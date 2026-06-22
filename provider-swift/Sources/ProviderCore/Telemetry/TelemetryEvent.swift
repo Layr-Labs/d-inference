@@ -250,6 +250,12 @@ public enum TelemetryFieldFilter {
         "steps_executed", "admits", "first_tokens_emitted",
         "consecutive_admits_without_first_token", "seconds_since_last_step",
         "seconds_since_last_first_token", "num_running", "wedge_suspected",
+        // Eval-in-flight + idle-clear + prefill-sampling-health diagnostics.
+        "eval_in_flight_ms", "longest_eval_ms", "evals_completed",
+        "idle_clear_in_flight_ms", "idle_clears_completed",
+        "prefill_samples_accepted", "prefill_samples_dropped_floor",
+        "prefill_samples_dropped_ceiling", "last_prefill_sample_tps",
+        "observed_prefill_tps_ewma",
     ]
 
     /// Filter a dictionary to only the keys the coordinator accepts.

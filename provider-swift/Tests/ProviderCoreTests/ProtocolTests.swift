@@ -658,6 +658,8 @@ import Testing
     #expect(decoded.secondsSinceLastStep == 0)
     #expect(decoded.secondsSinceLastFirstToken == 0)
     #expect(decoded.wedgeSuspected == false)
+    #expect(decoded.evalInFlightMs == 0)
+    #expect(decoded.idleClearInFlightMs == 0)
 }
 
 @Test func backendSlotCapacityDecodesMaxConcurrencyZero() throws {
@@ -704,6 +706,8 @@ import Testing
     #expect(object["seconds_since_last_step"] == nil)
     #expect(object["seconds_since_last_first_token"] == nil)
     #expect(object["wedge_suspected"] == nil)
+    #expect(object["eval_in_flight_ms"] == nil)
+    #expect(object["idle_clear_in_flight_ms"] == nil)
 }
 
 @Test func backendSlotCapacityRoundTripsWedgeFields() throws {
@@ -720,7 +724,9 @@ import Testing
         firstTokensEmitted: 0,
         secondsSinceLastStep: 12.5,
         secondsSinceLastFirstToken: 13.0,
-        wedgeSuspected: true
+        wedgeSuspected: true,
+        evalInFlightMs: 11_000,
+        idleClearInFlightMs: 1_500
     )
 
     let data = try JSONEncoder().encode(slot)
@@ -733,6 +739,8 @@ import Testing
     #expect(object["seconds_since_last_step"] as? Double == 12.5)
     #expect(object["seconds_since_last_first_token"] as? Double == 13.0)
     #expect(object["wedge_suspected"] as? Bool == true)
+    #expect(object["eval_in_flight_ms"] as? Int == 11_000)
+    #expect(object["idle_clear_in_flight_ms"] as? Int == 1_500)
 
     let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: data)
     #expect(decoded == slot)

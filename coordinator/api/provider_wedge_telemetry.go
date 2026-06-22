@@ -12,6 +12,12 @@ package api
 
 import "github.com/eigeninference/d-inference/coordinator/protocol"
 
+// evalInFlightLongMs is the threshold (ms) above which a heartbeat-reported
+// in-flight eval is treated as a developing first-token wedge. Well above a
+// normal eval (sub-ms..ms) and below the ~10s OpenRouter TTFT SLA, so it catches
+// the stall while it is still hanging.
+const evalInFlightLongMs = 2000
+
 // backendWedgeSignal is the per-slot engine-health view extracted from a
 // heartbeat. Kept as a small pure value so the extraction is table-testable
 // without a live Server / Datadog client.
@@ -22,6 +28,8 @@ type backendWedgeSignal struct {
 	FirstTokensEmitted   int64
 	SecondsSinceLastStep float64
 	WedgeSuspected       bool
+	EvalInFlightMs       int64
+	IdleClearInFlightMs  int64
 }
 
 // backendWedgeSignals extracts the engine-health signals from a heartbeat,
@@ -35,7 +43,8 @@ func backendWedgeSignals(hb *protocol.HeartbeatMessage) []backendWedgeSignal {
 	}
 	out := make([]backendWedgeSignal, 0, len(hb.BackendCapacity.Slots))
 	for _, slot := range hb.BackendCapacity.Slots {
-		if slot.StepsExecuted == 0 && slot.Admits == 0 && !slot.WedgeSuspected {
+		if slot.StepsExecuted == 0 && slot.Admits == 0 && !slot.WedgeSuspected &&
+			slot.EvalInFlightMs == 0 && slot.IdleClearInFlightMs == 0 {
 			continue
 		}
 		out = append(out, backendWedgeSignal{
@@ -45,6 +54,8 @@ func backendWedgeSignals(hb *protocol.HeartbeatMessage) []backendWedgeSignal {
 			FirstTokensEmitted:   slot.FirstTokensEmitted,
 			SecondsSinceLastStep: slot.SecondsSinceLastStep,
 			WedgeSuspected:       slot.WedgeSuspected,
+			EvalInFlightMs:       slot.EvalInFlightMs,
+			IdleClearInFlightMs:  slot.IdleClearInFlightMs,
 		})
 	}
 	return out
@@ -57,6 +68,11 @@ func (s *Server) recordBackendWedgeTelemetry(hb *protocol.HeartbeatMessage) {
 	for _, sig := range backendWedgeSignals(hb) {
 		if sig.WedgeSuspected {
 			s.ddIncr("provider.first_token_wedge_suspected", []string{"model:" + sig.Model})
+		}
+		// A blocking eval still running past the threshold is the direct wedge
+		// smoking gun (the provider is stuck inside mlx_eval under evalLock).
+		if sig.EvalInFlightMs >= evalInFlightLongMs {
+			s.ddIncr("provider.eval_in_flight_long", []string{"model:" + sig.Model})
 		}
 	}
 }

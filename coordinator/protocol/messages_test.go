@@ -1384,6 +1384,8 @@ func TestBackendSlotCapacityWedgeFields(t *testing.T) {
 		SecondsSinceLastStep:       12.5,
 		SecondsSinceLastFirstToken: 13.0,
 		WedgeSuspected:             true,
+		EvalInFlightMs:             11000,
+		IdleClearInFlightMs:        1500,
 	}
 
 	data, err := json.Marshal(slot)
@@ -1396,6 +1398,8 @@ func TestBackendSlotCapacityWedgeFields(t *testing.T) {
 		`"seconds_since_last_step":12.5`,
 		`"seconds_since_last_first_token":13`,
 		`"wedge_suspected":true`,
+		`"eval_in_flight_ms":11000`,
+		`"idle_clear_in_flight_ms":1500`,
 	} {
 		if !bytes.Contains(data, []byte(want)) {
 			t.Fatalf("expected %s in JSON, got %s", want, data)
@@ -1420,6 +1424,9 @@ func TestBackendSlotCapacityWedgeFields(t *testing.T) {
 	if !decoded.WedgeSuspected {
 		t.Fatal("wedge_suspected should round-trip true")
 	}
+	if decoded.EvalInFlightMs != 11000 || decoded.IdleClearInFlightMs != 1500 {
+		t.Fatalf("eval/idle-clear in-flight round-trip mismatch: %+v", decoded)
+	}
 
 	// All-zero/false slot: every wedge field is omitted (legacy-compatible wire).
 	zero := BackendSlotCapacity{Model: "m", State: "idle", NumRunning: 0}
@@ -1430,6 +1437,7 @@ func TestBackendSlotCapacityWedgeFields(t *testing.T) {
 	for _, key := range []string{
 		"steps_executed", "admits", "first_tokens_emitted",
 		"seconds_since_last_step", "seconds_since_last_first_token", "wedge_suspected",
+		"eval_in_flight_ms", "idle_clear_in_flight_ms",
 	} {
 		if bytes.Contains(zeroData, []byte(key)) {
 			t.Fatalf("zero wedge field %q should be omitted, got %s", key, zeroData)

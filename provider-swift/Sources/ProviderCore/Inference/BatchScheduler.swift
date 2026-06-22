@@ -297,6 +297,12 @@ public actor BatchScheduler {
     /// transition (healthy→suspected / suspected→recovered) emits immediately.
     var lastWedgeSuspectedEmitted = false
 
+    /// Cumulative prefill-EWMA sampling health (accepted / floor-dropped /
+    /// ceiling-dropped + last raw sample). Tracks why `observedPrefillTpsEwma`
+    /// stays 0; surfaced on the `engine_health` trail. MEASUREMENT ONLY — not
+    /// reset per load, mirroring the EWMA's own cross-load persistence.
+    var prefillHealth = PrefillSamplingHealth()
+
     /// Memory-kind selector for `gpuMemory(_:)` in the telemetry extension.
     enum MemoryKind { case active, peak, cache }
 

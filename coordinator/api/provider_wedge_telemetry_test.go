@@ -22,7 +22,8 @@ func TestBackendWedgeSignalsExtraction(t *testing.T) {
 			Slots: []protocol.BackendSlotCapacity{
 				// Legacy / freshly-idle: reports no engine-health signal → skipped.
 				{Model: "legacy", State: "idle"},
-				// Wedged: admits climbing, 0 first tokens, steps frozen.
+				// Wedged: admits climbing, 0 first tokens, steps frozen, and the
+				// blocking eval has been running 11s (the smoking gun).
 				{
 					Model:                "gpt-oss-20b",
 					State:                "idle",
@@ -31,6 +32,7 @@ func TestBackendWedgeSignalsExtraction(t *testing.T) {
 					FirstTokensEmitted:   0,
 					SecondsSinceLastStep: 30,
 					WedgeSuspected:       true,
+					EvalInFlightMs:       11000,
 				},
 				// Healthy-but-instrumented: has steps/admits but not wedged.
 				{
@@ -40,22 +42,32 @@ func TestBackendWedgeSignalsExtraction(t *testing.T) {
 					Admits:             20,
 					FirstTokensEmitted: 20,
 				},
+				// Only an in-flight eval reported (no other counters) — must still
+				// be surfaced so a developing wedge isn't skipped.
+				{
+					Model:          "gemma",
+					State:          "idle",
+					EvalInFlightMs: 3000,
+				},
 			},
 		},
 	}
 
 	got := backendWedgeSignals(hb)
-	if len(got) != 2 {
-		t.Fatalf("expected 2 instrumented slots (legacy skipped), got %d: %+v", len(got), got)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 instrumented slots (legacy skipped), got %d: %+v", len(got), got)
 	}
 	if got[0].Model != "gpt-oss-20b" || !got[0].WedgeSuspected {
 		t.Fatalf("expected first signal to be the wedged gpt-oss slot, got %+v", got[0])
 	}
-	if got[0].Admits != 5 || got[0].FirstTokensEmitted != 0 {
+	if got[0].Admits != 5 || got[0].FirstTokensEmitted != 0 || got[0].EvalInFlightMs != 11000 {
 		t.Fatalf("wedge counters mismatch: %+v", got[0])
 	}
 	if got[1].Model != "qwen" || got[1].WedgeSuspected {
 		t.Fatalf("expected second signal to be the healthy qwen slot, got %+v", got[1])
+	}
+	if got[2].Model != "gemma" || got[2].EvalInFlightMs != 3000 {
+		t.Fatalf("expected third signal to be the eval-in-flight gemma slot, got %+v", got[2])
 	}
 }
 

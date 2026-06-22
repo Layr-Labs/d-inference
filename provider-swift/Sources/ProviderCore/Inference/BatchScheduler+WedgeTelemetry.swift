@@ -19,6 +19,7 @@
 // content. The fields used here are mirrored in the Go + Swift + TS allowlists.
 
 import Foundation
+import MLX
 import MLXLMCommon
 
 extension BatchScheduler {
@@ -131,6 +132,19 @@ extension BatchScheduler {
                 .double(wedgeMonitor.secondsSinceLastFirstToken(now: now)),
             "num_running": .int(activeBridges.count),
             "wedge_suspected": .bool(wedgeMonitor.wedgeSuspected(now: now)),
+            // Eval-in-flight (process-global blocking eval under evalLock).
+            "eval_in_flight_ms": .int64(MLX.EvalProbe.currentEvalElapsedMs),
+            "longest_eval_ms": .int64(MLX.EvalProbe.longestEvalMs),
+            "evals_completed": .int(MLX.EvalProbe.evalsCompleted),
+            // Idle GPU drain + buffer-cache clear (per-slot engine).
+            "idle_clear_in_flight_ms": .int64(engine?.core.idleClearElapsedMs ?? 0),
+            "idle_clears_completed": .int(engine?.core.idleClearsCompleted ?? 0),
+            // Prefill-EWMA sampling health (why observed_prefill_tps stays 0).
+            "prefill_samples_accepted": .int(prefillHealth.accepted),
+            "prefill_samples_dropped_floor": .int(prefillHealth.droppedFloor),
+            "prefill_samples_dropped_ceiling": .int(prefillHealth.droppedCeiling),
+            "last_prefill_sample_tps": .double(prefillHealth.lastSampleTps),
+            "observed_prefill_tps_ewma": .double(observedPrefillTpsEwma),
         ]
     }
 }

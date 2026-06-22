@@ -407,6 +407,15 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     /// Provider-computed wedge primitive: ≥N consecutive admits emitted the
     /// preamble but produced 0 first tokens for ≥T seconds. Omitted when false.
     public var wedgeSuspected: Bool
+    /// Milliseconds the CURRENTLY-running blocking `eval` has been executing under
+    /// the process-global evalLock (0 = none in flight). A seconds-range value is
+    /// the direct first-token-wedge smoking gun. Process-global (same across this
+    /// provider's slots). See MLX `EvalProbe`.
+    public var evalInFlightMs: Int64
+    /// Milliseconds the current idle GPU drain + buffer-cache clear has been
+    /// running for THIS slot's engine (0 = none). A seconds-range value with no
+    /// exit pins the clearCache/IOKit race. See `EngineCore.idleClearElapsedMs`.
+    public var idleClearInFlightMs: Int64
 
     enum CodingKeys: String, CodingKey {
         case model
@@ -429,6 +438,8 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case secondsSinceLastStep = "seconds_since_last_step"
         case secondsSinceLastFirstToken = "seconds_since_last_first_token"
         case wedgeSuspected = "wedge_suspected"
+        case evalInFlightMs = "eval_in_flight_ms"
+        case idleClearInFlightMs = "idle_clear_in_flight_ms"
     }
 
     public init(
@@ -451,7 +462,9 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         firstTokensEmitted: Int64 = 0,
         secondsSinceLastStep: Double = 0,
         secondsSinceLastFirstToken: Double = 0,
-        wedgeSuspected: Bool = false
+        wedgeSuspected: Bool = false,
+        evalInFlightMs: Int64 = 0,
+        idleClearInFlightMs: Int64 = 0
     ) {
         self.model = model
         self.state = state
@@ -473,6 +486,8 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.secondsSinceLastStep = secondsSinceLastStep
         self.secondsSinceLastFirstToken = secondsSinceLastFirstToken
         self.wedgeSuspected = wedgeSuspected
+        self.evalInFlightMs = evalInFlightMs
+        self.idleClearInFlightMs = idleClearInFlightMs
     }
 
     public init(from decoder: Decoder) throws {
@@ -497,6 +512,8 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         secondsSinceLastStep = try container.decodeIfPresent(Double.self, forKey: .secondsSinceLastStep) ?? 0
         secondsSinceLastFirstToken = try container.decodeIfPresent(Double.self, forKey: .secondsSinceLastFirstToken) ?? 0
         wedgeSuspected = try container.decodeIfPresent(Bool.self, forKey: .wedgeSuspected) ?? false
+        evalInFlightMs = try container.decodeIfPresent(Int64.self, forKey: .evalInFlightMs) ?? 0
+        idleClearInFlightMs = try container.decodeIfPresent(Int64.self, forKey: .idleClearInFlightMs) ?? 0
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -525,6 +542,8 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         if wedgeSuspected {
             try container.encode(wedgeSuspected, forKey: .wedgeSuspected)
         }
+        try encodeIfNonZero(evalInFlightMs, forKey: .evalInFlightMs, into: &container)
+        try encodeIfNonZero(idleClearInFlightMs, forKey: .idleClearInFlightMs, into: &container)
     }
 
     private func encodeIfNonZero<T: BinaryInteger & Encodable>(

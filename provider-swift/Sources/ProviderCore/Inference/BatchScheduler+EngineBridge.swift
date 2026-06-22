@@ -302,11 +302,25 @@ extension BatchScheduler {
                 + Double(prefillElapsed.components.attoseconds) / 1e18
             // Cold prefill ⇒ restoredPrefixTokens == 0, so this is the full prompt.
             let prefilledTokens = finalPrompt - bridge.restoredPrefixTokens
-            if prefilledTokens > 0, prefillSeconds >= Self.minPrefillWindowSeconds {
-                let tps = Double(prefilledTokens) / prefillSeconds
-                if tps.isFinite, tps <= Self.maxPlausiblePrefillTps {
-                    updatePrefillTpsEwma(tps: tps)
-                }
+            // Measurement: record the raw sample rate (incl. the inflated
+            // below-floor value) before applying the unchanged bounds.
+            if let raw = Self.rawPrefillSampleTps(
+                prefilledTokens: prefilledTokens, prefillSeconds: prefillSeconds) {
+                prefillHealth.lastSampleTps = raw
+            }
+            // Same bounds as before, now routed through a pure classifier so the
+            // accept/drop reasons can be counted. `.accepted` ⇔ the original `if`.
+            switch Self.classifyPrefillSample(
+                prefilledTokens: prefilledTokens, prefillSeconds: prefillSeconds) {
+            case .accepted(let tps):
+                updatePrefillTpsEwma(tps: tps)
+                prefillHealth.accepted += 1
+            case .belowFloor:
+                prefillHealth.droppedFloor += 1
+            case .aboveCeiling:
+                prefillHealth.droppedCeiling += 1
+            case .notColdPrefill:
+                break
             }
         }
 

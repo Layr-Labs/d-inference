@@ -201,7 +201,11 @@ extension BatchScheduler {
             firstTokensEmitted: Int64(wedgeMonitor.firstTokens),
             secondsSinceLastStep: wedgeMonitor.secondsSinceLastStep(now: now),
             secondsSinceLastFirstToken: wedgeMonitor.secondsSinceLastFirstToken(now: now),
-            wedgeSuspected: wedgeMonitor.wedgeSuspected(now: now)
+            wedgeSuspected: wedgeMonitor.wedgeSuspected(now: now),
+            // Smoking-gun scalars: how long the current blocking eval (process-
+            // global) and this slot's idle GPU clear have been running. 0 = none.
+            evalInFlightMs: MLX.EvalProbe.currentEvalElapsedMs,
+            idleClearInFlightMs: engine?.core.idleClearElapsedMs ?? 0
         )
         return BackendCapacity(
             slots: [slot],

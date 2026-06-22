@@ -235,6 +235,8 @@ type BackendSlotCapacity struct {
 	SecondsSinceLastStep       float64 `json:"seconds_since_last_step,omitempty"`        // seconds since the step counter last advanced (large under demand ⇒ frozen loop)
 	SecondsSinceLastFirstToken float64 `json:"seconds_since_last_first_token,omitempty"` // seconds since the last first content token (0 = none yet this load)
 	WedgeSuspected             bool    `json:"wedge_suspected,omitempty"`                // provider-computed: ≥N consecutive admits, 0 first-tokens, ≥T seconds
+	EvalInFlightMs             int64   `json:"eval_in_flight_ms,omitempty"`              // ms the current blocking eval has run (process-global, evalLock); seconds-range = wedge smoking gun
+	IdleClearInFlightMs        int64   `json:"idle_clear_in_flight_ms,omitempty"`        // ms the current idle GPU drain+clearCache has run for this slot; seconds-range = clearCache/IOKit race
 }
 
 // BackendCapacity describes the aggregate capacity across all backend slots

@@ -116,6 +116,8 @@ type routingSnapshot struct {
 	secondsSinceLastStep       float64
 	secondsSinceLastFirstToken float64
 	wedgeSuspected             bool
+	evalInFlightMs             int64
+	idleClearInFlightMs        int64
 }
 
 type routingCandidate struct {
@@ -1042,6 +1044,8 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 			snap.secondsSinceLastStep = slot.SecondsSinceLastStep
 			snap.secondsSinceLastFirstToken = slot.SecondsSinceLastFirstToken
 			snap.wedgeSuspected = slot.WedgeSuspected
+			snap.evalInFlightMs = slot.EvalInFlightMs
+			snap.idleClearInFlightMs = slot.IdleClearInFlightMs
 			break
 		}
 	}
@@ -1902,6 +1906,8 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 				snap.secondsSinceLastStep = slot.SecondsSinceLastStep
 				snap.secondsSinceLastFirstToken = slot.SecondsSinceLastFirstToken
 				snap.wedgeSuspected = slot.WedgeSuspected
+				snap.evalInFlightMs = slot.EvalInFlightMs
+				snap.idleClearInFlightMs = slot.IdleClearInFlightMs
 				break
 			}
 		}

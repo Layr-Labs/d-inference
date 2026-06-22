@@ -3,6 +3,7 @@ import Foundation
 import MLX
 import MLXLMCommon
 import ProviderCore
+import ProviderBenchmark
 
 /// KV-cache capacity demo + long-context scaling microbenchmark.
 /// Loads a model into the real continuous-batching engine (fp16 baseline +

@@ -4,6 +4,7 @@ import MLXFast
 import MLXLMCommon
 import MLXRandom
 import ProviderCore
+import ProviderBenchmark
 
 // Deterministic numerical correctness probe for `quantizedScaledDotProductAttention`.
 //

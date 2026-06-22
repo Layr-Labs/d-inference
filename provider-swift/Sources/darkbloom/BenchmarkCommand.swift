@@ -1,5 +1,6 @@
 import ArgumentParser
 import ProviderCore
+import ProviderBenchmark
 
 struct Benchmark: AsyncParsableCommand {
     static let configuration = CommandConfiguration(

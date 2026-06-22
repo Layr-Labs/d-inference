@@ -17,7 +17,7 @@ import Foundation
 
 /// Namespace for KV-cache cost estimation. Pure functions only; no
 /// actor state, no global mutation.
-enum KVEstimation {
+public enum KVEstimation {
 
     // MARK: - Tunables
 
@@ -70,7 +70,7 @@ enum KVEstimation {
     /// Returns `.empty` when the config can't be read or parsed.
     /// All numeric fields are clamped to defend against malicious or
     /// corrupt configs in operator-writable model directories.
-    static func parseModelArchitecture(at configURL: URL) -> ModelArchitecture {
+    public static func parseModelArchitecture(at configURL: URL) -> ModelArchitecture {
         guard let data = readBoundedConfigJSON(configURL),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return .empty
@@ -333,7 +333,7 @@ extension BatchScheduler {
     /// When `quantScheme` is non-nil, full-attention layers are charged at
     /// the scheme's effective byte ratio so admission grants the reduced
     /// memory footprint.
-    static func resolvedKVBytesPerToken(
+    public static func resolvedKVBytesPerToken(
         architecture: ModelArchitecture,
         weightBytes: Int,
         quantScheme: KVQuantEngineScheme? = nil

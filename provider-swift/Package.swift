@@ -96,6 +96,30 @@ let package = Package(
         ),
 
         // ----------------------------------------------------------------
+        // ProviderBenchmark: KV-quant gate/perf/quality runners, throughput
+        // sweep, decode-bandwidth model, and the standalone benchmark KV
+        // caches (incl. fatalError protocol-conformance stubs). Kept OUT of
+        // the shipped ProviderCore library so the provider/enclave binaries
+        // don't link benchmark-only code; only the benchmark-bearing
+        // executables (darkbloom `benchmark`, kv-quant-gate, kv-attn-selftest,
+        // kv-engine-demo) depend on it. The engine-facing types it shares
+        // with the live scheduler (KVQuantCandidateMode, KVQuantPolicy) live
+        // in ProviderCore.
+        // ----------------------------------------------------------------
+        .target(
+            name: "ProviderBenchmark",
+            dependencies: [
+                "ProviderCore",
+                "ProviderCoreFoundation",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            ],
+            path: "Sources/ProviderBenchmark"
+        ),
+
+        // ----------------------------------------------------------------
         // darkbloom: command-line entry point. Subcommands: serve / start /
         // stop / status / doctor / models / login / logout / benchmark /
         // update / verify (Phase 0 fidelity check).
@@ -108,6 +132,7 @@ let package = Package(
             name: "darkbloom",
             dependencies: [
                 "ProviderCore",
+                "ProviderBenchmark",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/darkbloom"
@@ -182,6 +207,7 @@ let package = Package(
             name: "kv-quant-gate",
             dependencies: [
                 "ProviderCore",
+                "ProviderBenchmark",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/kv-quant-gate"
@@ -191,6 +217,7 @@ let package = Package(
             name: "kv-attn-selftest",
             dependencies: [
                 "ProviderCore",
+                "ProviderBenchmark",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXFast", package: "mlx-swift"),
                 .product(name: "MLXRandom", package: "mlx-swift"),
@@ -209,6 +236,7 @@ let package = Package(
             name: "kv-engine-demo",
             dependencies: [
                 "ProviderCore",
+                "ProviderBenchmark",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
             ],
@@ -225,6 +253,7 @@ let package = Package(
             name: "ProviderCoreTests",
             dependencies: [
                 "ProviderCore",
+                "ProviderBenchmark",
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
             ],

@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCore
 
 public struct KVQuantMemorySnapshot: Codable, Sendable, Equatable {
     public let label: String

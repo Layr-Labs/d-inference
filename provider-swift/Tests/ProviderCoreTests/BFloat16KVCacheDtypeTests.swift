@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXLMCommon
 import Testing
+@testable import ProviderBenchmark
 @testable import ProviderCore
 
 @Test("V-only bfloat16 cache stores values as bfloat16 after start token")

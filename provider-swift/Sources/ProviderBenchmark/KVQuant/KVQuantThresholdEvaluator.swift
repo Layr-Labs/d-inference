@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCore
 
 struct KVQuantThresholdEvaluator {
     static func evaluate(report: KVQuantGateReport, thresholdsURL: URL, hardware: HardwareInfo?) -> KVQuantThresholdReport? {

@@ -136,7 +136,7 @@ enum CheckpointLayerSignature: Sendable, Equatable {
 /// Model-architecture fields read from `config.json`, used by
 /// `KVEstimation.computeKVBytesPerToken` to size the token budget.
 /// All values are post-clamp; see `KVEstimation.parseModelArchitecture`.
-struct ModelArchitecture: Sendable {
+public struct ModelArchitecture: Sendable {
     let numLayers: Int?
     let kvHeads: Int?
     let headDim: Int?

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import ProviderBenchmark
 @testable import ProviderCore
 
 /// Tests that the KV-quant threshold evaluator FAILS CLOSED: a threshold file

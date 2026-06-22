@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCore
 import MLX
 import MLXLMCommon
 import MLXNN

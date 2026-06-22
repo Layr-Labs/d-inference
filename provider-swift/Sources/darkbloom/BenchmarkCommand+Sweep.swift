@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import ProviderCore
+import ProviderBenchmark
 
 extension Benchmark {
     /// Drive `ThroughputSweep` for the resolved model and print the JSON report

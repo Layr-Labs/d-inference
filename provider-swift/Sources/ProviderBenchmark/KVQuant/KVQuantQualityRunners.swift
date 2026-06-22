@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCore
 
 public struct KVQuantQualityRunner {
     public init() {}

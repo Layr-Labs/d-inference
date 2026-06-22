@@ -7,6 +7,7 @@
 import Foundation
 import Testing
 
+@testable import ProviderBenchmark
 @testable import ProviderCore
 
 @Suite("throughput sweep: bandwidth model")

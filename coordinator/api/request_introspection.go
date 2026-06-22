@@ -1,17 +1,24 @@
 package api
 
-// request_introspection.go holds pure helpers for introspecting and lightly
+// request_introspection.go holds helpers for introspecting and lightly
 // reshaping inbound inference request bodies before routing/dispatch:
 // token and cost estimation (routing vs billing), media/tool detection,
-// cache-affinity key derivation, and provider-serial allowlist parsing.
-// These functions have no Server dependencies and are split out of consumer.go
+// remote media-URL rejection, cache-affinity key derivation, and
+// provider-serial allowlist parsing. Most are pure helpers with no Server
+// state; the pre-dispatch media-URL rejection (rejectRemoteMediaURLs) hangs
+// off *Server only to record rejection telemetry. Split out of consumer.go
 // to keep the request-handling orchestrator thin.
 
 import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"os"
+	"strconv"
 	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // Media prompt-token costs. A vision encoder turns each image/video into a
@@ -306,6 +313,157 @@ func detectMediaRequirement(parsed map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// isInlineDataURI reports whether a media reference is an inline base64 data: URI
+// — the ONLY form the provider's E2E-encrypted VLM path accepts (see
+// VLMRequestInference.MediaError.invalidURL, which 400s anything else).
+func isInlineDataURI(s string) bool {
+	return strings.HasPrefix(strings.TrimSpace(s), "data:")
+}
+
+// mediaPartURLString returns the URL/inline reference carried by a media content
+// part and whether the part IS a media part. Covers OpenAI chat (image_url/
+// video_url objects or bare strings), OpenAI Responses (input_image/input_video),
+// and Anthropic source blocks ({type:"image"|"video", source:{type,…}}). A media
+// part whose reference can't be read returns ("", true) so the caller fails OPEN.
+func mediaPartURLString(pm map[string]any) (ref string, isMedia bool) {
+	typ, _ := pm["type"].(string)
+	if !isMediaPartType(typ) {
+		return "", false
+	}
+	switch typ {
+	case "image_url", "input_image", "video_url", "input_video":
+		field := "image_url"
+		if typ == "video_url" || typ == "input_video" {
+			field = "video_url"
+		}
+		switch v := pm[field].(type) {
+		case string:
+			return v, true
+		case map[string]any:
+			if u, ok := v["url"].(string); ok {
+				return u, true
+			}
+		}
+		return "", true
+	case "image", "video": // Anthropic source block
+		if src, ok := pm["source"].(map[string]any); ok {
+			switch st, _ := src["type"].(string); st {
+			case "url":
+				u, _ := src["url"].(string)
+				return u, true // remote reference
+			case "base64":
+				// Inline raw base64 (not a data: URI). Treated as inline/OK in v1 —
+				// the provider's Anthropic path accepts it; only remote refs are the
+				// production storm. Marked inline so it is never rejected here.
+				return "data:anthropic-inline-base64", true
+			}
+		}
+		return "", true
+	}
+	return "", true
+}
+
+// validateMediaParts walks every media part in a chat (messages[]) or Responses
+// (input[]) body and returns the first REMOTE / non-inline media reference. The
+// provider VLM path accepts ONLY inline data: URIs, so a remote http(s)://,
+// file://, or otherwise non-data: reference is the production gemma-vision 400
+// source. Returns ok=false with the offending reference so the caller rejects it
+// pre-dispatch (one clean 400) instead of dispatching and 400ing across the fleet.
+// Unknown/unreadable part shapes fall through (fail-OPEN) — never wrongly 400 a
+// body we don't model.
+func validateMediaParts(parsed map[string]any) (badRef string, ok bool) {
+	check := func(content any) (string, bool) {
+		parts, ok := content.([]any)
+		if !ok {
+			return "", true
+		}
+		for _, p := range parts {
+			pm, ok := p.(map[string]any)
+			if !ok {
+				continue
+			}
+			ref, isMedia := mediaPartURLString(pm)
+			if !isMedia || ref == "" {
+				continue
+			}
+			if !isInlineDataURI(ref) {
+				return ref, false
+			}
+		}
+		return "", true
+	}
+	if msgs, ok := parsed["messages"].([]any); ok {
+		for _, m := range msgs {
+			if mm, ok := m.(map[string]any); ok {
+				if ref, good := check(mm["content"]); !good {
+					return ref, false
+				}
+			}
+		}
+	}
+	if input, ok := parsed["input"].([]any); ok {
+		for _, it := range input {
+			if im, ok := it.(map[string]any); ok {
+				if ref, good := check(im["content"]); !good {
+					return ref, false
+				}
+			}
+		}
+	}
+	return "", true
+}
+
+// visionRejectRemoteEnabled gates the C4 pre-dispatch remote-media-URL rejection.
+// Default ON; DARKBLOOM_VISION_REJECT_REMOTE_URLS=false (or 0) restores the prior
+// dispatch-then-provider-400 behavior (still bounded by C1). Read live so the
+// kill switch toggles without a redeploy.
+func visionRejectRemoteEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("DARKBLOOM_VISION_REJECT_REMOTE_URLS"))
+	if v == "" {
+		return true
+	}
+	on, err := strconv.ParseBool(v)
+	return err != nil || on
+}
+
+// rejectRemoteMediaURLs fails a vision request fast (one terminal 400) when any
+// media part carries a remote/non-inline URL, mirroring the provider's data:-only
+// contract. Pre-dispatch — no provider is contacted. handled=true => caller returns.
+func (s *Server) rejectRemoteMediaURLs(w http.ResponseWriter, r *http.Request, parsed map[string]any, model, publicModel string, requiresVision, hasTools bool) (handled bool) {
+	if !requiresVision || !visionRejectRemoteEnabled() {
+		return false
+	}
+	badRef, ok := validateMediaParts(parsed)
+	if ok {
+		return false
+	}
+	shown := badRef
+	if len(shown) > 200 {
+		shown = shown[:200] + "…"
+	}
+	stream, _ := parsed["stream"].(bool)
+	s.recordRejection(rejectionInfo{
+		r:               r,
+		stage:           "validation",
+		reasonCode:      "bad_param",
+		httpStatus:      http.StatusBadRequest,
+		keyID:           keyIDFromContext(r.Context()),
+		consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+		requestedModel:  publicModel,
+		resolvedModel:   model,
+		stream:          stream,
+		requiresVision:  true,
+		hasTools:        hasTools,
+		params:          rejectionSamplingParams(parsed),
+	})
+	s.ddIncr("inference.media_remote_url_rejected", []string{"model:" + model})
+	writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+		"image/video input must be an inline base64 data: URI (e.g. \"data:image/jpeg;base64,…\"); "+
+			"remote http(s):// and file:// media URLs are not supported on this end-to-end-encrypted endpoint. Got: "+shown,
+		withParam("messages")))
+	return true
 }
 
 // requestHasTools reports whether the request carries a non-empty top-level

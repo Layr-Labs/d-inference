@@ -446,6 +446,18 @@ func main() {
 		}
 	}
 
+	// C1 kill switch: deterministic provider client-4xx (400/413/422/415) returns
+	// ONCE instead of failing over up to maxDispatchAttempts. Stop is ON by default;
+	// set EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP=true to restore pre-fix failover.
+	if v := os.Getenv("EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP"); v != "" {
+		if on, err := strconv.ParseBool(v); err == nil && on {
+			srv.SetDisableClientErrorStop(true)
+			logger.Warn("client-error dispatch stop DISABLED via EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP — deterministic provider 4xx will fail over up to maxDispatchAttempts")
+		} else if err != nil {
+			logger.Warn("invalid EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP; stop stays enabled", "value", v)
+		}
+	}
+
 	// Per-family prompt-token estimate calibration for the servability context
 	// check (the len/4 routing estimate undercounts dense content). Default
 	// {gpt-oss:1.3}; override with "family:factor,..." e.g. "gpt-oss:1.3,gemma:1.15".

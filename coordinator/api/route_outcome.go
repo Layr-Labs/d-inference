@@ -22,8 +22,15 @@ const (
 	errorReasonTokenBudgetExhaust = "token_budget_exhausted"
 	errorReasonCancelled          = "cancelled"
 	errorReasonProviderError      = "provider_error"
+	errorReasonClientError        = "client_error"
 	errorReasonUnknown            = "unknown"
 )
+
+// errorClassClientError is the route-outcome error_class for a DETERMINISTIC
+// provider-returned client-shape 4xx (invalid tool payload / role / response
+// format / unsupported media). The request is malformed by shape — identical on
+// every provider — so it is NOT a provider fault and NOT an admission mismatch.
+const errorClassClientError = "client_error"
 
 var validInferenceErrorReasons = map[string]struct{}{
 	errorReasonJinjaChannelTags:   {},
@@ -35,6 +42,7 @@ var validInferenceErrorReasons = map[string]struct{}{
 	errorReasonTokenBudgetExhaust: {},
 	errorReasonCancelled:          {},
 	errorReasonProviderError:      {},
+	errorReasonClientError:        {},
 	errorReasonUnknown:            {},
 }
 
@@ -145,6 +153,13 @@ func preResponseProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.I
 }
 
 func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
+	if isTerminalClientErrorCode(msg.StatusCode) {
+		// Deterministic client-shape 4xx: the request body is malformed/unservable
+		// by shape (fails identically on every provider), not a provider fault.
+		// Record as client_error WITHOUT AdmittedButFailed so it never pollutes the
+		// admission-mismatch gauge.
+		return pendingRouteOutcomeWithReason(pr, "error", errorClassClientError, msg.StatusCode, msg.ErrorReason, msg.Error)
+	}
 	class := "provider_error"
 	if providerDisconnectedError(msg.Error, msg.StatusCode) {
 		class = "provider_disconnect_pre_commit"
@@ -230,6 +245,8 @@ func inferenceErrorReason(providerReason, status, class string, code int, messag
 		return errorReasonCapacityTimeout
 	case lowerStatus == errorReasonCancelled || code == 499 || strings.Contains(lowerClass, "client_gone") || strings.Contains(lowerClass, "cancel") || strings.Contains(lowerMessage, "request cancelled"):
 		return errorReasonCancelled
+	case lowerClass == errorReasonClientError || strings.HasPrefix(lowerClass, errorReasonClientError):
+		return errorReasonClientError
 	case lowerClass == errorReasonProviderError || strings.HasPrefix(lowerClass, "provider_error") || strings.HasPrefix(lowerClass, "provider_disconnect") || strings.Contains(lowerClass, "provider_incomplete") || strings.Contains(lowerClass, "stream_timeout") || strings.Contains(lowerClass, "first_chunk_timeout") || strings.Contains(lowerClass, "accepted_timeout") || strings.Contains(lowerClass, "preamble_liveness_timeout") || strings.Contains(lowerMessage, "provider disconnected") || code >= http.StatusInternalServerError:
 		return errorReasonProviderError
 	default:

@@ -124,6 +124,30 @@ func snapshotStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
 	return coldTokenBudgetEstimate(snap.totalMemoryGB, snap.modelSizeGB, snap.kvBytesPerToken), true
 }
 
+// liveStructuralBudget is snapshotStructuralBudget minus the provider's CURRENTLY
+// committed tokens (active + queued) for resident slots, so the fleet-budget shed
+// reflects LIVE remaining headroom rather than the idle structural ceiling: a 50k
+// request fits an idle 131k box but NOT one already holding 100k. Cold/on-disk
+// slots keep the optimistic post-load estimate (nothing is committed there yet).
+// Same fail-open contract as snapshotStructuralBudget (known=false ⇒ skip).
+func liveStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
+	if snap.activeTokenBudgetMax > 0 {
+		rem := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
+		if rem < 0 {
+			rem = 0
+		}
+		return rem, true
+	}
+	if snap.modelLoaded {
+		// Resident but no token budget reported (legacy provider): unknown.
+		return 0, false
+	}
+	if snap.totalMemoryGB <= 0 || snap.modelSizeGB <= 0 {
+		return 0, false
+	}
+	return coldTokenBudgetEstimate(snap.totalMemoryGB, snap.modelSizeGB, snap.kvBytesPerToken), true
+}
+
 // PredictServable reports whether the fleet can structurally serve a request of
 // the given size for the model. contextLimit is the model's max context window
 // (from the model registry record; 0 = unknown → context tier skipped). It is
@@ -206,7 +230,10 @@ func (r *Registry) PredictServable(model string, estimatedPromptTokens, contextP
 			continue
 		}
 		providerCount++
-		budget, known := snapshotStructuralBudget(snap)
+		// LIVE remaining budget (structural ceiling minus committed) so the shed
+		// reflects real headroom under load, not the idle fleet-max. Gated/ship-dark
+		// (only the default-off servability gate sheds on this verdict).
+		budget, known := liveStructuralBudget(snap)
 		if !known {
 			sawUnknown = true
 			continue

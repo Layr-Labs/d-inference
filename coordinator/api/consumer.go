@@ -250,6 +250,13 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 	if opened, _ := s.registry.RecordProviderOutcome(providerID, false, statusCode, errStr); opened {
 		s.ddIncr("routing.provider_breaker_open", []string{"model:" + pr.Model})
 	}
+	// Feed the STABLE-IDENTITY ejection breaker too (survives reconnect churn, so a
+	// zombie that fault-loops while constantly disconnecting still accumulates).
+	if sid := s.registry.GetProviderStableIdentity(providerID); sid != "" {
+		if ejected, _ := s.registry.RecordProviderServeOutcome(sid, false, statusCode, errStr); ejected {
+			s.ddIncr("routing.provider_ejected", []string{"model:" + pr.Model})
+		}
+	}
 }
 
 // noteInferenceSuccess clears the inference-error strike state for the serving
@@ -264,6 +271,13 @@ func (s *Server) noteInferenceSuccess(pr *registry.PendingRequest) {
 	// breaker (and reset the exponential backoff) if it had tripped.
 	if _, closed := s.registry.RecordProviderOutcome(pr.ProviderID, true, 200, ""); closed {
 		s.ddIncr("routing.provider_breaker_closed", []string{"model:" + pr.Model})
+	}
+	// A clean completion is a success for the stable-identity ejection breaker too
+	// — closes it (half-open recovery) if this identity had been ejected.
+	if sid := s.registry.GetProviderStableIdentity(pr.ProviderID); sid != "" {
+		if _, recovered := s.registry.RecordProviderServeOutcome(sid, true, 200, ""); recovered {
+			s.ddIncr("routing.provider_ejection_recovered", []string{"model:" + pr.Model})
+		}
 	}
 }
 
@@ -1363,6 +1377,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Responses→chat lowering doesn't carry image/video parts through.
 	if s.visionToolsFailFast(w, model, publicModel, requiresVision, hasTools,
 		input != nil && len(messages) == 0, policy, allowedProviderSerials) {
+		return
+	}
+	// Reject remote/non-data: media URLs pre-dispatch (the provider VLM path is
+	// data:-only): one clean 400 instead of dispatching and 400ing across the fleet.
+	if s.rejectRemoteMediaURLs(w, r, parsed, model, publicModel, requiresVision, hasTools) {
 		return
 	}
 
@@ -3898,6 +3917,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	hasTools := requestHasTools(parsed)
 	if s.visionToolsFailFast(w, model, publicModel, requiresVision, hasTools,
 		false, policy, allowedProviderSerials) {
+		return
+	}
+	if s.rejectRemoteMediaURLs(w, r, parsed, model, publicModel, requiresVision, hasTools) {
 		return
 	}
 

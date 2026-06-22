@@ -6,6 +6,10 @@ import { PrivyProvider, usePrivy } from "@privy-io/react-auth";
 const PRIVY_APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID || "";
 const IS_PRIVY_CONFIGURED = PRIVY_APP_ID && PRIVY_APP_ID !== "placeholder";
 
+function isProductionEnv(): boolean {
+  return process.env.NODE_ENV === "production";
+}
+
 export interface AuthState {
   ready: boolean;
   authenticated: boolean;
@@ -97,6 +101,21 @@ export function PrivyClientProvider({
   children: React.ReactNode;
 }) {
   if (!IS_PRIVY_CONFIGURED) {
+    if (isProductionEnv()) {
+      return (
+        <div className="min-h-screen bg-bg-primary flex items-center justify-center p-4">
+          <div className="max-w-md w-full rounded-lg border border-red-800 bg-red-950/40 p-8 text-center">
+            <h1 className="text-lg font-semibold text-red-400 mb-2">
+              Authentication not configured
+            </h1>
+            <p className="text-sm text-red-300/80">
+              Authentication is not configured (NEXT_PUBLIC_PRIVY_APP_ID
+              missing). This deployment is misconfigured.
+            </p>
+          </div>
+        </div>
+      );
+    }
     return (
       <AuthContext.Provider value={MOCK_AUTH}>
         {children}

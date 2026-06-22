@@ -104,6 +104,18 @@ type routingSnapshot struct {
 	kvBytesPerToken    int64
 	fleetMedianTPS     float64
 	hasBackendCapacity bool // provider reports BackendCapacity; TTFT estimates are reliable
+
+	// Engine-health (first-token wedge) signals, decoded from the slot's
+	// BackendSlotCapacity (see docs/reports/2026-06-22-cancel-root-cause-and-fix.md
+	// §C). MEASUREMENT ONLY: surfaced here so routing/observability code can read
+	// a wedge ("admits climbing, first-tokens flat, steps frozen") — this PR does
+	// NOT gate any routing decision on them. 0/false for legacy providers.
+	stepsExecuted              int64
+	admits                     int64
+	firstTokensEmitted         int64
+	secondsSinceLastStep       float64
+	secondsSinceLastFirstToken float64
+	wedgeSuspected             bool
 }
 
 type routingCandidate struct {
@@ -1024,6 +1036,12 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 			snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 			snap.queuedTokenBudget = slot.QueuedTokenBudget
 			snap.kvBytesPerToken = slot.KVBytesPerToken
+			snap.stepsExecuted = slot.StepsExecuted
+			snap.admits = slot.Admits
+			snap.firstTokensEmitted = slot.FirstTokensEmitted
+			snap.secondsSinceLastStep = slot.SecondsSinceLastStep
+			snap.secondsSinceLastFirstToken = slot.SecondsSinceLastFirstToken
+			snap.wedgeSuspected = slot.WedgeSuspected
 			break
 		}
 	}
@@ -1878,6 +1896,12 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 				snap.queuedTokenBudget = slot.QueuedTokenBudget
 				snap.maxTokensPotential = slot.MaxTokensPotential
 				snap.kvBytesPerToken = slot.KVBytesPerToken
+				snap.stepsExecuted = slot.StepsExecuted
+				snap.admits = slot.Admits
+				snap.firstTokensEmitted = slot.FirstTokensEmitted
+				snap.secondsSinceLastStep = slot.SecondsSinceLastStep
+				snap.secondsSinceLastFirstToken = slot.SecondsSinceLastFirstToken
+				snap.wedgeSuspected = slot.WedgeSuspected
 				break
 			}
 		}

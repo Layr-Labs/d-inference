@@ -29,6 +29,9 @@ export type TelemetryKind =
   | "runtime_mismatch"
   | "connectivity"
   | "oom"
+  // Provider engine-health diagnostics for the first-token wedge (model-load
+  // milestones, periodic engine snapshots, wedge-suspected transitions).
+  | "engine_health"
   | "log"
   | "custom";
 
@@ -92,4 +95,13 @@ export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([
   "url",
   "user_agent",
   "route",
+  // Engine-health / first-token-wedge diagnostics (mirror of Go + Swift).
+  "steps_executed",
+  "admits",
+  "first_tokens_emitted",
+  "consecutive_admits_without_first_token",
+  "seconds_since_last_step",
+  "seconds_since_last_first_token",
+  "num_running",
+  "wedge_suspected",
 ]);

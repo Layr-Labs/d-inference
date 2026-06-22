@@ -59,6 +59,13 @@ extension BatchScheduler {
             var sawAdmission = false
             var sawFirstToken = false
             var sawTerminal = false
+            // Wedge instrumentation (measurement only): this request reached the
+            // streaming bridge and will emit the lock-free preamble, so count it
+            // as an admit BEFORE awaiting the engine — a wedged first `eval`
+            // never produces a `RequestOutput`, so admit accounting must not
+            // depend on one (that is precisely why the existing liveness
+            // watchdog, keyed on `admittedAt`, can't see this wedge).
+            await scheduler.recordWedgeAdmit()
             for await output in outputStream {
                 // First `RequestOutput` (even prefill-only with no tokens)
                 // marks engine admission. Required by `expirePlannerTimeouts`
@@ -76,6 +83,9 @@ extension BatchScheduler {
                     || output.completionTokens > 0
                 if !sawFirstToken, hasNewToken {
                     await scheduler.recordFirstToken(requestId: id, at: .now)
+                    // Wedge instrumentation: a real first content token clears
+                    // the monitor's zero-first-token dry streak.
+                    await scheduler.recordWedgeFirstToken()
                     sawFirstToken = true
                 }
 

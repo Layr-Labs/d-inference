@@ -89,6 +89,16 @@ var telemetryFieldAllowlist = map[string]struct{}{
 	"mlx_active_bytes":  {},
 	"memory_pressure":   {},
 	"in_flight":         {},
+	// Engine-health / first-token-wedge diagnostics (non-sensitive operational
+	// counters). Mirror of the Swift + TS allowlists. NEVER prompt/response data.
+	"steps_executed":                         {},
+	"admits":                                 {},
+	"first_tokens_emitted":                   {},
+	"consecutive_admits_without_first_token": {},
+	"seconds_since_last_step":                {},
+	"seconds_since_last_first_token":         {},
+	"num_running":                            {},
+	"wedge_suspected":                        {},
 	// Console UI context
 	"url":        {},
 	"user_agent": {},

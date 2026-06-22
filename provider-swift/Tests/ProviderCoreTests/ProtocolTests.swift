@@ -651,6 +651,13 @@ import Testing
     #expect(decoded.queuedTokenBudget == 0)
     #expect(decoded.kvBytesPerToken == 0)
     #expect(decoded.modelLoadTimeMs == 0)
+    // Pre-instrumentation provider: wedge fields default to zero/false.
+    #expect(decoded.stepsExecuted == 0)
+    #expect(decoded.admits == 0)
+    #expect(decoded.firstTokensEmitted == 0)
+    #expect(decoded.secondsSinceLastStep == 0)
+    #expect(decoded.secondsSinceLastFirstToken == 0)
+    #expect(decoded.wedgeSuspected == false)
 }
 
 @Test func backendSlotCapacityDecodesMaxConcurrencyZero() throws {
@@ -690,6 +697,45 @@ import Testing
     #expect(object["queued_token_budget"] == nil)
     #expect(object["kv_bytes_per_token"] == nil)
     #expect(object["model_load_time_ms"] == nil)
+    // Wedge fields default to zero/false and must be omitted too.
+    #expect(object["steps_executed"] == nil)
+    #expect(object["admits"] == nil)
+    #expect(object["first_tokens_emitted"] == nil)
+    #expect(object["seconds_since_last_step"] == nil)
+    #expect(object["seconds_since_last_first_token"] == nil)
+    #expect(object["wedge_suspected"] == nil)
+}
+
+@Test func backendSlotCapacityRoundTripsWedgeFields() throws {
+    // The wedge signature: admits climbing, 0 first tokens, steps frozen.
+    let slot = BackendSlotCapacity(
+        model: "gpt-oss-20b",
+        state: "running",
+        numRunning: 0,
+        numWaiting: 0,
+        activeTokens: 0,
+        maxTokensPotential: 0,
+        stepsExecuted: 4321,
+        admits: 7,
+        firstTokensEmitted: 0,
+        secondsSinceLastStep: 12.5,
+        secondsSinceLastFirstToken: 13.0,
+        wedgeSuspected: true
+    )
+
+    let data = try JSONEncoder().encode(slot)
+    let object = try jsonObject(data)
+    #expect(object["steps_executed"] as? Int == 4321)
+    #expect(object["admits"] as? Int == 7)
+    // 0 first tokens is the wedge signal — omitted on the wire (its ABSENCE,
+    // paired with admits>0, is what reveals the wedge).
+    #expect(object["first_tokens_emitted"] == nil)
+    #expect(object["seconds_since_last_step"] as? Double == 12.5)
+    #expect(object["seconds_since_last_first_token"] as? Double == 13.0)
+    #expect(object["wedge_suspected"] as? Bool == true)
+
+    let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: data)
+    #expect(decoded == slot)
 }
 
 @Test func privacyCapabilitiesDecodesMissingHypervisorActiveAsFalse() throws {

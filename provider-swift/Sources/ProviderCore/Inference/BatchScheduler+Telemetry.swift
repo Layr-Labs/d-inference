@@ -166,6 +166,12 @@ extension BatchScheduler {
         let cap = capacity()
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
 
+        // Engine-health (first-token wedge) sampling: read the engine's live
+        // step counter into the wedge monitor so the slot below carries the
+        // "loop progress / admits-vs-first-tokens" signals. MEASUREMENT ONLY.
+        let now = ContinuousClock.now
+        sampleEngineSteps(now: now)
+
         var activeTokens: Int64 = 0
         var maxTokensPotential: Int64 = 0
         for entry in activeBridges.values {
@@ -189,7 +195,13 @@ extension BatchScheduler {
             activeTokenBudgetMax: budgetMax,
             queuedTokenBudget: Int64(queuedTokenBudget),
             kvBytesPerToken: Int64(kvBytesPerToken),
-            modelLoadTimeMs: lastModelLoadMs
+            modelLoadTimeMs: lastModelLoadMs,
+            stepsExecuted: Int64(wedgeMonitor.lastStepsSample),
+            admits: Int64(wedgeMonitor.admits),
+            firstTokensEmitted: Int64(wedgeMonitor.firstTokens),
+            secondsSinceLastStep: wedgeMonitor.secondsSinceLastStep(now: now),
+            secondsSinceLastFirstToken: wedgeMonitor.secondsSinceLastFirstToken(now: now),
+            wedgeSuspected: wedgeMonitor.wedgeSuspected(now: now)
         )
         return BackendCapacity(
             slots: [slot],

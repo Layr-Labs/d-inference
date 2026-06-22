@@ -66,7 +66,7 @@ struct TelemetrySymmetryTests {
             "panic", "http_error", "protocol_error",
             "backend_crash", "attestation_failure",
             "inference_error", "runtime_mismatch",
-            "connectivity", "oom", "log", "custom",
+            "connectivity", "oom", "engine_health", "log", "custom",
         ]
         let got = Set(TelemetryKind.allCases.map(\.rawValue))
         #expect(got == want, "kind raw-value set mismatch: got \(got)")

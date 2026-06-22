@@ -1,0 +1,141 @@
+// Copyright © 2026 Eigen Labs.
+//
+// WedgeMonitor — pure, low-cardinality engine-health accounting for the
+// first-token "wedge" documented in
+// docs/reports/2026-06-22-cancel-root-cause-and-fix.md (§C):
+//
+//   On ~10% of powerful boxes the MLX/Metal first-token path wedges: the
+//   provider emits the CPU-only preamble (~104ms) then the first blocking
+//   `eval` under the single process-global evalLock never returns, so token
+//   production freezes while accept/preamble/heartbeats keep running and
+//   `num_running` stays 0 (the wedged request never registers as running).
+//
+// This type makes that wedge VISIBLE by counting cheap operational signals:
+//   • admits          — requests handed to the engine (the preamble path)
+//   • firstTokens     — requests that produced a first content token
+//   • engine steps    — sampled from EngineCore.stepsExecuted (loop progress)
+// The wedge signature is "admits climbing while firstTokens stay flat and the
+// engine step counter flatlines."
+//
+// MEASUREMENT ONLY. Pure value type, no locks, no GPU/eval access, no I/O — it
+// never changes inference behavior and never triggers an action. The self-heal
+// watchdog that would ACT on `wedgeSuspected(now:)` is intentionally out of
+// scope (follow-up PR); this PR only confirms/observes the wedge.
+//
+// PRIVACY: every field is an operational counter or timestamp. No prompt or
+// response content ever flows through here.
+
+import Foundation
+
+struct WedgeMonitor {
+    /// Consecutive admits (each emits the CPU-only preamble) producing zero
+    /// first tokens before the streak is flagged. The wedge is "born broken"
+    /// right after load, so a small N catches it within the first few requests.
+    static let suspectConsecutiveAdmits = 3
+
+    /// Minimum duration (seconds) of a zero-first-token admit streak before it
+    /// counts as a suspected wedge. Tracks the OpenRouter ~10s TTFT SLA: a
+    /// streak this long with no first token is the wedge signature, not a normal
+    /// slow prefill (idle prefill p90 only crosses 10s at ~20–32k tokens).
+    static let suspectStallSeconds: Double = 10
+
+    // MARK: - Cumulative counters (per load epoch; reset on (re)load)
+
+    /// Requests handed to the engine — i.e. that reach the streaming bridge and
+    /// will emit the lock-free preamble. Incremented once per request.
+    private(set) var admits: Int = 0
+    /// Requests that produced their first content token. Incremented once per
+    /// request. `admits > firstTokens` growing without bound ⇒ wedge.
+    private(set) var firstTokens: Int = 0
+    /// Admits since the last first token (reset to 0 on any first token).
+    private(set) var consecutiveAdmitsWithoutFirstToken: Int = 0
+
+    // MARK: - Wall-clock anchors (ContinuousClock; monotonic, skew-free)
+
+    private(set) var lastAdmitAt: ContinuousClock.Instant?
+    private(set) var lastFirstTokenAt: ContinuousClock.Instant?
+    /// First admit of the current zero-first-token streak; nil when not in one.
+    private var dryStreakStartedAt: ContinuousClock.Instant?
+
+    // MARK: - Engine-step sampling
+
+    /// Last sampled value of EngineCore.stepsExecuted and when it last advanced.
+    /// The engine only increments `stepsExecuted` while it has work, so a
+    /// flatline under demand (admits without first tokens) is the loop-frozen
+    /// signal that distinguishes a wedge from a genuinely idle box.
+    private(set) var lastStepsSample: Int = 0
+    private var sawStepSample = false
+    private(set) var lastStepAdvanceAt: ContinuousClock.Instant?
+
+    // MARK: - Recording (called from the bridge lifecycle)
+
+    /// A request was handed to the engine (preamble path). Call once per request.
+    mutating func recordAdmit(now: ContinuousClock.Instant) {
+        admits += 1
+        consecutiveAdmitsWithoutFirstToken += 1
+        if dryStreakStartedAt == nil { dryStreakStartedAt = now }
+        lastAdmitAt = now
+    }
+
+    /// A request produced its first content token. Call once per request.
+    mutating func recordFirstToken(now: ContinuousClock.Instant) {
+        firstTokens += 1
+        consecutiveAdmitsWithoutFirstToken = 0
+        dryStreakStartedAt = nil
+        lastFirstTokenAt = now
+    }
+
+    /// Sample the engine's cumulative step counter; stamp the advance time when
+    /// it moves so `secondsSinceLastStep(now:)` can report a flatline. Idempotent
+    /// — safe to call from both the heartbeat and the liveness tick.
+    mutating func sampleSteps(_ steps: Int, now: ContinuousClock.Instant) {
+        if !sawStepSample || steps > lastStepsSample {
+            lastStepAdvanceAt = now
+        }
+        lastStepsSample = steps
+        sawStepSample = true
+    }
+
+    /// Reset on (re)load: a fresh engine starts at `stepsExecuted == 0` and a
+    /// reload clears any wedge, so the per-load counters start clean.
+    mutating func reset() { self = WedgeMonitor() }
+
+    // MARK: - Derived signals (read on the heartbeat / telemetry path)
+
+    /// Seconds since the engine step counter last advanced; 0 if never sampled.
+    /// Only meaningful under demand — an idle engine also flatlines (it does not
+    /// step), so the coordinator pairs this with `admits`/`numRunning`.
+    func secondsSinceLastStep(now: ContinuousClock.Instant) -> Double {
+        guard let at = lastStepAdvanceAt else { return 0 }
+        return Self.seconds(now - at)
+    }
+
+    /// Seconds since the last first content token; 0 if none yet this load.
+    func secondsSinceLastFirstToken(now: ContinuousClock.Instant) -> Double {
+        guard let at = lastFirstTokenAt else { return 0 }
+        return Self.seconds(now - at)
+    }
+
+    /// Duration (s) of the current zero-first-token admit streak; 0 if not in
+    /// one. Climbs on a "born broken" box that never produced a first token.
+    func dryStreakSeconds(now: ContinuousClock.Instant) -> Double {
+        guard let at = dryStreakStartedAt else { return 0 }
+        return Self.seconds(now - at)
+    }
+
+    /// The Part C primitive: ≥ N consecutive admits emitted the preamble but
+    /// produced 0 first tokens AND the streak has lasted ≥ T seconds. This is
+    /// exactly what a correct first-token watchdog would key on — but here it is
+    /// MEASUREMENT ONLY (reported on the heartbeat + as a telemetry event); no
+    /// restart/derouting action is taken in this PR.
+    func wedgeSuspected(now: ContinuousClock.Instant) -> Bool {
+        consecutiveAdmitsWithoutFirstToken >= Self.suspectConsecutiveAdmits
+            && dryStreakSeconds(now: now) >= Self.suspectStallSeconds
+    }
+
+    /// `ContinuousClock.Duration` → seconds (Double).
+    static func seconds(_ duration: Duration) -> Double {
+        Double(duration.components.seconds)
+            + Double(duration.components.attoseconds) / 1e18
+    }
+}

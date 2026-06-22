@@ -368,6 +368,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		case protocol.TypeHeartbeat:
 			hbMsg := msg.Payload.(*protocol.HeartbeatMessage)
 			s.registry.Heartbeat(providerID, hbMsg)
+			// First-token-wedge observability (measurement only): surface the
+			// provider-reported engine-health signal as a Datadog counter so a
+			// wedged box is visible fleet-wide straight from heartbeats.
+			s.recordBackendWedgeTelemetry(hbMsg)
 			// W5 Fix 2 (2a): a late/changed APNs token carried in the heartbeat
 			// re-arms a code-identity challenge WITHOUT a reconnect.
 			s.maybeRearmCodeAttest(loopCtx, providerID, provider, hbMsg)

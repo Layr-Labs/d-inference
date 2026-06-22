@@ -221,6 +221,20 @@ type BackendSlotCapacity struct {
 	QueuedTokenBudget     int64   `json:"queued_token_budget,omitempty"`      // tokens reserved by queued requests
 	KVBytesPerToken       int64   `json:"kv_bytes_per_token,omitempty"`       // per-token KV cache memory cost in bytes (provider-side only)
 	ModelLoadTimeMS       int64   `json:"model_load_time_ms,omitempty"`       // measured cold-start load time (ms) for the model in this slot; omitted when unmeasured
+
+	// Engine-health (first-token wedge) signals — low-cardinality, NON-PRIVATE
+	// diagnostics that let the coordinator SEE a wedged MLX/Metal first-token
+	// path (provider emits the preamble, then the first blocking eval never
+	// returns; see docs/reports/2026-06-22-cancel-root-cause-and-fix.md §C and
+	// the Swift WedgeMonitor). All omitempty so legacy providers (and a
+	// freshly-idle slot) keep the prior wire shape. MEASUREMENT ONLY — decoded
+	// into the routing snapshot for observability; routing is NOT gated on them.
+	StepsExecuted              int64   `json:"steps_executed,omitempty"`                 // cumulative EngineCore.stepsExecuted (engine-loop progress); flatlines under demand ⇒ wedge
+	Admits                     int64   `json:"admits,omitempty"`                         // cumulative requests handed to the engine (preamble path)
+	FirstTokensEmitted         int64   `json:"first_tokens_emitted,omitempty"`           // cumulative requests that produced a first content token
+	SecondsSinceLastStep       float64 `json:"seconds_since_last_step,omitempty"`        // seconds since the step counter last advanced (large under demand ⇒ frozen loop)
+	SecondsSinceLastFirstToken float64 `json:"seconds_since_last_first_token,omitempty"` // seconds since the last first content token (0 = none yet this load)
+	WedgeSuspected             bool    `json:"wedge_suspected,omitempty"`                // provider-computed: ≥N consecutive admits, 0 first-tokens, ≥T seconds
 }
 
 // BackendCapacity describes the aggregate capacity across all backend slots

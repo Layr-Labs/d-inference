@@ -1369,6 +1369,84 @@ func TestBackendSlotCapacityBackwardCompatDecode(t *testing.T) {
 	}
 }
 
+// TestBackendSlotCapacityWedgeFields verifies the engine-health (first-token
+// wedge) signals round-trip with the exact snake_case keys the Swift WedgeMonitor
+// emits, and that each is omitempty so a legacy/idle slot keeps the prior wire
+// shape (Go omission ↔ Swift's encodeIfNonZero / false-omit).
+func TestBackendSlotCapacityWedgeFields(t *testing.T) {
+	slot := BackendSlotCapacity{
+		Model:                      "gpt-oss-20b",
+		State:                      "running",
+		NumRunning:                 0,
+		StepsExecuted:              4321,
+		Admits:                     7,
+		FirstTokensEmitted:         0,
+		SecondsSinceLastStep:       12.5,
+		SecondsSinceLastFirstToken: 13.0,
+		WedgeSuspected:             true,
+	}
+
+	data, err := json.Marshal(slot)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{
+		`"steps_executed":4321`,
+		`"admits":7`,
+		`"seconds_since_last_step":12.5`,
+		`"seconds_since_last_first_token":13`,
+		`"wedge_suspected":true`,
+	} {
+		if !bytes.Contains(data, []byte(want)) {
+			t.Fatalf("expected %s in JSON, got %s", want, data)
+		}
+	}
+	// first_tokens_emitted == 0 is omitted (this is the wedge: admits>0, 0 first
+	// tokens), so its ABSENCE — not a zero — is the on-wire signal.
+	if bytes.Contains(data, []byte("first_tokens_emitted")) {
+		t.Fatalf("zero first_tokens_emitted should be omitted, got %s", data)
+	}
+
+	var decoded BackendSlotCapacity
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.StepsExecuted != 4321 || decoded.Admits != 7 || decoded.FirstTokensEmitted != 0 {
+		t.Fatalf("counter round-trip mismatch: %+v", decoded)
+	}
+	if decoded.SecondsSinceLastStep != 12.5 || decoded.SecondsSinceLastFirstToken != 13.0 {
+		t.Fatalf("seconds round-trip mismatch: %+v", decoded)
+	}
+	if !decoded.WedgeSuspected {
+		t.Fatal("wedge_suspected should round-trip true")
+	}
+
+	// All-zero/false slot: every wedge field is omitted (legacy-compatible wire).
+	zero := BackendSlotCapacity{Model: "m", State: "idle", NumRunning: 0}
+	zeroData, err := json.Marshal(zero)
+	if err != nil {
+		t.Fatalf("marshal zero: %v", err)
+	}
+	for _, key := range []string{
+		"steps_executed", "admits", "first_tokens_emitted",
+		"seconds_since_last_step", "seconds_since_last_first_token", "wedge_suspected",
+	} {
+		if bytes.Contains(zeroData, []byte(key)) {
+			t.Fatalf("zero wedge field %q should be omitted, got %s", key, zeroData)
+		}
+	}
+
+	// Pre-instrumentation provider: a payload without any wedge field decodes to
+	// the zero values (never a panic, never a spurious wedge).
+	var legacy BackendSlotCapacity
+	if err := json.Unmarshal([]byte(`{"model":"m","state":"running","num_running":1}`), &legacy); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if legacy.StepsExecuted != 0 || legacy.Admits != 0 || legacy.WedgeSuspected {
+		t.Fatalf("legacy slot should default wedge fields to zero/false, got %+v", legacy)
+	}
+}
+
 // TestDesiredModelsMessageMarshal verifies the desired_models wire shape the
 // coordinator emits round-trips, including the snake_case keys the Swift decoder
 // expects and the omitempty behavior of previous_build (so Go's omission ↔ the

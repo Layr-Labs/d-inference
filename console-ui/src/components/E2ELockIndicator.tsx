@@ -3,16 +3,12 @@
 import { useState, useRef, useEffect } from "react";
 import { Lock } from "lucide-react";
 import type { TrustMetadata } from "@/lib/api";
+import { maskSerial } from "@/lib/format";
 import { useVerificationMode } from "@/components/providers/verification-mode";
 
 interface E2ELockIndicatorProps {
   trust?: TrustMetadata;
   onOpenExplainer?: () => void;
-}
-
-function maskSerial(serial: string): string {
-  if (serial.length <= 6) return serial;
-  return serial.slice(0, 4) + "\u2022".repeat(serial.length - 6) + serial.slice(-2);
 }
 
 export function E2ELockIndicator({ trust, onOpenExplainer }: E2ELockIndicatorProps) {

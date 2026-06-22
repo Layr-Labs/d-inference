@@ -2394,6 +2394,11 @@ func (d *dispatchState) writeCommittedResponse() {
 	// FinalizeReservation-guarded, so the park-then-remove overlap can't double-bill.
 	defer func() {
 		if stale := provider.GetPending(requestID); stale != nil {
+			// Post-commit consumer disconnect: the request is still pending, so we
+			// are about to signal the provider to stop (below). Stamp the cancel
+			// time now — at the actual send — so cancel_signal_sent_at_ms is not
+			// recorded late when the terminal/grace-expiry outcome is built. DAR-346.
+			stale.MarkCancelSignalSent()
 			s.holdForSettlement(stale)
 		} else {
 			// A terminal already claimed the pending. In every normal path the

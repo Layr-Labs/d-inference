@@ -204,6 +204,7 @@ func (s *Server) cancelDispatch(provider *registry.Provider, pr *registry.Pendin
 	}
 	removed := provider.RemovePending(pr.RequestID)
 	s.registry.SetProviderIdle(provider.ID)
+	pr.MarkCancelSignalSent()
 	s.sendProviderCancel(provider, pr.RequestID)
 	if removed != nil {
 		s.refundProviderExtra(pr)
@@ -2594,7 +2595,11 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				firstChunk = normalizeSSEChunk(firstChunk)
 			}
 			firstChunk = rewriteChunkModel(firstChunk, pr)
-			fmt.Fprintf(w, "%s\n\n", firstChunk)
+			// Count only what was actually written: a failed write to a gone client
+			// must not record a delivered chunk (DAR-346).
+			if _, werr := fmt.Fprintf(w, "%s\n\n", firstChunk); werr == nil {
+				pr.RecordDeliveredChunk(len(firstChunk))
+			}
 			flusher.Flush()
 		}
 	}
@@ -2748,7 +2753,11 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				}
 			}
 			chunk = rewriteChunkModel(chunk, pr)
-			fmt.Fprintf(w, "%s\n\n", chunk)
+			// Count only what was actually written: a failed write to a gone client
+			// must not record a delivered chunk (DAR-346).
+			if _, werr := fmt.Fprintf(w, "%s\n\n", chunk); werr == nil {
+				pr.RecordDeliveredChunk(len(chunk))
+			}
 			flusher.Flush()
 
 		case errMsg, ok := <-pr.ErrorCh:
@@ -2802,6 +2811,8 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 
 	for _, firstChunk := range firstChunks {
 		if firstChunk != "" {
+			// Delivery is counted inside the emitter (per emitted client event),
+			// not per raw provider chunk — the emitter may expand or drop chunks.
 			emitter.handleChunk(firstChunk)
 		}
 	}

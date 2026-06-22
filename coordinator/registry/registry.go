@@ -204,6 +204,70 @@ type PendingRequest struct {
 	// dispatch-goroutine-only.
 	Timing   *RequestTiming
 	timingMu sync.Mutex
+
+	// cancelSignalSentAt records when the coordinator sent a cancel to the
+	// provider for this request (DAR-346 cancellation telemetry). Set from the
+	// abandon path (cancelDispatch) and read by the outcome writer; guarded by
+	// timingMu since those run on different goroutines.
+	cancelSignalSentAt time.Time
+
+	// DAR-346 delivery measurement: what actually reached the client before a
+	// cancel/terminal. Written by the SSE relay goroutine on each forwarded
+	// ciphertext frame (never decrypted), read by the provider-terminal /
+	// settlement goroutine via DeliverySnapshot. Guarded by deliveryMu.
+	deliveryMu      sync.Mutex
+	deliveredChunks int
+	deliveredBytes  int64
+	lastChunkAt     time.Time
+	maxIdleGapMs    float64
+}
+
+// DeliveryStats is a point-in-time snapshot of what the SSE relay has delivered
+// to the client (DAR-346). All counts are over opaque ciphertext frames.
+type DeliveryStats struct {
+	Chunks       int
+	Bytes        int64
+	LastChunkAt  time.Time
+	MaxIdleGapMs float64
+}
+
+// RecordDeliveredChunk accounts one SSE frame forwarded to the client: bumps the
+// chunk/byte counters, tracks the largest inter-chunk idle gap (a no-progress
+// signal that disambiguates a stream-idle cancel), and stamps the last-delivery
+// time. Called from the relay goroutine; safe under deliveryMu.
+func (pr *PendingRequest) RecordDeliveredChunk(byteLen int) {
+	if pr == nil {
+		return
+	}
+	now := time.Now()
+	pr.deliveryMu.Lock()
+	if !pr.lastChunkAt.IsZero() {
+		if gap := float64(now.Sub(pr.lastChunkAt).Milliseconds()); gap > pr.maxIdleGapMs {
+			pr.maxIdleGapMs = gap
+		}
+	}
+	pr.deliveredChunks++
+	if byteLen > 0 {
+		pr.deliveredBytes += int64(byteLen)
+	}
+	pr.lastChunkAt = now
+	pr.deliveryMu.Unlock()
+}
+
+// DeliverySnapshot returns the current delivery counters under deliveryMu. Safe
+// to call from a goroutine other than the relay (e.g. the provider terminal).
+func (pr *PendingRequest) DeliverySnapshot() DeliveryStats {
+	if pr == nil {
+		return DeliveryStats{}
+	}
+	pr.deliveryMu.Lock()
+	defer pr.deliveryMu.Unlock()
+	return DeliveryStats{
+		Chunks:       pr.deliveredChunks,
+		Bytes:        pr.deliveredBytes,
+		LastChunkAt:  pr.lastChunkAt,
+		MaxIdleGapMs: pr.maxIdleGapMs,
+	}
 }
 
 // MarkFirstChunkArrived stamps Timing.FirstChunkAt to now exactly once, under
@@ -231,6 +295,30 @@ func (pr *PendingRequest) FirstChunkAtSafe() time.Time {
 	pr.timingMu.Lock()
 	defer pr.timingMu.Unlock()
 	return pr.Timing.FirstChunkAt
+}
+
+// MarkCancelSignalSent stamps cancelSignalSentAt to now exactly once, under
+// timingMu. Called from the abandon path (cancelDispatch) so the outcome writer
+// can persist when the coordinator told the provider to stop (DAR-346).
+func (pr *PendingRequest) MarkCancelSignalSent() {
+	if pr == nil {
+		return
+	}
+	pr.timingMu.Lock()
+	if pr.cancelSignalSentAt.IsZero() {
+		pr.cancelSignalSentAt = time.Now()
+	}
+	pr.timingMu.Unlock()
+}
+
+// CancelSignalSentAtSafe returns cancelSignalSentAt under timingMu.
+func (pr *PendingRequest) CancelSignalSentAtSafe() time.Time {
+	if pr == nil {
+		return time.Time{}
+	}
+	pr.timingMu.Lock()
+	defer pr.timingMu.Unlock()
+	return pr.cancelSignalSentAt
 }
 
 type TokenAdmission struct {

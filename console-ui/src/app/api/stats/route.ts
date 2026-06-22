@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const COORD_URL =
-  process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
+import { coordinatorUrl } from "@/lib/server/coordinator";
 
 type LocationBucket = {
   key: string;
@@ -527,11 +525,11 @@ function withMockGeography(data: Record<string, unknown>): Record<string, unknow
 export async function GET(req: NextRequest) {
   if (req.nextUrl.searchParams.get("mock") === "geo") {
     // Mock mode: try upstream but fall back to empty base so dev works offline.
-    const res = await fetch(`${COORD_URL}/v1/stats`, { cache: "no-store" }).catch(() => null);
+    const res = await fetch(`${coordinatorUrl()}/v1/stats`, { cache: "no-store" }).catch(() => null);
     const data = res?.ok ? await res.json() : {};
     return NextResponse.json(withMockGeography(data));
   }
-  const res = await fetch(`${COORD_URL}/v1/stats`, { cache: "no-store" });
+  const res = await fetch(`${coordinatorUrl()}/v1/stats`, { cache: "no-store" });
   if (!res.ok) {
     return NextResponse.json(
       { error: `Upstream ${res.status}` },

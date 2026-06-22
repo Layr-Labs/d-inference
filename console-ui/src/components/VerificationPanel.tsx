@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { TrustMetadata } from "@/lib/api";
-import { useVerificationMode } from "@/lib/verification-mode";
+import { useVerificationMode } from "@/components/providers/verification-mode";
 import { TrustExplainerModal } from "./TrustExplainerModal";
 import {
   verifyCertificateChain,

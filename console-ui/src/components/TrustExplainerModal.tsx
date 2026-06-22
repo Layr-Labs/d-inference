@@ -10,7 +10,7 @@ import {
   RefreshCw,
   ChevronDown,
 } from "lucide-react";
-import { useVerificationMode } from "@/lib/verification-mode";
+import { useVerificationMode } from "@/components/providers/verification-mode";
 
 interface TrustExplainerModalProps {
   open: boolean;

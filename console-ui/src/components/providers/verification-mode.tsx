@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useState, useCallback } from "react";
+import { STORAGE_KEYS } from "@/lib/constants";
 
 type VerificationMode = "normal" | "technical";
 
@@ -14,7 +15,7 @@ const VerificationModeContext = createContext<VerificationModeContextValue>({
   toggle: () => {},
 });
 
-const STORAGE_KEY = "darkbloom-verification-mode";
+const STORAGE_KEY = STORAGE_KEYS.verificationMode;
 
 function getInitialMode(): VerificationMode {
   if (typeof window === "undefined") return "normal";

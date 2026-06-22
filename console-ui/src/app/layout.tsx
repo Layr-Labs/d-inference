@@ -5,7 +5,7 @@ import { GoogleAnalytics } from "@/components/GoogleAnalytics";
 import { Analytics } from "@vercel/analytics/next";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import { PrivyClientProvider } from "@/components/providers/PrivyClientProvider";
-import { VerificationModeProvider } from "@/lib/verification-mode";
+import { VerificationModeProvider } from "@/components/providers/verification-mode";
 import { TelemetryInitializer } from "@/components/TelemetryInitializer";
 import { DatadogRUM } from "@/components/DatadogRUM";
 

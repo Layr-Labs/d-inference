@@ -12,20 +12,12 @@ import {
   unsealResponse,
   unsealSseEvent,
 } from "./encryption";
-
-const getApiKey = () => {
-  if (typeof window === "undefined") return "";
-  return localStorage.getItem("darkbloom_api_key") || "";
-};
-
-function proxyHeaders(extra?: Record<string, string>): Record<string, string> {
-  const apiKey = getApiKey();
-  return {
-    "Content-Type": "application/json",
-    ...(apiKey ? { "x-api-key": apiKey } : {}),
-    ...extra,
-  };
-}
+import { STORAGE_KEYS } from "./constants";
+import {
+  apiError,
+  managementHeaders,
+  proxyHeaders,
+} from "./http/proxy-client";
 
 export interface ModelPricing {
   prompt: string;
@@ -416,31 +408,9 @@ export interface CreatedKey {
   data: ApiKey;
 }
 
-function managementHeaders(token: string): Record<string, string> {
-  return {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-  };
-}
-
-async function keyError(res: Response, fallback: string): Promise<Error> {
-  const data = await res.json().catch(() => null);
-  if (data && typeof data === "object") {
-    const err = (data as Record<string, unknown>).error;
-    if (typeof err === "string" && err) return new Error(err);
-    if (err && typeof err === "object") {
-      const message = (err as Record<string, unknown>).message;
-      if (typeof message === "string" && message) return new Error(message);
-    }
-    const message = (data as Record<string, unknown>).message;
-    if (typeof message === "string" && message) return new Error(message);
-  }
-  return new Error(`${fallback} (${res.status})`);
-}
-
 export async function listApiKeys(token: string): Promise<ApiKey[]> {
   const res = await fetch("/api/keys", { headers: managementHeaders(token) });
-  if (!res.ok) throw await keyError(res, "Failed to load API keys");
+  if (!res.ok) throw await apiError(res, "Failed to load API keys");
   const data = await res.json();
   return Array.isArray(data?.data) ? (data.data as ApiKey[]) : [];
 }
@@ -451,7 +421,7 @@ export async function createApiKey(token: string, body: CreateKeyBody): Promise<
     headers: managementHeaders(token),
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw await keyError(res, "Failed to create API key");
+  if (!res.ok) throw await apiError(res, "Failed to create API key");
   return res.json();
 }
 
@@ -461,7 +431,7 @@ export async function updateApiKey(token: string, id: string, body: UpdateKeyBod
     headers: managementHeaders(token),
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw await keyError(res, "Failed to update API key");
+  if (!res.ok) throw await apiError(res, "Failed to update API key");
   return res.json();
 }
 
@@ -470,7 +440,7 @@ export async function deleteApiKey(token: string, id: string): Promise<void> {
     method: "DELETE",
     headers: managementHeaders(token),
   });
-  if (!res.ok) throw await keyError(res, "Failed to revoke API key");
+  if (!res.ok) throw await apiError(res, "Failed to revoke API key");
 }
 
 export async function rotateApiKey(token: string, id: string): Promise<CreatedKey> {
@@ -478,7 +448,7 @@ export async function rotateApiKey(token: string, id: string): Promise<CreatedKe
     method: "POST",
     headers: managementHeaders(token),
   });
-  if (!res.ok) throw await keyError(res, "Failed to rotate API key");
+  if (!res.ok) throw await apiError(res, "Failed to rotate API key");
   return res.json();
 }
 
@@ -491,7 +461,7 @@ export async function deleteProvider(token: string, serial: string): Promise<voi
     method: "DELETE",
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw await keyError(res, "Failed to remove machine");
+  if (!res.ok) throw await apiError(res, "Failed to remove machine");
 }
 
 export async function streamChat(
@@ -560,7 +530,7 @@ export async function streamChat(
   if (!res.ok) {
     // If 401, key is stale — clear it so useAuth re-provisions on next render
     if (res.status === 401) {
-      localStorage.removeItem("darkbloom_api_key");
+      localStorage.removeItem(STORAGE_KEYS.apiKey);
       // Dispatch event so useAuth can re-provision with Privy token
       window.dispatchEvent(new Event("darkbloom-key-expired"));
       callbacks.onError("Session expired — please try again");

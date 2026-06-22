@@ -1,11 +1,9 @@
 import { NextResponse } from "next/server";
-
-const COORD_URL =
-  process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
+import { coordinatorUrl } from "@/lib/server/coordinator";
 
 export async function GET() {
   try {
-    const response = await fetch(`${COORD_URL}/v1/providers/attestation`, {
+    const response = await fetch(`${coordinatorUrl()}/v1/providers/attestation`, {
       cache: "no-store",
     });
     const data = await response.json();

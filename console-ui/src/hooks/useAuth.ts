@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuthContext } from "@/components/providers/PrivyClientProvider";
 import { trackEvent } from "@/lib/google-analytics";
+import { STORAGE_KEYS } from "@/lib/constants";
 
-const API_KEY_STORAGE = "darkbloom_api_key";
-const OLD_API_KEY_STORAGE = "eigeninference_api_key";
-const COORD_URL_STORAGE = "darkbloom_coordinator_url";
+const API_KEY_STORAGE = STORAGE_KEYS.apiKey;
+const OLD_API_KEY_STORAGE = STORAGE_KEYS.legacyApiKey;
+const COORD_URL_STORAGE = STORAGE_KEYS.coordinatorUrl;
 
 export function useAuth() {
   const { ready, authenticated, user, login, logout: privyLogout, getAccessToken } = useAuthContext();

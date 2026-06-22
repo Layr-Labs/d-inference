@@ -20,8 +20,8 @@ func TestShouldStopFailover_ClientError400(t *testing.T) {
 	}
 }
 
-func TestShouldStopFailover_422And413And415(t *testing.T) {
-	for _, code := range []int{422, 413, 415} {
+func TestShouldStopFailover_413And415(t *testing.T) {
+	for _, code := range []int{413, 415} {
 		d := &dispatchState{s: newTestServerForDispatch(t), model: "m", lastErrCode: code}
 		if !d.shouldStopFailover() {
 			t.Fatalf("a provider %d must stop failover", code)
@@ -29,6 +29,19 @@ func TestShouldStopFailover_422And413And415(t *testing.T) {
 		if d.terminalClientErrorCode != code {
 			t.Fatalf("code %d must latch; got %d", code, d.terminalClientErrorCode)
 		}
+	}
+}
+
+// 422 (invalidResponseFormatOutput) is EXCLUDED from the stop set: it can be a
+// model-output-validation fault that recovers on retry at temp>0, so it must keep
+// failing over rather than be returned once.
+func TestShouldStopFailover_422FailsOver(t *testing.T) {
+	d := &dispatchState{s: newTestServerForDispatch(t), model: "m", lastErrCode: 422, lastErr: "model output was not valid JSON"}
+	if d.shouldStopFailover() {
+		t.Fatal("422 must fail over (may recover on retry), not stop")
+	}
+	if d.terminalClientError {
+		t.Fatal("422 must NOT latch a terminal client error")
 	}
 }
 

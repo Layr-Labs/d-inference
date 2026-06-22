@@ -175,10 +175,7 @@ enum DoctorRunner {
     }
 
     private static func formatDuration(_ seconds: Double) -> String {
-        let s = Int(seconds)
-        if s < 60 { return "\(s)s" }
-        if s < 3600 { return "\(s / 60)m" }
-        return "\(s / 3600)h\((s % 3600) / 60)m"
+        DurationFormatting.compact(seconds, spaced: false, elideZeroMinutesInHourRange: false)
     }
 
     /// Best-effort read of whether the system is currently being kept awake,

@@ -342,18 +342,5 @@ public struct Schedule: Sendable {
 
 /// Format a TimeInterval as a human-readable string (e.g. "2h 30m").
 public func formatDuration(_ interval: TimeInterval) -> String {
-    let secs = Int(interval)
-    if secs < 60 {
-        return "\(secs)s"
-    } else if secs < 3600 {
-        return "\(secs / 60)m"
-    } else {
-        let h = secs / 3600
-        let m = (secs % 3600) / 60
-        if m > 0 {
-            return "\(h)h \(m)m"
-        } else {
-            return "\(h)h"
-        }
-    }
+    DurationFormatting.compact(interval)
 }

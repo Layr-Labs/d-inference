@@ -245,10 +245,11 @@ final class ProgressRenderer: @unchecked Sendable {
     }
 
     static func formatDuration(_ seconds: Double) -> String {
-        let s = Int(seconds)
-        if s < 60 { return "\(s)s" }
-        if s < 3600 { return "\(s / 60)m \(s % 60)s" }
-        return "\(s / 3600)h \(s / 60 % 60)m"
+        DurationFormatting.compact(
+            seconds,
+            secondsInMinuteRange: true,
+            elideZeroMinutesInHourRange: false
+        )
     }
 
     static func terminalWidth() -> Int {

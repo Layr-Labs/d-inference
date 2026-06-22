@@ -2357,13 +2357,7 @@ public actor ProviderLoop {
     }
 
     private func formatDuration(_ duration: Duration) -> String {
-        let seconds = duration.components.seconds
-        if seconds < 60 { return "\(seconds)s" }
-        let minutes = seconds / 60
-        if minutes < 60 { return "\(minutes)m" }
-        let hours = minutes / 60
-        let remMinutes = minutes % 60
-        return remMinutes == 0 ? "\(hours)h" : "\(hours)h\(remMinutes)m"
+        DurationFormatting.compact(Double(duration.components.seconds), spaced: false)
     }
 
     // MARK: - Capacity Refresh

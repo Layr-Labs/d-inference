@@ -116,7 +116,7 @@ Providers carry one of three trust levels, surfaced to consumers on every respon
 | `self_signed` | Secure Enclave P-256 signature + periodic challenge-response |
 | `hardware` | MDM enrollment + Apple Managed Device Attestation (MDA) certificate chain |
 
-The strongest production gate is **APNs code-identity attestation**, which proves the running provider binary is genuine and team-provisioned. The full attestation chain for any provider is publicly verifiable at **`GET /v1/providers/attestation`**.
+The strongest production gate is **APNs code-identity attestation**, which proves the running provider binary is genuine and team-provisioned. The coordinator-verified attestation status for all online providers is available at **`GET /v1/providers/attestation`**; raw MDA certificate chains and device serial numbers are not exposed publicly.
 
 ## Quickstart (consumers)
 

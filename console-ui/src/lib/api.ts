@@ -107,13 +107,11 @@ export interface TrustMetadata {
   secureEnclave: boolean;
   mdaVerified: boolean;
   providerChip: string;
-  providerSerial: string;
   providerModel: string;
   // Attestation receipt fields (per-request SE signature)
   responseHash?: string;
   seSignature?: string;
   sePublicKey?: string;
-  deviceSerial?: string;
 }
 
 export interface StreamMetrics {
@@ -621,11 +619,9 @@ export async function streamChat(
     secureEnclave: res.headers.get("x-provider-secure-enclave") === "true",
     mdaVerified: res.headers.get("x-provider-mda-verified") === "true",
     providerChip: res.headers.get("x-provider-chip") || "",
-    providerSerial: res.headers.get("x-provider-serial") || "",
     providerModel: res.headers.get("x-provider-model") || "",
     // Attestation receipt fields (populated from headers + SSE events)
     sePublicKey: res.headers.get("x-attestation-se-public-key") || undefined,
-    deviceSerial: res.headers.get("x-attestation-device-serial") || undefined,
   };
 
   const reader = res.body?.getReader();

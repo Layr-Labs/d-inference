@@ -457,7 +457,8 @@ func TestVerifyProviderViaMDM_TransportErrorTransient(t *testing.T) {
 // hardware but still emitted the MDA cert chain + serial/udid payload (which the
 // late-MDA callback can attach to a since-reconnected self_signed provider). The
 // whole MDA payload must be suppressed for non-hardware connections, so the
-// endpoint can never show mda_verified=false alongside a populated cert chain.
+// endpoint can never show mda_verified=false alongside populated MDA metadata.
+// Per-device MDA certificate chains are no longer exposed on this public endpoint.
 func TestProviderAttestationGatesMDAPayloadOnHardware(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
@@ -494,11 +495,9 @@ func TestProviderAttestationGatesMDAPayloadOnHardware(t *testing.T) {
 
 	var parsed struct {
 		Providers []struct {
-			ProviderID   string   `json:"provider_id"`
-			MDAVerified  bool     `json:"mda_verified"`
-			MDACertChain []string `json:"mda_cert_chain_b64"`
-			MDASerial    string   `json:"mda_serial"`
-			MDAUDID      string   `json:"mda_udid"`
+			ProviderID   string `json:"provider_id"`
+			MDAVerified  bool   `json:"mda_verified"`
+			MDAOSVersion string `json:"mda_os_version"`
 		} `json:"providers"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
@@ -507,14 +506,16 @@ func TestProviderAttestationGatesMDAPayloadOnHardware(t *testing.T) {
 	for _, pr := range parsed.Providers {
 		switch pr.ProviderID {
 		case "ss-payload":
-			if pr.MDAVerified || len(pr.MDACertChain) != 0 || pr.MDASerial != "" || pr.MDAUDID != "" {
-				t.Errorf("self_signed provider leaked MDA payload: verified=%v chain=%d serial=%q udid=%q",
-					pr.MDAVerified, len(pr.MDACertChain), pr.MDASerial, pr.MDAUDID)
+			if pr.MDAVerified || pr.MDAOSVersion != "" {
+				t.Errorf("self_signed provider leaked MDA payload: verified=%v os_version=%q",
+					pr.MDAVerified, pr.MDAOSVersion)
 			}
 		case "hw-payload":
-			if !pr.MDAVerified || len(pr.MDACertChain) != 2 || pr.MDASerial == "" {
-				t.Errorf("hardware provider should expose MDA payload: verified=%v chain=%d serial=%q",
-					pr.MDAVerified, len(pr.MDACertChain), pr.MDASerial)
+			if !pr.MDAVerified {
+				t.Errorf("hardware provider should be mda_verified=true, got %v", pr.MDAVerified)
+			}
+			if pr.MDAOSVersion == "" {
+				t.Errorf("hardware provider should expose mda_os_version, got empty")
 			}
 		}
 	}

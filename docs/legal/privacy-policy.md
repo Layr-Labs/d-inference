@@ -63,7 +63,7 @@ We refer to this material as "Content."
 
 - hardware and device characteristics, such as machine model, chip family, memory, CPU/GPU information, and available capacity;
 - provider wallet addresses;
-- attestation materials and related security data, including: Secure Enclave-generated P-256 public keys and ECDSA attestation signatures; SHA-256 hashes of the provider binary; hardware serial numbers used to cross-reference device identity in our MDM server; SIP status, Secure Boot level, and Authenticated Root Volume integrity status as reported by the device;
+- attestation materials and related security data, including: Secure Enclave-generated P-256 public keys and ECDSA attestation signatures; SHA-256 hashes of the provider binary; hardware serial numbers used to cross-reference device identity in our MDM server (internal use only, not exposed publicly); SIP status, Secure Boot level, and Authenticated Root Volume integrity status as reported by the device;
 - challenge-response verification data: approximately every five minutes, our coordinator sends a 32-byte cryptographic nonce to the provider's device. The device signs the nonce using its Secure Enclave key and returns a response including fresh SIP and Secure Boot status. We collect and process the nonce, the signed response, and the accompanying security posture data for each challenge cycle;
 - heartbeats, health checks, thermal state, memory pressure, security posture, and version information;
 - device-linking tokens and account-link status.
@@ -174,7 +174,7 @@ Retention periods may vary by data type. For example:
 - usage and security logs may be retained for operational, fraud-prevention, and support purposes;
 - operational and routing telemetry may be retained for operational, security, capacity-planning, and service-improvement purposes;
 - tax identification information (W-9/W-8BEN data) is retained for as long as required by IRS regulations;
-- provider attestation and device-link data, including hardware serial numbers, binary hashes, Secure Enclave public keys, MDM SecurityInfo responses, and challenge-response records, may be retained for trust, audit, and network-integrity purposes;
+- provider attestation and device-link data, including hardware serial numbers (retained for internal trust verification only and not exposed publicly), binary hashes, Secure Enclave public keys, MDM SecurityInfo responses, and challenge-response records, may be retained for trust, audit, and network-integrity purposes;
 - Content may be retained for shorter operational periods unless preserved longer for support, abuse review, legal compliance, or dispute resolution.
 
 ## 9. Your Privacy Choices and Rights

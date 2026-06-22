@@ -74,15 +74,36 @@ struct Status: AsyncParsableCommand {
     /// trust reason — the answer to "am I earning, and if not, why?".
     private func printDaemonStatus() {
         let now = Date().timeIntervalSince1970
-        guard let state = DaemonStateFile.read() else {
-            print("Daemon: not running (run `darkbloom start`)")
+        let state = DaemonStateFile.read()
+        let stateAlive = state.map { daemonProcessAlive(pid: $0.pid) } ?? false
+
+        // The state file alone can't answer "is the daemon running?": it can be
+        // left over from a previous session, or the daemon may be unable to
+        // write it at all (e.g. ~/.darkbloom permissions). launchd is the
+        // source of truth for the process it manages, so cross-check it before
+        // declaring the daemon down.
+        let livePID: Int32? = stateAlive ? state?.pid : LaunchAgent.runningPID()
+
+        guard let pid = livePID else {
+            if let state {
+                // Leftover state file from a previous daemon session (stop,
+                // crash, or reboot). Point at the fix, not the artifact.
+                print("Daemon: not running (last session ended ~\(formatUptime(state.ageSeconds(now: now))) ago — run `darkbloom start`)")
+            } else {
+                print("Daemon: not running (run `darkbloom start`)")
+            }
             return
         }
-        let alive = daemonProcessAlive(pid: state.pid)
-        if !alive {
-            print("Daemon: not running (stale state file)")
+
+        guard let state, state.pid == pid else {
+            // launchd says the daemon is up, but the state file is missing or
+            // belongs to an older process — live diagnostics are unavailable.
+            print("Daemon: running (pid \(pid), managed by launchd)")
+            print("  → no live diagnostics: the daemon's state file is missing or from an older session.")
+            print("  → if this persists for >1 min, check that ~/.darkbloom is writable, or run `darkbloom stop && darkbloom start`.")
             return
         }
+
         if state.isStale(now: now) {
             print("Daemon: running (pid \(state.pid)) but last update \(Int(state.ageSeconds(now: now)))s ago — possibly wedged")
         } else {

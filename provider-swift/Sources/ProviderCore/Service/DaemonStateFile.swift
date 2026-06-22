@@ -151,8 +151,19 @@ public struct DaemonState: Codable, Sendable, Equatable {
 }
 
 /// Reports whether a process with the given PID is currently alive.
+/// EPERM means the process exists but we can't signal it — still alive.
 public func daemonProcessAlive(pid: Int32) -> Bool {
-    pid > 0 && kill(pid, 0) == 0
+    guard pid > 0 else { return false }
+    if kill(pid, 0) == 0 { return true }
+    return errno == EPERM
+}
+
+/// Whether the provider daemon is up: the state file's writer process is
+/// alive, or launchd reports a running provider service. The launchd
+/// cross-check covers a daemon whose state file is stale or unwritable.
+public func daemonIsRunning(state: DaemonState?) -> Bool {
+    if state.map({ daemonProcessAlive(pid: $0.pid) }) ?? false { return true }
+    return LaunchAgent.runningPID() != nil
 }
 
 /// Reads/writes the daemon state file at `~/.darkbloom/daemon-state.json`
@@ -192,6 +203,13 @@ public enum DaemonStateFile {
         } catch {
             // Intentionally ignored: state file is a diagnostic aid, not critical.
         }
+    }
+
+    /// Removes the state file. Best-effort: a leftover file from a previous
+    /// daemon session would otherwise make `status` report a confusing
+    /// "stale state file" forever after a stop/crash/reboot.
+    public static func remove(at url: URL = DaemonStateFile.path()) {
+        try? FileManager.default.removeItem(at: url)
     }
 
     /// Reads the snapshot, or nil if absent / unreadable / wrong schema.

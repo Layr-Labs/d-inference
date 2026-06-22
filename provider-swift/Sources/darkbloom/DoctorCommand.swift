@@ -39,7 +39,7 @@ struct Doctor: AsyncParsableCommand {
         print("darkbloom doctor \(ProviderCore.version)")
         print("Config: \(describeConfigPath(snapshot))")
         let daemonState = DaemonStateFile.read()
-        let daemonRunning = daemonState.map { daemonProcessAlive(pid: $0.pid) } ?? false
+        let daemonRunning = daemonIsRunning(state: daemonState)
         print("Daemon: \(daemonRunning ? "running" : "NOT running — run `darkbloom start`")")
 
         // The high-signal diagnosis first (sectioned, with fixes).

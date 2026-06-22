@@ -249,6 +249,7 @@ struct Start: AsyncParsableCommand {
         try ProcessLifecycle.acquireSingleInstanceLock()
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
+        defer { DaemonStateFile.remove() }
 
         // Install panic hook BEFORE telemetry so a crash during telemetry
         // setup is itself captured.

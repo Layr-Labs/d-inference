@@ -213,6 +213,15 @@ private func tmpStateURL() -> URL {
     #expect(DaemonStateFile.read(from: url) == nil, "future schema must be rejected, not mis-decoded")
 }
 
+@Test func daemonStateRemoveDeletesFileAndIsIdempotent() {
+    let url = tmpStateURL()
+    DaemonStateFile.write(DaemonState(pid: 1, version: "x", writtenAt: 1, startedAt: 1), to: url)
+    #expect(DaemonStateFile.read(from: url) != nil)
+    DaemonStateFile.remove(at: url)
+    #expect(DaemonStateFile.read(from: url) == nil)
+    DaemonStateFile.remove(at: url) // missing file is not an error
+}
+
 @Test func daemonProcessAliveForSelfAndDeadPid() {
     #expect(daemonProcessAlive(pid: getpid()) == true)
     #expect(daemonProcessAlive(pid: 0) == false)

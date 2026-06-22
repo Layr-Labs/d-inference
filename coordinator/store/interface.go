@@ -212,6 +212,23 @@ type InferenceRouteOutcome struct {
 	// Speculative/backup-race dispatch outcome.
 	UsedBackup bool `json:"used_backup"`
 	BackupWon  bool `json:"backup_won"`
+
+	// CompletionTokensSet forces the completion_tokens column to be written from
+	// CompletionTokens even when it is 0. Without it, a terminal cancel/error/
+	// timeout row (which delivers 0 tokens) leaves completion_tokens NULL, so the
+	// incident-majority 0-token cancels are invisible in telemetry. Success rows
+	// already write a real (usually non-zero) count, so this only needs to be set
+	// on the terminal cancel/error/timeout constructors (and success, harmlessly).
+	CompletionTokensSet bool `json:"completion_tokens_set,omitempty"`
+
+	// InvalidTTFT is a transient (never-persisted) signal that the raw
+	// time-to-first-token computed for this outcome was negative and was clamped
+	// to 0. The single store-submit funnel emits routing.invalid_ttft when it is
+	// set, so any regression of the retried-request shared-Timing bug
+	// (FirstContentAt of an early attempt minus a later attempt's DispatchedAt)
+	// is loud rather than silent. json:"-" keeps it out of every API payload and
+	// neither store impl persists it.
+	InvalidTTFT bool `json:"-"`
 }
 
 // RejectionRecord captures a single rejected inbound inference request (4xx/5xx)

@@ -106,8 +106,16 @@ const (
 var thinkBlockPattern = regexp.MustCompile(`(?is)<think>(.*?)</think>\s*`)
 
 // ttftDeadline returns the TTFT budget for a request based on prompt size.
-// Base: 5 seconds + 1ms per estimated input token. This meets the OpenRouter
-// SLA of TTFT < 5s + 1ms/input_token.
+// Base: 5 seconds + 1ms per estimated input token.
+//
+// NOTE (TTFT-contention Phase 0): this 5s base is the coordinator's INTERNAL
+// budget, not the deadline that actually cancels. Prod telemetry shows
+// client_gone cancels fit `10000 + 1ms·prompt_tokens` at a median ratio of 1.002
+// (telemetry-db findings §2); gating projected TTFT against this 5s base
+// over-sheds ~2x. The verified ~10s base lives in
+// registry.ttftDeadlineMsForPrompt (EIGENINFERENCE_TTFT_DEADLINE_BASE_MS) and is
+// used ONLY by the shadow evaluator. This live path is intentionally left at 5s
+// until the shadow validates; a future enforce step would reconcile them.
 func ttftDeadline(estimatedPromptTokens int) time.Duration {
 	base := 5 * time.Second
 	perToken := time.Duration(estimatedPromptTokens) * time.Millisecond

@@ -219,6 +219,20 @@ type RoutingDecision struct {
 	BestTTFTMs float64
 	// TTFTMs is the estimated time-to-first-token of the selected provider.
 	TTFTMs float64
+
+	// Phase-0 shadow TTFT admission/spread evaluation (see ttft_shadow.go).
+	// Populated ONLY when EIGENINFERENCE_TTFT_ADMISSION_MODE != off and a
+	// provider was selected. Purely observational — it never changes the
+	// selection; the API layer emits routing.ttft_admission / routing.ttft_spread
+	// from these fields so the spread-to-idle opportunity and the would-shed rate
+	// can be measured before any enforce flips them on.
+	ShadowEvaluated             bool
+	ShadowMode                  string
+	ShadowWouldShed             bool
+	ShadowIdleAlternativeExists bool
+	ShadowEstimateMs            float64
+	ShadowDeadlineMs            float64
+	ShadowOccupancy             int
 }
 
 // ReserveProvider selects a hardware-routable provider for the request and
@@ -261,6 +275,14 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 			BestTTFTMs:              bestTTFTMs,
 		}
 	}
+
+	// Phase-0 shadow TTFT evaluation: computed here (r.mu held, no provider lock
+	// taken yet, so it can snapshot peer providers one-at-a-time without holding
+	// two p.mu) against the winner's PRE-reserve snapshot, so its occupancy
+	// excludes the request we are about to admit. No-op (zero value) when the
+	// admission mode is off — keeping default behavior byte-for-byte. Attached to
+	// the success decision below; discarded if the admit re-check rejects.
+	shadowEval := r.evaluateTTFTShadowLocked(model, pr, selected)
 
 	p := selected.provider
 	p.mu.Lock()
@@ -341,6 +363,7 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		EffectiveTPS:            selected.effectiveTPS,
 		StaticTPS:               selected.snapshot.decodeTPS,
 	}
+	shadowEval.applyTo(&decision)
 	return p, decision
 }
 
@@ -1142,11 +1165,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 		return nil, rejectCapacity, false
 	}
 
-	effectiveQueue := snap.pendingForModel
-	backendDepth := snap.backendRunning + snap.backendWaiting
-	if backendDepth > effectiveQueue {
-		effectiveQueue = backendDepth
-	}
+	effectiveQueue := snapshotOccupancy(snap)
 
 	waitingBacklogTokens := float64(snap.backendWaiting * reqMax)
 	unaccountedPendingTokens := float64(snap.pendingMaxTokens) - float64(snap.maxTokensPotential) - waitingBacklogTokens
@@ -1335,6 +1354,26 @@ func effectiveDecodeTPS(staticTPS float64, backendRunning int) float64 {
 	return tps
 }
 
+// snapshotOccupancy is the per-(provider,model) in-flight occupancy the
+// coordinator already tracks: max(pendingForModel, backend_running +
+// backend_waiting). pendingForModel is the coordinator's own dispatched-but-not-
+// yet-terminal count (incremented at reserve, held the whole dark-time), so this
+// is herd-aware even when the heartbeat gauge still reads backend_running=0 — no
+// parallel reservation counter is needed. It is the same quantity the routing
+// cost's effectiveQueue and the quality-concurrency cap consume; the Phase-0
+// occupancy-aware TTFT term and the shadow admission/spread evaluator reuse it so
+// every occupancy-keyed decision reads one signal.
+func snapshotOccupancy(snap routingSnapshot) int {
+	occ := snap.pendingForModel
+	if backendDepth := snap.backendRunning + snap.backendWaiting; backendDepth > occ {
+		occ = backendDepth
+	}
+	if occ < 0 {
+		occ = 0
+	}
+	return occ
+}
+
 func resolvedDecodeTPS(p *Provider) float64 {
 	if p.DecodeTPS > 0 {
 		return p.DecodeTPS
@@ -1401,6 +1440,31 @@ func SetPrefillToDecodeRatio(ratio float64) {
 // measured prefill rate). Exposed for the routing simulation harness.
 func PrefillToDecodeRatio() float64 {
 	return prefillToDecodeRatio
+}
+
+// ttftOccupancyAlpha scales the Phase-0 occupancy term in ttftMsFromSnapshot
+// (see ttftOccupancyMs). It is the decode-token-times of head-of-line wait
+// charged per occupying peer, divided by the per-request decode rate the new
+// request would see. 0 (the default) disables the term, so ttftMsFromSnapshot —
+// and therefore the routing cost's TTFTMs, the candidate-loop TTFT ceiling, and
+// the preflight bestTTFT — are all byte-for-byte the pre-Phase-0 estimate.
+// Configured once at startup via SetTTFTOccupancyAlpha
+// (EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA), read-only on routing paths thereafter,
+// mirroring prefillToDecodeRatio.
+var ttftOccupancyAlpha = 0.0
+
+// SetTTFTOccupancyAlpha overrides the occupancy-term coefficient. Negative
+// values are clamped to 0 (term disabled). Must be called before serving starts.
+func SetTTFTOccupancyAlpha(alpha float64) {
+	if alpha < 0 {
+		alpha = 0
+	}
+	ttftOccupancyAlpha = alpha
+}
+
+// TTFTOccupancyAlpha returns the configured occupancy-term coefficient.
+func TTFTOccupancyAlpha() float64 {
+	return ttftOccupancyAlpha
 }
 
 // defaultLongPromptThresholdTokens gates the long-prompt fastest-tier routing
@@ -1834,7 +1898,43 @@ func ttftMsFromSnapshot(snap routingSnapshot, reqPromptTokens int) float64 {
 	queuedPrefillMs := queuedPrefillTokensAhead(snap, reqPromptTokens) / prefillTPS * 1000.0
 	thisPrefillMs := float64(reqPromptTokens) / prefillTPS * 1000.0
 	firstDecodeMs := 1000.0 / effectiveTPS
-	return statePenalty + queuedPrefillMs + thisPrefillMs + firstDecodeMs
+	return statePenalty + queuedPrefillMs + thisPrefillMs + firstDecodeMs + ttftOccupancyMs(snap)
+}
+
+// ttftOccupancyMs is the Phase-0 occupancy term added to the TTFT estimate: the
+// head-of-line wait while the box's already-occupying work (the herd) clears
+// enough for a newly admitted request to emit its first token. The old estimate
+// counted only WAITING prefill and a single decode step, so it was flat in
+// running occupancy — exactly where the ~11s of "dark time" lives.
+//
+// The term reuses the occupancy the snapshot ALREADY carries
+// (snapshotOccupancy = max(pendingForModel, backend_running+backend_waiting)),
+// not a new parallel counter, so it is herd-aware for free: a burst onto a box
+// still reporting backend_running=0 shows up through pendingForModel. Magnitude
+// per occupying peer is alpha decode-token-times divided by
+// projectedPerRequestDecodeTPS (the rate the new request sees at b+1), which
+// makes it super-linear in backend_running (the rate itself shrinks with b).
+//
+// Returns 0 when EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA is 0 (the default →
+// byte-for-byte the pre-Phase-0 estimate) or occupancy is 0 (an idle box never
+// pays the term, so route-to-idle is preserved). The deadline this is gated
+// against in the shadow evaluator is the verified ~10s base, NOT the code's 5s
+// internal budget; gating an occupancy estimate fit to the 5s base over-sheds
+// ~2x (telemetry-db findings §2).
+func ttftOccupancyMs(snap routingSnapshot) float64 {
+	alpha := ttftOccupancyAlpha
+	if alpha <= 0 {
+		return 0
+	}
+	occ := snapshotOccupancy(snap)
+	if occ <= 0 {
+		return 0
+	}
+	perReqDecodeTPS := projectedPerRequestDecodeTPS(snap)
+	if perReqDecodeTPS <= 0 {
+		perReqDecodeTPS = 1.0
+	}
+	return alpha * float64(occ) * 1000.0 / perReqDecodeTPS
 }
 
 func queuedPrefillTokensAhead(snap routingSnapshot, reqPromptTokens int) float64 {

@@ -1767,7 +1767,11 @@ func (s *PostgresStore) UpdateInferenceRouteOutcome(requestID string, attempt in
 			error_class = COALESCE(NULLIF($5, ''), error_class),
 			error_reason = COALESCE(NULLIF($6, ''), error_reason),
 			prompt_tokens = CASE WHEN $7 <> 0 THEN $7 ELSE prompt_tokens END,
-			completion_tokens = CASE WHEN $8 <> 0 THEN $8 ELSE completion_tokens END,
+			-- $24 (CompletionTokensSet) force-writes the count even when 0 so a
+			-- terminal cancel/error/timeout row persists 0 instead of NULL; the
+			-- OR $8 <> 0 keeps the legacy non-zero write path (mirrors the memory
+			-- store's mergeInferenceRouteOutcome exactly).
+			completion_tokens = CASE WHEN $24 OR $8 <> 0 THEN $8 ELSE completion_tokens END,
 			reasoning_tokens = CASE WHEN $9 <> 0 THEN $9 ELSE reasoning_tokens END,
 			cost_micro_usd = CASE WHEN $10 <> 0 THEN $10 ELSE cost_micro_usd END,
 			actual_ttft_ms = CASE WHEN $11 <> 0 THEN $11 ELSE actual_ttft_ms END,
@@ -1790,6 +1794,7 @@ func (s *PostgresStore) UpdateInferenceRouteOutcome(requestID string, attempt in
 		outcome.CostMicroUSD, outcome.ActualTTFTMs, outcome.DispatchToFirstChunkMs, outcome.TotalDurationMs,
 		outcome.ParseMs, outcome.ReserveMs, outcome.RouteMs, outcome.EncryptMs, outcome.QueueWaitMs, outcome.DispatchMs, outcome.ActualDecodeTPS,
 		outcome.AdmittedButFailed, outcome.UsedBackup, outcome.BackupWon,
+		outcome.CompletionTokensSet,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update inference route outcome: %w", err)

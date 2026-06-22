@@ -1904,25 +1904,15 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		// the full response.
 		outcome := completeRouteOutcome(pr, msg.Usage, totalCost, consumerGone)
 		if pr.Timing != nil {
-			t := pr.Timing
-			// This runs on the provider read-loop goroutine, not the request
-			// owner. FirstChunkAt is the one Timing field the dispatch goroutine
-			// writes after dispatch (while streaming), so read it via the
-			// mutex-guarded accessor to avoid a data race. The remaining fields
-			// (DispatchedAt, ReceivedAt, and those used by applyTimingDecomposition)
-			// are all stamped before dispatch and are safe to read here via the
-			// provider-registration happens-before edge.
+			// completeRouteOutcome already applied the per-attempt timing via
+			// applyPendingRouteTelemetry — actual_ttft_ms (from FirstContentAt),
+			// dispatch_to_first_chunk_ms (from FirstChunkAt), total_duration_ms,
+			// and the ParseMs..DispatchMs decomposition — all using the
+			// mutex-guarded timing accessors, which are race-free on this provider
+			// read-loop goroutine. This block only ADDS the measured decode
+			// throughput, which needs FirstChunkAt read via the same guarded
+			// accessor.
 			firstChunk := pr.FirstChunkAtSafe()
-			if !firstChunk.IsZero() && !t.DispatchedAt.IsZero() {
-				ms := float64(firstChunk.Sub(t.DispatchedAt).Milliseconds())
-				outcome.ActualTTFTMs = ms
-				outcome.DispatchToFirstChunkMs = ms
-			}
-			if !t.ReceivedAt.IsZero() {
-				outcome.TotalDurationMs = float64(time.Since(t.ReceivedAt).Milliseconds())
-			}
-			// Coordinator-side latency decomposition (ParseMs..DispatchMs).
-			applyTimingDecomposition(outcome, t, firstChunk)
 			// Measured decode throughput: completion tokens over the decode
 			// window (first chunk -> completion). Guard zero/negative durations
 			// and zero tokens so unmeasurable requests record 0.

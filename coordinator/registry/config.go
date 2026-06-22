@@ -37,6 +37,13 @@ type QualityCapConfig struct {
 	// little per-request TPS for ~double pool capacity. The decode floor + load
 	// factor are shared with the warm-pool target math (WarmPool.DecodeFloorTPS,
 	// effectiveTPSLoadFactor) so admission and planning cannot drift.
+	//
+	// Settable via EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT (parsed below).
+	// The TTFT-contention plan stages this DOWN 2.0 -> 1.5 -> 1.0 (one step per
+	// observation window) once the occupancy estimate + shadow are validated:
+	// 2.0 lets a fast model's quality cap reach ~4 (the gpt-oss cancel knee), so
+	// tightening toward 1.0 is the existing occupancy SHEDDER for the high-b tail.
+	// Kept at 2.0 by default here — no behavior change until an operator stages it.
 	Overcommit float64
 }
 

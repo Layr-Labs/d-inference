@@ -21,13 +21,18 @@ func TestCommittedRouteOutcomeIsNonTerminal(t *testing.T) {
 			DispatchedAt: now.Add(-50 * time.Millisecond),
 		},
 	}
+	// A committed response delivers content: the held preamble stamps FirstChunkAt
+	// (dispatch_to_first_chunk_ms diagnostic) and the first content chunk stamps
+	// FirstContentAt (actual_ttft_ms). Both must flow onto the non-terminal commit
+	// outcome.
 	pr.MarkFirstChunkArrived()
+	pr.MarkFirstContentArrived()
 	out := committedRouteOutcome(pr)
 	if out.FinalStatus != "" {
 		t.Fatalf("FinalStatus = %q, want empty until provider terminal", out.FinalStatus)
 	}
 	if out.ActualTTFTMs == 0 || out.DispatchToFirstChunkMs == 0 {
-		t.Fatalf("commit outcome should still carry TTFT fields: %+v", out)
+		t.Fatalf("commit outcome should carry content (actual_ttft_ms) + preamble (dispatch_to_first_chunk_ms): %+v", out)
 	}
 }
 

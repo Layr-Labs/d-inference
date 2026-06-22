@@ -320,6 +320,11 @@ func (d *dispatchState) recordRoutingDecisionFor(provider *registry.Provider, pr
 		provider.Mu().Unlock()
 	}
 
+	// Phase-0 shadow TTFT admission/spread metrics. No-op unless the request was
+	// evaluated (admission mode != off AND a provider was selected). Emitted on
+	// the synchronous path (cheap counter incr), not inside the async store write.
+	s.emitTTFTShadowMetrics(d.model, decision)
+
 	s.submitTelemetry("recordInferenceRoute", func() {
 		if err := s.store.RecordInferenceRoute(record); err != nil && s.logger != nil {
 			s.logger.Error("inference_routes record write failed",
@@ -2296,9 +2301,10 @@ func (d *dispatchState) writeCommittedResponse() {
 	// (known up front, adequate for normalization) and the provider's benchmarked
 	// PrefillTPS (set once at registration, read-only thereafter).
 	if pr.Timing != nil && d.firstChunk != "" {
-		if pr.Timing.FirstContentAt.IsZero() {
-			pr.Timing.FirstContentAt = time.Now()
-		}
+		// Stamp under timingMu (MarkFirstContentArrived) because the route-
+		// telemetry path now reads FirstContentAt for actual_ttft_ms from the
+		// provider read-loop goroutine (handleComplete -> applyPendingRouteTelemetry).
+		pr.MarkFirstContentArrived()
 		sample := adjustLatencyForPrefill(contentLatency(pr.Timing), pr.EstimatedPromptTokens, provider.PrefillTPS)
 		s.registry.RecordLatency(provider.ID, sample)
 	}

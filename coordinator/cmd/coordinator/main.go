@@ -383,6 +383,52 @@ func main() {
 		}
 	}
 
+	// Routing (Phase-0 TTFT-contention, shadow + measurement slice). All three
+	// knobs are behavior-neutral at their defaults:
+	//
+	//   - EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA (float, default 0): coefficient of
+	//     the occupancy term added to the TTFT estimate (ttftMsFromSnapshot). 0
+	//     leaves the estimate — and therefore the routing cost's TTFTMs, the
+	//     candidate-loop ceiling, and the preflight bestTTFT — byte-for-byte the
+	//     pre-Phase-0 value. Reuses the occupancy the snapshot already tracks
+	//     (max(pendingForModel, backend_running+backend_waiting)); herd-aware.
+	//   - EIGENINFERENCE_TTFT_DEADLINE_BASE_MS (float, default 10000): the SLA
+	//     base the shadow evaluator gates against. The verified OpenRouter SLA is
+	//     ~10s+1ms/token; the live consumer.go ttftDeadline (5s base) is left
+	//     untouched. Used ONLY by the shadow evaluator.
+	//   - EIGENINFERENCE_TTFT_ADMISSION_MODE (off|shadow|enforce, default off):
+	//     off => no evaluation; shadow/enforce => compute would_shed +
+	//     would_redirect_to_idle and emit routing.ttft_admission /
+	//     routing.ttft_spread WITHOUT changing the routing decision. enforce is
+	//     reserved for a future step that would actually shed; it currently
+	//     behaves like shadow.
+	if v := os.Getenv("EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA"); v != "" {
+		if alpha, err := strconv.ParseFloat(v, 64); err == nil && alpha >= 0 {
+			registry.SetTTFTOccupancyAlpha(alpha)
+			logger.Info("TTFT occupancy term configured via EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA", "alpha", alpha, "behavior_neutral", alpha == 0)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA; ignoring", "value", v)
+		}
+	}
+	if v := os.Getenv("EIGENINFERENCE_TTFT_DEADLINE_BASE_MS"); v != "" {
+		if base, err := strconv.ParseFloat(v, 64); err == nil && base > 0 {
+			registry.SetTTFTDeadlineBaseMs(base)
+			logger.Info("TTFT shadow deadline base configured via EIGENINFERENCE_TTFT_DEADLINE_BASE_MS", "base_ms", base)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_TTFT_DEADLINE_BASE_MS; ignoring", "value", v)
+		}
+	}
+	if v := os.Getenv("EIGENINFERENCE_TTFT_ADMISSION_MODE"); v != "" {
+		mode := registry.ParseTTFTAdmissionMode(v)
+		registry.SetTTFTAdmissionMode(mode)
+		if mode == registry.TTFTAdmissionOff {
+			logger.Info("TTFT admission shadow evaluation OFF (EIGENINFERENCE_TTFT_ADMISSION_MODE)", "value", v)
+		} else {
+			logger.Warn("TTFT admission shadow evaluation ENABLED (measurement only — no decision change)",
+				"mode", mode.String(), "deadline_base_ms", registry.TTFTDeadlineBaseMs(), "occupancy_alpha", registry.TTFTOccupancyAlpha())
+		}
+	}
+
 	// Routing: long-prompt fastest-tier preference. Very long prompts
 	// have a long prefill window that drives pre-first-token client cancellations
 	// (client_gone). When EIGENINFERENCE_LONG_PROMPT_TOKENS is set, the scheduler

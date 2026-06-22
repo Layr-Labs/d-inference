@@ -95,7 +95,7 @@ internal final class OneShotBoolContinuation: @unchecked Sendable {
     }
 }
 
-private enum ProviderLoopError: Error, CustomStringConvertible {
+internal enum ProviderLoopError: Error, CustomStringConvertible {
     case binaryHashUnavailable
 
     var description: String {

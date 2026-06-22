@@ -171,7 +171,7 @@ public final class ProviderState: @unchecked Sendable {
 
 // MARK: - os_unfair_lock wrapper (Sendable-safe)
 
-private final class OSAllocatedUnfairLock: @unchecked Sendable {
+internal final class OSAllocatedUnfairLock: @unchecked Sendable {
     private let _lock: UnsafeMutablePointer<os_unfair_lock>
 
     init() {

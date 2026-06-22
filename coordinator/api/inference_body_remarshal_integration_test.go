@@ -54,7 +54,7 @@ func TestAliasCapacityFallbackForwardsUnescapedBody(t *testing.T) {
 	// Desired build: a registered, trusted, SATURATED provider. The alias
 	// resolves to desired (structural), but QuickCapacityCheck(desired) returns
 	// 0 candidates / >0 rejections — the exact condition that fires
-	// maybeFallbackAliasCapacity. nil conn is fine: it never receives a dispatch.
+	// maybeFallbackAlias. nil conn is fine: it never receives a dispatch.
 	registerBuildsProvider(srv, "p-desired", desiredBuild)
 	pd := reg.GetProvider("p-desired")
 	pd.Mu().Lock()

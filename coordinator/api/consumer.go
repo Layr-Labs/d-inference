@@ -377,36 +377,27 @@ func (s *Server) resolveRequestedModel(parsed map[string]any, rawBody []byte, re
 	return buildID, requested, rb, true
 }
 
-// maybeFallbackAliasCapacity keeps public aliases available during a desired-build
-// saturation event. Alias resolution intentionally prefers Desired when it is
-// routable, but if every desired provider is transiently full and Previous has
-// immediate capacity, route this request to Previous instead of returning a fast
-// 429. Hard constraints and permanent model-too-large failures are handled by the
-// caller and do not use this fallback. The TTFT estimate for Previous is also
-// returned so the caller does not need to recompute it.
-func (s *Server) maybeFallbackAliasCapacity(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, int, int, int, time.Duration, bool, bool) {
-	if publicModel == "" || publicModel == currentModel {
-		return currentModel, 0, 0, 0, 0, false, false
-	}
-	target, ok := s.registry.AliasTarget(publicModel)
-	if !ok || target.Desired != currentModel || target.Previous == "" {
-		return currentModel, 0, 0, 0, 0, false, false
-	}
-	if s.modelShed(target.Previous, publicModel) {
-		return currentModel, 0, 0, 0, 0, false, false
-	}
-	if !s.registry.IsModelInCatalog(target.Previous) {
-		return currentModel, 0, 0, 0, 0, false, false
-	}
-	candidates, rejections, tooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
-	if candidates <= 0 {
-		return currentModel, candidates, rejections, tooLarge, bestTTFT, hasTTFT, false
-	}
-	parsed["model"] = target.Previous
-	return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, true
-}
+// aliasFallbackMode selects the failure policy for maybeFallbackAlias.
+type aliasFallbackMode int
 
-func (s *Server) maybeFallbackAliasTTFT(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, ttftThreshold time.Duration, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, int, int, int, time.Duration, bool, bool) {
+const (
+	// aliasFallbackCapacity routes to Previous whenever it has any free capacity.
+	aliasFallbackCapacity aliasFallbackMode = iota
+	// aliasFallbackTTFT additionally rejects Previous when its best TTFT estimate
+	// would miss the per-request ceiling (ttftThreshold).
+	aliasFallbackTTFT
+)
+
+// maybeFallbackAlias keeps public aliases available during a desired-build
+// saturation event. Alias resolution intentionally prefers Desired when it is
+// routable, but if every desired provider is transiently full (aliasFallbackCapacity)
+// or too slow to hit the TTFT ceiling (aliasFallbackTTFT) and Previous can serve,
+// route this request to Previous instead of returning a fast 429 / slow stream.
+// Hard constraints and permanent model-too-large failures are handled by the
+// caller and do not use this fallback. The TTFT estimate for Previous is also
+// returned so the caller does not need to recompute it. ttftThreshold is only
+// consulted in aliasFallbackTTFT mode.
+func (s *Server) maybeFallbackAlias(parsed map[string]any, mode aliasFallbackMode, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, ttftThreshold time.Duration, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, int, int, int, time.Duration, bool, bool) {
 	if publicModel == "" || publicModel == currentModel {
 		return currentModel, 0, 0, 0, 0, false, false
 	}
@@ -421,8 +412,15 @@ func (s *Server) maybeFallbackAliasTTFT(parsed map[string]any, publicModel, curr
 		return currentModel, 0, 0, 0, 0, false, false
 	}
 	candidates, rejections, tooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
-	if candidates <= 0 || ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
-		return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, false
+	tooSlow := mode == aliasFallbackTTFT && ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold)
+	if candidates <= 0 || tooSlow {
+		// Preserve the historical failure-path model: capacity mode reports the
+		// unchanged current build; TTFT mode reports the previous build it probed.
+		failModel := currentModel
+		if mode == aliasFallbackTTFT {
+			failModel = target.Previous
+		}
+		return failModel, candidates, rejections, tooLarge, bestTTFT, hasTTFT, false
 	}
 	parsed["model"] = target.Previous
 	return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, true
@@ -1962,7 +1960,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// owner's machine instead (handled below).
 		candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
 		if candidateCount == 0 && capacityRejections > 0 {
-			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
+			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackCapacity, publicModel, model, estimatedPromptTokens, requestedMaxTokens, 0, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 				candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
 				bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
@@ -2201,7 +2199,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
 				s.triggerWarmPool()
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
-			} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
+			} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackTTFT, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 				if isResponsesAPI {
 					providerParsed, err := responsesRequestToChatCompletions(parsed)
@@ -2317,7 +2315,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// model may have been rewritten by a capacity- or TTFT-fallback above
-	// (maybeFallbackAliasCapacity / maybeFallbackAliasTTFT), so refresh the context
+	// (maybeFallbackAlias), so refresh the context
 	// window for the FINAL build before handing it to the dispatch loop — otherwise
 	// shouldStopFailover/classifyRejection would compare a provider's budget against
 	// the originally-resolved model's context. Overwrite only on a successful lookup
@@ -4860,7 +4858,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	} else {
 		candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
 		if candidateCount == 0 && capacityRejections > 0 {
-			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
+			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackCapacity, publicModel, model, estimatedPromptTokens, requestedMaxTokens, 0, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 				candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
 				bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
@@ -5042,7 +5040,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
 				s.triggerWarmPool()
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
-			} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
+			} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackTTFT, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
 				model = fallbackModel
 			} else {
 				// Hard TTFT gate, no faster alias: 429 + Retry-After, and feed the

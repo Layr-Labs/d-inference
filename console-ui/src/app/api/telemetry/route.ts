@@ -11,7 +11,7 @@ const MAX_BODY = 64 * 1024;
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
-  const coordUrl = req.headers.get("x-coordinator-url") || DEFAULT_COORD;
+  const coordUrl = DEFAULT_COORD;
 
   // Read with explicit size cap.
   const raw = await req.text();

@@ -1210,6 +1210,12 @@ type Registry struct {
 	healthEjectionWindows map[string]*providerHealthWindow // stable-id sliding fault/success ring
 	healthEjectionUntil   map[string]time.Time             // ejection-open expiry per stable id
 	healthEjectionTrips   map[string]int                   // trip count per stable id (exponential backoff)
+	// disconnectedStableIDs caches a provider's stable identity at Disconnect time,
+	// keyed by its (now-removed) session id, so the pending-request ErrorCh flush —
+	// which runs AFTER Disconnect deletes the provider and carries the 502 "provider
+	// disconnected" faults that define a reconnecting zombie — can still resolve the
+	// identity and record those faults against the stable-identity breaker.
+	disconnectedStableIDs map[string]disconnectedStableID
 
 	// evictStrikes counts consecutive eviction sweeps a provider has been stale.
 	// A provider is only evicted after STALE on two sweeps in a row, so a single
@@ -1287,6 +1293,7 @@ func New(logger *slog.Logger) *Registry {
 		healthEjectionWindows:    make(map[string]*providerHealthWindow),
 		healthEjectionUntil:      make(map[string]time.Time),
 		healthEjectionTrips:      make(map[string]int),
+		disconnectedStableIDs:    make(map[string]disconnectedStableID),
 		evictStrikes:             make(map[string]int),
 		cacheAffinity:            newCacheAffinityTracker(cacheAffinityTTL),
 		cacheAffinityBonusMs:     defaultCacheAffinityBonusMs,
@@ -3544,6 +3551,14 @@ func (r *Registry) Disconnect(id string) {
 		// reconnect churn so a zombie that fails ~every request while disconnecting
 		// constantly still accumulates to the ejection threshold.
 		p.mu.Lock()
+		// Cache the stable identity (keyed by this session id) before the pending
+		// flush below: GetProviderStableIdentity falls back to it so the 502 "provider
+		// disconnected" faults — the dominant reconnecting-zombie signal — are recorded
+		// against the stable-identity breaker even though the provider is already gone
+		// from r.providers.
+		if sid := stableProviderIdentityLocked(p); sid != "" {
+			r.rememberDisconnectedStableIDLocked(id, sid)
+		}
 		if p.Status != StatusUntrusted {
 			r.onlineCount.Add(-1)
 			for _, m := range p.Models {

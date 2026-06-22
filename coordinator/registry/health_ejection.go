@@ -97,16 +97,54 @@ func (r *Registry) GetProviderStableIdentity(providerID string) string {
 	}
 	r.mu.RLock()
 	p := r.providers[providerID]
+	cached, hasCached := r.disconnectedStableIDs[providerID]
 	r.mu.RUnlock()
-	if p == nil {
-		return ""
+	if p != nil {
+		// This path does NOT hold p.mu (unlike the routing gate), so take it for the
+		// read — guarding against a concurrent SetAttestationResult (live re-attestation
+		// writes p.AttestationResult under p.mu). Not nested with r.mu, so no deadlock.
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return stableProviderIdentityLocked(p)
 	}
-	// This path does NOT hold p.mu (unlike the routing gate), so take it for the
-	// read — guarding against a concurrent SetAttestationResult (live re-attestation
-	// writes p.AttestationResult under p.mu). Not nested with r.mu, so no deadlock.
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return stableProviderIdentityLocked(p)
+	// Provider already removed from r.providers — typically because Disconnect ran
+	// before the pending-request ErrorCh flush, which carries the 502 "provider
+	// disconnected" faults that characterize a reconnecting zombie. Fall back to the
+	// identity captured at disconnect so those faults are still recorded against the
+	// stable-identity breaker (otherwise the dominant zombie signal is never counted).
+	if hasCached && time.Since(cached.at) < disconnectedStableIDTTL {
+		return cached.id
+	}
+	return ""
+}
+
+// disconnectedStableID caches a provider's stable identity at Disconnect time so
+// the trailing pending-request ErrorCh flush can still resolve it.
+type disconnectedStableID struct {
+	id string
+	at time.Time
+}
+
+// disconnectedStableIDTTL bounds how long a disconnected provider's cached stable
+// identity stays resolvable — long enough for the synchronous pending-request flush
+// and any immediately-trailing terminal, short enough to stay tiny.
+const disconnectedStableIDTTL = 2 * time.Minute
+
+// rememberDisconnectedStableIDLocked caches a provider's stable identity keyed by
+// its about-to-be-removed session id. Caller holds r.mu.
+func (r *Registry) rememberDisconnectedStableIDLocked(sessionID, stableID string) {
+	if r.disconnectedStableIDs == nil {
+		r.disconnectedStableIDs = make(map[string]disconnectedStableID)
+	}
+	if len(r.disconnectedStableIDs) > 4096 {
+		cutoff := time.Now().Add(-disconnectedStableIDTTL)
+		for k, v := range r.disconnectedStableIDs {
+			if v.at.Before(cutoff) {
+				delete(r.disconnectedStableIDs, k)
+			}
+		}
+	}
+	r.disconnectedStableIDs[sessionID] = disconnectedStableID{id: stableID, at: time.Now()}
 }
 
 // RecordProviderServeOutcome feeds one terminal outcome into the stable-identity

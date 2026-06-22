@@ -106,3 +106,40 @@ func TestHealthEjection_KillSwitch(t *testing.T) {
 		t.Fatal("kill switch off must disable ejection entirely")
 	}
 }
+
+// Codex P1: after Disconnect removes the provider, the trailing 502-disconnect
+// faults must still resolve the stable identity (via the disconnect cache) so they
+// are recorded against the breaker — otherwise the dominant zombie signal is lost.
+func TestGetProviderStableIdentity_DisconnectFallback(t *testing.T) {
+	reg := New(testLogger())
+	p := makeSchedulerProvider(t, reg, "sess-1", "m", 50)
+	p.mu.Lock()
+	p.AttestationResult = &attestation.VerificationResult{SerialNumber: "SER-Z"}
+	p.mu.Unlock()
+	if got := reg.GetProviderStableIdentity("sess-1"); got != "serial:SER-Z" {
+		t.Fatalf("connected lookup: got %q want serial:SER-Z", got)
+	}
+	reg.Disconnect("sess-1") // removes from r.providers; cache must still resolve
+	if got := reg.GetProviderStableIdentity("sess-1"); got != "serial:SER-Z" {
+		t.Fatalf("post-disconnect fallback: got %q want serial:SER-Z (zombie disconnect faults would be lost)", got)
+	}
+}
+
+// Codex P1: if health-ejection skips the only provider for a model, the fail-open
+// rescan (which bypasses ejection) must still return it — never zero out the model.
+func TestHealthEjection_FailOpenWhenAllEjected(t *testing.T) {
+	reg := New(testLogger())
+	p := makeSchedulerProvider(t, reg, "only", "m", 50)
+	p.mu.Lock()
+	p.AttestationResult = &attestation.VerificationResult{SerialNumber: "SOLO"}
+	p.mu.Unlock()
+	for i := 0; i < healthEjectionConsecTrip; i++ {
+		reg.RecordProviderServeOutcome("serial:SOLO", false, 500, "boom")
+	}
+	if !reg.HealthEjectionOpen("serial:SOLO") {
+		t.Fatal("precondition: must be ejected")
+	}
+	if got := reserveOne(reg, "m", 100); got == nil {
+		t.Fatal("fail-open: the only provider for a model must still be reservable when ejected")
+	}
+}

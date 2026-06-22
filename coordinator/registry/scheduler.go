@@ -287,6 +287,16 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	// the very candidate the safety valve selected. All under r.mu (held), so the
 	// breaker state cannot change between selection and this check.
 	ignoreBreaker := r.providerBreakerOpenLocked(p.ID, time.Now())
+	if !ignoreBreaker && healthEjectionEnabled() {
+		// Mirror the breaker carry-through for stable-identity health ejection: a
+		// health-ejected winner can ONLY have come from the bypass (fail-open) pass,
+		// so the admit re-check must also bypass ejection — otherwise it re-rejects
+		// the very candidate the safety valve selected and the model is zeroed out.
+		// p.mu is held (above), so read the identity directly (no re-lock).
+		if sid := stableProviderIdentityLocked(p); sid != "" && r.healthEjectionOpenLocked(sid, time.Now()) {
+			ignoreBreaker = true
+		}
+	}
 	if !r.providerCanAdmitLockedEx(p, model, pr.Traits, relaxTrust, ignoreBreaker) ||
 		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model)) {
 		return nil, RoutingDecision{
@@ -461,11 +471,25 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 		// provider is simply dropped here.
 		snap, ok := r.snapshotProviderLockedEx(p, model, pr.Traits, relaxTrust, ignoreProviderBreaker)
 		if !ok {
-			// Count providers the node-health breaker is actively derouting so
-			// selectBestCandidateLockedFull can decide whether a breaker-bypassed
-			// fail-open re-scan would help. Only meaningful on the normal pass.
-			if !ignoreProviderBreaker && r.providerBreakerOpenLocked(p.ID, now) {
-				breakerRejected++
+			// Count providers a breaker-bypassed fail-open re-scan COULD rescue: those
+			// dropped by the node-health breaker OR the stable-identity health-ejection
+			// gate (both are bypassed when ignoreProviderBreaker is set). Without
+			// counting ejection here, ejecting EVERY provider for a model would leave
+			// winner==nil with breakerRejected==0, so shouldBypassBreakerFailOpen would
+			// NOT fire and the model would be zeroed out. Only meaningful on the normal pass.
+			if !ignoreProviderBreaker {
+				if r.providerBreakerOpenLocked(p.ID, now) {
+					breakerRejected++
+				} else if healthEjectionEnabled() {
+					// p.mu is not held here (snapshot released it); take it for the
+					// identity read (r.mu→p.mu is the established order).
+					p.mu.Lock()
+					sid := stableProviderIdentityLocked(p)
+					p.mu.Unlock()
+					if sid != "" && r.healthEjectionOpenLocked(sid, now) {
+						breakerRejected++
+					}
+				}
 			}
 			continue
 		}

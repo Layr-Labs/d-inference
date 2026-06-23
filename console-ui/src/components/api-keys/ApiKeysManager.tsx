@@ -19,6 +19,7 @@ type ConfirmState = { kind: "rotate" | "delete"; key: ApiKey };
 export function ApiKeysManager({ onConsoleKeyChange }: { onConsoleKeyChange?: (key: string) => void }) {
   const {
     authenticated,
+    ready,
     login,
     keys,
     models,
@@ -77,9 +78,10 @@ export function ApiKeysManager({ onConsoleKeyChange }: { onConsoleKeyChange?: (k
         <p className="text-sm text-text-secondary mb-4">Sign in to create and manage your API keys.</p>
         <button
           onClick={login}
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-coral text-white text-sm font-medium hover:opacity-90 transition-all"
+          disabled={!ready}
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-coral text-white text-sm font-medium hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Sign In
+          {ready ? "Sign In" : "Loading…"}
         </button>
       </div>
     );

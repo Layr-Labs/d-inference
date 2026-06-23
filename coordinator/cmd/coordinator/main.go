@@ -392,6 +392,52 @@ func main() {
 		}
 	}
 
+	// Routing: prefill-fallback recalibration (coordinator-side, ship-now fix for
+	// the live ~41% long-prompt ttft_429 over-shed). The mode is behavior-neutral
+	// at its default (off); the ceiling raise is also behavior-neutral on today's
+	// fleet (0 of 313 warm slots report observed_prefill_tps, so nothing is being
+	// zeroed/capped near the old 5000 ceiling).
+	//
+	//   - EIGENINFERENCE_PREFILL_FALLBACK_MODE (off|shadow|enforce, default off):
+	//     off => resolvePrefillTPS keeps the legacy sqrt(bandwidth)×ratio fallback
+	//     (~280 tok/s); shadow => routing unchanged but the preflight emits
+	//     routing.prefill_fallback{would_admit|would_shed} so the projected
+	//     ttft_429 recovery is measured BEFORE enforcing; enforce => routing uses
+	//     the data-derived fallback (~6500 tok/s, the measured prefill p50) when no
+	//     provider measurement exists.
+	//   - EIGENINFERENCE_PREFILL_FALLBACK_TPS (float, default 6500): the fallback
+	//     value, the measured empirical idle prefill p50.
+	//   - EIGENINFERENCE_MAX_PREFILL_TPS (float, default 20000): the prefill sanity
+	//     ceiling, raised above the measured p90 (17,707) so a correctly-measured
+	//     value from a fixed provider is neither zeroed at ingest nor capped in
+	//     routing. Tunable down for instant rollback.
+	if v := os.Getenv("EIGENINFERENCE_MAX_PREFILL_TPS"); v != "" {
+		if ceil, err := strconv.ParseFloat(v, 64); err == nil && ceil > 0 {
+			registry.SetMaxPrefillTPS(ceil)
+			logger.Info("max prefill TPS override via EIGENINFERENCE_MAX_PREFILL_TPS", "tps", ceil)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_MAX_PREFILL_TPS; keeping default", "value", v, "default", registry.MaxPrefillTPS())
+		}
+	}
+	if v := os.Getenv("EIGENINFERENCE_PREFILL_FALLBACK_TPS"); v != "" {
+		if tps, err := strconv.ParseFloat(v, 64); err == nil && tps > 0 {
+			registry.SetPrefillFallbackTPS(tps)
+			logger.Info("prefill fallback TPS override via EIGENINFERENCE_PREFILL_FALLBACK_TPS", "tps", tps)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_PREFILL_FALLBACK_TPS; keeping default", "value", v, "default", registry.PrefillFallbackTPS())
+		}
+	}
+	if v := os.Getenv("EIGENINFERENCE_PREFILL_FALLBACK_MODE"); v != "" {
+		mode := registry.ParsePrefillFallbackMode(v)
+		registry.SetPrefillFallbackMode(mode)
+		if mode == registry.PrefillFallbackOff {
+			logger.Info("prefill-fallback recalibration OFF (EIGENINFERENCE_PREFILL_FALLBACK_MODE)", "value", v)
+		} else {
+			logger.Warn("prefill-fallback recalibration ENABLED (EIGENINFERENCE_PREFILL_FALLBACK_MODE)",
+				"mode", mode.String(), "fallback_tps", registry.PrefillFallbackTPS(), "max_prefill_tps", registry.MaxPrefillTPS())
+		}
+	}
+
 	// Routing (Phase-0 TTFT-contention, shadow + measurement slice). All three
 	// knobs are behavior-neutral at their defaults:
 	//

@@ -55,17 +55,28 @@ extension BatchScheduler {
         continuation: AsyncStream<GenerationEvent>.Continuation
     ) {
         let scheduler = self
+        // Capture the load epoch: wedge callbacks from THIS bridge are ignored if
+        // a reload (`stopCurrentEngine`, which bumps `generationEpoch` and resets
+        // the monitor) supersedes this load while the request is still in flight,
+        // so a stale bridge can't corrupt the fresh model's counters.
+        let bridgeEpoch = generationEpoch
         Task { [continuation] in
             var sawAdmission = false
             var sawFirstToken = false
             var sawTerminal = false
-            // Wedge instrumentation (measurement only): this request reached the
-            // streaming bridge and will emit the lock-free preamble, so count it
-            // as an admit BEFORE awaiting the engine — a wedged first `eval`
-            // never produces a `RequestOutput`, so admit accounting must not
-            // depend on one (that is precisely why the existing liveness
-            // watchdog, keyed on `admittedAt`, can't see this wedge).
-            await scheduler.recordWedgeAdmit()
+            // Wedge instrumentation (measurement only): count the admit at bridge
+            // start, BEFORE awaiting the engine. This is REQUIRED — not a
+            // queued-stream miscount: in THIS engine a `RequestOutput` is emitted
+            // ONLY from the decode phase (`Scheduler.processGenResponses`); there
+            // is NO prefill/admission-stage output, so a wedged first `eval`
+            // produces NO `RequestOutput` at all. Tying the admit to a "real
+            // engine admission signal" (first `RequestOutput`) would make the
+            // exact wedge we exist to detect invisible. A merely-queued request on
+            // a HEALTHY engine does NOT false-trip: `wedgeSuspected` additionally
+            // requires the engine step counter to be FROZEN (steps keep advancing
+            // while the engine serves other work), so only a truly frozen engine
+            // trips. (See docs/reports/2026-06-22-cancel-root-cause-and-fix.md §C4.)
+            await scheduler.recordWedgeAdmit(epoch: bridgeEpoch)
             for await output in outputStream {
                 // First `RequestOutput` (even prefill-only with no tokens)
                 // marks engine admission. Required by `expirePlannerTimeouts`
@@ -85,7 +96,7 @@ extension BatchScheduler {
                     await scheduler.recordFirstToken(requestId: id, at: .now)
                     // Wedge instrumentation: a real first content token clears
                     // the monitor's zero-first-token dry streak.
-                    await scheduler.recordWedgeFirstToken()
+                    await scheduler.recordWedgeFirstToken(epoch: bridgeEpoch)
                     sawFirstToken = true
                 }
 
@@ -164,7 +175,7 @@ extension BatchScheduler {
                     // produced a first token (cancel/abort/error/0-token finish),
                     // drop it from the hanging streak so it can't read as a wedge.
                     if !sawFirstToken {
-                        await scheduler.recordWedgeTerminalWithoutFirstToken()
+                        await scheduler.recordWedgeTerminalWithoutFirstToken(epoch: bridgeEpoch)
                     }
                     continuation.finish()
                     return
@@ -180,7 +191,7 @@ extension BatchScheduler {
             // Wedge instrumentation: stream-closed end without a first token is
             // also a no-first-token terminal — clear it from the hanging streak.
             if !sawFirstToken {
-                await scheduler.recordWedgeTerminalWithoutFirstToken()
+                await scheduler.recordWedgeTerminalWithoutFirstToken(epoch: bridgeEpoch)
             }
             await scheduler.dropBridge(requestId: id)
             continuation.finish()

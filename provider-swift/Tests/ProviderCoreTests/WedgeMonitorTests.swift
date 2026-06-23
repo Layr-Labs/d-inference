@@ -135,4 +135,49 @@ struct WedgeMonitorTests {
         #expect(m.lastStepsSample == 0)
         #expect(m.wedgeSuspected(now: base.advanced(by: .seconds(60))) == false)
     }
+
+    /// B1 regression: after an older admit ends (terminal w/o first token), the
+    /// dry-streak must re-anchor to the OLDEST still-hanging admit — not to the
+    /// admit that already ended. Codex scenario: A@0, B/C@9, A cancels@9.5, D@10,
+    /// steps frozen ⇒ NOT a wedge (B/C/D have only stalled ~1s). Pre-fix the
+    /// anchor stayed at the ended A@0 and falsely reported a wedge at t=10.
+    @Test func dryStreakAnchorsToOldestStillHangingAdmit() {
+        var m = WedgeMonitor()
+        m.sampleSteps(100, now: base)  // frozen baseline (steps never advance)
+        m.recordAdmit(now: base)  // A@0
+        m.recordAdmit(now: base.advanced(by: .seconds(9)))  // B@9
+        m.recordAdmit(now: base.advanced(by: .seconds(9)))  // C@9
+        m.recordTerminalWithoutFirstToken()  // A cancels (removes oldest, A@0)
+        m.recordAdmit(now: base.advanced(by: .seconds(10)))  // D@10
+
+        #expect(m.consecutiveAdmitsWithoutFirstToken == 3)  // B, C, D hanging
+        // Oldest hanging is B@9 → only ~1s stalled at t=10 ⇒ NOT a wedge.
+        #expect(m.wedgeSuspected(now: base.advanced(by: .seconds(10))) == false)
+        // Once B/C/D actually stall ≥10s (B@9 → 10.5s) it IS a wedge.
+        #expect(m.wedgeSuspected(now: base.advanced(by: .seconds(19.5))) == true)
+    }
+
+    /// B3 regression: a wedge callback from a bridge whose load was superseded by
+    /// a reset (which bumps `generationEpoch` + resets the monitor) must be
+    /// ignored, so a stale in-flight request can't corrupt the fresh model's
+    /// counters. Exercises the epoch guard on `BatchScheduler.recordWedge*`.
+    @Test func staleEpochWedgeCallbackIgnoredAfterReset() async {
+        let s = BatchScheduler()
+        let epoch0 = await s.generationEpoch
+        await s.recordWedgeAdmit(epoch: epoch0)
+        #expect(await s.wedgeMonitor.admits == 1)
+
+        // A reload (unloadModel → stopCurrentEngine) bumps the epoch + resets.
+        await s.unloadModel()
+        #expect(await s.wedgeMonitor.admits == 0)
+
+        // Stale callback at the OLD epoch is dropped — fresh monitor untouched.
+        await s.recordWedgeAdmit(epoch: epoch0)
+        #expect(await s.wedgeMonitor.admits == 0)
+
+        // A current-epoch callback still records normally.
+        let epoch1 = await s.generationEpoch
+        await s.recordWedgeAdmit(epoch: epoch1)
+        #expect(await s.wedgeMonitor.admits == 1)
+    }
 }

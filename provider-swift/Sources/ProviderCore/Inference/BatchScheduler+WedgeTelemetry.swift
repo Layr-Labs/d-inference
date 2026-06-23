@@ -30,18 +30,27 @@ extension BatchScheduler {
     static let engineHealthSnapshotIntervalSeconds: Double = 60
 
     // MARK: - Bridge-lifecycle recording (called from BatchScheduler+EngineBridge)
+    //
+    // Generation gating: each bridge captures `generationEpoch` at start and
+    // passes it back here. A callback from a bridge that belongs to a previous
+    // load (its engine was torn down by `stopCurrentEngine`/reload, which bumps
+    // `generationEpoch` and resets `wedgeMonitor`) is IGNORED, so a stale in-flight
+    // request can't corrupt the fresh model's per-load counters. Mirrors the
+    // existing epoch guards around engine reloads (`engineStillCurrent`).
 
     /// A request reached the streaming bridge (it will emit the lock-free
     /// preamble). Counted as an "admit" for the wedge monitor. Called once per
     /// request, at bridge start — independent of whether the engine ever emits a
     /// `RequestOutput`, which a wedged first-`eval` never does.
-    func recordWedgeAdmit() {
+    func recordWedgeAdmit(epoch: UInt64) {
+        guard epoch == generationEpoch else { return }
         wedgeMonitor.recordAdmit(now: .now)
     }
 
     /// The request produced its first content token. Clears the wedge monitor's
     /// dry streak. Called once per request from the bridge's first-token path.
-    func recordWedgeFirstToken() {
+    func recordWedgeFirstToken(epoch: UInt64) {
+        guard epoch == generationEpoch else { return }
         wedgeMonitor.recordFirstToken(now: .now)
     }
 
@@ -50,7 +59,8 @@ extension BatchScheduler {
     /// monitor's currently-hanging streak so common `client_gone` cancels don't
     /// pollute it into a false wedge. Called from the bridge's terminal paths only
     /// when no first token was seen.
-    func recordWedgeTerminalWithoutFirstToken() {
+    func recordWedgeTerminalWithoutFirstToken(epoch: UInt64) {
+        guard epoch == generationEpoch else { return }
         wedgeMonitor.recordTerminalWithoutFirstToken()
     }
 

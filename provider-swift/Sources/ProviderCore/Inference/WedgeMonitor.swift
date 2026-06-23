@@ -47,15 +47,24 @@ struct WedgeMonitor {
     /// Requests that produced their first content token. Incremented once per
     /// request. `admits > firstTokens` growing without bound ⇒ wedge.
     private(set) var firstTokens: Int = 0
-    /// Admits since the last first token (reset to 0 on any first token).
-    private(set) var consecutiveAdmitsWithoutFirstToken: Int = 0
+
+    /// FIFO of admit timestamps for requests CURRENTLY hanging (admitted, no
+    /// first token yet, not terminated). The front is the oldest still-hanging
+    /// admit, so the dry-streak is measured from it — never from an admit that has
+    /// already ended (the bug this replaces, where a mix of old+new admits could
+    /// report a wedge before the newer admits had actually stalled). Appended on
+    /// admit; the front is removed on a no-first-token terminal; cleared entirely
+    /// on a first token (engine proven alive ⇒ nothing is wedged).
+    private var hangingAdmitsSince: [ContinuousClock.Instant] = []
+
+    /// Number of admits currently hanging (no first token, not terminated).
+    /// Derived from the FIFO so it can never disagree with the streak anchor.
+    var consecutiveAdmitsWithoutFirstToken: Int { hangingAdmitsSince.count }
 
     // MARK: - Wall-clock anchors (ContinuousClock; monotonic, skew-free)
 
     private(set) var lastAdmitAt: ContinuousClock.Instant?
     private(set) var lastFirstTokenAt: ContinuousClock.Instant?
-    /// First admit of the current zero-first-token streak; nil when not in one.
-    private var dryStreakStartedAt: ContinuousClock.Instant?
 
     // MARK: - Engine-step sampling
 
@@ -72,18 +81,16 @@ struct WedgeMonitor {
     /// A request was handed to the engine (preamble path). Call once per request.
     mutating func recordAdmit(now: ContinuousClock.Instant) {
         admits += 1
-        consecutiveAdmitsWithoutFirstToken += 1
-        if dryStreakStartedAt == nil { dryStreakStartedAt = now }
+        hangingAdmitsSince.append(now)
         lastAdmitAt = now
     }
 
     /// A request produced its first content token. Call once per request. A
     /// single first token proves the engine + global eval lock are alive, so it
-    /// fully clears the wedge suspicion (not just -1).
+    /// fully clears the wedge suspicion (the whole hanging set).
     mutating func recordFirstToken(now: ContinuousClock.Instant) {
         firstTokens += 1
-        consecutiveAdmitsWithoutFirstToken = 0
-        dryStreakStartedAt = nil
+        hangingAdmitsSince.removeAll()
         lastFirstTokenAt = now
     }
 
@@ -97,11 +104,15 @@ struct WedgeMonitor {
     /// the streak into a false wedge on a healthy box. Do NOT call for a request
     /// that produced a first token (that path uses `recordFirstToken`).
     mutating func recordTerminalWithoutFirstToken() {
-        if consecutiveAdmitsWithoutFirstToken > 0 {
-            consecutiveAdmitsWithoutFirstToken -= 1
-        }
-        if consecutiveAdmitsWithoutFirstToken == 0 {
-            dryStreakStartedAt = nil
+        // One hanging admit ended without a first token. Drop the OLDEST hanging
+        // timestamp so the streak re-anchors to the next-oldest STILL-hanging
+        // admit — never to one that has already ended. On a real wedge no first
+        // tokens occur and requests cancel in admit order, so the front tracks the
+        // true oldest hanging admit; in mixed traffic this is conservative (may
+        // under-count), and the step-flatline gate in `wedgeSuspected` is the
+        // backstop against false positives.
+        if !hangingAdmitsSince.isEmpty {
+            hangingAdmitsSince.removeFirst()
         }
     }
 
@@ -136,11 +147,12 @@ struct WedgeMonitor {
         return Self.seconds(now - at)
     }
 
-    /// Duration (s) of the current zero-first-token admit streak; 0 if not in
-    /// one. Climbs on a "born broken" box that never produced a first token.
+    /// Duration (s) the OLDEST still-hanging admit has waited with no first token;
+    /// 0 if nothing is hanging. Climbs on a "born broken" box that never produced
+    /// a first token.
     func dryStreakSeconds(now: ContinuousClock.Instant) -> Double {
-        guard let at = dryStreakStartedAt else { return 0 }
-        return Self.seconds(now - at)
+        guard let oldest = hangingAdmitsSince.first else { return 0 }
+        return Self.seconds(now - oldest)
     }
 
     /// The Part C primitive — the full three-part wedge signature:

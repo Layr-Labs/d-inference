@@ -4,7 +4,7 @@ import type { NextConfig } from "next";
 // - 'unsafe-inline' for style-src: required by Next.js for injected styles.
 // - 'unsafe-inline' + 'unsafe-eval' for script-src: required by Privy SDK
 //   and Next.js dev mode. Tighten to nonce-based CSP when feasible.
-// - connect-src: coordinator API, Privy auth, Google Analytics, Stripe.
+// - connect-src: coordinator API, Privy auth, WalletConnect (Privy wallet login), Google Analytics, Stripe.
 // - frame-src: Privy auth iframes, Stripe Checkout iframes.
 const cspDirectives = [
   "default-src 'self'",
@@ -12,7 +12,7 @@ const cspDirectives = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  "connect-src 'self' https://api.darkbloom.dev https://*.privy.io wss://*.privy.io https://www.google-analytics.com https://api.stripe.com",
+  "connect-src 'self' https://api.darkbloom.dev https://*.privy.io wss://*.privy.io https://www.google-analytics.com https://api.stripe.com https://*.walletconnect.com wss://*.walletconnect.com https://*.walletconnect.org wss://*.walletconnect.org",
   "frame-src https://auth.privy.io https://js.stripe.com",
   "frame-ancestors 'none'",
   "base-uri 'self'",

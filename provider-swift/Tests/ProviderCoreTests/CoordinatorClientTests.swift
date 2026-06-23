@@ -346,6 +346,14 @@ import Testing
     }
     #expect(status.verified == false)
     #expect(status.mismatches.first?.component == "runtime")
+
+    let controlSocket = try CoordinatorClientCodec.decodeIncomingMessage(
+        from: #"{"type":"control_socket","url":"wss://api.darkbloom.dev/ws/provider/control?provider_id=p1&token=t1","expires_at":"2026-06-23T19:45:00Z"}"#
+    )
+    #expect(controlSocket == .controlSocket(CoordinatorMessage.ControlSocket(
+        url: "wss://api.darkbloom.dev/ws/provider/control?provider_id=p1&token=t1",
+        expiresAt: "2026-06-23T19:45:00Z"
+    )))
 }
 
 @Test func exponentialBackoffDoublesWithJitterUntilMaximumAndResets() {

@@ -639,6 +639,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
     case cancel(Cancel)
     case attestationChallenge(AttestationChallenge)
     case runtimeStatus(RuntimeStatus)
+    case controlSocket(ControlSocket)
     case loadModel(LoadModel)
     case prefetchModel(PrefetchModel)
     case desiredModels(DesiredModels)
@@ -676,6 +677,16 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public init(verified: Bool, mismatches: [RuntimeMismatch] = []) {
             self.verified = verified
             self.mismatches = mismatches
+        }
+    }
+
+    /// Coordinator invite to attach a second WebSocket for control traffic.
+    public struct ControlSocket: Sendable, Equatable {
+        public var url: String
+        public var expiresAt: String?
+        public init(url: String, expiresAt: String? = nil) {
+            self.url = url
+            self.expiresAt = expiresAt
         }
     }
 
@@ -753,6 +764,7 @@ extension CoordinatorMessage: Codable {
         case cancel
         case attestationChallenge = "attestation_challenge"
         case runtimeStatus = "runtime_status"
+        case controlSocket = "control_socket"
         case loadModel = "load_model"
         case prefetchModel = "prefetch_model"
         case desiredModels = "desired_models"
@@ -766,6 +778,8 @@ extension CoordinatorMessage: Codable {
         case encryptedBody = "encrypted_body"
         case nonce, timestamp
         case verified, mismatches
+        case url
+        case expiresAt = "expires_at"
         case modelId = "model_id"
         case priority
         case trustLevel = "trust_level"
@@ -798,6 +812,11 @@ extension CoordinatorMessage: Codable {
             if !s.mismatches.isEmpty {
                 try container.encode(s.mismatches, forKey: .mismatches)
             }
+
+        case .controlSocket(let c):
+            try container.encode(TypeValue.controlSocket, forKey: .type)
+            try container.encode(c.url, forKey: .url)
+            try container.encodeIfPresent(c.expiresAt, forKey: .expiresAt)
 
         case .loadModel(let l):
             try container.encode(TypeValue.loadModel, forKey: .type)
@@ -852,6 +871,12 @@ extension CoordinatorMessage: Codable {
             self = .runtimeStatus(RuntimeStatus(
                 verified: try container.decode(Bool.self, forKey: .verified),
                 mismatches: try container.decodeIfPresent([RuntimeMismatch].self, forKey: .mismatches) ?? []
+            ))
+
+        case .controlSocket:
+            self = .controlSocket(ControlSocket(
+                url: try container.decode(String.self, forKey: .url),
+                expiresAt: try container.decodeIfPresent(String.self, forKey: .expiresAt)
             ))
 
         case .loadModel:

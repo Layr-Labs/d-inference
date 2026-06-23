@@ -31,6 +31,7 @@ import (
 	"errors"
 
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -69,7 +70,15 @@ const (
 	// back. Must be > MaxFailedChallenges so a brief blip (sleep/network) still
 	// self-recovers without a disconnect.
 	MaxConsecutiveChallengeTimeoutsBeforeReconnect = 6
+
+	providerControlAttachTokenTTL      = 2 * time.Minute
+	minProviderVersionForControlSocket = "0.6.18"
 )
+
+type providerControlToken struct {
+	ProviderID string
+	ExpiresAt  time.Time
+}
 
 // pendingChallenge tracks an outstanding challenge sent to a provider.
 type pendingChallenge struct {
@@ -130,6 +139,153 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 
 	// Run the read loop; on return the provider is disconnected.
 	s.providerReadLoop(r.Context(), conn, providerID, acmeResult, r)
+}
+
+func (s *Server) issueProviderControlToken(providerID string) (token string, expiresAt time.Time, err error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", time.Time{}, err
+	}
+	token = base64.RawURLEncoding.EncodeToString(raw[:])
+	expiresAt = time.Now().Add(providerControlAttachTokenTTL)
+	s.providerControlMu.Lock()
+	if s.providerControlTokens == nil {
+		s.providerControlTokens = make(map[string]providerControlToken)
+	}
+	s.pruneProviderControlTokensLocked(time.Now())
+	s.providerControlTokens[token] = providerControlToken{ProviderID: providerID, ExpiresAt: expiresAt}
+	s.providerControlMu.Unlock()
+	return token, expiresAt, nil
+}
+
+func (s *Server) pruneProviderControlTokensLocked(now time.Time) {
+	for token, entry := range s.providerControlTokens {
+		if !now.Before(entry.ExpiresAt) {
+			delete(s.providerControlTokens, token)
+		}
+	}
+}
+
+func (s *Server) revokeProviderControlToken(token string) {
+	if token == "" {
+		return
+	}
+	s.providerControlMu.Lock()
+	delete(s.providerControlTokens, token)
+	s.providerControlMu.Unlock()
+}
+
+func (s *Server) consumeProviderControlToken(providerID, token string) bool {
+	if providerID == "" || token == "" {
+		return false
+	}
+	now := time.Now()
+	s.providerControlMu.Lock()
+	defer s.providerControlMu.Unlock()
+	s.pruneProviderControlTokensLocked(now)
+	entry, ok := s.providerControlTokens[token]
+	if !ok {
+		return false
+	}
+	delete(s.providerControlTokens, token)
+	return entry.ProviderID == providerID && now.Before(entry.ExpiresAt)
+}
+
+func (s *Server) providerControlURL(r *http.Request, providerID, token string) string {
+	base := s.resolveBaseURL(r)
+	u, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	switch u.Scheme {
+	case "https":
+		u.Scheme = "wss"
+	case "http":
+		u.Scheme = "ws"
+	case "wss", "ws":
+	default:
+		return ""
+	}
+	u.Path = "/ws/provider/control"
+	q := u.Query()
+	q.Set("provider_id", providerID)
+	q.Set("token", token)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func (s *Server) sendProviderControlInvite(r *http.Request, provider *registry.Provider) {
+	if provider == nil {
+		return
+	}
+	if provider.Version == "" || semverLess(provider.Version, minProviderVersionForControlSocket) {
+		return
+	}
+	token, expiresAt, err := s.issueProviderControlToken(provider.ID)
+	if err != nil {
+		s.logger.Warn("failed to issue provider control token", "provider_id", provider.ID, "error", err)
+		return
+	}
+	controlURL := s.providerControlURL(r, provider.ID, token)
+	if controlURL == "" {
+		s.revokeProviderControlToken(token)
+		s.logger.Warn("failed to build provider control websocket URL", "provider_id", provider.ID)
+		return
+	}
+	msg := protocol.ControlSocketMessage{
+		Type:      protocol.TypeControlSocket,
+		URL:       controlURL,
+		ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		s.revokeProviderControlToken(token)
+		s.logger.Warn("failed to marshal provider control invite", "provider_id", provider.ID, "error", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if err := provider.EnqueueText(ctx, data); err != nil {
+		s.revokeProviderControlToken(token)
+		s.logger.Debug("failed to queue provider control invite", "provider_id", provider.ID, "error", err)
+	}
+}
+
+func (s *Server) handleProviderControlWS(w http.ResponseWriter, r *http.Request) {
+	providerID := r.URL.Query().Get("provider_id")
+	token := r.URL.Query().Get("token")
+	if !s.consumeProviderControlToken(providerID, token) {
+		http.Error(w, "invalid provider control token", http.StatusUnauthorized)
+		return
+	}
+	provider := s.registry.GetProvider(providerID)
+	if provider == nil {
+		http.Error(w, "provider not found", http.StatusNotFound)
+		return
+	}
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+	if err != nil {
+		s.logger.Error("provider control websocket accept failed", "provider_id", providerID, "error", err)
+		return
+	}
+	conn.SetReadLimit(64 * 1024)
+	if err := provider.AttachControlConn(conn); err != nil {
+		_ = conn.Close(websocket.StatusInternalError, "control attach failed")
+		s.logger.Warn("failed to attach provider control websocket", "provider_id", providerID, "error", err)
+		return
+	}
+	s.logger.Info("provider control websocket attached", "provider_id", providerID, "remote", r.RemoteAddr)
+	defer func() {
+		provider.ClearControlConn(conn)
+		_ = conn.Close(websocket.StatusNormalClosure, "goodbye")
+		s.logger.Info("provider control websocket detached", "provider_id", providerID)
+	}()
+
+	for {
+		if _, _, err := conn.Read(r.Context()); err != nil {
+			return
+		}
+	}
 }
 
 // providerReadLoop reads messages from the provider WebSocket and dispatches
@@ -250,6 +406,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				provider.Version = regMsg.Version
 				provider.Mu().Unlock()
 			}
+			s.sendProviderControlInvite(r, provider)
 
 			// Verify runtime integrity against the known-good manifest. Swift
 			// providers omit Python/vllm hashes, but they still report external

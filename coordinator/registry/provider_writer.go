@@ -300,12 +300,19 @@ func (p *Provider) WriteControlText(ctx context.Context, data []byte) error {
 		return errors.New("provider is nil")
 	}
 	p.mu.Lock()
-	w := p.writer
+	controlWriter := p.controlWriter
+	dataWriter := p.writer
 	p.mu.Unlock()
-	if w == nil {
-		return errProviderWriterStopped
+	if controlWriter == nil {
+		if dataWriter == nil {
+			return errProviderWriterStopped
+		}
+		return dataWriter.writeControl(ctx, data)
 	}
-	return w.writeControl(ctx, data)
+	if err := controlWriter.writeControl(ctx, data); err == nil || dataWriter == nil || dataWriter == controlWriter {
+		return err
+	}
+	return dataWriter.writeControl(ctx, data)
 }
 
 // EnqueueText queues a text WebSocket frame without waiting for write
@@ -317,12 +324,61 @@ func (p *Provider) EnqueueText(ctx context.Context, data []byte) error {
 		return errors.New("provider is nil")
 	}
 	p.mu.Lock()
-	w := p.writer
+	controlWriter := p.controlWriter
+	dataWriter := p.writer
 	p.mu.Unlock()
-	if w == nil {
-		return errProviderWriterStopped
+	if controlWriter == nil {
+		if dataWriter == nil {
+			return errProviderWriterStopped
+		}
+		return dataWriter.enqueue(ctx, data)
 	}
-	return w.enqueue(ctx, data)
+	if err := controlWriter.enqueue(ctx, data); err == nil || dataWriter == nil || dataWriter == controlWriter {
+		return err
+	}
+	return dataWriter.enqueue(ctx, data)
+}
+
+// AttachControlConn installs a dedicated control WebSocket writer. It replaces
+// any older control socket but leaves the primary data socket untouched.
+func (p *Provider) AttachControlConn(conn *websocket.Conn) error {
+	if p == nil {
+		return errors.New("provider is nil")
+	}
+	if conn == nil {
+		return errors.New("control websocket is nil")
+	}
+	w := newProviderWriter(conn)
+	p.mu.Lock()
+	old := p.controlWriter
+	p.controlConn = conn
+	p.controlWriter = w
+	p.mu.Unlock()
+	if old != nil {
+		old.closeNow()
+	}
+	return nil
+}
+
+// ClearControlConn removes the dedicated control writer only if it still points
+// at conn. This prevents an old control socket's read-loop cleanup from closing a
+// newer replacement socket.
+func (p *Provider) ClearControlConn(conn *websocket.Conn) {
+	if p == nil || conn == nil {
+		return
+	}
+	p.mu.Lock()
+	if p.controlConn != conn {
+		p.mu.Unlock()
+		return
+	}
+	w := p.controlWriter
+	p.controlConn = nil
+	p.controlWriter = nil
+	p.mu.Unlock()
+	if w != nil {
+		w.closeNow()
+	}
 }
 
 func (p *Provider) closeWriterNow() {
@@ -331,9 +387,15 @@ func (p *Provider) closeWriterNow() {
 	}
 	p.mu.Lock()
 	w := p.writer
+	cw := p.controlWriter
 	p.writer = nil
+	p.controlWriter = nil
+	p.controlConn = nil
 	p.mu.Unlock()
 	if w != nil {
 		w.closeNow()
+	}
+	if cw != nil {
+		cw.closeNow()
 	}
 }

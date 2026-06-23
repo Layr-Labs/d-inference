@@ -49,6 +49,7 @@ const (
 	TypeCancel               = "cancel"
 	TypeAttestationChallenge = "attestation_challenge"
 	TypeRuntimeStatus        = "runtime_status"
+	TypeControlSocket        = "control_socket"
 	TypeLoadModel            = "load_model"
 	TypePrefetchModel        = "prefetch_model"
 	TypeDesiredModels        = "desired_models"
@@ -358,6 +359,15 @@ type EncryptedPayload struct {
 type CancelMessage struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`
+}
+
+// ControlSocketMessage invites a provider to attach a second WebSocket used for
+// coordinator→provider control frames. The primary socket remains the data
+// channel and is still the fallback for providers that ignore this message.
+type ControlSocketMessage struct {
+	Type      string `json:"type"`
+	URL       string `json:"url"`
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 // LoadModelMessage instructs a provider to eagerly load (and pin in

@@ -143,7 +143,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // 0.6.0 is the APNs code-identity / VLM-routing / graceful-update release.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.6.11"
+var LatestProviderVersion = "0.6.18"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -345,6 +345,9 @@ type Server struct {
 	// successful upgrade or disconnect.
 	pendingACMEMu sync.Mutex
 	pendingACME   map[string]*ACMEVerificationResult
+
+	providerControlMu     sync.Mutex
+	providerControlTokens map[string]providerControlToken
 
 	// apiKeyCache memoizes ValidateKeyFull results so repeated requests
 	// with the same API key skip the DB round trip. Entries expire after
@@ -670,24 +673,25 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	reg.SetStore(st)
 
 	s := &Server{
-		registry:             reg,
-		store:                st,
-		ledger:               payments.NewLedger(st),
-		logger:               logger,
-		mux:                  http.NewServeMux(),
-		knownRuntimeManifest: &RuntimeManifest{},
-		metrics:              NewMetrics(),
-		telemetryLimiter:     newTelemetryLimiter(),
-		readCache:            newTTLCache(),
-		geoResolver:          newProviderGeoResolverFromEnv(logger),
-		apiKeyCache:          make(map[string]apiKeyCacheEntry),
-		pendingACME:          make(map[string]*ACMEVerificationResult),
-		codeAttestThrottle:   newCodeAttestThrottle(),
-		trustReuseCache:      newTrustReuseCache(),
-		settlements:          newSettlementHolder(),
-		zombieCanceller:      newZombieStreamCanceller(),
-		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
-		routeTelemetry:       newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
+		registry:              reg,
+		store:                 st,
+		ledger:                payments.NewLedger(st),
+		logger:                logger,
+		mux:                   http.NewServeMux(),
+		knownRuntimeManifest:  &RuntimeManifest{},
+		metrics:               NewMetrics(),
+		telemetryLimiter:      newTelemetryLimiter(),
+		readCache:             newTTLCache(),
+		geoResolver:           newProviderGeoResolverFromEnv(logger),
+		apiKeyCache:           make(map[string]apiKeyCacheEntry),
+		pendingACME:           make(map[string]*ACMEVerificationResult),
+		providerControlTokens: make(map[string]providerControlToken),
+		codeAttestThrottle:    newCodeAttestThrottle(),
+		trustReuseCache:       newTrustReuseCache(),
+		settlements:           newSettlementHolder(),
+		zombieCanceller:       newZombieStreamCanceller(),
+		serviceReservations:   newServiceReservationManager(st, cfg.ServiceReservations),
+		routeTelemetry:        newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 	}
 	s.registerDefaultGauges()
 	s.routes()
@@ -1646,6 +1650,7 @@ func (s *Server) routes() {
 
 	// Provider WebSocket — no API key auth (providers authenticate differently).
 	s.mux.HandleFunc("GET /ws/provider", s.handleProviderWS)
+	s.mux.HandleFunc("GET /ws/provider/control", s.handleProviderControlWS)
 
 	// Key management — requires interactive Privy session (API keys rejected
 	// to prevent self-replication from a leaked key).

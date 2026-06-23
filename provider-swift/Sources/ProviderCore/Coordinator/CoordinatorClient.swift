@@ -527,6 +527,8 @@ public actor CoordinatorClient {
     private let outboundRouter = OutboundRouter()
 
     private var webSocketTask: URLSessionWebSocketTask?
+    private var controlWebSocketTask: URLSessionWebSocketTask?
+    private var controlReceiveTask: Task<Void, Never>?
     private var urlSession: URLSession?
     /// Device token that arrived after the initial registration (APNs slow at
     /// startup). Once set, every (re)registration carries it. See refreshAPNsToken.
@@ -637,6 +639,7 @@ public actor CoordinatorClient {
     public func shutdown() {
         shutdownRequested = true
         webSocketTask?.cancel(with: .goingAway, reason: nil)
+        closeControlSocket()
         eventContinuation?.finish()
         outboundRouter.finish()
     }
@@ -715,6 +718,7 @@ public actor CoordinatorClient {
         Self.applyInboundMessageLimit(to: ws)
         self.webSocketTask = ws
         ws.resume()
+        defer { closeControlSocket() }
 
         try await sendRegistration(ws: ws)
         logger.info("Sent registration to coordinator")
@@ -844,6 +848,51 @@ public actor CoordinatorClient {
         }
     }
 
+    private func connectControlSocket(urlString: String) {
+        guard let url = URL(string: urlString) else {
+            logger.warning("Ignoring invalid coordinator control socket URL")
+            return
+        }
+        guard let session = urlSession else {
+            logger.warning("Ignoring control socket invite before primary URLSession is ready")
+            return
+        }
+
+        closeControlSocket()
+
+        let ws = session.webSocketTask(with: url)
+        Self.applyInboundMessageLimit(to: ws)
+        controlWebSocketTask = ws
+        ws.resume()
+
+        controlReceiveTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.receiveLoop(ws: ws)
+            } catch {
+                await self.controlSocketClosed(ws: ws, error: error)
+            }
+        }
+        logger.info("Attached coordinator control websocket")
+    }
+
+    private func controlSocketClosed(ws: URLSessionWebSocketTask, error: Error) {
+        if controlWebSocketTask === ws {
+            controlWebSocketTask = nil
+            controlReceiveTask = nil
+        }
+        if !shutdownRequested {
+            logger.info("Coordinator control websocket closed: \(error.localizedDescription)")
+        }
+    }
+
+    private func closeControlSocket() {
+        controlReceiveTask?.cancel()
+        controlReceiveTask = nil
+        controlWebSocketTask?.cancel(with: .goingAway, reason: nil)
+        controlWebSocketTask = nil
+    }
+
     private func handleIncomingText(_ text: String, ws: URLSessionWebSocketTask) async {
         guard let data = text.data(using: .utf8) else { return }
 
@@ -925,6 +974,10 @@ public actor CoordinatorClient {
                 }
                 eventContinuation?.yield(.runtimeOutdated(mismatches: status.mismatches))
             }
+
+        case .controlSocket(let control):
+            logger.info("Received coordinator control websocket invite")
+            connectControlSocket(urlString: control.url)
 
         case .loadModel(let load):
             logger.info("Received coordinator-driven preload for: \(load.modelId)")

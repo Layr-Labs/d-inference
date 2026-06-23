@@ -174,6 +174,85 @@ func TestProviderControlEnqueueBypassesFullDataQueue(t *testing.T) {
 	}
 }
 
+func TestProviderControlWriterUsesAttachedControlSocket(t *testing.T) {
+	dataServerConn, dataClientConn := testWebSocketPair(t)
+	controlServerConn, controlClientConn := testWebSocketPair(t)
+	p := &Provider{Conn: dataServerConn, writer: newProviderWriter(dataServerConn)}
+	t.Cleanup(p.closeWriterNow)
+	if err := p.AttachControlConn(controlServerConn); err != nil {
+		t.Fatalf("AttachControlConn: %v", err)
+	}
+
+	if err := p.WriteControlText(context.Background(), []byte(`{"type":"cancel","request_id":"r1"}`)); err != nil {
+		t.Fatalf("WriteControlText: %v", err)
+	}
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRead()
+	_, data, err := controlClientConn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("control client read: %v", err)
+	}
+	if string(data) != `{"type":"cancel","request_id":"r1"}` {
+		t.Fatalf("control data = %s", data)
+	}
+
+	// The primary data socket must remain available for inference frames.
+	if err := p.WriteText(context.Background(), []byte(`{"type":"inference_request","request_id":"r2"}`)); err != nil {
+		t.Fatalf("WriteText: %v", err)
+	}
+	readCtx2, cancelRead2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRead2()
+	_, data, err = dataClientConn.Read(readCtx2)
+	if err != nil {
+		t.Fatalf("data client read: %v", err)
+	}
+	if string(data) != `{"type":"inference_request","request_id":"r2"}` {
+		t.Fatalf("data frame = %s", data)
+	}
+
+	p.ClearControlConn(controlServerConn)
+	if err := p.WriteControlText(context.Background(), []byte(`{"type":"cancel","request_id":"r3"}`)); err != nil {
+		t.Fatalf("WriteControlText after ClearControlConn: %v", err)
+	}
+	readCtx3, cancelRead3 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRead3()
+	_, data, err = dataClientConn.Read(readCtx3)
+	if err != nil {
+		t.Fatalf("data client fallback read: %v", err)
+	}
+	if string(data) != `{"type":"cancel","request_id":"r3"}` {
+		t.Fatalf("fallback control frame = %s", data)
+	}
+}
+
+func TestProviderControlWriterFallsBackWhenControlWriterStopped(t *testing.T) {
+	dataServerConn, dataClientConn := testWebSocketPair(t)
+	controlServerConn, _ := testWebSocketPair(t)
+	p := &Provider{Conn: dataServerConn, writer: newProviderWriter(dataServerConn)}
+	t.Cleanup(p.closeWriterNow)
+	if err := p.AttachControlConn(controlServerConn); err != nil {
+		t.Fatalf("AttachControlConn: %v", err)
+	}
+
+	p.mu.Lock()
+	staleControlWriter := p.controlWriter
+	p.mu.Unlock()
+	staleControlWriter.closeNow()
+
+	if err := p.WriteControlText(context.Background(), []byte(`{"type":"cancel","request_id":"stale"}`)); err != nil {
+		t.Fatalf("WriteControlText with stale control writer: %v", err)
+	}
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRead()
+	_, data, err := dataClientConn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("data client fallback read: %v", err)
+	}
+	if string(data) != `{"type":"cancel","request_id":"stale"}` {
+		t.Fatalf("stale fallback control frame = %s", data)
+	}
+}
+
 func TestSendModelLoadActionsClearsPendingWhenWriterQueueFull(t *testing.T) {
 	r := New(testLogger())
 	p := &Provider{

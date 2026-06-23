@@ -355,6 +355,8 @@ type Provider struct {
 	Status           ProviderStatus
 	Conn             *websocket.Conn
 	writer           *providerWriter
+	controlConn      *websocket.Conn
+	controlWriter    *providerWriter
 	LastHeartbeat    time.Time
 	Stats            protocol.HeartbeatStats // lifetime counters shown to users
 	lastSessionStats protocol.HeartbeatStats // raw counters from the current provider process

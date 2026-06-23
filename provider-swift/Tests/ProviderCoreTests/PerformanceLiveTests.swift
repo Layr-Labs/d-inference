@@ -589,13 +589,20 @@ struct PerformanceLiveTests {
                     var start = ContinuousClock.now
                     var produced = 0
                     for await output in engine.core.streamOutputs(requestId: id) {
-                        if !sawFirst {
-                            // Start the clock after the first token to
-                            // discount prefill.
-                            sawFirst = true
-                            start = ContinuousClock.now
-                        } else {
-                            produced += output.newTokenIds.count
+                        // Gate on a REAL token: the engine now emits a token-less
+                        // prefill-start marker as the FIRST output (at admit), so
+                        // starting the clock on the first output would include
+                        // prefill. Skipping empty-token outputs discounts prefill as
+                        // intended (matches the bridge in BatchScheduler+EngineBridge).
+                        if !output.newTokenIds.isEmpty {
+                            if !sawFirst {
+                                // Start the clock after the first token to
+                                // discount prefill.
+                                sawFirst = true
+                                start = ContinuousClock.now
+                            } else {
+                                produced += output.newTokenIds.count
+                            }
                         }
                         if output.finished || output.error != nil { break }
                     }

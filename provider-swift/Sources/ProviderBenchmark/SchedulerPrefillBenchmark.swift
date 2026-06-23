@@ -238,6 +238,14 @@ public enum SchedulerPrefillBenchmark {
         var firstOutput: Duration?
         var errorMessage: String?
         for await output in engine.core.streamOutputs(requestId: requestID) {
+            // Skip the token-less prefill-start admission marker (emitted at admit,
+            // BEFORE prefill). Timing TTFT to it would report ~admit latency, not the
+            // prefill+first-token time this benchmark measures. A terminal output or
+            // a real token is NOT skipped, so a maxTokens==1 request still measures
+            // to the finish (matches the bridge skip in BatchScheduler+EngineBridge).
+            let isPrefillStartMarker = output.newTokenIds.isEmpty
+                && !output.finished && output.error == nil
+            if isPrefillStartMarker { continue }
             if firstOutput == nil {
                 firstOutput = ContinuousClock.now - started
             }

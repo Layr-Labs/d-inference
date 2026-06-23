@@ -164,3 +164,35 @@ func TestClampBackendCapacityPrefillOverflowIgnored(t *testing.T) {
 		t.Errorf("plausible ObservedPrefillTPS = %v, want 1600 (unchanged)", bc.Slots[3].ObservedPrefillTPS)
 	}
 }
+
+func TestClampBackendCapacityPrefillFastColdBandKept(t *testing.T) {
+	// The ceiling was raised to align with the provider's accepted prefill bound
+	// (maxPlausiblePrefillTps = 20000 tok/s) so a legitimately fast COLD prefill —
+	// measured p90 ~17,707 tok/s — is REPORTED and USED for TTFT instead of being
+	// zeroed at ingest (which forced the pessimistic decode×ratio fallback and
+	// defeated the whole point of the provider emitting the prefill-start marker).
+	// Values above the ceiling are still treated as no-measurement (0).
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	bc := &protocol.BackendCapacity{
+		Slots: []protocol.BackendSlotCapacity{
+			{Model: "cold-p90", ObservedPrefillTPS: 17707},           // fast cold p90 -> kept
+			{Model: "cold-mid", ObservedPrefillTPS: 6500},            // fast cold band -> kept
+			{Model: "at-ceiling", ObservedPrefillTPS: maxPrefillTPS}, // boundary -> kept
+			{Model: "over", ObservedPrefillTPS: maxPrefillTPS + 1},   // above ceiling -> zeroed
+		},
+	}
+	clampBackendCapacity(logger, "p1", bc)
+
+	if bc.Slots[0].ObservedPrefillTPS != 17707 {
+		t.Errorf("fast cold p90 ObservedPrefillTPS = %v, want 17707 (kept)", bc.Slots[0].ObservedPrefillTPS)
+	}
+	if bc.Slots[1].ObservedPrefillTPS != 6500 {
+		t.Errorf("fast cold ObservedPrefillTPS = %v, want 6500 (kept)", bc.Slots[1].ObservedPrefillTPS)
+	}
+	if bc.Slots[2].ObservedPrefillTPS != maxPrefillTPS {
+		t.Errorf("boundary ObservedPrefillTPS = %v, want %v (kept)", bc.Slots[2].ObservedPrefillTPS, maxPrefillTPS)
+	}
+	if bc.Slots[3].ObservedPrefillTPS != 0 {
+		t.Errorf("above-ceiling ObservedPrefillTPS = %v, want 0 (zeroed)", bc.Slots[3].ObservedPrefillTPS)
+	}
+}

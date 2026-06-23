@@ -261,11 +261,18 @@ public enum ThroughputSweep {
                     var start = ContinuousClock.now
                     var produced = 0
                     for await output in engine.core.streamOutputs(requestId: id) {
-                        if !sawFirst {
-                            sawFirst = true
-                            start = ContinuousClock.now
-                        } else {
-                            produced += output.newTokenIds.count
+                        // The engine emits a token-less prefill-start marker as the
+                        // FIRST output (at admit, before prefill). Gate the decode
+                        // clock on a REAL token so throughput excludes prefill and
+                        // never starts on the marker (matches the bridge skip in
+                        // BatchScheduler+EngineBridge.swift).
+                        if !output.newTokenIds.isEmpty {
+                            if !sawFirst {
+                                sawFirst = true
+                                start = ContinuousClock.now
+                            } else {
+                                produced += output.newTokenIds.count
+                            }
                         }
                         if output.finished || output.error != nil { break }
                     }

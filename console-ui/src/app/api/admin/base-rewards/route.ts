@@ -1,25 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const DEFAULT_COORD = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
+import { coordinatorUrl, privyAuth, missingPrivyToken } from "@/lib/server/coordinator";
 
 // Proxy for the admin-only base-rewards status endpoint. Forwards the caller's
 // Privy bearer token (or the privy-token cookie) to the coordinator, which does
 // the actual admin authorization. Read-only.
 export async function GET(req: NextRequest) {
-  const coordUrl = DEFAULT_COORD;
+  const authHeader = privyAuth(req);
+  if (!authHeader) return missingPrivyToken();
 
-  let authHeader = req.headers.get("authorization") || "";
-  if (!authHeader) {
-    const privyToken = req.cookies.get("privy-token")?.value;
-    if (privyToken) {
-      authHeader = `Bearer ${privyToken}`;
-    }
-  }
-  if (!authHeader) {
-    return NextResponse.json({ error: "missing privy token" }, { status: 401 });
-  }
-
-  const res = await fetch(`${coordUrl}/v1/admin/base-rewards`, {
+  const res = await fetch(`${coordinatorUrl()}/v1/admin/base-rewards`, {
     headers: { Authorization: authHeader },
     cache: "no-store",
   });

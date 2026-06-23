@@ -19,6 +19,8 @@ import { API_KEY_STORAGE, CONSOLE_KEY_ID_STORAGE } from "./constants";
 
 export interface UseApiKeys {
   authenticated: boolean;
+  /** Privy auth readiness; false while the SDK lazy-loads (login is a no-op). */
+  ready: boolean;
   login: () => void;
   keys: ApiKey[];
   models: string[];
@@ -45,7 +47,7 @@ export interface UseApiKeys {
 // useApiKeys owns all server interaction and the console-key localStorage
 // bookkeeping. UI/modal state lives in the component that consumes it.
 export function useApiKeys({ onConsoleKeyChange }: { onConsoleKeyChange?: (key: string) => void }): UseApiKeys {
-  const { authenticated, login, getAccessToken } = useAuth();
+  const { ready, authenticated, login, getAccessToken } = useAuth();
   const addToast = useToastStore((s) => s.addToast);
 
   const [keys, setKeys] = useState<ApiKey[]>([]);
@@ -260,6 +262,7 @@ export function useApiKeys({ onConsoleKeyChange }: { onConsoleKeyChange?: (key: 
 
   return {
     authenticated,
+    ready,
     login,
     keys,
     models,

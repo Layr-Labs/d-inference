@@ -30,6 +30,11 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   allowedDevOrigins: ["127.0.0.1"],
+  // Tree-shake barrel imports for icon-heavy packages so only the icons we use
+  // ship (perf F14). lucide-react is imported at ~47 sites across the app.
+  experimental: {
+    optimizePackageImports: ["lucide-react"],
+  },
   typescript: {
     // @noble/curves >=1.9 ships raw .ts files with .ts import extensions,
     // which fails Next.js type-checking even with skipLibCheck: true.

@@ -11,7 +11,9 @@
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "bundle:check": "node scripts/analyze-bundle.mjs --budget",
+    "bundle:budget": "next build && node scripts/analyze-bundle.mjs --budget"
   },
   "dependencies": {
     "@datadog/browser-rum": "^6.32.0",

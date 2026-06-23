@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useVisiblePolling } from "@/hooks/useVisiblePolling";
 import {
   Activity,
   BarChart3,
@@ -35,10 +36,11 @@ import {
   type CatalogDataSummary,
   type CatalogModelSummary,
 } from "@/lib/stats-model-filter";
-import {
-  verifyCertificateChain,
-  type CertVerificationResult,
-  type VerificationStep,
+// Type-only import keeps pkijs/asn1js (~76 KB gz) out of First Load; the
+// verifier is dynamically imported where it's used (perf F4).
+import type {
+  CertVerificationResult,
+  VerificationStep,
 } from "@/lib/cert-verify";
 import { formatPower } from "@/lib/format-power";
 import { activeNetworkPowerWatts } from "@/lib/network-power";
@@ -2855,6 +2857,7 @@ function NetworkNodes({ providers }: { providers: ProviderStats[] }) {
         return;
       }
 
+      const { verifyCertificateChain } = await import("@/lib/cert-verify");
       const result = await verifyCertificateChain(certs, (steps) => {
         setVerifySteps(steps);
       });
@@ -3045,11 +3048,22 @@ export default function StatsPage() {
     }
   };
 
-  useEffect(() => {
-    fetchStats();
-    const interval = setInterval(fetchStats, 10_000);
-    return () => clearInterval(interval);
-  }, []);
+  // Poll only while the tab is visible; pause in the background (perf F6).
+  // Cadence raised 10s -> 15s to cut active request volume.
+  useVisiblePolling(fetchStats, 15_000);
+
+  // Memoize the per-poll aggregation so it doesn't recompute on unrelated
+  // re-renders (perf F10): buildModelInventory iterates providers x aliases and
+  // activeNetworkPowerWatts iterates providers. Declared above the early returns
+  // to keep hook order stable.
+  const visibleModelCount = useMemo(
+    () => (stats ? buildModelInventory(stats, catalogData?.aliases ?? []).length : 0),
+    [stats, catalogData],
+  );
+  const networkPowerWatts = useMemo(
+    () => (stats ? activeNetworkPowerWatts(stats) : 0),
+    [stats],
+  );
 
   if (loading) {
     return (
@@ -3080,8 +3094,6 @@ export default function StatsPage() {
   }
 
   const hardwareAttested = stats.providers.filter((p) => p.trust_level === "hardware").length;
-  const visibleModelCount = buildModelInventory(stats, catalogData?.aliases ?? []).length;
-  const networkPowerWatts = activeNetworkPowerWatts(stats);
   const nu = stats.network_utilization;
   const utilizationSub =
     nu && nu.bottleneck_model && (nu.bottleneck_utilization ?? 0) > (nu.utilization ?? 0)

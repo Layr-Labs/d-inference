@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuthContext } from "@/components/providers/PrivyClientProvider";
 import { trackEvent } from "@/lib/google-analytics";
+import { STORAGE_KEYS } from "@/lib/constants";
 
-const API_KEY_STORAGE = "darkbloom_api_key";
-const OLD_API_KEY_STORAGE = "eigeninference_api_key";
-const COORD_URL_STORAGE = "darkbloom_coordinator_url";
+const API_KEY_STORAGE = STORAGE_KEYS.apiKey;
+const OLD_API_KEY_STORAGE = STORAGE_KEYS.legacyApiKey;
+const COORD_URL_STORAGE = STORAGE_KEYS.coordinatorUrl;
 
 export function useAuth() {
   const { ready, authenticated, user, login, logout: privyLogout, getAccessToken } = useAuthContext();
@@ -17,7 +18,34 @@ export function useAuth() {
 
   const displayName = email || null;
 
-  // Migrate old API key and auto-provision on auth
+  // Single provisioning path: fetch a fresh inference key with the Privy token
+  // and store it. Used by both the mount effect and the key-expired handler so
+  // the sequence lives in one place (proposal F8).
+  const provisionApiKey = useCallback(async () => {
+    const token = await getAccessToken().catch(() => null);
+    if (!token) return;
+    try {
+      const res = await fetch("/api/auth/keys", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const data = await res.json();
+      if (data.api_key) {
+        localStorage.setItem(API_KEY_STORAGE, data.api_key);
+        setApiKeyReady(true);
+      } else {
+        setApiKeyReady(false);
+      }
+    } catch (err) {
+      console.warn("[useAuth] Key provisioning failed:", err);
+      setApiKeyReady(false);
+    }
+  }, [getAccessToken]);
+
+  // Migrate old API key and auto-provision on auth.
   useEffect(() => {
     if (!authenticated || typeof window === "undefined") return;
 
@@ -32,61 +60,19 @@ export function useAuth() {
       return;
     }
 
-    getAccessToken().then((token) => {
-      if (!token) return;
-      fetch("/api/auth/keys", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-      })
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.api_key) {
-            localStorage.setItem(API_KEY_STORAGE, data.api_key);
-            setApiKeyReady(true);
-          } else {
-            console.warn("[useAuth] Key provisioning returned no api_key:", data);
-            setApiKeyReady(false);
-          }
-        })
-        .catch((err) => {
-          console.warn("[useAuth] Key provisioning failed:", err);
-          setApiKeyReady(false);
-        });
-    });
-  }, [authenticated, getAccessToken]);
+    provisionApiKey();
+  }, [authenticated, provisionApiKey]);
 
-  // Re-provision API key when it expires (401 from streamChat)
+  // Re-provision API key when it expires (401 from streamChat).
   useEffect(() => {
     if (!authenticated) return;
     const handleExpired = () => {
       setApiKeyReady(false);
-      getAccessToken().then((token) => {
-        if (!token) return;
-        fetch("/api/auth/keys", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-        })
-          .then((res) => res.json())
-          .then((data) => {
-            if (data.api_key) {
-              localStorage.setItem(API_KEY_STORAGE, data.api_key);
-              setApiKeyReady(true);
-            } else {
-              setApiKeyReady(false);
-            }
-          })
-          .catch(() => setApiKeyReady(false));
-      });
+      provisionApiKey();
     };
     window.addEventListener("darkbloom-key-expired", handleExpired);
     return () => window.removeEventListener("darkbloom-key-expired", handleExpired);
-  }, [authenticated, getAccessToken]);
+  }, [authenticated, provisionApiKey]);
 
   // Reset when logged out
   useEffect(() => {

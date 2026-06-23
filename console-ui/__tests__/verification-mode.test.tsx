@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import {
   VerificationModeProvider,
   useVerificationMode,
-} from "@/lib/verification-mode";
+} from "@/components/providers/verification-mode";
 
 // ---------------------------------------------------------------------------
 // Test component that exposes the hook values

@@ -27,6 +27,15 @@ const eslintConfig = defineConfig([
       "promise/no-return-wrap": "error",
       "promise/always-return": "warn",
 
+      // Guardrails (proposal phase 7): keep a new 3000-line god-file from
+      // landing silently. Warn-level + generous threshold so it flags only the
+      // genuinely oversized files (the remaining stats split + earn JSX) without
+      // churning the rest of the tree. Cognitive-complexity below stays a warn.
+      "max-lines": [
+        "warn",
+        { max: 500, skipBlankLines: true, skipComments: true },
+      ],
+
       // Sonarjs — tune down noisy rules to warnings
       "sonarjs/cognitive-complexity": "warn",
       "sonarjs/no-nested-conditional": "warn",

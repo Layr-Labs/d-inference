@@ -1,7 +1,7 @@
 "use client";
 
-import { createContext, useContext, useState, useEffect, useCallback } from "react";
-import { PrivyProvider, usePrivy } from "@privy-io/react-auth";
+import { createContext, useContext, useState } from "react";
+import dynamic from "next/dynamic";
 
 const PRIVY_APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID || "";
 const IS_PRIVY_CONFIGURED = PRIVY_APP_ID && PRIVY_APP_ID !== "placeholder";
@@ -28,6 +28,8 @@ const MOCK_AUTH: AuthState = {
   getAccessToken: noopToken,
 };
 
+// Pre-hydration / pre-Privy state: render immediately as "not ready yet" and
+// reconcile when the lazy Privy chunk loads (progressive enhancement — perf F2).
 const SSR_AUTH: AuthState = {
   ready: false,
   authenticated: false,
@@ -43,51 +45,20 @@ export function useAuthContext() {
   return useContext(AuthContext);
 }
 
-function PrivyAuthBridge({ children }: { children: React.ReactNode }) {
-  const privy = usePrivy();
+// The Privy SDK is loaded as its own on-demand chunk after first paint (perf
+// F1). ssr:false keeps it out of the server render; children below render
+// synchronously against AuthContext regardless of whether Privy has loaded.
+const PrivyRealProvider = dynamic(() => import("./PrivyRealProvider"), {
+  ssr: false,
+});
 
-  const getAccessToken = useCallback(async () => {
-    return privy.getAccessToken();
-  }, [privy]);
-
-  const value: AuthState = {
-    ready: privy.ready,
-    authenticated: privy.authenticated,
-    user: privy.user,
-    login: privy.login,
-    logout: privy.logout,
-    getAccessToken,
-  };
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-}
-
-function PrivyClientProviderInner({ children }: { children: React.ReactNode }) {
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
-
-  if (!mounted) {
-    return (
-      <AuthContext.Provider value={SSR_AUTH}>
-        {children}
-      </AuthContext.Provider>
-    );
-  }
-
+function PrivyGate({ children }: { children: React.ReactNode }) {
+  const [authState, setAuthState] = useState<AuthState>(SSR_AUTH);
   return (
-    <PrivyProvider
-      appId={PRIVY_APP_ID}
-      config={{
-        loginMethods: ["email"],
-        appearance: {
-          theme: "dark",
-          accentColor: "#6366f1",
-        },
-        embeddedWallets: {},
-      }}
-    >
-      <PrivyAuthBridge>{children}</PrivyAuthBridge>
-    </PrivyProvider>
+    <AuthContext.Provider value={authState}>
+      <PrivyRealProvider appId={PRIVY_APP_ID} onAuthChange={setAuthState} />
+      {children}
+    </AuthContext.Provider>
   );
 }
 
@@ -104,5 +75,5 @@ export function PrivyClientProvider({
     );
   }
 
-  return <PrivyClientProviderInner>{children}</PrivyClientProviderInner>;
+  return <PrivyGate>{children}</PrivyGate>;
 }

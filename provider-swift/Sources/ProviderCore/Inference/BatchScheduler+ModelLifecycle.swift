@@ -41,6 +41,8 @@ extension BatchScheduler {
         // `model_load_time_ms`. Superseded loads return early below and never
         // set `lastModelLoadMs`, so a losing race never reports a bogus time.
         let loadStartedAt = ContinuousClock.now
+        // Engine-health trail: record the load-start milestone (offline debug).
+        emitModelLoadMilestone(operation: "model_load_start", model: modelId)
 
         let snapshot = await Self.snapshotContainer(container)
         // Detect concurrent reload that won the race; bail before we
@@ -215,6 +217,11 @@ extension BatchScheduler {
         let loadMs = Double(loadElapsed.components.seconds) * 1000.0
             + Double(loadElapsed.components.attoseconds) / 1e15
         lastModelLoadMs = Int64(max(0, loadMs.rounded()))
+        // Engine-health trail: record the load-complete milestone + cold-start
+        // duration (offline debug). Only reached on a successful, non-superseded
+        // load (superseded loads return early above).
+        emitModelLoadMilestone(
+            operation: "model_load_complete", model: modelId, durationMs: lastModelLoadMs)
     }
 
     /// Snapshot model bytes + tokenizer + architecture out of the

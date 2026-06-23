@@ -23,7 +23,8 @@ struct Doctor: AsyncParsableCommand {
         await runUpdateBannerIfEnabled()
 
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
-        var checks = buildDoctorChecks(snapshot: snapshot)
+        let bootSecurity = BootSecuritySnapshot.live()
+        var checks = buildDoctorChecks(snapshot: snapshot, bootSecurity: bootSecurity)
         checks.append(contentsOf: await buildCoordinatorDoctorChecks(
             snapshot: snapshot,
             coordinatorOverride: coordinator
@@ -51,6 +52,14 @@ struct Doctor: AsyncParsableCommand {
         print("DETAILED CHECKS")
         for check in checks {
             print("  \(check.status.marker) \(check.name): \(check.detail)")
+        }
+
+        // Show ONE combined, deduped enable guide covering whichever
+        // boot-security protections didn't pass (single shared footer).
+        if let guide = bootSecurityActionGuide(bootSecurity) {
+            print("")
+            print("BOOT SECURITY — ACTION REQUIRED")
+            print(guide)
         }
         if support {
             print("")
@@ -87,15 +96,49 @@ enum CheckStatus: Equatable {
         case .fail: return "[FAIL]"
         }
     }
+
+    init(_ verdict: BootSecurityVerdict) {
+        switch verdict {
+        case .pass: self = .pass
+        case .warn: self = .warn
+        case .fail: self = .fail
+        }
+    }
 }
 
 struct DoctorCheck {
     let name: String
     let status: CheckStatus
     let detail: String
+
+    init(name: String, status: CheckStatus, detail: String) {
+        self.name = name
+        self.status = status
+        self.detail = detail
+    }
 }
 
-func buildDoctorChecks(snapshot: RuntimeSnapshot) -> [DoctorCheck] {
+/// The single combined, deduped boot-security remediation guide for `doctor`,
+/// or `nil` when all protections pass. Reuses
+/// `BootSecurityGuidance.guide(includeMacOS:includeSIP:includeSecureBoot:)` so
+/// there is exactly one guide with one shared verification footer — never
+/// multiple full guides with a doubled footer.
+func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot) -> String? {
+    let macOSFailed = BootSecurityPolicy.macOSVerdict(bootSecurity.macOSMajorVersion) != .pass
+    let sipFailed = BootSecurityPolicy.sipVerdict(bootSecurity.sip) != .pass
+    let secureBootFailed = BootSecurityPolicy.secureBootVerdict(bootSecurity.secureBoot) != .pass
+    guard macOSFailed || sipFailed || secureBootFailed else { return nil }
+    return BootSecurityGuidance.guide(
+        includeMacOS: macOSFailed,
+        includeSIP: sipFailed,
+        includeSecureBoot: secureBootFailed
+    )
+}
+
+func buildDoctorChecks(
+    snapshot: RuntimeSnapshot,
+    bootSecurity: BootSecuritySnapshot = .live()
+) -> [DoctorCheck] {
     var checks: [DoctorCheck] = []
 
     if let hardware = snapshot.hardware {
@@ -156,11 +199,18 @@ func buildDoctorChecks(snapshot: RuntimeSnapshot) -> [DoctorCheck] {
         detail: "\(snapshot.models.count) discovered"
     ))
 
-    let sipEnabled = checkSIPEnabled()
+    let macOSVerdict = BootSecurityPolicy.macOSVerdict(bootSecurity.macOSMajorVersion)
+    checks.append(.init(
+        name: "macos",
+        status: CheckStatus(macOSVerdict),
+        detail: BootSecurityPolicy.macOSSummary(majorVersion: bootSecurity.macOSMajorVersion)
+    ))
+
+    let sipVerdict = BootSecurityPolicy.sipVerdict(bootSecurity.sip)
     checks.append(.init(
         name: "sip",
-        status: sipEnabled ? .pass : .fail,
-        detail: sipEnabled ? "enabled" : "disabled"
+        status: CheckStatus(sipVerdict),
+        detail: bootSecurity.sip.summary
     ))
 
     let rdmaDisabled = checkRDMADisabled()
@@ -170,11 +220,11 @@ func buildDoctorChecks(snapshot: RuntimeSnapshot) -> [DoctorCheck] {
         detail: rdmaDisabled ? "disabled" : "enabled; allowed for RDMA-aware runtimes"
     ))
 
-    let secureBoot = checkSecureBootEnabled()
+    let secureBootVerdict = BootSecurityPolicy.secureBootVerdict(bootSecurity.secureBoot)
     checks.append(.init(
         name: "secure boot",
-        status: secureBoot ? .pass : .warn,
-        detail: secureBoot ? "enabled" : "not confirmed"
+        status: CheckStatus(secureBootVerdict),
+        detail: bootSecurity.secureBoot.summary
     ))
 
     let authenticatedRoot = checkAuthenticatedRootEnabled()

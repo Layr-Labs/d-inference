@@ -12,12 +12,7 @@ extension Start {
     /// Runs critical doctor checks inline before the model picker so users
     /// don't discover problems *after* downloading GBs of weights.
     internal func runPreflightChecks(snapshot: RuntimeSnapshot) throws {
-        let sipEnabled = checkSIPEnabled()
-        if !sipEnabled {
-            printError("System Integrity Protection (SIP) is disabled.")
-            printError("The coordinator will reject this provider. Re-enable SIP and restart.")
-            throw ExitCode.failure
-        }
+        try enforceBootSecurity()
 
         let debuggerAttached = checkDebuggerAttached()
         if debuggerAttached {

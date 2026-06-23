@@ -10,7 +10,9 @@
 ///   - Core dump disabling: RLIMIT_CORE set to 0
 ///   - Environment scrubbing: removes dangerous env vars (DYLD_*, etc.)
 ///   - Anti-debug detection: P_TRACED flag, sysctl kern.proc
-///   - Secure Boot check: Apple Silicon full security mode
+///   - Secure Boot check: `ibridge_secure_boot` via system_profiler
+///     SPiBridgeDataType (authoritative and sudo-free on macOS 26 / Tahoe, the
+///     provider's minimum OS, on both Apple Silicon and Intel T2)
 ///   - Hardened Runtime check: codesign entitlement verification
 ///   - Bundle signature verification: validates .app code signature
 ///   - MDM enrollment detection: MicroMDM profile checks
@@ -67,33 +69,31 @@ public enum SecurityError: Error, CustomStringConvertible, Sendable {
 /// SIP cannot be disabled at runtime -- it requires rebooting into
 /// Recovery Mode. So if this check passes, SIP will remain enabled
 /// for the lifetime of this process.
-public func checkSIPEnabled() -> Bool {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/csrutil")
-    process.arguments = ["status"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    do {
-        try process.run()
-    } catch {
-        logger.error("SIP check: failed to run csrutil: \(error)")
-        return false
-    }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
-    let enabled = output.contains("enabled")
-
-    if enabled {
-        logger.info("SIP check: System Integrity Protection is enabled")
-    } else {
+///
+/// Returns true only when SIP is *fully* enabled. "enabled (Custom
+/// Configuration)" — where one or more protections are individually disabled —
+/// is treated as NOT enabled, since it is an unsupported, partially-protected
+/// state. Detection runs through `SIPStatusChecker`/`SIPStatusParser`, the
+/// single source of truth for parsing `csrutil status`.
+///
+/// This value feeds the SIGNED attestation (`sip_enabled`). The
+/// `SecurityCommandRunner` is injectable so the attestation-feeding path is
+/// unit-testable without depending on the host's SIP configuration.
+public func checkSIPEnabled(runner: SecurityCommandRunner = .live) -> Bool {
+    let status = SIPStatusChecker(runner: runner).status()
+    switch status {
+    case .enabled:
+        logger.info("SIP check: System Integrity Protection is fully enabled")
+    case .enabledWithCustomConfiguration:
+        logger.error("SIP check: System Integrity Protection is only partially enabled (Custom Configuration)")
+    case .disabled:
         logger.error("SIP check: System Integrity Protection is DISABLED")
+    case .unavailable(let reason):
+        logger.error("SIP check: could not determine SIP status: \(reason)")
+    case .unrecognized:
+        logger.error("SIP check: could not interpret csrutil output")
     }
-    return enabled
+    return status.isFullyEnabled
 }
 
 // MARK: - RDMA Check
@@ -141,75 +141,72 @@ public func checkRDMADisabled() -> Bool {
 
 // MARK: - Secure Boot Check
 
-/// Check if Secure Boot is enabled.
+/// Check whether the Secure Boot posture is acceptable for serving inference.
 ///
-/// On Apple Silicon, Secure Boot is always enabled in Full Security mode.
-/// Reduced Security or Permissive Security are set via Recovery OS.
+/// Detection runs through `SecureBootStatusChecker` (the single source of truth):
+/// `ibridge_secure_boot` via `system_profiler SPiBridgeDataType`, authoritative
+/// and sudo-free on macOS 26 (Tahoe) — the provider's minimum OS — on both
+/// Apple Silicon and Intel T2.
 ///
-/// Returns true if running in Full Security mode.
-public func checkSecureBootEnabled() -> Bool {
-    // On Apple Silicon, the default (and only safe) configuration is
-    // Full Security. Checking bputil would require root. The coordinator
-    // independently verifies via MDM SecurityInfo, so returning true here
-    // is safe -- a downgraded device will fail the MDM cross-check.
-    //
-    // For software-level detection without root, we check the Authenticated
-    // Root Volume which is only sealed under Full Security.
-    return checkAuthenticatedRootEnabled()
+/// Returns `SecureBootStatus.attestsSecureBoot`: true only for provable Full
+/// Security (`ibridge_secure_boot == "Full Security"`); false for any confident
+/// downgrade or an unreadable posture. The gate (`secureBootVerdict`) and this
+/// attestation boolean derive from the SAME `status()` result, so `doctor` /
+/// `start` and the attested `secure_boot_enabled` never disagree.
+///
+/// This value feeds the SIGNED attestation (`secure_boot_enabled`). The
+/// `SecurityCommandRunner` is injectable so the attestation-feeding path is
+/// unit-testable without depending on the host's boot policy.
+public func checkSecureBootEnabled(runner: SecurityCommandRunner = .live) -> Bool {
+    let status = SecureBootStatusChecker(runner: runner).status()
+    if !status.attestsSecureBoot {
+        logger.warning("Secure Boot check: \(status.summary)")
+    }
+    return status.attestsSecureBoot
 }
 
 // MARK: - Authenticated Root Volume
 
-/// Check if Authenticated Root Volume (ARV) is enabled.
+/// Check if Authenticated Root Volume (ARV / SSV) is sealed.
 ///
-/// ARV seals the system volume with a cryptographic hash. Any modification
-/// to system files breaks the seal and the volume won't mount.
+/// ARV seals the system volume with a cryptographic hash. Any modification to
+/// system files breaks the seal and the volume won't mount. This is reported to
+/// the coordinator as the standalone signed-attestation field
+/// `authenticated_root_enabled`, independent of the Secure Boot check.
 ///
-/// Detection: checks `diskutil info /` for "Sealed: Yes" which works
-/// reliably on all macOS configurations including multi-boot EC2 Macs
-/// where `csrutil authenticated-root status` prompts interactively.
-public func checkAuthenticatedRootEnabled() -> Bool {
-    // Primary: csrutil authenticated-root status. Works without root and
-    // correctly reports "enabled" on macOS 26 where diskutil shows
-    // "Sealed: Broken" due to changed APFS snapshot semantics.
-    if let csrResult = runSimpleProcess(
-        "/usr/bin/csrutil", arguments: ["authenticated-root", "status"]
-    ) {
-        if csrResult.lowercased().contains("enabled") {
-            return true
-        }
+/// Detection is sudo-free: `csrutil authenticated-root status` is primary (it
+/// works without root and correctly reports "enabled" on macOS 26, where
+/// `diskutil` mislabels the seal "Sealed: Broken" due to changed APFS snapshot
+/// semantics); `diskutil info /` ("Sealed: Yes/No") is the fallback. Returns
+/// true only when the seal is positively confirmed enabled; an explicit
+/// disabled, an ambiguous "Broken", or an unreadable probe all return false.
+///
+/// This value feeds the SIGNED attestation (`authenticated_root_enabled`). The
+/// `SecurityCommandRunner` is injectable so the path is unit-testable without
+/// depending on the host's seal state.
+public func checkAuthenticatedRootEnabled(runner: SecurityCommandRunner = .live) -> Bool {
+    // csrutil primary: check "disabled" before "enabled" to prefer the explicit
+    // downgrade reading and guard against any substring overlap.
+    if let result = try? runner.run("/usr/bin/csrutil", ["authenticated-root", "status"]),
+       result.terminationStatus == 0 {
+        let normalized = result.stdout.lowercased()
+        if normalized.contains("disabled") { return false }
+        if normalized.contains("enabled") { return true }
     }
 
-    // Fallback: diskutil info / for older macOS versions.
-    if let diskResult = runSimpleProcess(
-        "/usr/sbin/diskutil", arguments: ["info", "/"]
-    ) {
-        for line in diskResult.components(separatedBy: "\n") {
+    // diskutil fallback for older macOS where csrutil prompts interactively.
+    if let result = try? runner.run("/usr/sbin/diskutil", ["info", "/"]),
+       result.terminationStatus == 0 {
+        for line in result.stdout.components(separatedBy: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("Sealed:") {
-                return trimmed.contains("Yes")
-            }
+            guard trimmed.hasPrefix("Sealed:") else { continue }
+            // "Sealed: Yes" ⇒ sealed; "No" or an ambiguous "Broken" (macOS 26
+            // mislabels a healthy seal) ⇒ not positively confirmed.
+            return trimmed.localizedCaseInsensitiveContains("Yes")
         }
     }
 
     return false
-}
-
-private func runSimpleProcess(_ path: String, arguments: [String]) -> String? {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: path)
-    process.arguments = arguments
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-    do {
-        try process.run()
-    } catch {
-        return nil
-    }
-    process.waitUntilExit()
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    return String(data: data, encoding: .utf8)
 }
 
 // MARK: - Hardened Runtime Check

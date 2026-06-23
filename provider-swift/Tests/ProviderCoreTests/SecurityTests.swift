@@ -51,6 +51,99 @@ import Testing
     #expect(status == .unavailable(reason: "csrutil: failed"))
 }
 
+// MARK: - Attestation-feeding checks (checkSIPEnabled / checkSecureBootEnabled)
+//
+// These two functions feed the SIGNED attestation (`sip_enabled`,
+// `secure_boot_enabled`). They run through an injected `SecurityCommandRunner`
+// so the exact value the coordinator verifies is exercised here without
+// depending on the host's boot policy.
+
+@Test func checkSIPEnabledReflectsInjectedRunner() {
+    func sip(_ stdout: String) -> SecurityCommandRunner {
+        SecurityCommandRunner { path, args in
+            #expect(path == "/usr/bin/csrutil")
+            #expect(args == ["status"])
+            return SecurityCommandResult(terminationStatus: 0, stdout: stdout)
+        }
+    }
+    #expect(checkSIPEnabled(runner: sip("System Integrity Protection status: enabled.\n")))
+    #expect(!checkSIPEnabled(runner: sip("System Integrity Protection status: disabled.\n")))
+    // "enabled (Custom Configuration)" is NOT fully enabled → attests false.
+    #expect(!checkSIPEnabled(runner: sip(
+        """
+        System Integrity Protection status: enabled (Custom Configuration).
+
+        Configuration:
+        \tKext Signing: disabled
+        """
+    )))
+}
+
+@Test func checkSecureBootEnabledUnavailableWhenSPiBridgeEmpty() {
+    // An EMPTY SPiBridge array (anomalous on Tahoe) yields `.unavailable`, which
+    // attests false — there is no sudo-free proxy fallback anymore.
+    #expect(!checkSecureBootEnabled(runner: bootSecurityRunner(systemProfiler: emptyBridge)))
+    // A system_profiler failure likewise attests false.
+    #expect(!checkSecureBootEnabled(runner: SecurityCommandRunner { _, _ in
+        SecurityCommandResult(terminationStatus: 1, stderr: "system_profiler: boom")
+    }))
+}
+
+@Test func checkSecureBootEnabledViaSPiBridge() {
+    // Primary path: a populated SPiBridge `ibridge_secure_boot` decides on BOTH
+    // Intel T2 AND modern Apple Silicon.
+    #expect(checkSecureBootEnabled(runner: bootSecurityRunner(
+        systemProfiler: spiBridge("Full Security"))))
+    #expect(!checkSecureBootEnabled(runner: bootSecurityRunner(
+        systemProfiler: spiBridge("Medium Security"))))
+    #expect(!checkSecureBootEnabled(runner: bootSecurityRunner(
+        systemProfiler: spiBridge("No Security"))))
+}
+
+@Test func checkSecureBootEnabledRealAppleSiliconSPiBridge() {
+    // Ground the attestation-feeding path in the EXACT real output captured on
+    // Apple Silicon (M4 Max / Mac16,5 / arm64): a populated SPiBridgeDataType
+    // with `ibridge_secure_boot == "Full Security"` MUST attest true.
+    #expect(checkSecureBootEnabled(runner: bootSecurityRunner(
+        systemProfiler: realAppleSiliconBridgeJSON)))
+}
+
+// MARK: - checkAuthenticatedRootEnabled (standalone SSV-seal attestation field)
+//
+// `authenticated_root_enabled` is a SEPARATE signed-attestation field, distinct
+// from `secure_boot_enabled`. It reads the SSV seal sudo-free: `csrutil
+// authenticated-root status` primary, `diskutil info /` fallback. Exercised here
+// via an injected runner so the attested boolean is pinned without depending on
+// the host's seal state.
+
+@Test func checkAuthenticatedRootEnabledCsrutilPrimary() {
+    // csrutil reports the seal directly: enabled → true, disabled → false.
+    #expect(checkAuthenticatedRootEnabled(runner: bootSecurityRunner(
+        systemProfiler: emptyBridge,
+        authenticatedRoot: "Authenticated Root status: enabled\n")))
+    #expect(!checkAuthenticatedRootEnabled(runner: bootSecurityRunner(
+        systemProfiler: emptyBridge,
+        authenticatedRoot: "Authenticated Root status: disabled\n")))
+}
+
+@Test func checkAuthenticatedRootEnabledDiskutilFallback() {
+    // When csrutil is unreadable, fall back to diskutil's "Sealed:" line.
+    #expect(checkAuthenticatedRootEnabled(runner: bootSecurityRunner(
+        systemProfiler: emptyBridge, diskutil: "   Sealed:                     Yes\n")))
+    #expect(!checkAuthenticatedRootEnabled(runner: bootSecurityRunner(
+        systemProfiler: emptyBridge, diskutil: "   Sealed:                     No\n")))
+    // macOS 26 mislabels a healthy seal "Broken" — ambiguous, so NOT confirmed.
+    #expect(!checkAuthenticatedRootEnabled(runner: bootSecurityRunner(
+        systemProfiler: emptyBridge, diskutil: "   Sealed:                     Broken\n")))
+}
+
+@Test func checkAuthenticatedRootEnabledUnreadableIsFalse() {
+    // Both probes failing must attest false, never a false positive.
+    #expect(!checkAuthenticatedRootEnabled(runner: SecurityCommandRunner { _, _ in
+        SecurityCommandResult(terminationStatus: 1, stderr: "unreadable")
+    }))
+}
+
 @Test func binarySHA256HasherHashesDataAndFiles() throws {
     let hasher = BinarySHA256Hasher(chunkSize: 2)
     #expect(
@@ -273,6 +366,74 @@ private func temporaryDirectory() throws -> URL {
         .appendingPathComponent("ProviderCoreSecurityTests-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
+}
+
+// MARK: - Boot-security fixtures (shared by the checkSecureBootEnabled tests)
+
+/// An EMPTY `system_profiler -json SPiBridgeDataType` array — the fallback shape
+/// seen only on older Apple Silicon / older macOS (or a sandboxed
+/// `system_profiler`). Modern Apple Silicon POPULATES this array
+/// (see `realAppleSiliconBridgeJSON`).
+private let emptyBridge = #"{ "SPiBridgeDataType" : [ ] }"#
+
+/// A populated `system_profiler -json SPiBridgeDataType` with `ibridge_secure_boot`.
+/// This array is populated on BOTH Intel T2 AND modern Apple Silicon.
+private func spiBridge(_ secureBoot: String) -> String {
+    #"{ "SPiBridgeDataType" : [ { "ibridge_secure_boot" : ""# + secureBoot + #"" } ] }"#
+}
+
+/// The EXACT real `system_profiler -json SPiBridgeDataType` captured on Apple
+/// Silicon (M4 Max / Mac16,5 / arm64, macOS darwin 25.5.0): a POPULATED array
+/// reporting `ibridge_secure_boot == "Full Security"` — proof the data type is
+/// not Intel-T2-only and not empty on modern Apple Silicon.
+private let realAppleSiliconBridgeJSON = """
+{
+  "SPiBridgeDataType" : [
+    {
+      "ibridge_boot_uuid" : "A904AC62-589E-450B-8829-96ADA16DE3DC",
+      "ibridge_build" : "mBoot-18000.120.36",
+      "ibridge_extra_boot_policies" : " ",
+      "ibridge_model_identifier_top" : "Mac16,5",
+      "ibridge_sb_boot_args" : "Enabled",
+      "ibridge_sb_ctrr" : "Enabled",
+      "ibridge_sb_device_mdm" : "Yes",
+      "ibridge_sb_manual_mdm" : "No",
+      "ibridge_sb_other_kext" : "No",
+      "ibridge_sb_sip" : "Enabled",
+      "ibridge_sb_ssv" : "Enabled",
+      "ibridge_secure_boot" : "Full Security"
+    }
+  ]
+}
+"""
+
+/// Dispatches each boot-security probe to a fixture. Secure Boot reads only
+/// `system_profiler`; the SSV-seal attestation field (`checkAuthenticatedRootEnabled`)
+/// reads `csrutil authenticated-root status` (primary) and `diskutil info /`
+/// (fallback). A `nil` fixture simulates that probe being unreadable.
+private func bootSecurityRunner(
+    systemProfiler: String,
+    authenticatedRoot: String? = nil,
+    diskutil: String? = nil
+) -> SecurityCommandRunner {
+    SecurityCommandRunner { path, args in
+        switch (path, args) {
+        case ("/usr/sbin/system_profiler", ["-json", "SPiBridgeDataType"]):
+            return SecurityCommandResult(terminationStatus: 0, stdout: systemProfiler)
+        case ("/usr/bin/csrutil", ["authenticated-root", "status"]):
+            guard let authenticatedRoot else {
+                return SecurityCommandResult(terminationStatus: 1, stderr: "no authenticated-root fixture")
+            }
+            return SecurityCommandResult(terminationStatus: 0, stdout: authenticatedRoot)
+        case ("/usr/sbin/diskutil", ["info", "/"]):
+            guard let diskutil else {
+                return SecurityCommandResult(terminationStatus: 1, stderr: "no diskutil fixture")
+            }
+            return SecurityCommandResult(terminationStatus: 0, stdout: diskutil)
+        default:
+            return SecurityCommandResult(terminationStatus: 127, stderr: "unexpected probe: \(path) \(args)")
+        }
+    }
 }
 
 private struct PtraceCall: Equatable {

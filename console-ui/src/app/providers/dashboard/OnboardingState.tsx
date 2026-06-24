@@ -2,7 +2,9 @@
 // gives the three concrete steps with a copyable install command, and explains
 // in one line why the network is trustworthy.
 
-import Link from "next/link";
+// Native <a> navigation (not next/link): the App Router client-router path is
+// currently broken for shell navigation (see #457/#458) — Link renders but does
+// not navigate. Browser-native route loads always work. Mirrors #458.
 import { ArrowRight, Cpu, ShieldCheck, TrendingUp, Zap } from "lucide-react";
 import { CopyCommand } from "./gauges/CopyCommand";
 import { INSTALL_COMMAND } from "./fixes";
@@ -51,18 +53,18 @@ export function OnboardingState() {
             </div>
 
             <div className="flex flex-wrap gap-3 mt-6">
-              <Link
+              <a
                 href="/providers/setup"
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent-brand text-white text-sm font-medium hover:bg-accent-brand-hover transition-colors"
               >
                 Set up a provider <ArrowRight size={14} />
-              </Link>
-              <Link
+              </a>
+              <a
                 href="/earn"
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-bg-tertiary text-text-primary text-sm font-medium hover:bg-bg-hover transition-colors"
               >
                 Open calculator <ArrowRight size={14} />
-              </Link>
+              </a>
             </div>
           </div>
 

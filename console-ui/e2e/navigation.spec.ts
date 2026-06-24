@@ -1,4 +1,5 @@
-import { test, expect, type Page, type ConsoleMessage } from "@playwright/test";
+import type { Page, ConsoleMessage } from "@playwright/test";
+import { test, expect } from "./fixtures";
 
 // Patterns that indicate a React hydration mismatch — the failure class behind
 // the broken-navigation regression (#457/#463): a divergent first client render

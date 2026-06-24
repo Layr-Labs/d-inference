@@ -19,13 +19,19 @@ const noop = () => {};
 const noopAsync = async () => {};
 const noopToken = async () => null as string | null;
 
+// E2E hook (Playwright only): when NEXT_PUBLIC_E2E_AUTH=1, the mock-auth path
+// returns a usable token + user so authenticated flows can be driven against
+// route-mocked APIs. This env var is set ONLY by the Playwright dev server and
+// is unset in every real build, so production behaviour is unchanged.
+const E2E_AUTH = process.env.NEXT_PUBLIC_E2E_AUTH === "1";
+
 const MOCK_AUTH: AuthState = {
   ready: true,
   authenticated: true,
-  user: null,
+  user: E2E_AUTH ? { id: "e2e-user", email: { address: "e2e@darkbloom.test" } } : null,
   login: noop,
   logout: noopAsync,
-  getAccessToken: noopToken,
+  getAccessToken: E2E_AUTH ? async () => "e2e-mock-token" : noopToken,
 };
 
 // Pre-hydration / pre-Privy state: render immediately as "not ready yet" and

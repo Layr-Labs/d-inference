@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { PrivyProvider, usePrivy } from "@privy-io/react-auth";
 import type { AuthState } from "./PrivyClientProvider";
 
@@ -12,13 +12,30 @@ import type { AuthState } from "./PrivyClientProvider";
 
 function PrivyAuthBridge({ onAuthChange }: { onAuthChange: (s: AuthState) => void }) {
   const privy = usePrivy();
-  const { ready, authenticated, user, login, logout } = privy;
+  const { ready, authenticated, user } = privy;
 
-  const getAccessToken = useCallback(() => privy.getAccessToken(), [privy]);
+  // usePrivy() returns a NEW object on every internal tick (token refresh,
+  // etc.). Closing over it directly gave getAccessToken/login/logout a fresh
+  // identity each tick, which pushed a new AuthState into context and
+  // invalidated every consumer effect — most visibly the key auto-provision,
+  // which then stormed POST /api/auth/keys. Hold the live instance in a ref so
+  // the action callbacks stay STABLE while still calling the latest Privy.
+  const privyRef = useRef(privy);
+  privyRef.current = privy;
 
+  const getAccessToken = useCallback(() => privyRef.current.getAccessToken(), []);
+  const login = useCallback(() => privyRef.current.login(), []);
+  const logout = useCallback(() => privyRef.current.logout(), []);
+
+  // Only publish a new AuthState when the MEANINGFUL auth state changes
+  // (readiness, authentication, or which user). A token refresh that leaves
+  // those untouched must not churn the context. The action callbacks above are
+  // stable refs, so they are intentionally excluded from the deps.
+  const userId = (user as { id?: string } | null)?.id ?? null;
   useEffect(() => {
     onAuthChange({ ready, authenticated, user, login, logout, getAccessToken });
-  }, [ready, authenticated, user, login, logout, getAccessToken, onAuthChange]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, authenticated, userId, onAuthChange]);
 
   return null;
 }

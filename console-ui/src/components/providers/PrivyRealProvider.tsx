@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { PrivyProvider, usePrivy } from "@privy-io/react-auth";
 import type { AuthState } from "./PrivyClientProvider";
 
@@ -12,13 +12,40 @@ import type { AuthState } from "./PrivyClientProvider";
 
 function PrivyAuthBridge({ onAuthChange }: { onAuthChange: (s: AuthState) => void }) {
   const privy = usePrivy();
-  const { ready, authenticated, user, login, logout } = privy;
+  const { ready, authenticated, user } = privy;
 
-  const getAccessToken = useCallback(() => privy.getAccessToken(), [privy]);
+  // Keep a live ref to the Privy handle so the methods we expose are STABLE
+  // identities. Without this, `usePrivy()` hands back fresh `login`/`logout`/
+  // `getAccessToken` references on most renders, which made the effect below
+  // re-fire and call `onAuthChange` on every render — a setState-in-the-parent
+  // loop. It produced no DOM changes (the rendered output was identical), so it
+  // was invisible, but it perpetually re-scheduled default-priority work and
+  // starved React's lower-priority navigation transitions, so `<Link>` /
+  // `router.push` silently no-opped (the App Router sidebar became unclickable).
+  const privyRef = useRef(privy);
+  privyRef.current = privy;
+
+  const getAccessToken = useCallback(() => privyRef.current.getAccessToken(), []);
+  const login = useCallback(() => privyRef.current.login(), []);
+  const logout = useCallback(() => privyRef.current.logout(), []);
+
+  // Identify the user by a stable primitive so an unstable `user` object
+  // identity from Privy doesn't re-fire this effect every render.
+  const userId = (user as { id?: string } | null)?.id ?? null;
 
   useEffect(() => {
-    onAuthChange({ ready, authenticated, user, login, logout, getAccessToken });
-  }, [ready, authenticated, user, login, logout, getAccessToken, onAuthChange]);
+    onAuthChange({
+      ready,
+      authenticated,
+      user: privyRef.current.user,
+      login,
+      logout,
+      getAccessToken,
+    });
+    // Depend only on the values that meaningfully change auth state; the
+    // callbacks are stable (refs) so this fires once per real auth change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, authenticated, userId, login, logout, getAccessToken, onAuthChange]);
 
   return null;
 }

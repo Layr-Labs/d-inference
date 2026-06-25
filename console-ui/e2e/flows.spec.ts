@@ -151,6 +151,59 @@ test.describe("chat", () => {
     await expect(page.getByRole("button", { name: /Model Beta/ })).toBeVisible();
     await expect(page.getByRole("button", { name: /Model Alpha/ })).toHaveCount(0);
   });
+
+  test("stop halts an in-flight generation", async ({ page }) => {
+    // Hold the chat request open so the generation stays in-flight; the client
+    // aborts it on Stop (the handler is abandoned when the page closes).
+    await page.route("**/api/chat", async (route) => {
+      await new Promise((r) => setTimeout(r, 15_000));
+      await route.abort().catch(() => {});
+    });
+
+    await page.goto("/");
+    const input = page.getByPlaceholder("Send a message...");
+    await input.fill("ping");
+    await input.press("Enter");
+
+    // Streaming → the composer shows Stop.
+    const stop = page.getByRole("button", { name: "Stop generating" });
+    await expect(stop).toBeVisible();
+    await stop.click();
+
+    // Cancelled → composer returns to the idle Send state, no error bubble.
+    await expect(page.getByRole("button", { name: "Send message" })).toBeVisible();
+    await expect(page.getByText(/Error:/)).toHaveCount(0);
+  });
+});
+
+test.describe("invite codes", () => {
+  test("redeeming a valid code credits the account", async ({ page }) => {
+    await page.route("**/api/invite/redeem", (route) =>
+      route.fulfill({ json: { credited_usd: "5.00", balance_usd: "17.34" } }),
+    );
+    await page.goto("/billing");
+
+    await page.getByPlaceholder("INV-XXXXXXXX").fill("INV-TEST1234");
+    await page.getByRole("button", { name: "Redeem" }).click();
+
+    await expect(page.getByText(/credited to your account/)).toBeVisible();
+  });
+
+  test("an invalid code surfaces an error", async ({ page }) => {
+    await page.route("**/api/invite/redeem", (route) =>
+      route.fulfill({
+        status: 400,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { message: "Invalid invite code" } }),
+      }),
+    );
+    await page.goto("/billing");
+
+    await page.getByPlaceholder("INV-XXXXXXXX").fill("INV-BADCODE0");
+    await page.getByRole("button", { name: "Redeem" }).click();
+
+    await expect(page.getByText("Invalid invite code")).toBeVisible();
+  });
 });
 
 test.describe("billing", () => {

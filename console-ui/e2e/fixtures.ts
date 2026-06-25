@@ -56,7 +56,7 @@ export function makeProvider(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function providersResponse(providers: unknown[]) {
+export function makeProvidersResponse(providers: unknown[]) {
   return {
     providers,
     latest_provider_version: "0.6.20",
@@ -93,13 +93,16 @@ function makeKey(over: Record<string, unknown> = {}) {
   };
 }
 
-function chatSse(chunks: string[]): string {
+export function chatSse(chunks: string[]): string {
   const out = chunks.map(
     (c) => `data: ${JSON.stringify({ choices: [{ delta: { content: c } }] })}\n\n`,
   );
   out.push("data: [DONE]\n\n");
   return out.join("");
 }
+
+// Default streamed assistant response used by the chat flows.
+export const CHAT_REPLY = "Hello from the E2E mock";
 
 async function installCoordinatorMocks(page: Page) {
   await page.route("**/api/auth/keys", (route) =>
@@ -108,21 +111,28 @@ async function installCoordinatorMocks(page: Page) {
   await page.route("**/api/models", (route) =>
     route.fulfill({ json: { object: "list", data: [SEED_MODEL] } }),
   );
-  await page.route("**/api/pricing", (route) => route.fulfill({ json: { data: [] } }));
+  await page.route("**/api/pricing", (route) => route.fulfill({ json: { prices: [] } }));
   await page.route("**/api/health", (route) => route.fulfill({ json: { status: "ok" } }));
   await page.route("**/api/encryption-key", (route) => route.fulfill({ status: 404, body: "" }));
-  await page.route("**/api/me/providers", (route) => route.fulfill({ json: providersResponse([]) }));
+  await page.route("**/api/me/providers", (route) => route.fulfill({ json: makeProvidersResponse([]) }));
   await page.route("**/api/me/summary", (route) => route.fulfill({ json: EMPTY_SUMMARY }));
 
-  // Stateful API-key list: GET lists, POST appends (drives the create flow).
+  // Stateful API-key store: full CRUD so every management flow (create, edit,
+  // disable/enable, rotate, revoke) round-trips. All mutations refetch GET, so
+  // this array is the single source of truth the UI re-reads after each change.
   const keys: Record<string, unknown>[] = [makeKey()];
+  const keyIdFromUrl = (url: string, suffix = "") =>
+    decodeURIComponent(url.split("/api/keys/")[1].split("?")[0]).replace(suffix, "");
+
+  // list (GET) + create (POST)
   await page.route(/\/api\/keys(\?.*)?$/, async (route) => {
     const req = route.request();
     if (req.method() === "POST") {
-      const body = JSON.parse(req.postData() || "{}") as { name?: string };
+      const body = JSON.parse(req.postData() || "{}") as Record<string, unknown>;
       const created = makeKey({
+        ...body,
         id: `key_${keys.length + 1}`,
-        name: body.name || "New key",
+        name: (body.name as string) || "New key",
         label: "sk-db-new9...z0z0",
       });
       keys.push(created);
@@ -131,11 +141,37 @@ async function installCoordinatorMocks(page: Page) {
     return route.fulfill({ json: { object: "list", data: keys } });
   });
 
+  // edit (PATCH) + revoke (DELETE) by id. Registered after the list route and
+  // before the rotate route so Playwright's last-registered-first matching tries
+  // rotate, then this, then list — i.e. most specific first.
+  await page.route(/\/api\/keys\/[^/]+$/, async (route) => {
+    const req = route.request();
+    const idx = keys.findIndex((k) => k.id === keyIdFromUrl(req.url()));
+    if (req.method() === "DELETE") {
+      if (idx >= 0) keys.splice(idx, 1);
+      return route.fulfill({ status: 200, json: { ok: true } });
+    }
+    if (req.method() === "PATCH") {
+      const body = JSON.parse(req.postData() || "{}") as Record<string, unknown>;
+      if (idx >= 0) keys[idx] = { ...keys[idx], ...body };
+      return route.fulfill({ json: keys[idx] ?? makeKey() });
+    }
+    return route.fallback();
+  });
+
+  // rotate (POST .../rotate) — issue a new secret, keep the same id.
+  await page.route(/\/api\/keys\/[^/]+\/rotate$/, async (route) => {
+    const idx = keys.findIndex((k) => k.id === keyIdFromUrl(route.request().url(), "/rotate"));
+    const rotated = makeKey({ ...(keys[idx] ?? {}), label: "sk-db-rot8...w9w9" });
+    if (idx >= 0) keys[idx] = rotated;
+    return route.fulfill({ json: { key: "sk-db-e2e-rotated-secret", data: rotated } });
+  });
+
   await page.route("**/api/chat", (route) =>
     route.fulfill({
       status: 200,
       headers: { "content-type": "text/event-stream" },
-      body: chatSse(["Hello", " from", " the", " E2E", " mock"]),
+      body: chatSse(CHAT_REPLY.split(" ").map((w, i) => (i === 0 ? w : ` ${w}`))),
     }),
   );
 }
@@ -153,6 +189,15 @@ export { expect };
 // default, so Playwright runs it first).
 export async function seedProviders(page: Page, providers: unknown[]) {
   await page.route("**/api/me/providers", (route) =>
-    route.fulfill({ json: providersResponse(providers) }),
+    route.fulfill({ json: makeProvidersResponse(providers) }),
   );
+}
+
+// Override the API-key list for a single test (e.g. seed an empty list to drive
+// the empty state). Mutations fall through to the stateful default handler.
+export async function seedKeys(page: Page, keys: unknown[]) {
+  await page.route(/\/api\/keys(\?.*)?$/, (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    return route.fulfill({ json: { object: "list", data: keys } });
+  });
 }

@@ -1,5 +1,5 @@
 import type { Page, ConsoleMessage } from "@playwright/test";
-import { test, expect } from "./fixtures";
+import { test, expect, seedProviders } from "./fixtures";
 
 // Patterns that indicate a React hydration mismatch — the failure class behind
 // the broken-navigation regression (#457/#463): a divergent first client render
@@ -82,9 +82,10 @@ test.describe("console shell — navigation", () => {
   });
 
   // Pre-install (no linked machines), only the Dashboard tab is shown; Setup and
-  // Earnings are gated behind having a provider linked (#462). Mock-auth has no
-  // linked machines, so this is the pre-install state.
+  // Earnings are gated behind having a provider linked (#462). Seed an empty
+  // fleet explicitly so the test doesn't depend on the fixture's default.
   test("provider dashboard hides Setup/Earnings tabs until a machine is linked (#462)", async ({ page }) => {
+    await seedProviders(page, []);
     await page.goto("/providers");
     await waitForShell(page);
 

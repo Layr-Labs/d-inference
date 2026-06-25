@@ -34,13 +34,16 @@ export default defineConfig({
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    // The dev server is sufficient for routing/hydration coverage and avoids a
-    // slow production build in CI. Privy unset => mock-auth, so the shell renders
-    // without any backend. PORT is read by `next dev`.
-    command: "npm run dev",
+    // Production build + start (not `next dev`). The dev server compiles routes
+    // on-demand and serves SSR single-threaded, which made heavy pages (/models)
+    // flake under parallel workers. A prod build pre-compiles every route and
+    // serves static/optimized output, so parallel load is trivial and the suite
+    // is deterministic. NEXT_PUBLIC_E2E_AUTH must be set at BUILD time (it is
+    // inlined), so it lives in this env block.
+    command: `npm run build && npx next start -p ${PORT}`,
     url: BASE_URL,
     reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
+    timeout: 240_000,
     env: {
       PORT: String(PORT),
       // Privy unset => mock-auth; E2E flag makes mock-auth return a usable

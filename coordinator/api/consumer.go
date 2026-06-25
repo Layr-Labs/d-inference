@@ -105,19 +105,32 @@ const (
 
 var thinkBlockPattern = regexp.MustCompile(`(?is)<think>(.*?)</think>\s*`)
 
-// ttftDeadline returns the TTFT budget for a request based on prompt size.
-// Base: 5 seconds + 1ms per estimated input token.
-//
-// NOTE (TTFT-contention Phase 0): this 5s base is the coordinator's INTERNAL
-// budget, not the deadline that actually cancels. Prod telemetry shows
-// client_gone cancels fit `10000 + 1ms·prompt_tokens` at a median ratio of 1.002
-// (telemetry-db findings §2); gating projected TTFT against this 5s base
-// over-sheds ~2x. The verified ~10s base lives in
-// registry.ttftDeadlineMsForPrompt (EIGENINFERENCE_TTFT_DEADLINE_BASE_MS) and is
-// used ONLY by the shadow evaluator. This live path is intentionally left at 5s
-// until the shadow validates; a future enforce step would reconcile them.
+// ttftLiveDeadlineBaseMs is the base term (ms) of the LIVE TTFT admission
+// deadline: ttftDeadline = base + 1ms*estimatedPromptTokens. It governs the live
+// HARD_REJECT cutoff — the preflight bestTTFT shed, the scheduler MaxTTFTMs
+// candidate ceiling, and the queued-request ceiling all derive from
+// ttftDeadline. Default 5000 preserves the historical 5s behavior; override via
+// EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS (wired in cmd/coordinator) so the
+// base can be retuned without a rebuild — e.g. to ~9s/10s, since prod telemetry
+// shows client_gone cancels fit 10000 + 1ms*prompt_tokens and the 5s base
+// over-sheds ~2x. Set once at startup, read-only on routing paths thereafter —
+// mirrors registry.ttftDeadlineBaseMs (the shadow base) and prefillToDecodeRatio.
+var ttftLiveDeadlineBaseMs float64 = 5000
+
+// SetTTFTLiveDeadlineBaseMs overrides the live TTFT deadline base (ms). Values
+// <= 0 are ignored (keep the 5s default). Must be called before serving starts.
+func SetTTFTLiveDeadlineBaseMs(ms float64) {
+	if ms > 0 {
+		ttftLiveDeadlineBaseMs = ms
+	}
+}
+
+// ttftDeadline returns the TTFT budget for a request based on prompt size:
+// ttftLiveDeadlineBaseMs + 1ms per estimated input token. The base is
+// configurable (see ttftLiveDeadlineBaseMs); the per-token slope is fixed at 1ms
+// to match the verified OpenRouter cancel slope.
 func ttftDeadline(estimatedPromptTokens int) time.Duration {
-	base := 5 * time.Second
+	base := time.Duration(ttftLiveDeadlineBaseMs) * time.Millisecond
 	perToken := time.Duration(estimatedPromptTokens) * time.Millisecond
 	return base + perToken
 }

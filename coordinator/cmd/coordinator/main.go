@@ -429,6 +429,21 @@ func main() {
 				"value", v, "min_ms", minTTFTDeadlineBaseMs, "max_ms", maxTTFTDeadlineBaseMs)
 		}
 	}
+	// LIVE TTFT deadline base — the HARD_REJECT cutoff. Distinct from the SHADOW
+	// base above: this sets consumer.go's ttftDeadline = base + 1ms*prompt_tokens,
+	// which drives the live preflight shed, the scheduler MaxTTFTMs candidate
+	// ceiling, and the queued-request ceiling. Default 5000 (5s) is unchanged;
+	// raising it (e.g. 9000) admits more long-prompt requests instead of 429ing
+	// them, at the cost of higher tail TTFT. Reuses the [1s,120s] validation.
+	if v := os.Getenv("EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS"); v != "" {
+		if base, ok := validateTTFTDeadlineBaseMs(v); ok {
+			api.SetTTFTLiveDeadlineBaseMs(base)
+			logger.Warn("LIVE TTFT deadline base OVERRIDDEN via EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS (changes the HARD_REJECT cutoff)", "base_ms", base)
+		} else {
+			logger.Warn("invalid or out-of-range EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS; keeping default 5000",
+				"value", v, "min_ms", minTTFTDeadlineBaseMs, "max_ms", maxTTFTDeadlineBaseMs)
+		}
+	}
 	if v := os.Getenv("EIGENINFERENCE_TTFT_ADMISSION_MODE"); v != "" {
 		mode := registry.ParseTTFTAdmissionMode(v)
 		registry.SetTTFTAdmissionMode(mode)

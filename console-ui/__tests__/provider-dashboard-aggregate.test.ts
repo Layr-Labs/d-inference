@@ -24,11 +24,14 @@ describe("buildAttentionGroups", () => {
   });
 
   it("ranks blocking before degrading, then by affected-machine count", () => {
+    const thermal = {
+      system_metrics: { memory_pressure: 0.2, cpu_usage: 0.1, thermal_state: "serious" as const },
+    };
     const groups = buildAttentionGroups(
       [
         baseProvider({ id: "a", trust_level: "self_signed" }), // blocking
-        baseProvider({ id: "b", mda_verified: false }), // degrading
-        baseProvider({ id: "c", mda_verified: false }), // degrading
+        baseProvider({ id: "b", ...thermal }), // degrading
+        baseProvider({ id: "c", ...thermal }), // degrading
       ],
       ctx
     );
@@ -67,7 +70,11 @@ describe("deriveFleetVerdict", () => {
   });
 
   it("never shows a false all-clear for a degraded fleet", () => {
-    const providers = [baseProvider({ mda_verified: false })];
+    const providers = [
+      baseProvider({
+        system_metrics: { memory_pressure: 0.2, cpu_usage: 0.1, thermal_state: "serious" },
+      }),
+    ];
     const v = deriveFleetVerdict(providers, ctx);
     expect(v.state).toBe("degraded");
     expect(v.state).not.toBe("routable");

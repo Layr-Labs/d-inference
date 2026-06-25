@@ -28,7 +28,9 @@ describe("deriveRouting", () => {
   });
 
   it("returns degraded for an online machine with only degrading warnings", () => {
-    const p = baseProvider({ mda_verified: false }); // mda_missing is degrading
+    const p = baseProvider({
+      system_metrics: { memory_pressure: 0.2, cpu_usage: 0.1, thermal_state: "serious" },
+    });
     expect(routingFor(p, ctx)).toBe("degraded");
   });
 

@@ -113,9 +113,9 @@ describe("computeWarnings", () => {
     expect(warnings.find((w) => w.id === "trust_none")?.severity).toBe("blocking");
   });
 
-  it("flags hardware trust without MDA as degrading", () => {
+  it("flags hardware trust without MDA as informational (not routing-degrading)", () => {
     const warnings = computeWarnings(baseProvider({ mda_verified: false }), ctx);
-    expect(warnings.find((w) => w.id === "mda_missing")?.severity).toBe("degrading");
+    expect(warnings.find((w) => w.id === "mda_missing")?.severity).toBe("info");
   });
 
   it("flags critical thermal as blocking", () => {

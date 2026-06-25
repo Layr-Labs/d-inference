@@ -97,17 +97,21 @@ struct AdaptivePrefillPolicyTests {
         #expect(settled.currentChunkSize == 1536)
     }
 
-    @Test("seeded at the optimum, a flat upper neighbour holds (does not grow)")
-    func holdsAtSeededOptimum() {
-        // Mirrors the real M4 Max curve where 2048 is within the noise band of
-        // 1536: the climber probes up once, finds no gain, and settles back.
+    @Test("seeded above a within-noise lower neighbour, prefers the smaller rung")
+    func seededFlatLowerPrefersSmaller() {
+        // Real M4 Max curve: 2048 is within the noise band ABOVE 1536, and 1536
+        // is within the noise band ABOVE 1024 (only ~1% faster). Pre-fix the
+        // climber "held" at 1536 only because it never measured 1024. With
+        // downward self-calibration it measures 1024, sees 1536 is no real gain
+        // (inside the 4% band), and — per the flat-band invariant — prefers the
+        // smaller rung. 512 is clearly worse, so it stops at 1024 (no collapse).
         let p = AdaptivePrefillPolicy(
             ladder: ladder, initialChunkSize: 1536,
             minCleanSamplesPerRung: 2, cooldownSampleCount: 1)
-        let curve = [1024: 1.101, 1536: 1.087, 2048: 1.127]
-        let settled = drive(p, msByRung: curve, start: p.initialState(), steps: 40)
-        #expect(settled.currentChunkSize == 1536)
-        #expect(settled.ceiling == 1536)  // locked so it stops re-probing up
+        let curve = [512: 5.0, 1024: 1.101, 1536: 1.087, 2048: 1.127]
+        let settled = drive(p, msByRung: curve, start: p.initialState(), steps: 60)
+        #expect(settled.currentChunkSize == 1024)
+        #expect(settled.ceiling == 1024)  // tightened as it settled on the smaller rung
     }
 
     @Test("flat band prefers the smaller rung")
@@ -139,6 +143,76 @@ struct AdaptivePrefillPolicyTests {
         let curve = [512: 5.0, 1024: 4.0, 2048: 3.0, 4096: 2.0]
         let settled = drive(p, msByRung: curve, start: p.initialState(), steps: 60)
         #expect(settled.currentChunkSize == 4096)
+    }
+
+    // MARK: - Downward self-calibration (overshooting seed / restored rung)
+
+    /// Full roofline ladder so a seed (1536) has rungs both above and below it.
+    private let seedLadder = [512, 1024, 1536, 2048, 3072, 4096]
+
+    @Test("an overshooting seed self-corrects DOWN to the true optimum by measurement")
+    func seedOvershootConvergesDown() {
+        let p = AdaptivePrefillPolicy(
+            ladder: seedLadder, initialChunkSize: 1536,
+            minCleanSamplesPerRung: 2, cooldownSampleCount: 1)
+        // 1024 is the clear minimum; everything at/above 1536 is strictly worse.
+        // Pre-fix the climber only probed UP from the seed and locked the ceiling
+        // at 1536, never discovering 1024.
+        let curve = [512: 2.0, 1024: 1.0, 1536: 2.0, 2048: 3.0, 3072: 4.0, 4096: 5.0]
+        let settled = drive(p, msByRung: curve, start: p.initialState(), steps: 120)
+        #expect(settled.currentChunkSize == 1024)
+    }
+
+    @Test("a correct seed holds and does not thrash once both neighbours are measured")
+    func seedOptimumHoldsNoThrash() {
+        let p = AdaptivePrefillPolicy(
+            ladder: seedLadder, initialChunkSize: 1536,
+            minCleanSamplesPerRung: 2, cooldownSampleCount: 1)
+        // 1536 strictly fastest; both neighbours clearly worse (beyond the band).
+        let curve = [512: 4.0, 1024: 2.0, 1536: 1.0, 2048: 2.0, 3072: 4.0, 4096: 5.0]
+        var state = drive(p, msByRung: curve, start: p.initialState(), steps: 80)
+        #expect(state.currentChunkSize == 1536)
+        // Many further steady samples must NOT move the rung (no oscillation).
+        for _ in 0..<40 {
+            let t = p.record(sample: clean(1536, msPerToken: 1.0), state: state)
+            #expect(!t.changedChunkSize)
+            state = t.state
+        }
+        #expect(state.currentChunkSize == 1536)
+    }
+
+    @Test("a restored/persisted HIGH rung re-probes downward and converges to the optimum")
+    func restoredHighRungConvergesDown() {
+        let p = AdaptivePrefillPolicy(
+            ladder: seedLadder, initialChunkSize: 1536,
+            minCleanSamplesPerRung: 2, cooldownSampleCount: 1)
+        // Restore a converged-high rung from disk — covers Codex's "re-probe
+        // lower rungs after restoring persisted state": same root cause as the
+        // seed overshoot (rungMsPerToken is reset, so block (A) has no downward
+        // baseline until the climber goes and measures one).
+        let persisted = AdaptivePrefillState(
+            currentChunkSize: 2048,
+            policyVersion: AdaptivePrefillPolicy.algorithmIdentity)
+        let start = p.initialState(persisted: persisted)
+        #expect(start.currentChunkSize == 2048)  // restored high
+        let curve = [512: 2.0, 1024: 1.0, 1536: 2.0, 2048: 3.0, 3072: 4.0, 4096: 5.0]
+        let settled = drive(p, msByRung: curve, start: start, steps: 140)
+        #expect(settled.currentChunkSize == 1024)
+    }
+
+    @Test("after convergence, steady samples never move the rung (no infinite oscillation)")
+    func stableAfterConvergence() {
+        let p = policy()
+        let curve = [512: 3.0, 1024: 2.0, 1536: 1.0, 2048: 2.0]
+        var state = drive(p, msByRung: curve, start: p.initialState(), steps: 60)
+        #expect(state.currentChunkSize == 1536)
+        for _ in 0..<60 {
+            let rung = state.currentChunkSize
+            let t = p.record(sample: clean(rung, msPerToken: curve[rung] ?? 9), state: state)
+            #expect(!t.changedChunkSize)
+            #expect(t.state.currentChunkSize == 1536)
+            state = t.state
+        }
     }
 
     // MARK: - Clean gate

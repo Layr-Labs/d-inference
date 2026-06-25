@@ -38,6 +38,19 @@ struct AdaptivePrefillRuntimeTests {
             cappedByCheckpoint: false, cappedByRemaining: false)
     }
 
+    /// A cold-prefill chunk that overlaps an active decode step, with an explicit
+    /// wall-time (the quantity that stalls the concurrent decode tokens).
+    private func overlapCold(
+        _ rung: Int, durationMs: Double, decodeBatchSize: Int = 4, positionOffset: Int = 0
+    ) -> ColdPrefillChunkSample {
+        ColdPrefillChunkSample(
+            requestedChunkSize: rung, actualChunkSize: rung, batchSize: 1,
+            totalTokens: rung, positionOffset: positionOffset,
+            durationSeconds: durationMs / 1000.0,
+            decodeBatchSize: decodeBatchSize, cappedByBudget: false,
+            cappedByCheckpoint: false, cappedByRemaining: false)
+    }
+
     @Test("clean cold samples flow through and converge on the U-curve minimum")
     func convergesThroughRuntime() {
         let runtime = AdaptivePrefillRuntime(
@@ -75,6 +88,52 @@ struct AdaptivePrefillRuntimeTests {
         let state = runtime.snapshotState()
         #expect(state.currentChunkSize == 1024)
         #expect(state.lastDecisionReason == .shrinkMemoryPressure)
+    }
+
+    // MARK: - Decode-latency harm wiring
+
+    @Test("a slow overlapped chunk trips decode-latency harm: shrink one rung + lock ceiling")
+    func decodeHarmShrinksThroughRuntime() {
+        let runtime = AdaptivePrefillRuntime(
+            policy: policy(initial: 2048, ladder: [512, 1024, 2048, 4096]),
+            store: tempStore(), key: key(),
+            safetySignalProvider: normalSafety,
+            decodeOverlapHarmBudgetMs: 250.0)
+        // 600ms overlapped first chunk ≫ 250ms budget ⇒ materially stalls decode.
+        runtime.record(overlapCold(2048, durationMs: 600))
+        let state = runtime.snapshotState()
+        #expect(state.currentChunkSize == 1024)            // one rung down
+        #expect(state.lastDecisionReason == .shrinkDecodeHarm)
+        #expect(state.ceiling == 1024)                     // ceiling locked
+    }
+
+    @Test("a fast overlapped chunk is normal overlap, not harm (no false positive)")
+    func decodeOverlapNoFalsePositive() {
+        let runtime = AdaptivePrefillRuntime(
+            policy: policy(initial: 2048, ladder: [512, 1024, 2048, 4096]),
+            store: tempStore(), key: key(),
+            safetySignalProvider: normalSafety,
+            decodeOverlapHarmBudgetMs: 250.0)
+        // 100ms overlapped chunk < 250ms budget ⇒ ordinary overlap; stays put.
+        runtime.record(overlapCold(2048, durationMs: 100))
+        let state = runtime.snapshotState()
+        #expect(state.currentChunkSize == 2048)
+        #expect(state.lastDecisionReason != .shrinkDecodeHarm)
+    }
+
+    @Test("a slow LATE overlapped chunk does not trip harm (position cost, not chunk size)")
+    func decodeHarmIgnoresLateChunks() {
+        let runtime = AdaptivePrefillRuntime(
+            policy: policy(initial: 2048, ladder: [512, 1024, 2048, 4096]),
+            store: tempStore(), key: key(),
+            safetySignalProvider: normalSafety,
+            decodeOverlapHarmBudgetMs: 250.0)
+        // Slow AND overlapped, but positionOffset > 0 ⇒ the cost is O(N²) attention
+        // growth, not an oversized rung — must not collapse the ladder to the floor.
+        runtime.record(overlapCold(2048, durationMs: 600, positionOffset: 4096))
+        let state = runtime.snapshotState()
+        #expect(state.currentChunkSize == 2048)
+        #expect(state.lastDecisionReason != .shrinkDecodeHarm)
     }
 
     // MARK: - Migration

@@ -16,6 +16,12 @@ import Foundation
 ///   * A flat band (|Δ| ≤ `epsNoise`) prefers the **smaller** rung.
 ///   * A larger rung is abandoned only after `regressionConfirmations`
 ///     consecutive slower readings.
+///   * Before settling on a rung, the climber establishes a **downward** baseline:
+///     if the immediate lower rung has never been measured it descends one rung to
+///     measure it (`.probeDown`). So a seed — or a restored/persisted rung — that
+///     sits ABOVE the true optimum self-corrects downward by MEASUREMENT (a
+///     one-time bracket) instead of staying oversized until harm. A correct seed
+///     holds; an overshoot converges to the real minimum without oscillating.
 ///   * Memory / thermal / decode / resource harm forces an immediate one-rung
 ///     back-off and locks a ceiling so the climber cannot re-grow into the wall.
 public struct AdaptivePrefillPolicy: Sendable, Equatable {
@@ -205,15 +211,50 @@ public struct AdaptivePrefillPolicy: Sendable, Equatable {
                     return moveTo(&next, upper, reason: .grow, ceiling: next.ceiling,
                                   previousSize: previousSize)
                 }
-                // Upper measured and not better → current rung is the optimum.
-                next.ceiling = effectiveCeiling(lockingAt: cur, existing: next.ceiling)
-                return finish(&next, .holdOptimum, changed: false)
+                // Upper measured and not better → settle at cur (after first
+                // establishing a downward baseline so an overshoot self-corrects).
+                return settle(&next, at: cur, lower: lower, previousSize: previousSize)
             }
             // Upper unexplored → probe it.
             return moveTo(&next, upper, reason: .grow, ceiling: next.ceiling, previousSize: previousSize)
         }
 
-        // (C) Nowhere left to climb (ceiling / top) → settled.
+        // (C) Nowhere left to climb (ceiling / top) → settle at cur.
+        return settle(&next, at: cur, lower: lower, previousSize: previousSize)
+    }
+
+    /// Settle at `cur` as the measured optimum — but first establish a downward
+    /// baseline. If the immediate lower rung exists yet has never been measured,
+    /// descend one rung to measure it (`.probeDown`) instead of locking the
+    /// ceiling at `cur`.
+    ///
+    /// Why this is needed: the upward climb (block B) only ever probes *up*, so a
+    /// seed — or a restored/persisted rung — that sits ABOVE the true optimum
+    /// would otherwise lock the ceiling at the seed and never discover the faster
+    /// (or flat ⇒ preferred-smaller) lower rung, staying oversized until
+    /// memory/thermal/decode harm forced a back-off. The downward probe measures
+    /// the lower neighbour so block (A) can compare against it on the next clean
+    /// sample and settle correctly.
+    ///
+    /// Convergence (no oscillation): the probe fires only while the lower
+    /// neighbour is UNMEASURED, so each rung is descended into at most once — a
+    /// one-time bracket that walks down only while each lower neighbour is
+    /// actually better (block A grows back up) or flat (block A prefers the
+    /// smaller), and stops the moment a lower neighbour is worse. Once every
+    /// relevant rung is measured no further probe fires and the ceiling lock
+    /// (here + block A) pins the result, so a correct seed holds and an overshoot
+    /// converges to the true minimum.
+    private func settle(
+        _ next: inout AdaptivePrefillState,
+        at cur: Int,
+        lower: Int?,
+        previousSize: Int
+    ) -> AdaptivePrefillTransition {
+        if let lower, next.rungMsPerToken[lower] == nil {
+            return moveTo(&next, lower, reason: .probeDown, ceiling: next.ceiling,
+                          previousSize: previousSize)
+        }
+        next.ceiling = effectiveCeiling(lockingAt: cur, existing: next.ceiling)
         return finish(&next, .holdOptimum, changed: false)
     }
 

@@ -53,7 +53,12 @@ public final class AdaptivePrefillStore: @unchecked Sendable {
     }
 
     private let url: URL
+    /// Guards the in-memory read + merge of the states map (fast).
     private let lock = NSLock()
+    /// Serializes the on-disk write so it can run OUTSIDE `lock`, keeping slow
+    /// file I/O off the lock that `load` (and concurrent saves) contend on while
+    /// still making each save's read-merge-write atomic on this instance.
+    private let ioLock = NSLock()
 
     public init(url: URL = AdaptivePrefillStore.defaultURL()) {
         self.url = url
@@ -73,12 +78,31 @@ public final class AdaptivePrefillStore: @unchecked Sendable {
         return readUnlocked().states[key.storageKey]
     }
 
+    /// Persisted on a rung TRANSITION only (the cold path) — never per request.
+    /// The read + merge + encode runs under `lock`; the actual file write runs
+    /// outside it (serialized by `ioLock`) so the slow disk write never blocks
+    /// `load` or another save's in-memory merge. `ioLock` makes the whole
+    /// read-merge-write atomic on this instance, so no save can lose another's
+    /// key.
     public func save(_ state: AdaptivePrefillState, key: AdaptivePrefillStoreKey) throws {
+        ioLock.lock()
+        defer { ioLock.unlock() }
+        let data = try encodeMergedSnapshot(state, key: key)
+        try persist(data)
+    }
+
+    private func encodeMergedSnapshot(_ state: AdaptivePrefillState, key: AdaptivePrefillStoreKey) throws -> Data {
         lock.lock()
         defer { lock.unlock() }
         var file = readUnlocked()
         file.states[key.storageKey] = state
-        try writeUnlocked(file)
+        return try JSONEncoder().encode(file)
+    }
+
+    private func persist(_ data: Data) throws {
+        let dir = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try data.write(to: url, options: [.atomic])
     }
 
     private func readUnlocked() -> PersistedFile {
@@ -89,12 +113,5 @@ public final class AdaptivePrefillStore: @unchecked Sendable {
             return PersistedFile(version: Self.currentFileVersion, states: [:])
         }
         return file
-    }
-
-    private func writeUnlocked(_ file: PersistedFile) throws {
-        let dir = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let data = try JSONEncoder().encode(file)
-        try data.write(to: url, options: [.atomic])
     }
 }

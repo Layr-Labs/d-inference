@@ -8,6 +8,11 @@ public enum AdaptivePrefillDecisionReason: String, Codable, Sendable, Equatable 
     case initial
     case steady
     case grow
+    /// Descend one rung to MEASURE an as-yet-unmeasured lower neighbour before
+    /// settling. Lets an overshooting seed / restored rung self-correct downward
+    /// by measurement (a one-time bracket) instead of staying oversized until
+    /// memory/thermal/decode harm forces a back-off. See `AdaptivePrefillPolicy.settle`.
+    case probeDown
     case cooldown
     case capped
     /// Settled at the measured throughput optimum (held, or rolled back to the

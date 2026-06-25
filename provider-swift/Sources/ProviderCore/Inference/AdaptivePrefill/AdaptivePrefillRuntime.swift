@@ -20,13 +20,26 @@ public final class AdaptivePrefillRuntime: @unchecked Sendable {
         let thermal: AdaptivePrefillThermalSignal
     }
 
+    /// Default decode-overlap harm budget (ms). An overlapped first cold-prefill
+    /// chunk whose wall time exceeds this stalls every concurrently-decoding
+    /// sequence by that long (they share the same forward pass), so the climber
+    /// treats it as decode-latency harm. Conservative by design: a single
+    /// reasonably sized first chunk finishes well under a second even on Apple
+    /// silicon, so normal overlap never trips it — only a chunk that is oversized
+    /// for the current load does. Tunable per construction site.
+    public static let defaultDecodeOverlapHarmBudgetMs: Double = 1000.0
+
     private let policy: AdaptivePrefillPolicy
     private let store: AdaptivePrefillStore
     private let key: AdaptivePrefillStoreKey
     private let safetySignalTTL: TimeInterval
     private let safetySignalProvider: SafetySignalProvider?
+    private let decodeOverlapHarmBudgetMs: Double
     private let lock = NSLock()
     private var state: AdaptivePrefillState
+    /// Single, TTL-bounded cached OS reading — NOT a growing cache. It is one
+    /// optional tuple overwritten in place whenever it ages past `safetySignalTTL`,
+    /// so its memory footprint is constant regardless of request volume.
     private var cachedSafetySignals: (sampledAt: Date, signals: SafetySignals)?
 
     public init(
@@ -34,13 +47,15 @@ public final class AdaptivePrefillRuntime: @unchecked Sendable {
         store: AdaptivePrefillStore = AdaptivePrefillStore(),
         key: AdaptivePrefillStoreKey,
         safetySignalTTL: TimeInterval = 2.0,
-        safetySignalProvider: SafetySignalProvider? = nil
+        safetySignalProvider: SafetySignalProvider? = nil,
+        decodeOverlapHarmBudgetMs: Double = AdaptivePrefillRuntime.defaultDecodeOverlapHarmBudgetMs
     ) {
         self.policy = policy
         self.store = store
         self.key = key
         self.safetySignalTTL = max(0.1, safetySignalTTL)
         self.safetySignalProvider = safetySignalProvider
+        self.decodeOverlapHarmBudgetMs = max(0, decodeOverlapHarmBudgetMs)
         self.state = policy.initialState(persisted: store.load(key: key))
     }
 
@@ -53,15 +68,17 @@ public final class AdaptivePrefillRuntime: @unchecked Sendable {
 
     public func record(_ sample: ColdPrefillChunkSample) {
         let signals = safetySignals()
+        let durationMs = sample.durationSeconds * 1000.0
         let policySample = AdaptivePrefillSample(
             requestedChunkSize: sample.requestedChunkSize,
             actualChunkSize: sample.actualChunkSize,
             totalTokens: sample.totalTokens,
-            durationMs: sample.durationSeconds * 1000.0,
+            durationMs: durationMs,
             positionOffset: sample.positionOffset,
             decodeBatchSize: sample.decodeBatchSize,
             memorySignal: signals.memory,
             thermalSignal: signals.thermal,
+            decodeLatencyHarmed: decodeLatencyHarmed(sample, durationMs: durationMs),
             cappedByBudget: sample.cappedByBudget,
             cappedByCheckpoint: sample.cappedByCheckpoint,
             cappedByRemaining: sample.cappedByRemaining
@@ -90,6 +107,28 @@ public final class AdaptivePrefillRuntime: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return state
+    }
+
+    /// Decode-latency harm signal for the policy.
+    ///
+    /// In continuous batching a cold-prefill chunk that overlaps decode
+    /// (`decodeBatchSize > 0`) is fused into the SAME forward pass as the decode
+    /// step, so its wall time (`durationMs`) is added directly to the
+    /// time-between-tokens of every concurrently-decoding sequence. When that
+    /// stall exceeds `decodeOverlapHarmBudgetMs` the chunk is oversized for the
+    /// current load: flag harm so the policy backs off one rung and locks a
+    /// ceiling (it grew during idle traffic and must not keep an oversized chunk
+    /// once decode is contending).
+    ///
+    /// Gated to the first chunk (`positionOffset == 0`) for the same reason the
+    /// clean gate is: only the first chunk's duration is a function of chunk SIZE
+    /// alone. Later chunks carry O(N²) attention growth, so a slow late chunk
+    /// reflects prompt position, not an oversized rung — counting it would
+    /// false-positive on long prompts and collapse the ladder to the floor.
+    private func decodeLatencyHarmed(_ sample: ColdPrefillChunkSample, durationMs: Double) -> Bool {
+        sample.decodeBatchSize > 0
+            && sample.positionOffset == 0
+            && durationMs >= decodeOverlapHarmBudgetMs
     }
 
     private func safetySignals(now: Date = Date()) -> SafetySignals {

@@ -22,9 +22,9 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   workers: process.env.CI ? 1 : undefined,
   reporter: process.env.CI ? [["github"], ["list"]] : "list",
-  // The dev server compiles routes on-demand; under parallel workers a route's
-  // first hit can take several seconds. A generous assertion timeout absorbs
-  // cold compiles without masking real hangs (a hydration break still fails).
+  // Generous assertion/action timeouts as a safety margin for CI cold starts
+  // and first navigation after the production build; a real hydration break or
+  // page crash still fails, just a little later.
   expect: { timeout: 15_000 },
   use: {
     baseURL: BASE_URL,

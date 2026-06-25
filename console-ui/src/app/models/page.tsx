@@ -26,10 +26,11 @@ const baselinePricing: Record<string, { output: number; baseline: string; unit?:
 // Build a unified pricing lookup from the coordinator's response
 function buildPricingLookup(pricing: PricingResponse | null): Record<string, { input: number; output: number; unit?: string }> {
   const lookup: Record<string, { input: number; output: number; unit?: string }> = {};
-  // Defensive: a missing/oddly-shaped `prices` must not crash the whole page
+  // Defensive: a missing or non-array `prices` must not crash the whole page
   // (it previously threw "prices is not iterable" and tripped the root error
-  // boundary). Tolerate null pricing and an absent array alike.
-  for (const p of pricing?.prices ?? []) {
+  // boundary). Array.isArray covers null/undefined and any non-array shape.
+  const prices = Array.isArray(pricing?.prices) ? pricing.prices : [];
+  for (const p of prices) {
     lookup[p.model] = { input: p.input_price, output: p.output_price };
   }
   return lookup;

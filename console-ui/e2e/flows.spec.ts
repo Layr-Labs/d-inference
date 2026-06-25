@@ -180,3 +180,47 @@ test.describe("error + retry paths", () => {
     await expect(page.getByText("recovered after retry")).toBeVisible({ timeout: 15_000 });
   });
 });
+
+test.describe("page resilience", () => {
+  // Regression for the crash this suite first surfaced: a pricing payload
+  // without a `prices` array broke buildPricingLookup on both /models and /earn.
+  // The two pages fail differently, so we assert against both mechanisms:
+  //   - /models calls buildPricingLookup during render → a throw trips the ROOT
+  //     error boundary, replacing the shell (the Chat link disappears).
+  //   - /earn calls it inside a fetch .then() → a throw is an unhandled
+  //     rejection (no boundary), so we also capture page errors/rejections.
+  // Without the guards these fail; with them the pages render cleanly.
+  for (const route of ["/models", "/earn"]) {
+    test(`${route} survives a malformed pricing payload`, async ({ page }) => {
+      const pageErrors: string[] = [];
+      page.on("pageerror", (e) => pageErrors.push(e.message));
+      await page.addInitScript(() => {
+        const w = window as unknown as { __e2eErrors: string[] };
+        w.__e2eErrors = [];
+        window.addEventListener("unhandledrejection", (ev) =>
+          w.__e2eErrors.push(String((ev as PromiseRejectionEvent).reason)),
+        );
+        window.addEventListener("error", (ev) => w.__e2eErrors.push(String(ev.message)));
+      });
+
+      await page.route("**/api/pricing", (r) => r.fulfill({ json: {} })); // no `prices`
+      await page.goto(route);
+      await page.waitForLoadState("networkidle"); // let the pricing fetch resolve
+
+      // Shell intact (no root error boundary).
+      await expect(page.getByRole("link", { name: "Chat" }).first()).toBeVisible();
+      await expect(page.getByText("Something went wrong")).toHaveCount(0);
+
+      // No pricing-shape crash surfaced (render throw OR async rejection).
+      const crashRe = /is not iterable|reading 'map'/i;
+      await expect
+        .poll(async () => {
+          const winErrors = await page.evaluate(
+            () => (window as unknown as { __e2eErrors?: string[] }).__e2eErrors ?? [],
+          );
+          return [...pageErrors, ...winErrors].join("\n");
+        })
+        .not.toMatch(crashRe);
+    });
+  }
+});

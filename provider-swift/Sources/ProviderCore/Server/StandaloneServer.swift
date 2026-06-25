@@ -57,6 +57,9 @@ public struct StandaloneServerConfig: Sendable {
     /// When true, enable provider-local adaptive cold-prefill chunk sizing.
     /// Default false keeps the fixed 512-token path.
     public let adaptivePrefill: Bool
+    /// Detected local hardware, used to seed the adaptive cold-prefill ladder.
+    /// nil ⇒ unknown hardware ⇒ generic empirical ladder.
+    public let hardware: HardwareInfo?
 
     public init(
         port: UInt16 = 8000,
@@ -64,7 +67,8 @@ public struct StandaloneServerConfig: Sendable {
         maxCachedModels: Int = 3,
         authToken: String? = nil,
         kvQuant: Bool = false,
-        adaptivePrefill: Bool = false
+        adaptivePrefill: Bool = false,
+        hardware: HardwareInfo? = nil
     ) {
         self.port = port
         self.host = host
@@ -72,6 +76,7 @@ public struct StandaloneServerConfig: Sendable {
         self.authToken = authToken
         self.kvQuant = kvQuant
         self.adaptivePrefill = adaptivePrefill
+        self.hardware = hardware
     }
 }
 
@@ -277,7 +282,8 @@ public actor StandaloneServer {
             kvBudget: kvBudget,
             diskAccountant: diskAccountant,
             kvQuantEnabled: config.kvQuant,
-            adaptivePrefillEnabled: config.adaptivePrefill
+            adaptivePrefillEnabled: config.adaptivePrefill,
+            hardwareInfo: config.hardware
         )
         await scheduler.loadModel(container: container, modelId: modelId)
         let tokenizer: TokenizerHandle = await container.perform { ctx in

@@ -6,17 +6,23 @@ public struct AdaptivePrefillStoreKey: Sendable, Hashable {
     public let weightIdentity: String
     public let kvMode: String
     public let hardwareMemoryFingerprint: String
+    /// Algorithm/version identity folded into the hashed key so a policy change
+    /// yields a fresh key namespace — machines that learned a rung under an
+    /// older decision algorithm never collide with the new one.
+    public let policyIdentity: String
 
     public init(
         modelId: String,
         weightIdentity: String,
         kvMode: String,
-        hardwareMemoryFingerprint: String
+        hardwareMemoryFingerprint: String,
+        policyIdentity: String = AdaptivePrefillPolicy.algorithmIdentity
     ) {
         self.modelId = modelId
         self.weightIdentity = weightIdentity
         self.kvMode = kvMode
         self.hardwareMemoryFingerprint = hardwareMemoryFingerprint
+        self.policyIdentity = policyIdentity
     }
 
     var storageKey: String {
@@ -25,6 +31,7 @@ public struct AdaptivePrefillStoreKey: Sendable, Hashable {
             weightIdentity,
             kvMode,
             hardwareMemoryFingerprint,
+            policyIdentity,
         ].joined(separator: "\u{1f}")
         return SHA256.hash(data: Data(raw.utf8))
             .map { String(format: "%02x", $0) }
@@ -33,6 +40,13 @@ public struct AdaptivePrefillStoreKey: Sendable, Hashable {
 }
 
 public final class AdaptivePrefillStore: @unchecked Sendable {
+    /// On-disk schema version. Bumped 1→2 with the move from the duration-based
+    /// policy to the ms/token hill-climb: a v1 file is ignored wholesale on load
+    /// so previously learned 1024/1536 rungs re-seed cleanly instead of blocking
+    /// adoption. Mismatched per-entry `policyVersion` is filtered separately by
+    /// `AdaptivePrefillPolicy.initialState`.
+    static let currentFileVersion = 2
+
     private struct PersistedFile: Codable {
         var version: Int
         var states: [String: AdaptivePrefillState]
@@ -70,9 +84,9 @@ public final class AdaptivePrefillStore: @unchecked Sendable {
     private func readUnlocked() -> PersistedFile {
         guard let data = try? Data(contentsOf: url),
               let file = try? JSONDecoder().decode(PersistedFile.self, from: data),
-              file.version == 1
+              file.version == Self.currentFileVersion
         else {
-            return PersistedFile(version: 1, states: [:])
+            return PersistedFile(version: Self.currentFileVersion, states: [:])
         }
         return file
     }

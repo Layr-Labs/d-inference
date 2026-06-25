@@ -134,7 +134,8 @@ enum CheckpointLayerSignature: Sendable, Equatable {
 }
 
 /// Model-architecture fields read from `config.json`, used by
-/// `KVEstimation.computeKVBytesPerToken` to size the token budget.
+/// `KVEstimation.computeKVBytesPerToken` to size the token budget and by
+/// `AdaptivePrefillSeed` to seed the cold-prefill chunk ladder from physics.
 /// All values are post-clamp; see `KVEstimation.parseModelArchitecture`.
 public struct ModelArchitecture: Sendable {
     let numLayers: Int?
@@ -146,6 +147,44 @@ public struct ModelArchitecture: Sendable {
     let slidingWindowPattern: Int?
     let layerTypes: [String]?
     let maxContextLength: Int?
+    /// MoE: total routed experts (`num_local_experts`). nil ⇒ dense model.
+    let numLocalExperts: Int?
+    /// MoE: experts activated per token (`num_experts_per_tok`). nil ⇒ dense.
+    let numExpertsPerTok: Int?
+    /// Transformer residual width (`hidden_size`).
+    let hiddenSize: Int?
+    /// MLP / per-expert inner width (`intermediate_size`).
+    let intermediateSize: Int?
+
+    init(
+        numLayers: Int?,
+        kvHeads: Int?,
+        headDim: Int?,
+        numKvSharedLayers: Int,
+        globalHeadDim: Int?,
+        numGlobalKvHeads: Int?,
+        slidingWindowPattern: Int?,
+        layerTypes: [String]?,
+        maxContextLength: Int?,
+        numLocalExperts: Int? = nil,
+        numExpertsPerTok: Int? = nil,
+        hiddenSize: Int? = nil,
+        intermediateSize: Int? = nil
+    ) {
+        self.numLayers = numLayers
+        self.kvHeads = kvHeads
+        self.headDim = headDim
+        self.numKvSharedLayers = numKvSharedLayers
+        self.globalHeadDim = globalHeadDim
+        self.numGlobalKvHeads = numGlobalKvHeads
+        self.slidingWindowPattern = slidingWindowPattern
+        self.layerTypes = layerTypes
+        self.maxContextLength = maxContextLength
+        self.numLocalExperts = numLocalExperts
+        self.numExpertsPerTok = numExpertsPerTok
+        self.hiddenSize = hiddenSize
+        self.intermediateSize = intermediateSize
+    }
 
     static let empty = ModelArchitecture(
         numLayers: nil,

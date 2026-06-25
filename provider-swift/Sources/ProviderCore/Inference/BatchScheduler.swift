@@ -79,6 +79,10 @@ public actor BatchScheduler {
     /// False preserves the fixed 512-token production scheduler path.
     let adaptivePrefillEnabled: Bool
 
+    /// Detected local hardware. Drives the adaptive cold-prefill roofline seed
+    /// (`AdaptivePrefillSeed`). nil ⇒ unknown hardware ⇒ generic empirical ladder.
+    let hardwareInfo: HardwareInfo?
+
     // MARK: - Model-specific state (set by `loadModel`)
 
     var modelContainer: ModelContainer?
@@ -303,7 +307,8 @@ public actor BatchScheduler {
         kvBudget: GlobalKVCacheBudget? = nil,
         diskAccountant: GlobalDiskAccountant? = nil,
         kvQuantEnabled: Bool = false,
-        adaptivePrefillEnabled: Bool = false
+        adaptivePrefillEnabled: Bool = false,
+        hardwareInfo: HardwareInfo? = nil
     ) {
         self.maxConcurrentRequests = max(1, maxConcurrentRequests)
         self.pendingTimeout = pendingTimeout
@@ -313,6 +318,7 @@ public actor BatchScheduler {
         self.diskAccountant = diskAccountant
         self.kvQuantEnabled = kvQuantEnabled
         self.adaptivePrefillEnabled = adaptivePrefillEnabled
+        self.hardwareInfo = hardwareInfo
         // Cold-start concurrency seed. Start at the configured ceiling rather
         // than the old hard pin to 4: a startup burst of N concurrent requests
         // has no per-batch TPS samples yet, so the adaptive ramp hasn't engaged

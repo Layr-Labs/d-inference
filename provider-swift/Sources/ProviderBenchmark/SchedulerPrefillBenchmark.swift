@@ -113,6 +113,23 @@ public enum SchedulerPrefillBenchmark {
             return encoded.isEmpty ? [0] : encoded
         }
 
+        // Mirror production policy construction: seed the adaptive ladder from
+        // the detected GPU roofline + the model's own architecture. One runtime
+        // is shared across all adaptive iterations (isolated temp store) so it
+        // accumulates clean first-chunk samples and actually converges, rather
+        // than re-seeding every measurement.
+        let hardware = try? HardwareDetector.detect()
+        let architecture = KVEstimation.parseModelArchitecture(
+            at: modelDirectory.appendingPathComponent("config.json"))
+        let adaptivePolicy = adaptivePolicy(
+            modelID: modelID, hardware: hardware, architecture: architecture)
+        if let hardware {
+            log("seed: chip=\(hardware.chipName) ridge=\(String(format: "%.1f", hardware.rooflineRidgeFlopPerByte)) -> initial chunk \(adaptivePolicy.initialState().currentChunkSize), ladder \(adaptivePolicy.ladder)")
+        } else {
+            log("seed: hardware unknown -> generic ladder \(adaptivePolicy.ladder), initial \(adaptivePolicy.initialState().currentChunkSize)")
+        }
+        let sharedAdaptiveRuntime = makeAdaptiveRuntime(modelID: modelID, policy: adaptivePolicy)
+
         _ = try await measureOne(
             container: container,
             modelID: modelID,
@@ -120,7 +137,8 @@ public enum SchedulerPrefillBenchmark {
             promptTokens: min(lengths.first ?? 128, 128),
             strategy: .fixed(512),
             iteration: 0,
-            record: false
+            record: false,
+            adaptiveRuntime: nil
         )
 
         var samples: [SchedulerPrefillBenchmarkReport.Sample] = []
@@ -134,9 +152,10 @@ public enum SchedulerPrefillBenchmark {
                         promptTokens: length,
                         strategy: strategy,
                         iteration: iteration,
-                        record: true
+                        record: true,
+                        adaptiveRuntime: strategy == .adaptive ? sharedAdaptiveRuntime : nil
                     )
-                    log("  \(strategy.label) L=\(length) i=\(iteration): \(String(format: "%.3f", sample.msPerPrefillToken)) ms/t (\(String(format: "%.1f", sample.ttftMs)) ms)")
+                    log("  \(strategy.label) L=\(length) i=\(iteration): \(String(format: "%.3f", sample.msPerPrefillToken)) ms/t (\(String(format: "%.1f", sample.ttftMs)) ms, chunk=\(sample.finalAdaptiveChunkSize.map(String.init) ?? "-"))")
                     samples.append(sample)
                 }
             }
@@ -159,27 +178,10 @@ public enum SchedulerPrefillBenchmark {
         promptTokens: Int,
         strategy: Strategy,
         iteration: Int,
-        record: Bool
+        record: Bool,
+        adaptiveRuntime: AdaptivePrefillRuntime?
     ) async throws -> SchedulerPrefillBenchmarkReport.Sample {
         let recorder = ChunkRecorder()
-        let adaptiveRuntime: AdaptivePrefillRuntime? = {
-            guard strategy == .adaptive else { return nil }
-            let storeURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("darkbloom-adaptive-prefill-bench-\(UUID().uuidString)", isDirectory: true)
-                .appendingPathComponent("state.json")
-            let store = AdaptivePrefillStore(url: storeURL)
-            let key = AdaptivePrefillStoreKey(
-                modelId: modelID,
-                weightIdentity: modelDirectoryIdentity(modelID: modelID),
-                kvMode: "fp16",
-                hardwareMemoryFingerprint: "bench:\(ProcessInfo.processInfo.physicalMemory)"
-            )
-            return AdaptivePrefillRuntime(
-                policy: adaptivePolicy(modelID: modelID),
-                store: store,
-                key: key
-            )
-        }()
 
         let engine = await container.perform { ctx -> BatchedEngine in
             let prefillStepSize: Int
@@ -268,10 +270,37 @@ public enum SchedulerPrefillBenchmark {
         "bench:\(modelID)"
     }
 
-    private static func adaptivePolicy(modelID: String) -> AdaptivePrefillPolicy {
-        modelID.lowercased().contains("gpt-oss-20b")
-            ? .gptOSS20BDefault()
-            : .liveDefault()
+    /// Production-mirrored policy: roofline-seeded from hardware + architecture
+    /// when both are available, else the generic empirical default.
+    private static func adaptivePolicy(
+        modelID: String,
+        hardware: HardwareInfo?,
+        architecture: ModelArchitecture
+    ) -> AdaptivePrefillPolicy {
+        guard let hardware else { return .liveDefault() }
+        return AdaptivePrefillSeed.policy(hardware: hardware, model: architecture)
+    }
+
+    /// One adaptive runtime per benchmark run, backed by an isolated temp store
+    /// so prior on-disk learned state never taints the measurement.
+    private static func makeAdaptiveRuntime(
+        modelID: String,
+        policy: AdaptivePrefillPolicy
+    ) -> AdaptivePrefillRuntime {
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-adaptive-prefill-bench-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("state.json")
+        let key = AdaptivePrefillStoreKey(
+            modelId: modelID,
+            weightIdentity: modelDirectoryIdentity(modelID: modelID),
+            kvMode: "fp16",
+            hardwareMemoryFingerprint: "bench:\(ProcessInfo.processInfo.physicalMemory)"
+        )
+        return AdaptivePrefillRuntime(
+            policy: policy,
+            store: AdaptivePrefillStore(url: storeURL),
+            key: key
+        )
     }
 
     private static func stopAndReclaim(_ engine: BatchedEngine) async {

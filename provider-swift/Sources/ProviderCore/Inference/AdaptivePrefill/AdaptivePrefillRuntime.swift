@@ -8,6 +8,13 @@ let adaptivePrefillLogger = Logger(
 )
 
 public final class AdaptivePrefillRuntime: @unchecked Sendable {
+    /// Live OS memory/thermal signals. Injectable so tests can drive the harm
+    /// path deterministically without mocking the policy or store (the real
+    /// components under test); production leaves it nil and samples the OS.
+    public typealias SafetySignalProvider = @Sendable () -> (
+        memory: AdaptivePrefillMemorySignal, thermal: AdaptivePrefillThermalSignal
+    )
+
     private struct SafetySignals {
         let memory: AdaptivePrefillMemorySignal
         let thermal: AdaptivePrefillThermalSignal
@@ -17,6 +24,7 @@ public final class AdaptivePrefillRuntime: @unchecked Sendable {
     private let store: AdaptivePrefillStore
     private let key: AdaptivePrefillStoreKey
     private let safetySignalTTL: TimeInterval
+    private let safetySignalProvider: SafetySignalProvider?
     private let lock = NSLock()
     private var state: AdaptivePrefillState
     private var cachedSafetySignals: (sampledAt: Date, signals: SafetySignals)?
@@ -25,12 +33,14 @@ public final class AdaptivePrefillRuntime: @unchecked Sendable {
         policy: AdaptivePrefillPolicy = .liveDefault(),
         store: AdaptivePrefillStore = AdaptivePrefillStore(),
         key: AdaptivePrefillStoreKey,
-        safetySignalTTL: TimeInterval = 2.0
+        safetySignalTTL: TimeInterval = 2.0,
+        safetySignalProvider: SafetySignalProvider? = nil
     ) {
         self.policy = policy
         self.store = store
         self.key = key
         self.safetySignalTTL = max(0.1, safetySignalTTL)
+        self.safetySignalProvider = safetySignalProvider
         self.state = policy.initialState(persisted: store.load(key: key))
     }
 
@@ -46,7 +56,9 @@ public final class AdaptivePrefillRuntime: @unchecked Sendable {
         let policySample = AdaptivePrefillSample(
             requestedChunkSize: sample.requestedChunkSize,
             actualChunkSize: sample.actualChunkSize,
+            totalTokens: sample.totalTokens,
             durationMs: sample.durationSeconds * 1000.0,
+            positionOffset: sample.positionOffset,
             decodeBatchSize: sample.decodeBatchSize,
             memorySignal: signals.memory,
             thermalSignal: signals.thermal,
@@ -63,7 +75,7 @@ public final class AdaptivePrefillRuntime: @unchecked Sendable {
 
         guard transition.changedChunkSize else { return }
         adaptivePrefillLogger.notice(
-            "adaptive-prefill \(transition.reason.rawValue, privacy: .public): chunk \(previous.currentChunkSize) -> \(transition.state.currentChunkSize), duration_ms=\(policySample.durationMs, privacy: .public)"
+            "adaptive-prefill \(transition.reason.rawValue, privacy: .public): chunk \(previous.currentChunkSize) -> \(transition.state.currentChunkSize), ms_per_token=\(policySample.msPerToken, privacy: .public) (total_tokens=\(policySample.totalTokens, privacy: .public), pos_offset=\(policySample.positionOffset, privacy: .public))"
         )
         do {
             try store.save(transition.state, key: key)
@@ -90,7 +102,13 @@ public final class AdaptivePrefillRuntime: @unchecked Sendable {
         }
         lock.unlock()
 
-        let signals = Self.currentSafetySignals()
+        let signals: SafetySignals
+        if let safetySignalProvider {
+            let resolved = safetySignalProvider()
+            signals = SafetySignals(memory: resolved.memory, thermal: resolved.thermal)
+        } else {
+            signals = Self.currentSafetySignals()
+        }
 
         lock.lock()
         cachedSafetySignals = (sampledAt: now, signals: signals)

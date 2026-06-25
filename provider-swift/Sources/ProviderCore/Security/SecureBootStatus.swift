@@ -14,8 +14,8 @@ import Foundation
 ///
 /// `unavailable` covers the cases where the level genuinely can't be read —
 /// an absent/empty `SPiBridgeDataType` (anomalous on Tahoe), a `system_profiler`
-/// failure, or a localized level string we don't recognize. These are warned,
-/// never hard-blocked, to avoid false lockouts.
+/// failure, or a localized level string we don't recognize. These warn locally;
+/// the coordinator's MDM trust path remains the hard enforcement layer.
 public enum SecureBootStatus: Sendable, Equatable {
     /// Provably Full Security: `ibridge_secure_boot == "Full Security"` from
     /// `system_profiler SPiBridgeDataType`. The only posture the gate and the
@@ -29,7 +29,7 @@ public enum SecureBootStatus: Sendable, Equatable {
     /// Secure boot effectively off: `ibridge_secure_boot` reports Permissive or
     /// No Security.
     case permissiveOrDisabled
-    /// The posture could not be determined (warned, never hard-blocked).
+    /// The posture could not be determined.
     case unavailable(reason: String)
 
     /// True only when the machine *provably* reports Full Security
@@ -53,8 +53,7 @@ public enum SecureBootStatus: Sendable, Equatable {
 
     /// True when detection is *confident* the machine is NOT at an acceptable
     /// posture (a reported Reduced/Medium/Permissive/No-Security downgrade).
-    /// `unavailable` is deliberately excluded: an undetectable posture is
-    /// warned, not blocked.
+    /// `unavailable` is deliberately excluded: it is not a confirmed downgrade.
     public var isConfidentlyNotFullSecurity: Bool {
         switch self {
         case .reduced, .permissiveOrDisabled:
@@ -75,11 +74,10 @@ public enum SecureBootStatus: Sendable, Equatable {
 /// — on the provider's minimum supported OS (macOS 26 / Tahoe) on BOTH Apple
 /// Silicon and Intel T2. If the array is empty/absent (anomalous on Tahoe, or a
 /// sandboxed `system_profiler`), `spiBridgeStatus` returns `nil` and the caller
-/// maps that to `.unavailable` (a WARN, never a false downgrade).
+/// maps that to `.unavailable`.
 public enum SecureBootStatusParser {
     /// Classify a `SPiBridgeDataType` result, or `nil` when the array is
-    /// empty/unavailable (anomalous on Tahoe, or a command failure) so the
-    /// caller can warn rather than block.
+    /// empty/unavailable (anomalous on Tahoe, or a command failure).
     public static func spiBridgeStatus(_ result: SecurityCommandResult) -> SecureBootStatus? {
         guard result.terminationStatus == 0 else { return nil }
         return spiBridgeStatus(result.stdout)
@@ -108,8 +106,8 @@ public enum SecureBootStatusParser {
     /// `system_profiler` localizes these values on non-English Macs, and the
     /// strings are not forceable to English. We therefore positively recognize
     /// only the known English values and treat anything else as `unavailable`
-    /// (→ a WARN, not a false downgrade) so a correctly configured non-English
-    /// Mac is never wrongly blocked.
+    /// (unavailable, not a false downgrade) so a correctly configured
+    /// non-English Mac never gets misclassified as downgraded.
     public static func classify(level rawValue: String) -> SecureBootStatus {
         let normalized = rawValue.lowercased().filter { !$0.isWhitespace }
         switch normalized {

@@ -11,7 +11,7 @@ import Foundation
 /// data type is reliably populated on BOTH Apple Silicon (verified on M4 Max /
 /// Mac16,5 / arm64) AND Intel T2, so it is the single source of truth. When the
 /// array is empty/absent (anomalous on Tahoe) or `system_profiler` fails, the
-/// posture is `.unavailable` — a WARN, never a false lockout.
+/// posture is `.unavailable`, which the serving policy warns about.
 ///
 /// The probe runs through the injectable `SecurityCommandRunner`, so the whole
 /// detection path is unit-testable without depending on the host's boot policy.

@@ -13,8 +13,11 @@ extension Start {
     internal func runLocalStandalone(
         snapshot: RuntimeSnapshot,
         config: ProviderConfig,
-        hardware: HardwareInfo
+        hardware: HardwareInfo,
+        bootSecuritySnapshot: BootSecuritySnapshot = .live()
     ) async throws {
+        try enforceBootSecurity(snapshot: bootSecuritySnapshot)
+
         let selected = advertisedModels(
             from: snapshot.models,
             config: config,
@@ -142,8 +145,11 @@ extension Start {
         snapshot: RuntimeSnapshot,
         hardware: HardwareInfo,
         config: ProviderConfig,
-        coordinatorURL: String
+        coordinatorURL: String,
+        bootSecuritySnapshot: BootSecuritySnapshot = .live()
     ) async throws {
+        try enforceBootSecurity(snapshot: bootSecuritySnapshot)
+
         let selectedModels: [ModelInfo]
         if !model.isEmpty {
             selectedModels = advertisedModels(from: snapshot.models, config: config, modelOverrides: model)
@@ -200,14 +206,15 @@ extension Start {
             machineId: macHardwareSerialNumber() ?? ""
         ))
 
+        var startupFields = bootSecurityTelemetryFields(bootSecuritySnapshot)
+        startupFields["backend"] = .string("mlx-swift")
+        startupFields["models"] = .int(models.count)
+
         TelemetryClient.shared.emit(
             kind: .log,
-            severity: .info,
+            severity: bootSecurityTelemetrySeverity(bootSecuritySnapshot),
             message: "provider starting",
-            fields: [
-                "backend": .string("mlx-swift"),
-                "models": .int(models.count),
-            ]
+            fields: startupFields
         )
 
         let schedule: Schedule? = config.schedule.flatMap { Schedule.from(config: $0) }

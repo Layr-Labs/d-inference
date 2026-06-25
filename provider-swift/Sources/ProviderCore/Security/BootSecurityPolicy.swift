@@ -2,13 +2,14 @@ import Foundation
 
 // MARK: - Verdict
 
-/// The gate verdict for a single boot-security protection.
+/// The rollout verdict for a single boot-security protection.
 public enum BootSecurityVerdict: Sendable, Equatable {
     /// Fully on — acceptable.
     case pass
-    /// Could not be determined — surface a warning, but do not block.
+    /// Non-fatal advisory state for checks that can safely proceed with notice.
     case warn
-    /// Confidently not fully on — block startup.
+    /// Confidently not fully on. Retained for policy consumers that still need
+    /// a hard-fail signal; provider startup currently reports warnings only.
     case fail
 }
 
@@ -50,21 +51,19 @@ extension SecureBootStatus {
             return "Permissive / No Security (system_profiler ibridge_secure_boot) "
                 + "— secure boot not enforced"
         case .unavailable(let reason):
-            return "could not determine (\(reason)) — the coordinator still requires "
-                + "confirmed Secure Boot, so proceeding locally does not guarantee admission"
+            return "could not determine (\(reason)) — confirmed Secure Boot is required for hardware trust"
         }
     }
 }
 
 // MARK: - Policy
 
-/// Pure policy that maps detected boot-security states to gate verdicts and to
+/// Pure policy that maps detected boot-security states to rollout verdicts and to
 /// the combined `start` preflight decision. Free of any process/IO so it is
 /// fully unit-testable.
 public enum BootSecurityPolicy {
-    /// Environment variable that downgrades a hard failure to a loud warning.
-    /// Documented developer escape hatch so engineers on non-Full-Security
-    /// machines aren't locked out; never for production use.
+    /// Historical developer escape hatch. Kept so existing launchd plists and
+    /// scripts do not break during the warning-only rollout.
     public static let overrideEnvVar = "DARKBLOOM_ALLOW_INSECURE_BOOT"
 
     /// The minimum supported macOS major version. macOS 26 (Tahoe) is the floor:
@@ -72,11 +71,11 @@ public enum BootSecurityPolicy {
     /// Secure Boot signal, and it is the only OS the provider is validated on.
     public static let minimumMacOSMajorVersion = 26
 
-    /// macOS version gate: the running major version must be at least
-    /// `minimumMacOSMajorVersion`. Always determinable (read from `ProcessInfo`),
-    /// so there is no `.warn` case — below the floor is a hard `.fail`.
+    /// macOS version posture: Tahoe or newer is the supported serving platform.
+    /// During rollout, older versions warn locally and report telemetry; runtime
+    /// readiness still handles Metal/MLX incompatibility.
     public static func macOSVerdict(_ majorVersion: Int) -> BootSecurityVerdict {
-        majorVersion >= minimumMacOSMajorVersion ? .pass : .fail
+        majorVersion >= minimumMacOSMajorVersion ? .pass : .warn
     }
 
     /// One-line, human-readable summary of the macOS version state, shared by
@@ -85,56 +84,49 @@ public enum BootSecurityPolicy {
         if majorVersion >= minimumMacOSMajorVersion {
             return "macOS \(majorVersion) — meets the macOS \(minimumMacOSMajorVersion) (Tahoe) minimum"
         }
-        return "macOS \(majorVersion) — below the required macOS \(minimumMacOSMajorVersion) "
-            + "(Tahoe); update to continue"
+        return "macOS \(majorVersion) — below the supported macOS \(minimumMacOSMajorVersion) "
+            + "(Tahoe); update for full support"
     }
 
-    /// SIP gate: fully enabled passes; disabled or "enabled (Custom
-    /// Configuration)" fail (custom config is NOT fully enabled); an
-    /// undeterminable result warns rather than blocks (csrutil should always be
-    /// present, so this is the pathological case — warn to avoid false lockout).
+    /// SIP posture: fully enabled passes; everything else warns locally. The
+    /// coordinator's MDM hardware-trust path remains the hard enforcement layer.
     public static func sipVerdict(_ status: SIPStatus) -> BootSecurityVerdict {
         switch status {
         case .enabled:
             return .pass
-        case .disabled, .enabledWithCustomConfiguration:
-            return .fail
-        case .unavailable, .unrecognized:
+        case .disabled, .enabledWithCustomConfiguration, .unavailable, .unrecognized:
             return .warn
         }
     }
 
-    /// Secure Boot gate: provable Full Security (`ibridge_secure_boot == "Full
+    /// Secure Boot posture: provable Full Security (`ibridge_secure_boot == "Full
     /// Security"`, Apple Silicon or Intel T2) passes; a confidently-reported
-    /// downgrade (Reduced/Medium/Permissive/No Security) fails; an undeterminable
-    /// posture warns rather than blocks (avoids false-positive lockouts on a
-    /// localized `system_profiler` value or an unreadable probe).
+    /// downgrade (Reduced/Medium/Permissive/No Security) or an undeterminable
+    /// posture warns locally. MDM enforces Full Security for hardware trust.
     ///
     /// `pass` and `attestsSecureBoot` derive from the SAME `SecureBootStatus`, so
-    /// the gate and the attested `secure_boot_enabled` never disagree.
+    /// the local verdict and the attested `secure_boot_enabled` never disagree.
     public static func secureBootVerdict(_ status: SecureBootStatus) -> BootSecurityVerdict {
         switch status {
         case .fullSecurity:
             return .pass
-        case .reduced, .permissiveOrDisabled:
-            return .fail
-        case .unavailable:
+        case .reduced, .permissiveOrDisabled, .unavailable:
             return .warn
         }
     }
 
     // MARK: - Combined preflight decision
 
-    /// Outcome of evaluating both protections for the `start` preflight: whether
-    /// to block, the exact lines to print, and whether a block was overridden.
+    /// Outcome of evaluating boot posture for the `start` preflight: the exact
+    /// lines to print, plus legacy block fields kept stable for callers/tests.
     public struct PreflightDecision: Sendable, Equatable {
-        /// True when `start` must abort (throw a non-zero exit).
+        /// Currently always false for boot posture: this rollout is non-blocking.
         public let shouldBlock: Bool
         /// Ordered lines to print (warnings + the enable guide). Empty when all
         /// protections pass.
         public let messageLines: [String]
-        /// True when a confident failure was downgraded to a warning by the
-        /// escape-hatch env var.
+        /// Currently always false; retained for compatibility with the previous
+        /// previous blocking policy.
         public let overrodeBlock: Bool
 
         public init(shouldBlock: Bool, messageLines: [String], overrodeBlock: Bool) {
@@ -149,16 +141,14 @@ public enum BootSecurityPolicy {
 
     /// Evaluate all three protections and produce the preflight decision.
     ///
-    /// - Failure (below the macOS floor, or a confident SIP / Secure Boot
-    ///   downgrade) blocks startup unless `allowInsecureOverride` is set, in
-    ///   which case it is loudly downgraded to a warning.
-    /// - A warning (undeterminable Secure Boot) prints the guide but never
-    ///   blocks, so an undetectable host is not falsely locked out.
+    /// - This rollout is intentionally non-blocking: failures/warnings are
+    ///   surfaced locally and emitted through telemetry, while the coordinator's
+    ///   MDM trust checks remain the hard enforcement layer.
     public static func preflightDecision(
         macOSMajorVersion: Int,
         sip: SIPStatus,
         secureBoot: SecureBootStatus,
-        allowInsecureOverride: Bool
+        allowInsecureOverride _: Bool
     ) -> PreflightDecision {
         let macOSV = macOSVerdict(macOSMajorVersion)
         let sipV = sipVerdict(sip)
@@ -167,13 +157,9 @@ public enum BootSecurityPolicy {
             return .ok
         }
 
-        let hasFailure = macOSV == .fail || sipV == .fail || secureBootV == .fail
-
         var lines: [String] = []
         lines.append(
-            hasFailure
-                ? "ERROR: macOS boot security is not fully enabled — required to serve inference."
-                : "WARNING: macOS boot security could not be fully verified."
+            "WARNING: macOS boot security is not fully verified. Continuing while the coordinator enforces hardware trust."
         )
         if macOSV != .pass {
             lines.append("  - macOS version: \(macOSSummary(majorVersion: macOSMajorVersion))")
@@ -191,21 +177,6 @@ public enum BootSecurityPolicy {
             includeSecureBoot: secureBootV != .pass
         ))
 
-        if hasFailure && allowInsecureOverride {
-            lines.append("")
-            lines.append("\(overrideEnvVar)=1 is set — continuing despite the failure above.")
-            lines.append("This is for development only. DO NOT serve production traffic like this.")
-            return PreflightDecision(shouldBlock: false, messageLines: lines, overrodeBlock: true)
-        }
-
-        if hasFailure {
-            lines.append("")
-            lines.append("Refusing to start. Fix the above, or set \(overrideEnvVar)=1 to override (developer use only).")
-            return PreflightDecision(shouldBlock: true, messageLines: lines, overrodeBlock: false)
-        }
-
-        // Warnings only (state genuinely undeterminable): surface the guide but
-        // let startup proceed so we never lock out a correctly configured host.
         return PreflightDecision(shouldBlock: false, messageLines: lines, overrodeBlock: false)
     }
 }

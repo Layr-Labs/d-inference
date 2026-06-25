@@ -10,7 +10,7 @@ import Testing
 /// (Full / Reduced-Medium / Permissive-No Security). On the provider's minimum
 /// OS — macOS 26 (Tahoe) — this array is reliably populated and authoritative on
 /// BOTH Apple Silicon (verified on M4 Max / Mac16,5 / arm64) AND Intel T2. When
-/// it is empty/absent the posture is `.unavailable` (a WARN, never a downgrade).
+/// it is empty/absent the posture is `.unavailable` (unproven, never a downgrade).
 ///
 /// Nothing here depends on the host's actual macOS / SIP / Secure Boot state.
 @Suite("boot security gate")
@@ -157,21 +157,21 @@ struct BootSecurityTests {
         #expect(BootSecurityPolicy.secureBootVerdict(checker.status()) == .pass)
     }
 
-    @Test("Intel T2: verdict mapping — Full passes, Medium/No fail")
+    @Test("Intel T2: verdict mapping — Full passes, Medium/No warn")
     func intelT2Verdicts() {
         func verdict(_ level: String) -> BootSecurityVerdict {
             BootSecurityPolicy.secureBootVerdict(
                 SecureBootStatusChecker(runner: runner(systemProfiler: ok(spiBridge(level)))).status())
         }
         #expect(verdict("Full Security") == .pass)
-        #expect(verdict("Medium Security") == .fail)
-        #expect(verdict("No Security") == .fail)
+        #expect(verdict("Medium Security") == .warn)
+        #expect(verdict("No Security") == .warn)
     }
 
-    @Test("SPiBridge: a localized level is unavailable (warn), never a false downgrade")
+    @Test("SPiBridge: a localized level is unavailable and warns, never a false downgrade")
     func spiBridgeLocalizedLevelWarns() {
         // system_profiler localizes ibridge_secure_boot on non-English Macs; an
-        // unrecognized value must WARN, not be misread as a downgrade.
+        // unrecognized value must not be misread as a downgrade.
         let status = SecureBootStatusChecker(
             runner: runner(systemProfiler: ok(spiBridge("Vollständige Sicherheit")))
         ).status()
@@ -184,9 +184,9 @@ struct BootSecurityTests {
         #expect(!status.isConfidentlyNotFullSecurity)
     }
 
-    @Test("empty SPiBridge array → unavailable (WARN only, no lockout)")
+    @Test("empty SPiBridge array → unavailable and warns")
     func emptySPiBridgeWarns() {
-        // Anomalous on Tahoe, but if the array is empty we warn rather than block.
+        // Anomalous on Tahoe; if the array is empty, serving reports the posture for telemetry.
         let status = SecureBootStatusChecker(runner: runner(systemProfiler: ok(emptyBridge))).status()
         if case .unavailable = status {
             // expected
@@ -197,7 +197,7 @@ struct BootSecurityTests {
         #expect(!status.attestsSecureBoot)
     }
 
-    @Test("system_profiler failure → unavailable, never a false pass/fail")
+    @Test("system_profiler failure → unavailable and warns")
     func commandFailureUnavailable() {
         let status = SecureBootStatusChecker(runner: runner(
             systemProfiler: SecurityCommandResult(terminationStatus: 1, stderr: "system_profiler: boom"))
@@ -277,42 +277,36 @@ struct BootSecurityTests {
         #expect(!SecureBootStatus.unavailable(reason: "x").isConfidentlyNotFullSecurity)
     }
 
-    /// Pins the deliberate gate↔attestation split for an undeterminable posture:
-    /// `start` proceeds locally (verdict `.warn`, no false lockout) but the
-    /// attested `secure_boot_enabled` is false, so the coordinator still rejects.
-    /// The WARNING text must say so, or operators are surprised by a rejection
-    /// after a "successful" local start.
-    @Test("unavailable warns locally (start proceeds) but does NOT attest Secure Boot (coordinator rejects)")
-    func unavailableWarnsLocallyButDoesNotAttestSecureBoot() {
+    /// Pins the non-blocking rollout invariant for an undeterminable posture:
+    /// local serving warns and continues while the attested `secure_boot_enabled`
+    /// remains false for coordinator-side trust checks.
+    @Test("unavailable warns locally and does NOT attest Secure Boot")
+    func unavailableWarnsAndDoesNotAttestSecureBoot() {
         let status = SecureBootStatus.unavailable(reason: "no ibridge_secure_boot level")
 
-        // Local gate: warn → start proceeds (never a false lockout)…
         #expect(BootSecurityPolicy.secureBootVerdict(status) == .warn)
-        // …but the attested boolean is false, so the coordinator stays untrusting.
         #expect(!status.attestsSecureBoot)
 
-        // The same split holds through the attestation-feeding entry point: an
-        // unreadable runner (every probe fails → unavailable) attests false.
+        // The attestation-feeding entry point also reports false when every
+        // probe fails.
         let unreadable = SecurityCommandRunner { _, _ in
             SecurityCommandResult(terminationStatus: 1, stderr: "unreadable")
         }
         #expect(!checkSecureBootEnabled(runner: unreadable))
 
-        // The WARNING text tells the operator that proceeding locally is not
-        // admission — the coordinator still requires confirmed Secure Boot.
-        let warning = status.summary
-        #expect(warning.contains("coordinator"))
-        #expect(warning.contains("does not guarantee admission"))
+        let summary = status.summary
+        #expect(summary.contains("confirmed Secure Boot"))
+        #expect(summary.contains("required for hardware trust"))
     }
 
     // MARK: - Verdict mapping
 
-    @Test("macOS verdict: Tahoe+ passes, anything below fails")
+    @Test("macOS verdict: Tahoe+ passes, anything below warns during rollout")
     func macOSVerdicts() {
         #expect(BootSecurityPolicy.macOSVerdict(26) == .pass)
         #expect(BootSecurityPolicy.macOSVerdict(27) == .pass)
-        #expect(BootSecurityPolicy.macOSVerdict(25) == .fail)
-        #expect(BootSecurityPolicy.macOSVerdict(15) == .fail)
+        #expect(BootSecurityPolicy.macOSVerdict(25) == .warn)
+        #expect(BootSecurityPolicy.macOSVerdict(15) == .warn)
         #expect(BootSecurityPolicy.minimumMacOSMajorVersion == 26)
     }
 
@@ -326,21 +320,21 @@ struct BootSecurityTests {
         #expect(ok.contains("26"))
     }
 
-    @Test("SIP verdict: only full passes; custom-config is a failure")
+    @Test("SIP verdict: only full passes; every other posture warns")
     func sipVerdicts() {
         #expect(BootSecurityPolicy.sipVerdict(.enabled) == .pass)
-        #expect(BootSecurityPolicy.sipVerdict(.disabled) == .fail)
+        #expect(BootSecurityPolicy.sipVerdict(.disabled) == .warn)
         #expect(BootSecurityPolicy.sipVerdict(
-            .enabledWithCustomConfiguration(disabledProtections: ["Kext Signing"])) == .fail)
+            .enabledWithCustomConfiguration(disabledProtections: ["Kext Signing"])) == .warn)
         #expect(BootSecurityPolicy.sipVerdict(.unavailable(reason: "x")) == .warn)
         #expect(BootSecurityPolicy.sipVerdict(.unrecognized(output: "?")) == .warn)
     }
 
-    @Test("Secure Boot verdict: Full Security passes, downgrades fail, unknown warns")
+    @Test("Secure Boot verdict: Full Security passes; downgrades and unknown warn")
     func secureBootVerdicts() {
         #expect(BootSecurityPolicy.secureBootVerdict(.fullSecurity) == .pass)
-        #expect(BootSecurityPolicy.secureBootVerdict(.reduced) == .fail)
-        #expect(BootSecurityPolicy.secureBootVerdict(.permissiveOrDisabled) == .fail)
+        #expect(BootSecurityPolicy.secureBootVerdict(.reduced) == .warn)
+        #expect(BootSecurityPolicy.secureBootVerdict(.permissiveOrDisabled) == .warn)
         #expect(BootSecurityPolicy.secureBootVerdict(.unavailable(reason: "x")) == .warn)
     }
 
@@ -365,12 +359,13 @@ struct BootSecurityTests {
         #expect(decision.messageLines.isEmpty)
     }
 
-    @Test("macOS below the Tahoe floor blocks and prints the upgrade guide")
-    func preflightBelowMacOSFloorBlocks() {
+    @Test("macOS below the Tahoe floor warns and prints the upgrade guide")
+    func preflightBelowMacOSFloorWarns() {
         let decision = BootSecurityPolicy.preflightDecision(
             macOSMajorVersion: 25, sip: .enabled, secureBoot: .fullSecurity, allowInsecureOverride: false)
-        #expect(decision.shouldBlock)
+        #expect(!decision.shouldBlock)
         let text = decision.messageLines.joined(separator: "\n")
+        #expect(text.contains("WARNING"))
         #expect(text.contains("Software Update"))
         #expect(text.contains("Tahoe"))
         // SIP and Secure Boot are fine here, so their sections are omitted.
@@ -378,23 +373,24 @@ struct BootSecurityTests {
         #expect(!text.contains("Startup Security Utility"))
     }
 
-    @Test("escape hatch downgrades a below-floor macOS failure to a loud warning")
-    func preflightMacOSOverrideDowngrades() {
+    @Test("escape hatch is unnecessary for non-blocking macOS warnings")
+    func preflightMacOSOverrideIsNoOp() {
         let decision = BootSecurityPolicy.preflightDecision(
             macOSMajorVersion: 25, sip: .enabled, secureBoot: .fullSecurity, allowInsecureOverride: true)
         #expect(!decision.shouldBlock)
-        #expect(decision.overrodeBlock)
+        #expect(!decision.overrodeBlock)
         let text = decision.messageLines.joined(separator: "\n")
-        #expect(text.contains(BootSecurityPolicy.overrideEnvVar))
-        #expect(text.contains("development only"))
+        #expect(text.contains("WARNING"))
+        #expect(!text.contains(BootSecurityPolicy.overrideEnvVar))
     }
 
-    @Test("SIP disabled blocks and prints the enable guide")
-    func preflightSIPDisabledBlocks() {
+    @Test("SIP disabled warns and prints the enable guide")
+    func preflightSIPDisabledWarns() {
         let decision = BootSecurityPolicy.preflightDecision(
             macOSMajorVersion: 26, sip: .disabled, secureBoot: .fullSecurity, allowInsecureOverride: false)
-        #expect(decision.shouldBlock)
+        #expect(!decision.shouldBlock)
         let text = decision.messageLines.joined(separator: "\n")
+        #expect(text.contains("WARNING"))
         #expect(text.contains("csrutil enable"))
         #expect(text.contains("System Integrity Protection"))
         // Secure Boot and macOS are fine here, so those sections are omitted.
@@ -402,48 +398,51 @@ struct BootSecurityTests {
         #expect(!text.contains("Software Update"))
     }
 
-    @Test("SIP custom configuration blocks (treated as not fully enabled)")
-    func preflightSIPCustomBlocks() {
+    @Test("SIP custom configuration warns (treated as not fully enabled)")
+    func preflightSIPCustomWarns() {
         let decision = BootSecurityPolicy.preflightDecision(
             macOSMajorVersion: 26,
             sip: .enabledWithCustomConfiguration(disabledProtections: ["Kext Signing"]),
             secureBoot: .fullSecurity,
             allowInsecureOverride: false)
-        #expect(decision.shouldBlock)
+        #expect(!decision.shouldBlock)
         #expect(decision.messageLines.joined(separator: "\n").contains("NOT fully enabled"))
     }
 
-    @Test("Secure Boot downgrade (permissiveOrDisabled) blocks and prints the Full Security guide")
-    func preflightSecureBootDowngradeBlocks() {
+    @Test("Secure Boot downgrade (permissiveOrDisabled) warns and prints the Full Security guide")
+    func preflightSecureBootDowngradeWarns() {
         let decision = BootSecurityPolicy.preflightDecision(
             macOSMajorVersion: 26, sip: .enabled, secureBoot: .permissiveOrDisabled, allowInsecureOverride: false)
-        #expect(decision.shouldBlock)
+        #expect(!decision.shouldBlock)
         let text = decision.messageLines.joined(separator: "\n")
         #expect(text.contains("Startup Security Utility"))
         #expect(text.contains("Full Security"))
         #expect(!text.contains("csrutil enable"))
     }
 
-    @Test("undeterminable Secure Boot warns but does not block")
-    func preflightUnavailableWarnsOnly() {
+    @Test("undeterminable Secure Boot warns and prints the Full Security guide")
+    func preflightUnavailableWarns() {
         let decision = BootSecurityPolicy.preflightDecision(
             macOSMajorVersion: 26, sip: .enabled, secureBoot: .unavailable(reason: "no level"),
             allowInsecureOverride: false)
         #expect(!decision.shouldBlock)
         #expect(!decision.overrodeBlock)
         #expect(!decision.messageLines.isEmpty)
-        #expect(decision.messageLines.joined(separator: "\n").contains("WARNING"))
+        let text = decision.messageLines.joined(separator: "\n")
+        #expect(text.contains("WARNING"))
+        #expect(!text.contains("Refusing to start"))
+        #expect(text.contains("Startup Security Utility"))
     }
 
-    @Test("escape hatch downgrades a hard failure to a loud warning")
-    func preflightOverrideDowngradesFailure() {
+    @Test("escape hatch is unnecessary for non-blocking SIP and Secure Boot warnings")
+    func preflightOverrideIsNoOpForWarnings() {
         let decision = BootSecurityPolicy.preflightDecision(
             macOSMajorVersion: 26, sip: .disabled, secureBoot: .reduced, allowInsecureOverride: true)
         #expect(!decision.shouldBlock)
-        #expect(decision.overrodeBlock)
+        #expect(!decision.overrodeBlock)
         let text = decision.messageLines.joined(separator: "\n")
-        #expect(text.contains(BootSecurityPolicy.overrideEnvVar))
-        #expect(text.contains("development only"))
+        #expect(text.contains("WARNING"))
+        #expect(!text.contains(BootSecurityPolicy.overrideEnvVar))
     }
 
     // MARK: - Shared guidance content (single combined entry point)

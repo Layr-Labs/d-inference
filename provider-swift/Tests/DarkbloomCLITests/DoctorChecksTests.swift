@@ -129,21 +129,21 @@ struct DoctorChecksTests {
         #expect(c?.detail == "enabled (full protection)")
     }
 
-    @Test("SIP disabled -> FAIL")
-    func sipDisabledFails() {
+    @Test("SIP disabled -> WARN (MDM enforces hardware trust)")
+    func sipDisabledWarns() {
         let c = sipCheck(.disabled)
-        #expect(c?.status == .fail)
+        #expect(c?.status == .warn)
         #expect(c?.detail == "disabled")
     }
 
-    @Test("SIP custom configuration -> FAIL, treated as not fully enabled")
-    func sipCustomConfigFails() {
+    @Test("SIP custom configuration -> WARN, treated as not fully enabled")
+    func sipCustomConfigWarns() {
         let c = sipCheck(.enabledWithCustomConfiguration(disabledProtections: ["Kext Signing"]))
-        #expect(c?.status == .fail)
+        #expect(c?.status == .warn)
         #expect(c?.detail.contains("NOT fully enabled") == true)
     }
 
-    @Test("SIP undeterminable -> WARN (not a hard failure)")
+    @Test("SIP undeterminable -> WARN")
     func sipUnavailableWarns() {
         let c = sipCheck(.unavailable(reason: "csrutil missing"))
         #expect(c?.status == .warn)
@@ -167,10 +167,10 @@ struct DoctorChecksTests {
         #expect(c?.detail.contains("26") == true)
     }
 
-    @Test("macOS 25 (Sequoia) -> FAIL with the Tahoe upgrade hint")
-    func macOSBelowFloorFails() {
+    @Test("macOS 25 (Sequoia) -> WARN with the Tahoe upgrade hint")
+    func macOSBelowFloorWarns() {
         let c = macOSCheck(25)
-        #expect(c?.status == .fail)
+        #expect(c?.status == .warn)
         #expect(c?.detail.contains("Tahoe") == true)
     }
 
@@ -191,22 +191,22 @@ struct DoctorChecksTests {
         #expect(c?.detail == "Full Security")
     }
 
-    @Test("Secure Boot Reduced (SPiBridge reports Reduced/Medium) -> FAIL")
-    func secureBootReducedFails() {
+    @Test("Secure Boot Reduced (SPiBridge reports Reduced/Medium) -> WARN")
+    func secureBootReducedWarns() {
         let c = secureBootCheck(.reduced)
-        #expect(c?.status == .fail)
+        #expect(c?.status == .warn)
         // The detail names the authoritative field it came from, not a platform.
         #expect(c?.detail.contains("ibridge_secure_boot") == true)
         #expect(c?.detail.contains("Reduced/Medium") == true)
     }
 
-    @Test("Secure Boot Permissive / No Security -> FAIL")
-    func secureBootPermissiveFails() {
+    @Test("Secure Boot Permissive / No Security -> WARN")
+    func secureBootPermissiveWarns() {
         let c = secureBootCheck(.permissiveOrDisabled)
-        #expect(c?.status == .fail)
+        #expect(c?.status == .warn)
     }
 
-    @Test("Secure Boot undeterminable -> WARN (not a hard failure)")
+    @Test("Secure Boot undeterminable -> WARN")
     func secureBootUnavailableWarns() {
         let c = secureBootCheck(.unavailable(reason: "no controller"))
         #expect(c?.status == .warn)
@@ -220,7 +220,7 @@ struct DoctorChecksTests {
         #expect(guide == nil)
     }
 
-    @Test("macOS-only failure -> guide has the Software Update section only")
+    @Test("macOS-only warning -> guide has the Software Update section only")
     func actionGuideMacOSOnly() {
         let guide = bootSecurityActionGuide(
             BootSecuritySnapshot(macOSMajorVersion: 25, sip: .enabled, secureBoot: .fullSecurity))

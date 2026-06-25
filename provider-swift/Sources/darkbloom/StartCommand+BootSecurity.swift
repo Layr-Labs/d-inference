@@ -1,4 +1,4 @@
-// Start preflight: the boot-security gate (SIP + Secure Boot must be fully on).
+// Start preflight: boot-security posture warning and telemetry.
 //
 // Thin wiring only — the policy and the user-facing guidance live in
 // ProviderCore (`BootSecurityPolicy`, `BootSecurityGuidance`) so they are pure,
@@ -8,15 +8,11 @@ import Foundation
 import ProviderCore
 
 extension Start {
-    /// Block startup unless macOS, SIP, and Secure Boot are all fully on.
+    /// Warn unless macOS, SIP, and Secure Boot are all fully on.
     ///
-    /// A confident failure (below the macOS 26 floor, SIP off / partial, or
-    /// Secure Boot Reduced/Permissive) hard-fails after printing the enable
-    /// guide. A state we genuinely can't determine (undetectable Secure Boot)
-    /// only warns — we never want a false positive (e.g. a localized
-    /// `system_profiler` value) to lock an otherwise-correct provider out of the
-    /// network. The `DARKBLOOM_ALLOW_INSECURE_BOOT` escape hatch downgrades the
-    /// hard-fail to a loud warning for developers on non-compliant machines.
+    /// This is intentionally non-blocking during rollout: the provider reports
+    /// posture through telemetry and the coordinator's MDM path enforces hardware
+    /// trust for public routing.
     internal func enforceBootSecurity(
         snapshot: BootSecuritySnapshot = .live(),
         allowInsecureOverride: Bool = Start.allowInsecureBootOverride(),
@@ -44,5 +40,64 @@ extension Start {
     ) -> Bool {
         guard let raw = environment[BootSecurityPolicy.overrideEnvVar] else { return false }
         return ["1", "true", "yes"].contains(raw.trimmingCharacters(in: .whitespaces).lowercased())
+    }
+
+    func bootSecurityTelemetryFields(_ snapshot: BootSecuritySnapshot) -> [String: AnyCodableValue] {
+        [
+            "boot_macos_major": .int(snapshot.macOSMajorVersion),
+            "boot_macos_verdict": .string(verdictName(BootSecurityPolicy.macOSVerdict(snapshot.macOSMajorVersion))),
+            "boot_sip_status": .string(sipStatusName(snapshot.sip)),
+            "boot_sip_verdict": .string(verdictName(BootSecurityPolicy.sipVerdict(snapshot.sip))),
+            "boot_secure_boot_status": .string(secureBootStatusName(snapshot.secureBoot)),
+            "boot_secure_boot_verdict": .string(verdictName(BootSecurityPolicy.secureBootVerdict(snapshot.secureBoot))),
+        ]
+    }
+
+    func bootSecurityTelemetrySeverity(_ snapshot: BootSecuritySnapshot) -> TelemetrySeverity {
+        if BootSecurityPolicy.macOSVerdict(snapshot.macOSMajorVersion) == .pass,
+           BootSecurityPolicy.sipVerdict(snapshot.sip) == .pass,
+           BootSecurityPolicy.secureBootVerdict(snapshot.secureBoot) == .pass {
+            return .info
+        }
+        return .warn
+    }
+
+    private func verdictName(_ verdict: BootSecurityVerdict) -> String {
+        switch verdict {
+        case .pass:
+            return "pass"
+        case .warn:
+            return "warn"
+        case .fail:
+            return "fail"
+        }
+    }
+
+    private func sipStatusName(_ status: SIPStatus) -> String {
+        switch status {
+        case .enabled:
+            return "enabled"
+        case .disabled:
+            return "disabled"
+        case .enabledWithCustomConfiguration:
+            return "custom_configuration"
+        case .unavailable:
+            return "unavailable"
+        case .unrecognized:
+            return "unrecognized"
+        }
+    }
+
+    private func secureBootStatusName(_ status: SecureBootStatus) -> String {
+        switch status {
+        case .fullSecurity:
+            return "full_security"
+        case .reduced:
+            return "reduced"
+        case .permissiveOrDisabled:
+            return "permissive_or_disabled"
+        case .unavailable:
+            return "unavailable"
+        }
     }
 }

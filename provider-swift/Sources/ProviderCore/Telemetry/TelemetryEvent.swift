@@ -239,9 +239,12 @@ public enum TelemetryFieldFilter {
         "component", "operation", "duration_ms", "attempt", "endpoint",
         "status_code", "error_class", "error", "model", "backend",
         "exit_code", "signal", "hardware_chip", "memory_gb", "macos_version",
+        "boot_macos_major", "boot_macos_verdict", "boot_sip_status", "boot_sip_verdict",
+        "boot_secure_boot_status", "boot_secure_boot_verdict",
         "handler", "provider_id", "trust_level", "queue_depth", "reason",
         "runtime_component", "reconnect_count", "last_error", "ws_state",
-        "billing_method", "payment_failed", "target",
+        "network_reachable", "coordinator_url", "billing_method", "payment_failed", "target",
+        "url", "user_agent", "route",
         // OOM / memory-pressure fields (non-sensitive). Mirror in Go allowlist.
         "detect_source", "peak_memory_bytes", "report", "pressure",
         "available_bytes", "mlx_active_bytes", "memory_pressure", "in_flight",

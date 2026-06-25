@@ -272,45 +272,53 @@ test.describe("error + retry paths", () => {
 });
 
 test.describe("page resilience", () => {
-  // Regression for the crash this suite first surfaced: a pricing payload
-  // without a `prices` array broke buildPricingLookup on both /models and /earn.
-  // The two pages fail differently, so we assert against both mechanisms:
+  // Regression for the crash this suite first surfaced: a malformed pricing
+  // payload broke buildPricingLookup on both /models and /earn. The two pages
+  // fail differently, so we assert against both mechanisms:
   //   - /models calls buildPricingLookup during render → a throw trips the ROOT
   //     error boundary, replacing the shell (the Chat link disappears).
   //   - /earn calls it inside a fetch .then() → a throw is an unhandled
   //     rejection (no boundary), so we also capture page errors/rejections.
-  // Without the guards these fail; with them the pages render cleanly.
+  // Two malformed shapes are covered: a missing `prices` (catches the original
+  // crash / a deleted guard) and a non-array `prices` (specifically pins the
+  // Array.isArray guard — a weaker `?? []` would still throw here).
+  const MALFORMED_PRICING: { label: string; body: unknown }[] = [
+    { label: "missing prices", body: {} },
+    { label: "non-array prices", body: { prices: {} } },
+  ];
   for (const route of ["/models", "/earn"]) {
-    test(`${route} survives a malformed pricing payload`, async ({ page }) => {
-      const pageErrors: string[] = [];
-      page.on("pageerror", (e) => pageErrors.push(e.message));
-      await page.addInitScript(() => {
-        const w = window as unknown as { __e2eErrors: string[] };
-        w.__e2eErrors = [];
-        window.addEventListener("unhandledrejection", (ev) =>
-          w.__e2eErrors.push(String((ev as PromiseRejectionEvent).reason)),
-        );
-        window.addEventListener("error", (ev) => w.__e2eErrors.push(String(ev.message)));
-      });
-
-      await page.route("**/api/pricing", (r) => r.fulfill({ json: {} })); // no `prices`
-      await page.goto(route);
-      await page.waitForLoadState("networkidle"); // let the pricing fetch resolve
-
-      // Shell intact (no root error boundary).
-      await expect(page.getByRole("link", { name: "Chat" }).first()).toBeVisible();
-      await expect(page.getByText("Something went wrong")).toHaveCount(0);
-
-      // No pricing-shape crash surfaced (render throw OR async rejection).
-      const crashRe = /is not iterable|reading 'map'/i;
-      await expect
-        .poll(async () => {
-          const winErrors = await page.evaluate(
-            () => (window as unknown as { __e2eErrors?: string[] }).__e2eErrors ?? [],
+    for (const { label, body } of MALFORMED_PRICING) {
+      test(`${route} survives a malformed pricing payload (${label})`, async ({ page }) => {
+        const pageErrors: string[] = [];
+        page.on("pageerror", (e) => pageErrors.push(e.message));
+        await page.addInitScript(() => {
+          const w = window as unknown as { __e2eErrors: string[] };
+          w.__e2eErrors = [];
+          window.addEventListener("unhandledrejection", (ev) =>
+            w.__e2eErrors.push(String((ev as PromiseRejectionEvent).reason)),
           );
-          return [...pageErrors, ...winErrors].join("\n");
-        })
-        .not.toMatch(crashRe);
-    });
+          window.addEventListener("error", (ev) => w.__e2eErrors.push(String(ev.message)));
+        });
+
+        await page.route("**/api/pricing", (r) => r.fulfill({ json: body }));
+        await page.goto(route);
+        await page.waitForLoadState("networkidle"); // let the pricing fetch resolve
+
+        // Shell intact (no root error boundary).
+        await expect(page.getByRole("link", { name: "Chat" }).first()).toBeVisible();
+        await expect(page.getByText("Something went wrong")).toHaveCount(0);
+
+        // No pricing-shape crash surfaced (render throw OR async rejection).
+        const crashRe = /is not iterable|reading 'map'|is not a function/i;
+        await expect
+          .poll(async () => {
+            const winErrors = await page.evaluate(
+              () => (window as unknown as { __e2eErrors?: string[] }).__e2eErrors ?? [],
+            );
+            return [...pageErrors, ...winErrors].join("\n");
+          })
+          .not.toMatch(crashRe);
+      });
+    }
   }
 });

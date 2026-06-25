@@ -287,6 +287,31 @@ public actor BatchScheduler {
     var lastPushedMaxNumSeqs: Int = -1
     var pendingSummaryCache: PendingSummary = .empty
 
+    // MARK: - Engine-health / first-token-wedge instrumentation
+    //
+    // MEASUREMENT ONLY (docs/reports/2026-06-22-cancel-root-cause-and-fix.md §C).
+    // `wedgeMonitor` counts admits/first-tokens/engine-steps so the heartbeat
+    // (`backendCapacity()`) and the offline telemetry trail can SEE a first-token
+    // wedge. No routing/watchdog action is taken on these signals in this PR.
+
+    /// Per-load engine-health counters. Reset in `stopCurrentEngine` (every load
+    /// path runs it first), so a reload clears the wedge and `stepsExecuted`
+    /// re-baselines against the fresh engine.
+    var wedgeMonitor = WedgeMonitor()
+    /// When the periodic `engine_health` telemetry snapshot was last emitted;
+    /// nil until the first emit of the current load. Rate-limits the trail.
+    var lastEngineHealthEmitAt: ContinuousClock.Instant?
+    /// Last `wedgeSuspected` value pushed as a telemetry event, so a state
+    /// transition (healthy→suspected / suspected→recovered) emits immediately.
+    var lastWedgeSuspectedEmitted = false
+
+    /// Per-load prefill-EWMA sampling health (accepted / floor-dropped /
+    /// ceiling-dropped + last raw sample). Tracks why `observedPrefillTpsEwma`
+    /// stays 0; surfaced on the `engine_health` trail. MEASUREMENT ONLY. Reset in
+    /// `stopCurrentEngine` alongside `observedPrefillTpsEwma` (which is also reset
+    /// there) so a model swap doesn't carry the previous model's counts.
+    var prefillHealth = PrefillSamplingHealth()
+
     /// Memory-kind selector for `gpuMemory(_:)` in the telemetry extension.
     enum MemoryKind { case active, peak, cache }
 
@@ -360,6 +385,11 @@ public actor BatchScheduler {
 
     internal func stopCurrentEngine() async {
         generationEpoch &+= 1
+        // Per-load engine-health reset: a fresh engine re-baselines stepsExecuted
+        // from 0 and a reload clears any wedge, so the counters/cadence start clean.
+        wedgeMonitor.reset()
+        lastEngineHealthEmitAt = nil
+        lastWedgeSuspectedEmitted = false
         // Detach the engine synchronously, before any suspension below. The teardown
         // awaits (stats logging, stopAndWait) let a submit interleave on the actor;
         // if self.engine still pointed at the stopping engine it would pass
@@ -460,6 +490,10 @@ public actor BatchScheduler {
         ewmaInitialized = false
         observedPrefillTpsEwma = 0
         prefillEwmaInitialized = false
+        // Reset prefill-sampling health alongside the EWMA it tracks, so a new
+        // model's engine_health doesn't inherit the previous model's accepted/
+        // dropped/last-sample counts.
+        prefillHealth = PrefillSamplingHealth()
         lastModelLoadMs = 0
         performanceByBatchSize.removeAll()
         // Reset the cold-start seed to the configured ceiling (same rationale as

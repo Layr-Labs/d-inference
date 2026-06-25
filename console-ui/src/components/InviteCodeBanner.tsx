@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Ticket, X, Check, Loader2 } from "lucide-react";
 import { redeemInviteCode } from "@/lib/api";
 import { trackEvent } from "@/lib/google-analytics";
@@ -11,10 +11,14 @@ export const INVITE_DISMISSED_EVENT = "darkbloom-invite-dismissed";
 const DISMISSED_KEY = INVITE_DISMISSED_KEY;
 
 export function InviteCodeBanner() {
-  const [dismissed, setDismissed] = useState(() => {
-    if (typeof window === "undefined") return true;
-    return localStorage.getItem(DISMISSED_KEY) === "1";
-  });
+  // SSR-safe: render nothing on the first client paint (matching the server,
+  // which has no localStorage) to avoid a React #418 hydration mismatch that
+  // would regenerate the page tree and break the sidebar nav. The real dismissed
+  // state is read after mount.
+  const [dismissed, setDismissed] = useState(true);
+  useEffect(() => {
+    setDismissed(localStorage.getItem(DISMISSED_KEY) === "1");
+  }, []);
   const [expanded, setExpanded] = useState(false);
   const [code, setCode] = useState("");
   const [loading, setLoading] = useState(false);

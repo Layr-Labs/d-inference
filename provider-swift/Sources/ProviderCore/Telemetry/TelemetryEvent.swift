@@ -45,6 +45,10 @@ public enum TelemetryKind: String, Codable, Sendable, CaseIterable {
     /// Out-of-memory: a jetsam/crash-log OOM detected on the next launch, or a
     /// critical memory-pressure event observed before death.
     case oom
+    /// Engine-health diagnostics for the first-token wedge (model-load
+    /// milestones, periodic engine snapshots, wedge-suspected transitions). All
+    /// fields are NON-PRIVATE operational counters — see `WedgeMonitor`.
+    case engineHealth = "engine_health"
     case log
     case custom
 }
@@ -241,6 +245,17 @@ public enum TelemetryFieldFilter {
         // OOM / memory-pressure fields (non-sensitive). Mirror in Go allowlist.
         "detect_source", "peak_memory_bytes", "report", "pressure",
         "available_bytes", "mlx_active_bytes", "memory_pressure", "in_flight",
+        // Engine-health / first-token-wedge diagnostics (non-sensitive
+        // operational counters). Mirror in Go + TS allowlists.
+        "steps_executed", "admits", "first_tokens_emitted",
+        "consecutive_admits_without_first_token", "seconds_since_last_step",
+        "seconds_since_last_first_token", "num_running", "wedge_suspected",
+        // Eval-in-flight + idle-clear + prefill-sampling-health diagnostics.
+        "eval_in_flight_ms", "longest_eval_ms", "evals_completed",
+        "idle_clear_in_flight_ms", "idle_clears_completed",
+        "prefill_samples_accepted", "prefill_samples_dropped_floor",
+        "prefill_samples_dropped_ceiling", "last_prefill_sample_tps",
+        "observed_prefill_tps_ewma",
     ]
 
     /// Filter a dictionary to only the keys the coordinator accepts.

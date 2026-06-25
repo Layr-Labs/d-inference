@@ -381,6 +381,42 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public var maxConcurrency: UInt32
     public var modelLoadTimeMs: Int64
 
+    // MARK: - Engine-health (first-token wedge) signals
+    //
+    // Low-cardinality, NON-PRIVATE diagnostic counters that let the coordinator
+    // SEE a first-token wedge (see docs/reports/2026-06-22-cancel-root-cause-and-fix.md
+    // §C and `WedgeMonitor`). All are omit-empty so legacy providers (and a
+    // freshly-idle slot) keep the pre-existing wire shape unchanged. MEASUREMENT
+    // ONLY — the coordinator decodes these for observability; it does not yet
+    // gate routing on them.
+
+    /// Cumulative `EngineCore.stepsExecuted` for this slot's engine (engine-loop
+    /// progress). Flatlines under demand ⇒ the loop is wedged.
+    public var stepsExecuted: Int64
+    /// Cumulative requests handed to the engine (each emits the lock-free
+    /// preamble). `admits` climbing while `firstTokensEmitted` stays flat is the
+    /// wedge signature.
+    public var admits: Int64
+    /// Cumulative requests that produced a first content token.
+    public var firstTokensEmitted: Int64
+    /// Seconds since the engine step counter last advanced (0 = just stepped /
+    /// never sampled). A large value under demand pins a frozen loop.
+    public var secondsSinceLastStep: Double
+    /// Seconds since the last first content token (0 = none yet this load).
+    public var secondsSinceLastFirstToken: Double
+    /// Provider-computed wedge primitive: ≥N consecutive admits emitted the
+    /// preamble but produced 0 first tokens for ≥T seconds. Omitted when false.
+    public var wedgeSuspected: Bool
+    /// Milliseconds the CURRENTLY-running blocking `eval` has been executing under
+    /// the process-global evalLock (0 = none in flight). A seconds-range value is
+    /// the direct first-token-wedge smoking gun. Process-global (same across this
+    /// provider's slots). See MLX `EvalProbe`.
+    public var evalInFlightMs: Int64
+    /// Milliseconds the current idle GPU drain + buffer-cache clear has been
+    /// running for THIS slot's engine (0 = none). A seconds-range value with no
+    /// exit pins the clearCache/IOKit race. See `EngineCore.idleClearElapsedMs`.
+    public var idleClearInFlightMs: Int64
+
     enum CodingKeys: String, CodingKey {
         case model
         case state
@@ -396,6 +432,14 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case kvBytesPerToken = "kv_bytes_per_token"
         case maxConcurrency = "max_concurrency"
         case modelLoadTimeMs = "model_load_time_ms"
+        case stepsExecuted = "steps_executed"
+        case admits
+        case firstTokensEmitted = "first_tokens_emitted"
+        case secondsSinceLastStep = "seconds_since_last_step"
+        case secondsSinceLastFirstToken = "seconds_since_last_first_token"
+        case wedgeSuspected = "wedge_suspected"
+        case evalInFlightMs = "eval_in_flight_ms"
+        case idleClearInFlightMs = "idle_clear_in_flight_ms"
     }
 
     public init(
@@ -412,7 +456,15 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         activeTokenBudgetMax: Int64 = 0,
         queuedTokenBudget: Int64 = 0,
         kvBytesPerToken: Int64 = 0,
-        modelLoadTimeMs: Int64 = 0
+        modelLoadTimeMs: Int64 = 0,
+        stepsExecuted: Int64 = 0,
+        admits: Int64 = 0,
+        firstTokensEmitted: Int64 = 0,
+        secondsSinceLastStep: Double = 0,
+        secondsSinceLastFirstToken: Double = 0,
+        wedgeSuspected: Bool = false,
+        evalInFlightMs: Int64 = 0,
+        idleClearInFlightMs: Int64 = 0
     ) {
         self.model = model
         self.state = state
@@ -428,6 +480,14 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.queuedTokenBudget = queuedTokenBudget
         self.kvBytesPerToken = kvBytesPerToken
         self.modelLoadTimeMs = modelLoadTimeMs
+        self.stepsExecuted = stepsExecuted
+        self.admits = admits
+        self.firstTokensEmitted = firstTokensEmitted
+        self.secondsSinceLastStep = secondsSinceLastStep
+        self.secondsSinceLastFirstToken = secondsSinceLastFirstToken
+        self.wedgeSuspected = wedgeSuspected
+        self.evalInFlightMs = evalInFlightMs
+        self.idleClearInFlightMs = idleClearInFlightMs
     }
 
     public init(from decoder: Decoder) throws {
@@ -446,6 +506,14 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         queuedTokenBudget = try container.decodeIfPresent(Int64.self, forKey: .queuedTokenBudget) ?? 0
         kvBytesPerToken = try container.decodeIfPresent(Int64.self, forKey: .kvBytesPerToken) ?? 0
         modelLoadTimeMs = try container.decodeIfPresent(Int64.self, forKey: .modelLoadTimeMs) ?? 0
+        stepsExecuted = try container.decodeIfPresent(Int64.self, forKey: .stepsExecuted) ?? 0
+        admits = try container.decodeIfPresent(Int64.self, forKey: .admits) ?? 0
+        firstTokensEmitted = try container.decodeIfPresent(Int64.self, forKey: .firstTokensEmitted) ?? 0
+        secondsSinceLastStep = try container.decodeIfPresent(Double.self, forKey: .secondsSinceLastStep) ?? 0
+        secondsSinceLastFirstToken = try container.decodeIfPresent(Double.self, forKey: .secondsSinceLastFirstToken) ?? 0
+        wedgeSuspected = try container.decodeIfPresent(Bool.self, forKey: .wedgeSuspected) ?? false
+        evalInFlightMs = try container.decodeIfPresent(Int64.self, forKey: .evalInFlightMs) ?? 0
+        idleClearInFlightMs = try container.decodeIfPresent(Int64.self, forKey: .idleClearInFlightMs) ?? 0
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -464,6 +532,18 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         try encodeIfNonZero(queuedTokenBudget, forKey: .queuedTokenBudget, into: &container)
         try encodeIfNonZero(kvBytesPerToken, forKey: .kvBytesPerToken, into: &container)
         try encodeIfNonZero(modelLoadTimeMs, forKey: .modelLoadTimeMs, into: &container)
+        try encodeIfNonZero(stepsExecuted, forKey: .stepsExecuted, into: &container)
+        try encodeIfNonZero(admits, forKey: .admits, into: &container)
+        try encodeIfNonZero(firstTokensEmitted, forKey: .firstTokensEmitted, into: &container)
+        try encodeIfNonZero(secondsSinceLastStep, forKey: .secondsSinceLastStep, into: &container)
+        try encodeIfNonZero(secondsSinceLastFirstToken, forKey: .secondsSinceLastFirstToken, into: &container)
+        // Bool: mirror Go's `omitempty` (false is omitted) so the wire shape is
+        // unchanged for healthy slots and pre-wedge providers.
+        if wedgeSuspected {
+            try container.encode(wedgeSuspected, forKey: .wedgeSuspected)
+        }
+        try encodeIfNonZero(evalInFlightMs, forKey: .evalInFlightMs, into: &container)
+        try encodeIfNonZero(idleClearInFlightMs, forKey: .idleClearInFlightMs, into: &container)
     }
 
     private func encodeIfNonZero<T: BinaryInteger & Encodable>(

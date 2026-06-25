@@ -50,9 +50,13 @@ const (
 	KindConnectivity       TelemetryKind = "connectivity"
 	// KindOOM: a provider-detected jetsam/crash-log OOM (surfaced next launch)
 	// or a coordinator-classified oom_suspected disconnect.
-	KindOOM    TelemetryKind = "oom"
-	KindLog    TelemetryKind = "log"
-	KindCustom TelemetryKind = "custom"
+	KindOOM TelemetryKind = "oom"
+	// KindEngineHealth: provider engine-health diagnostics for the first-token
+	// wedge (model-load milestones, periodic engine snapshots, wedge-suspected
+	// transitions). NON-PRIVATE operational counters only.
+	KindEngineHealth TelemetryKind = "engine_health"
+	KindLog          TelemetryKind = "log"
+	KindCustom       TelemetryKind = "custom"
 )
 
 // TelemetrySourceCustom is returned when a source value can't be classified
@@ -97,6 +101,7 @@ func KnownKinds() map[TelemetryKind]struct{} {
 		KindRuntimeMismatch:    {},
 		KindConnectivity:       {},
 		KindOOM:                {},
+		KindEngineHealth:       {},
 		KindLog:                {},
 		KindCustom:             {},
 	}

@@ -38,7 +38,8 @@ extension BatchScheduler {
         eosTokenIds: Set<Int>,
         architecture: ModelArchitecture,
         diskAccountant: GlobalDiskAccountant? = nil,
-        kvQuantEnabled: Bool = false
+        kvQuantEnabled: Bool = false,
+        adaptivePrefillRuntime: AdaptivePrefillRuntime? = nil
     ) async -> EngineBuild {
         // TB-007: the prefix cache is ON by default (operator decision) with an
         // ENCRYPTED-at-rest backend; opt out with DARKBLOOM_PREFIX_CACHE=0.
@@ -216,6 +217,13 @@ extension BatchScheduler {
                 eosTokenIds: eosTokenIds,
                 prefixCache: enginePrefixCache  // nil unless .engine + flag (TB-007)
             )
+            if let adaptivePrefillRuntime {
+                scheduler.adaptivePrefillChunkSizer = adaptivePrefillRuntime.proposeChunkSize
+                scheduler.onColdPrefillChunk = adaptivePrefillRuntime.record
+                adaptivePrefillLogger.notice(
+                    "adaptive-prefill enabled: starting cold-prefill chunk \(adaptivePrefillRuntime.snapshotState().currentChunkSize)"
+                )
+            }
             // Wire the checkpoint capture hook: store snapshots to the manager
             // out-of-band (the hook is sync on the engine queue; storing hops
             // to the manager actor via a detached Task). nil-safe: only set

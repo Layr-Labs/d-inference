@@ -76,3 +76,41 @@ import Testing
     #expect(toml.contains("kv_quant"))
     #expect(decoded.backend.kvQuant == true)
 }
+
+@Test func configParsingDefaultsAdaptivePrefillToFalse() throws {
+    let config = ConfigManager.parse("""
+    [provider]
+    name = "test-provider"
+
+    [backend]
+    port = 8100
+    """)
+
+    #expect(config.backend.adaptivePrefill == false)
+}
+
+@Test func configParsingHonoursAdaptivePrefillTrue() throws {
+    let config = ConfigManager.parse("""
+    [provider]
+    name = "test-provider"
+
+    [backend]
+    adaptive_prefill = true
+    """)
+
+    #expect(config.backend.adaptivePrefill == true)
+}
+
+@Test func configSerializationRoundTripsAdaptivePrefill() throws {
+    let original = ProviderConfig(
+        provider: ProviderSettings(name: "test-provider"),
+        backend: BackendSettings(adaptivePrefill: true),
+        coordinator: CoordinatorSettings()
+    )
+
+    let toml = ConfigManager.serialize(original)
+    let decoded = ConfigManager.parse(toml)
+
+    #expect(toml.contains("adaptive_prefill"))
+    #expect(decoded.backend.adaptivePrefill == true)
+}

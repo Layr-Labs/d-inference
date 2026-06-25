@@ -52,6 +52,11 @@ extension BatchScheduler {
         self.currentWeightHash = weightHash
         self.modelWeightBytes = snapshot.bytes
         self.tokenizer = snapshot.tokenizer
+        let adaptivePrefillRuntime = makeAdaptivePrefillRuntime(
+            modelId: modelId,
+            weightHash: weightHash,
+            snapshot: snapshot
+        )
 
         let build = await Self.makeBatchedEngine(
             container: container,
@@ -67,7 +72,8 @@ extension BatchScheduler {
             ),
             architecture: snapshot.architecture,
             diskAccountant: diskAccountant,
-            kvQuantEnabled: kvQuantEnabled
+            kvQuantEnabled: kvQuantEnabled,
+            adaptivePrefillRuntime: adaptivePrefillRuntime
         )
         let engine = build.engine
         // Re-check epoch after the engine.start suspension. If another
@@ -78,6 +84,7 @@ extension BatchScheduler {
             return
         }
         self.engine = engine
+        self.adaptivePrefillRuntime = adaptivePrefillRuntime
         self.checkpointManager = build.checkpointManager
         self.checkpointBoundaries = build.checkpointBoundaries
         self.checkpointLayerSignatures = build.checkpointLayerSignatures
@@ -90,6 +97,7 @@ extension BatchScheduler {
         // already replaced it, leave the winner's self.* intact.
         guard loadEpoch == generationEpoch else {
             if self.engine === engine { self.engine = nil }
+            if self.adaptivePrefillRuntime === adaptivePrefillRuntime { self.adaptivePrefillRuntime = nil }
             if self.checkpointManager === build.checkpointManager { self.checkpointManager = nil }
             if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
             if self.checkpointLayerSignatures == build.checkpointLayerSignatures { self.checkpointLayerSignatures = [] }
@@ -134,6 +142,7 @@ extension BatchScheduler {
         // Identity-checked cleanup (same as above).
         guard loadEpoch == generationEpoch else {
             if self.engine === engine { self.engine = nil }
+            if self.adaptivePrefillRuntime === adaptivePrefillRuntime { self.adaptivePrefillRuntime = nil }
             if self.checkpointManager === build.checkpointManager { self.checkpointManager = nil }
             if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
             if self.checkpointLayerSignatures == build.checkpointLayerSignatures { self.checkpointLayerSignatures = [] }
@@ -174,6 +183,7 @@ extension BatchScheduler {
                         self.engineTierAccountantToken = nil
                     }
                     if self.engine === engine { self.engine = nil }
+                    if self.adaptivePrefillRuntime === adaptivePrefillRuntime { self.adaptivePrefillRuntime = nil }
                     if self.checkpointManager === build.checkpointManager { self.checkpointManager = nil }
                     if self.checkpointBoundaries == build.checkpointBoundaries { self.checkpointBoundaries = [] }
                     if self.checkpointLayerSignatures == build.checkpointLayerSignatures { self.checkpointLayerSignatures = [] }

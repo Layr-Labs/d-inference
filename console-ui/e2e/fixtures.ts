@@ -113,6 +113,22 @@ async function installCoordinatorMocks(page: Page) {
   );
   await page.route("**/api/pricing", (route) => route.fulfill({ json: { prices: [] } }));
   await page.route("**/api/health", (route) => route.fulfill({ json: { status: "ok" } }));
+
+  // Payments (billing page): balance, usage, Stripe payouts status, and a
+  // checkout that "redirects" back to the success URL so the flow completes
+  // hermetically (the app does window.location = resp.url).
+  await page.route("**/api/payments/balance", (route) =>
+    route.fulfill({
+      json: { balance_micro_usd: 12_340_000, balance_usd: 12.34, withdrawable_micro_usd: 0, withdrawable_usd: 0 },
+    }),
+  );
+  await page.route("**/api/payments/usage", (route) => route.fulfill({ json: { usage: [] } }));
+  await page.route("**/api/payments/stripe/status", (route) =>
+    route.fulfill({ json: { configured: false, has_account: false, status: "" } }),
+  );
+  await page.route("**/api/payments/stripe/checkout", (route) =>
+    route.fulfill({ json: { url: "/billing?stripe_checkout_success=1" } }),
+  );
   await page.route("**/api/encryption-key", (route) => route.fulfill({ status: 404, body: "" }));
   await page.route("**/api/me/providers", (route) => route.fulfill({ json: makeProvidersResponse([]) }));
   await page.route("**/api/me/summary", (route) => route.fulfill({ json: EMPTY_SUMMARY }));
@@ -200,4 +216,12 @@ export async function seedKeys(page: Page, keys: unknown[]) {
     if (route.request().method() !== "GET") return route.fallback();
     return route.fulfill({ json: { object: "list", data: keys } });
   });
+}
+
+// Override the model catalog for a single test (e.g. seed two models to drive
+// the chat model selector).
+export async function seedModels(page: Page, models: unknown[]) {
+  await page.route("**/api/models", (route) =>
+    route.fulfill({ json: { object: "list", data: models } }),
+  );
 }

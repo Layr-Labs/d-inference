@@ -5,6 +5,7 @@ import {
   makeProvidersResponse,
   seedProviders,
   seedKeys,
+  seedModels,
   chatSse,
   CHAT_REPLY,
 } from "./fixtures";
@@ -129,6 +130,42 @@ test.describe("chat", () => {
 
     // The mocked SSE stream resolves to this content.
     await expect(page.getByText(CHAT_REPLY)).toBeVisible({ timeout: 15_000 });
+  });
+
+  test("switching the chat model updates the selector", async ({ page }) => {
+    await seedModels(page, [
+      { id: "model-a", object: "model", display_name: "Model Alpha", model_type: "chat" },
+      { id: "model-b", object: "model", display_name: "Model Beta", model_type: "chat" },
+    ]);
+    await page.goto("/");
+
+    // Models load after auth + key provisioning; the selector defaults to the
+    // first model (store.setModels picks models[0] when none is selected).
+    const selector = page.getByRole("button", { name: /Model Alpha/ });
+    await expect(selector).toBeVisible();
+    await selector.click();
+
+    await page.getByRole("button", { name: /Model Beta/ }).click();
+
+    // Selector now reflects the new model and no longer shows the old one.
+    await expect(page.getByRole("button", { name: /Model Beta/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Model Alpha/ })).toHaveCount(0);
+  });
+});
+
+test.describe("billing", () => {
+  test("shows the balance and completes an add-funds checkout", async ({ page }) => {
+    await page.goto("/billing");
+
+    // Balance from the mocked /api/payments/balance.
+    await expect(page.getByText(/12\.34/).first()).toBeVisible();
+
+    await page.getByRole("button", { name: "Buy Credits" }).click();
+    await page.getByRole("button", { name: "Continue" }).click();
+
+    // The mocked checkout redirects back with the success flag, which the page
+    // detects and surfaces as a success toast.
+    await expect(page.getByText("Payment successful!")).toBeVisible();
   });
 });
 

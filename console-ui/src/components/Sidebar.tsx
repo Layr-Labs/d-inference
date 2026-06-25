@@ -1,5 +1,6 @@
 "use client";
 
+/* eslint-disable @next/next/no-html-link-for-pages */
 import { useStore } from "@/lib/store";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/components/providers/ThemeProvider";
@@ -19,7 +20,6 @@ import {
   Sun,
   Moon,
 } from "lucide-react";
-import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { CommunityLinks } from "@/components/community/CommunityLinks";
 
@@ -41,19 +41,22 @@ export function Sidebar() {
   if (!sidebarOpen) return null;
 
   const isChatActive = pathname === "/";
+  const closeSidebarOnMobile = () => {
+    if (window.innerWidth < 640) setSidebarOpen(false);
+  };
 
   return (
     <aside className="sidebar-animate fixed inset-0 z-50 w-full sm:static sm:w-[260px] h-screen flex flex-col bg-bg-secondary sm:border-r sm:border-border-default shrink-0">
       {/* Brand header */}
       <div className="px-5 pt-5 pb-4 flex items-center justify-between">
-        <Link href="/" className="group">
+        <a href="/" className="group" onClick={closeSidebarOnMobile}>
           <h1 className="text-2xl text-ink tracking-tight" style={{ fontFamily: "'Louize', Georgia, serif" }}>
             Darkbloom
           </h1>
           <p className="text-[10px] font-mono text-text-tertiary tracking-wide uppercase mt-1">
             An Eigen Labs project · Public Alpha
           </p>
-        </Link>
+        </a>
         <button
           onClick={() => setSidebarOpen(false)}
           className="p-1.5 rounded-lg hover:bg-bg-hover text-text-tertiary hover:text-text-primary transition-colors"
@@ -76,10 +79,10 @@ export function Sidebar() {
               ? pathname === "/"
               : pathname.startsWith(href);
           return (
-            <Link
+            <a
               key={href}
               href={href}
-              onClick={() => { if (window.innerWidth < 640) setSidebarOpen(false); }}
+              onClick={closeSidebarOnMobile}
               className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-semibold transition-all ${
                 isActive
                   ? "bg-coral/15 text-coral border-2 border-coral"
@@ -88,7 +91,7 @@ export function Sidebar() {
             >
               <Icon size={18} className={isActive ? "text-coral" : "opacity-60"} />
               {label}
-            </Link>
+            </a>
           );
         })}
       </nav>
@@ -151,10 +154,10 @@ export function Sidebar() {
           { href: "/billing", icon: CreditCard, label: "Billing" },
           { href: "/settings", icon: Settings, label: "Settings" },
         ].map(({ href, icon: Icon, label }) => (
-          <Link
+          <a
             key={href}
             href={href}
-            onClick={() => { if (window.innerWidth < 640) setSidebarOpen(false); }}
+            onClick={closeSidebarOnMobile}
             className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all ${
               pathname === href
                 ? "bg-bg-elevated text-text-primary font-semibold"
@@ -163,7 +166,7 @@ export function Sidebar() {
           >
             <Icon size={16} className="opacity-50" />
             {label}
-          </Link>
+          </a>
         ))}
       </nav>
 

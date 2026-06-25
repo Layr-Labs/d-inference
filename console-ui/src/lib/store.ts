@@ -2,6 +2,10 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { TrustMetadata, Model } from "./api";
 
+// localStorage key for the persisted store. Exported so the app shell can detect
+// a first-time visitor (no persisted state yet) when applying responsive defaults.
+export const STORE_NAME = "darkbloom-store";
+
 export interface Chat {
   id: string;
   title: string;
@@ -65,7 +69,13 @@ export const useStore = create<AppState>()(
       activeChatId: null,
       selectedModel: "",
       models: [],
-      sidebarOpen: typeof window !== "undefined" ? window.innerWidth >= 640 : true,
+      // Deterministic SSR-safe default: the server always renders the sidebar
+      // open, so the first client render must match (reading window.innerWidth
+      // here diverges on mobile → React #418 hydration mismatch, which
+      // regenerates the tree and breaks the sidebar's event handlers). The
+      // responsive default + any persisted value are applied after mount (see
+      // AppShell's rehydrate effect and `skipHydration` below).
+      sidebarOpen: true,
       useMyMachine: false,
 
       createChat: () => {
@@ -166,7 +176,14 @@ export const useStore = create<AppState>()(
         })),
     }),
     {
-      name: "darkbloom-store",
+      name: STORE_NAME,
+      // Defer reading persisted state until after mount. With the default
+      // (synchronous) rehydration, persisted values (chats, sidebarOpen,
+      // selectedModel, …) are applied during the first client render and diverge
+      // from the server HTML → React hydration mismatch (#418) → the whole tree
+      // (including the freshly-SSR'd sidebar) is regenerated and loses its click
+      // handlers. AppShell calls `useStore.persist.rehydrate()` once mounted.
+      skipHydration: true,
       partialize: (state) => ({
         chats: state.chats.map((c) => ({
           ...c,

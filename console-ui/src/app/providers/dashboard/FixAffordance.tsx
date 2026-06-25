@@ -2,7 +2,9 @@
 // card hero and the attention feed: a copy-command pill, a link button, or a
 // line of guidance. Shared so the action always looks and behaves the same.
 
-import Link from "next/link";
+// Native <a> for internal links too: the App Router client-router path is
+// currently broken for shell navigation (see #457/#458) — next/link renders but
+// does not navigate. Browser-native route loads always work. Mirrors #458.
 import { ArrowRight, ExternalLink } from "lucide-react";
 import { CopyCommand } from "./gauges/CopyCommand";
 import type { FixAction } from "./fixes";
@@ -41,9 +43,9 @@ export function FixAffordance({
             {fix.label} <ExternalLink size={11} />
           </a>
         ) : (
-          <Link href={fix.href} className={cls}>
+          <a href={fix.href} className={cls}>
             {fix.label} <ArrowRight size={11} />
-          </Link>
+          </a>
         )}
         {note}
       </div>

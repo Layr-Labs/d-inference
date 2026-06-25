@@ -290,7 +290,7 @@ public enum ThroughputSweep {
     /// A neutral seed paragraph; we only need a valid in-vocabulary token
     /// stream to tile to arbitrary prompt lengths. Content is irrelevant to the
     /// bytes/token a forward pass reads.
-    private static let seedText = """
+    static let seedText = """
     The quick brown fox jumps over the lazy dog while the engineer measures \
     throughput across many prompt lengths and batch sizes. Memory bandwidth, \
     not raw compute, sets the pace of autoregressive decoding on unified \

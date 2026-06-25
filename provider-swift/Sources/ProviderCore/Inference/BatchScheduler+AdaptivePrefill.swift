@@ -24,6 +24,14 @@ extension BatchScheduler {
             kvMode: kvMode,
             hardwareMemoryFingerprint: hardwareMemoryFingerprint
         )
-        return AdaptivePrefillRuntime(key: key)
+        return AdaptivePrefillRuntime(policy: Self.adaptivePrefillPolicy(modelId: modelId), key: key)
+    }
+
+    private static func adaptivePrefillPolicy(modelId: String) -> AdaptivePrefillPolicy {
+        let normalized = modelId.lowercased()
+        if normalized.contains("gpt-oss-20b") {
+            return .gptOSS20BDefault()
+        }
+        return .liveDefault()
     }
 }

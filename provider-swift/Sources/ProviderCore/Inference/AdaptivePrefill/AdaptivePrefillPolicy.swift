@@ -94,20 +94,27 @@ public struct AdaptivePrefillTransition: Sendable, Equatable {
 public struct AdaptivePrefillPolicy: Sendable, Equatable {
     public static let productionLadder = [512, 1024, 2048, 4096]
     public static let experimentalLadder = [512, 1024, 2048, 4096, 8192]
+    public static let gptOSS20BLadder = [512, 1024, 1536]
 
     public let ladder: [Int]
+    public let initialChunkSize: Int
     public let targetChunkDurationMs: Double
     public let growthSampleCount: Int
     public let cooldownSampleCount: Int
 
     public init(
         ladder: [Int] = AdaptivePrefillPolicy.productionLadder,
+        initialChunkSize: Int? = nil,
         targetChunkDurationMs: Double = 100,
         growthSampleCount: Int = 8,
         cooldownSampleCount: Int = 4
     ) {
         let sanitized = Array(Set(ladder.filter { $0 > 0 })).sorted()
         self.ladder = sanitized.isEmpty ? Self.productionLadder : sanitized
+        self.initialChunkSize = Self.resolveInitialChunkSize(
+            initialChunkSize,
+            ladder: self.ladder
+        )
         self.targetChunkDurationMs = max(1, targetChunkDurationMs)
         self.growthSampleCount = max(1, growthSampleCount)
         self.cooldownSampleCount = max(0, cooldownSampleCount)
@@ -125,11 +132,25 @@ public struct AdaptivePrefillPolicy: Sendable, Equatable {
         )
     }
 
+    public static func gptOSS20BDefault(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> AdaptivePrefillPolicy {
+        let target = environment["DARKBLOOM_ADAPTIVE_PREFILL_GPTOSS_TARGET_MS"]
+            .flatMap(Double.init)
+            .map { max(1, $0) } ?? 3_000
+        return AdaptivePrefillPolicy(
+            ladder: gptOSS20BLadder,
+            initialChunkSize: 1536,
+            targetChunkDurationMs: target,
+            growthSampleCount: 4
+        )
+    }
+
     public func initialState(persisted: AdaptivePrefillState? = nil) -> AdaptivePrefillState {
         guard let persisted,
               ladder.contains(persisted.currentChunkSize)
         else {
-            return AdaptivePrefillState(currentChunkSize: ladder.first ?? 512)
+            return AdaptivePrefillState(currentChunkSize: initialChunkSize)
         }
         return AdaptivePrefillState(
             currentChunkSize: persisted.currentChunkSize,
@@ -205,6 +226,11 @@ public struct AdaptivePrefillPolicy: Sendable, Equatable {
         case "1", "true", "yes", "on": return true
         default: return false
         }
+    }
+
+    private static func resolveInitialChunkSize(_ requested: Int?, ladder: [Int]) -> Int {
+        guard let requested, ladder.contains(requested) else { return ladder.first ?? 512 }
+        return requested
     }
 
     private func normalized(_ state: AdaptivePrefillState) -> AdaptivePrefillState {

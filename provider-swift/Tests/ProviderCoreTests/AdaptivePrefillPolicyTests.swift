@@ -25,6 +25,14 @@ struct AdaptivePrefillPolicyTests {
         #expect(state.cleanSamplesAtCurrentSize == 0)
     }
 
+    @Test("gpt-oss 20b policy starts at measured safe optimum")
+    func gptOSS20BPolicyStartsAtMeasuredOptimum() {
+        let policy = AdaptivePrefillPolicy.gptOSS20BDefault(environment: [:])
+        #expect(policy.ladder == [512, 1024, 1536])
+        #expect(policy.initialState().currentChunkSize == 1536)
+        #expect(policy.initialState(persisted: AdaptivePrefillState(currentChunkSize: 2048)).currentChunkSize == 1536)
+    }
+
     @Test("growth requires enough clean cold-prefill samples")
     func growthRequiresCleanSamples() {
         var state = policy.initialState()

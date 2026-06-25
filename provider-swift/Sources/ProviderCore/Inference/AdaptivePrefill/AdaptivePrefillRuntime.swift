@@ -8,20 +8,29 @@ let adaptivePrefillLogger = Logger(
 )
 
 public final class AdaptivePrefillRuntime: @unchecked Sendable {
+    private struct SafetySignals {
+        let memory: AdaptivePrefillMemorySignal
+        let thermal: AdaptivePrefillThermalSignal
+    }
+
     private let policy: AdaptivePrefillPolicy
     private let store: AdaptivePrefillStore
     private let key: AdaptivePrefillStoreKey
+    private let safetySignalTTL: TimeInterval
     private let lock = NSLock()
     private var state: AdaptivePrefillState
+    private var cachedSafetySignals: (sampledAt: Date, signals: SafetySignals)?
 
     public init(
         policy: AdaptivePrefillPolicy = .liveDefault(),
         store: AdaptivePrefillStore = AdaptivePrefillStore(),
-        key: AdaptivePrefillStoreKey
+        key: AdaptivePrefillStoreKey,
+        safetySignalTTL: TimeInterval = 2.0
     ) {
         self.policy = policy
         self.store = store
         self.key = key
+        self.safetySignalTTL = max(0.1, safetySignalTTL)
         self.state = policy.initialState(persisted: store.load(key: key))
     }
 
@@ -33,7 +42,7 @@ public final class AdaptivePrefillRuntime: @unchecked Sendable {
     }
 
     public func record(_ sample: ColdPrefillChunkSample) {
-        let signals = Self.currentSafetySignals()
+        let signals = safetySignals()
         let policySample = AdaptivePrefillSample(
             requestedChunkSize: sample.requestedChunkSize,
             actualChunkSize: sample.actualChunkSize,
@@ -71,15 +80,30 @@ public final class AdaptivePrefillRuntime: @unchecked Sendable {
         return state
     }
 
-    private static func currentSafetySignals() -> (
-        memory: AdaptivePrefillMemorySignal,
-        thermal: AdaptivePrefillThermalSignal
-    ) {
+    private func safetySignals(now: Date = Date()) -> SafetySignals {
+        lock.lock()
+        if let cachedSafetySignals,
+           now.timeIntervalSince(cachedSafetySignals.sampledAt) < safetySignalTTL {
+            let signals = cachedSafetySignals.signals
+            lock.unlock()
+            return signals
+        }
+        lock.unlock()
+
+        let signals = Self.currentSafetySignals()
+
+        lock.lock()
+        cachedSafetySignals = (sampledAt: now, signals: signals)
+        lock.unlock()
+        return signals
+    }
+
+    private static func currentSafetySignals() -> SafetySignals {
         let cores = UInt32(max(1, ProcessInfo.processInfo.activeProcessorCount))
         let metrics = SystemMetricsCollector.collect(cpuCores: cores)
-        return (
-            memorySignal(metrics.memoryPressure),
-            thermalSignal(metrics.thermalState)
+        return SafetySignals(
+            memory: memorySignal(metrics.memoryPressure),
+            thermal: thermalSignal(metrics.thermalState)
         )
     }
 

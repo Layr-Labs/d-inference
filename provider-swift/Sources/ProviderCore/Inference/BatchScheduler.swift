@@ -261,6 +261,22 @@ public actor BatchScheduler {
     /// (vs. "request cancelled" for client-initiated aborts).
     var timedOutBridges: Set<String> = []
 
+    /// In-flight B=1 greedy fast-path tasks, keyed by request id. The fast path
+    /// (see `BatchScheduler+B1FastPath.swift`) bypasses the batched engine for a
+    /// single exclusive greedy request and runs `ModelContainer.generate`
+    /// directly, so it is NOT registered with `engine.core` — `cancel` /
+    /// `cancelAll` / `stopCurrentEngine` must cancel these tasks here (the
+    /// engine abort path can't reach them). Each task removes its own entry on
+    /// completion via `clearFastPathTask`.
+    var fastPathTasks: [String: Task<Void, Never>] = [:]
+
+    /// Test-only override for the B=1 fast-path enablement gate. `nil` (the
+    /// production default) defers to the env flags via `b1GreedyFastPathEnabled()`.
+    /// Set via `_setForceB1FastPathForTest` so a benchmark can A/B the fast path
+    /// against the batched engine in one process without relying on mutating the
+    /// (often cached) `ProcessInfo` environment mid-run. @testable-only.
+    internal var _forceB1FastPathForTest: Bool? = nil
+
     // MARK: - Telemetry state (read by `backendCapacity`)
 
     var observedDecodeTpsEwma: Double = 0
@@ -398,6 +414,13 @@ public actor BatchScheduler {
         // submits fail the guard and reject/retry against the next model instead.
         var stoppingEngine = self.engine
         self.engine = nil
+        // Tear down any in-flight B=1 fast-path tasks: they run off-engine via
+        // `ModelContainer.generate`, so the engine abort below can't reach them.
+        // Cancellation makes each task's loop observe `Task.isCancelled`, run its
+        // finish bookkeeping (KV release + bridge removal + terminal events) and
+        // self-remove. Drop the handles now; late `clearFastPathTask` calls no-op.
+        cancelAllFastPathTasks()
+        fastPathTasks.removeAll()
         pendingTimeoutTask?.cancel()
         pendingTimeoutTask = nil
         // Stop the backend-liveness watchdog; a recovery restart re-arms it via

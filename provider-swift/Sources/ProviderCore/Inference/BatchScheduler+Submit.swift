@@ -89,6 +89,18 @@ extension BatchScheduler {
             continuation.finish()
             return stream
         }
+        // B=1 greedy fast path eligibility — MUST be decided BEFORE inserting our
+        // bridge (it checks `activeBridges.isEmpty` for exclusivity). When taken,
+        // this bypasses the batched engine + planner for a single greedy request;
+        // otherwise the unchanged batched-engine path below runs.
+        let useFastPath = b1FastPathEligible(
+            temperature: temperature,
+            topP: topP,
+            topK: topK,
+            seed: seed,
+            maxTokens: maxTokens,
+            cacheScope: cacheScope
+        )
         let bridge = BridgeState(
             requestId: id,
             promptTokens: promptTokens.count,
@@ -96,6 +108,50 @@ extension BatchScheduler {
             submittedAt: .now
         )
         activeBridges[id] = bridge
+
+        if useFastPath {
+            // Reserve KV bytes (cold; no restore, no planner, no engine enqueue)
+            // so the global KV budget and concurrent admissions still account for
+            // this request exactly as the engine path would.
+            let kvOutcome = await reserveKVForRequest(
+                requestId: id,
+                requestTokens: requestBudget,
+                reservationTokens: requestBudget,
+                restorePlanned: false
+            )
+            guard kvOutcome != .failed else {
+                await dropBridge(requestId: id)
+                noteAdmissionReject()
+                continuation.yield(.error(
+                    "token_budget_exhausted: insufficient global KV cache headroom"))
+                continuation.finish()
+                return stream
+            }
+            // Re-check the captured engine is still current and the container is
+            // live after the reserve await — a reload/unload may have run. Use
+            // releaseRequestResources (not bare dropBridge) so the reservation
+            // made above is not leaked if a cancel dropped the bridge meanwhile.
+            guard engineStillCurrent(submitEpoch, engine), let container = self.modelContainer else {
+                await releaseRequestResources(id)
+                continuation.yield(.error("model reloaded during submit; please retry"))
+                continuation.finish()
+                return stream
+            }
+            runGreedyFastPath(
+                requestId: id,
+                container: container,
+                promptTokens: promptTokens,
+                maxTokens: maxTokens,
+                continuation: continuation
+            )
+            let scheduler = self
+            continuation.onTermination = { @Sendable termination in
+                if case .cancelled = termination {
+                    Task { await scheduler.cancel(requestId: id) }
+                }
+            }
+            return stream
+        }
 
         if let planner = self.planner {
             await refreshPlannerPolicy(activeTokenBudget: tokenBudgetMax)
@@ -405,6 +461,14 @@ extension BatchScheduler {
     }
 
     public func cancel(requestId: String) async {
+        // B=1 fast-path request: it runs off-engine, so the engine abort below
+        // can't reach it. Cancel its task; the task observes the cancellation,
+        // runs its own finish bookkeeping (KV release + bridge removal + terminal
+        // events) and clears its handle. (If it already finished and self-removed,
+        // this is a no-op and we fall through to the harmless engine/local path.)
+        if cancelFastPathTask(requestId) {
+            return
+        }
         if let engine = self.engine {
             // Engine delivers a terminal RequestOutput synchronously; the
             // streaming Task handles `recordFinish` + KV release.
@@ -436,6 +500,11 @@ extension BatchScheduler {
     }
 
     public func cancelAll() async {
+        // Cancel any off-engine B=1 fast-path tasks first; each self-removes and
+        // releases its KV/bridge. The bridge-id KV release + removeAll below then
+        // covers the engine-path bridges (and is an idempotent no-op for any
+        // fast-path bridge a racing task already tore down).
+        cancelAllFastPathTasks()
         if let engine = self.engine {
             _ = engine.core.abortAllRequests()
         }

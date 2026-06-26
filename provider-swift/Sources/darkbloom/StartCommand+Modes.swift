@@ -65,7 +65,9 @@ extension Start {
                 host: bind,
                 maxCachedModels: Int(clamping: config.backend.maxModelSlots),
                 authToken: token,
-                kvQuant: config.backend.kvQuant
+                kvQuant: config.backend.kvQuant,
+                adaptivePrefill: config.backend.adaptivePrefill,
+                hardware: hardware
             ),
             models: advertised
         )

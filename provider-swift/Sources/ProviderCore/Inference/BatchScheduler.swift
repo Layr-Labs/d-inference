@@ -75,6 +75,13 @@ public actor BatchScheduler {
     /// Opt-in KV-cache quantization flag from provider config. Only takes effect
     /// for model families explicitly allow-listed by ``KVQuantPolicy``.
     let kvQuantEnabled: Bool
+    /// Opt-in adaptive cold-prefill chunk sizing flag from provider config.
+    /// False preserves the fixed 512-token production scheduler path.
+    let adaptivePrefillEnabled: Bool
+
+    /// Detected local hardware. Drives the adaptive cold-prefill roofline seed
+    /// (`AdaptivePrefillSeed`). nil ⇒ unknown hardware ⇒ generic empirical ladder.
+    let hardwareInfo: HardwareInfo?
 
     // MARK: - Model-specific state (set by `loadModel`)
 
@@ -102,6 +109,7 @@ public actor BatchScheduler {
     var maxContextLength: Int = 0
     var tokenizer: TokenizerHandle?
     var engine: BatchedEngine?
+    var adaptivePrefillRuntime: AdaptivePrefillRuntime?
 
     /// Checkpoint-tier KV cache for hybrid sliding-window models (Gemma-4,
     /// GPT-OSS). Non-nil only when the model's caches classify as
@@ -323,7 +331,9 @@ public actor BatchScheduler {
         defaultMaxTokens: Int = 4096,
         kvBudget: GlobalKVCacheBudget? = nil,
         diskAccountant: GlobalDiskAccountant? = nil,
-        kvQuantEnabled: Bool = false
+        kvQuantEnabled: Bool = false,
+        adaptivePrefillEnabled: Bool = false,
+        hardwareInfo: HardwareInfo? = nil
     ) {
         self.maxConcurrentRequests = max(1, maxConcurrentRequests)
         self.pendingTimeout = pendingTimeout
@@ -332,6 +342,8 @@ public actor BatchScheduler {
         self.kvBudget = kvBudget
         self.diskAccountant = diskAccountant
         self.kvQuantEnabled = kvQuantEnabled
+        self.adaptivePrefillEnabled = adaptivePrefillEnabled
+        self.hardwareInfo = hardwareInfo
         // Cold-start concurrency seed. Start at the configured ceiling rather
         // than the old hard pin to 4: a startup burst of N concurrent requests
         // has no per-batch TPS samples yet, so the adaptive ramp hasn't engaged
@@ -413,6 +425,7 @@ public actor BatchScheduler {
         stoppingEngine = nil
         modelContainer = nil
         tokenizer = nil
+        adaptivePrefillRuntime = nil
         // Drain the bounded capture pipeline FIRST (#374): the engine is stopped
         // (no more capture hooks fire), so finish the stream and cancel the
         // consumer. This releases retained KV snapshots and stops an in-flight

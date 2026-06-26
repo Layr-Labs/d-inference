@@ -251,7 +251,9 @@ extension ProviderLoop {
                 defaultMaxTokens: Self.schedulerDefaultMaxTokens,
                 kvBudget: kvBudget,
                 diskAccountant: diskAccountant,
-                kvQuantEnabled: loopConfig.config.backend.kvQuant
+                kvQuantEnabled: loopConfig.config.backend.kvQuant,
+                adaptivePrefillEnabled: loopConfig.config.backend.adaptivePrefill,
+                hardwareInfo: loopConfig.hardware
             )
             await scheduler.loadModel(
                 container: container,

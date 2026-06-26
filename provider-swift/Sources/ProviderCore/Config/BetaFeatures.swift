@@ -76,6 +76,21 @@ public enum BetaFeatures {
             requiresRestart: true,
             read: { $0.backend.kvQuant },
             write: { enabled, config in config.backend.kvQuant = enabled }
+        ),
+        BetaFeature(
+            id: "adaptive-prefill",
+            title: "Adaptive prefill autotuning",
+            summary: "Learns provider-local cold-prefill chunk sizes from latency and safety signals.",
+            details: """
+            Replaces the fixed 512-token cold-prefill chunk with a conservative \
+            provider-local autotuner. It starts at 512, grows only after clean \
+            measured cold-prefill chunks, and backs off immediately on slow \
+            chunks, high memory pressure, or serious thermal pressure. Prefix \
+            cache restores and checkpoint hits do not train the policy.
+            """,
+            requiresRestart: true,
+            read: { $0.backend.adaptivePrefill },
+            write: { enabled, config in config.backend.adaptivePrefill = enabled }
         )
     ]
 

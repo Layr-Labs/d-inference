@@ -70,6 +70,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// model is unaffected and keeps fp16. Enable per provider by setting
     /// `kv_quant = true` under `[backend]` in provider.toml.
     public var kvQuant: Bool
+    /// Opt-in dynamic cold-prefill chunk sizing. Default false preserves the
+    /// fixed 512-token production path. Enable with `adaptive_prefill = true`
+    /// under `[backend]` in provider.toml.
+    public var adaptivePrefill: Bool
 
     public init(
         port: UInt16 = 8100,
@@ -78,7 +82,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         enabledModels: [String] = [],
         idleTimeoutMins: UInt64 = 60,
         maxModelSlots: UInt64 = 3,
-        kvQuant: Bool = false
+        kvQuant: Bool = false,
+        adaptivePrefill: Bool = false
     ) {
         self.port = port
         self.model = model
@@ -87,6 +92,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.idleTimeoutMins = idleTimeoutMins
         self.maxModelSlots = maxModelSlots
         self.kvQuant = kvQuant
+        self.adaptivePrefill = adaptivePrefill
     }
 
     enum CodingKeys: String, CodingKey {
@@ -97,6 +103,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case idleTimeoutMins = "idle_timeout_mins"
         case maxModelSlots = "max_model_slots"
         case kvQuant = "kv_quant"
+        case adaptivePrefill = "adaptive_prefill"
     }
 
     public init(from decoder: Decoder) throws {
@@ -108,6 +115,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
         self.kvQuant = try container.decodeIfPresent(Bool.self, forKey: .kvQuant) ?? false
+        self.adaptivePrefill = try container.decodeIfPresent(Bool.self, forKey: .adaptivePrefill) ?? false
     }
 }
 

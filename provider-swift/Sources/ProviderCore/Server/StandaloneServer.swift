@@ -54,19 +54,29 @@ public struct StandaloneServerConfig: Sendable {
     /// When true, enable KV-cache quantization for validated model families
     /// (Gemma 4 only in v1). Default false keeps the legacy fp16 path.
     public let kvQuant: Bool
+    /// When true, enable provider-local adaptive cold-prefill chunk sizing.
+    /// Default false keeps the fixed 512-token path.
+    public let adaptivePrefill: Bool
+    /// Detected local hardware, used to seed the adaptive cold-prefill ladder.
+    /// nil ⇒ unknown hardware ⇒ generic empirical ladder.
+    public let hardware: HardwareInfo?
 
     public init(
         port: UInt16 = 8000,
         host: String = "127.0.0.1",
         maxCachedModels: Int = 3,
         authToken: String? = nil,
-        kvQuant: Bool = false
+        kvQuant: Bool = false,
+        adaptivePrefill: Bool = false,
+        hardware: HardwareInfo? = nil
     ) {
         self.port = port
         self.host = host
         self.maxCachedModels = max(1, maxCachedModels)
         self.authToken = authToken
         self.kvQuant = kvQuant
+        self.adaptivePrefill = adaptivePrefill
+        self.hardware = hardware
     }
 }
 
@@ -271,7 +281,9 @@ public actor StandaloneServer {
             defaultMaxTokens: Self.schedulerDefaultMaxTokens,
             kvBudget: kvBudget,
             diskAccountant: diskAccountant,
-            kvQuantEnabled: config.kvQuant
+            kvQuantEnabled: config.kvQuant,
+            adaptivePrefillEnabled: config.adaptivePrefill,
+            hardwareInfo: config.hardware
         )
         await scheduler.loadModel(container: container, modelId: modelId)
         let tokenizer: TokenizerHandle = await container.perform { ctx in

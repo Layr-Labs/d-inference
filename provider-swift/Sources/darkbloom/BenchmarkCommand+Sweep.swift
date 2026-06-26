@@ -36,6 +36,36 @@ extension Benchmark {
         print(try report.jsonString())
     }
 
+    func runSchedulerPrefillBenchmark(
+        modelID: String,
+        modelDirectory: URL
+    ) async throws {
+        let lengths = Self.parsePositiveInts(prefillLengths)
+        guard !lengths.isEmpty else {
+            printError("--prefill-lengths must contain at least one positive integer")
+            throw ExitCode.failure
+        }
+        let strategies = SchedulerPrefillBenchmark.parseStrategies(prefillStrategies)
+        guard !strategies.isEmpty else {
+            printError("--prefill-strategies must contain at least one valid strategy")
+            throw ExitCode.failure
+        }
+        guard prefillIterations >= 1 else {
+            printError("--prefill-iterations must be >= 1")
+            throw ExitCode.failure
+        }
+
+        let report = try await SchedulerPrefillBenchmark.run(
+            modelID: modelID,
+            modelDirectory: modelDirectory,
+            promptLengths: lengths,
+            strategies: strategies,
+            iterations: prefillIterations
+        )
+
+        print(try report.jsonString())
+    }
+
     /// Parse a comma-separated list of positive integers, ignoring blanks and
     /// non-numeric tokens.
     static func parsePositiveInts(_ raw: String) -> [Int] {

@@ -45,38 +45,16 @@ export interface UseApiKeys {
   adoptConsoleKey: (created: CreatedKey) => void;
 }
 
-type ProviderModelsResponse = {
-  providers?: Array<{
-    online?: boolean;
-    status?: string;
-    runtime_verified?: boolean;
-    last_challenge_verified?: string;
-    models?: Array<{ id?: string }>;
-  }>;
-};
+type ProviderModelsResponse = { models?: string[] };
 
 async function fetchSelfRouteModels(token: string): Promise<string[]> {
-  const res = await fetch("/api/me/providers", {
+  const res = await fetch("/api/me/provider-models", {
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
   });
   if (!res.ok) return [];
   const data = (await res.json()) as ProviderModelsResponse;
-  const ids = new Set<string>();
-  for (const provider of data.providers ?? []) {
-    if (
-      !provider.online ||
-      provider.status === "untrusted" ||
-      !provider.runtime_verified ||
-      !provider.last_challenge_verified
-    ) {
-      continue;
-    }
-    for (const model of provider.models ?? []) {
-      if (model.id) ids.add(model.id);
-    }
-  }
-  return [...ids].sort();
+  return (data.models ?? []).filter(Boolean).sort();
 }
 
 // useApiKeys owns all server interaction and the console-key localStorage

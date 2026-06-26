@@ -82,6 +82,62 @@ describe("GET /api/me/providers", () => {
 });
 
 // =========================================================================
+// GET /api/me/provider-models
+// =========================================================================
+
+describe("GET /api/me/provider-models", () => {
+  it("returns deduped model ids from eligible owned providers", async () => {
+    upstreamFetch.mockResolvedValueOnce(
+      upstreamOk({
+        providers: [
+          {
+            online: true,
+            status: "online",
+            runtime_verified: true,
+            last_challenge_verified: "2026-06-26T00:00:00Z",
+            models: [{ id: "local/b" }, { id: "local/a" }],
+          },
+          {
+            online: true,
+            status: "serving",
+            runtime_verified: true,
+            last_challenge_verified: "2026-06-26T00:00:00Z",
+            models: [{ id: "local/a" }],
+          },
+          {
+            online: false,
+            status: "offline",
+            runtime_verified: true,
+            last_challenge_verified: "2026-06-26T00:00:00Z",
+            models: [{ id: "offline/model" }],
+          },
+        ],
+      })
+    );
+
+    const { GET } = await import("@/app/api/me/provider-models/route");
+    const req = makeRequest("/api/me/provider-models", {
+      headers: { authorization: "Bearer privy-token-123" },
+    });
+    const res = await GET(req);
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ models: ["local/a", "local/b"] });
+    const [upstreamUrl, upstreamOpts] = upstreamFetch.mock.calls[0];
+    expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/me/providers`);
+    expect(upstreamOpts.headers.Authorization).toBe("Bearer privy-token-123");
+  });
+
+  it("rejects missing auth", async () => {
+    const { GET } = await import("@/app/api/me/provider-models/route");
+    const res = await GET(makeRequest("/api/me/provider-models"));
+
+    expect(res.status).toBe(401);
+    expect(upstreamFetch).not.toHaveBeenCalled();
+  });
+});
+
+// =========================================================================
 // GET /api/me/summary
 // =========================================================================
 

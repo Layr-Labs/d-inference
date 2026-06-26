@@ -350,7 +350,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             topP: request.topP,
             topK: request.topK,
             requestId: requestId,
-            cacheScope: cacheScope
+            cacheScope: cacheScope,
+            // Keep tool-bearing requests off the greedy text-only B=1 fast path:
+            // it cannot reproduce the engine's raw-text tool-call contract. No
+            // tools ⇒ fast path may apply (subject to the scheduler's gates).
+            allowFastPath: toolHandler == nil
         )
 
         return AsyncThrowingStream { continuation in

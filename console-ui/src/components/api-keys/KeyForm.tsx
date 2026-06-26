@@ -12,6 +12,7 @@ import { expiryOrClear, intOrClear, modelsOrClear, numOrClear } from "./limits";
 export function KeyForm({
   initial,
   models,
+  selfRouteModels = [],
   mode,
   submitting,
   onCancel,
@@ -19,6 +20,7 @@ export function KeyForm({
 }: {
   initial?: ApiKey;
   models: string[];
+  selfRouteModels?: string[];
   mode: "create" | "edit";
   submitting: boolean;
   onCancel: () => void;
@@ -36,7 +38,8 @@ export function KeyForm({
   const [modelText, setModelText] = useState((initial?.allowed_models ?? []).join(", "));
   const [selfRouteOnly, setSelfRouteOnly] = useState(initial?.self_route_only ?? false);
 
-  const hasModels = models.length > 0;
+  const visibleModels = selfRouteOnly ? selfRouteModels : models;
+  const hasModels = visibleModels.length > 0;
   const nameTrim = name.trim();
   const canSubmit = !!nameTrim && !submitting;
 
@@ -45,8 +48,8 @@ export function KeyForm({
   };
 
   const filteredModels = modelQuery.trim()
-    ? models.filter((m) => m.toLowerCase().includes(modelQuery.trim().toLowerCase()))
-    : models;
+    ? visibleModels.filter((m) => m.toLowerCase().includes(modelQuery.trim().toLowerCase()))
+    : visibleModels;
 
   const handleSubmit = () => {
     if (!canSubmit) return;

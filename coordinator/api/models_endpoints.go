@@ -230,6 +230,14 @@ func (s *Server) listModelEntries(includeBuilds bool) ([]types.ModelEntry, error
 }
 
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
+	if k := apiKeyFromContext(r.Context()); k != nil && k.SelfRouteOnly {
+		writeJSON(w, http.StatusOK, types.ModelListResponse{
+			Object: "list",
+			Data:   s.selfRouteModelEntries(consumerKeyFromContext(r.Context())),
+		})
+		return
+	}
+
 	// Pass ?include_builds=1 (ops/debug) to also list the raw quant builds.
 	data, err := s.listModelEntries(r.URL.Query().Get("include_builds") == "1")
 	if err != nil {
@@ -242,6 +250,39 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		Object: "list",
 		Data:   data,
 	})
+}
+
+func (s *Server) selfRouteModelEntries(accountID string) []types.ModelEntry {
+	models := s.registry.OwnedModels(accountID)
+	data := make([]types.ModelEntry, 0, len(models))
+	for _, m := range models {
+		metadata := types.ModelMetadata{
+			ModelType:         m.ModelType,
+			Quantization:      m.Quantization,
+			ProviderCount:     m.Providers,
+			AttestedProviders: m.AttestedProviders,
+			TrustLevel:        string(m.TrustLevel),
+			RoutableProviders: m.Providers,
+			CanAccept:         m.Providers > 0,
+		}
+		if m.Attestation != nil {
+			metadata.Attestation = &types.ModelAttestation{
+				SecureEnclave: m.Attestation.SecureEnclave,
+				SIPEnabled:    m.Attestation.SIPEnabled,
+				SecureBoot:    m.Attestation.SecureBoot,
+			}
+		}
+		data = append(data, types.ModelEntry{
+			ID:            m.ID,
+			Object:        "model",
+			OwnedBy:       "self",
+			Name:          m.ID,
+			HuggingFaceID: m.ID,
+			Quantization:  m.Quantization,
+			Metadata:      metadata,
+		})
+	}
+	return data
 }
 
 // handleGetModel handles GET /v1/models/{id...} — the OpenAI "retrieve model"

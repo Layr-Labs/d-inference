@@ -1285,7 +1285,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reject requests for models not in the catalog.
-	if !s.registry.IsModelInCatalog(model) {
+	if !policy.enabled && !s.registry.IsModelInCatalog(model) {
 		refundReservation()
 		s.recordRejection(rejectionInfo{
 			r:                     r,
@@ -3107,7 +3107,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	model = buildModel
 	cacheAffinityKey := requestCacheAffinityKey(parsed)
 
-	if !s.registry.IsModelInCatalog(model) {
+	if !policy.enabled && !s.registry.IsModelInCatalog(model) {
 		s.recordRejection(rejectionInfo{
 			r:               r,
 			stage:           "model_resolution",

@@ -65,12 +65,17 @@ func (r *Registry) providerLivenessGateLocked(p *Provider, minTrust TrustLevel, 
 // providerServesRoutableModelLocked reports whether the provider advertises a
 // catalog-allowed build of model AND is not excluded from it by the
 // dedicated-box isolation rule. allowDedicated exempts the dedicated rule — the
-// owner self-route context, where an owner may run a mixed box. Shared by the
-// dispatch gate, alias routability, warm detection, and the load planner so the
-// catalog + dedicated decision cannot drift across them. Caller holds r.mu and
-// p.mu.
+// owner self-route context, where an owner may run a mixed box. That owner
+// context also permits off-catalog models, but still requires an exact provider
+// advertisement. Shared by the dispatch gate, alias routability, warm detection,
+// and the load planner so the catalog + dedicated decision cannot drift across
+// them. Caller holds r.mu and p.mu.
 func (r *Registry) providerServesRoutableModelLocked(p *Provider, model string, allowDedicated bool) bool {
-	if !r.providerServesCatalogModelLocked(p, model) {
+	serves := r.providerServesCatalogModelLocked(p, model)
+	if allowDedicated {
+		serves = r.providerAdvertisesModelLocked(p, model)
+	}
+	if !serves {
 		return false
 	}
 	if !allowDedicated && r.providerExcludedByDedicatedRuleLocked(p, model) {

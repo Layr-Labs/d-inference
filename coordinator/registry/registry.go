@@ -2038,6 +2038,18 @@ func (r *Registry) providerServesCatalogModelLocked(p *Provider, model string) b
 	return false
 }
 
+// providerAdvertisesModelLocked returns true if the provider advertises the
+// model, regardless of whether it is in the public catalog. Caller must hold
+// p.mu.
+func (r *Registry) providerAdvertisesModelLocked(p *Provider, model string) bool {
+	for _, m := range p.Models {
+		if m.ID == model {
+			return true
+		}
+	}
+	return false
+}
+
 // providerServesVisionModelLocked reports whether the provider advertises the
 // model as a vision-capable (VLM) build — required to route image/video requests
 // so the media is actually perceived rather than silently dropped. Caller must
@@ -3770,6 +3782,65 @@ func (r *Registry) ListModels() []AggregateModel {
 		models = append(models, am)
 	}
 
+	return models
+}
+
+// OwnedModels returns deduplicated live models advertised by providers owned by
+// accountID. Unlike ListModels, it intentionally does not apply the public
+// catalog filter; self-route keys may target off-catalog local models.
+func (r *Registry) OwnedModels(accountID string) []AggregateModel {
+	if accountID == "" {
+		return nil
+	}
+	now := time.Now()
+	agg := make(map[string]*AggregateModel)
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		p.mu.Lock()
+		eligible := p.AccountID == accountID &&
+			p.Status != StatusOffline &&
+			p.Status != StatusUntrusted &&
+			p.RuntimeVerified &&
+			r.providerSupportsPrivateTextLocked(p) &&
+			!p.LastChallengeVerified.IsZero() &&
+			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
+		if !eligible {
+			p.mu.Unlock()
+			continue
+		}
+		trust := p.TrustLevel
+		models := make([]protocol.ModelInfo, len(p.Models))
+		copy(models, p.Models)
+		p.mu.Unlock()
+
+		for _, m := range models {
+			if m.ID == "" {
+				continue
+			}
+			a, ok := agg[m.ID]
+			if !ok {
+				a = &AggregateModel{
+					ID:           m.ID,
+					ModelType:    m.ModelType,
+					Quantization: m.Quantization,
+					TrustLevel:   TrustNone,
+				}
+				agg[m.ID] = a
+			}
+			a.Providers++
+			if trustRank(trust) > trustRank(a.TrustLevel) {
+				a.TrustLevel = trust
+			}
+		}
+	}
+
+	models := make([]AggregateModel, 0, len(agg))
+	for _, a := range agg {
+		models = append(models, *a)
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models
 }
 

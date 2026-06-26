@@ -7,6 +7,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -141,6 +143,51 @@ func TestSelfRoute_PerKeyFlagForcesFree(t *testing.T) {
 	if bal := ledger.Balance(owner); bal != 0 {
 		t.Errorf("owner balance = %d, want 0 (per-key free)", bal)
 	}
+}
+
+func TestSelfRouteOnlyKeyUsesOwnedOffCatalogModel(t *testing.T) {
+	srv, st, _ := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const owner = "owner-off-catalog"
+	raw, _, err := st.CreateAPIKey(owner, store.APIKeyCreate{Name: "mine", SelfRouteOnly: true})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+
+	model := "local/off-catalog-model"
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, owner)
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: "catalog-only-model"}})
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+raw)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("list models request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("list models status = %d body = %s", resp.StatusCode, body)
+	}
+	var listed types.ModelListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode list models: %v", err)
+	}
+	if len(listed.Data) != 1 || listed.Data[0].ID != model || listed.Data[0].OwnedBy != "self" {
+		t.Fatalf("listed models = %+v, want one self-owned off-catalog model %q", listed.Data, model)
+	}
+
+	providerDone := serveOneInference(ctx, t, conn, pubKey, protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 5})
+	if status := sendSelfRouteRequest(t, ctx, ts.URL, model, raw, false); status != http.StatusOK {
+		t.Fatalf("self-route-only key status = %d, want 200", status)
+	}
+	<-providerDone
 }
 
 // TestSelfRoute_NormalRequestStillBilled is the contrast case: the SAME

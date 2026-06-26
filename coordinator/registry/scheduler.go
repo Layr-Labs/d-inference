@@ -817,7 +817,7 @@ func (r *Registry) OwnedProviderSummary(accountID, model string) (online, serves
 			continue
 		}
 		online++
-		serves := r.providerServesCatalogModelLocked(p, model) &&
+		serves := r.providerAdvertisesModelLocked(p, model) &&
 			p.RuntimeVerified &&
 			r.providerSupportsPrivateTextLocked(p) &&
 			!p.LastChallengeVerified.IsZero() &&

@@ -23,6 +23,7 @@ export function ApiKeysManager({ onConsoleKeyChange }: { onConsoleKeyChange?: (k
     login,
     keys,
     models,
+    selfRouteModels,
     loading,
     error,
     submitting,
@@ -170,6 +171,7 @@ export function ApiKeysManager({ onConsoleKeyChange }: { onConsoleKeyChange?: (k
         <KeyForm
           mode="create"
           models={models}
+          selfRouteModels={selfRouteModels}
           submitting={submitting}
           onCancel={() => setCreateOpen(false)}
           onSubmit={onCreateSubmit}
@@ -183,6 +185,7 @@ export function ApiKeysManager({ onConsoleKeyChange }: { onConsoleKeyChange?: (k
             mode="edit"
             initial={editing}
             models={models}
+            selfRouteModels={selfRouteModels}
             submitting={submitting}
             onCancel={() => setEditing(null)}
             onSubmit={onEditSubmit}

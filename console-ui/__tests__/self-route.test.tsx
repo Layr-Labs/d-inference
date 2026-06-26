@@ -152,4 +152,22 @@ describe("KeyForm self_route_only", () => {
     fireEvent.click(screen.getByText("Save changes"));
     expect(submitted!.self_route_only).toBe(true);
   });
+
+  it("switches allowed models to machine models for self-route keys", () => {
+    render(
+      <KeyForm
+        models={["gpt-oss-20b"]}
+        selfRouteModels={["local/llama-3.1-8b"]}
+        mode="create"
+        submitting={false}
+        onCancel={() => {}}
+        onSubmit={() => {}}
+      />
+    );
+
+    expect(screen.getByText("gpt-oss-20b")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("My Machine only — free"));
+    expect(screen.getByText("local/llama-3.1-8b")).toBeInTheDocument();
+    expect(screen.queryByText("gpt-oss-20b")).toBeNull();
+  });
 });

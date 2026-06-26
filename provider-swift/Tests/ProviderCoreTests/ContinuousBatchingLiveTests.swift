@@ -1401,9 +1401,8 @@ struct ContinuousBatchingLiveTests {
                 externalChatTemplate: nil)
         }
         await engine.start()
-        defer { Task { await engine.stop() } }
 
-        return await withTaskGroup(of: (Int, Double).self) { group -> [Double] in
+        let results = await withTaskGroup(of: (Int, Double).self) { group -> [Double] in
             for (i, prompt) in prompts.enumerated() {
                 let id = "perstream-\(i)-\(UUID().uuidString.prefix(6))"
                 group.addTask { [engine] in
@@ -1419,10 +1418,16 @@ struct ContinuousBatchingLiveTests {
                     return (i, Self.tokensPerSecond(produced, .now - start))
                 }
             }
-            var results = Array(repeating: 0.0, count: prompts.count)
-            for await (idx, tps) in group { results[idx] = tps }
-            return results
+            var r = Array(repeating: 0.0, count: prompts.count)
+            for await (idx, tps) in group { r[idx] = tps }
+            return r
         }
+
+        // Synchronous stop: a detached teardown would race the next
+        // helper invocation against a live engine on the shared
+        // ModelContainer.
+        await engine.stop()
+        return results
     }
 
     // MARK: - streamInterval text completeness

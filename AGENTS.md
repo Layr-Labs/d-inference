@@ -73,7 +73,7 @@ scripts/              build, signing, install, and deploy helpers
 ├── admin.sh          admin CLI (Privy auth, release mgmt, API calls)
 ├── publish-model.sh  model registry publish workflow
 ├── deploy-acme.sh    nginx/step-ca helper
-├── fetch-metallib.sh MLX metallib fetcher
+├── fetch-metallib.sh MLX metallib builder (cmake from libs/mlx-swift source)
 └── entitlements.plist hardened runtime entitlements (hypervisor, network)
 
 docs/                 architecture, deploy runbooks, MDM/ACME notes, threat model

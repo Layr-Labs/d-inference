@@ -29,6 +29,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
 
 	"net/http"
 	"strings"
@@ -247,6 +248,34 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			provider = s.registry.Register(providerID, conn, regMsg)
 			s.attachProviderLocation(providerID, provider, r)
 			s.verifyProviderAttestation(providerID, provider, regMsg)
+			// If this is a cluster head, independently verify EVERY member's
+			// attestation and set the head's surfaced trust to min(member).
+			s.verifyClusterMembers(providerID, provider, regMsg)
+
+			// DEV ONLY: EIGENINFERENCE_DEV_FORCE_ROUTABLE=true forces every
+			// routability gate so a minimal/cluster provider is servable without
+			// the full attestation handshake (runtime manifest, APNs code
+			// attestation, challenge-verified SIP, privacy capabilities). This
+			// DISABLES the trust model — never set it in production.
+			if os.Getenv("EIGENINFERENCE_DEV_FORCE_ROUTABLE") == "true" {
+				provider.Mu().Lock()
+				provider.Status = registry.StatusOnline
+				provider.TrustLevel = registry.TrustHardware
+				provider.Backend = registry.BackendMLXSwift
+				provider.RuntimeVerified = true
+				provider.RuntimeManifestChecked = true
+				provider.EncryptedResponseChunks = true
+				provider.ChallengeVerifiedSIP = true
+				provider.PrivacyCapabilities = &protocol.PrivacyCapabilities{
+					TextBackendInprocess: true, TextProxyDisabled: true,
+					AntiDebugEnabled: true, CoreDumpsDisabled: true, EnvScrubbed: true,
+					SIPEnabled: true,
+				}
+				provider.Mu().Unlock()
+				provider.SetCodeAttested(true)
+				provider.SetLastChallengeVerified(time.Now())
+				s.logger.Warn("DEV FORCE ROUTABLE — provider trust gates bypassed", "provider_id", providerID)
+			}
 
 			// Record registration outcome metrics + telemetry.
 			if s.metrics != nil {
@@ -1578,6 +1607,11 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		})
 		return
 	}
+	// DEBUG: chunk content length to diagnose empty-content delivery.
+	if os.Getenv("EIGENINFERENCE_DEBUG_CHUNKS") == "1" {
+		s.logger.Info("DEBUG chunk decrypted", "request_id", msg.RequestID,
+			"len", len(chunkData), "preview", func() string { if len(chunkData) > 20 { return chunkData[:20] }; return chunkData }())
+	}
 	// Non-blocking send — if consumer is gone the chunk is dropped.
 	select {
 	case pr.ChunkCh <- chunkData:
@@ -2345,6 +2379,58 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 	}
 }
 
+// verifyClusterMembers independently verifies the Secure Enclave attestation of
+// EVERY member of a pipeline-parallel cluster (relayed by the head in the
+// register message) and records them on the head provider. The head's surfaced
+// trust becomes min(member trust): a member whose blob fails verification is
+// `none`, which taints the whole cluster. This closes the gap where a cluster's
+// non-head nodes — which see plaintext activations — were invisible to the
+// coordinator's trust model.
+func (s *Server) verifyClusterMembers(providerID string, provider *registry.Provider, regMsg *protocol.RegisterMessage) {
+	if regMsg.Cluster == nil || len(regMsg.Cluster.Members) == 0 {
+		return
+	}
+	members := make([]registry.ClusterMemberAttestation, 0, len(regMsg.Cluster.Members))
+	for _, m := range regMsg.Cluster.Members {
+		entry := registry.ClusterMemberAttestation{NodeID: m.NodeID, Rank: m.Rank}
+		result, err := attestation.VerifyJSON(m.Attestation)
+		if err != nil || !result.Valid {
+			entry.Verified = false
+			entry.TrustLevel = registry.TrustNone
+			reason := result.Error
+			if err != nil {
+				reason = err.Error()
+			}
+			s.logger.Warn("cluster member attestation FAILED",
+				"provider_id", providerID, "cluster_id", regMsg.Cluster.ClusterID,
+				"node_id", m.NodeID, "error", reason)
+		} else {
+			// A verified SE-signed blob earns self_signed (hardware needs MDM/MDA,
+			// which relayed members don't carry).
+			entry.Verified = true
+			entry.TrustLevel = registry.TrustSelfSigned
+			entry.SEPublicKey = result.PublicKey
+			entry.ChipName = result.ChipName
+			entry.HardwareModel = result.HardwareModel
+			entry.SerialNumber = result.SerialNumber
+			entry.SIPEnabled = result.SIPEnabled
+			entry.SecureBoot = result.SecureBootEnabled
+		}
+		members = append(members, entry)
+	}
+	provider.SetClusterMembers(regMsg.Cluster.ClusterID, members)
+	verifiedCount := 0
+	for _, m := range members {
+		if m.Verified {
+			verifiedCount++
+		}
+	}
+	s.logger.Info("cluster members verified",
+		"provider_id", providerID, "cluster_id", regMsg.Cluster.ClusterID,
+		"members", len(members), "verified", verifiedCount,
+		"surfaced_trust", string(provider.GetTrustLevel()))
+}
+
 // mdmVerifyOutcome classifies the result of one MDM verification attempt so the
 // per-connection mdmVerificationLoop can decide whether to retry.
 type mdmVerifyOutcome int
@@ -2788,6 +2874,18 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 // Users can independently verify the Apple MDA certificate chain against
 // Apple's public Enterprise Attestation Root CA.
 func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Request) {
+	type clusterMemberAttest struct {
+		NodeID        string `json:"node_id"`
+		Rank          int    `json:"rank"`
+		TrustLevel    string `json:"trust_level"`
+		Verified      bool   `json:"verified"`
+		SEPublicKey   string `json:"se_public_key,omitempty"`
+		ChipName      string `json:"chip_name,omitempty"`
+		HardwareModel string `json:"hardware_model,omitempty"`
+		SerialNumber  string `json:"serial_number,omitempty"`
+		SIPEnabled    bool   `json:"sip_enabled"`
+		SecureBoot    bool   `json:"secure_boot_enabled"`
+	}
 	type providerAttestation struct {
 		ProviderID    string `json:"provider_id"`
 		ChipName      string `json:"chip_name"`
@@ -2822,6 +2920,13 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		MDAUDID       string   `json:"mda_udid,omitempty"`
 		MDAOSVersion  string   `json:"mda_os_version,omitempty"`
 		MDASepVersion string   `json:"mda_sepos_version,omitempty"`
+
+		// Cluster, when present, lists EVERY node of a pipeline-parallel cluster
+		// behind this provider. A consumer must see all machines that touch
+		// their activations, not just the head. Surfaced trust_level above is
+		// already the min across these members.
+		ClusterID      string                `json:"cluster_id,omitempty"`
+		ClusterMembers []clusterMemberAttest `json:"cluster_members,omitempty"`
 	}
 
 	var providers []providerAttestation
@@ -2897,6 +3002,20 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 				pa.MDAUDID = mdaResult.DeviceUDID
 				pa.MDAOSVersion = mdaResult.OSVersion
 				pa.MDASepVersion = mdaResult.SepOSVersion
+			}
+		}
+
+		// Cluster roster: surface every verified member so the consumer sees the
+		// full set of machines that handle their activations.
+		if cid, cmembers := p.ClusterMembersSnapshot(); len(cmembers) > 0 {
+			pa.ClusterID = cid
+			for _, m := range cmembers {
+				pa.ClusterMembers = append(pa.ClusterMembers, clusterMemberAttest{
+					NodeID: m.NodeID, Rank: m.Rank, TrustLevel: string(m.TrustLevel),
+					Verified: m.Verified, SEPublicKey: m.SEPublicKey, ChipName: m.ChipName,
+					HardwareModel: m.HardwareModel, SerialNumber: m.SerialNumber,
+					SIPEnabled: m.SIPEnabled, SecureBoot: m.SecureBoot,
+				})
 			}
 		}
 

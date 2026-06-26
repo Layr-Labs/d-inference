@@ -59,6 +59,22 @@ const (
 
 const BackendMLXSwift = "mlx-swift"
 
+// ClusterMemberAttestation is one verified node of a pipeline-parallel cluster,
+// recorded on the head provider's record. Trust is per-member; the cluster's
+// surfaced trust is the minimum across all members.
+type ClusterMemberAttestation struct {
+	NodeID        string
+	Rank          int
+	TrustLevel    TrustLevel
+	SEPublicKey   string // base64 raw P-256 SE signing key from the attestation blob
+	ChipName      string
+	HardwareModel string
+	SerialNumber  string
+	SIPEnabled    bool
+	SecureBoot    bool
+	Verified      bool // true if the SE signature on the member's blob verified
+}
+
 // MaxFailedChallenges is the number of consecutive challenge failures before
 // a provider is marked untrusted and fully derouted.
 const MaxFailedChallenges = 3
@@ -247,7 +263,14 @@ type Provider struct {
 	PublicKey         string // base64-encoded X25519 public key for E2E encryption
 	Attested          bool   // true if attestation was verified successfully
 	AttestationResult *attestation.VerificationResult
-	TrustLevel        TrustLevel             // attestation trust level
+	TrustLevel        TrustLevel             // attestation trust level (for a cluster head: min across members)
+	// ClusterMembers, when non-empty, means this provider is the HEAD of a
+	// pipeline-parallel cluster: each entry is a member node whose Secure Enclave
+	// attestation the coordinator independently verified. Surfaced trust is the
+	// minimum across members; the full roster is exposed at
+	// /v1/providers/attestation so consumers see every machine in the path.
+	ClusterID      string
+	ClusterMembers []ClusterMemberAttestation
 	MDAVerified       bool                   // true if Apple Device Attestation cert chain verified
 	MDACertChain      [][]byte               // DER-encoded Apple MDA certificate chain (leaf first)
 	MDAResult         *attestation.MDAResult // parsed OIDs from Apple cert
@@ -438,6 +461,44 @@ func (p *Provider) SetAttested(attested bool, trust TrustLevel) {
 	p.Attested = attested
 	p.TrustLevel = trust
 	p.mu.Unlock()
+}
+
+// SetClusterMembers records the verified members of a pipeline-parallel cluster
+// on the head provider and sets the head's surfaced TrustLevel to the MINIMUM
+// trust across all members (one untrusted member taints the cluster). An empty
+// members slice clears cluster status.
+func (p *Provider) SetClusterMembers(clusterID string, members []ClusterMemberAttestation) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ClusterID = clusterID
+	p.ClusterMembers = members
+	if len(members) == 0 {
+		return
+	}
+	minTrust := TrustHardware
+	for _, m := range members {
+		if !m.Verified || trustRank(m.TrustLevel) < trustRank(minTrust) {
+			if !m.Verified {
+				minTrust = TrustNone
+			} else {
+				minTrust = m.TrustLevel
+			}
+		}
+	}
+	p.TrustLevel = minTrust
+	p.Attested = minTrust != TrustNone
+}
+
+// ClusterMembersSnapshot returns a copy of this provider's cluster members.
+func (p *Provider) ClusterMembersSnapshot() (string, []ClusterMemberAttestation) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.ClusterMembers) == 0 {
+		return "", nil
+	}
+	out := make([]ClusterMemberAttestation, len(p.ClusterMembers))
+	copy(out, p.ClusterMembers)
+	return p.ClusterID, out
 }
 
 // GrantHardwareIfNotUntrusted atomically promotes the provider to hardware trust

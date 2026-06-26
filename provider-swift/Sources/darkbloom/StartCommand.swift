@@ -46,6 +46,9 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Disable local API-key auth for --local / --local-endpoint (NOT recommended; trusted/airgapped use only).")
     var noAuth = false
 
+    @Flag(help: "Join this machine to its configured [cluster] for pipeline-parallel inference across co-located, attested Macs. Requires a [cluster] section in provider.toml (EXPERIMENTAL).")
+    var cluster = false
+
     /// Public URL of the Darkbloom Terms of Service.
     static let termsURL = "https://darkbloom.dev/terms.html"
 
@@ -96,6 +99,16 @@ struct Start: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
+        // --cluster (or `[cluster] enabled = true`) resolves the pipeline-
+        // parallel topology up-front: validating it here means the provider
+        // fails fast with a clear message rather than half-forming a cluster.
+        // The resolved plan selects the distributed engine in the loop; on a
+        // single node or without a [cluster] section this is a no-op and the
+        // provider runs exactly as before.
+        if let plan = try resolveClusterPlan(&effectiveConfig) {
+            printClusterPlan(plan)
+        }
+
         if local {
             try await runLocalStandalone(
                 snapshot: snapshot,
@@ -116,6 +129,73 @@ struct Start: AsyncParsableCommand {
                 coordinatorURL: effectiveCoordinator
             )
         }
+    }
+
+    // MARK: - Cluster (--cluster)
+
+    /// Resolve the pipeline-parallel cluster plan from config + the `--cluster`
+    /// flag. The flag forces `cluster.enabled = true` (so a user can opt in
+    /// without editing TOML, as long as a `[cluster]` section with members
+    /// exists). Returns nil when clustering is off; throws a clear error when it
+    /// is on but mis-configured.
+    private func resolveClusterPlan(_ config: inout ProviderConfig) throws -> ClusterPlan? {
+        if cluster {
+            if config.cluster == nil {
+                printError("--cluster requires a [cluster] section in provider.toml (cluster_id, node_id, and [[cluster.members]]).")
+                throw ExitCode.failure
+            }
+            config.cluster?.enabled = true
+        }
+        guard let settings = config.cluster, settings.enabled else {
+            return nil
+        }
+        do {
+            return try ClusterPlan.resolve(settings)
+        } catch let e as ClusterPlanError {
+            printError("Invalid [cluster] configuration: \(clusterPlanErrorMessage(e))")
+            throw ExitCode.failure
+        }
+    }
+
+    private func clusterPlanErrorMessage(_ e: ClusterPlanError) -> String {
+        switch e {
+        case .disabled: return "clustering is disabled"
+        case .missingClusterId: return "cluster_id is required"
+        case .emptyMembers: return "no [[cluster.members]] listed"
+        case .singleMember: return "a cluster needs at least 2 members (this machine plus a peer)"
+        case .selfNotInMembers(let id): return "this machine's node_id \"\(id)\" is not in the members list"
+        case .duplicateNodeId(let id): return "duplicate node_id \"\(id)\" in members"
+        case .unsupportedBackend(let b): return "unsupported transport backend \"\(b)\" (use \"ring\" or \"jaccl\")"
+        }
+    }
+
+    private func printClusterPlan(_ plan: ClusterPlan) {
+        let (prev, next) = plan.neighborNodeIds()
+        print("Cluster mode: \(plan.clusterId)")
+        print("  this node : \(plan.nodeId) (rank \(plan.rank) of \(plan.worldSize), backend=\(plan.backend.rawValue))")
+        print("  ring      : prev=\(prev ?? "—")  next=\(next ?? "—")")
+        print("  role      : \(plan.isHead ? "head (decrypts requests)" : plan.isTail ? "tail (samples tokens)" : "middle")")
+
+        // Materialize the MLX ring hostfile + env now (real, fail-fast). The
+        // ring transport reads MLX_HOSTFILE/MLX_RANK at group init.
+        do {
+            let dir = try ConfigManager.defaultConfigPath().deletingLastPathComponent()
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let env = try MLXRingEnvironment.materialize(plan, directory: dir)
+            for (k, v) in env { setenv(k, v, 1) }
+            print("  ring env  : MLX_HOSTFILE=\(env["MLX_HOSTFILE"] ?? "") MLX_RANK=\(env["MLX_RANK"] ?? "")")
+        } catch {
+            printError("Failed to materialize MLX ring environment: \(error)")
+        }
+
+        // The cluster engine itself (DistributedInferenceEngine over the real MLX
+        // ring + sharded model load) is brought up on the cluster hardware; the
+        // node-to-node handshakes run via ClusterBringup over the configured
+        // member addresses. Until that path is exercised on two TB-linked Macs,
+        // the provider continues to serve single-node so it never comes up
+        // half-formed. See docs/developer/clustering-implementation-status.md.
+        print("  status    : topology + ring env ready; distributed engine bring-up runs on cluster hardware.")
+        print()
     }
 
     // MARK: - Standalone (--local)

@@ -90,6 +90,10 @@ public enum ProviderProtocolCodec {
             try validateRawJSON(attestation.rawBytes)
             fields.append(("attestation", attestation.rawBytes))
         }
+        if let cluster = register.cluster {
+            try validateRawJSON(cluster.rawBytes)
+            fields.append(("cluster", cluster.rawBytes))
+        }
         try appendIfPresent(register.prefillTps, key: "prefill_tps", to: &fields)
         try appendIfPresent(register.decodeTps, key: "decode_tps", to: &fields)
         try appendIfPresent(register.authToken, key: "auth_token", to: &fields)

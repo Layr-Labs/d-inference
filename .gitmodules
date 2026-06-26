@@ -1,6 +1,6 @@
 [submodule "libs/mlx-swift"]
 	path = libs/mlx-swift
-	url = https://github.com/Layr-Labs/mlx-swift.git
+	url = https://github.com/crypt0fairy/mlx-swift.git
 [submodule "libs/mlx-swift-lm"]
 	path = libs/mlx-swift-lm
-	url = https://github.com/Layr-Labs/mlx-swift-lm.git
+	url = https://github.com/crypt0fairy/mlx-swift-lm.git

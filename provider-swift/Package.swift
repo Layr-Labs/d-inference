@@ -13,6 +13,7 @@ let package = Package(
         .executable(name: "darkbloom", targets: ["darkbloom"]),
         .executable(name: "darkbloom-enclave", targets: ["DarkbloomEnclaveCLI"]),
         .executable(name: "darkbloom-publish", targets: ["darkbloom-publish"]),
+        .executable(name: "loop-diag", targets: ["loop-diag"]),
     ],
     dependencies: [
         .package(path: "../libs/mlx-swift"),
@@ -79,6 +80,10 @@ let package = Package(
             dependencies: [
                 "ProviderCoreFoundation",
                 .product(name: "MLX", package: "mlx-swift"),
+                // Cmlx: the mlx-c C API. ProviderCore's MLXDistributed binding
+                // (Cluster/) calls the distributed collectives directly, since
+                // mlx-swift does not yet wrap them in Swift.
+                .product(name: "Cmlx", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),
@@ -140,6 +145,183 @@ let package = Package(
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),
             ],
             path: "Sources/vlm-smoke"
+        ),
+
+        // ----------------------------------------------------------------
+        // gptoss-shard-smoke: THROWAWAY harness validating the GPT-OSS pipeline
+        // shard (GPTOSSPipelineShard / GPTOSSPipelineShardLoader) against a TINY
+        // SYNTHETIC checkpoint it generates in-process (the real gpt-oss-20b is
+        // too big to load monolithic + 2 shards at once). Mints a ~MB random
+        // fp32 checkpoint with the exact keys/shapes GPTOSSModel expects, loads
+        // the full model and a 2-way layer split, and asserts the sharded logits
+        // match the monolithic logits at the last position. Mirrors shard-smoke.
+        // NOT a product.
+        //   swift run -c release gptoss-shard-smoke [out-dir]
+        // ----------------------------------------------------------------
+        .executableTarget(
+            name: "gptoss-shard-smoke",
+            dependencies: [
+                "ProviderCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            ],
+            path: "Sources/gptoss-shard-smoke"
+        ),
+
+        // ----------------------------------------------------------------
+        // solo-bench: single-node decode benchmark pointed straight at a model
+        // dir, bypassing the coordinator/scanner. The single-node baseline for
+        // comparing against the cluster's pipeline-parallel tok/s. NOT a product.
+        //   swift run -c release solo-bench <model-dir> [maxTokens] [iterations]
+        // ----------------------------------------------------------------
+        .executableTarget(
+            name: "solo-bench",
+            dependencies: [
+                "ProviderCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            ],
+            path: "Sources/solo-bench"
+        ),
+
+        // ----------------------------------------------------------------
+        // loop-diag: single-machine diagnostic harness that runs the CLUSTER'S
+        // decode-loop discipline (manual argMax sampling, evalEvery:4 mid-layer
+        // eval chopping, the per-token .eval() barrier) on ONE machine with the
+        // FULL model and NO network / group collectives. Its tok/s vs
+        // solo-bench's isolates the pure LOOP OVERHEAD from the network hop +
+        // pipeline bubble. NOT a product.
+        //   swift run -c release loop-diag <model-dir> [maxTokens] [iterations]
+        // ----------------------------------------------------------------
+        .executableTarget(
+            name: "loop-diag",
+            dependencies: [
+                "ProviderCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            ],
+            path: "Sources/loop-diag"
+        ),
+
+        // ----------------------------------------------------------------
+        // batch-bench: batched single-node decode benchmark. Submits B
+        // concurrent decode requests through the production continuous-
+        // batching path (BatchScheduler → BatchedEngine) and reports the
+        // AGGREGATE decode tok/s — the throughput multiplier vs solo-bench's
+        // batch=1 baseline. NOT a product.
+        //   swift run -c release batch-bench <model-dir> [batchSize] [maxTokens] [iterations]
+        // ----------------------------------------------------------------
+        .executableTarget(
+            name: "batch-bench",
+            dependencies: [
+                "ProviderCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            ],
+            path: "Sources/batch-bench"
+        ),
+
+        // ----------------------------------------------------------------
+        // spec-bench: single-node speculative-decoding benchmark. A small draft
+        // model proposes K tokens, the target verifies them in one forward pass.
+        // Greedy output is token-identical to the target alone; pure latency win.
+        // NOT a product. Compare vs solo-bench on the same target for the speedup.
+        //   swift run -c release spec-bench <target-dir> <draft-dir> [maxTokens] [iters] [K]
+        // ----------------------------------------------------------------
+        .executableTarget(
+            name: "spec-bench",
+            dependencies: [
+                "ProviderCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            ],
+            path: "Sources/spec-bench"
+        ),
+
+        // ----------------------------------------------------------------
+        // batch-ctrl-test: standalone round-trip check of the continuous-batching
+        // composition control vector (swift test is broken in this toolchain).
+        //   swift run -c release batch-ctrl-test
+        // ----------------------------------------------------------------
+        .executableTarget(
+            name: "batch-ctrl-test",
+            dependencies: ["ProviderCore"],
+            path: "Sources/batch-ctrl-test"
+        ),
+
+        // ----------------------------------------------------------------
+        // batch-shard-smoke: Phase 1 correctness oracle for batched sharded
+        // decode. Single machine, no ring: asserts B batched rows produce the
+        // same greedy token stream as the B=1 path. NOT a product.
+        //   swift run -c release batch-shard-smoke <model-dir> [B] [maxTokens]
+        // ----------------------------------------------------------------
+        .executableTarget(
+            name: "batch-shard-smoke",
+            dependencies: [
+                "ProviderCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            ],
+            path: "Sources/batch-shard-smoke"
+        ),
+
+        // ----------------------------------------------------------------
+        // comms-bench: measure the tensor-parallel comms floor over the ring —
+        // 2*layers all-reduce-sized collectives per simulated token. The go/no-go
+        // number for whether TP can approach single-node speed. Run on both nodes.
+        //   swift run -c release comms-bench [hiddenSize] [layers] [tokens]
+        // ----------------------------------------------------------------
+        .executableTarget(
+            name: "comms-bench",
+            dependencies: [
+                "ProviderCore",
+                .product(name: "MLX", package: "mlx-swift"),
+            ],
+            path: "Sources/comms-bench"
+        ),
+
+        // ----------------------------------------------------------------
+        // cluster-run: run ONE model split across the cluster over the real
+        // MLX ring. Reads [cluster] from provider.toml, joins the ring, loads
+        // this rank's layer slice, and runs a greedy pipeline decode. Run the
+        // same command on every node. NOT a product (the production path is
+        // `darkbloom start --cluster`; this is the hardware bring-up harness).
+        //   swift run -c release cluster-run <model-dir> "<prompt>"
+        // ----------------------------------------------------------------
+        .executableTarget(
+            name: "cluster-run",
+            dependencies: [
+                "ProviderCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            ],
+            path: "Sources/cluster-run"
+        ),
+
+        // ----------------------------------------------------------------
+        // cluster-provider: the HEAD node acting as a real Darkbloom provider
+        // against a coordinator — bridges CoordinatorClient (registration,
+        // attestation, sealed-request protocol) to DistributedInferenceEngine
+        // (ring-sharded inference). Run on rank 0; run cluster-run-style peers
+        // on the other ranks. NOT yet production (single-node attestation).
+        //   swift run -c release cluster-provider <model-dir> [coordinator-ws-url]
+        // ----------------------------------------------------------------
+        .executableTarget(
+            name: "cluster-provider",
+            dependencies: [
+                "ProviderCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            ],
+            path: "Sources/cluster-provider"
         ),
 
         // ----------------------------------------------------------------

@@ -312,7 +312,53 @@ func main() {
 	billingCfg := cfg.BillingConfig
 	ledger := payments.NewLedger(st)
 	billingSvc := billing.NewService(st, ledger, logger, billingCfg)
-	srv.SetBilling(billingSvc)
+	// DEV ONLY: EIGENINFERENCE_BILLING_DISABLE=true leaves the billing service
+	// unset, so the consumer balance reservation (gated on s.billing != nil) is
+	// skipped entirely — lets a dev/demo coordinator serve without funding an
+	// account. Never set this in production.
+	if os.Getenv("EIGENINFERENCE_BILLING_DISABLE") == "true" {
+		logger.Warn("BILLING DISABLED (dev) — no balance checks; do not use in production")
+	} else {
+		srv.SetBilling(billingSvc)
+	}
+
+	// DEV ONLY: seed the model catalog with one model id so a locally-served
+	// model is routable WITHOUT the R2 manifest/publish pipeline. Comma-separate
+	// ids in EIGENINFERENCE_DEV_SEED_MODELS. Registers an entry + a fake
+	// promoted version (the consumer catalog requires an active version). Never
+	// set in production.
+	if seed := os.Getenv("EIGENINFERENCE_DEV_SEED_MODELS"); seed != "" {
+		for _, id := range strings.Split(seed, ",") {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			entry := &store.ModelRegistryEntry{
+				ID: id, DisplayName: id, Family: "dev", Architecture: "dev",
+				Quantization: "dev", MaxContextLength: 131072, MaxOutputLength: 32768,
+				MinRAMGB: 1, Status: "active", Description: "dev-seeded local model",
+			}
+			ver := &store.ModelVersion{
+				ModelID: id, Version: "dev", R2Prefix: "dev/" + id,
+				AggregateSHA256: "0000000000000000000000000000000000000000000000000000000000000000",
+				TotalSizeBytes: 0, FileCount: 0, Status: "ready", // must be "ready" to be catalog-active
+			}
+			if err := st.SetModelVersion(entry, ver, nil); err != nil {
+				logger.Error("dev seed: SetModelVersion failed", "model", id, "error", err)
+				continue
+			}
+			if err := st.PromoteModelVersion(id, "dev"); err != nil {
+				logger.Error("dev seed: PromoteModelVersion failed", "model", id, "error", err)
+				continue
+			}
+			logger.Warn("DEV SEED: registered local model in catalog", "model", id)
+		}
+		// Re-sync the registry's catalog map AFTER seeding (the startup
+		// SyncModelCatalog ran on an empty store), so providers advertising the
+		// seeded model are allowed by modelAllowedByCatalogLocked → routable.
+		srv.SyncModelCatalog()
+		logger.Warn("DEV SEED: re-synced registry model catalog")
+	}
 
 	// Derive the coordinator's long-lived X25519 key.
 	if coordKey, err := e2e.DeriveCoordinatorKey(billingCfg.EncryptionMnemonic); err == nil {

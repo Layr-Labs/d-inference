@@ -249,6 +249,9 @@ public struct CoordinatorClientConfig: Sendable {
     /// nil on headless/no-GUI boxes (no token) — those register un-attested.
     public let apnsDeviceToken: String?
     public let apnsEnvironment: String?
+    /// Cluster registration blob (head only): raw JSON the head relays carrying
+    /// every member's signed attestation. nil for non-cluster providers.
+    public let cluster: RawJSON?
 
     public init(
         url: String,
@@ -265,7 +268,8 @@ public struct CoordinatorClientConfig: Sendable {
         privacyCapabilities: PrivacyCapabilities? = nil,
         privateOnly: Bool = false,
         apnsDeviceToken: String? = nil,
-        apnsEnvironment: String? = nil
+        apnsEnvironment: String? = nil,
+        cluster: RawJSON? = nil
     ) {
         self.url = url
         self.hardware = hardware
@@ -282,6 +286,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.privateOnly = privateOnly
         self.apnsDeviceToken = apnsDeviceToken
         self.apnsEnvironment = apnsEnvironment
+        self.cluster = cluster
     }
 }
 

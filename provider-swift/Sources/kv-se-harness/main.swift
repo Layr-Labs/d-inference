@@ -6,17 +6,18 @@
 // `keychain-access-groups` entitlement and runs from a plain unsigned
 // `swift build` binary. Run:
 //
-//   swift build --product kv-se-harness
+//   swift build --product kv-se-harness        # DEBUG build only
 //   .build/debug/kv-se-harness
+//
+// NOTE: `PersistentEnclaveKey.makeTransient()` is `#if DEBUG`-gated (compiled
+// out of release builds), so this harness is likewise gated — in a release
+// build it compiles to a no-op `main` rather than failing the whole package
+// build. Build it in debug to actually exercise the SE.
 //
 // Exercises, on the real Secure Enclave:
 //   - SE key generation (transient)
-//   - ECIES wrap (public-key) + unwrap (SE private key) — the new code in
-//     PersistentEnclaveKey+ECIES / SecureEnclaveKeyWrappingService
-//   - KVCacheKEK: generate -> SE-wrap -> store -> read -> SE-unwrap,
-//     recovering the SAME KEK material (KEK storage is in-memory here;
-//     keychain PERSISTENCE of the key is the one part that needs a signed
-//     build, and it's the same SecItem path the attestation key uses).
+//   - ECIES wrap (public-key) + unwrap (SE private key)
+//   - KVCacheKEK: generate -> SE-wrap -> store -> read -> SE-unwrap
 //   - DEK wrap/unwrap under the recovered KEK
 //
 // Prints PASS/FAIL; exits non-zero on failure. NOT a product, NOT shipped.
@@ -30,6 +31,13 @@ func harnessFail(_ msg: String) -> Never {
     exit(1)
 }
 
+/// `SymmetricKey` raw bytes as `Data`. `Data(Array($0))` avoids the ambiguous
+/// `Data.init` overload set that `Data($0)` hits on Swift 6.3+.
+func rawBytes(_ key: SymmetricKey) -> Data {
+    key.withUnsafeBytes { Data(Array($0)) }
+}
+
+#if DEBUG
 print("== SE ECIES + KEK harness (transient SE key, unsigned) ==")
 print("SE available: \(PersistentEnclaveKey.isAvailable)")
 
@@ -42,9 +50,7 @@ do {
     let se = try PersistentEnclaveKey.makeTransient()
     print("✓ transient SE key created (pub \(se.publicKeyRaw.count) bytes)")
 
-    // 1) Direct ECIES round-trip on the real SE key (the new code path:
-    //    SecKeyCreateEncryptedData / SecKeyCreateDecryptedData with
-    //    .eciesEncryptionStandardX963SHA256AESGCM).
+    // 1) Direct ECIES round-trip on the real SE key.
     let probe = Data("ecies-probe-payload-\(UUID().uuidString)".utf8)
     let sealed = try se.eciesEncrypt(probe)
     let opened = try se.eciesDecrypt(sealed)
@@ -52,18 +58,15 @@ do {
     print("✓ ECIES wrap+unwrap on real SE (ciphertext \(sealed.count) bytes; SE-private decrypt)")
 
     // 2) KEK: generate -> SE-wrap -> store -> read -> SE-unwrap.
-    //    Both KEK instances share the same transient SE key + storage
-    //    (the key is in-memory; we're validating wrap/unwrap, not
-    //    keychain persistence).
     let wrapper = SecureEnclaveKeyWrappingService(enclaveKey: se)
     let storage = InMemoryWrappedKEKStorage(identifier: "harness")
     let kek1 = KVCacheKEK(wrapper: wrapper, storage: storage)
     let k1 = try await kek1.loadOrCreate()
-    let k1raw = k1.withUnsafeBytes { Data($0) }
+    let k1raw = rawBytes(k1)
 
     let kek2 = KVCacheKEK(wrapper: wrapper, storage: storage)
     let k2 = try await kek2.loadOrCreate()  // reads stored wrapped KEK -> SE-unwrap
-    let k2raw = k2.withUnsafeBytes { Data($0) }
+    let k2raw = rawBytes(k2)
     guard k1raw == k2raw else {
         harnessFail("KEK material differed after store + SE-unwrap (wrap/unwrap broken)")
     }
@@ -72,9 +75,9 @@ do {
     // 3) DEK wrap/unwrap under the recovered KEK.
     let aad = Data("harness-metadata-aad".utf8)
     let (dek, wrappedDEK) = try await kek1.freshDEK(aad: aad)
-    let dekRaw = dek.withUnsafeBytes { Data($0) }
+    let dekRaw = rawBytes(dek)
     let recovered = try await kek2.unwrap(wrappedDEK: wrappedDEK, aad: aad)
-    let recRaw = recovered.withUnsafeBytes { Data($0) }
+    let recRaw = rawBytes(recovered)
     guard dekRaw == recRaw else { harnessFail("DEK round-trip under recovered KEK mismatch") }
     print("✓ DEK wrap/unwrap under recovered KEK")
 
@@ -90,3 +93,7 @@ do {
 } catch {
     harnessFail("threw: \(error)")
 }
+#else
+// makeTransient() is DEBUG-only; in release this harness has nothing to do.
+print("kv-se-harness is a DEBUG-only tool; build with `swift build --product kv-se-harness` (debug).")
+#endif

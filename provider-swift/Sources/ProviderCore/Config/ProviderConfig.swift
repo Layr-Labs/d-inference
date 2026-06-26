@@ -129,22 +129,107 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
     }
 }
 
+/// One member of a cluster, as written in the `[[cluster.members]]` config.
+/// Members are listed in ring order; `nodeId` is matched against this machine's
+/// own `nodeId` to determine this node's rank.
+public struct ClusterMemberSettings: Sendable, Equatable, Codable {
+    public var nodeId: String
+    /// Address the MLX ring transport uses to reach this member
+    /// (host or host:port, Thunderbolt-bridge IP preferred).
+    public var address: String
+    /// Usable memory (GB) this member can devote to model weights. Drives the
+    /// memory-weighted layer split so a smaller machine gets fewer layers and
+    /// does not swap. Leave the OS + KV/activation headroom OUT of this number
+    /// (e.g. a 24 GB Mac → ~16; a 32 GB Mac → ~24). If omitted, the split falls
+    /// back to even.
+    public var memoryGb: Double?
+
+    public init(nodeId: String, address: String, memoryGb: Double? = nil) {
+        self.nodeId = nodeId
+        self.address = address
+        self.memoryGb = memoryGb
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case nodeId = "node_id"
+        case address
+        case memoryGb = "memory_gb"
+    }
+}
+
+/// `[cluster]` config: opt-in pipeline parallelism across co-located,
+/// individually-attested Macs (see docs/architecture/clustering.md). Disabled
+/// by default — a node with `enabled = false` behaves exactly as today.
+public struct ClusterSettings: Sendable, Equatable, Codable {
+    public var enabled: Bool
+    /// Stable identifier for the cluster (matches the coordinator-issued roster).
+    public var clusterId: String
+    /// This machine's node id; must appear in `members`.
+    public var nodeId: String
+    /// All members in ring order.
+    public var members: [ClusterMemberSettings]
+    /// Transport backend: "ring" (TCP/Thunderbolt-IP) or "jaccl" (RDMA/TB5).
+    public var backend: String
+    /// Continuous-batching decode path (Phase 3). Off by default: the proven
+    /// serial B=1 loop runs unless explicitly enabled. When true the head runs
+    /// the ClusterBatchScheduler and peers run runBatchedPeerLoop.
+    public var batched: Bool
+
+    public init(
+        enabled: Bool = false,
+        clusterId: String = "",
+        nodeId: String = "",
+        members: [ClusterMemberSettings] = [],
+        backend: String = "ring",
+        batched: Bool = false
+    ) {
+        self.enabled = enabled
+        self.clusterId = clusterId
+        self.nodeId = nodeId
+        self.members = members
+        self.backend = backend
+        self.batched = batched
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case clusterId = "cluster_id"
+        case nodeId = "node_id"
+        case members
+        case backend
+        case batched
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        self.clusterId = try c.decodeIfPresent(String.self, forKey: .clusterId) ?? ""
+        self.nodeId = try c.decodeIfPresent(String.self, forKey: .nodeId) ?? ""
+        self.members = try c.decodeIfPresent([ClusterMemberSettings].self, forKey: .members) ?? []
+        self.backend = try c.decodeIfPresent(String.self, forKey: .backend) ?? "ring"
+        self.batched = try c.decodeIfPresent(Bool.self, forKey: .batched) ?? false
+    }
+}
+
 public struct ProviderConfig: Sendable, Equatable, Codable {
     public var provider: ProviderSettings
     public var backend: BackendSettings
     public var coordinator: CoordinatorSettings
     public var schedule: ScheduleConfig?
+    public var cluster: ClusterSettings?
 
     public init(
         provider: ProviderSettings,
         backend: BackendSettings = BackendSettings(),
         coordinator: CoordinatorSettings = CoordinatorSettings(),
-        schedule: ScheduleConfig? = nil
+        schedule: ScheduleConfig? = nil,
+        cluster: ClusterSettings? = nil
     ) {
         self.provider = provider
         self.backend = backend
         self.coordinator = coordinator
         self.schedule = schedule
+        self.cluster = cluster
     }
 
     public init(from decoder: Decoder) throws {
@@ -153,6 +238,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         self.backend = try container.decodeIfPresent(BackendSettings.self, forKey: .backend) ?? BackendSettings()
         self.coordinator = try container.decodeIfPresent(CoordinatorSettings.self, forKey: .coordinator) ?? CoordinatorSettings()
         self.schedule = try container.decodeIfPresent(ScheduleConfig.self, forKey: .schedule)
+        self.cluster = try container.decodeIfPresent(ClusterSettings.self, forKey: .cluster)
     }
 
     /// Generate a default config based on detected hardware.
@@ -221,6 +307,11 @@ public enum ConfigManager: Sendable {
     /// If none of those files exist yet, we return path #1 so first-time
     /// `save()` writes to the canonical location.
     public static func defaultConfigPath() throws -> URL {
+        // Explicit override (used to run multiple ranks on one host for testing:
+        // each process points DARKBLOOM_CONFIG at its own provider.toml).
+        if let override = ProcessInfo.processInfo.environment["DARKBLOOM_CONFIG"], !override.isEmpty {
+            return URL(fileURLWithPath: override)
+        }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask

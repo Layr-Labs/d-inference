@@ -39,6 +39,11 @@ public enum ProviderMessage: Sendable, Equatable {
         /// to. Mirrors RegisterMessage.APNsDeviceToken/APNsEnvironment (Go).
         public var apnsDeviceToken: String?
         public var apnsEnvironment: String?
+        /// Cluster registration: head relays every member's signed attestation
+        /// (raw JSON: {cluster_id, members:[{node_id,rank,attestation}]}). nil
+        /// for non-cluster providers. The coordinator verifies each member and
+        /// sets surfaced trust = min(member).
+        public var cluster: RawJSON?
 
         public init(
             hardware: HardwareInfo,
@@ -58,7 +63,8 @@ public enum ProviderMessage: Sendable, Equatable {
             privacyCapabilities: PrivacyCapabilities? = nil,
             privateOnly: Bool = false,
             apnsDeviceToken: String? = nil,
-            apnsEnvironment: String? = nil
+            apnsEnvironment: String? = nil,
+            cluster: RawJSON? = nil
         ) {
             self.hardware = hardware
             self.models = models
@@ -78,6 +84,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.privateOnly = privateOnly
             self.apnsDeviceToken = apnsDeviceToken
             self.apnsEnvironment = apnsEnvironment
+            self.cluster = cluster
         }
     }
 

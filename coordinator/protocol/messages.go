@@ -164,6 +164,28 @@ type RegisterMessage struct {
 	RuntimeHash         string               `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
 	TemplateHashes      map[string]string    `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
 	PrivacyCapabilities *PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
+
+	// Cluster, when present, declares that this provider is the HEAD of a
+	// pipeline-parallel cluster. The head relays every member's signed Secure
+	// Enclave attestation so the coordinator can independently verify EACH node
+	// that will touch activations — not just the head. The coordinator sets the
+	// provider's surfaced trust to min(member trust) and exposes the full roster
+	// at /v1/providers/attestation. Without this, a cluster's non-head nodes are
+	// invisible to the trust model. See docs/architecture/cluster-node-handshake.md.
+	Cluster *ClusterRegistration `json:"cluster,omitempty"`
+}
+
+// ClusterRegistration is the head's declaration of its cluster's members.
+type ClusterRegistration struct {
+	ClusterID string                  `json:"cluster_id"`
+	Members   []ClusterMemberRegister `json:"members"`
+}
+
+// ClusterMemberRegister is one cluster node's attestation, relayed by the head.
+type ClusterMemberRegister struct {
+	NodeID      string          `json:"node_id"`
+	Rank        int             `json:"rank"`
+	Attestation json.RawMessage `json:"attestation"` // signed SE attestation blob (same shape as RegisterMessage.Attestation)
 }
 
 // PrivacyCapabilities describes the provider's privacy invariants at registration time.

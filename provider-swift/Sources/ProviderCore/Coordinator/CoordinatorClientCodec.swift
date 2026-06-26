@@ -53,7 +53,8 @@ public enum CoordinatorClientCodec {
             privacyCapabilities: privacyCapabilities,
             privateOnly: config.privateOnly,
             apnsDeviceToken: effectiveToken,
-            apnsEnvironment: effectiveEnv
+            apnsEnvironment: effectiveEnv,
+            cluster: config.cluster
         ))
     }
 

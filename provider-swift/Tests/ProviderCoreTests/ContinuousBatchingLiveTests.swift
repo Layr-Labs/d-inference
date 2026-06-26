@@ -87,7 +87,7 @@ struct ContinuousBatchingLiveTests {
         )
     )
     func gemma4VLMMixedLengthCoherent() async throws {
-        try ensureMetallibAvailable()
+        guard ensureMetallibAvailable() else { return }
         MLX.GPU.set(memoryLimit: 96 * 1024 * 1024 * 1024)
 
         let modelID = ProcessInfo.processInfo.environment["DARKBLOOM_GEMMA_MODEL"]
@@ -194,7 +194,7 @@ struct ContinuousBatchingLiveTests {
         )
     )
     func gemma4VLMLongContextMixedB3() async throws {
-        try ensureMetallibAvailable()
+        guard ensureMetallibAvailable() else { return }
         MLX.GPU.set(memoryLimit: 96 * 1024 * 1024 * 1024)
 
         let modelID = ProcessInfo.processInfo.environment["DARKBLOOM_GEMMA_MODEL"]
@@ -293,7 +293,7 @@ struct ContinuousBatchingLiveTests {
         )
     )
     func gemma4DecodeRingBenchmarkB1B2B3() async throws {
-        try ensureMetallibAvailable()
+        guard ensureMetallibAvailable() else { return }
         MLX.GPU.set(memoryLimit: 96 * 1024 * 1024 * 1024)
 
         let env = ProcessInfo.processInfo.environment
@@ -364,7 +364,7 @@ struct ContinuousBatchingLiveTests {
         .enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_TESTS"] != nil)
     )
     func samePromptDeterministicAcrossBatchPositions() async throws {
-        try ensureMetallibAvailable()
+        guard ensureMetallibAvailable() else { return }
 
         let modelID = "mlx-community/Qwen3-0.6B-8bit"
         guard let modelDir = ModelScanner.resolveLocalPath(modelID: modelID) else {
@@ -410,7 +410,7 @@ struct ContinuousBatchingLiveTests {
         maxTokens: Int,
         wiredMemoryGB: Int? = nil
     ) async throws {
-        try ensureMetallibAvailable()
+        guard ensureMetallibAvailable() else { return }
         if let wiredMemoryGB {
             MLX.GPU.set(memoryLimit: wiredMemoryGB * 1024 * 1024 * 1024)
         }
@@ -591,12 +591,21 @@ struct ContinuousBatchingLiveTests {
 
     /// Place the matching `mlx.metallib` next to the test runner so the MLX
     /// C++ runtime's `dladdr` lookup finds it on the first GPU call.
-    private func ensureMetallibAvailable() throws {
+    ///
+    /// Returns `true` when the metallib is colocated (GPU work can proceed) and
+    /// `false` — after recording an issue — when it is missing, so callers do
+    /// `guard ensureMetallibAvailable() else { return }` and STOP before the
+    /// first GPU call. This mirrors `Gemma4DecodeProfileTests`, which returns on
+    /// a missing metallib instead of pressing on into a hard crash on the first
+    /// MLX kernel dispatch.
+    private func ensureMetallibAvailable() -> Bool {
         if LiveInferenceFixtures.ensureMetallibColocated() == nil {
             let msg = "mlx.metallib not found near test bundle or in MLX_METALLIB_PATH/SOURCE; "
                 + "run scripts/fetch-metallib.sh debug to install it for local runs"
             Issue.record(Comment(rawValue: msg))
+            return false
         }
+        return true
     }
 
     // MARK: - Eviction-and-admission
@@ -610,7 +619,7 @@ struct ContinuousBatchingLiveTests {
         .enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_TESTS"] != nil)
     )
     func evictionAndAdmissionMatchesSolo() async throws {
-        try ensureMetallibAvailable()
+        guard ensureMetallibAvailable() else { return }
 
         let modelID = "mlx-community/Qwen3-0.6B-8bit"
         guard let modelDir = ModelScanner.resolveLocalPath(modelID: modelID) else {
@@ -772,7 +781,7 @@ struct ContinuousBatchingLiveTests {
         )
     )
     func resourceCountTrajectoryProbeSmall() async throws {
-        try ensureMetallibAvailable()
+        guard ensureMetallibAvailable() else { return }
         // Mimic the big-RAM box: BOTH the cache-size trim (cacheLimit /
         // max_pool_size_) AND the byte-pressure reclaim (memoryLimit, which drives
         // gc_limit_ in MetalAllocator::malloc) must be lifted, or the byte path
@@ -843,7 +852,7 @@ struct ContinuousBatchingLiveTests {
         )
     )
     func resourceCountTrajectoryProbe() async throws {
-        try ensureMetallibAvailable()
+        guard ensureMetallibAvailable() else { return }
 
         // Mimic the 128 GB box: lift BOTH the cache-size trim (cacheLimit) AND the
         // byte-pressure reclaim (memoryLimit -> gc_limit_ in

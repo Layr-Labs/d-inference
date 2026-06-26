@@ -102,12 +102,18 @@ extension CoordinatorClient {
             }
 
             // Task 2: Forward outbound messages to coordinator
+            //
+            // Hot path for inference chunks: `encodeOutbound` is nonisolated
+            // (pure static codec, no actor state) so it runs inline without
+            // hopping to the CoordinatorClient actor. This eliminates the
+            // per-token actor-scheduling round-trip that serialized under
+            // concurrent load and inflated inter-token latency.
             group.addTask { [weak self] in
                 guard let self else { return }
                 for await msg in outboundStream {
                     let shutting = await self.shutdownRequested
                     if shutting { break }
-                    let json = await self.encodeOutbound(msg)
+                    let json = self.encodeOutbound(msg)
                     try await ws.send(.string(json))
                 }
             }

@@ -203,6 +203,22 @@ extension BatchScheduler {
                 }
             }
 
+            // streamInterval: emit one SSE frame per N decoded tokens instead
+            // of per-token. This dramatically reduces the WebSocket frame rate
+            // under concurrent load — the provider funnels ALL concurrent
+            // inference chunks through a single serial WS write loop
+            // (OutboundRouter → CoordinatorClient+Connection Task 2), so at
+            // streamInterval=1 with B concurrent requests the per-stream
+            // inter-token gap scales ~linearly with B (each token's WS frame
+            // waits behind B-1 other tokens' frames). At interval=4 the frame
+            // count drops 4× and per-stream TPS recovers proportionally.
+            //
+            // UX impact: at 65 tok/s the client receives a 4-token burst every
+            // ~62ms — smoother than 60 fps, visually indistinguishable from
+            // per-token streaming. The client TPS metric (total tokens / elapsed)
+            // is unaffected because it measures total delivery, not chunk cadence.
+            let streamInterval = 4
+
             let scheduler = Scheduler(
                 model: ctx.model,
                 tokenizer: ctx.tokenizer,
@@ -210,7 +226,7 @@ extension BatchScheduler {
                     maxNumSeqs: maxConcurrentRequests,
                     maxNumBatchedTokens: 8192,
                     prefillStepSize: 512,
-                    streamInterval: 1,
+                    streamInterval: streamInterval,
                     maxKVCacheTokens: 0,  // unlimited — our kvBudget gates by bytes
                     kvQuantization: kvQuantScheme?.schedulerConfig
                 ),

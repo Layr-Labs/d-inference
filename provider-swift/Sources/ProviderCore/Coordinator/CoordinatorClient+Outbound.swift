@@ -10,7 +10,15 @@ import os
 extension CoordinatorClient {
     // MARK: - Outbound Encoding
 
-    internal func encodeOutbound(_ msg: OutboundMessage) -> String {
+    /// Encode an outbound message to its wire JSON string.
+    ///
+    /// `nonisolated`: the codec is a pure static function with no actor state,
+    /// so encoding can run inline on the caller's task without hopping to the
+    /// CoordinatorClient actor. This matters on the inference-chunk hot path
+    /// where every token previously paid an actor-scheduling round-trip —
+    /// under concurrent load those round-trips serialize and inflate
+    /// inter-token latency (the WS write-loop bottleneck).
+    nonisolated internal func encodeOutbound(_ msg: OutboundMessage) -> String {
         do {
             return try CoordinatorClientCodec.encodeOutboundMessageString(msg)
         } catch {
@@ -54,7 +62,7 @@ extension CoordinatorClient {
     /// A never-should-happen outbound-encode failure must not silently ship a
     /// corrupt/empty payload: record it at error severity and via protocol
     /// telemetry so the drift is observable instead of invisible.
-    internal func recordEncodeFailure(_ operation: String, _ error: Error) {
+    nonisolated internal func recordEncodeFailure(_ operation: String, _ error: Error) {
         logger.error("Outbound encode failed (\(operation)): \(error.localizedDescription)")
         TelemetryClient.shared.emit(
             kind: .protocolError,

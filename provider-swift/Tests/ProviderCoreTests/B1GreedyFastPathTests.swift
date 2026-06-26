@@ -24,29 +24,41 @@ import MLXVLM
 @Suite("B=1 fast-path eligibility")
 struct B1GreedyFastPathEligibilityTests {
 
-    /// All conditions satisfied for a single exclusive greedy request.
+    /// All conditions satisfied for a single exclusive greedy Gemma-4 request.
     private func eligible(
         enabled: Bool = true,
+        allowFastPath: Bool = true,
+        modelId: String = "mlx-community/gemma-4-26b-a4b-it-8bit",
+        kvQuantEnabled: Bool = false,
         temperature: Float = 0,
         topP: Float? = nil,
         topK: Int? = nil,
         seed: UInt64? = nil,
+        promptTokenCount: Int = 16,
         maxTokens: Int = 128,
+        maxContextLength: Int = 8192,
         cacheScope: String = "",
         activeBridgeCount: Int = 0,
         pendingRequestCount: Int = 0,
+        fastPathActive: Bool = false,
         hasContainer: Bool = true
     ) -> Bool {
         BatchScheduler.b1FastPathEligiblePure(
             enabled: enabled,
+            allowFastPath: allowFastPath,
+            modelId: modelId,
+            kvQuantEnabled: kvQuantEnabled,
             temperature: temperature,
             topP: topP,
             topK: topK,
             seed: seed,
+            promptTokenCount: promptTokenCount,
             maxTokens: maxTokens,
+            maxContextLength: maxContextLength,
             cacheScope: cacheScope,
             activeBridgeCount: activeBridgeCount,
             pendingRequestCount: pendingRequestCount,
+            fastPathActive: fastPathActive,
             hasContainer: hasContainer
         )
     }
@@ -78,6 +90,40 @@ struct B1GreedyFastPathEligibilityTests {
         #expect(!eligible(maxTokens: -5))
     }
 
+    @Test("an empty prompt is ineligible")
+    func emptyPromptIneligible() {
+        #expect(!eligible(promptTokenCount: 0))
+    }
+
+    @Test("the caller can force the request onto the engine path")
+    func callerOptOutIsIneligible() {
+        // Tool-bearing requests clear this so they never take the text-only path.
+        #expect(!eligible(allowFastPath: false))
+    }
+
+    @Test("only Gemma-family models are eligible")
+    func nonGemmaIsIneligible() {
+        #expect(!eligible(modelId: "mlx-community/Qwen3.5-30B-8bit"))
+        #expect(!eligible(modelId: ""))
+        // Case-insensitive family match.
+        #expect(eligible(modelId: "google/Gemma-4-it"))
+    }
+
+    @Test("KV quantization disqualifies the fast path (fp16 KV under-reserve)")
+    func kvQuantIsIneligible() {
+        #expect(!eligible(kvQuantEnabled: true))
+    }
+
+    @Test("a prompt+generation span over the context window defers to the engine")
+    func overContextIsIneligible() {
+        // prompt + maxTokens must fit the model context window.
+        #expect(!eligible(promptTokenCount: 8000, maxTokens: 512, maxContextLength: 8192))
+        // Exactly at the limit is fine.
+        #expect(eligible(promptTokenCount: 8064, maxTokens: 128, maxContextLength: 8192))
+        // Unknown context (0) skips the gate — other gates still apply.
+        #expect(eligible(promptTokenCount: 100000, maxTokens: 4096, maxContextLength: 0))
+    }
+
     @Test("a prefix-cache scope defers to the engine")
     func scopedIsIneligible() {
         #expect(!eligible(cacheScope: "tenant-abc"))
@@ -87,6 +133,11 @@ struct B1GreedyFastPathEligibilityTests {
     func nonExclusiveIsIneligible() {
         #expect(!eligible(activeBridgeCount: 1))
         #expect(!eligible(pendingRequestCount: 1))
+    }
+
+    @Test("an already-running fast-path task disqualifies a second one")
+    func fastPathActiveIsIneligible() {
+        #expect(!eligible(fastPathActive: true))
     }
 
     @Test("a missing container is ineligible")

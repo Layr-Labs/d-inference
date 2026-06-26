@@ -416,11 +416,15 @@ public actor BatchScheduler {
         self.engine = nil
         // Tear down any in-flight B=1 fast-path tasks: they run off-engine via
         // `ModelContainer.generate`, so the engine abort below can't reach them.
-        // Cancellation makes each task's loop observe `Task.isCancelled`, run its
-        // finish bookkeeping (KV release + bridge removal + terminal events) and
-        // self-remove. Drop the handles now; late `clearFastPathTask` calls no-op.
-        cancelAllFastPathTasks()
-        fastPathTasks.removeAll()
+        // We must FENCE (not just cancel) them here — before this teardown nil's
+        // `modelContainer` and runs `MLX.Memory.clearCache()` below — because a
+        // task still inside its `generate` loop holds and runs GPU work against
+        // the model + its KV. `waitForFastPathTasks` cancels each task and awaits
+        // its unwind (cancellation observation + finish bookkeeping: KV release,
+        // bridge removal, terminal events). The await suspends this actor so those
+        // callbacks make progress; no new fast path can start because `engine` is
+        // already nil above (every submit path short-circuits on a nil engine).
+        await waitForFastPathTasks()
         pendingTimeoutTask?.cancel()
         pendingTimeoutTask = nil
         // Stop the backend-liveness watchdog; a recovery restart re-arms it via

@@ -65,20 +65,28 @@ extension BatchScheduler {
         topP: Float?,
         topK: Int?,
         seed: UInt64?,
+        promptTokenCount: Int,
         maxTokens: Int,
-        cacheScope: String
+        cacheScope: String,
+        allowFastPath: Bool
     ) -> Bool {
         Self.b1FastPathEligiblePure(
             // Test override wins when set; otherwise consult the env flags.
             enabled: _forceB1FastPathForTest ?? Self.b1GreedyFastPathEnabled(),
+            allowFastPath: allowFastPath,
+            modelId: modelId,
+            kvQuantEnabled: kvQuantEnabled,
             temperature: temperature,
             topP: topP,
             topK: topK,
             seed: seed,
+            promptTokenCount: promptTokenCount,
             maxTokens: maxTokens,
+            maxContextLength: maxContextLength,
             cacheScope: cacheScope,
             activeBridgeCount: activeBridges.count,
             pendingRequestCount: pendingRequestCount,
+            fastPathActive: !fastPathTasks.isEmpty,
             hasContainer: modelContainer != nil
         )
     }
@@ -88,17 +96,39 @@ extension BatchScheduler {
     /// to the result (all conditions must hold), but kept cheapest-first.
     static func b1FastPathEligiblePure(
         enabled: Bool,
+        allowFastPath: Bool,
+        modelId: String,
+        kvQuantEnabled: Bool,
         temperature: Float,
         topP: Float?,
         topK: Int?,
         seed: UInt64?,
+        promptTokenCount: Int,
         maxTokens: Int,
+        maxContextLength: Int,
         cacheScope: String,
         activeBridgeCount: Int,
         pendingRequestCount: Int,
+        fastPathActive: Bool,
         hasContainer: Bool
     ) -> Bool {
         guard enabled else { return false }
+        // Caller opt-in. The engine consumer clears this for tool-bearing
+        // requests: the fast path is greedy text-only and cannot reproduce the
+        // engine's raw-text tool-call contract (`container.generate` may parse a
+        // call into a `.toolCall` event, CONSUMING the text — see the runner's
+        // `.toolCall` handling), so tool requests must stay on the engine path.
+        guard allowFastPath else { return false }
+        // Family gate: only Gemma-4 is profiled + validated for this bypass, and
+        // its greedy / EOS behavior is only known-good there. Every other family
+        // (different EOS sets, tool/stop conventions) defers to the batched engine.
+        guard modelId.lowercased().contains("gemma") else { return false }
+        // KV quantization: batched-engine admission reserves at the REDUCED
+        // (quantized) per-token KV rate, but `ModelContainer.generate` allocates a
+        // full fp16 KV cache. A fast-path reservation sized at the quantized rate
+        // would under-count ~2x and risk a unified-memory OOM, so whenever KV
+        // quant is active we defer to the engine (which owns the quantized cache).
+        guard !kvQuantEnabled else { return false }
         // Pure greedy only: temperature 0 and no nucleus / top-k truncation.
         // (minP / repetition / presence / frequency penalties are not part of
         // the tokenized submit surface, so temperature + topP + topK fully
@@ -110,6 +140,17 @@ extension BatchScheduler {
         // presence as "not the simple greedy case" and defer to the engine.
         guard seed == nil else { return false }
         guard maxTokens > 0 else { return false }
+        // Need a real prompt to prefill (a 0-token prompt has no greedy seed).
+        guard promptTokenCount > 0 else { return false }
+        // Context window: the fast path runs a cold prefill of the WHOLE prompt
+        // and decodes up to `maxTokens` against one fresh cache. If that span
+        // exceeds the model's context window, defer to the engine path — it
+        // enforces context limits and emits the precise context-overflow
+        // rejection. `maxContextLength == 0` ⇒ context unknown ⇒ skip this gate
+        // (the remaining gates, incl. the token-budget guard upstream, still apply).
+        if maxContextLength > 0 {
+            guard promptTokenCount + maxTokens <= maxContextLength else { return false }
+        }
         // No prefix-cache scope: the fast path runs a cold prefill against a
         // fresh cache and does not participate in the checkpoint / engine prefix
         // tiers, so a scoped request keeps the engine path to retain cache reuse.
@@ -118,6 +159,10 @@ extension BatchScheduler {
         // would defeat the single-row assumption (shared GPU + KV headroom).
         guard activeBridgeCount == 0 else { return false }
         guard pendingRequestCount == 0 else { return false }
+        // And no OTHER fast-path task already running (explicit single-row gate;
+        // belt-and-suspenders with the activeBridgeCount check, since a running
+        // fast path also holds a bridge).
+        guard !fastPathActive else { return false }
         // Need a live container to generate against.
         guard hasContainer else { return false }
         return true
@@ -172,8 +217,21 @@ extension BatchScheduler {
             }
 
             var sawFirstToken = false
-            var completionTokens = 0
+            // Count every streamed chunk as >= 1 completion token. The terminal
+            // `.info` carries the EXACT generation count, but it only arrives on a
+            // clean finish; on cancellation the loop breaks before it, so without
+            // this running tally `recordFinish` would settle at 0 completion tokens
+            // and the coordinator would bill $0 for work already streamed to the
+            // client. `recordFinish` takes max(observed, terminal), so a clean
+            // finish still uses the exact `.info` count (>= the chunk tally).
+            var streamedTokens = 0
+            var terminalCompletion: Int? = nil
             var reportedPrompt = promptCount
+            // Defensive: the greedy text-only fast path should never see a parsed
+            // tool call (tool requests are kept on the engine path by the caller's
+            // `allowFastPath` gate). If one is surfaced anyway we cannot faithfully
+            // reproduce the engine's raw-text behavior, so we FAIL rather than drop.
+            var sawToolCall = false
 
             for await gen in genStream {
                 // Cooperative cancellation: a client cancel / model reload cancels
@@ -185,24 +243,30 @@ extension BatchScheduler {
                         sawFirstToken = true
                         await scheduler.recordFirstToken(requestId: id, at: .now)
                     }
+                    streamedTokens += 1
                     if !text.isEmpty {
                         continuation.yield(.chunk(text))
                     }
                 case .info(let info):
                     reportedPrompt = info.promptTokenCount
-                    completionTokens = info.generationTokenCount
+                    terminalCompletion = info.generationTokenCount
                 case .toolCall:
-                    // Tool-call parsing is handled upstream on the raw text by
-                    // the consumer (`MultiModelBatchSchedulerEngine`). The
-                    // single-sequence generator only surfaces this when it parsed
-                    // a call from the text it already emitted as `.chunk`s, so we
-                    // ignore it to stay text-stream compatible with the engine
-                    // path (which emits raw text and never `.toolCall`).
-                    break
+                    // `container.generate` parsed a tool call (and may have
+                    // CONSUMED its text rather than emitting it as `.chunk`s).
+                    // Silently dropping it would lose the call; the engine path
+                    // emits raw text and never `.toolCall`, so we cannot match it
+                    // here. Mark failure and stop.
+                    sawToolCall = true
                 }
+                if sawToolCall { break }
             }
 
             let cancelled = Task.isCancelled
+            // Billing-safe completion count: terminal exact count when present,
+            // otherwise the streamed-chunk lower bound (covers cancel + tool-call
+            // failure, where no `.info` arrived).
+            let completionTokens = max(terminalCompletion ?? 0, streamedTokens)
+            let succeeded = !cancelled && !sawToolCall
             // Reuse the engine bridge's finish bookkeeping: removes the bridge,
             // updates the decode + prefill EWMA, releases the KV reservation, and
             // returns billing-safe usage counts (max of observed vs. terminal).
@@ -210,18 +274,21 @@ extension BatchScheduler {
                 requestId: id,
                 promptTokens: reportedPrompt,
                 completionTokens: completionTokens,
-                success: !cancelled)
+                success: succeeded)
 
+            // Emit delivered usage (so a listener can bill partial work) before
+            // any terminal error, mirroring the engine bridge.
+            if !succeeded, usage.promptTokens > 0 || usage.completionTokens > 0 {
+                continuation.yield(.info(
+                    promptTokens: usage.promptTokens,
+                    completionTokens: usage.completionTokens,
+                    tokensPerSecond: usage.tps))
+            }
             if cancelled {
-                // Emit delivered usage (so a listener can bill partial work)
-                // before the cancellation error, mirroring the engine bridge.
-                if usage.promptTokens > 0 || usage.completionTokens > 0 {
-                    continuation.yield(.info(
-                        promptTokens: usage.promptTokens,
-                        completionTokens: usage.completionTokens,
-                        tokensPerSecond: usage.tps))
-                }
                 continuation.yield(.error("request cancelled"))
+            } else if sawToolCall {
+                continuation.yield(.error(
+                    "fast path does not support tool calls; please retry"))
             } else {
                 continuation.yield(.info(
                     promptTokens: usage.promptTokens,
@@ -258,6 +325,30 @@ extension BatchScheduler {
     /// `stopCurrentEngine`) make late `clearFastPathTask` calls harmless no-ops.
     func cancelAllFastPathTasks() {
         for task in fastPathTasks.values { task.cancel() }
+    }
+
+    /// Cancel AND fence every in-flight fast-path task — used by
+    /// `stopCurrentEngine` before it nil's `modelContainer` and clears the MLX
+    /// cache. Unlike the engine (which is fenced by `stopAndWait`), a fast-path
+    /// task runs off-engine inside `ModelContainer.generate`, holding and running
+    /// GPU work against the model + its KV cache. If teardown freed that state
+    /// while a task were still mid-`generate`, it could touch released model/MLX
+    /// state. Awaiting each task's value blocks until it has observed
+    /// cancellation, run its finish bookkeeping (KV release + bridge removal +
+    /// terminal events) and dropped its model/iterator references.
+    ///
+    /// The handles are snapshotted first so a self-removing `clearFastPathTask`
+    /// during the awaits cannot mutate the collection being iterated. The await
+    /// suspends the actor so those actor-isolated callbacks make progress; no NEW
+    /// fast path can start meanwhile because `stopCurrentEngine` has already
+    /// nil'd `engine` (every submit path short-circuits on a nil engine).
+    /// Idempotent: a no-op when nothing is in flight.
+    func waitForFastPathTasks() async {
+        let inflight = Array(fastPathTasks.values)
+        guard !inflight.isEmpty else { return }
+        for task in inflight { task.cancel() }
+        for task in inflight { await task.value }
+        fastPathTasks.removeAll()
     }
 }
 

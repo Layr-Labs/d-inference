@@ -97,6 +97,11 @@ extension BatchScheduler {
             maxTokens: maxTokens,
             maxContextLength: maxContextLength,
             cacheScope: cacheScope,
+            // Prefix/checkpoint cache active for this model (checkpoint tier for
+            // Gemma-4/GPT-OSS, engine tier for pure-attention models). When on, an
+            // unscoped request must stay on the engine so cache stores/hits keep
+            // working — the fast path bypasses planRestoredCheckpoint/capture.
+            prefixCacheEnabled: checkpointManager != nil || enginePrefixCacheActive,
             activeBridgeCount: activeBridges.count,
             pendingRequestCount: pendingRequestCount,
             fastPathActive: !fastPathTasks.isEmpty,
@@ -120,6 +125,7 @@ extension BatchScheduler {
         maxTokens: Int,
         maxContextLength: Int,
         cacheScope: String,
+        prefixCacheEnabled: Bool,
         activeBridgeCount: Int,
         pendingRequestCount: Int,
         fastPathActive: Bool,
@@ -168,6 +174,15 @@ extension BatchScheduler {
         // fresh cache and does not participate in the checkpoint / engine prefix
         // tiers, so a scoped request keeps the engine path to retain cache reuse.
         guard cacheScope.isEmpty else { return false }
+        // Prefix/checkpoint cache enabled: even an UNSCOPED greedy request would
+        // normally populate/hit the checkpoint (or engine-tier) prefix cache via
+        // `planRestoredCheckpoint` / `finalizeRestore` + the engine capture hooks.
+        // The fast path bypasses all of that (cold prefill on a fresh cache), so
+        // when a prefix cache is active (the provider default) we defer to the
+        // engine — otherwise default-on would silently stop populating/serving the
+        // cache for the common unscoped path (and break the HybridCheckpoint
+        // live tests that assert stores/hits).
+        guard !prefixCacheEnabled else { return false }
         // Exclusive: no other in-flight or queued work. Concurrent batched work
         // would defeat the single-row assumption (shared GPU + KV headroom).
         guard activeBridgeCount == 0 else { return false }
@@ -337,6 +352,9 @@ extension BatchScheduler {
     /// task self-removes; callers that also clear `fastPathTasks` (e.g.
     /// `stopCurrentEngine`) make late `clearFastPathTask` calls harmless no-ops.
     func cancelAllFastPathTasks() {
+        // Defensive: also drop any in-progress admission fence (a `submitTokenized`
+        // suspended at its KV-reserve await). Its own exit will also clear this.
+        fastPathAdmitting = false
         for task in fastPathTasks.values { task.cancel() }
     }
 
@@ -357,6 +375,11 @@ extension BatchScheduler {
     /// nil'd `engine` (every submit path short-circuits on a nil engine).
     /// Idempotent: a no-op when nothing is in flight.
     func waitForFastPathTasks() async {
+        // Clear the admission fence first (before the early-return guard) so a
+        // `submitTokenized` suspended mid-admission can't leave it stuck set after
+        // teardown. `stopCurrentEngine` has already nil'd `engine`, so no new fast
+        // path can begin.
+        fastPathAdmitting = false
         let inflight = Array(fastPathTasks.values)
         guard !inflight.isEmpty else { return }
         for task in inflight { task.cancel() }

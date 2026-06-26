@@ -50,7 +50,7 @@ extension BatchScheduler {
         seed: UInt64? = nil,
         requestId: String? = nil,
         cacheScope: String = "",
-        allowFastPath: Bool = true
+        allowFastPath: Bool = false
     ) async -> AsyncStream<GenerationEvent> {
         let id = requestId ?? "req-\(UUID().uuidString.prefix(12))"
         let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
@@ -104,14 +104,21 @@ extension BatchScheduler {
             cacheScope: cacheScope,
             allowFastPath: allowFastPath
         )
+        // Fence the fast-path admission window the instant we decide to take it
+        // (Codex P1): set BEFORE the bridge insert + KV-reserve await below, and
+        // before `runGreedyFastPath` populates `fastPathTasks`, so a concurrent
+        // request arriving during that await can't slip onto the engine path and
+        // run alongside the fast path. Cleared on every fast-path exit below.
+        if useFastPath { fastPathAdmitting = true }
         // Concurrency gate: never run the batched engine concurrently with an
-        // in-flight B=1 fast-path task. The fast path assumes it is the sole GPU /
-        // KV consumer (single-row), so a request that is NOT itself taking the
-        // fast path while one is active is rejected with a retryable signal
-        // (`token_budget_exhausted` ⇒ 503 upstream) so it reroutes / retries
-        // rather than overlapping. Inert when the fast path is OFF (the default):
-        // `fastPathTasks` is then always empty, so the engine path is unchanged.
-        if !useFastPath && !fastPathTasks.isEmpty {
+        // in-flight (or just-admitting) B=1 fast path. The fast path assumes it is
+        // the sole GPU / KV consumer (single-row), so a request that is NOT itself
+        // taking the fast path while one is active/admitting is rejected with a
+        // retryable signal (`token_budget_exhausted` ⇒ 503 upstream) so it
+        // reroutes / retries rather than overlapping. Inert when the fast path is
+        // OFF: `fastPathTasks` is empty and `fastPathAdmitting` stays false, so the
+        // engine path is unchanged.
+        if !useFastPath && (!fastPathTasks.isEmpty || fastPathAdmitting) {
             noteAdmissionReject()
             continuation.yield(.error(
                 "token_budget_exhausted: a single-request fast path is active; retry shortly"))
@@ -137,6 +144,8 @@ extension BatchScheduler {
                 restorePlanned: false
             )
             guard kvOutcome != .failed else {
+                // Fast-path exit: clear the admission fence (no task was launched).
+                fastPathAdmitting = false
                 await dropBridge(requestId: id)
                 noteAdmissionReject()
                 continuation.yield(.error(
@@ -149,6 +158,8 @@ extension BatchScheduler {
             // releaseRequestResources (not bare dropBridge) so the reservation
             // made above is not leaked if a cancel dropped the bridge meanwhile.
             guard engineStillCurrent(submitEpoch, engine), let container = self.modelContainer else {
+                // Fast-path exit: clear the admission fence (no task was launched).
+                fastPathAdmitting = false
                 await releaseRequestResources(id)
                 continuation.yield(.error("model reloaded during submit; please retry"))
                 continuation.finish()
@@ -161,6 +172,9 @@ extension BatchScheduler {
                 maxTokens: maxTokens,
                 continuation: continuation
             )
+            // The task is now tracked in `fastPathTasks`, which the concurrency
+            // gates check — hand the fence off to it and clear the admitting flag.
+            fastPathAdmitting = false
             let scheduler = self
             continuation.onTermination = { @Sendable termination in
                 if case .cancelled = termination {
@@ -296,11 +310,11 @@ extension BatchScheduler {
         let submitEpoch = generationEpoch
 
         // Concurrency gate (see submitTokenized): this ChatCompletionRequest path
-        // always uses the batched engine, which must not overlap an in-flight B=1
-        // fast-path task. Reject with a retryable signal while one is active.
-        // Inert when the fast path is OFF (`fastPathTasks` always empty), so the
-        // engine path is unchanged by default.
-        if !fastPathTasks.isEmpty {
+        // always uses the batched engine, which must not overlap an in-flight or
+        // just-admitting B=1 fast path. Reject with a retryable signal while one is
+        // active/admitting. Inert when the fast path is OFF (`fastPathTasks` empty
+        // and `fastPathAdmitting` false), so the engine path is unchanged.
+        if !fastPathTasks.isEmpty || fastPathAdmitting {
             noteAdmissionReject()
             continuation.yield(.error(
                 "token_budget_exhausted: a single-request fast path is active; retry shortly"))

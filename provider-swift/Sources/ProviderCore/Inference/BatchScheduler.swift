@@ -270,6 +270,18 @@ public actor BatchScheduler {
     /// completion via `clearFastPathTask`.
     var fastPathTasks: [String: Task<Void, Never>] = [:]
 
+    /// Synchronous fence for the fast-path *admission* window. `submitTokenized`
+    /// sets this `true` the instant it decides to take the fast path — BEFORE its
+    /// first `await` (the KV reservation) and BEFORE `runGreedyFastPath` populates
+    /// `fastPathTasks`. Without it there is a reentrant hole: a concurrent request
+    /// arriving during that await sees `fastPathTasks.isEmpty`, takes the engine
+    /// path, and then runs alongside the fast path once it launches — violating the
+    /// single-exclusive assumption (OOM / mis-scheduling). Both engine concurrency
+    /// gates reject non-fast-path requests while this is set. It is cleared on
+    /// EVERY fast-path exit (KV-reserve failure, engine-superseded, or successful
+    /// launch where `fastPathTasks` takes over) and defensively on teardown.
+    var fastPathAdmitting: Bool = false
+
     /// Test-only override for the B=1 fast-path enablement gate. `nil` (the
     /// production default) defers to the env flags via `b1GreedyFastPathEnabled()`.
     /// Set via `_setForceB1FastPathForTest` so a benchmark can A/B the fast path

@@ -38,6 +38,7 @@ struct B1GreedyFastPathEligibilityTests {
         maxTokens: Int = 128,
         maxContextLength: Int = 8192,
         cacheScope: String = "",
+        prefixCacheEnabled: Bool = false,
         activeBridgeCount: Int = 0,
         pendingRequestCount: Int = 0,
         fastPathActive: Bool = false,
@@ -56,6 +57,7 @@ struct B1GreedyFastPathEligibilityTests {
             maxTokens: maxTokens,
             maxContextLength: maxContextLength,
             cacheScope: cacheScope,
+            prefixCacheEnabled: prefixCacheEnabled,
             activeBridgeCount: activeBridgeCount,
             pendingRequestCount: pendingRequestCount,
             fastPathActive: fastPathActive,
@@ -129,6 +131,17 @@ struct B1GreedyFastPathEligibilityTests {
         #expect(!eligible(cacheScope: "tenant-abc"))
     }
 
+    @Test("an enabled prefix/checkpoint cache defers even unscoped requests")
+    func prefixCacheEnabledIsIneligible() {
+        // With the fast path default-on, an unscoped greedy request would
+        // otherwise take it and bypass the checkpoint prefix cache (cold prefill,
+        // no planRestoredCheckpoint/capture). Defer to the engine whenever a
+        // prefix cache is active so stores/hits keep working (Codex P2).
+        #expect(!eligible(prefixCacheEnabled: true))
+        // The canonical request stays eligible when no prefix cache is active.
+        #expect(eligible(prefixCacheEnabled: false))
+    }
+
     @Test("any concurrent or queued work disqualifies the exclusive fast path")
     func nonExclusiveIsIneligible() {
         #expect(!eligible(activeBridgeCount: 1))
@@ -186,7 +199,10 @@ struct B1GreedyFastPathBenchmark {
             promptTokens: promptTokens,
             maxTokens: maxTokens,
             temperature: 0.0,
-            requestId: "b1-bench-\(UUID().uuidString.prefix(8))"
+            requestId: "b1-bench-\(UUID().uuidString.prefix(8))",
+            // `submitTokenized` now defaults `allowFastPath: false` (Codex P2 — keep
+            // direct tokenized tool prompts on the engine); this A/B bench opts in.
+            allowFastPath: true
         )
         var run = FastPathRun()
         var chunks: [String] = []

@@ -73,12 +73,20 @@ guard group.rank == plan.rank else {
 print("[rank \(plan.rank)] ring joined ✓ (size \(group.size))")
 
 // ---- even contiguous layer split ----
-// Read layer count from config via a 1-layer probe load? No — load the shard
-// loader's full-model layer count cheaply from config.json.
-func totalLayersFromConfig(_ dir: URL) -> Int {
+// Read an Int field from config.json. Multimodal configs (e.g. Gemma 4) nest the
+// text tower's dims under `text_config`; prefer that, falling back to the top
+// level for flat configs (Llama / Mistral / GPT-OSS).
+func configInt(_ dir: URL, _ key: String) -> Int? {
     guard let data = try? Data(contentsOf: dir.appending(component: "config.json")),
-          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let n = obj["num_hidden_layers"] as? Int else { die("cannot read num_hidden_layers from config.json") }
+          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else { return nil }
+    if let textCfg = obj["text_config"] as? [String: Any], let v = textCfg[key] as? Int { return v }
+    return obj[key] as? Int
+}
+func totalLayersFromConfig(_ dir: URL) -> Int {
+    guard let n = configInt(dir, "num_hidden_layers") else {
+        die("cannot read num_hidden_layers from config.json")
+    }
     return n
 }
 let N = totalLayersFromConfig(modelDir)
@@ -150,8 +158,10 @@ do {
     switch modelType {
     case "gpt_oss":
         shard = try GPTOSSShardAdapter.load(directory: modelDir, interval: interval)
+    case "gemma4", "gemma4_text":
+        shard = try Gemma4ShardAdapter.load(directory: modelDir, interval: interval)
     default:
-        die("unsupported model_type '\(modelType)' for clustering (have: gpt_oss)")
+        die("unsupported model_type '\(modelType)' for clustering (have: gpt_oss, gemma4)")
     }
 } catch { die("shard load failed: \(error)") }
 print("[rank \(plan.rank)] shard loaded ✓")
@@ -168,9 +178,7 @@ do {
 } catch { die("tokenize failed: \(error)") }
 
 let hiddenSize = { () -> Int in
-    guard let data = try? Data(contentsOf: modelDir.appending(component: "config.json")),
-          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let h = obj["hidden_size"] as? Int else { die("cannot read hidden_size") }
+    guard let h = configInt(modelDir, "hidden_size") else { die("cannot read hidden_size") }
     return h
 }()
 

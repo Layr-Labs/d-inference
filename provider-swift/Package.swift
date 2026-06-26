@@ -170,6 +170,29 @@ let package = Package(
         ),
 
         // ----------------------------------------------------------------
+        // gemma4-shard-smoke: THROWAWAY harness validating the Gemma 4 pipeline
+        // shard (Gemma4PipelineShard / Gemma4PipelineShardLoader) against a TINY
+        // SYNTHETIC checkpoint it generates in-process (the real gemma-4-26B is
+        // too big to load monolithic + 2 shards at once). Mints a ~MB random
+        // fp32 checkpoint with the exact keys/shapes Gemma4TextModel expects
+        // (MoE experts, k_eq_v full-attention layers, sliding/full mix, tied
+        // embeddings, final-logit softcap), loads the full model and a 2-way
+        // layer split, and asserts the sharded logits match the monolithic
+        // logits at the last position. Mirrors gptoss-shard-smoke. NOT a product.
+        //   swift run -c release gemma4-shard-smoke [out-dir]
+        // ----------------------------------------------------------------
+        .executableTarget(
+            name: "gemma4-shard-smoke",
+            dependencies: [
+                "ProviderCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            ],
+            path: "Sources/gemma4-shard-smoke"
+        ),
+
+        // ----------------------------------------------------------------
         // solo-bench: single-node decode benchmark pointed straight at a model
         // dir, bypassing the coordinator/scanner. The single-node baseline for
         // comparing against the cluster's pipeline-parallel tok/s. NOT a product.

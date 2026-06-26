@@ -25,7 +25,7 @@ public enum ClusterHeadBringupError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .rankMismatch(let e, let g): return "ring rank \(g) != configured rank \(e)"
-        case .unsupportedModelType(let t): return "unsupported model_type '\(t)' (have: gpt_oss)"
+        case .unsupportedModelType(let t): return "unsupported model_type '\(t)' (have: gpt_oss, gemma4)"
         case .configRead(let m): return "config read failed: \(m)"
         }
     }
@@ -65,8 +65,15 @@ public enum ClusterHeadBringup {
 
     private static func configInt(_ dir: URL, _ key: String) throws -> Int {
         guard let data = try? Data(contentsOf: dir.appending(component: "config.json")),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let v = obj[key] as? Int else { throw ClusterHeadBringupError.configRead(key) }
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { throw ClusterHeadBringupError.configRead(key) }
+        // Multimodal configs (e.g. Gemma 4) nest the text tower's dims under
+        // `text_config`; prefer that, falling back to the top level for flat
+        // configs (Llama / Mistral / GPT-OSS).
+        if let textCfg = obj["text_config"] as? [String: Any], let v = textCfg[key] as? Int {
+            return v
+        }
+        guard let v = obj[key] as? Int else { throw ClusterHeadBringupError.configRead(key) }
         return v
     }
 
@@ -123,6 +130,7 @@ public enum ClusterHeadBringup {
         let shard: any PipelineModelShard
         switch mt {
         case "gpt_oss": shard = try GPTOSSShardAdapter.load(directory: modelDir, interval: interval)
+        case "gemma4", "gemma4_text": shard = try Gemma4ShardAdapter.load(directory: modelDir, interval: interval)
         default: throw ClusterHeadBringupError.unsupportedModelType(mt)
         }
 

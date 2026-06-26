@@ -174,6 +174,173 @@ struct ContinuousBatchingLiveTests {
         return false
     }
 
+    /// Long-context, mixed-length B=3 correctness for the optimized
+    /// `BatchRotatingKVCache` decode ring + per-row RoPE offset. Row 2 is a
+    /// ~1k-token prompt, so prompt + generation crosses the Gemma sliding
+    /// window (`slidingWindow == 1024`) DURING decode — the regime that
+    /// exercises the fast path's window slide / ring compaction and, crucially,
+    /// the per-row `batchOffset` past the window (the scalar `cache.offset`
+    /// caps at the window and mis-positions every post-window query, which the
+    /// `gemma4VLMGraphOffsetArray` fix corrects). Each row's batched greedy
+    /// output is compared against its single-stream (`RotatingKVCache`)
+    /// reference and must (a) never degenerate into repetition and (b) track
+    /// the reference at least past the deterministic floor. ≥64 tokens are
+    /// generated so the long row decodes well past the window edge.
+    @Test(
+        "Gemma 4 VLM long-context (~1k) mixed-length B=3 tracks solo + stays coherent",
+        .enabled(if:
+            ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_TESTS"] != nil
+                && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_GEMMA"] != nil
+        )
+    )
+    func gemma4VLMLongContextMixedB3() async throws {
+        try ensureMetallibAvailable()
+        MLX.GPU.set(memoryLimit: 96 * 1024 * 1024 * 1024)
+
+        let modelID = ProcessInfo.processInfo.environment["DARKBLOOM_GEMMA_MODEL"]
+            ?? "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+        guard let modelDir = ModelScanner.resolveLocalPath(modelID: modelID) else {
+            Issue.record("model '\(modelID)' is not in the local cache")
+            return
+        }
+        let container = try await VLMModelFactory.shared.loadContainer(
+            from: modelDir, using: LocalTokenizerLoader())
+
+        // Row 0: short, low-entropy (deterministic floor). Row 1: medium.
+        // Row 2: ~1k tokens — long enough that prompt + 64 generated tokens
+        // crosses the 1024 sliding window mid-decode.
+        let longBody = String(
+            repeating: "Renewable energy has reshaped the global grid in many ways. ",
+            count: 130)
+        let prompts = [
+            "Reply with the single word 'ocean'.",
+            "Briefly, what is photosynthesis?",
+            "Read the following notes and then summarize them in one paragraph.\n\n"
+                + longBody,
+        ]
+        let encoded: [[Int]] = try await container.perform { ctx in
+            try prompts.map {
+                try ctx.tokenizer.applyChatTemplate(
+                    messages: [["role": "user", "content": $0]],
+                    tools: nil, additionalContext: nil)
+            }
+        }
+        let lengths = encoded.map { $0.count }
+        print("[gemma4-vlm-longctx] prompt token lengths: \(lengths)")
+        #expect(
+            lengths[2] >= 900,
+            Comment(rawValue: "long row only \(lengths[2]) tokens; want ~1k to cross the window"))
+
+        let maxTokens = 80  // ≥ 64; long row decodes past the 1024 window edge
+        let batched = try await runBatchedEngine(
+            container: container, modelID: modelID, prompts: encoded, maxTokens: maxTokens)
+        let single = await singleStreamGreedy(
+            container: container, prompts: encoded, maxTokens: maxTokens)
+
+        let eos = 106
+        for row in 0 ..< prompts.count {
+            let toks = batched[row]
+            let text = await container.decode(tokenIds: toks)
+            print("[gemma4-vlm-longctx] batched row \(row) (\(toks.count) toks): \(text.prefix(160))")
+            #expect(
+                !Self.hasDegenerateRepetition(toks),
+                Comment(rawValue: "batched row \(row) degenerates into repetition: \(toks)"))
+
+            let singleHead = Array(single[row].prefix(while: { $0 != eos }))
+            let batchedHead = Array(toks.prefix(while: { $0 != eos }))
+            let match = zip(batchedHead, singleHead).prefix(while: ==).count
+            print(
+                "[gemma4-vlm-longctx] row \(row): batched/solo prefix match = \(match) "
+                    + "(batchedHead=\(batchedHead.count), soloHead=\(singleHead.count))")
+            // Row 0 is low-entropy → strong deterministic agreement. Rows 1/2
+            // are higher-entropy MoE continuations where bf16 argmax flips can
+            // diverge after the floor; the regression we guard is repetition /
+            // immediate divergence, so require a small positive prefix match.
+            let required = row == 0 ? 3 : 1
+            #expect(
+                match >= required,
+                Comment(rawValue:
+                    "row \(row) diverges below floor \(required) (match=\(match), "
+                        + "batched=\(batchedHead.prefix(8)), solo=\(singleHead.prefix(8)))"))
+        }
+    }
+
+    /// Provider-stack decode throughput at B=1/2/3 for the optimized
+    /// `BatchRotatingKVCache`. Drives the same `BatchedEngine` the provider
+    /// uses (via `runBatchedEngine`) with a ~1k-token prompt per row and times
+    /// the full prefill+decode, reporting aggregate tok/s per batch width.
+    ///
+    /// OLD vs NEW comparison (the optimization is a runtime gate, so no rebuild
+    /// is needed):
+    /// ```
+    /// # NEW (in-place decode ring, default):
+    /// DARKBLOOM_LIVE_MLX_TESTS=1 DARKBLOOM_LIVE_MLX_GEMMA=1 DARKBLOOM_BENCH=1 \
+    ///   swift test --filter gemma4DecodeRingBenchmarkB1B2B3
+    /// # OLD (legacy concat+trim path):
+    /// DARKBLOOM_FAST_BATCH_ROTATING_KV=0 DARKBLOOM_LIVE_MLX_TESTS=1 \
+    ///   DARKBLOOM_LIVE_MLX_GEMMA=1 DARKBLOOM_BENCH=1 \
+    ///   swift test --filter gemma4DecodeRingBenchmarkB1B2B3
+    /// ```
+    /// `DARKBLOOM_BENCH_OUTPUT` overrides the generated-token count (default
+    /// 256; set 512 to match the production decode benchmark). Diagnostic
+    /// (prints tok/s); the only assertion is that every row produced output.
+    @Test(
+        "BENCHMARK: gemma4DecodeRingBenchmarkB1B2B3 (BatchRotatingKVCache decode TPS)",
+        .enabled(if:
+            ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_TESTS"] != nil
+                && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_GEMMA"] != nil
+                && ProcessInfo.processInfo.environment["DARKBLOOM_BENCH"] != nil
+        )
+    )
+    func gemma4DecodeRingBenchmarkB1B2B3() async throws {
+        try ensureMetallibAvailable()
+        MLX.GPU.set(memoryLimit: 96 * 1024 * 1024 * 1024)
+
+        let env = ProcessInfo.processInfo.environment
+        let fastGate = env["DARKBLOOM_FAST_BATCH_ROTATING_KV"].map {
+            !["0", "false", "no", "off"].contains($0.lowercased())
+        } ?? true
+        let outputTokens = env["DARKBLOOM_BENCH_OUTPUT"].flatMap { Int($0) } ?? 256
+
+        let modelID = env["DARKBLOOM_GEMMA_MODEL"]
+            ?? "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+        guard let modelDir = ModelScanner.resolveLocalPath(modelID: modelID) else {
+            Issue.record("model '\(modelID)' is not in the local cache")
+            return
+        }
+        let container = try await VLMModelFactory.shared.loadContainer(
+            from: modelDir, using: LocalTokenizerLoader())
+
+        // ~973-token prompt to match the production decode benchmark; with
+        // outputTokens decode steps this crosses the 1024 sliding window.
+        let body = String(
+            repeating: "Renewable energy reshaped the global grid in many ways. ", count: 120)
+        let encoded: [Int] = try await container.perform { ctx in
+            try ctx.tokenizer.applyChatTemplate(
+                messages: [["role": "user", "content": "Summarize:\n\n" + body]],
+                tools: nil, additionalContext: nil)
+        }
+        print(
+            "[gemma4-bench] fast_path=\(fastGate) prompt_tokens=\(encoded.count) "
+                + "output_tokens=\(outputTokens) model=\(modelID)")
+
+        for B in [1, 2, 3] {
+            let prompts = Array(repeating: encoded, count: B)
+            let t0 = Date()
+            let toks = try await runBatchedEngine(
+                container: container, modelID: modelID, prompts: prompts, maxTokens: outputTokens)
+            let dt = Date().timeIntervalSince(t0)
+            let generated = toks.reduce(0) { $0 + $1.count }
+            let aggregateTPS = dt > 0 ? Double(generated) / dt : 0
+            for t in toks {
+                #expect(!t.isEmpty, Comment(rawValue: "B=\(B): a row produced no tokens"))
+            }
+            print(String(
+                format: "[gemma4-bench] fast=%@ B=%d: %d tokens / %.2fs = %.1f tok/s aggregate",
+                "\(fastGate)", B, generated, dt, aggregateTPS))
+        }
+    }
+
     @Test(
         "Qwen 3.5 0.8B-MLX-4bit (hybrid SSM+attention), B=2",
         .enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_TESTS"] != nil)

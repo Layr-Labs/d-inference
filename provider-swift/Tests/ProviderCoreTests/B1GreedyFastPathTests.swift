@@ -145,15 +145,18 @@ struct B1GreedyFastPathEligibilityTests {
         #expect(!eligible(hasContainer: false))
     }
 
-    @Test("env flags are off by default in this process")
-    func envFlagDefaultOff() {
-        // The CI runner does not set these, so the static gate is false. (If a
-        // developer exported them, this documents the expectation rather than
-        // asserting a hard false.)
+    @Test("fast path is ON by default; env flags opt OUT")
+    func envFlagDefaultOn() {
+        // Default ON: the gate is true unless EITHER flag is set to a falsey
+        // value (0/false/no/off). The CI runner does not set them, so the gate
+        // is true. (If a developer exported an opt-out, this documents the
+        // expectation rather than asserting a hard true.)
         let env = ProcessInfo.processInfo.environment
-        let expected = env["DARKBLOOM_B1_GREEDY_FAST_PATH"] == "1"
-            || env["DARKBLOOM_GEMMA_B1_FAST_PATH"] == "1"
-        #expect(BatchScheduler.b1GreedyFastPathEnabled() == expected)
+        let off: Set<String> = ["0", "false", "no", "off"]
+        let optedOut =
+            off.contains((env["DARKBLOOM_B1_GREEDY_FAST_PATH"] ?? "").lowercased())
+            || off.contains((env["DARKBLOOM_GEMMA_B1_FAST_PATH"] ?? "").lowercased())
+        #expect(BatchScheduler.b1GreedyFastPathEnabled() == !optedOut)
     }
 }
 

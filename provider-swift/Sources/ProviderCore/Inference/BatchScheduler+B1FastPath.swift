@@ -19,7 +19,8 @@
 // `GenerationEvent` stream.
 //
 // Safety posture:
-//   * OFF by default; opt in with an env flag.
+//   * ON by default; opt OUT with an env flag (`DARKBLOOM_B1_GREEDY_FAST_PATH=0`
+//     or `DARKBLOOM_GEMMA_B1_FAST_PATH=0`).
 //   * Conservative gate — anything that isn't a single exclusive greedy text
 //     request falls back to the batched engine, so the engine path's behavior
 //     is never altered.
@@ -38,15 +39,27 @@ extension BatchScheduler {
 
     // MARK: - Env gate
 
-    /// True when the operator opted into the B=1 greedy fast path. Two flags are
-    /// accepted: `DARKBLOOM_B1_GREEDY_FAST_PATH` (generic) and
-    /// `DARKBLOOM_GEMMA_B1_FAST_PATH` (Gemma-targeted alias). Either set to `"1"`
-    /// enables it. Read per-call (cheap) so tests can toggle it via the
-    /// environment without restarting the scheduler.
+    /// Whether the B=1 greedy fast path is enabled. **Default ON.** Two flags are
+    /// accepted as an opt-OUT: `DARKBLOOM_B1_GREEDY_FAST_PATH` (generic) and
+    /// `DARKBLOOM_GEMMA_B1_FAST_PATH` (Gemma-targeted alias). Set EITHER to
+    /// `"0"`/`"false"`/`"no"`/`"off"` to disable; any other (or absent) value
+    /// keeps it on. Read per-call (cheap) so tests / operators can toggle it via
+    /// the environment without restarting the scheduler.
+    ///
+    /// (Still only ENGAGES for requests that pass every conservative eligibility
+    /// gate in `b1FastPathEligiblePure` — Gemma-family, greedy, no KV quant, no
+    /// tools, in-context, single exclusive in-flight request. Anything else
+    /// defers to the batched engine regardless of this flag.)
     static func b1GreedyFastPathEnabled() -> Bool {
         let env = ProcessInfo.processInfo.environment
-        return env["DARKBLOOM_B1_GREEDY_FAST_PATH"] == "1"
-            || env["DARKBLOOM_GEMMA_B1_FAST_PATH"] == "1"
+        let off: Set<String> = ["0", "false", "no", "off"]
+        if let v = env["DARKBLOOM_B1_GREEDY_FAST_PATH"], off.contains(v.lowercased()) {
+            return false
+        }
+        if let v = env["DARKBLOOM_GEMMA_B1_FAST_PATH"], off.contains(v.lowercased()) {
+            return false
+        }
+        return true
     }
 
     // MARK: - Eligibility

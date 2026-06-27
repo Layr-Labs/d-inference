@@ -221,7 +221,7 @@ extension BatchScheduler {
             // ~62ms — smoother than 60 fps, visually indistinguishable from
             // per-token streaming. The client TPS metric (total tokens / elapsed)
             // is unaffected because it measures total delivery, not chunk cadence.
-            let streamInterval = 8
+            let streamInterval = 4
 
             let scheduler = Scheduler(
                 model: ctx.model,

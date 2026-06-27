@@ -209,6 +209,24 @@ internal final class PongTracker: @unchecked Sendable {
     }
 }
 
+// MARK: - ShutdownFlag
+
+/// Thread-safe shutdown state shared between the CoordinatorClient actor and
+/// its connection child tasks. A lock-backed Bool is enough here and avoids a
+/// per-frame actor hop in the outbound WebSocket writer.
+internal final class ShutdownFlag: @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock()
+    private var requested = false
+
+    var isRequested: Bool {
+        lock.withLock { requested }
+    }
+
+    func request() {
+        lock.withLock { requested = true }
+    }
+}
+
 // MARK: - ManagedAtomic
 
 private final class ManagedAtomic<Value: FixedWidthInteger>: @unchecked Sendable {
@@ -231,4 +249,3 @@ private final class ManagedAtomic<Value: FixedWidthInteger>: @unchecked Sendable
         lock.withLock { value &+= delta }
     }
 }
-

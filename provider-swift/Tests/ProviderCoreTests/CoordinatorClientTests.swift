@@ -298,6 +298,54 @@ import Testing
     #expect(!json.contains("apns_environment"))
 }
 
+@Test func shutdownRequestedIsNonisolatedAndIdempotent() async {
+    let config = CoordinatorClientConfig(
+        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        hardware: clientSampleHardware(),
+        models: [clientSampleModel()],
+        backendName: "mlx_swift_lm",
+        publicKey: "cHVibGlj"
+    )
+    let client = CoordinatorClient(
+        config: config,
+        stats: AtomicProviderStats(),
+        state: ProviderState()
+    )
+
+    // This read intentionally has no `await`: the outbound WebSocket writer
+    // checks the same property once per frame on the inference hot path.
+    #expect(client.shutdownRequested == false)
+
+    await client.shutdown()
+    #expect(client.shutdownRequested == true)
+
+    await client.shutdown()
+    #expect(client.shutdownRequested == true)
+}
+
+@Test func shutdownFlagHandlesConcurrentReadersAndRequests() async {
+    let flag = ShutdownFlag()
+
+    await withTaskGroup(of: Void.self) { group in
+        for _ in 0..<16 {
+            group.addTask {
+                for _ in 0..<1_000 {
+                    _ = flag.isRequested
+                }
+            }
+        }
+        for _ in 0..<4 {
+            group.addTask {
+                for _ in 0..<100 {
+                    flag.request()
+                }
+            }
+        }
+    }
+
+    #expect(flag.isRequested == true)
+}
+
 @Test func atomicProviderStatsSnapshotIncludesOutcomeCounters() {
     let stats = AtomicProviderStats()
     stats.incrementRequestsServed()

@@ -111,8 +111,7 @@ extension CoordinatorClient {
             group.addTask { [weak self] in
                 guard let self else { return }
                 for await msg in outboundStream {
-                    let shutting = await self.shutdownRequested
-                    if shutting { break }
+                    if self.shutdownRequested { break }
                     let json = self.encodeOutbound(msg)
                     try await ws.send(.string(json))
                 }
@@ -121,13 +120,12 @@ extension CoordinatorClient {
             // Task 3: Heartbeat timer
             group.addTask { [weak self] in
                 guard let self else { return }
-                let interval = await self.config.heartbeatInterval
+                let interval = self.config.heartbeatInterval
 
                 try await Task.sleep(for: .seconds(interval))
 
                 while true {
-                    let shutting = await self.shutdownRequested
-                    if shutting { break }
+                    if self.shutdownRequested { break }
                     let json = await self.buildHeartbeatJSON()
                     try await ws.send(.string(json))
                     try await Task.sleep(for: .seconds(interval))

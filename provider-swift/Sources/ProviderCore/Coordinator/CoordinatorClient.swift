@@ -71,7 +71,16 @@ public actor CoordinatorClient {
     /// registrations consistent.
     internal var modelWeightHashOverrides: [String: String] = [:]
 
-    internal var shutdownRequested = false
+    private let shutdownFlag = ShutdownFlag()
+
+    /// Fast, thread-safe shutdown visibility for connection tasks.
+    ///
+    /// The outbound WebSocket writer checks this once per inference chunk. Keep
+    /// the read nonisolated so the hot path does not hop back to the
+    /// CoordinatorClient actor just to read a Bool.
+    nonisolated internal var shutdownRequested: Bool {
+        shutdownFlag.isRequested
+    }
 
     /// Mutable advertised-model list. Seeded from `config.models`; background
     /// prefetch (Layer 3) appends newly-verified builds so re-registration and
@@ -155,7 +164,7 @@ public actor CoordinatorClient {
     }
 
     public func shutdown() {
-        shutdownRequested = true
+        shutdownFlag.request()
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         eventContinuation?.finish()
         outboundRouter.finish()

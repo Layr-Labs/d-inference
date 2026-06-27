@@ -1,6 +1,6 @@
 import Foundation
 
-/// Testable message construction for the URLSessionWebSocketTask coordinator
+/// Testable message construction for the NWConnection-based coordinator
 /// client. The client owns transport/reconnect concerns; this type owns the
 /// wire messages it sends and receives.
 public enum CoordinatorClientCodec {

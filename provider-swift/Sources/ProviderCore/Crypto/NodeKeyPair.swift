@@ -156,6 +156,54 @@ public struct NodeKeyPair: Sendable {
         return Data(sealed)
     }
 
+    // MARK: - Precomputed shared key (Phase 3)
+
+    /// Precompute the DH shared secret with a recipient's public key.
+    ///
+    /// Call once per request, then use ``encryptWithSharedKey(_:plaintext:)``
+    /// for each chunk.  This avoids a ~150 us Curve25519 scalar multiply per
+    /// chunk, dropping per-chunk encryption to ~1-2 us (XSalsa20-Poly1305
+    /// symmetric only).
+    public func precomputeSharedKey(recipientPublicKey: Data) throws -> Data {
+        guard recipientPublicKey.count == 32 else {
+            throw CryptoError.invalidPublicKeyLength(got: recipientPublicKey.count)
+        }
+        guard let key = sodium.box.beforenm(
+            recipientPublicKey: Bytes(recipientPublicKey),
+            senderSecretKey: Bytes(secretKeyBytes)
+        ) else {
+            throw CryptoError.encryptionFailed
+        }
+        return Data(key)
+    }
+
+    /// Encrypt using a precomputed shared key from ``precomputeSharedKey(recipientPublicKey:)``.
+    ///
+    /// Output format is identical to ``encrypt(recipientPublicKey:plaintext:)``:
+    /// `nonce (24 bytes) || authenticated_ciphertext`.
+    public func encryptWithSharedKey(_ sharedKey: Data, plaintext: Data) throws -> Data {
+        guard let sealed: Bytes = sodium.box.seal(
+            message: Bytes(plaintext),
+            beforenm: Bytes(sharedKey)
+        ) else {
+            throw CryptoError.encryptionFailed
+        }
+        return Data(sealed)
+    }
+
+    /// Encrypt into an ``EncryptedPayload`` using a precomputed shared key.
+    ///
+    /// Drop-in replacement for ``encryptPayload(recipientPublicKey:plaintext:)``
+    /// on the hot path where the same recipient key is used many times (e.g.
+    /// per-chunk SSE encryption during a streaming response).
+    public func encryptPayloadFast(sharedKey: Data, plaintext: Data) throws -> EncryptedPayload {
+        let ciphertext = try encryptWithSharedKey(sharedKey, plaintext: plaintext)
+        return EncryptedPayload(
+            ephemeralPublicKey: publicKeyBase64,
+            ciphertext: ciphertext.base64EncodedString()
+        )
+    }
+
     // MARK: - EncryptedPayload helpers
 
     /// Decrypt an `EncryptedPayload` (the wire type used in WebSocket messages).

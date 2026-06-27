@@ -40,6 +40,18 @@ public actor CoordinatorClient {
     /// one AsyncStream across reconnects silently kills outbound delivery.
     internal let outboundRouter = OutboundRouter()
 
+    /// Inference-chunk fast path. `chunkBatcher` owns the dedicated serial queue
+    /// + coalescing; `chunkSender` is the nonisolated, Sendable handle the
+    /// ProviderLoop captures so `emitSSE` can write chunks straight to the live
+    /// NWConnection — bypassing the OutboundRouter → AsyncStream → for-await
+    /// control path (whose cooperative-pool consumer is starved by MLX decode).
+    /// Both are `nonisolated` so the hot path never hops to this actor. The
+    /// batcher's connection sink is (re)bound per session in `connectAndRun`;
+    /// control messages (heartbeats, attestation, complete/error) keep flowing
+    /// through `outboundRouter`.
+    nonisolated internal let chunkBatcher: ChunkBatcher
+    nonisolated internal let chunkSender: ChunkSender
+
     /// Active Network.framework WebSocket connection (replaces the prior
     /// `URLSessionWebSocketTask`). Outbound frames are written with the
     /// non-blocking `NWConnection.send`, which buffers in the kernel and returns
@@ -104,6 +116,31 @@ public actor CoordinatorClient {
         self.state = state
         self.advertisedModelStore = AdvertisedModelStore(config.models)
         self.liveAPNsToken = liveAPNsToken ?? { APNsBridge.shared.currentDeviceToken() }
+
+        // Inference-chunk fast path. The encode closure is the same pure static
+        // codec the control path uses; on the (effectively impossible) encode
+        // failure of a fixed-shape chunk it returns nil so SendHandle falls back
+        // to the control path. A local logger is captured (not `self.logger`,
+        // which isn't available while initializing stored properties) to avoid a
+        // retain cycle through the actor.
+        let chunkLogger = CoordinatorWSLogger(
+            subsystem: "dev.darkbloom.provider", category: "coordinator.chunks")
+        let batcher = ChunkBatcher()
+        self.chunkBatcher = batcher
+        self.chunkSender = ChunkSender(batcher: batcher, encode: { message in
+            do {
+                return try CoordinatorClientCodec.encodeOutboundMessageString(message)
+            } catch {
+                chunkLogger.error("chunk encode failed: \(error.localizedDescription)")
+                TelemetryClient.shared.emit(
+                    kind: .protocolError,
+                    severity: .error,
+                    message: "outbound chunk encode failed",
+                    fields: ["error": .string(error.localizedDescription)]
+                )
+                return nil
+            }
+        })
     }
 
     /// Add a runtime-verified build to the advertised set so the coordinator

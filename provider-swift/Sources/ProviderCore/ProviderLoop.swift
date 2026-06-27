@@ -24,12 +24,50 @@ import os
 /// signature from `CoordinatorClient.start()` does not carry `@Sendable`.
 public final class SendHandle: @unchecked Sendable {
     private let fn: (OutboundMessage) -> Void
+    /// Direct inference-chunk fast path (bypasses the AsyncStream control path).
+    /// `nil` for SendHandles built without a wired coordinator (unit/integration
+    /// tests), in which case chunks fall back to the control path.
+    private let chunkSender: ChunkSender?
 
     public init(_ fn: @escaping (OutboundMessage) -> Void) {
         self.fn = fn
+        self.chunkSender = nil
     }
 
+    /// Wire the direct chunk path alongside the control path. Internal: the
+    /// production wiring lives in `ProviderLoop+Serve` (same module); the public
+    /// init keeps the existing test/call surface unchanged.
+    init(_ fn: @escaping (OutboundMessage) -> Void, chunkSender: ChunkSender?) {
+        self.fn = fn
+        self.chunkSender = chunkSender
+    }
+
+    /// Control-path send (heartbeats, attestation, accepted, complete, errors,
+    /// model/prefetch status) through the OutboundRouter → AsyncStream.
+    ///
+    /// Doubles as the ORDERING BARRIER for the direct path: before a TERMINAL
+    /// inference message (`inference_complete` / `inference_error`) goes out the
+    /// slower control path, any chunks queued on the direct path are flushed to
+    /// the wire first. The coordinator `RemovePending`s on complete, so a
+    /// terminal that overtook a chunk would make it drop the chunk's tail.
     public func send(_ message: OutboundMessage) {
+        switch message {
+        case .inferenceComplete, .inferenceError:
+            chunkSender?.flush()
+        default:
+            break
+        }
+        fn(message)
+    }
+
+    /// Inference-chunk hot path. Encodes + writes the frame directly to the live
+    /// NWConnection via the ChunkSender (no actor hop, no AsyncStream, no
+    /// cooperative-pool scheduling gap). Falls back to the control path when no
+    /// direct sender is wired (tests) or encoding fails.
+    public func sendChunk(_ message: OutboundMessage) {
+        if let chunkSender, chunkSender.sendChunk(message) {
+            return
+        }
         fn(message)
     }
 }

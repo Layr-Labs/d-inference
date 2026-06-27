@@ -314,7 +314,14 @@ extension ProviderLoop {
                     return false
                 }
 
-                send.send(.inferenceChunk(
+                // Direct send: bypass the OutboundRouter → AsyncStream →
+                // for-await control path (whose cooperative-pool consumer is
+                // starved ~30-40 ms per turn by CPU-bound MLX decode) and write
+                // the chunk straight to the live NWConnection off a dedicated
+                // serial queue. Ordering vs the terminal inference_complete is
+                // preserved by SendHandle.send's flush barrier. Falls back to the
+                // control path automatically if no direct sender is wired.
+                send.sendChunk(.inferenceChunk(
                     requestId: requestId,
                     data: "",
                     encryptedData: encryptedPayload

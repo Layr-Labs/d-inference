@@ -105,6 +105,11 @@ extension CoordinatorClient {
             // Nil the stored reference so sendOnCurrentConnection fast-returns
             // during the reconnect window instead of firing on a cancelled connection.
             self.nwConnection = nil
+            // Detach the inference-chunk fast path from this connection (drops any
+            // queued chunks; their requests are cancelled on disconnect). Guarded
+            // by identity so a concurrent reconnect's freshly-bound writer isn't
+            // clobbered by this teardown.
+            self.chunkBatcher.unbind(ifCurrent: connection)
             connection.cancel()
         }
 
@@ -165,6 +170,16 @@ extension CoordinatorClient {
         // .connected so any immediate outbound is buffered, not dropped.
         let (outboundStream, outboundCont) = AsyncStream<OutboundMessage>.makeStream()
         outboundRouter.activate(outboundCont)
+
+        // Bind the inference-chunk fast path to THIS connection. A per-session
+        // ChunkFrameWriter (Opt 3: reused send contexts) becomes the batcher's
+        // sink, so emitSSE writes chunks straight to this connection's kernel
+        // buffer off a dedicated serial queue. Rebound on every reconnect;
+        // detached in the defer above.
+        let chunkWriter = ChunkFrameWriter(connection: connection, logger: self.logger)
+        chunkBatcher.bind(connection: connection) { frames in
+            chunkWriter.write(frames)
+        }
 
         eventContinuation?.yield(.connected)
 

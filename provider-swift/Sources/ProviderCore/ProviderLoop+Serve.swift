@@ -125,7 +125,10 @@ extension ProviderLoop {
         await coordinator.updateModelWeightHashes(liveModelHashes)
 
         let (events, sendFn) = await coordinator.start()
-        let send = SendHandle(sendFn)
+        // Wire the direct inference-chunk fast path (Optimizations 1-3) alongside
+        // the control path. `chunkSender` is a nonisolated handle on the actor;
+        // its connection sink is (re)bound per session inside the client.
+        let send = SendHandle(sendFn, chunkSender: coordinator.chunkSender)
 
         // APNs code-identity (v0.6.0): answer pushed code-identity challenges by
         // decrypting E_K(nonce) with K and signing the nonce with the SE key, then

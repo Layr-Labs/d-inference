@@ -75,5 +75,5 @@ public enum ProviderCore {
     // jinja_null_bridge / jinja_template / model_load), so durable telemetry can
     // tell the two indistinguishable gpt-oss 500 modes apart. Wire-compatible:
     // `error_reason` is an optional inference-error field, omitted when nil.
-    public static let version = "0.6.23"
+    public static let version = "0.6.24"
 }

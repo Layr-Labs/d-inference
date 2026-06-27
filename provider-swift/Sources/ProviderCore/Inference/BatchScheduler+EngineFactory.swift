@@ -210,14 +210,18 @@ extension BatchScheduler {
             // (OutboundRouter → CoordinatorClient+Connection Task 2), so at
             // streamInterval=1 with B concurrent requests the per-stream
             // inter-token gap scales ~linearly with B (each token's WS frame
-            // waits behind B-1 other tokens' frames). At interval=4 the frame
-            // count drops 4× and per-stream TPS recovers proportionally.
+            // waits behind B-1 other tokens' frames). At interval=8 the frame
+            // count drops 8× and per-stream TPS recovers proportionally; vs the
+            // prior interval=4 this halves the WS frame count from ~230 to ~115
+            // per 918-token response. Combined with NWConnection's non-blocking
+            // sends, this further reduces the CPU overhead from per-frame
+            // encoding + encryption.
             //
-            // UX impact: at 65 tok/s the client receives a 4-token burst every
+            // UX impact: at 130 tok/s the client receives an 8-token burst every
             // ~62ms — smoother than 60 fps, visually indistinguishable from
             // per-token streaming. The client TPS metric (total tokens / elapsed)
             // is unaffected because it measures total delivery, not chunk cadence.
-            let streamInterval = 4
+            let streamInterval = 8
 
             let scheduler = Scheduler(
                 model: ctx.model,

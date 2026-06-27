@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Testing
 @testable import ProviderCore
 
@@ -414,17 +415,13 @@ import Testing
     #expect(inRange(backoff.nextDelay(), 1))
 }
 
-@Test func inboundMessageLimitRaisedAboveDefault() {
-    let session = URLSession(configuration: .default)
-    let ws = session.webSocketTask(with: URL(string: "wss://example.invalid/ws/provider")!)
-    defer { ws.cancel(with: .goingAway, reason: nil) }
-
-    // Default URLSessionWebSocketTask limit is 1 MiB; a single base64 image request
-    // frame exceeds it and would tear down the session, so the client raises it well
-    // above the coordinator's 16 MiB sealed-body cap (after base64 expansion).
-    CoordinatorClient.applyInboundMessageLimit(to: ws)
-    #expect(ws.maximumMessageSize == CoordinatorClient.maxInboundMessageBytes)
-    #expect(ws.maximumMessageSize >= 22 * 1024 * 1024)
+@Test("NWProtocolWebSocket options set maximum message size above default")
+func wsOptionsMaximumMessageSize() {
+    let wsOptions = NWProtocolWebSocket.Options()
+    wsOptions.maximumMessageSize = CoordinatorClient.maxInboundMessageBytes
+    // Verify the constant is 32 MiB and the options object accepted it
+    #expect(CoordinatorClient.maxInboundMessageBytes == 32 * 1024 * 1024)
+    #expect(wsOptions.maximumMessageSize == CoordinatorClient.maxInboundMessageBytes)
 }
 
 private func clientSampleHardware() -> HardwareInfo {

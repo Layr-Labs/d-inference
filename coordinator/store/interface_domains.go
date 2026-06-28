@@ -634,3 +634,11 @@ type ProviderStore interface {
 	// GetLogReport retrieves a single log report by ID.
 	GetLogReport(id int64) (*LogReport, error)
 }
+
+// PlatformRevenueStore exposes aggregated coordinator platform revenue (fees collected).
+type PlatformRevenueStore interface {
+	// GetPlatformRevenue returns total platform fees collected (micro-USD) across
+	// all time. Reads from the ledger where account_id='platform' and
+	// entry_type='platform_fee'.
+	GetPlatformRevenue(ctx context.Context) int64
+}

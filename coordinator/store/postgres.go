@@ -4756,6 +4756,7 @@ func (s *PostgresStore) GetLogReport(id int64) (*LogReport, error) {
 	}
 	return &r, nil
 }
+
 // GetPlatformRevenue returns total platform fees collected (micro-USD) across
 // all time from the ledger.
 func (s *PostgresStore) GetPlatformRevenue(ctx context.Context) int64 {
@@ -4770,7 +4771,6 @@ func (s *PostgresStore) GetPlatformRevenue(ctx context.Context) int64 {
 	}
 	return total
 }
-
 
 // OpenProviderSession records the start of a provider connection. Idempotent:
 // ON CONFLICT DO NOTHING so a duplicate register, or an open that races behind a

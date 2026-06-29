@@ -15,12 +15,24 @@ help:
 coordinator-test: ## Run Go unit tests for the coordinator
 	cd coordinator && go test ./...
 
+# Stamp build metadata into the binary so /health is traceable to a commit
+# (matches the ldflags the release Dockerfile injects). Falls back to dev/unknown
+# outside a git checkout.
+GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+GIT_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+COORDINATOR_LDFLAGS := \
+	-X github.com/eigeninference/d-inference/coordinator/api.BuildVersion=$(GIT_VERSION) \
+	-X github.com/eigeninference/d-inference/coordinator/api.BuildCommit=$(GIT_COMMIT) \
+	-X github.com/eigeninference/d-inference/coordinator/api.BuildDate=$(BUILD_DATE) \
+	-X github.com/eigeninference/d-inference/coordinator/telemetry.CoordinatorVersion=$(GIT_VERSION)
+
 coordinator-build: ## Build the coordinator binary for the host platform
-	cd coordinator && go build ./cmd/coordinator
+	cd coordinator && go build -ldflags="$(COORDINATOR_LDFLAGS)" ./cmd/coordinator
 
 coordinator-build-linux: ## Cross-compile coordinator for linux/amd64 (EigenCloud)
 	cd coordinator && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-	    go build -o coordinator-linux ./cmd/coordinator
+	    go build -ldflags="$(COORDINATOR_LDFLAGS)" -o coordinator-linux ./cmd/coordinator
 
 coordinator: coordinator-test coordinator-build ## Test + build coordinator
 

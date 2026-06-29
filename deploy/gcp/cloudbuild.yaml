@@ -29,6 +29,8 @@ steps:
     name: gcr.io/cloud-builders/docker
     args:
       - build
+      - --build-arg=GIT_COMMIT=$SHORT_SHA
+      - --build-arg=GIT_VERSION=$SHORT_SHA
       - --tag=${_IMAGE}:$SHORT_SHA
       - --tag=${_IMAGE}:latest
       - --file=coordinator/Dockerfile

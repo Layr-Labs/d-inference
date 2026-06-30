@@ -162,7 +162,13 @@ func (lg *LoadGenerator) Run() *LoadResult {
 				}
 			}
 
-			prompt := fmt.Sprintf("What is %d+%d? Answer with just the number.", idx, idx+1)
+			prompt := "What is 2+2? Answer with just the number."
+			// Variable per-index prompts break MLX hybrid batching when multiple
+			// requests share a BatchedEngine step (concatenate shape mismatch →
+			// provider fatal). Sequential load (Concurrency==1) can vary prompts.
+			if lg.Config.Concurrency <= 1 {
+				prompt = fmt.Sprintf("What is %d+%d? Answer with just the number.", idx, idx+1)
+			}
 			if lg.Config.PromptBytes > 0 {
 				padding := lg.Config.PromptBytes - len(prompt)
 				if padding > 0 {

@@ -258,6 +258,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
               {isStreaming ? (
                 <button
                   onClick={onStop}
+                  aria-label="Stop generating"
                   className="flex items-center justify-center w-9 h-9 rounded-xl bg-accent-red/20 hover:bg-accent-red/30 text-accent-red border-2 border-accent-red transition-colors"
                 >
                   <Square size={16} />
@@ -265,6 +266,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
               ) : (
                 <button
                   onClick={handleSend}
+                  aria-label="Send message"
                   disabled={(!input.trim() && images.length === 0) || isStreaming}
                   className="flex items-center justify-center w-9 h-9 rounded-xl bg-coral border-2 border-ink text-white
                              disabled:opacity-30 disabled:border-border-subtle

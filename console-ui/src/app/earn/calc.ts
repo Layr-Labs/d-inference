@@ -187,9 +187,12 @@ interface PriceLookupEntry {
 }
 
 export function buildPricingLookup(pricing: PricingResponse | null): Record<string, PriceLookupEntry> {
-  if (!pricing) return {};
+  // Defensive: tolerate a missing/non-array `prices` so a malformed pricing
+  // payload can't crash the earnings calculator via the root error boundary
+  // (mirrors the guard in models/page.tsx).
+  const prices = Array.isArray(pricing?.prices) ? pricing.prices : [];
   return Object.fromEntries(
-    pricing.prices.map((p) => [p.model, { output: p.output_price, input: p.input_price }])
+    prices.map((p) => [p.model, { output: p.output_price, input: p.input_price }]),
   );
 }
 

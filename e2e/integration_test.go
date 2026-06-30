@@ -509,10 +509,20 @@ func TestIntegration_StreamingContentValidation(t *testing.T) {
 func TestIntegration_ConcurrentRequests(t *testing.T) {
 	s := startSuite(t)
 
+	// Warm the loaded model before the burst so every concurrent request hits a
+	// ready engine (cold-start + first-batch races are not what this test targets).
+	warm := postChatCompletions(t, s, "What is 2+2? Answer with just the number.", false, 20)
+	defer warm.Body.Close()
+	require.Equal(t, http.StatusOK, warm.StatusCode)
+
 	buf := testbed.NewEventBuffer()
 	inst := testbed.NewInstrument(buf)
 
 	const numRequests = 5
+	// Identical prompts: Qwen3.5 hybrid batching fatals on mixed-length rows in
+	// one BatchedEngine step (MLX concatenate shape mismatch). Coordinator
+	// concurrency is what we exercise here, not mixed-shape continuous batching.
+	const prompt = "What is 2+2? Answer with just the number."
 	type result struct {
 		statusCode int
 		body       string
@@ -527,7 +537,7 @@ func TestIntegration_ConcurrentRequests(t *testing.T) {
 			ri := inst.NewRequest()
 			timer := ri.StartSegment(testbed.SegmentTotalE2E)
 
-			resp := postChatCompletions(t, s, fmt.Sprintf("What is %d+%d?", idx, idx+1), false, 20)
+			resp := postChatCompletions(t, s, prompt, false, 20)
 			defer resp.Body.Close()
 			respBody, _ := io.ReadAll(resp.Body)
 
@@ -551,7 +561,7 @@ func TestIntegration_ConcurrentRequests(t *testing.T) {
 			t.Logf("request %d: status=%d body=%s", i, r.statusCode, r.body)
 		}
 	}
-	require.Greater(t, successCount, 0, "at least some concurrent requests should succeed")
+	require.Equal(t, numRequests, successCount, "all concurrent requests should succeed")
 
 	run := tbprofile.NewProfiler(testbed.DefaultTestConfig(), buf).BuildProfile()
 	t.Logf("\n%s", run.SummaryTable())

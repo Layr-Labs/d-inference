@@ -1895,6 +1895,9 @@ func (s *Server) routes() {
 	// internally via requireAdminKey.
 	s.mux.HandleFunc("GET /v1/admin/utilization", s.handleAdminUtilization)
 
+	// Platform revenue — admin-gated total fees collected
+	s.mux.HandleFunc("GET /v1/admin/platform-revenue", s.handlePlatformRevenue)
+
 	// Graceful drain toggle (admin only) — sets the coordinator into drain mode
 	// before a restart/upgrade so new inference requests get 429 while in-flight
 	// ones finish. Wrapped with requireAuth (the SAME pattern as the other

@@ -45,6 +45,7 @@ type Store interface {
 	InviteStore
 	ProviderEarningsStore
 	ProviderStore
+	PlatformRevenueStore
 }
 
 // TelemetryEventRecord is the persistence-layer representation of a telemetry

@@ -3203,3 +3203,15 @@ func sha256Hex(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:])
 }
+
+// GetPlatformRevenue returns total platform fees collected (micro-USD) across
+// all time from the in-memory ledger.
+func (s *MemoryStore) GetPlatformRevenue(ctx context.Context) int64 {
+	var total int64
+	for _, entry := range s.ledgerEntries {
+		if entry.AccountID == "platform" && entry.Type == LedgerPlatformFee {
+			total += entry.AmountMicroUSD
+		}
+	}
+	return total
+}

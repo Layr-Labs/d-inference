@@ -277,7 +277,7 @@ func TestProviderToken(t *testing.T) {
 	s := NewMemory(Config{})
 
 	rawToken := "darkbloom-token-abc123"
-	tokenHash := sha256Hex(rawToken)
+	tokenHash := hashKey(rawToken)
 
 	pt := &ProviderToken{
 		TokenHash: tokenHash,

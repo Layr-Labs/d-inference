@@ -11,7 +11,7 @@ public enum ProviderProtocolCodec {
             return try encodeRegisterPreservingRawAttestation(register)
         }
 
-        return try makeEncoder().encode(message)
+        return try encoder.encode(message)
     }
 
     public static func encodeProviderMessageString(_ message: ProviderMessage) throws -> String {
@@ -43,7 +43,7 @@ public enum ProviderProtocolCodec {
     }
 
     public static func encodeCoordinatorMessage(_ message: CoordinatorMessage) throws -> Data {
-        try makeEncoder().encode(message)
+        try encoder.encode(message)
     }
 
     public static func encodeCoordinatorMessageString(_ message: CoordinatorMessage) throws -> String {
@@ -65,11 +65,17 @@ public enum ProviderProtocolCodec {
         return try decodeCoordinatorMessage(from: data)
     }
 
-    private static func makeEncoder() -> JSONEncoder {
+    /// Shared encoder for every outbound message, cached to avoid a fresh
+    /// JSONEncoder allocation per message on the per-token chunk hot path.
+    /// Safe to share across concurrent encodes: JSONEncoder holds no mutable
+    /// state during `encode(_:)` (configuration is read-only after setup and
+    /// each encode builds its own private encoding storage). The formatting
+    /// options MUST NOT change — they define the wire format.
+    private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return encoder
-    }
+    }()
 
     private static func encodeRegisterPreservingRawAttestation(
         _ register: ProviderMessage.Register
@@ -122,7 +128,7 @@ public enum ProviderProtocolCodec {
     }
 
     private static func encodeValue<T: Encodable>(_ value: T) throws -> Data {
-        try makeEncoder().encode(value)
+        try encoder.encode(value)
     }
 
     private static func validateRawJSON(_ data: Data) throws {

@@ -748,7 +748,7 @@ threats:
     affected_files:
       - console-ui/src/hooks/useAuth.ts
       - console-ui/src/lib/api.ts
-      - coordinator/internal/auth/**
+      - coordinator/auth/**
     mitigations:
       - description: API keys verified on every coordinator request via constant-time compare.
         status: implemented
@@ -771,7 +771,7 @@ threats:
     adversaries: [ADV-002, ADV-003]
     affected_assets: [A-009]
     affected_files:
-      - coordinator/internal/api/consumer.go
+      - coordinator/api/consumer.go
     mitigations:
       - description: No MaxBytesReader applied to inference endpoints.
         status: open
@@ -819,9 +819,9 @@ threats:
     adversaries: [ADV-002]
     affected_assets: [A-005, A-011]
     affected_files:
-      - coordinator/internal/auth/**
-      - coordinator/internal/api/server.go
-      - coordinator/internal/api/release_handlers.go
+      - coordinator/auth/**
+      - coordinator/api/server.go
+      - coordinator/api/release_handlers.go
     mitigations:
       - description: Admin endpoints gated by separate admin key middleware.
         status: implemented
@@ -844,8 +844,8 @@ threats:
     adversaries: [ADV-002]
     affected_assets: [A-009]
     affected_files:
-      - coordinator/internal/api/consumer.go
-      - coordinator/internal/store/postgres.go
+      - coordinator/api/consumer.go
+      - coordinator/store/postgres.go
     mitigations:
       - description: Usage rows written per request to the ledger.
         status: implemented
@@ -871,8 +871,8 @@ threats:
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-011]
     affected_files:
-      - coordinator/internal/api/provider.go
-      - coordinator/internal/registry/registry.go
+      - coordinator/api/provider.go
+      - coordinator/registry/registry.go
     mitigations:
       - description: Binary hash verified at registration against known blessed hashes.
         status: implemented
@@ -895,8 +895,8 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-001, A-004]
     affected_files:
-      - coordinator/internal/registry/registry.go
-      - coordinator/internal/api/provider.go
+      - coordinator/registry/registry.go
+      - coordinator/api/provider.go
       - provider-swift/Sources/ProviderCore/Inference/**
       - provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift
       - provider-swift/Tests/ProviderCoreFoundationTests/WeightHasherMemoryTests.swift
@@ -926,7 +926,7 @@ threats:
     affected_assets: [A-001]
     affected_files:
       - provider-swift/Sources/ProviderCore/ProviderLoop.swift
-      - coordinator/internal/api/provider.go
+      - coordinator/api/provider.go
     mitigations:
       - description: Coordinator rejects plaintext inference chunks and marks provider untrusted.
         status: implemented
@@ -952,7 +952,7 @@ threats:
     affected_assets: [A-001]
     affected_files:
       - provider-swift/Sources/ProviderCore/ProviderLoop.swift
-      - coordinator/internal/registry/registry.go
+      - coordinator/registry/registry.go
     mitigations:
       - description: Routing gate exists and enforces privacy flags.
         status: implemented
@@ -1029,8 +1029,8 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-004, A-001]
     affected_files:
-      - coordinator/internal/registry/registry.go
-      - coordinator/internal/api/provider.go
+      - coordinator/registry/registry.go
+      - coordinator/api/provider.go
       - provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift
       - provider-swift/Tests/ProviderCoreFoundationTests/WeightHasherMemoryTests.swift
     mitigations:
@@ -1056,7 +1056,7 @@ threats:
     affected_assets: [A-011, A-010]
     affected_files:
       - provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift
-      - coordinator/internal/attestation/**
+      - coordinator/attestation/**
     mitigations:
       - description: Code signing enforced by macOS; SIP prevents unsigned binaries from launching.
         status: implemented
@@ -1119,8 +1119,8 @@ threats:
     affected_assets: [A-001, A-010]
     affected_files:
       - provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift
-      - coordinator/internal/api/provider.go
-      - coordinator/internal/registry/registry.go
+      - coordinator/api/provider.go
+      - coordinator/registry/registry.go
     mitigations:
       - description: darkbloom checks SIP at startup and refuses to serve if disabled.
         status: implemented
@@ -1266,9 +1266,9 @@ threats:
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-010]
     affected_files:
-      - coordinator/internal/api/server.go
-      - coordinator/internal/mdm/mdm.go
-      - coordinator/internal/api/provider.go
+      - coordinator/api/server.go
+      - coordinator/mdm/mdm.go
+      - coordinator/api/provider.go
     mitigations:
       - description: Coordinator verifies MDA cert chain against Apple Enterprise Attestation Root CA.
         status: implemented
@@ -1294,8 +1294,8 @@ threats:
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-010, A-012]
     affected_files:
-      - coordinator/internal/api/acme_verify.go
-      - coordinator/internal/api/provider.go
+      - coordinator/api/acme_verify.go
+      - coordinator/api/provider.go
     mitigations:
       - description: Coordinator verifies the presented cert chain and binds the ACME key to SE attestation.
         status: implemented
@@ -1318,8 +1318,8 @@ threats:
     adversaries: []
     affected_assets: [A-010]
     affected_files:
-      - coordinator/internal/mdm/mdm.go
-      - coordinator/internal/attestation/**
+      - coordinator/mdm/mdm.go
+      - coordinator/attestation/**
     mitigations:
       - description: Providers can still operate at self_signed trust level without MDA.
         status: implemented
@@ -1345,8 +1345,8 @@ threats:
     adversaries: [ADV-003]
     affected_assets: [A-005, A-011]
     affected_files:
-      - coordinator/internal/api/release_handlers.go
-      - coordinator/internal/api/server.go
+      - coordinator/api/release_handlers.go
+      - coordinator/api/server.go
     mitigations:
       - description: Release key gated by separate middleware from consumer keys.
         status: implemented
@@ -1372,7 +1372,7 @@ threats:
     adversaries: [ADV-003]
     affected_assets: [A-011]
     affected_files:
-      - coordinator/internal/api/release_handlers.go
+      - coordinator/api/release_handlers.go
     mitigations:
       - description: Cache invalidation implemented but targeting wrong key (SEC-021).
         status: open
@@ -1394,7 +1394,7 @@ threats:
     adversaries: [ADV-003]
     affected_assets: []
     affected_files:
-      - coordinator/internal/api/release_handlers.go
+      - coordinator/api/release_handlers.go
     mitigations:
       - description: No per-IP or per-email rate limit on OTP endpoints.
         status: open
@@ -1419,7 +1419,7 @@ threats:
     affected_files:
       - provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift
       - provider-swift/Tests/ProviderCoreFoundationTests/WeightHasherMemoryTests.swift
-      - coordinator/internal/registry/registry.go
+      - coordinator/registry/registry.go
     mitigations:
       - description: Weight hash computed by WeightHasher and advertised in registration.
         status: implemented
@@ -1557,8 +1557,8 @@ threats:
     adversaries: [ADV-002, ADV-003]
     affected_assets: [A-009]
     affected_files:
-      - coordinator/internal/api/billing_handlers.go
-      - coordinator/internal/store/postgres.go
+      - coordinator/api/billing_handlers.go
+      - coordinator/store/postgres.go
     mitigations:
       - description: Completed-session check exists but is not atomic with credit insertion.
         status: open
@@ -1580,7 +1580,7 @@ threats:
     adversaries: [ADV-002, ADV-003]
     affected_assets: [A-009]
     affected_files:
-      - coordinator/internal/api/consumer.go
+      - coordinator/api/consumer.go
     mitigations:
       - description: Endpoint is unauthenticated by design for legacy reasons.
         status: open
@@ -1602,7 +1602,7 @@ threats:
     adversaries: [ADV-003]
     affected_assets: [A-006]
     affected_files:
-      - coordinator/internal/billing/**
+      - coordinator/billing/**
       - coordinator/cmd/coordinator/main.go
     mitigations:
       - description: Mnemonic stored in EigenCloud KMS, injected at runtime.
@@ -1627,8 +1627,8 @@ threats:
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-010]
     affected_files:
-      - coordinator/internal/attestation/**
-      - coordinator/internal/api/provider.go
+      - coordinator/attestation/**
+      - coordinator/api/provider.go
       - provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift
       - provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift
       - provider-swift/Sources/ProviderCore/Security/AttestationSigner.swift
@@ -1715,7 +1715,7 @@ threats:
     affected_files:
       - provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift
       - provider-swift/Sources/ProviderCore/Security/SecureEnclaveIdentity.swift
-      - coordinator/internal/api/provider.go
+      - coordinator/api/provider.go
     mitigations:
       - description: Coordinator logs registration events with SE public key fingerprint.
         status: implemented
@@ -1746,10 +1746,10 @@ threats:
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-010]
     affected_files:
-      - coordinator/internal/attestation/**
-      - coordinator/internal/mdm/mdm.go
-      - coordinator/internal/api/provider.go
-      - coordinator/internal/registry/registry.go
+      - coordinator/attestation/**
+      - coordinator/mdm/mdm.go
+      - coordinator/api/provider.go
+      - coordinator/registry/registry.go
     mitigations:
       - description: "Full chain required: SE signature → MDM SecurityInfo → MDA cert from Apple root CA."
         status: implemented
@@ -1791,7 +1791,7 @@ threats:
     affected_assets: [A-001, A-010]
     affected_files:
       - provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift
-      - coordinator/internal/api/provider.go
+      - coordinator/api/provider.go
     mitigations:
       - description: SIP checked at startup, before every request, and in every 5-minute challenge.
         status: implemented
@@ -1845,8 +1845,8 @@ threats:
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-008]
     affected_files:
-      - coordinator/internal/api/device_auth.go
-      - coordinator/internal/store/postgres.go
+      - coordinator/api/device_auth.go
+      - coordinator/store/postgres.go
     mitigations:
       - description: Device codes have a validity window.
         status: implemented
@@ -1870,9 +1870,9 @@ threats:
     adversaries: [ADV-003]
     affected_assets: [A-011]
     affected_files:
-      - coordinator/internal/api/server.go
-      - coordinator/internal/api/enroll.go
-      - coordinator/internal/api/consumer.go
+      - coordinator/api/server.go
+      - coordinator/api/enroll.go
+      - coordinator/api/consumer.go
     mitigations:
       - description: baseURL should be set in production; fallback to Host header is the risk.
         status: open

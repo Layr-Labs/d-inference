@@ -78,8 +78,7 @@ final class ProviderAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
-        APNsBridge.shared.setDeviceToken(hex)
+        APNsBridge.shared.setDeviceToken(deviceToken.hexString)
     }
 
     func application(_: NSApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {

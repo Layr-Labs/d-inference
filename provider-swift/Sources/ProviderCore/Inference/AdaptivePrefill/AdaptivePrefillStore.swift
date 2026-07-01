@@ -33,9 +33,7 @@ public struct AdaptivePrefillStoreKey: Sendable, Hashable {
             hardwareMemoryFingerprint,
             policyIdentity,
         ].joined(separator: "\u{1f}")
-        return SHA256.hash(data: Data(raw.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
+        return SHA256.hash(data: Data(raw.utf8)).hexString
     }
 }
 

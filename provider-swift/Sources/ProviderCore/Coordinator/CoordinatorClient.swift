@@ -129,7 +129,7 @@ public actor CoordinatorClient {
         self.chunkBatcher = batcher
         self.chunkSender = ChunkSender(batcher: batcher, encode: { message in
             do {
-                return try CoordinatorClientCodec.encodeOutboundMessageString(message)
+                return try CoordinatorClientCodec.encodeOutboundMessage(message)
             } catch {
                 chunkLogger.error("chunk encode failed: \(error.localizedDescription)")
                 TelemetryClient.shared.emit(

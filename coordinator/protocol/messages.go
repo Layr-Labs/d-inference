@@ -571,16 +571,27 @@ type ProviderMessage struct {
 
 // UnmarshalJSON reads the "type" field first, then unmarshals the full object
 // into the appropriate concrete struct.
+//
+// Fast path: scanTopLevelString reads "type" with a cheap byte walk so each
+// frame is json.Unmarshal'ed exactly once. Previously every frame — including
+// one per streamed token chunk — was parsed twice (envelope pass just to read
+// "type", then the concrete struct). If the scanner is unsure (escapes,
+// non-string value, malformed input, missing key) it falls back to the
+// envelope decode, preserving the original error behavior.
 func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
-	var envelope struct {
-		Type string `json:"type"`
+	msgType, ok := scanTopLevelString(data, "type")
+	if !ok {
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			return fmt.Errorf("protocol: failed to read message type: %w", err)
+		}
+		msgType = envelope.Type
 	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return fmt.Errorf("protocol: failed to read message type: %w", err)
-	}
-	pm.Type = envelope.Type
+	pm.Type = msgType
 
-	switch envelope.Type {
+	switch msgType {
 	case TypeRegister:
 		var msg RegisterMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
@@ -659,7 +670,7 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		pm.Payload = &msg
 
 	default:
-		return fmt.Errorf("protocol: unknown message type %q", envelope.Type)
+		return fmt.Errorf("protocol: unknown message type %q", msgType)
 	}
 
 	return nil

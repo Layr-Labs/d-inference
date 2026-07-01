@@ -9,19 +9,8 @@ export function microToUsd(micro: number): number {
   return (micro ?? 0) / MICRO_PER_USD;
 }
 
-/** USD float → integer micro-USD (rounded, matches the server's integer math). */
-export function usdToMicro(usd: number): number {
-  return Math.round((usd ?? 0) * MICRO_PER_USD);
-}
-
 /** "$1.23" — fixed decimals, no sign handling. */
 export function formatUsd(usd: number, decimals = 2): string {
-  return `$${usd.toFixed(decimals)}`;
-}
-
-/** "$1.23" / "-$1.23" — signed variant for ledgers and deltas. */
-export function formatUsdSigned(usd: number, decimals = 2): string {
-  if (usd < 0) return `-$${Math.abs(usd).toFixed(decimals)}`;
   return `$${usd.toFixed(decimals)}`;
 }
 

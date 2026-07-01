@@ -54,12 +54,7 @@ public struct SelfUpdater: Sendable {
 
     public init(coordinatorBaseURL: String) {
         // Convert WebSocket URL to HTTP if needed
-        var base = coordinatorBaseURL
-        if base.hasPrefix("ws://") {
-            base = "http://" + base.dropFirst("ws://".count)
-        } else if base.hasPrefix("wss://") {
-            base = "https://" + base.dropFirst("wss://".count)
-        }
+        var base = WebSocketURLScheme.toHTTP(coordinatorBaseURL)
         // Strip trailing path components (e.g. /ws/provider)
         if let url = URL(string: base), let scheme = url.scheme, let host = url.host {
             let port = url.port.map { ":\($0)" } ?? ""

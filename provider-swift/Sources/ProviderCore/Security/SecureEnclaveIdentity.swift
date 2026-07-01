@@ -76,7 +76,7 @@ public final class SecureEnclaveIdentity: @unchecked Sendable {
 
     /// Public key as a lowercase hex string.
     public var publicKeyHex: String {
-        publicKey.rawRepresentation.map { String(format: "%02x", $0) }.joined()
+        publicKey.rawRepresentation.hexString
     }
 
     // MARK: - Sign / Verify

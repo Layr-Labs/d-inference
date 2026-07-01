@@ -10,8 +10,10 @@
 //   - maxSize: maximum number of queued requests per model (default 10)
 //   - maxWait: maximum time a request can wait in the queue (default 30s)
 //
-// Stale requests (those past maxWait) are cleaned up both lazily (on
-// enqueue) and can be cleaned up explicitly via CleanStale.
+// Stale requests (those past maxWait) are cleaned up lazily: Enqueue and
+// QueuedModels sweep a model's queue via cleanStaleLocked, PopNextFresh
+// rejects stale entries as it pops, and each waiter enforces its own maxWait
+// timer in WaitForProviderContext.
 package registry
 
 import (
@@ -229,16 +231,6 @@ func (q *RequestQueue) TotalSize() int {
 	return total
 }
 
-// CleanStale removes requests that have exceeded maxWait from all queues.
-func (q *RequestQueue) CleanStale() {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	for model := range q.queues {
-		q.cleanStaleLocked(model)
-	}
-}
-
 // PreferWaiterOwners returns the distinct owner account IDs of PreferOwner
 // waiters currently queued for a model. Used by RejectUnservableQueuedRequests
 // to compute owner eligibility OUTSIDE the queue lock (OwnedProviderSummary
@@ -275,8 +267,10 @@ func (q *RequestQueue) PreferWaiterOwners(model string) []string {
 //     request, so it is failed fast like any other public waiter rather than
 //     left to hit the 120s stale timeout.
 //
-// Preserved waiters drain on availability or time out naturally via CleanStale
-// (surfacing machine_busy). Returns the number of requests failed.
+// Preserved waiters drain on availability or hit their own maxWait timer in
+// WaitForProviderContext (surfacing machine_busy); entries they leave behind
+// are swept lazily by cleanStaleLocked on the next Enqueue or QueuedModels
+// scan. Returns the number of requests failed.
 func (q *RequestQueue) FailQueuedRequestsForModel(model string, preferOwnerEligible map[string]bool) int {
 	q.mu.Lock()
 	defer q.mu.Unlock()

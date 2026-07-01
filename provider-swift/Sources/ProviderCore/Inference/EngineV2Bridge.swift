@@ -190,6 +190,17 @@ public actor EngineV2Bridge {
         let id = requestId ?? "req-\(UUID().uuidString.prefix(12))"
         let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
 
+        // Duplicate request-id guard (legacy: the planner's
+        // `duplicateRequestID` rejection). Without it a second submit under
+        // the same id would overwrite the first request's bookkeeping and
+        // the two pumps would corrupt each other's teardown. Same canonical
+        // message → `.requestRejected` (a deterministic client fault).
+        guard active[id] == nil else {
+            continuation.yield(.error("token_budget_exhausted: duplicate request ID"))
+            continuation.finish()
+            return stream
+        }
+
         let cbv2Id = CBv2RequestID(nextRawId)
         nextRawId += 1
         let cbv2Request = EngineV2Translation.cbv2Request(

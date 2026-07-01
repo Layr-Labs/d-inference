@@ -552,6 +552,24 @@ struct EngineV2ErrorMappingTests {
         let classified = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
         #expect(classified == .generationFailed(message))
     }
+
+    @Test("duplicate request id is rejected with the legacy planner message")
+    func duplicateRequestId() async {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        _ = await bridge.submit(request: makeRequest(), requestId: "req-dup")
+        let (events, _) = await record(
+            await bridge.submit(request: makeRequest(), requestId: "req-dup")
+        )
+        #expect(events == [.error("token_budget_exhausted: duplicate request ID")])
+        // Only the first submit reached the engine.
+        #expect(engine.submitted.count == 1)
+        // Deterministic client fault (400), not a retryable capacity error.
+        if case .error(let message)? = events.first {
+            let classified = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
+            #expect(classified == .requestRejected(message))
+        }
+    }
 }
 
 // MARK: - Cancellation
@@ -595,7 +613,10 @@ struct EngineV2CancellationTests {
         let runtime = EngineV2Runtime()
         await runtime.register(modelId: "gemma-4-27b-it", bridge: bridge)
 
-        _ = await bridge.submit(request: makeRequest(), requestId: "req-xyz")
+        // Hold the stream for the whole test: dropping it would fire
+        // `onTermination(.cancelled)` and race a second (idempotent)
+        // engine cancel into the count assertions below.
+        let stream = await bridge.submit(request: makeRequest(), requestId: "req-xyz")
         let owned = await runtime.cancel(requestId: "req-xyz")
         #expect(owned)
         #expect(engine.cancelled.count == 1)
@@ -604,6 +625,7 @@ struct EngineV2CancellationTests {
         let unowned = await runtime.cancel(requestId: "req-legacy")
         #expect(!unowned)
         #expect(engine.cancelled.count == 1)
+        withExtendedLifetime(stream) {}
     }
 }
 

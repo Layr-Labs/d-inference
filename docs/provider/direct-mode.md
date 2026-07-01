@@ -76,24 +76,29 @@ export function discoverLocalEndpoint() {
 
 ## Local-first with coordinator fallback
 
-`console-ui/src/lib/localFirst.ts` prefers the local endpoint and falls back to
-the coordinator self-route on a connection failure (the Mac is asleep, you're
-away, or local mode isn't running). Fallback fires **only** on a connection-level
-error — a reachable-but-erroring local server returns its own error rather than
-silently rerouting. Both paths are free.
+The recommended client pattern: prefer the local endpoint and fall back to the
+coordinator self-route on a connection failure (the Mac is asleep, you're away,
+or local mode isn't running). Fallback should fire **only** on a
+connection-level error — a reachable-but-erroring local server returns its own
+error rather than silently rerouting. Both paths are free.
+
+The console UI does not ship this helper today (a ready-made
+`chatCompletionWithFallback` prototype lived at `console-ui/src/lib/localFirst.ts`
+until it was removed as unwired code — recover it from git history if useful).
+The pattern is a few lines:
 
 ```ts
-import { chatCompletionWithFallback } from "@/lib/localFirst";
-
-const { response, via } = await chatCompletionWithFallback(
-  { model, messages, stream: true },
-  {
-    local: discoverLocalEndpoint(),        // or null
-    coordinatorURL: "/api/chat",            // proxy, or a coordinator /v1/chat/completions
-    coordinatorApiKey: "dk-…",
+async function chatCompletionWithFallback(body: object, local: { baseURL: string; apiKey?: string } | null) {
+  if (local) {
+    try {
+      return { via: "local", response: await postChat(`${local.baseURL}/v1/chat/completions`, body, local.apiKey) };
+    } catch (err) {
+      if (!isConnectionError(err)) throw err; // reachable-but-erroring: surface it
+    }
   }
-);
-// `via` is "local" or "coordinator"; stream `response` as usual.
+  // proxy route, or a coordinator /v1/chat/completions with X-Darkbloom-Route: self
+  return { via: "coordinator", response: await postChat("/api/chat", body, coordinatorApiKey) };
+}
 ```
 
 ## Security
@@ -125,8 +130,8 @@ const { response, via } = await chatCompletionWithFallback(
 | Cost | free | free |
 | Code-identity gate | N/A — no coordinator | applies once enforced |
 
-They are complementary modes a client picks by reachability — `localFirst.ts`
-does exactly that.
+They are complementary modes a client picks by reachability — the local-first
+fallback pattern above does exactly that.
 
 ## Serve publicly AND locally at once (`--local-endpoint`)
 
@@ -147,5 +152,5 @@ auth, CORS, and error mapping behave the same.
   the endpoint URL is printed at startup. Writing the discovery record from
   unified mode (so `darkbloom local` finds it too) is a small follow-on.
 - The hosted browser console can't read `~/.darkbloom/local.json`; a settings
-  field to paste the `darkbloom local` URL + token (then prefer it via
-  `localFirst.ts`) is a natural follow-on.
+  field to paste the `darkbloom local` URL + token (then prefer it via the
+  local-first fallback pattern above) is a natural follow-on.

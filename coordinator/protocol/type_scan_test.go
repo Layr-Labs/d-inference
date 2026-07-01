@@ -16,9 +16,6 @@ func TestScanTopLevelString(t *testing.T) {
 		in   string
 		want string
 		ok   bool
-		// skipReference disables the encoding/json cross-check for cases
-		// where the scanner intentionally diverges (duplicate keys).
-		skipReference bool
 	}{
 		// --- success cases ---
 		{name: "type first key", in: `{"type":"heartbeat","status":"idle"}`, want: "heartbeat", ok: true},
@@ -69,14 +66,15 @@ func TestScanTopLevelString(t *testing.T) {
 		{name: "top-level array", in: `["type","heartbeat"]`, ok: false},
 		{name: "top-level string", in: `"type"`, ok: false},
 		{name: "top-level null", in: `null`, ok: false},
-		// The scanner is first-wins on duplicate keys while encoding/json is
-		// last-wins. Our providers never emit duplicate keys, so this
-		// divergence is acceptable; the case documents the behavior.
-		{
-			name: "duplicate type keys takes first",
-			in:   `{"type":"first","type":"second"}`,
-			want: "first", ok: true, skipReference: true,
-		},
+		// Duplicate (or case-variant) type keys force the fallback:
+		// encoding/json is last-match-wins and case-insensitive, so the
+		// scanner refuses to pick a winner rather than risk disagreeing with
+		// the concrete-struct decode that follows.
+		{name: "duplicate type keys falls back", in: `{"type":"first","type":"second"}`, ok: false},
+		{name: "case-variant duplicate falls back", in: `{"type":"first","Type":"second"}`, ok: false},
+		{name: "case-variant before exact falls back", in: `{"Type":"first","type":"second"}`, ok: false},
+		{name: "case-variant only falls back", in: `{"Type":"heartbeat"}`, ok: false},
+		{name: "duplicate non-type key still succeeds", in: `{"a":1,"a":2,"type":"heartbeat"}`, want: "heartbeat", ok: true},
 	}
 
 	for _, tc := range tests {
@@ -85,7 +83,7 @@ func TestScanTopLevelString(t *testing.T) {
 			if ok != tc.ok || got != tc.want {
 				t.Fatalf("scanTopLevelString(%q) = (%q, %v), want (%q, %v)", tc.in, got, ok, tc.want, tc.ok)
 			}
-			if !ok || tc.skipReference {
+			if !ok {
 				return
 			}
 			// Never-wrong invariant: whenever the scanner reports success it

@@ -1,5 +1,7 @@
 package protocol
 
+import "strings"
+
 // Lightweight top-level key scanner used by ProviderMessage.UnmarshalJSON so
 // the message "type" can be read without a full envelope json.Unmarshal pass.
 // Every provider frame — including one per streamed token — used to be parsed
@@ -12,9 +14,13 @@ package protocol
 // decode. It never needs to be *complete*, only never-wrong.
 
 // scanTopLevelString returns the raw string value of a top-level object key.
-// ok is false when the key is absent, its value is not a plain (escape-free)
-// string, or the input isn't a well-formed-enough object — callers must fall
-// back to encoding/json.
+// ok is false when the key is absent, appears more than once (including
+// case-insensitive variants — encoding/json matches keys case-insensitively
+// and last-match-wins), its value is not a plain (escape-free) string, or the
+// input isn't a well-formed-enough object — callers must fall back to
+// encoding/json. Bailing on duplicates keeps the fast path behaviorally
+// identical to a full decode: picking either occurrence here could disagree
+// with the concrete-struct unmarshal that follows.
 func scanTopLevelString(data []byte, key string) (value string, ok bool) {
 	i := skipJSONWhitespace(data, 0)
 	if i >= len(data) || data[i] != '{' {
@@ -24,9 +30,10 @@ func scanTopLevelString(data []byte, key string) (value string, ok bool) {
 	if i < len(data) && data[i] == '}' {
 		return "", false
 	}
+	found := false
 	for {
-		k, next, ok := scanSimpleJSONString(data, i)
-		if !ok {
+		k, next, kOK := scanSimpleJSONString(data, i)
+		if !kOK {
 			return "", false
 		}
 		i = skipJSONWhitespace(data, next)
@@ -34,18 +41,27 @@ func scanTopLevelString(data []byte, key string) (value string, ok bool) {
 			return "", false
 		}
 		i = skipJSONWhitespace(data, i+1)
-		if string(k) == key {
-			v, _, ok := scanSimpleJSONString(data, i)
-			if !ok {
+		if strings.EqualFold(string(k), key) {
+			// A repeated key, or a case-variant ("Type") that encoding/json
+			// would also match: defer to the full decode. Real provider
+			// frames never emit duplicates; correctness beats speed here.
+			if found || string(k) != key {
 				return "", false
 			}
-			return string(v), true
+			v, vNext, vOK := scanSimpleJSONString(data, i)
+			if !vOK {
+				return "", false
+			}
+			value, found = string(v), true
+			i = vNext
+		} else {
+			vNext, vOK := skipJSONValue(data, i)
+			if !vOK {
+				return "", false
+			}
+			i = vNext
 		}
-		next, ok = skipJSONValue(data, i)
-		if !ok {
-			return "", false
-		}
-		i = skipJSONWhitespace(data, next)
+		i = skipJSONWhitespace(data, i)
 		if i >= len(data) {
 			return "", false
 		}
@@ -53,6 +69,9 @@ func scanTopLevelString(data []byte, key string) (value string, ok bool) {
 		case ',':
 			i = skipJSONWhitespace(data, i+1)
 		case '}':
+			if found {
+				return value, true
+			}
 			return "", false // key not present
 		default:
 			return "", false

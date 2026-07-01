@@ -653,11 +653,18 @@ struct ContinuousBatchingLiveTests {
                     var start = ContinuousClock.now
                     var produced = 0
                     for await output in engine.core.streamOutputs(requestId: id) {
-                        if !sawFirst {
-                            sawFirst = true
-                            start = .now
-                        } else {
-                            produced += output.newTokenIds.count
+                        // Gate on a REAL token: the engine emits a token-less
+                        // prefill-start marker as the FIRST output (at admit, before
+                        // prefill), so starting the decode clock on the first output
+                        // would include prefill and count the marker (matches the
+                        // bridge skip in BatchScheduler+EngineBridge.swift).
+                        if !output.newTokenIds.isEmpty {
+                            if !sawFirst {
+                                sawFirst = true
+                                start = .now
+                            } else {
+                                produced += output.newTokenIds.count
+                            }
                         }
                         if output.finished || output.error != nil { break }
                     }
@@ -1411,8 +1418,13 @@ struct ContinuousBatchingLiveTests {
                         samplingParams: SamplingParams(maxTokens: decodeTokens + 1, temperature: 0.0)))
                     var sawFirst = false; var start = ContinuousClock.now; var produced = 0
                     for await output in engine.core.streamOutputs(requestId: id) {
-                        if !sawFirst { sawFirst = true; start = .now }
-                        else { produced += output.newTokenIds.count }
+                        // Gate on a REAL token: the first output is now the token-less
+                        // prefill-start marker (emitted at admit), which would start
+                        // the decode clock before prefill (see BatchScheduler+EngineBridge).
+                        if !output.newTokenIds.isEmpty {
+                            if !sawFirst { sawFirst = true; start = .now }
+                            else { produced += output.newTokenIds.count }
+                        }
                         if output.finished || output.error != nil { break }
                     }
                     return (i, Self.tokensPerSecond(produced, .now - start))

@@ -2133,10 +2133,18 @@ func (r *Registry) SetQueue(q *RequestQueue) {
 // could otherwise report absurd values to monopolize routing. These caps are
 // ~3-4x current hardware ceilings (M2 Ultra is ~800 GB/s, MLX decode is ~120
 // tok/s, max Mac Studio RAM is 512 GB) so legitimate future hardware isn't
-// clamped unnecessarily.
+// clamped unnecessarily. maxPrefillTPS is instead pinned to the provider's
+// accepted prefill bound (see its inline note) so the two stay consistent.
 const (
-	maxDecodeTPS                    = 500.0
-	maxPrefillTPS                   = 5000.0
+	maxDecodeTPS = 500.0
+	// maxPrefillTPS matches the provider's maxPlausiblePrefillTps ceiling
+	// (provider-swift BatchScheduler+EngineBridge.swift). It admits the MEASURED
+	// cold-prefill p90 (~17,707 tok/s, docs/reports/2026-06-22-live-prefill-tps-check.md)
+	// so a legitimately fast cold prefill is USED for TTFT instead of zeroed at
+	// ingest (the old 5000 sat below p90 and discarded the fast-cold band, forcing
+	// the pessimistic decode×ratio fallback). Kept finite so a window-collapse
+	// artifact (billions of tok/s) is still treated as no-measurement.
+	maxPrefillTPS                   = 20000.0
 	maxMemoryBandwidthGBs           = 2000.0
 	maxMemoryGB                     = 1024
 	maxMemoryGBFloat                = 1024.0

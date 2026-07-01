@@ -443,7 +443,7 @@ struct BatchSchedulerBudgetTests {
         await s._testSeedBridge(id: "engine", promptTokens: 1000, maxTokens: 16)
         let t0 = ContinuousClock.now
         // A perfectly representative-looking cold window (1000 tok over 1s, well
-        // above the 1ms floor and below the 8000 cap): the ONLY reason to skip is
+        // above the 1ms floor and below the 20000 cap): the ONLY reason to skip is
         // that an engine-tier hit is indistinguishable from a cold prefill.
         await s.recordAdmission(requestId: "engine", at: t0.advanced(by: .seconds(-2)))
         await s.recordFirstToken(requestId: "engine", at: t0.advanced(by: .seconds(-1)))
@@ -456,6 +456,64 @@ struct BatchSchedulerBudgetTests {
             "engine-tier prefix cache active ⇒ no prefill-EWMA sample (hit vs cold ambiguous)")
         #expect(tps == 0,
             "engine-tier sampling skipped; EWMA stays at its 0 default (got \(tps))")
+    }
+
+    // MARK: - Raised prefill ceiling (durable measurement fix)
+
+    /// The plausibility ceiling was raised from 8000 → 20000 tok/s, above the
+    /// MEASURED real-prefill p90 (17,707). The old 8000 sat BELOW p90, so once the
+    /// engine emits a real prefill-start marker (giving cold prefills a real
+    /// window), a genuinely-fast cold prefill in the 8k–17.7k band would have been
+    /// dropped as "implausible". The classifier must now accept it.
+    @Test("classifyPrefillSample accepts the fast-cold band up to the raised ceiling")
+    func prefillClassifierHonorsRaisedCeiling() {
+        #expect(BatchScheduler.maxPlausiblePrefillTps == 20000.0,
+            "ceiling must sit above the measured p90 (17,707)")
+
+        // p50 (6500) and a fast cold prefill (14000) — both ACCEPTED now; 14000
+        // would have been .aboveCeiling under the old 8000 bound.
+        for tps in [6500.0, 14000.0, 17700.0] {
+            let c = BatchScheduler.classifyPrefillSample(
+                prefilledTokens: Int(tps), prefillSeconds: 1.0)
+            #expect(c == .accepted(tps: tps),
+                "\(tps) tok/s is a plausible cold prefill (<= p90); got \(c)")
+        }
+        // Above the new ceiling is still rejected (residual overflow guard).
+        let over = BatchScheduler.classifyPrefillSample(
+            prefilledTokens: 25000, prefillSeconds: 1.0)
+        #expect(over == .aboveCeiling, "25000 tok/s must still be dropped; got \(over)")
+        // The sub-millisecond window floor is unchanged.
+        let collapsed = BatchScheduler.classifyPrefillSample(
+            prefilledTokens: 1000, prefillSeconds: 0.0005)
+        #expect(collapsed == .belowFloor, "sub-1ms window still below floor; got \(collapsed)")
+    }
+
+    /// End-to-end through `recordFinish`: a real cold prefill window that yields a
+    /// fast rate in the 8k–20k band (impossible to even reach before the engine
+    /// emitted a prefill-start marker) is now ACCEPTED and initializes the EWMA —
+    /// the same sample was `droppedCeiling` under the old 8000 bound.
+    @Test("recordFinish accepts a fast cold prefill under the raised ceiling")
+    func prefillEwmaAcceptsFastColdPrefill() async {
+        let s = BatchScheduler()
+        // 14000 prompt tokens prefilled over 1s → 14000 tok/s (above the old 8000
+        // ceiling, below the new 20000). Explicit instants make it deterministic.
+        await s._testSeedBridge(id: "fast", promptTokens: 14000, maxTokens: 16)
+        let t0 = ContinuousClock.now
+        await s.recordAdmission(requestId: "fast", at: t0.advanced(by: .seconds(-2)))
+        await s.recordFirstToken(requestId: "fast", at: t0.advanced(by: .seconds(-1)))
+        _ = await s.recordFinish(
+            requestId: "fast", promptTokens: 14000, completionTokens: 8, success: true)
+
+        let tps = await s.observedPrefillTpsEwma
+        let initialized = await s.prefillEwmaInitialized
+        let health = await s.prefillHealth
+
+        #expect(initialized, "a fast cold prefill must initialize the EWMA")
+        #expect(abs(tps - 14000) < 1.0,
+            "14000 tok over 1s ≈ 14000 tok/s (got \(tps))")
+        #expect(health.accepted == 1, "sample accepted (got accepted=\(health.accepted))")
+        #expect(health.droppedCeiling == 0,
+            "must NOT be dropped by the ceiling now that it is 20000 (got droppedCeiling=\(health.droppedCeiling))")
     }
 
     // MARK: - Billing-zero leak: terminal must not zero observed tokens

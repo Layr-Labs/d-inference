@@ -36,11 +36,16 @@ extension BatchScheduler {
     /// rejects that near-zero-window artifact.
     static let minPrefillWindowSeconds = 0.001
 
-    /// Upper plausibility bound (tok/s) for a prefill sample. Set above the
-    /// coordinator's 5000 clamp so a legitimately fast cold prefill still
-    /// registers, while clearly impossible rates are dropped (defense in depth
-    /// behind the cold-only + window-floor guards).
-    static let maxPlausiblePrefillTps = 8000.0
+    /// Upper plausibility bound (tok/s) for a prefill sample. Raised above the
+    /// MEASURED real-prefill p90 (17,707 tok/s — see
+    /// docs/reports/2026-06-22-live-prefill-tps-check.md) so a legitimately fast
+    /// cold prefill still registers now that the engine emits a real prefill-start
+    /// marker (the old 8000 sat BELOW p90 and would drop the genuinely-fast tail).
+    /// Kept finite so a residual window-collapse artifact is still rejected
+    /// (defense in depth behind the cold-only + window-floor guards). Matches the
+    /// coordinator's maxPrefillTPS ceiling so a sample this side accepts is not
+    /// then zeroed at ingest.
+    static let maxPlausiblePrefillTps = 20000.0
 
     // MARK: - Bridge runner (called from `submit` in the main file)
 
@@ -65,23 +70,26 @@ extension BatchScheduler {
             var sawFirstToken = false
             var sawTerminal = false
             // Wedge instrumentation (measurement only): count the admit at bridge
-            // start, BEFORE awaiting the engine. This is REQUIRED — not a
-            // queued-stream miscount: in THIS engine a `RequestOutput` is emitted
-            // ONLY from the decode phase (`Scheduler.processGenResponses`); there
-            // is NO prefill/admission-stage output, so a wedged first `eval`
-            // produces NO `RequestOutput` at all. Tying the admit to a "real
-            // engine admission signal" (first `RequestOutput`) would make the
-            // exact wedge we exist to detect invisible. A merely-queued request on
-            // a HEALTHY engine does NOT false-trip: `wedgeSuspected` additionally
+            // start, BEFORE awaiting the engine, so it is recorded even for the
+            // window before the engine's `addRequest` runs (a request still
+            // mid-submit). The engine now emits a token-less prefill-start
+            // `RequestOutput` at admission (`Scheduler.step`), so a wedged first
+            // `eval` DOES surface as admittedAt!=nil && firstTokenAt==nil — but
+            // counting here too is the belt-and-suspenders that keeps the admit
+            // visible regardless of output timing. A merely-queued request on a
+            // HEALTHY engine does NOT false-trip: `wedgeSuspected` additionally
             // requires the engine step counter to be FROZEN (steps keep advancing
             // while the engine serves other work), so only a truly frozen engine
             // trips. (See docs/reports/2026-06-22-cancel-root-cause-and-fix.md §C4.)
             await scheduler.recordWedgeAdmit(epoch: bridgeEpoch)
             for await output in outputStream {
-                // First `RequestOutput` (even prefill-only with no tokens)
-                // marks engine admission. Required by `expirePlannerTimeouts`
-                // to distinguish "queued" from "running" — long prefills
-                // emit no decoded token for many seconds.
+                // First `RequestOutput` marks engine admission. The engine emits a
+                // token-less prefill-start marker at admit (`Scheduler.step`), so
+                // this stamps admittedAt at REAL prefill start — the basis of the
+                // cold-prefill window measured in `recordFinish`. Also required by
+                // `expirePlannerTimeouts` to distinguish "queued" from "running" so
+                // a long prefill (which emits no decoded token for many seconds) is
+                // not aborted as a queue timeout.
                 if !sawAdmission {
                     await scheduler.recordAdmission(requestId: id, at: .now)
                     sawAdmission = true

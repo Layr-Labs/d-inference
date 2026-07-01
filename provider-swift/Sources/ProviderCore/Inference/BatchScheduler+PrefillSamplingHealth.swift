@@ -2,19 +2,20 @@
 //
 // Prefill-EWMA sampling health — MEASUREMENT ONLY.
 //
-// The cold-prefill EWMA (`observedPrefillTpsEwma`, fed by `recordFinish`) can sit
-// stuck at 0 because every cold sample is dropped: a prefix-cache HIT (or a
-// near-instant first token) collapses the admission→first-token window so
-// `prefillSeconds ≈ ε`, which either falls below the `minPrefillWindowSeconds`
-// floor or, after dividing, blows past the `maxPlausiblePrefillTps` ceiling. With
-// no accepted samples the EWMA never initializes and the coordinator's TTFT model
-// falls back to its (10–25× pessimistic) estimate.
+// This file holds only the OBSERVABILITY side of cold-prefill sampling: the
+// cumulative accept/drop counters (`PrefillSamplingHealth`, surfaced on the
+// `engine_health` telemetry path) and `classifyPrefillSample` — the pure,
+// unit-testable classifier that `recordFinish` routes each candidate sample
+// through. The classifier encodes the EXACT same floor/ceiling/finite/cold
+// conditions as `recordFinish` and the accept path (`updatePrefillTpsEwma` on
+// `.accepted`) is byte-for-byte unchanged, so extracting it changes no behavior;
+// the counters just turn a previously silent drop into a dashboard line.
 //
-// These counters turn that silent drop into a dashboard line. They do NOT change
-// the sampling logic or bounds — `classifyPrefillSample` encodes the EXACT same
-// floor/ceiling/finite/cold conditions `recordFinish` already used; the accept
-// path (`updatePrefillTpsEwma` on `.accepted`) is byte-for-byte unchanged. The
-// classifier is pulled out as a pure function only so it is unit-testable.
+// The prefill-measurement MECHANISM itself — why the engine emits a token-less
+// prefill-start marker at admit, how admittedAt/firstTokenAt bound the cold-prefill
+// window, and the `minPrefillWindowSeconds` / `maxPlausiblePrefillTps` bounds and
+// their rationale — is documented canonically in BatchScheduler+EngineBridge.swift
+// (the "Prefill-EWMA sampling bounds" section and `recordFinish`), not repeated here.
 
 import Foundation
 

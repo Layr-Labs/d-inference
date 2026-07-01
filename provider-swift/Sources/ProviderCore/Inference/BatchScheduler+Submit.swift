@@ -204,6 +204,12 @@ extension BatchScheduler {
         if let topP { sp.topP = topP }
         if let topK { sp.topK = topK }
         if let seed { sp.seed = seed }
+        if let loopDefaults = Self.loopDetectionDefaults(
+            modelId: modelId, enabled: Self.gemmaLoopDetectionEnabled())
+        {
+            sp.loopDetectionMaxPatternSize = loopDefaults.maxPatternSize
+            sp.loopDetectionMinCount = loopDefaults.minCount
+        }
 
         let req = Request(
             requestId: id,
@@ -415,6 +421,12 @@ extension BatchScheduler {
         if let topP = request.top_p { sp.topP = topP }
         if let topK = request.top_k { sp.topK = topK }
         if let seed = request.seed { sp.seed = seed }
+        if let loopDefaults = Self.loopDetectionDefaults(
+            modelId: modelId, enabled: Self.gemmaLoopDetectionEnabled())
+        {
+            sp.loopDetectionMaxPatternSize = loopDefaults.maxPatternSize
+            sp.loopDetectionMinCount = loopDefaults.minCount
+        }
 
         let req = Request(
             requestId: id,

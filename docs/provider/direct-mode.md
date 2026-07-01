@@ -96,8 +96,14 @@ async function chatCompletionWithFallback(body: object, local: { baseURL: string
       if (!isConnectionError(err)) throw err; // reachable-but-erroring: surface it
     }
   }
-  // proxy route, or a coordinator /v1/chat/completions with X-Darkbloom-Route: self
-  return { via: "coordinator", response: await postChat("/api/chat", body, coordinatorApiKey) };
+  // Coordinator fallback MUST self-route to stay free: without the
+  // X-Darkbloom-Route: self header the request goes to the public paid fleet.
+  return {
+    via: "coordinator",
+    response: await postChat("/api/chat", body, coordinatorApiKey, {
+      "X-Darkbloom-Route": "self",
+    }),
+  };
 }
 ```
 

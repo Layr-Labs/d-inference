@@ -237,6 +237,35 @@ func TestProviderWriterEnqueueUsesControlLane(t *testing.T) {
 	}
 }
 
+// TestWriteTextThenEnqueueTextPreservesOrdering pins the ordering contract
+// that request→cancel call sites rely on: WriteText (data lane) blocks until
+// its frame has been written to the socket, so a control frame enqueued via
+// EnqueueText AFTER WriteText returned can never precede the data frame on
+// the wire. This holds despite the control lane's strict priority — the data
+// frame is already gone by the time the control frame is submitted.
+// Cross-lane ordering is otherwise unspecified: a control frame submitted
+// while a data frame is still queued may overtake it.
+func TestWriteTextThenEnqueueTextPreservesOrdering(t *testing.T) {
+	serverConn, clientConn := testWebSocketPair(t)
+	p := &Provider{Conn: serverConn, writer: newProviderWriter(serverConn)}
+	t.Cleanup(p.closeWriterNow)
+
+	if err := p.WriteText(context.Background(), []byte(`{"type":"request"}`)); err != nil {
+		t.Fatalf("WriteText = %v", err)
+	}
+	if err := p.EnqueueText(context.Background(), []byte(`{"type":"cancel"}`)); err != nil {
+		t.Fatalf("EnqueueText = %v", err)
+	}
+
+	frames := readFrames(t, clientConn, 2)
+	want := []string{`{"type":"request"}`, `{"type":"cancel"}`}
+	for i := range want {
+		if frames[i] != want[i] {
+			t.Fatalf("frame[%d] = %s, want %s (all frames: %v)", i, frames[i], want[i], frames)
+		}
+	}
+}
+
 func TestProviderWriterQueueFullPerLane(t *testing.T) {
 	w := &providerWriter{
 		queue:   make(chan *providerWriteRequest, 1),

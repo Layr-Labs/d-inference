@@ -8,7 +8,7 @@
 //
 // Queue limits:
 //   - maxSize: maximum number of queued requests per model (default 10)
-//   - maxWait: maximum time a request can wait in the queue (default 30s)
+//   - maxWait: maximum time a request can wait in the queue (default 120s)
 //
 // Stale requests (those past maxWait) are cleaned up lazily: Enqueue and
 // QueuedModels sweep a model's queue via cleanStaleLocked, PopNextFresh

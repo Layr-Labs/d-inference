@@ -7,8 +7,8 @@ package store
 // testing, and single-instance deployments where persistence across restarts
 // is not needed.
 //
-// API keys are stored as raw strings (no hashing) for simplicity in the
-// in-memory implementation. The PostgresStore uses SHA-256 hashing.
+// API keys and tokens are stored with the same SHA-256 hashing (hashKey) as
+// the PostgresStore, so lookup semantics match across backends.
 
 import (
 	"context"

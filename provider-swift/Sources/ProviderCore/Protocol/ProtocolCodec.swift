@@ -67,10 +67,17 @@ public enum ProviderProtocolCodec {
 
     /// Shared encoder for every outbound message, cached to avoid a fresh
     /// JSONEncoder allocation per message on the per-token chunk hot path.
-    /// Safe to share across concurrent encodes: JSONEncoder holds no mutable
-    /// state during `encode(_:)` (configuration is read-only after setup and
-    /// each encode builds its own private encoding storage). The formatting
-    /// options MUST NOT change — they define the wire format.
+    ///
+    /// Concurrency: JSONEncoder does have mutable configuration properties
+    /// (`outputFormatting`, key/date strategies, ...), but this instance is
+    /// configured once in the initializer below and never mutated afterward.
+    /// JSONEncoder is Sendable, and `encode(_:)` allocates its own private
+    /// encoding storage per call, so calling it concurrently on a shared,
+    /// unmutated instance is safe.
+    ///
+    /// WARNING: mutating `outputFormatting` (or any other property) at
+    /// runtime would be both a data race with concurrent encodes AND a
+    /// silent wire-format change — the options below define the wire format.
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]

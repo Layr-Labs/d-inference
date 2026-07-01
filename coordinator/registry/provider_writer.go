@@ -35,13 +35,24 @@ type providerWriteRequest struct {
 // providerWriter serializes all writes to one provider WebSocket through a
 // single goroutine, with two lanes:
 //
-//   - control: small latency-sensitive frames (attestation challenges,
-//     cancels, load/prefetch/trust status). Served with strict priority so
-//     they never head-of-line-block behind multi-MiB inference frames — a
+//   - control: small latency-sensitive frames — attestation challenges
+//     (WriteTextControl, api/provider.go) and cancel / trust-status /
+//     runtime-status frames (EnqueueText). Served with strict priority so
+//     they do not queue behind backlogged multi-MiB inference frames — a
 //     congested data lane must not convert into attestation timeouts or
 //     delayed cancels that burn provider GPU.
-//   - queue: data frames (inference request bodies, up to ~21 MiB sealed
-//     vision payloads).
+//   - queue: data frames — inference request bodies (up to ~21 MiB sealed
+//     vision payloads) AND the load_model / prefetch_model / desired_models
+//     commands (SendLoadModel, SendPrefetchModel, SendDesiredModels in
+//     registry.go go through WriteText). Rerouting those model commands to
+//     the control lane is a candidate follow-up; today they share the data
+//     lane.
+//
+// Ordering: frames are FIFO only WITHIN a lane; ordering ACROSS lanes is
+// unspecified — a control frame submitted after a data frame may reach the
+// wire first. Priority is non-preemptive: a control frame still waits for
+// any in-flight data write to finish (up to the per-frame write timeout,
+// 30s worst case) before it is served.
 //
 // Per-frame write deadlines are enforced by a single watchdog goroutine per
 // connection (see watchWrites) rather than a goroutine+timer per frame.
@@ -113,17 +124,29 @@ func (w *providerWriter) writeControl(ctx context.Context, data []byte) error {
 	return w.writeLane(ctx, data, true)
 }
 
-func (w *providerWriter) writeLane(ctx context.Context, data []byte, control bool) error {
+// checkAccept validates the shared submission preamble: writer liveness
+// (nil/dead) and caller-context expiry. It normalizes a nil ctx to
+// context.Background() and returns the ctx to use, or a non-nil error when
+// the frame must be rejected.
+func (w *providerWriter) checkAccept(ctx context.Context) (context.Context, error) {
 	if w == nil {
-		return errProviderWriterStopped
+		return nil, errProviderWriterStopped
 	}
 	if w.dead.Load() {
-		return errProviderWriterStopped
+		return nil, errProviderWriterStopped
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return ctx, nil
+}
+
+func (w *providerWriter) writeLane(ctx context.Context, data []byte, control bool) error {
+	ctx, err := w.checkAccept(ctx)
+	if err != nil {
 		return err
 	}
 	req := &providerWriteRequest{
@@ -158,16 +181,7 @@ func (w *providerWriter) writeLane(ctx context.Context, data []byte, control boo
 
 // enqueue queues a control-plane frame fire-and-forget on the priority lane.
 func (w *providerWriter) enqueue(ctx context.Context, data []byte) error {
-	if w == nil {
-		return errProviderWriterStopped
-	}
-	if w.dead.Load() {
-		return errProviderWriterStopped
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := ctx.Err(); err != nil {
+	if _, err := w.checkAccept(ctx); err != nil {
 		return err
 	}
 	req := &providerWriteRequest{
@@ -336,6 +350,12 @@ func providerWriteTimeout(frameBytes int) time.Duration {
 // WriteText serializes a text WebSocket frame through this provider's single
 // writer (data lane). ctx controls enqueue/result waiting only; it is never
 // passed to the underlying WebSocket write.
+//
+// WriteText returns only after the frame has been written to the socket (or
+// the write failed). This synchronous completion is the invariant that keeps
+// request→cancel ordering correct at call sites: a cancel enqueued on the
+// control lane AFTER WriteText returned can never precede the request on the
+// wire. Cross-lane ordering is otherwise unspecified.
 func (p *Provider) WriteText(ctx context.Context, data []byte) error {
 	if p == nil {
 		return errors.New("provider is nil")
@@ -351,7 +371,9 @@ func (p *Provider) WriteText(ctx context.Context, data []byte) error {
 
 // WriteTextControl is WriteText on the priority control lane. Use it for
 // small latency-sensitive frames (attestation challenges) that must not queue
-// behind multi-MiB data frames.
+// behind backlogged data frames. Control frames may overtake data frames
+// still queued on the data lane; priority is non-preemptive, so an in-flight
+// data write completes first (up to the per-frame write timeout).
 func (p *Provider) WriteTextControl(ctx context.Context, data []byte) error {
 	if p == nil {
 		return errors.New("provider is nil")
@@ -367,9 +389,10 @@ func (p *Provider) WriteTextControl(ctx context.Context, data []byte) error {
 
 // EnqueueText queues a text WebSocket frame without waiting for write
 // completion, on the priority control lane. It is for control-plane
-// best-effort sends (cancel/load/prefetch/status) where a caller must not
-// block behind prior data frames. ctx controls enqueue only; it is never
-// passed to the underlying WebSocket write.
+// best-effort sends (cancel / trust-status / runtime-status) where a caller
+// must not block behind prior data frames; the frame may overtake data
+// frames still queued on the data lane. ctx controls enqueue only; it is
+// never passed to the underlying WebSocket write.
 func (p *Provider) EnqueueText(ctx context.Context, data []byte) error {
 	if p == nil {
 		return errors.New("provider is nil")

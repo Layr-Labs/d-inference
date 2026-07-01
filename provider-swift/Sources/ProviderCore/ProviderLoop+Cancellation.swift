@@ -55,6 +55,14 @@ extension ProviderLoop {
         // reach the same teardown).
         await cancellationRegistry.cancel(requestId: requestId)
 
+        // ContinuousBatchingV2 (flag-gated, additive): forward the
+        // coordinator request-id to any active v2 bridge so
+        // `CBv2Engine.cancel` drops the row promptly (the in-flight step
+        // completes, then the engine delivers `.finished(.cancelled)` and
+        // the bridge tears down). No-op when the v2 engine is off — the
+        // registry is empty and no bridge owns the id.
+        await EngineV2Runtime.shared.cancel(requestId: requestId)
+
         if requestToModel.removeValue(forKey: requestId) != nil {
             if !hadInflightTask {
                 stats.incrementCancelDuringModelLoad()

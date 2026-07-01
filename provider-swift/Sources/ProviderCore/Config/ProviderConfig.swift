@@ -74,6 +74,12 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// fixed 512-token production path. Enable with `adaptive_prefill = true`
     /// under `[backend]` in provider.toml.
     public var adaptivePrefill: Bool
+    /// Opt-in ContinuousBatchingV2 engine for the allowlisted model families
+    /// (gemma-4*, gpt-oss* — see `EngineV2Config`). Default false keeps the
+    /// legacy `BatchedEngine` path byte-identical. Enable with
+    /// `engine_v2 = true` under `[backend]` in provider.toml, or override
+    /// either way via env `DARKBLOOM_ENGINE_V2`.
+    public var engineV2: Bool
 
     public init(
         port: UInt16 = 8100,
@@ -83,7 +89,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         idleTimeoutMins: UInt64 = 60,
         maxModelSlots: UInt64 = 3,
         kvQuant: Bool = false,
-        adaptivePrefill: Bool = false
+        adaptivePrefill: Bool = false,
+        engineV2: Bool = false
     ) {
         self.port = port
         self.model = model
@@ -93,6 +100,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.maxModelSlots = maxModelSlots
         self.kvQuant = kvQuant
         self.adaptivePrefill = adaptivePrefill
+        self.engineV2 = engineV2
     }
 
     enum CodingKeys: String, CodingKey {
@@ -104,6 +112,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case maxModelSlots = "max_model_slots"
         case kvQuant = "kv_quant"
         case adaptivePrefill = "adaptive_prefill"
+        case engineV2 = "engine_v2"
     }
 
     public init(from decoder: Decoder) throws {
@@ -116,6 +125,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
         self.kvQuant = try container.decodeIfPresent(Bool.self, forKey: .kvQuant) ?? false
         self.adaptivePrefill = try container.decodeIfPresent(Bool.self, forKey: .adaptivePrefill) ?? false
+        self.engineV2 = try container.decodeIfPresent(Bool.self, forKey: .engineV2) ?? false
     }
 }
 

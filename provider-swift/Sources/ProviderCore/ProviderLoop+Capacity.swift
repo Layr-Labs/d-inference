@@ -48,6 +48,16 @@ extension ProviderLoop {
             totalActive += schedCap.activeRequests
         }
 
+        // ContinuousBatchingV2 (flag-gated, additive): fold any active v2
+        // bridge slots into the SAME heartbeat payload — identical protocol
+        // fields, truthful bytes-derived token numbers (see
+        // `EngineV2Bridge+Capacity`). The registry is empty when the v2
+        // engine is off (`DARKBLOOM_ENGINE_V2` unset / `engine_v2 = false`),
+        // so legacy behavior is unchanged.
+        let engineV2 = await EngineV2Runtime.shared.capacitySummary()
+        allSlots.append(contentsOf: engineV2.slots)
+        totalActive += engineV2.activeRequests
+
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
         let totalMem = ProcessInfo.processInfo.physicalMemory
 

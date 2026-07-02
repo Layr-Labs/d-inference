@@ -701,6 +701,51 @@ struct EngineV2ErrorMappingTests {
         // retryable capacity (→ 503 with backoff upstream).
         let classified = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
         #expect(classified == .tokenBudgetExhausted(message))
+        #expect(ProviderLoop.mapInferenceErrorToStatus(classified) == 503)
+    }
+
+    @Test("engine queue-full sentinel maps to the legacy queue-full class (429), not token-budget (503)")
+    func queueFullSentinelMapsToQueueFull() async {
+        // `EngineV2.submit` throws `capacityExhausted(needed: 1, available: 0)`
+        // when its waiting queue is full (`gauges.beginSubmit(maxWaiting:)`) or
+        // it is draining for shutdown — a SLOT rejection, not a byte figure.
+        // The legacy path classifies queue saturation as `.queueFull` (429 +
+        // Retry-After), so the v2 mapping must preserve that distinction
+        // (round-3 PR#499 P2).
+        let engine = ScriptedCBv2Engine(
+            script: .throwOnSubmit(
+                CBv2KVError.capacityExhausted(needed: 1, available: 0)
+            ))
+        let bridge = makeBridge(engine: engine)
+        let (events, _) = await record(await bridge.submit(request: makeRequest()))
+        #expect(events.count == 1)
+        guard case .error(let message)? = events.first else {
+            Issue.record("expected a single .error event, got \(events)")
+            return
+        }
+        // The exact canonical string the legacy planner emits for a full
+        // queue (`BatchSchedulerTypes.RejectionReason.queueFull`) — no new
+        // classification strings on the wire.
+        #expect(message == "token_budget_exhausted: request queue full")
+        let classified = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
+        #expect(classified == .queueFull(message))
+        #expect(ProviderLoop.mapInferenceErrorToStatus(classified) == 429)
+    }
+
+    @Test("real byte figures near the sentinel still classify as token-budget capacity")
+    func nearSentinelByteFiguresStayTokenBudget() {
+        // Only the exact slot-rejection sentinel (needed == 1, available ≤ 0)
+        // is queue-full; a genuine byte-ledger rejection always carries
+        // needed = a multiple of the per-token KV cost (≫ 1).
+        let byteReject = EngineV2Translation.admissionErrorMessage(
+            for: CBv2KVError.capacityExhausted(needed: 2, available: 0))
+        #expect(!byteReject.contains("queue full"))
+        #expect(MultiModelBatchSchedulerEngineError.fromSchedulerMessage(byteReject)
+            == .tokenBudgetExhausted(byteReject))
+        // needed == 1 with real headroom is not the sentinel either.
+        let withHeadroom = EngineV2Translation.admissionErrorMessage(
+            for: CBv2KVError.capacityExhausted(needed: 1, available: 512))
+        #expect(!withHeadroom.contains("queue full"))
     }
 
     @Test("backendIneligible → non-retryable generation failure")
@@ -974,6 +1019,69 @@ struct EngineV2CapacityTests {
         await runtime.unregister(modelId: "gemma-4-27b-it")
         let after = await runtime.capacitySummary()
         #expect(after.slots.isEmpty)
+    }
+
+    @Test("budget max clamps to the live fleet budget; nil clamp preserves the raw grant")
+    func budgetMaxClampsToLiveFleetBudget() async {
+        let engine = ScriptedCBv2Engine(
+            script: .manual,
+            capacity: CBv2CapacitySnapshot(
+                activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
+                kvBytesCapacity: 40_000_000, activeTokens: 0
+            ))
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000)
+        // No clamp (unit callers / no fleet context): construction grant.
+        let raw = await bridge.backendSlotCapacity()
+        #expect(raw.activeTokenBudgetMax == 10000)
+        // Fleet shrank the live budget below the grant: report the clamp.
+        let clamped = await bridge.backendSlotCapacity(kvBytesBudgetClamp: 20_000_000)
+        #expect(clamped.activeTokenBudgetMax == 5000)
+        // A clamp ABOVE the grant never inflates the report.
+        let above = await bridge.backendSlotCapacity(kvBytesBudgetClamp: 80_000_000)
+        #expect(above.activeTokenBudgetMax == 10000)
+        // Degenerate negative clamp reports 0, never traps.
+        let negative = await bridge.backendSlotCapacity(kvBytesBudgetClamp: -1)
+        #expect(negative.activeTokenBudgetMax == 0)
+    }
+
+    @Test("runtime summary recomputes each bridge's budget from live fleet residency")
+    func runtimeSummaryAppliesFleetClamp() async {
+        let gib: UInt64 = 1024 * 1024 * 1024
+        let physical = 64 * gib
+        let weights = Int(8 * gib)
+        let rate = 4096
+        let grant = EngineV2KVSizing.engineKVBytesCapacity(
+            newModelWeightBytes: weights, coResidentWeightBytes: 0,
+            existingEngineKVCapacities: [], physicalBytes: physical)
+        let engine = ScriptedCBv2Engine(
+            script: .manual,
+            capacity: CBv2CapacitySnapshot(
+                activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
+                kvBytesCapacity: grant, activeTokens: 0
+            ))
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: rate)
+        let runtime = EngineV2Runtime()
+        await runtime.register(modelId: "gemma-4-27b-it", bridge: bridge)
+
+        // Fleet unchanged since construction: reported max == the grant.
+        let alone = await runtime.capacitySummary(
+            fleetKV: EngineV2Runtime.FleetKVContext(
+                totalResidentWeightBytes: UInt64(weights), physicalBytes: physical))
+        #expect(alone.slots.first?.activeTokenBudgetMax == Int64(grant / rate))
+
+        // A 12 GiB model loaded later (legacy — subtracts nothing from the
+        // grant): the reported max shrinks by exactly its weights in tokens.
+        let laterWeights = 12 * gib
+        let grown = await runtime.capacitySummary(
+            fleetKV: EngineV2Runtime.FleetKVContext(
+                totalResidentWeightBytes: UInt64(weights) + laterWeights,
+                physicalBytes: physical))
+        #expect(grown.slots.first?.activeTokenBudgetMax
+            == Int64((grant - Int(laterWeights)) / rate))
+
+        // No fleet context (legacy callers): raw construction figures.
+        let uncontexted = await runtime.capacitySummary()
+        #expect(uncontexted.slots.first?.activeTokenBudgetMax == Int64(grant / rate))
     }
 }
 

@@ -205,6 +205,34 @@ enum EngineV2Translation {
         if let kvError = error as? CBv2KVError {
             switch kvError {
             case .capacityExhausted(let needed, let available):
+                // Two engine rejection families share this case (round-3
+                // PR#499 P2 — `EngineV2.submit`):
+                //
+                //   * KV capacity ("could never fit"): thrown with the REAL
+                //     byte figures — `needed` = `AdmissionV2.estimatedBytes`
+                //     for prompt+max (a multiple of the per-token KV cost,
+                //     never 1) and `available` = `admissibleBytesCapacity`
+                //     (> 0 for any constructible engine, which requires
+                //     `kvBytesCapacity > 0`).
+                //   * Waiting-queue full / draining-for-shutdown guards:
+                //     thrown with the sentinel shape `(needed: 1,
+                //     available: 0)` — no byte estimate exists because the
+                //     rejection is about SLOTS, not bytes.
+                //
+                // The legacy path distinguishes these — queue-full carries
+                // the canonical "request queue full" marker that
+                // `MultiModelBatchSchedulerEngineError.fromSchedulerMessage`
+                // maps to `.queueFull` (429 + Retry-After), while budget
+                // exhaustion maps to `.tokenBudgetExhausted` (503) — so map
+                // the sentinel to the SAME legacy queue-full string
+                // (`BatchSchedulerTypes.RejectionReason.queueFull`). The
+                // shutdown-drain guard riding the same sentinel also lands
+                // on queue-full, exactly like the legacy handler's
+                // `.queueFull("provider shutting down")`. No new
+                // classification strings.
+                if needed == 1 && available <= 0 {
+                    return "token_budget_exhausted: request queue full"
+                }
                 return "token_budget_exhausted: request requires \(needed) tokens "
                     + "but only \(available) available"
             case .backendIneligible(let reason):

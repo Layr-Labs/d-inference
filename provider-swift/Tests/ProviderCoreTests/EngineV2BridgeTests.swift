@@ -196,7 +196,7 @@ private func record(
 // MARK: - Shared builders
 
 private func makeBridge(
-    engine: ScriptedCBv2Engine,
+    engine: any CBv2Engine,
     tokenizer: StubTokenizer = StubTokenizer(),
     modelId: String = "gemma-4-27b-it",
     eosTokenIds: Set<Int> = [2],
@@ -1429,6 +1429,161 @@ struct EngineV2HardeningTests {
         #expect(engine.submitted.count == 2)
         #expect(engine.submitted[0].id == CBv2RequestID(1))
         #expect(engine.submitted[1].id == CBv2RequestID(2))
+    }
+}
+
+// MARK: - Seeded sampling reproducibility (stable engine ids)
+
+/// STOCHASTIC sampler stub: emitted tokens are a pure function of
+/// (sampling.seed, request.id.raw, stepIndex) — the exact key shape the real
+/// v2 sampler uses (`SamplerV2.mix`) — so these tests prove end-to-end that
+/// seeded outputs reproduce iff the bridge hands the engine a stable id.
+private final class StochasticScriptedEngine: CBv2Engine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _submitted: [CBv2Request] = []
+    var submitted: [CBv2Request] { lock.withLock { _submitted } }
+
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        lock.withLock { _submitted.append(request) }
+        let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
+        for step in 0..<4 {
+            let key = Self.mix(
+                seed: request.sampling.seed ?? 0, id: request.id.raw, step: UInt64(step))
+            let token = Int(key % 50_000)
+            continuation.yield(.delta(text: "t\(token) ", tokens: [token], logprobs: nil))
+        }
+        continuation.yield(.finished(
+            reason: .stop,
+            usage: CBv2Usage(promptTokens: request.promptTokens.count, completionTokens: 4)))
+        continuation.finish()
+        return stream
+    }
+
+    func cancel(_ id: CBv2RequestID) {}
+    func capacity() -> CBv2CapacitySnapshot {
+        CBv2CapacitySnapshot(
+            activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
+            kvBytesCapacity: 0, activeTokens: 0)
+    }
+    func shutdown() async {}
+
+    /// Same mixing family as the engine sampler's keyed RNG.
+    static func mix(seed: UInt64, id: UInt64, step: UInt64) -> UInt64 {
+        func splitmix(_ x: UInt64) -> UInt64 {
+            var z = x &+ 0x9E37_79B9_7F4A_7C15
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
+        return splitmix(splitmix(splitmix(seed) ^ id) ^ step)
+    }
+}
+
+@Suite("EngineV2 seeded sampling reproducibility")
+struct EngineV2SeededSamplingTests {
+
+    private func chunks(_ events: [RecordedEvent]) -> [String] {
+        events.compactMap {
+            if case .chunk(let text) = $0 { return text }
+            return nil
+        }
+    }
+
+    @Test("same seed + same prompt reproduce identical output across submissions")
+    func seededOutputReproduces() async {
+        let engine = StochasticScriptedEngine()
+        let bridge = makeBridge(engine: engine)
+        let prompt = [11, 22, 33]
+
+        let (first, _) = await record(await bridge.submitTokenized(
+            promptTokens: prompt, request: makeRequest(maxTokens: 8, seed: 42),
+            requestId: "req-seed-1"))
+        // Interleave an UNRELATED request so the monotonic counter moves —
+        // the regression this fix targets: seeded output must not depend on
+        // prior traffic.
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [9, 9, 9], request: makeRequest(maxTokens: 8),
+            requestId: "req-noise"))
+        let (second, _) = await record(await bridge.submitTokenized(
+            promptTokens: prompt, request: makeRequest(maxTokens: 8, seed: 42),
+            requestId: "req-seed-2"))
+
+        #expect(!chunks(first).isEmpty)
+        #expect(chunks(first) == chunks(second))
+        // The engine saw the SAME stable id on both seeded submissions —
+        // that is what keys the RNG stream — and it carries the seeded tag.
+        #expect(engine.submitted.count == 3)
+        #expect(engine.submitted[0].id == engine.submitted[2].id)
+        #expect(engine.submitted[0].id.raw & EngineV2Bridge.seededIdTagBit != 0)
+    }
+
+    @Test("different seed or different prompt produce different ids (and RNG streams)")
+    func seededOutputDiverges() async {
+        let engine = StochasticScriptedEngine()
+        let bridge = makeBridge(engine: engine)
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 8, seed: 42),
+            requestId: "req-a"))
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 8, seed: 43),
+            requestId: "req-b"))
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 4], request: makeRequest(maxTokens: 8, seed: 42),
+            requestId: "req-c"))
+        let ids = engine.submitted.map(\.id.raw)
+        #expect(Set(ids).count == 3)
+    }
+
+    @Test("unseeded submissions keep fresh monotonic ids")
+    func unseededStaysMonotonic() async {
+        let engine = StochasticScriptedEngine()
+        let bridge = makeBridge(engine: engine)
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 8),
+            requestId: "req-u1"))
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 8),
+            requestId: "req-u2"))
+        #expect(engine.submitted[0].id == CBv2RequestID(1))
+        #expect(engine.submitted[1].id == CBv2RequestID(2))
+    }
+
+    @Test("a live identical seeded request falls back to a fresh id (collision guard)")
+    func liveCollisionFallsBackToFreshId() async {
+        // Manual engine keeps the first submission LIVE while the identical
+        // second one arrives.
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let first = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 8, seed: 42),
+            requestId: "req-live-a")
+        let second = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 8, seed: 42),
+            requestId: "req-live-b")
+        #expect(engine.submitted.count == 2)
+        let firstId = engine.submitted[0].id
+        let secondId = engine.submitted[1].id
+        // First got the stable seeded id; the overlapping duplicate got a
+        // fresh monotonic id (documented reproducibility waiver) — never a
+        // duplicate live id inside the engine.
+        #expect(firstId.raw & EngineV2Bridge.seededIdTagBit != 0)
+        #expect(secondId.raw & EngineV2Bridge.seededIdTagBit == 0)
+        #expect(firstId != secondId)
+        withExtendedLifetime((first, second)) {}
+    }
+
+    @Test("stableSeededRawId is deterministic, tagged, and input-sensitive")
+    func stableSeededRawIdProperties() {
+        let a = EngineV2Bridge.stableSeededRawId(seed: 42, promptTokens: [1, 2, 3])
+        let b = EngineV2Bridge.stableSeededRawId(seed: 42, promptTokens: [1, 2, 3])
+        #expect(a == b)
+        #expect(a & EngineV2Bridge.seededIdTagBit != 0)
+        #expect(a != EngineV2Bridge.stableSeededRawId(seed: 43, promptTokens: [1, 2, 3]))
+        #expect(a != EngineV2Bridge.stableSeededRawId(seed: 42, promptTokens: [1, 2]))
+        #expect(a != EngineV2Bridge.stableSeededRawId(seed: 42, promptTokens: [1, 2, 4]))
+        // Empty prompt still derives a valid tagged id.
+        let empty = EngineV2Bridge.stableSeededRawId(seed: 42, promptTokens: [])
+        #expect(empty & EngineV2Bridge.seededIdTagBit != 0)
     }
 }
 

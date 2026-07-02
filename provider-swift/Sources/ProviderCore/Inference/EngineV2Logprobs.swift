@@ -127,6 +127,15 @@ public struct EngineV2LogprobsPlumbing: Sendable {
 /// the v2 engine). Appended by the bridge pump task, drained by the frames
 /// loop — a plain lock keeps it allocation-cheap on the hot path.
 ///
+/// WHY A LOCK, NOT AN ACTOR (hardening review): the critical section is a
+/// bounded array append/swap — no I/O, no allocation beyond the append —
+/// contended by exactly TWO parties (one pump, one frames loop), and only
+/// on requests that opted into logprobs. An uncontended `NSLock`
+/// lock/unlock is tens of nanoseconds; converting to an actor would force
+/// the pump to `await` per delta (executor hop + suspension bookkeeping),
+/// which costs more than the lock it replaces and adds reordering risk
+/// before the chunk yield that the current synchronous append precludes.
+///
 /// BOUNDED (hardening): the pump appends BEFORE yielding each text chunk and
 /// the frames loop drains per SSE frame, so in the steady state the buffer
 /// holds ~1 frame's worth of entries. But if the frames loop stalls or never

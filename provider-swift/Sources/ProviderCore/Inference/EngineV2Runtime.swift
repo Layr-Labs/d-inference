@@ -80,6 +80,15 @@ public actor EngineV2Runtime {
     /// Forward a coordinator request-id cancellation to whichever bridge
     /// owns it. Returns true when a bridge accepted the cancel; false when
     /// no v2 bridge knows the id (the legacy path owns it).
+    ///
+    /// O(n) BY DESIGN (hardening review): n is the number of v2-SERVED
+    /// MODELS — bounded by the provider's `max_model_slots` (single digits;
+    /// production default ≤ 3) — not the number of requests, and each probe
+    /// is a dictionary hit inside the owning bridge. Cancellation is a rare,
+    /// non-hot event (client disconnects). A request-id → bridge index would
+    /// make this O(1) but adds per-request cross-actor register/unregister
+    /// traffic on the hot submit/finish paths of every bridge — strictly
+    /// more work overall than scanning ≤ 3 entries here.
     @discardableResult
     public func cancel(requestId: String) async -> Bool {
         consultCount += 1

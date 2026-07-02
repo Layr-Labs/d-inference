@@ -107,6 +107,19 @@ public actor EngineV2Bridge {
     /// outlive the engine drain (defense against a leaked stream). Keyed by
     /// the (normalized) provider request-id; each entry removes itself when
     /// its pump returns (`clearPumpTask`).
+    ///
+    /// BOUNDED WITHOUT A LOCAL LIMIT: a pump task exists only for an
+    /// engine-ACCEPTED request (created strictly after `engine.submit`
+    /// returned) and self-clears on its terminal, and the engine's own
+    /// admission bounds accepted-but-unfinished requests — `EngineV2.submit`
+    /// throws `capacityExhausted` once the waiting queue is full
+    /// (`gauges.beginSubmit(maxWaiting:)`, `CBv2SchedulerConfig.maxWaiting`,
+    /// default 64) on top of the running-row cap (`maxConcurrentRequests`,
+    /// production 4). So `pumpTasks.count ≤ maxConcurrent + maxWaiting`
+    /// (≈ 68 in production) by construction; the shared KV-budget gate in
+    /// `submitTokenized` bounds it further under memory pressure. A separate
+    /// bridge-side limit would just shadow the engine's admission with a
+    /// second constant to keep in sync.
     var pumpTasks: [String: Task<Void, Never>] = [:]
 
     /// Upper bound on a caller-supplied request-id we will use verbatim.

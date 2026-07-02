@@ -809,7 +809,7 @@ struct EngineV2CancellationTests {
 @Suite("EngineV2 capacity: CBv2CapacitySnapshot → BackendSlotCapacity")
 struct EngineV2CapacityTests {
 
-    @Test("bytes-derived truthful budget mapping onto the existing protocol fields")
+    @Test("budget fields follow the legacy committed/worst-case contract; activeTokens stays engine truth")
     func snapshotMapping() async {
         let engine = ScriptedCBv2Engine(
             script: .manual,
@@ -822,13 +822,28 @@ struct EngineV2CapacityTests {
                 stepsExecuted: 12345
             ))
         let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000)
+        // Two accepted long-max_tokens requests whose KV has barely
+        // materialized: committed worst case = (5+100) + (3+200) = 308.
+        _ = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(maxTokens: 100),
+            requestId: "req-cap-a")
+        _ = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 200),
+            requestId: "req-cap-b")
         let slot = await bridge.backendSlotCapacity()
         #expect(slot.model == "gemma-4-27b-it")
         #expect(slot.state == "running")
         #expect(slot.numRunning == 2)
         #expect(slot.numWaiting == 3)
+        // Engine truth: the real KV-resident token count, NOT the worst case.
         #expect(slot.activeTokens == 1000)
-        #expect(slot.activeTokenBudgetUsed == 1000)   // 4 MB / 4000 B-per-token
+        // Coordinator admission-gate fields: the COMMITTED worst-case
+        // reservation (legacy `activeTokenBudgetUsed` semantics) — a request
+        // that has only materialized a prefix still holds its full budget.
+        #expect(slot.maxTokensPotential == 308)
+        #expect(slot.activeTokenBudgetUsed == 308)
+        #expect(slot.queuedTokenBudget == 0)
+        // Budget ceiling: the engine's byte capacity in tokens.
         #expect(slot.activeTokenBudgetMax == 10000)   // 40 MB / 4000 B-per-token
         #expect(slot.kvBytesPerToken == 4000)
         #expect(slot.maxConcurrency == 4)
@@ -837,7 +852,7 @@ struct EngineV2CapacityTests {
         #expect(!slot.wedgeSuspected)
     }
 
-    @Test("idle when nothing runs; token fallback when kvBytesPerToken unknown")
+    @Test("idle when nothing runs; budget gate disengaged when kvBytesPerToken unknown")
     func idleAndFallback() async {
         let engine = ScriptedCBv2Engine(
             script: .manual,
@@ -851,8 +866,32 @@ struct EngineV2CapacityTests {
         let bridge = makeBridge(engine: engine, kvBytesPerToken: 0)
         let slot = await bridge.backendSlotCapacity()
         #expect(slot.state == "idle")
-        #expect(slot.activeTokenBudgetUsed == 17)
+        // Engine truth flows through; no committed requests ⇒ zero budget
+        // used, and an unknown rate reports budgetMax 0 so the coordinator's
+        // budget gate disengages instead of trusting an invented budget.
+        #expect(slot.activeTokens == 17)
+        #expect(slot.activeTokenBudgetUsed == 0)
         #expect(slot.activeTokenBudgetMax == 0)
+    }
+
+    @Test("finished requests release their committed budget from the heartbeat")
+    func budgetReleasedOnFinish() async {
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
+                .delta(text: "x", tokens: [10], logprobs: nil),
+                .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
+            ]),
+            capacity: CBv2CapacitySnapshot(
+                activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
+                kvBytesCapacity: 40_000_000, activeTokens: 0
+            ))
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000)
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(maxTokens: 100),
+            requestId: "req-cap-done"))
+        let slot = await bridge.backendSlotCapacity()
+        #expect(slot.activeTokenBudgetUsed == 0)
+        #expect(slot.maxTokensPotential == 0)
     }
 
     @Test("wedge counters flow into the slot (admits / first tokens / engine steps)")

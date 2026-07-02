@@ -4,10 +4,12 @@
 //
 //   * `backendSlotCapacity()` maps the engine's `CBv2CapacitySnapshot`
 //     into the EXISTING `BackendSlotCapacity` protocol fields — no wire
-//     changes, coordinator compatibility preserved. Numbers become
-//     truthful: `active_tokens` is the engine's real KV-resident token
-//     count and the budget fields are BYTES-derived
-//     (`kvBytesInUse / kvBytesPerToken`), not worst-case reservations.
+//     changes, coordinator compatibility preserved. `active_tokens` is the
+//     engine's real KV-resident token count (engine truth); the BUDGET
+//     fields carry the same committed/worst-case semantics the legacy
+//     scheduler reports, because that is the contract the coordinator's
+//     admission gate assumes — see the field-mapping table inside
+//     `backendSlotCapacity()`.
 //
 //   * `engine_v2.step_wedge`: the same `WedgeMonitor` primitive the legacy
 //     engine uses (admits vs first tokens vs loop progress), with loop
@@ -47,18 +49,42 @@ extension EngineV2Bridge {
             maxTokensPotential += Int64(state.promptTokens + state.maxTokens)
         }
 
-        // Truthful bytes-derived token budget. When the per-token KV cost
-        // is unknown (0), fall back to the engine's token counts rather
-        // than inventing a budget.
-        let budgetUsed: Int64
-        let budgetMax: Int64
-        if kvBytesPerToken > 0 {
-            budgetUsed = Int64(snapshot.kvBytesInUse / kvBytesPerToken)
-            budgetMax = Int64(snapshot.kvBytesCapacity / kvBytesPerToken)
-        } else {
-            budgetUsed = Int64(snapshot.activeTokens)
-            budgetMax = 0
-        }
+        // Budget fields — SEMANTICS ALIGNED WITH THE LEGACY SCHEDULER
+        // (round-2 PR#499 P2). The coordinator's token-budget admission gate
+        // is (coordinator/registry/scheduler.go):
+        //
+        //     activeTokenBudgetUsed + queuedTokenBudget + requestTokens
+        //         <= activeTokenBudgetMax        (only when budgetMax > 0)
+        //
+        // and it expects `used` to carry the COMMITTED worst-case reservation
+        // of every accepted request — the legacy scheduler reports
+        // Σ(promptTokens + maxTokens) over active bridges
+        // (`BatchScheduler.activeTokenBudgetUsed`). Reporting the engine's
+        // MATERIALIZED KV here instead (a long-max_tokens request that has
+        // only prefilled a small prefix) leaves the remaining growth of
+        // accepted requests unprotected: the gate does not consult
+        // `max_tokens_potential`, so the coordinator over-routes until the
+        // engine starts rejecting post-acceptance. Field mapping (existing
+        // wire fields only — no protocol change):
+        //
+        //   activeTokens          ← snapshot.activeTokens (ENGINE TRUTH: the
+        //                           real KV-resident token count)
+        //   maxTokensPotential    ← Σ(prompt + maxTokens)  (worst case)
+        //   activeTokenBudgetUsed ← Σ(prompt + maxTokens)  (the committed
+        //                           reservation the admission gate must see —
+        //                           conservative for sliding-window models,
+        //                           whose engine ledger plateaus per layer)
+        //   activeTokenBudgetMax  ← kvBytesCapacity / fp16 rate (the engine's
+        //                           admission ceiling in tokens; 0 when the
+        //                           rate is unknown ⇒ the coordinator's
+        //                           budget gate disengages rather than
+        //                           trusting an invented budget)
+        //   queuedTokenBudget     ← 0 (engine-WAITING requests are already
+        //                           inside the committed sum above — the
+        //                           bridge does not split running/waiting)
+        let budgetUsed = maxTokensPotential
+        let budgetMax: Int64 =
+            kvBytesPerToken > 0 ? Int64(snapshot.kvBytesCapacity / kvBytesPerToken) : 0
 
         let state: String
         if wedgeMonitor.wedgeSuspected(now: now) {

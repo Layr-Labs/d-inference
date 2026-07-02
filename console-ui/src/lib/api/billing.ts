@@ -81,6 +81,21 @@ export async function fetchStripeWithdrawals(limit = 20): Promise<StripeWithdraw
   return data.withdrawals || [];
 }
 
+// Detach the linked Stripe Connect account so a fresh one can be onboarded.
+// Escape hatch for wedged accounts (closed on Stripe, stuck onboarding,
+// wrong country). In-flight withdrawals are unaffected.
+export async function unlinkStripeAccount(): Promise<{ unlinked: boolean }> {
+  const res = await fetch("/api/payments/stripe/account", {
+    method: "DELETE",
+    headers: proxyHeaders(),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || data?.error || `Unlink failed (${res.status})`);
+  }
+  return res.json();
+}
+
 // computeStripeFeeUsd mirrors billing.FeeForMethodMicroUSD on the server so
 // the UI can preview the fee without a round-trip. Keep these formulas in
 // lockstep — see coordinator/internal/billing/stripe_connect.go.

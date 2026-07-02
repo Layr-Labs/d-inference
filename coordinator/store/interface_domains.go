@@ -299,6 +299,17 @@ type BillingStore interface {
 	// ListStripeWithdrawals returns withdrawals for an account, newest first.
 	// Pass limit <= 0 for no limit.
 	ListStripeWithdrawals(accountID string, limit int) ([]StripeWithdrawal, error)
+
+	// ListStripeWithdrawalsByStatus returns up to limit withdrawals in the
+	// given status created before olderThan, oldest first. Used by the payout
+	// reconciler to find withdrawals stuck in "transferred".
+	ListStripeWithdrawalsByStatus(status string, olderThan time.Time, limit int) ([]StripeWithdrawal, error)
+
+	// ListStripeWithdrawalsForStripeAccount returns withdrawals destined for
+	// the given connected account (acct_…) in the given status, oldest first.
+	// Used to resolve Stripe's automatic sweep payouts (whose IDs we never
+	// see at creation time) back to local withdrawal rows.
+	ListStripeWithdrawalsForStripeAccount(stripeAccountID, status string) ([]StripeWithdrawal, error)
 }
 
 // ModelRegistryStore is the manifest-backed model catalog plus the

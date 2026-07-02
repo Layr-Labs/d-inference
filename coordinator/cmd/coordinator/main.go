@@ -825,6 +825,11 @@ func main() {
 		saferun.Go(logger, "base_rewards_settlement", func() { br.Run(ctx) })
 	}
 
+	// Stripe payout reconciler: heals connected accounts stuck on a legacy
+	// manual payout schedule and alerts on withdrawals stuck in "transferred".
+	// No-op when Stripe Connect isn't configured. Spawns its own panic-safe loop.
+	srv.StartStripePayoutReconciler(ctx)
+
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{
 		Addr:    ":" + cfg.ServerConfig.Port,

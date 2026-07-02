@@ -2209,6 +2209,39 @@ func (s *MemoryStore) ListStripeWithdrawals(accountID string, limit int) ([]Stri
 	return out, nil
 }
 
+// ListStripeWithdrawalsByStatus returns up to limit withdrawals in the given
+// status created before olderThan, oldest first.
+func (s *MemoryStore) ListStripeWithdrawalsByStatus(status string, olderThan time.Time, limit int) ([]StripeWithdrawal, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []StripeWithdrawal{}
+	for _, w := range s.stripeWithdrawalsByID {
+		if w.Status == status && w.CreatedAt.Before(olderThan) {
+			out = append(out, *w)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// ListStripeWithdrawalsForStripeAccount returns withdrawals destined for the
+// given connected account in the given status, oldest first.
+func (s *MemoryStore) ListStripeWithdrawalsForStripeAccount(stripeAccountID, status string) ([]StripeWithdrawal, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []StripeWithdrawal{}
+	for _, w := range s.stripeWithdrawalsByID {
+		if w.StripeAccountID == stripeAccountID && w.Status == status {
+			out = append(out, *w)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
 // --- Device Authorization ---
 
 func (s *MemoryStore) CreateDeviceCode(dc *DeviceCode) error {

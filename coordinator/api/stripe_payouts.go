@@ -6,26 +6,37 @@ package api
 //
 //  1. Onboard. POST /v1/billing/stripe/onboard creates a Stripe Express
 //     connected account for the Privy user (idempotent — reuses an existing
-//     stripe_account_id if one is on file), then returns a hosted onboarding
-//     URL the frontend redirects them to.
+//     stripe_account_id when it is still valid; recreates it when the user
+//     changed country, closed the account on Stripe, or the account is under
+//     the wrong service agreement for its country), then returns a hosted
+//     onboarding URL the frontend redirects them to. Accounts outside the
+//     US/CA/UK/EEA/CH transfer region are created under the `recipient`
+//     service agreement (see billing/stripe_regions.go).
 //  2. Status. GET /v1/billing/stripe/status returns the user's current
 //     readiness state. Called both on the billing page load and when the user
 //     comes back from the hosted onboarding flow so we can refresh from
-//     Stripe before the webhook arrives.
+//     Stripe before the webhook arrives. refresh=1 also self-heals legacy
+//     manual payout schedules and unlinks accounts deleted on Stripe's side.
 //  3. Withdraw. POST /v1/billing/withdraw/stripe debits the ledger by
-//     amount_usd, computes the Instant fee (1.5% / $0.50 min) if requested,
-//     calls transfers.create then payouts.create, and persists the local
-//     withdrawal row. On any Stripe error we re-credit the ledger.
-//  4. Webhook. POST /v1/billing/stripe/connect/webhook drives the local state
-//     machine via account.updated, payout.paid, payout.failed, transfer.failed.
-//     payout.failed and transfer.failed re-credit the user's ledger via
-//     LedgerRefund.
+//     amount_usd and calls transfers.create. Standard withdrawals are then
+//     delivered by Stripe's automatic daily payout sweep (local currency,
+//     works for recipient accounts); instant withdrawals additionally call
+//     payouts.create against the user's debit card. On transfer failure we
+//     re-credit the ledger.
+//  4. Unlink. DELETE /v1/billing/stripe/account detaches the stored connected
+//     account so the user can onboard a fresh one (support/self-serve escape
+//     hatch for wedged accounts).
+//  5. Webhook. POST /v1/billing/stripe/connect/webhook drives the local state
+//     machine via account.updated, payout.paid, payout.failed,
+//     transfer.reversed. Automatic sweep payouts (IDs we never created) are
+//     matched back to withdrawal rows by connected account. Only
+//     transfer.reversed re-credits the ledger — a failed payout leaves the
+//     funds in the connected account where the next sweep retries delivery.
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -34,8 +45,6 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
-	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/google/uuid"
 )
 
 // stripeStatusReady is the value of User.StripeAccountStatus when payouts are
@@ -115,17 +124,68 @@ func (s *Server) handleStripeOnboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Stripe locks the country when the Express account is created. If the
-	// user picked a different country than their existing (possibly unfinished)
-	// account, create a new account so they can onboard in the right country.
-	// See https://docs.stripe.com/connect/accounts — Express country cannot be
-	// changed later.
+	// Decide whether the existing account (if any) is reusable. Stripe locks
+	// both the country and the service agreement when the Express account is
+	// created (https://docs.stripe.com/connect/accounts,
+	// https://docs.stripe.com/connect/service-agreement-types), so we must
+	// create a NEW account when:
+	//   - the user picked a different country than their existing account,
+	//   - the account no longer exists on Stripe (user closed it), or
+	//   - the account is under the wrong service agreement for its country
+	//     (e.g. AU/NZ/JP accounts created under `full` before we set
+	//     `recipient` — those can never receive platform transfers).
 	stripeAcctID := user.StripeAccountID
-	countryChanged := stripeAcctID != "" && requestedCountry != "" &&
-		(user.StripeAccountCountry == "" || requestedCountry != user.StripeAccountCountry)
+	needNewAccount := stripeAcctID == ""
+	existingCountry := user.StripeAccountCountry
 
-	if stripeAcctID == "" || countryChanged {
+	if stripeAcctID != "" {
+		countryChanged := requestedCountry != "" &&
+			(user.StripeAccountCountry == "" || requestedCountry != user.StripeAccountCountry)
+
+		acct, err := s.billing.StripeConnect().GetAccount(stripeAcctID)
+		switch {
+		case err != nil && billing.IsAccountGoneErr(err):
+			s.logger.Warn("stripe connect: stored account gone — recreating",
+				"stripe_account_id", stripeAcctID, "error", err)
+			needNewAccount = true
+		case err != nil:
+			// Transient Stripe error — only force a new account if the user
+			// explicitly changed country; otherwise proceed with the existing
+			// one and let CreateAccountLink surface any real problem.
+			s.logger.Warn("stripe connect: onboard account fetch failed", "error", err)
+			needNewAccount = countryChanged
+		default:
+			if acct.Country != "" {
+				existingCountry = acct.Country
+			}
+			required := billing.RequiredServiceAgreement(
+				s.billing.StripeConnect().PlatformCountry(), acct.Country)
+			agreementMismatch := acct.ServiceAgreement != "" && acct.ServiceAgreement != required
+			if agreementMismatch {
+				s.logger.Warn("stripe connect: service agreement mismatch — recreating account",
+					"stripe_account_id", stripeAcctID, "country", acct.Country,
+					"have", acct.ServiceAgreement, "want", required)
+			}
+			needNewAccount = countryChanged || agreementMismatch
+			if !needNewAccount && acct.PayoutInterval == "manual" {
+				// Self-heal accounts created by older code with a manual
+				// payout schedule (they strand transferred funds).
+				if err := s.billing.StripeConnect().UpdateAccountPayoutScheduleDaily(stripeAcctID); err != nil {
+					s.logger.Warn("stripe connect: payout schedule self-heal failed",
+						"stripe_account_id", stripeAcctID, "error", err)
+				} else {
+					s.logger.Info("stripe connect: payout schedule healed to daily",
+						"stripe_account_id", stripeAcctID)
+				}
+			}
+		}
+	}
+
+	if needNewAccount {
 		country := requestedCountry
+		if country == "" {
+			country = existingCountry
+		}
 		if country == "" {
 			country = s.billing.StripeConnect().PlatformCountry()
 		}
@@ -199,15 +259,41 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 	// onboarding flow so the UI doesn't lag behind the webhook.
 	if user.StripeAccountID != "" && r.URL.Query().Get("refresh") == "1" {
 		acct, err := s.billing.StripeConnect().GetAccount(user.StripeAccountID)
-		if err != nil {
+		switch {
+		case err != nil && billing.IsAccountGoneErr(err):
+			// The user closed their Stripe account — unlink it so the UI
+			// offers a fresh onboarding instead of a permanently broken state.
+			s.logger.Warn("stripe connect: stored account gone — unlinking",
+				"stripe_account_id", user.StripeAccountID, "error", err)
+			if perr := s.billing.Store().SetUserStripeAccount(user.AccountID, "", "", "", "", "", false); perr != nil {
+				s.logger.Error("stripe connect: unlink gone account failed", "error", perr)
+			} else {
+				resp["has_account"] = false
+				resp["stripe_account_id"] = ""
+				resp["status"] = ""
+			}
+		case err != nil:
 			s.logger.Warn("stripe connect: status refresh failed", "error", err)
-		} else {
+		default:
+			// Self-heal accounts created by older code with a manual payout
+			// schedule — a manual schedule strands transferred funds in the
+			// connected account ("Contact Eigen Labs, Inc. to get paid out").
+			if acct.PayoutInterval == "manual" {
+				if herr := s.billing.StripeConnect().UpdateAccountPayoutScheduleDaily(user.StripeAccountID); herr != nil {
+					s.logger.Warn("stripe connect: payout schedule self-heal failed",
+						"stripe_account_id", user.StripeAccountID, "error", herr)
+				} else {
+					s.logger.Info("stripe connect: payout schedule healed to daily",
+						"stripe_account_id", user.StripeAccountID)
+				}
+			}
 			status := stripeStatusForAccount(acct)
 			if err := s.billing.Store().SetUserStripeAccount(user.AccountID, user.StripeAccountID,
-				status, "", acct.DestinationType, acct.DestinationLast4, acct.InstantEligible); err != nil {
+				status, acct.Country, acct.DestinationType, acct.DestinationLast4, acct.InstantEligible); err != nil {
 				s.logger.Warn("stripe connect: status persist failed", "error", err)
 			} else {
 				resp["status"] = status
+				resp["stripe_account_country"] = acct.Country
 				resp["destination_type"] = acct.DestinationType
 				resp["destination_last4"] = acct.DestinationLast4
 				resp["instant_eligible"] = acct.InstantEligible
@@ -217,240 +303,6 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// handleStripeWithdraw handles POST /v1/billing/withdraw/stripe.
-//
-// Body: { amount_usd: "10.00", method: "standard"|"instant" }
-//
-// Behavior:
-//  1. Validate method, amount, and that the user's account is ready.
-//  2. Compute fee (Instant: 1.5%, $0.50 min; Standard: free).
-//  3. Debit the ledger by the GROSS amount.
-//  4. transfers.create → payouts.create. Any failure re-credits the ledger.
-//  5. Persist a stripe_withdrawals row in "transferred" or "paid"-leaning
-//     state; the webhook will eventually drive it to a terminal state.
-func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
-	user := s.requirePrivyUser(w, r)
-	if user == nil {
-		return
-	}
-	if s.billing == nil || s.billing.StripeConnect() == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Stripe Payouts not configured"))
-		return
-	}
-	if user.StripeAccountID == "" || user.StripeAccountStatus != stripeStatusReady {
-		writeJSON(w, http.StatusForbidden, errorResponse("not_onboarded",
-			"link your bank or debit card via Stripe before withdrawing"))
-		return
-	}
-
-	var req struct {
-		AmountUSD string `json:"amount_usd"`
-		Method    string `json:"method"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
-		return
-	}
-
-	method := strings.ToLower(strings.TrimSpace(req.Method))
-	if method == "" {
-		method = "standard"
-	}
-	if method != "standard" && method != "instant" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
-			"method must be 'standard' or 'instant'"))
-		return
-	}
-	if method == "instant" && !user.StripeInstantEligible {
-		writeJSON(w, http.StatusBadRequest, errorResponse("instant_unavailable",
-			"instant payouts require a debit card destination — link one in Stripe to enable"))
-		return
-	}
-
-	amountFloat, err := strconv.ParseFloat(req.AmountUSD, 64)
-	if err != nil || amountFloat <= 0 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
-			"amount_usd must be a positive number"))
-		return
-	}
-	grossMicroUSD := int64(amountFloat * 1_000_000)
-	if grossMicroUSD < billing.MinWithdrawMicroUSD {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
-			fmt.Sprintf("minimum withdrawal is $%.2f", float64(billing.MinWithdrawMicroUSD)/1_000_000)))
-		return
-	}
-
-	feeMicroUSD := billing.FeeForMethodMicroUSD(method, grossMicroUSD)
-	netMicroUSD := grossMicroUSD - feeMicroUSD
-	if netMicroUSD <= 0 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
-			fmt.Sprintf("amount after fees must be > $0 (fee is $%.2f)", float64(feeMicroUSD)/1_000_000)))
-		return
-	}
-
-	// Cents-rounded amounts crossing the Stripe boundary. We never refund
-	// sub-cent dust to the user — the gross debit absorbs any rounding so
-	// the platform's books stay balanced.
-	netCents := microUSDToCents(netMicroUSD)
-	if netCents <= 0 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
-			"net amount rounds to less than 1 cent"))
-		return
-	}
-
-	// State machine:
-	//
-	//   pending     → row persisted, ledger debited, no Stripe call yet.
-	//   transferred → transfer succeeded; payout may or may not be created.
-	//   paid        → payout.paid webhook delivered.
-	//   failed      → terminal failure; ledger refunded if Refunded=true.
-	//
-	// We persist the row BEFORE any Stripe call so a DB write failure can
-	// never coexist with a successful money movement (no double-spend window).
-	withdrawalID := uuid.New().String()
-	debitRef := "stripe_withdraw:" + withdrawalID
-
-	// DebitWithdrawable atomically checks and subtracts from both
-	// balance_micro_usd and withdrawable_micro_usd. This prevents the
-	// inflation bug where Debit eats non-withdrawable credits and a
-	// subsequent refund via CreditWithdrawable restores the amount as
-	// withdrawable earnings.
-	if err := s.store.DebitWithdrawable(user.AccountID, grossMicroUSD, store.LedgerStripePayout, debitRef); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("insufficient_withdrawable", err.Error()))
-		return
-	}
-
-	wd := &store.StripeWithdrawal{
-		ID:              withdrawalID,
-		AccountID:       user.AccountID,
-		StripeAccountID: user.StripeAccountID,
-		AmountMicroUSD:  grossMicroUSD,
-		FeeMicroUSD:     feeMicroUSD,
-		NetMicroUSD:     netMicroUSD,
-		Method:          method,
-		Status:          "pending",
-	}
-	if err := s.billing.Store().CreateStripeWithdrawal(wd); err != nil {
-		// No Stripe calls yet — refund and bail.
-		if rerr := s.billing.Store().CreditWithdrawable(user.AccountID, grossMicroUSD, store.LedgerRefund, debitRef); rerr != nil {
-			s.logger.Error("stripe payout: refund after persist failure failed",
-				"error", rerr, "withdrawal_id", withdrawalID)
-		}
-		s.logger.Error("stripe payout: persist withdrawal failed", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error",
-			"failed to record withdrawal — refunded to your balance"))
-		return
-	}
-
-	markFailedRefund := func(reason string) {
-		// Refund the ledger and mark the row failed atomically (best-effort —
-		// neither store call has rollback). Refunded flag prevents webhook
-		// replay from double-crediting.
-		if rerr := s.billing.Store().CreditWithdrawable(user.AccountID, grossMicroUSD, store.LedgerRefund, debitRef); rerr != nil {
-			s.logger.Error("stripe payout: refund failed", "error", rerr, "withdrawal_id", withdrawalID)
-		} else {
-			wd.Refunded = true
-		}
-		wd.Status = "failed"
-		wd.FailureReason = reason
-		if uerr := s.billing.Store().UpdateStripeWithdrawal(wd); uerr != nil {
-			s.logger.Error("stripe payout: mark failed failed", "error", uerr, "withdrawal_id", withdrawalID)
-		}
-	}
-
-	// Step 2: transfer USD from platform balance to the connected account.
-	transfer, err := s.billing.StripeConnect().CreateTransfer(billing.CreateTransferParams{
-		DestinationAccountID: user.StripeAccountID,
-		AmountCents:          netCents,
-		IdempotencyKey:       "wd-tr-" + withdrawalID,
-		Description:          "Darkbloom credit withdrawal",
-	})
-	if err != nil {
-		markFailedRefund("transfer_create_failed: " + err.Error())
-		s.logger.Error("stripe payout: transfer failed", "error", err, "withdrawal_id", withdrawalID)
-		writeJSON(w, http.StatusBadGateway, errorResponse("stripe_error",
-			"failed to transfer funds: "+err.Error()))
-		return
-	}
-	wd.TransferID = transfer.ID
-	wd.Status = "transferred"
-	if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
-		// Transfer succeeded but we lost track of it. Money is in the
-		// connected account; auto-payout will move it. Don't refund — that
-		// would double-credit the user.
-		s.logger.Error("stripe payout: persist transfer_id failed",
-			"error", err, "withdrawal_id", withdrawalID, "transfer_id", transfer.ID)
-	}
-
-	// Step 3: create the Stripe payout from the connected account → bank/card.
-	payout, err := s.billing.StripeConnect().CreatePayout(billing.CreatePayoutParams{
-		OnBehalfOfAccountID: user.StripeAccountID,
-		AmountCents:         netCents,
-		Method:              method,
-		IdempotencyKey:      "wd-po-" + withdrawalID,
-		Description:         "Darkbloom credit withdrawal",
-	})
-	if err != nil {
-		// Transfer succeeded — funds are in the connected account. Stripe's
-		// default daily auto-payout schedule will move them to the bank. We
-		// do NOT refund (that would double-credit) and we do NOT mark the row
-		// failed (the user will eventually get the money). Leave status at
-		// "transferred" with FailureReason populated for ops visibility.
-		wd.FailureReason = "payout_create_failed: " + err.Error()
-		if uerr := s.billing.Store().UpdateStripeWithdrawal(wd); uerr != nil {
-			s.logger.Error("stripe payout: persist payout failure failed",
-				"error", uerr, "withdrawal_id", withdrawalID)
-		}
-		s.logger.Error("stripe payout: create payout failed", "error", err,
-			"withdrawal_id", withdrawalID, "transfer_id", transfer.ID)
-		writeJSON(w, http.StatusAccepted, map[string]any{
-			"status":            "transferred",
-			"withdrawal_id":     withdrawalID,
-			"transfer_id":       transfer.ID,
-			"amount_usd":        formatUSD(grossMicroUSD),
-			"fee_usd":           formatUSD(feeMicroUSD),
-			"net_usd":           formatUSD(netMicroUSD),
-			"method":            method,
-			"message":           "transfer succeeded but payout failed; funds will arrive on Stripe's default schedule",
-			"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
-		})
-		return
-	}
-	wd.PayoutID = payout.ID
-	if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
-		// Payout succeeded but we couldn't persist the ID. Webhook will
-		// arrive with the payout ID — without the index entry we'll silently
-		// drop it. Log loudly so ops can manually reconcile via the Stripe
-		// dashboard. Do NOT refund — the user is getting the money.
-		s.logger.Error("stripe payout: persist payout_id failed — webhook will be lost",
-			"error", err, "withdrawal_id", withdrawalID,
-			"transfer_id", transfer.ID, "payout_id", payout.ID)
-	}
-
-	s.logger.Info("stripe payout: created",
-		"withdrawal_id", withdrawalID,
-		"account", user.AccountID[:min(8, len(user.AccountID))]+"...",
-		"method", method,
-		"gross_micro_usd", grossMicroUSD,
-		"fee_micro_usd", feeMicroUSD,
-		"net_micro_usd", netMicroUSD,
-	)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":            "submitted",
-		"withdrawal_id":     withdrawalID,
-		"transfer_id":       transfer.ID,
-		"payout_id":         payout.ID,
-		"amount_usd":        formatUSD(grossMicroUSD),
-		"fee_usd":           formatUSD(feeMicroUSD),
-		"net_usd":           formatUSD(netMicroUSD),
-		"method":            method,
-		"eta":               etaForMethod(method),
-		"arrival_unix":      payout.ArrivalDate,
-		"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
-	})
 }
 
 // handleStripeWithdrawals handles GET /v1/billing/stripe/withdrawals.
@@ -474,167 +326,40 @@ func (s *Server) handleStripeWithdrawals(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"withdrawals": withdrawals})
 }
 
-// handleStripeConnectWebhook handles POST /v1/billing/stripe/connect/webhook.
-// Drives the local state machine for Connect events. This is a separate
-// endpoint from the Checkout webhook because Stripe lets you configure
-// per-endpoint signing secrets.
-func (s *Server) handleStripeConnectWebhook(w http.ResponseWriter, r *http.Request) {
-	if s.billing == nil || s.billing.StripeConnect() == nil {
-		http.Error(w, "Stripe Connect not configured", http.StatusServiceUnavailable)
+// handleStripeUnlink handles DELETE /v1/billing/stripe/account.
+//
+// Detaches the stored connected account from the user so the next onboard
+// creates a fresh one. This is the self-serve escape hatch for wedged
+// accounts (closed on Stripe's side, stuck onboarding, wrong country
+// selected, wrong service agreement). It does not touch Stripe — the
+// connected account (and any balance still being swept to the user's bank)
+// is unaffected, and in-flight withdrawals still reconcile via webhooks
+// because the rows carry their own copy of the stripe_account_id.
+//
+// Idempotent: unlinking with no account on file succeeds.
+func (s *Server) handleStripeUnlink(w http.ResponseWriter, r *http.Request) {
+	user := s.requirePrivyUser(w, r)
+	if user == nil {
 		return
 	}
-
-	payload, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		http.Error(w, "read body", http.StatusBadRequest)
+	if s.billing == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "billing not configured"))
 		return
 	}
-	sig := r.Header.Get("Stripe-Signature")
-	event, err := s.billing.StripeConnect().VerifyConnectWebhookSignature(payload, sig)
-	if err != nil {
-		s.logger.Warn("stripe connect webhook: signature verification failed", "error", err)
-		http.Error(w, "invalid signature", http.StatusBadRequest)
+	if user.StripeAccountID == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"unlinked": false})
 		return
 	}
-
-	// Connect webhooks include the connected account ID at the top level
-	// (event.account in Stripe's payload). We re-parse the raw payload to
-	// pull it out; the WebhookEvent struct only exposes Type + Data.
-	var envelope struct {
-		Account string `json:"account"`
-	}
-	_ = json.Unmarshal(payload, &envelope)
-
-	switch event.Type {
-	case "account.updated":
-		s.handleAccountUpdated(event)
-	case "payout.paid":
-		s.handlePayoutTerminal(event, envelope.Account, true)
-	case "payout.failed", "payout.canceled":
-		s.handlePayoutTerminal(event, envelope.Account, false)
-	case "transfer.reversed":
-		s.handleTransferFailed(event)
-	default:
-		// Ignore everything else — we just ack.
-	}
-	w.WriteHeader(http.StatusOK)
-}
-
-// handleAccountUpdated mirrors Stripe's view of the connected account into our
-// User row. This is what flips a user from "pending" → "ready".
-func (s *Server) handleAccountUpdated(event *billing.WebhookEvent) {
-	acct, err := s.billing.StripeConnect().AccountUpdatedFromEvent(event)
-	if err != nil {
-		s.logger.Warn("stripe connect webhook: account.updated parse failed", "error", err)
+	prev := user.StripeAccountID
+	if err := s.billing.Store().SetUserStripeAccount(user.AccountID, "", "", "", "", "", false); err != nil {
+		s.logger.Error("stripe connect: unlink failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to unlink Stripe account"))
 		return
 	}
-	user, err := s.billing.Store().GetUserByStripeAccount(acct.ID)
-	if err != nil {
-		s.logger.Warn("stripe connect webhook: account.updated user lookup failed",
-			"stripe_account_id", acct.ID, "error", err)
-		return
-	}
-	status := stripeStatusForAccount(acct)
-	if err := s.billing.Store().SetUserStripeAccount(user.AccountID, acct.ID,
-		status, "", acct.DestinationType, acct.DestinationLast4, acct.InstantEligible); err != nil {
-		s.logger.Error("stripe connect webhook: persist account state failed", "error", err)
-	}
-}
-
-// handlePayoutTerminal handles payout.paid / payout.failed / payout.canceled.
-// On success we mark the row "paid". On failure we mark "failed" and re-credit
-// the user's ledger via LedgerRefund.
-func (s *Server) handlePayoutTerminal(event *billing.WebhookEvent, _ string, success bool) {
-	pe, err := s.billing.StripeConnect().PayoutFromEvent(event, "")
-	if err != nil {
-		s.logger.Warn("stripe connect webhook: payout parse failed", "error", err)
-		return
-	}
-	wd, err := s.billing.Store().GetStripeWithdrawalByPayoutID(pe.ID)
-	if err != nil {
-		// Stripe may emit payout events for payouts created outside our flow
-		// (e.g. directly in the dashboard) — silently ignore those.
-		s.logger.Debug("stripe connect webhook: unknown payout", "payout_id", pe.ID)
-		return
-	}
-	if success {
-		// payout.paid is idempotent: nothing changes the ledger, so a
-		// repeated delivery just rewrites the row to "paid" again.
-		if wd.Status == "paid" {
-			return
-		}
-		wd.Status = "paid"
-		if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
-			s.logger.Error("stripe connect webhook: mark paid failed", "error", err)
-		}
-		return
-	}
-
-	// payout.failed: refund the ledger if we haven't already, then mark
-	// failed. We key idempotency on the Refunded flag (not Status) so a
-	// previously-failed-but-refund-failed row gets retried on webhook
-	// redelivery.
-	if wd.Refunded {
-		// Already refunded — make sure status is terminal and bail.
-		if wd.Status != "failed" {
-			wd.Status = "failed"
-			if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
-				s.logger.Error("stripe connect webhook: status flip failed", "error", err)
-			}
-		}
-		return
-	}
-	wd.FailureReason = pe.FailureCode + ": " + pe.FailureReason
-	if err := s.billing.Store().CreditWithdrawable(wd.AccountID, wd.AmountMicroUSD, store.LedgerRefund,
-		"stripe_withdraw:"+wd.ID); err != nil {
-		s.logger.Error("stripe connect webhook: refund failed", "error", err, "withdrawal_id", wd.ID)
-		// Still update the row so we know about the failure even if the
-		// refund needs manual intervention.
-		wd.Status = "failed"
-		_ = s.billing.Store().UpdateStripeWithdrawal(wd)
-		return
-	}
-	wd.Refunded = true
-	wd.Status = "failed"
-	if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
-		s.logger.Error("stripe connect webhook: mark failed failed", "error", err)
-	}
-}
-
-// handleTransferFailed handles the rare case where Stripe rolls back a transfer
-// after we've considered it successful. Same refund logic as a failed payout.
-func (s *Server) handleTransferFailed(event *billing.WebhookEvent) {
-	te, err := s.billing.StripeConnect().TransferFromEvent(event)
-	if err != nil {
-		s.logger.Warn("stripe connect webhook: transfer parse failed", "error", err)
-		return
-	}
-	wd, err := s.billing.Store().GetStripeWithdrawalByTransferID(te.ID)
-	if err != nil {
-		return
-	}
-	// Idempotency keyed on Refunded so a redelivery after a transient credit
-	// failure can still retry the refund.
-	if wd.Refunded {
-		if wd.Status != "failed" {
-			wd.Status = "failed"
-			_ = s.billing.Store().UpdateStripeWithdrawal(wd)
-		}
-		return
-	}
-	wd.FailureReason = "transfer_reversed"
-	if err := s.billing.Store().CreditWithdrawable(wd.AccountID, wd.AmountMicroUSD, store.LedgerRefund,
-		"stripe_withdraw:"+wd.ID); err != nil {
-		s.logger.Error("stripe connect webhook: refund failed", "error", err, "withdrawal_id", wd.ID)
-		wd.Status = "failed"
-		_ = s.billing.Store().UpdateStripeWithdrawal(wd)
-		return
-	}
-	wd.Refunded = true
-	wd.Status = "failed"
-	if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
-		s.logger.Error("stripe connect webhook: mark failed failed", "error", err)
-	}
+	s.logger.Info("stripe connect: account unlinked",
+		"account", user.AccountID[:min(8, len(user.AccountID))]+"...",
+		"stripe_account_id", prev)
+	writeJSON(w, http.StatusOK, map[string]any{"unlinked": true})
 }
 
 // validateRedirectURL ensures the user-supplied URL is on the same host as
@@ -695,7 +420,10 @@ func etaForMethod(method string) string {
 	if method == "instant" {
 		return "~30 minutes"
 	}
-	return "1-2 business days"
+	// Standard: Stripe's automatic daily payout sweeps the connected balance,
+	// then the bank rail (ACH/SEPA/local) takes 1-2 business days. Recipient-
+	// agreement accounts add +24h of transfer availability delay.
+	return "1-3 business days"
 }
 
 // Compile-time check we don't accidentally drop the auth import; the Privy

@@ -6,6 +6,7 @@ import {
   startStripeOnboarding,
   withdrawStripe,
   fetchStripeWithdrawals,
+  unlinkStripeAccount,
   type StripeStatus,
   type StripeWithdrawal,
 } from "@/lib/api";
@@ -33,6 +34,9 @@ export interface UseStripePayouts {
   withdraw: () => Promise<void>;
   /** Open the withdraw modal, seeding the amount + best available method. */
   openWithdraw: (defaultAmount?: string) => void;
+  /** Detach the linked Stripe account so a fresh one can be onboarded. */
+  unlink: () => Promise<void>;
+  unlinkLoading: boolean;
 }
 
 export interface StripePayoutsOptions {
@@ -137,6 +141,20 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
     setWithdrawOpen(true);
   }, [status?.instant_eligible]);
 
+  const [unlinkLoading, setUnlinkLoading] = useState(false);
+  const unlink = useCallback(async () => {
+    setUnlinkLoading(true);
+    try {
+      await unlinkStripeAccount();
+      setSelectedCountry("");
+      addToast("Stripe account unlinked — you can now set up payouts again", "success");
+      await reload(false);
+    } catch (e) {
+      addToast(`Unlink failed: ${(e as Error).message}`);
+    }
+    setUnlinkLoading(false);
+  }, [addToast, reload]);
+
   return {
     status,
     withdrawals,
@@ -154,5 +172,7 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
     onboard,
     withdraw,
     openWithdraw,
+    unlink,
+    unlinkLoading,
   };
 }

@@ -21,6 +21,8 @@ export function StripePayoutsCard({
   onCountryChange,
   onOnboard,
   onOpenWithdraw,
+  onUnlink,
+  unlinkLoading,
   title,
   icon,
   noun,
@@ -35,6 +37,9 @@ export function StripePayoutsCard({
   onCountryChange: (country: string) => void;
   onOnboard: () => void;
   onOpenWithdraw: () => void;
+  /** Detach the linked Stripe account (escape hatch for wedged accounts). */
+  onUnlink?: () => void;
+  unlinkLoading?: boolean;
   title: string;
   icon: React.ReactNode;
   noun: string;
@@ -154,6 +159,15 @@ export function StripePayoutsCard({
             {onboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
             {onboardLoading ? "Redirecting..." : restricted ? "Provide more info" : "Continue setup"}
           </button>
+          {onUnlink && (
+            <button
+              onClick={onUnlink}
+              disabled={unlinkLoading}
+              className="mt-3 block text-xs text-text-tertiary underline underline-offset-2 hover:text-coral disabled:opacity-50 transition-colors"
+            >
+              {unlinkLoading ? "Unlinking..." : "Unlink Stripe account and start over"}
+            </button>
+          )}
         </>
       )}
 

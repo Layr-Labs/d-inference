@@ -17,6 +17,7 @@ export {
   startStripeOnboarding,
   withdrawStripe,
   fetchStripeWithdrawals,
+  unlinkStripeAccount,
   computeStripeFeeUsd,
 } from "./billing";
 export {

@@ -666,6 +666,8 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_account ON stripe_withdrawals(account_id, created_at DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_stripe_withdrawals_transfer ON stripe_withdrawals(transfer_id) WHERE transfer_id != ''`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_stripe_withdrawals_payout ON stripe_withdrawals(payout_id) WHERE payout_id != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_status ON stripe_withdrawals(status, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_stripe_account ON stripe_withdrawals(stripe_account_id, status)`,
 
 		// Telemetry events table + indices removed.
 		// Datadog is the sole durable sink for telemetry — the Postgres table
@@ -3404,6 +3406,62 @@ func (s *PostgresStore) ListStripeWithdrawals(accountID string, limit int) ([]St
 	}
 	if out == nil {
 		return []StripeWithdrawal{}, nil
+	}
+	return out, nil
+}
+
+// ListStripeWithdrawalsByStatus returns up to limit withdrawals in the given
+// status created before olderThan, oldest first.
+func (s *PostgresStore) ListStripeWithdrawalsByStatus(status string, olderThan time.Time, limit int) ([]StripeWithdrawal, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	q := `SELECT ` + stripeWithdrawalSelectColumns + ` FROM stripe_withdrawals
+		 WHERE status = $1 AND created_at < $2 ORDER BY created_at ASC`
+	args := []any{status, olderThan}
+	if limit > 0 {
+		q += ` LIMIT $3`
+		args = append(args, limit)
+	}
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list stripe withdrawals by status: %w", err)
+	}
+	defer rows.Close()
+
+	out := []StripeWithdrawal{}
+	for rows.Next() {
+		w, err := scanStripeWithdrawal(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan stripe withdrawal: %w", err)
+		}
+		out = append(out, *w)
+	}
+	return out, nil
+}
+
+// ListStripeWithdrawalsForStripeAccount returns withdrawals destined for the
+// given connected account in the given status, oldest first.
+func (s *PostgresStore) ListStripeWithdrawalsForStripeAccount(stripeAccountID, status string) ([]StripeWithdrawal, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+stripeWithdrawalSelectColumns+` FROM stripe_withdrawals
+		 WHERE stripe_account_id = $1 AND status = $2 ORDER BY created_at ASC`,
+		stripeAccountID, status)
+	if err != nil {
+		return nil, fmt.Errorf("store: list stripe withdrawals for stripe account: %w", err)
+	}
+	defer rows.Close()
+
+	out := []StripeWithdrawal{}
+	for rows.Next() {
+		w, err := scanStripeWithdrawal(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan stripe withdrawal: %w", err)
+		}
+		out = append(out, *w)
 	}
 	return out, nil
 }

@@ -196,6 +196,8 @@ export default function EarningsContent() {
         selectedCountry={payouts.selectedCountry}
         onCountryChange={payouts.setSelectedCountry}
         onOnboard={payouts.onboard}
+        onUnlink={payouts.unlink}
+        unlinkLoading={payouts.unlinkLoading}
         onOpenWithdraw={() =>
           payouts.openWithdraw(availableUsd >= minWithdrawUsd ? availableUsd.toFixed(2) : "10")
         }

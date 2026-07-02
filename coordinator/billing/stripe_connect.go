@@ -123,6 +123,10 @@ func SetStripeAPIBaseForTest(url string) string {
 type ExpressAccount struct {
 	ID               string
 	Email            string
+	Country          string // ISO 3166-1 alpha-2 the account is locked to
+	DefaultCurrency  string // lowercase ISO currency the balance settles in (e.g. "usd", "eur")
+	ServiceAgreement string // "full" | "recipient" — immutable after acceptance
+	PayoutInterval   string // settings.payouts.schedule.interval: "daily" | "weekly" | "monthly" | "manual"
 	ChargesEnabled   bool
 	PayoutsEnabled   bool
 	DetailsSubmitted bool
@@ -144,14 +148,25 @@ type CreateExpressAccountParams struct {
 	Country   string // ISO 3166-1 alpha-2 — empty means "use platform default"
 }
 
-// CreateExpressAccount creates a Stripe Express connected account. We request
-// both `transfers` (to push funds out) and `card_payments` because Stripe's
-// Connect Express flow requires the latter unless the platform has been
-// pre-approved for transfers-only. Requesting `card_payments` doesn't mean
-// we ever charge cards on behalf of the user — the capability just sits
-// enabled on the connected account; we only ever call transfers + payouts.
-// The trade-off is slightly more KYC info collected during onboarding, which
-// the user fills in on Stripe's hosted page anyway.
+// CreateExpressAccount creates a Stripe Express connected account.
+//
+// The service agreement depends on the account country (see stripe_regions.go):
+//
+//   - `full` (US/CA/UK/EEA/CH): we request `transfers` + `card_payments`.
+//     Stripe's Connect Express flow requires `card_payments` unless the
+//     platform has been pre-approved for transfers-only. We never charge
+//     cards on the user's behalf — the capability just sits enabled.
+//   - `recipient` (everywhere else): we set
+//     tos_acceptance[service_agreement]=recipient and request ONLY
+//     `transfers` — `card_payments` is incompatible with the recipient
+//     agreement and Stripe rejects the account creation if requested.
+//
+// Payouts ride Stripe's automatic daily schedule: the platform transfers to
+// the connected account and Stripe sweeps the balance to the user's bank in
+// their local currency. Do NOT set the schedule to "manual" — manual-schedule
+// accounts strand funds when our payouts.create call fails (wrong currency,
+// funds not yet available, …) and the user sees "Contact <platform> to get
+// paid out" in their Stripe dashboard with no way to self-serve.
 func (c *StripeConnect) CreateExpressAccount(params CreateExpressAccountParams) (*ExpressAccount, error) {
 	if c.secretKey == "" && !c.mockMode {
 		return nil, errors.New("stripe connect: not configured")
@@ -160,12 +175,16 @@ func (c *StripeConnect) CreateExpressAccount(params CreateExpressAccountParams) 
 	if country == "" {
 		country = c.platformCountry
 	}
+	agreement := RequiredServiceAgreement(c.platformCountry, country)
 
 	if c.mockMode {
 		mockID := "acct_mock_" + strings.ReplaceAll(params.Email, "@", "_at_")
 		return &ExpressAccount{
 			ID:               mockID,
 			Email:            params.Email,
+			Country:          country,
+			ServiceAgreement: agreement,
+			PayoutInterval:   "daily",
 			ChargesEnabled:   false,
 			PayoutsEnabled:   false,
 			DetailsSubmitted: false,
@@ -176,7 +195,11 @@ func (c *StripeConnect) CreateExpressAccount(params CreateExpressAccountParams) 
 	form.Set("type", "express")
 	form.Set("country", country)
 	form.Set("capabilities[transfers][requested]", "true")
-	form.Set("capabilities[card_payments][requested]", "true")
+	if agreement == ServiceAgreementRecipient {
+		form.Set("tos_acceptance[service_agreement]", ServiceAgreementRecipient)
+	} else {
+		form.Set("capabilities[card_payments][requested]", "true")
+	}
 	form.Set("business_type", "individual")
 	if params.Email != "" {
 		form.Set("email", params.Email)
@@ -188,14 +211,36 @@ func (c *StripeConnect) CreateExpressAccount(params CreateExpressAccountParams) 
 	if params.LastName != "" {
 		form.Set("individual[last_name]", params.LastName)
 	}
-	// We hand off all subsequent collection to Stripe's hosted flow.
-	form.Set("settings[payouts][schedule][interval]", "manual")
+	// Stripe sweeps the connected balance to the user's bank automatically.
+	form.Set("settings[payouts][schedule][interval]", "daily")
 
 	body, err := c.do("POST", "/v1/accounts", form, "")
 	if err != nil {
 		return nil, fmt.Errorf("stripe connect: create account: %w", err)
 	}
 	return parseAccount(body)
+}
+
+// UpdateAccountPayoutScheduleDaily flips a connected account's payout schedule
+// to automatic daily sweeps. Used to self-heal accounts created by older code
+// with a "manual" schedule, which stranded transferred funds in the connected
+// account balance. Idempotent — safe to call on accounts already on daily.
+func (c *StripeConnect) UpdateAccountPayoutScheduleDaily(accountID string) error {
+	if c.secretKey == "" && !c.mockMode {
+		return errors.New("stripe connect: not configured")
+	}
+	if accountID == "" {
+		return errors.New("stripe connect: account_id required")
+	}
+	if c.mockMode {
+		return nil
+	}
+	form := url.Values{}
+	form.Set("settings[payouts][schedule][interval]", "daily")
+	if _, err := c.do("POST", "/v1/accounts/"+accountID, form, ""); err != nil {
+		return fmt.Errorf("stripe connect: update payout schedule: %w", err)
+	}
+	return nil
 }
 
 // CreateAccountLink returns a hosted onboarding URL the frontend should
@@ -247,6 +292,10 @@ func (c *StripeConnect) GetAccount(accountID string) (*ExpressAccount, error) {
 		// Mock-mode account is "ready" so devs can exercise withdrawals.
 		return &ExpressAccount{
 			ID:               accountID,
+			Country:          c.platformCountry,
+			DefaultCurrency:  "usd",
+			ServiceAgreement: ServiceAgreementFull,
+			PayoutInterval:   "daily",
 			ChargesEnabled:   true,
 			PayoutsEnabled:   true,
 			DetailsSubmitted: true,
@@ -456,6 +505,8 @@ type PayoutEvent struct {
 	Status        string // "paid" | "failed" | etc
 	AmountCents   int64
 	Method        string
+	Automatic     bool  // true for payouts created by Stripe's payout schedule
+	Created       int64 // Unix epoch — when the payout was created (sweeps cover balance available then)
 	FailureCode   string
 	FailureReason string
 	Destination   string // pm-style ID (ba_… / card_…)
@@ -475,6 +526,8 @@ func (c *StripeConnect) PayoutFromEvent(event *WebhookEvent, rawAccount string) 
 			Status      string `json:"status"`
 			Amount      int64  `json:"amount"`
 			Method      string `json:"method"`
+			Automatic   bool   `json:"automatic"`
+			Created     int64  `json:"created"`
 			FailureCode string `json:"failure_code"`
 			FailureMsg  string `json:"failure_message"`
 			Destination string `json:"destination"`
@@ -488,6 +541,8 @@ func (c *StripeConnect) PayoutFromEvent(event *WebhookEvent, rawAccount string) 
 		Status:        data.Object.Status,
 		AmountCents:   data.Object.Amount,
 		Method:        data.Object.Method,
+		Automatic:     data.Object.Automatic,
+		Created:       data.Object.Created,
 		FailureCode:   data.Object.FailureCode,
 		FailureReason: data.Object.FailureMsg,
 		Destination:   data.Object.Destination,
@@ -570,7 +625,9 @@ func (c *StripeConnect) do(method, path string, form url.Values, idempotencyKey 
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Try to surface Stripe's structured error message verbatim.
+		// Try to surface Stripe's structured error message verbatim. The
+		// error code (when present) is included so callers can classify
+		// failures (see IsAccountGoneErr / IsServiceAgreementErr).
 		var errEnvelope struct {
 			Error struct {
 				Message string `json:"message"`
@@ -579,11 +636,37 @@ func (c *StripeConnect) do(method, path string, form url.Values, idempotencyKey 
 			} `json:"error"`
 		}
 		if json.Unmarshal(respBody, &errEnvelope) == nil && errEnvelope.Error.Message != "" {
+			if errEnvelope.Error.Code != "" {
+				return nil, fmt.Errorf("stripe %d [%s]: %s", resp.StatusCode, errEnvelope.Error.Code, errEnvelope.Error.Message)
+			}
 			return nil, fmt.Errorf("stripe %d: %s", resp.StatusCode, errEnvelope.Error.Message)
 		}
 		return nil, fmt.Errorf("stripe %d: %s", resp.StatusCode, string(respBody))
 	}
 	return respBody, nil
+}
+
+// IsAccountGoneErr reports whether a Stripe error means the connected account
+// no longer exists (the user closed it in their Stripe dashboard, or it was
+// deleted). The stored acct_… is permanently unusable — the caller should
+// clear it so the user can onboard a fresh account.
+func IsAccountGoneErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "No such destination") ||
+		strings.Contains(msg, "No such account") ||
+		strings.Contains(msg, "account_invalid") ||
+		strings.Contains(msg, "does not have access to account")
+}
+
+// IsServiceAgreementErr reports whether a Stripe error means the connected
+// account is under a service agreement that can't receive platform transfers
+// (e.g. an AU/NZ/JP account created under `full` instead of `recipient`).
+// The agreement is immutable — the account must be recreated.
+func IsServiceAgreementErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "service agreement")
 }
 
 // parseAccount maps the raw account JSON onto our trimmed ExpressAccount type.
@@ -593,10 +676,22 @@ func parseAccount(body []byte) (*ExpressAccount, error) {
 	var resp struct {
 		ID               string `json:"id"`
 		Email            string `json:"email"`
+		Country          string `json:"country"`
+		DefaultCurrency  string `json:"default_currency"`
 		ChargesEnabled   bool   `json:"charges_enabled"`
 		PayoutsEnabled   bool   `json:"payouts_enabled"`
 		DetailsSubmitted bool   `json:"details_submitted"`
-		Requirements     struct {
+		TOSAcceptance    struct {
+			ServiceAgreement string `json:"service_agreement"`
+		} `json:"tos_acceptance"`
+		Settings struct {
+			Payouts struct {
+				Schedule struct {
+					Interval string `json:"interval"`
+				} `json:"schedule"`
+			} `json:"payouts"`
+		} `json:"settings"`
+		Requirements struct {
 			CurrentlyDue   []string `json:"currently_due"`
 			DisabledReason string   `json:"disabled_reason"`
 		} `json:"requirements"`
@@ -617,6 +712,10 @@ func parseAccount(body []byte) (*ExpressAccount, error) {
 	acct := &ExpressAccount{
 		ID:               resp.ID,
 		Email:            resp.Email,
+		Country:          resp.Country,
+		DefaultCurrency:  resp.DefaultCurrency,
+		ServiceAgreement: resp.TOSAcceptance.ServiceAgreement,
+		PayoutInterval:   resp.Settings.Payouts.Schedule.Interval,
 		ChargesEnabled:   resp.ChargesEnabled,
 		PayoutsEnabled:   resp.PayoutsEnabled,
 		DetailsSubmitted: resp.DetailsSubmitted,

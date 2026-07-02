@@ -1136,13 +1136,14 @@ struct EngineV2SharedBudgetTests {
             promptTokens: [1, 2, 3, 4, 5],
             request: makeRequest(maxTokens: 16),
             requestId: "req-acct-1")
-        // Consume the stream on a separate task so the pump runs.
-        let consumer = Task { await record(stream) }
-        // The pump records the reservation shortly after submit.
-        for _ in 0..<200 where await budget.outstandingReservedBytes() == 0 {
-            try? await Task.sleep(for: .milliseconds(5))
-        }
+        // No-gap invariant: the reservation is recorded SYNCHRONOUSLY with
+        // admission, so it is already visible the instant submit returns —
+        // before the pump task runs and before the stream is consumed. No
+        // polling: a concurrent model-load gate can never observe zero in the
+        // window between engine admission and the pump starting.
         #expect(await budget.outstandingReservedBytes() == 84_000)
+        // Consume the stream on a separate task so the pump runs to terminal.
+        let consumer = Task { await record(stream) }
 
         // Terminal → the reservation is released.
         engine.manualContinuation?.yield(
@@ -1240,13 +1241,11 @@ struct EngineV2HardeningTests {
         let stream = await bridge.submitTokenized(
             promptTokens: [1, 2, 3, 4, 5], request: makeRequest(maxTokens: 16),
             requestId: "req-live-1")
-        let consumer = Task { await record(stream) }
-        // Wait for the pump to run + record its reservation.
-        for _ in 0..<200 where await budget.outstandingReservedBytes() == 0 {
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-        #expect(await bridge._testLivePumpCount() == 1)
+        // Reservation is recorded synchronously with admission (no poll), and
+        // the pump task is tracked for shutdown.
         #expect(await budget.outstandingReservedBytes() == 84_000)
+        #expect(await bridge._testLivePumpCount() == 1)
+        let consumer = Task { await record(stream) }
 
         await bridge.shutdown()
         #expect(engine.shutdownCalls == 1)

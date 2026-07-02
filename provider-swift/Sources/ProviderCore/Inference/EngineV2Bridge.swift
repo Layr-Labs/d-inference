@@ -169,7 +169,7 @@ public actor EngineV2Bridge {
         request: ChatCompletionRequest,
         requestId: String? = nil,
         logprobsChannel: EngineV2LogprobsChannel? = nil
-    ) -> AsyncStream<GenerationEvent> {
+    ) async -> AsyncStream<GenerationEvent> {
         let messages: [[String: any Sendable]] = request.messages.map { msg in
             [
                 "role": msg.role,
@@ -189,7 +189,7 @@ public actor EngineV2Bridge {
             continuation.finish()
             return stream
         }
-        return submitTokenized(
+        return await submitTokenized(
             promptTokens: promptTokens, request: request, requestId: requestId,
             cacheScope: request.cacheScope, logprobsChannel: logprobsChannel
         )
@@ -219,7 +219,7 @@ public actor EngineV2Bridge {
         requestId: String? = nil,
         cacheScope: String = "",
         logprobsChannel: EngineV2LogprobsChannel? = nil
-    ) -> AsyncStream<GenerationEvent> {
+    ) async -> AsyncStream<GenerationEvent> {
         // Validate the caller-supplied id before it becomes a dictionary key /
         // cancel-correlation handle: a nil / empty / over-long / non-printable
         // id is replaced with a fresh generated one (it could never correlate
@@ -284,6 +284,17 @@ public actor EngineV2Bridge {
         idMap[id] = cbv2Id
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(now: .now)
+
+        // Record the request's worst-case KV footprint in the shared budget
+        // SYNCHRONOUSLY with admission — before returning the stream and
+        // before the pump task is even scheduled — so a concurrent model-load
+        // gate can never observe zero v2 KV in the gap between engine
+        // admission and the pump starting. Bookkeeping only (never gates v2
+        // admission); released on every terminal/teardown path in the pump.
+        // No-op when kvBudget is nil (unit tests) or kvBytesPerToken is 0.
+        await kvBudget?.recordEngineKV(
+            requestID: id, kvBytesPerToken: kvBytesPerToken,
+            tokenCount: promptTokens.count + cbv2Request.maxTokens)
 
         runPump(
             id: id, events: events, continuation: continuation,
@@ -366,16 +377,9 @@ public actor EngineV2Bridge {
         continuation: AsyncStream<GenerationEvent>.Continuation,
         logprobsChannel: EngineV2LogprobsChannel? = nil
     ) async {
-        // Record this request's worst-case KV footprint in the shared budget
-        // so the model-LOAD gate and the legacy live-KV gate see the v2
-        // engine's committed KV (bookkeeping only — never gates v2 admission;
-        // released on every terminal path below). No-op when kvBudget is nil
-        // (unit tests) or kvBytesPerToken is unknown (0).
-        if let state = active[id] {
-            await kvBudget?.recordEngineKV(
-                requestID: id, kvBytesPerToken: kvBytesPerToken,
-                tokenCount: state.promptTokens + state.maxTokens)
-        }
+        // NOTE: the shared-budget KV reservation is recorded in
+        // `submitTokenized` (synchronously with admission), NOT here — the
+        // pump only RELEASES it on the terminal/teardown paths below.
         var sawFirstToken = false
         var sawTerminal = false
         for await event in events {

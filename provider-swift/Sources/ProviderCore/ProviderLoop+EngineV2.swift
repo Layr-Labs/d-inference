@@ -168,14 +168,6 @@ extension ProviderLoop {
             }
         }
 
-        // WARN once (per load) that kv_quant is being ignored on the v2 path.
-        // Emitted after `emitTelemetry` is resolved so it routes through the
-        // test sink when hooks are installed.
-        if kvSizing.warnKVQuantUnsupported {
-            EngineV2Factory.emitKVQuantUnsupportedTelemetry(
-                modelId: modelId, emitTelemetry: emitTelemetry)
-        }
-
         guard
             let bridge = EngineV2Factory.makeBridgeIfSelected(
                 modelId: modelId,
@@ -199,6 +191,16 @@ extension ProviderLoop {
             logger.warning(
                 "engine_v2: init failed for \(modelId) — serving via the legacy engine")
             return nil
+        }
+
+        // WARN once (per load) that kv_quant is being ignored on the v2 path.
+        // Emitted ONLY after the v2 bridge actually built (below the guard):
+        // if v2 init failed and the model fell back to the legacy engine,
+        // legacy DOES honor kv_quant, so a "kv_quant unsupported" WARN there
+        // would be untruthful.
+        if kvSizing.warnKVQuantUnsupported {
+            EngineV2Factory.emitKVQuantUnsupportedTelemetry(
+                modelId: modelId, emitTelemetry: emitTelemetry)
         }
 
         // Register before the slot goes live so capacity heartbeats and

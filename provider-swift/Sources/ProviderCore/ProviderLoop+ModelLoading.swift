@@ -304,11 +304,31 @@ extension ProviderLoop {
             let tokenizer: TokenizerHandle = await container.perform { ctx in
                 TokenizerHandle(ctx.tokenizer)
             }
-            modelSlots[modelId] = ModelSlot(
-                scheduler: scheduler,
+
+            // ContinuousBatchingV2 (flag-gated, additive): when EngineV2Config
+            // selects the v2 engine for this model, build the real CBv2 engine
+            // over the SAME loaded container, wrap it in an EngineV2Bridge, and
+            // register it with the runtime so capacity/cancel fan-out works
+            // from the first request. nil on every legacy path — flag off,
+            // non-allowlisted model, VLM slot, or v2 init failure (which emits
+            // WARN engine_health telemetry and falls back to the scheduler
+            // below).
+            let slotIsVLM = Self.modelIsVLM(at: modelPath)
+            let engineV2Bridge = await makeEngineV2BridgeForSlot(
+                modelId: modelId,
+                modelType: modelInfo.modelType,
+                isVLM: slotIsVLM,
                 container: container,
                 tokenizer: tokenizer,
-                isVLM: Self.modelIsVLM(at: modelPath),
+                scheduler: scheduler
+            )
+
+            modelSlots[modelId] = ModelSlot(
+                scheduler: scheduler,
+                engineV2: engineV2Bridge,
+                container: container,
+                tokenizer: tokenizer,
+                isVLM: slotIsVLM,
                 modelType: modelInfo.modelType,
                 lastInferenceAt: .now
             )
@@ -356,6 +376,14 @@ extension ProviderLoop {
     internal func unloadModel(_ modelId: String) async {
         guard let slot = modelSlots[modelId], !modelsUnloading.contains(modelId) else { return }
         modelsUnloading.insert(modelId)
+        // ContinuousBatchingV2: retire the slot's v2 bridge first — unregister
+        // so heartbeats/cancellation stop fanning out to it, then drain the
+        // engine gracefully (running requests finish, new submissions are
+        // rejected). No-op for legacy-only slots (engineV2 == nil).
+        if let bridge = slot.engineV2 {
+            await engineV2Runtime.unregister(modelId: modelId)
+            await bridge.shutdown()
+        }
         await slot.scheduler.unloadModel()
         modelSlots.removeValue(forKey: modelId)
         modelsUnloading.remove(modelId)

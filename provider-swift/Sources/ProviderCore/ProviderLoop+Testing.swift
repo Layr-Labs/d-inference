@@ -63,4 +63,68 @@ extension ProviderLoop {
         if let send { self.outboundSend = send }
     }
 
+    // MARK: - ContinuousBatchingV2 seams
+
+    /// Test seam: swap the process-global v2 runtime for an isolated
+    /// instance so registration/consult assertions can't race other tests.
+    func setEngineV2RuntimeForTesting(_ runtime: EngineV2Runtime) {
+        engineV2Runtime = runtime
+    }
+
+    /// Test seam: install slot-factory hooks (environment + EOS snapshot +
+    /// engine builder) so `makeEngineV2BridgeForSlot` runs end-to-end with a
+    /// scripted `CBv2Engine` — no model weights, no container reads.
+    func setEngineV2SlotHooksForTesting(_ hooks: EngineV2SlotHooks?) {
+        engineV2SlotHooks = hooks
+    }
+
+    /// Test seam: drive the model-load slot factory directly (production
+    /// entry point is `ensureModelLoaded`, which needs real weights).
+    func makeEngineV2BridgeForSlotForTesting(
+        modelId: String,
+        modelType: String?,
+        isVLM: Bool = false,
+        container: MLXLMCommon.ModelContainer,
+        tokenizer: TokenizerHandle,
+        scheduler: BatchScheduler
+    ) async -> EngineV2Bridge? {
+        await makeEngineV2BridgeForSlot(
+            modelId: modelId,
+            modelType: modelType,
+            isVLM: isVLM,
+            container: container,
+            tokenizer: tokenizer,
+            scheduler: scheduler
+        )
+    }
+
+    /// Test seam: install a fully-formed model slot (optionally carrying a
+    /// v2 bridge) so capacity/cancellation guard tests can exercise the
+    /// slot-dependent paths without loading weights.
+    func installModelSlotForTesting(
+        modelId: String,
+        scheduler: BatchScheduler,
+        container: MLXLMCommon.ModelContainer,
+        tokenizer: TokenizerHandle,
+        engineV2: EngineV2Bridge? = nil,
+        modelType: String? = nil
+    ) {
+        modelSlots[modelId] = ModelSlot(
+            scheduler: scheduler,
+            engineV2: engineV2,
+            container: container,
+            tokenizer: tokenizer,
+            isVLM: false,
+            modelType: modelType,
+            lastInferenceAt: .now
+        )
+    }
+
+    /// Test seam: whether any live slot carries a v2 bridge (the capacity/
+    /// cancellation zero-overhead guard).
+    func hasEngineV2SlotsForTesting() -> Bool { hasEngineV2Slots }
+
+    /// Test seam: the current aggregate backend capacity snapshot.
+    func backendCapacityForTesting() -> BackendCapacity? { state.backendCapacity }
+
 }

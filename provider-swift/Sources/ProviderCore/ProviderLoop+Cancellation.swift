@@ -59,9 +59,15 @@ extension ProviderLoop {
         // coordinator request-id to any active v2 bridge so
         // `CBv2Engine.cancel` drops the row promptly (the in-flight step
         // completes, then the engine delivers `.finished(.cancelled)` and
-        // the bridge tears down). No-op when the v2 engine is off — the
-        // registry is empty and no bridge owns the id.
-        await EngineV2Runtime.shared.cancel(requestId: requestId)
+        // the bridge tears down). Guarded on the slot set so the flag-off
+        // steady state takes ZERO extra actor hops here. Defense in depth:
+        // the primary v2 teardown is the same Task-cancellation propagation
+        // documented above (the bridge stream's onTermination cancels the
+        // engine-minted id); this fan-out additionally catches any submit
+        // made directly under the coordinator id.
+        if hasEngineV2Slots {
+            await engineV2Runtime.cancel(requestId: requestId)
+        }
 
         if requestToModel.removeValue(forKey: requestId) != nil {
             if !hadInflightTask {

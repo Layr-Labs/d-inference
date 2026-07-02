@@ -42,6 +42,11 @@ extension ProviderLoop {
         var totalActive = 0
         let slots = modelSlots.filter { !modelsUnloading.contains($0.key) }
         for (_, slot) in slots {
+            // A v2-served slot reports through its bridge (folded in below via
+            // the runtime). Its legacy scheduler is a dormant fallback that
+            // serves no requests while the bridge exists — reporting BOTH
+            // would advertise the same model's capacity twice and over-admit.
+            if slot.engineV2 != nil { continue }
             let cap = await slot.scheduler.backendCapacity()
             allSlots.append(contentsOf: cap.slots)
             let schedCap = await slot.scheduler.capacity()
@@ -51,12 +56,14 @@ extension ProviderLoop {
         // ContinuousBatchingV2 (flag-gated, additive): fold any active v2
         // bridge slots into the SAME heartbeat payload — identical protocol
         // fields, truthful bytes-derived token numbers (see
-        // `EngineV2Bridge+Capacity`). The registry is empty when the v2
-        // engine is off (`DARKBLOOM_ENGINE_V2` unset / `engine_v2 = false`),
-        // so legacy behavior is unchanged.
-        let engineV2 = await EngineV2Runtime.shared.capacitySummary()
-        allSlots.append(contentsOf: engineV2.slots)
-        totalActive += engineV2.activeRequests
+        // `EngineV2Bridge+Capacity`). Guarded on the slot set so the flag-off
+        // steady state pays ZERO extra cost here — no runtime actor hop, no
+        // allocations; legacy behavior is byte-identical.
+        if hasEngineV2Slots {
+            let engineV2 = await engineV2Runtime.capacitySummary()
+            allSlots.append(contentsOf: engineV2.slots)
+            totalActive += engineV2.activeRequests
+        }
 
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
         let totalMem = ProcessInfo.processInfo.physicalMemory

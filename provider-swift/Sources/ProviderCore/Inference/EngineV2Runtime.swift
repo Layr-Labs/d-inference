@@ -10,8 +10,9 @@
 //   * `ProviderLoop+Cancellation.handleCancellation` fans the coordinator
 //     request-id out through `cancel(requestId:)` → `CBv2Engine.cancel`.
 //
-// Both hooks are no-ops (empty registry, zero allocations beyond the actor
-// hop) when the v2 engine is off, so flag-off behavior stays byte-identical.
+// Both hooks guard on `ProviderLoop.hasEngineV2Slots` BEFORE hopping here,
+// so when the v2 engine is off they cost zero — no actor hop, no
+// allocations — and flag-off behavior stays byte-identical.
 
 import Foundation
 
@@ -21,6 +22,11 @@ public actor EngineV2Runtime {
     /// modelId → bridge. One bridge per v2-served model, mirroring the
     /// one-scheduler-per-model shape of the legacy registry.
     private var bridges: [String: EngineV2Bridge] = [:]
+
+    /// Test instrumentation: total `capacitySummary()` + `cancel(requestId:)`
+    /// invocations. Lets tests prove the flag-off production paths never
+    /// consult the runtime (the zero-overhead guard).
+    private(set) var consultCount = 0
 
     /// Public init so tests can build isolated instances; production code
     /// uses `.shared`.
@@ -57,6 +63,7 @@ public actor EngineV2Runtime {
     /// registered bridge. Sorted by model id so heartbeat payloads are
     /// deterministic. Empty when v2 is off.
     public func capacitySummary() async -> CapacitySummary {
+        consultCount += 1
         guard !bridges.isEmpty else { return .empty }
         var slots: [BackendSlotCapacity] = []
         var activeRequests = 0
@@ -75,6 +82,7 @@ public actor EngineV2Runtime {
     /// no v2 bridge knows the id (the legacy path owns it).
     @discardableResult
     public func cancel(requestId: String) async -> Bool {
+        consultCount += 1
         for bridge in bridges.values {
             if await bridge.cancelIfOwned(requestId: requestId) {
                 return true

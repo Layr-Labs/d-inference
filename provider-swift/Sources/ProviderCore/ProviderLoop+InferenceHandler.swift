@@ -272,6 +272,10 @@ extension ProviderLoop {
         let modelType = slot.modelType
         let slotContainer = slot.container
         let slotIsVLM = slot.isVLM
+        // ContinuousBatchingV2 (flag-gated): non-nil only when the slot was
+        // loaded with a v2 bridge. The engine below routes text generation
+        // through it; nil keeps the legacy scheduler path byte-identical.
+        let slotEngineV2 = slot.engineV2
 
         // 8. Spawn inference task. The streaming pipeline now flows through
         // the upstream `MLXLMServer` library:
@@ -361,7 +365,8 @@ extension ProviderLoop {
                 registryProvider: { @Sendable in
                     [chatRequest.model: .init(
                         scheduler: sched, tokenizer: tokenizer, modelType: modelType,
-                        container: slotContainer, isVLM: slotIsVLM)]
+                        container: slotContainer, isVLM: slotIsVLM,
+                        engineV2Bridge: slotEngineV2)]
                 },
                 ensureLoaded: { _ in },
                 reserveModel: { _ in },

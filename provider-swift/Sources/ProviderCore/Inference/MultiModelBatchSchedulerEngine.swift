@@ -165,6 +165,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let releaseBox: OneShotRelease
         let container: ModelContainer?
         let isVLM: Bool
+        let engineV2Bridge: EngineV2Bridge?
         let modelId = request.model
         if let acquire {
             let acquired = try await acquire(modelId)
@@ -174,6 +175,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             releaseBox = acquired.releaseToken
             container = acquired.container
             isVLM = acquired.isVLM
+            engineV2Bridge = acquired.engineV2Bridge
         } else {
             try await ensureLoaded(modelId)
             let registry = await (registryProvider?() ?? [:])
@@ -187,6 +189,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             releaseBox = OneShotRelease(release: releaseModel, modelId: modelId)
             container = entry.container
             isVLM = entry.isVLM
+            engineV2Bridge = entry.engineV2Bridge
         }
 
         // Multimodal (image/video) requests can't flow through the token-only
@@ -343,19 +346,48 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         }
 
         let requestId = "req-\(UUID().uuidString.prefix(12))"
-        let upstream = await scheduler.submitTokenized(
-            promptTokens: promptTokens,
-            maxTokens: maxTokens,
-            temperature: temperature,
-            topP: request.topP,
-            topK: request.topK,
-            requestId: requestId,
-            cacheScope: cacheScope,
-            // Keep tool-bearing requests off the greedy text-only B=1 fast path:
-            // it cannot reproduce the engine's raw-text tool-call contract. No
-            // tools ⇒ fast path may apply (subject to the scheduler's gates).
-            allowFastPath: toolHandler == nil
-        )
+
+        // ContinuousBatchingV2 routing (flag-gated): when the resolved model
+        // carries a v2 bridge, submit the SAME tokenized prompt through it.
+        // The bridge yields the identical `AsyncStream<GenerationEvent>`
+        // shape the scheduler produces, so everything downstream — tool-call
+        // parsing, SSE framing, error→status mapping, billing extraction —
+        // is engine-agnostic. nil bridge ⇒ the legacy path, byte-identical.
+        //
+        // INTENTIONAL sampling delta on the v2 path: the legacy submit below
+        // forwards only temperature/topP/topK, silently dropping repetition/
+        // frequency/presence penalties and `stop` strings; the v2 translation
+        // honors them (more OpenAI-faithful). Identical wire requests using
+        // those knobs therefore sample differently across the two engines.
+        let upstream: AsyncStream<GenerationEvent>
+        let cancelUpstream: @Sendable () async -> Void
+        if let bridge = engineV2Bridge {
+            upstream = await bridge.submitTokenized(
+                promptTokens: promptTokens,
+                // Sampling/stop/max-token translation reuses the OpenAI →
+                // internal request mapping (`EngineV2Translation` reads the
+                // internal shape).
+                request: Self.translate(
+                    openAIRequest: request, defaultMaxTokens: defaultMaxTokens),
+                requestId: requestId
+            )
+            cancelUpstream = { await bridge.cancel(requestId: requestId) }
+        } else {
+            upstream = await scheduler.submitTokenized(
+                promptTokens: promptTokens,
+                maxTokens: maxTokens,
+                temperature: temperature,
+                topP: request.topP,
+                topK: request.topK,
+                requestId: requestId,
+                cacheScope: cacheScope,
+                // Keep tool-bearing requests off the greedy text-only B=1 fast path:
+                // it cannot reproduce the engine's raw-text tool-call contract. No
+                // tools ⇒ fast path may apply (subject to the scheduler's gates).
+                allowFastPath: toolHandler == nil
+            )
+            cancelUpstream = { await scheduler.cancel(requestId: requestId) }
+        }
 
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -370,7 +402,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
                 for await event in upstream {
                     if Task.isCancelled {
-                        await scheduler.cancel(requestId: requestId)
+                        await cancelUpstream()
                         await releaseBox.fire()
                         continuation.finish()
                         return
@@ -441,7 +473,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             continuation.onTermination = { @Sendable _ in
                 task.cancel()
                 Task {
-                    await scheduler.cancel(requestId: requestId)
+                    await cancelUpstream()
                     await releaseBox.fire()
                 }
             }

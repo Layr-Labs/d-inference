@@ -53,7 +53,7 @@ scripts/
 ├── deploy-acme.sh    nginx/step-ca helper
 ├── fetch-metallib.sh MLX metallib fetcher
 ├── smoke-dev.sh      Dev-coordinator smoke test
-└── entitlements.plist Hardened Runtime entitlements (hypervisor, network)
+└── entitlements.plist Hardened Runtime entitlements (network, keychain)
 
 docs/                 Architecture docs, deploy runbook, MDM/ACME notes, threat model
 .github/workflows/    CI (ci.yml), integration tests (integration.yml), Swift release (release-swift.yml),
@@ -188,7 +188,6 @@ CI (`.github/workflows/release-swift.yml`) builds, signs, notarizes, and uploads
 - **Challenge timing**: Initial attestation challenge sent immediately on provider registration, then every 5 minutes via ticker.
 - **Model scan performance**: `scan_models()` does fast discovery without hashing. Weight hash computed on-demand only for the model being served via `compute_weight_hash()`.
 - **Chat template injection**: Provider auto-injects ChatML template for models missing `chat_template` field (e.g., Qwen3.5 base models).
-- **Hypervisor memory isolation**: Apple Hypervisor.framework creates Stage 2 page tables to protect inference memory from RDMA/DMA attacks. Requires `com.apple.security.hypervisor` entitlement.
 - **Device auth**: RFC 8628 device code flow for linking provider machines to user accounts. Provider runs `login`, gets a code, user enters it on the web.
 - **CI code signing**: GitHub Actions release workflow signs provider binary with Developer ID Application cert, notarizes with Apple, computes SHA-256 hashes after signing. Provisioning profile embedded in .app bundle for persistent SE key.
 - **Observability**: Datadog DogStatsD metrics for attestation, routing, billing, fleet version, provider capacity. X-Timing JSON header decomposes per-request latency (parse, reserve, route, queue, encrypt, dispatch, provider).

@@ -292,14 +292,38 @@ extension ProviderLoop {
                 }
             }
 
+            // Phase 3: precompute the DH shared secret once per request.
+            // This drops per-chunk encryption from ~150 us (full Curve25519
+            // scalar multiply + XSalsa20-Poly1305) to ~1-2 us (symmetric
+            // XSalsa20-Poly1305 only).  At ~1-2 us per chunk the synchronous
+            // approach does not measurably affect 80 TPS decode, making an
+            // async encryption queue unnecessary.
+            let sharedKey: Data
+            do {
+                sharedKey = try kp.precomputeSharedKey(
+                    recipientPublicKey: responsePublicKeyData
+                )
+            } catch {
+                log.error("[\(requestId)] Shared key precomputation failed: \(error)")
+                providerStats.incrementChunkEncryptionErrors()
+                send.send(.inferenceError(
+                    requestId: requestId,
+                    error: "response encryption failed",
+                    statusCode: 500,
+                    errorReason: nil
+                ))
+                return
+            }
+
             /// Encrypts and emits an SSE frame string. Returns `false` if
             /// encryption failed — callers must abort the inference task
-            /// immediately.
+            /// immediately.  Uses the precomputed DH shared key so each
+            /// call is ~1-2 us (symmetric-only), not ~150 us.
             let emitSSE: @Sendable (String) -> Bool = { sseData in
                 let encryptedPayload: EncryptedPayload
                 do {
-                    encryptedPayload = try kp.encryptPayload(
-                        recipientPublicKey: responsePublicKeyData,
+                    encryptedPayload = try kp.encryptPayloadFast(
+                        sharedKey: sharedKey,
                         plaintext: Data(sseData.utf8)
                     )
                 } catch {
@@ -314,7 +338,14 @@ extension ProviderLoop {
                     return false
                 }
 
-                send.send(.inferenceChunk(
+                // Direct send: bypass the OutboundRouter → AsyncStream →
+                // for-await control path (whose cooperative-pool consumer is
+                // starved ~30-40 ms per turn by CPU-bound MLX decode) and write
+                // the chunk straight to the live NWConnection off a dedicated
+                // serial queue. Ordering vs the terminal inference_complete is
+                // preserved by SendHandle.send's flush barrier. Falls back to the
+                // control path automatically if no direct sender is wired.
+                send.sendChunk(.inferenceChunk(
                     requestId: requestId,
                     data: "",
                     encryptedData: encryptedPayload

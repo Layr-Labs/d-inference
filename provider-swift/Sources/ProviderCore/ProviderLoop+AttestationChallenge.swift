@@ -65,7 +65,6 @@ extension ProviderLoop {
                 signature: response.signature,
                 statusSignature: response.statusSignature,
                 publicKey: response.publicKey,
-                hypervisorActive: response.hypervisorActive,
                 rdmaDisabled: response.rdmaDisabled,
                 sipEnabled: response.sipEnabled,
                 secureBootEnabled: response.secureBootEnabled,

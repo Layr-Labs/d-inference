@@ -205,7 +205,6 @@ import Testing
             signature: "c2ln",
             statusSignature: "c3RhdHVz",
             publicKey: "cGs=",
-            hypervisorActive: true,
             rdmaDisabled: true,
             sipEnabled: true,
             secureBootEnabled: true,
@@ -746,11 +745,47 @@ import Testing
     #expect(decoded == slot)
 }
 
-@Test func privacyCapabilitiesDecodesMissingHypervisorActiveAsFalse() throws {
-    let raw = #"{"text_backend_inprocess":true,"text_proxy_disabled":true,"python_runtime_locked":true,"dangerous_modules_blocked":true,"sip_enabled":true,"anti_debug_enabled":true,"core_dumps_disabled":true,"env_scrubbed":true}"#
-    let decoded = try JSONDecoder().decode(PrivacyCapabilities.self, from: Data(raw.utf8))
+@Test func privacyCapabilitiesJSONOmitsHypervisorKeys() throws {
+    // The hypervisor concept was removed from the provider (it never uses
+    // hypervisors; the old field was a hardcoded-false trust signal). Pin
+    // that registration privacy_capabilities JSON carries NO hypervisor key.
+    let data = try JSONEncoder().encode(samplePrivacyCapabilities())
+    let object = try jsonObject(data)
 
-    #expect(decoded.hypervisorActive == false)
+    #expect(object["hypervisor_active"] == nil)
+    #expect(object["hypervisorActive"] == nil)
+    // Sanity: the remaining capabilities still encode under snake_case keys.
+    #expect(object["text_backend_inprocess"] as? Bool == true)
+    #expect(object["env_scrubbed"] as? Bool == true)
+    #expect(object.count == 8)
+}
+
+@Test func attestationResponseJSONOmitsHypervisorKeys() throws {
+    // Challenge-response wire shape: no hypervisor_active key, ever -- the
+    // canonical status bytes (StatusCanonical) omit it too, so the coordinator
+    // and provider sign/verify the same bytes.
+    let message = ProviderMessage.attestationResponse(ProviderMessage.AttestationResponse(
+        nonce: "bm9uY2U=",
+        signature: "c2ln",
+        statusSignature: "c3RhdHVz",
+        publicKey: "cGs=",
+        rdmaDisabled: true,
+        sipEnabled: true,
+        secureBootEnabled: true,
+        binaryHash: "binaryhash",
+        activeModelHash: "modelhash",
+        runtimeHash: "runtimehash",
+        templateHashes: ["chatml": "templatehash"],
+        modelHashes: ["model": "weighthash"]
+    ))
+    let data = try ProviderProtocolCodec.encodeProviderMessage(message)
+    let object = try jsonObject(data)
+
+    #expect(object["hypervisor_active"] == nil)
+    #expect(object["hypervisorActive"] == nil)
+    // Sanity: the posture fields that remain still ride the response.
+    #expect(object["rdma_disabled"] as? Bool == true)
+    #expect(object["sip_enabled"] as? Bool == true)
 }
 
 @Test func heartbeatBackendCapacityEncodesSnakeCaseFields() throws {
@@ -870,8 +905,7 @@ private func samplePrivacyCapabilities() -> PrivacyCapabilities {
         sipEnabled: true,
         antiDebugEnabled: true,
         coreDumpsDisabled: true,
-        envScrubbed: true,
-        hypervisorActive: false
+        envScrubbed: true
     )
 }
 

@@ -193,9 +193,10 @@ internal final class OSAllocatedUnfairLock: @unchecked Sendable {
 
 // MARK: - PongTracker (thread-safe timestamp for ping/pong timeout)
 
-/// Tracks the last pong time. Updated from URLSessionWebSocketTask's sendPing
-/// completion handler (runs on an arbitrary queue) and read from the ping
-/// task on the cooperative thread pool.
+/// Tracks the last pong time. Updated when a pong frame arrives over the
+/// NWConnection (NWProtocolWebSocket surfaces the pong on the connection's
+/// receive queue, an arbitrary queue) and read from the ping task on the
+/// cooperative thread pool.
 internal final class PongTracker: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
     private var lastPong = CFAbsoluteTimeGetCurrent()
@@ -206,6 +207,24 @@ internal final class PongTracker: @unchecked Sendable {
 
     func elapsed() -> TimeInterval {
         lock.withLock { CFAbsoluteTimeGetCurrent() - lastPong }
+    }
+}
+
+// MARK: - ShutdownFlag
+
+/// Thread-safe shutdown state shared between the CoordinatorClient actor and
+/// its connection child tasks. A lock-backed Bool is enough here and avoids a
+/// per-frame actor hop in the outbound WebSocket writer.
+internal final class ShutdownFlag: @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock()
+    private var requested = false
+
+    var isRequested: Bool {
+        lock.withLock { requested }
+    }
+
+    func request() {
+        lock.withLock { requested = true }
     }
 }
 
@@ -231,4 +250,3 @@ private final class ManagedAtomic<Value: FixedWidthInteger>: @unchecked Sendable
         lock.withLock { value &+= delta }
     }
 }
-

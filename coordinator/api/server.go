@@ -145,7 +145,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // 0.6.0 is the APNs code-identity / VLM-routing / graceful-update release.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.6.11"
+var LatestProviderVersion = "0.6.30"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -332,6 +332,12 @@ type Server struct {
 	// requests from senders. Set via SetCoordinatorKey. nil disables the
 	// /v1/encryption-key endpoint and the sealed-request middleware.
 	coordinatorKey *e2e.CoordinatorKey
+
+	// chunkKeys memoizes the per-request NaCl shared key so streaming chunk
+	// decryption skips the X25519 scalar multiplication per token. Zero value
+	// is ready; entries are dropped on request completion/error and bounded
+	// by chunkKeyCacheMax.
+	chunkKeys chunkKeyCache
 
 	// metrics is the in-process metrics registry exposed via /v1/admin/metrics
 	// and used by internal counters/histograms. Never nil.
@@ -1182,16 +1188,6 @@ func hasConfiguredHashInput(hashes []string) bool {
 	return false
 }
 
-// SetConsoleURL sets the frontend URL for device auth verification links.
-func (s *Server) SetConsoleURL(url string) {
-	s.consoleURL = url
-}
-
-// SetCORSOrigin configures the allowed CORS origin.
-func (s *Server) SetCORSOrigin(origin string) {
-	s.corsOrigin = origin
-}
-
 // SetReleaseKey configures the scoped release key for GitHub Actions.
 func (s *Server) SetReleaseKey(key string) {
 	s.releaseKey = key
@@ -1201,12 +1197,6 @@ func (s *Server) SetReleaseKey(key string) {
 // for sender-to-coordinator request encryption. Pass nil to disable.
 func (s *Server) SetCoordinatorKey(k *e2e.CoordinatorKey) {
 	s.coordinatorKey = k
-}
-
-// CoordinatorKey returns the configured coordinator encryption key (or nil).
-// Exposed for tests; production code should not need this.
-func (s *Server) CoordinatorKey() *e2e.CoordinatorKey {
-	return s.coordinatorKey
 }
 
 // SyncBinaryHashes rebuilds knownBinaryHashes from all active releases.

@@ -232,6 +232,69 @@ struct CoordinatorIntegrationTests {
         #expect(stateBox.isCanceled())
     }
 
+    // MARK: 2b. Direct-send fast path over a real WebSocket
+
+    /// End-to-end validation of Optimizations 1-3 over a REAL loopback
+    /// WebSocket: a chunk sent via `SendHandle.sendChunk` travels the direct
+    /// ChunkSender → ChunkBatcher → ChunkFrameWriter path (NWConnection.batch{}
+    /// + reused send contexts), NOT the OutboundRouter/AsyncStream control path,
+    /// and lands at the coordinator inside a byte-identical
+    /// `inference_response_chunk` envelope — proving the wire is unchanged.
+    @Test("inference chunks sent via the direct fast path arrive over a real WebSocket")
+    func directChunkFastPathDeliversOverRealWebSocket() async throws {
+        let mock = MockCoordinator()
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let keys = NodeKeyPair.generate()
+        let coordinator = makeClient(
+            url: baseURL.mockProviderWebSocketURL(),
+            publicKey: keys.publicKeyBase64,
+            heartbeatInterval: 60
+        )
+        let (events, sendFn) = await coordinator.start()
+        // Wire the DIRECT path exactly as ProviderLoop+Serve does in production.
+        let send = SendHandle(sendFn, chunkSender: coordinator.chunkSender)
+        defer { Task { await coordinator.shutdown() } }
+
+        // Drain events so the stream doesn't back up.
+        let drain = Task { for await _ in events {} }
+        defer { drain.cancel() }
+
+        // The chunk batcher binds to the connection just after registration.
+        let register = try await mock.awaitFirstRegister(timeout: .seconds(5))
+        try #require(register != nil)
+
+        let requestId = "direct-fastpath-1"
+        let payload = EncryptedPayload(
+            ephemeralPublicKey: keys.publicKeyBase64,
+            ciphertext: "Y2lwaGVydGV4dA=="
+        )
+
+        // Send via the DIRECT path, retrying briefly: a send that races ahead of
+        // the per-session bind is dropped (correct reconnect-safety behavior), so
+        // we resend until the frame lands — proving the bound fast path delivers.
+        var captured: ProviderMessage.InferenceResponseChunk?
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while ContinuousClock.now < deadline {
+            send.sendChunk(.inferenceChunk(requestId: requestId, data: "", encryptedData: payload))
+            try await Task.sleep(for: .milliseconds(50))
+            if let hit = mock.snapshot().inferenceChunks.first(where: { $0.requestId == requestId }) {
+                captured = hit
+                break
+            }
+        }
+
+        let chunk = try #require(captured, "direct-path chunk never arrived over the real WebSocket")
+        #expect(chunk.requestId == requestId)
+        // Wire shape is identical to the control path: empty plaintext `data`,
+        // encrypted_data carrying the provider's own ephemeral key + ciphertext.
+        #expect(chunk.data.isEmpty)
+        let enc = try #require(chunk.encryptedData)
+        #expect(enc.ciphertext == "Y2lwaGVydGV4dA==")
+        #expect(enc.ephemeralPublicKey == keys.publicKeyBase64)
+    }
+
     // MARK: 3. Reconnect after WS drop
 
     @Test("CoordinatorClient reconnects after the server drops the WS")
@@ -564,8 +627,7 @@ private func makeClient(
             sipEnabled: true,
             antiDebugEnabled: false,
             coreDumpsDisabled: false,
-            envScrubbed: false,
-            hypervisorActive: false
+            envScrubbed: false
         )
     )
     return CoordinatorClient(

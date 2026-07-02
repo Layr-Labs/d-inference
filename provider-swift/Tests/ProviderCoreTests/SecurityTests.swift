@@ -124,7 +124,6 @@ import Testing
     let data = try StatusCanonical.build(StatusCanonicalInput(
         nonce: "test-nonce",
         timestamp: "2026-04-16T12:00:00Z",
-        hypervisorActive: true,
         rdmaDisabled: true,
         sipEnabled: true,
         secureBootEnabled: true,
@@ -141,8 +140,43 @@ import Testing
             "trinity": "modelhash2",
         ]
     ))
-    let expected = #"{"active_model_hash":"activemodel","binary_hash":"binhash","hypervisor_active":true,"model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}"#
+    let expected = #"{"active_model_hash":"activemodel","binary_hash":"binhash","model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}"#
     #expect(String(data: data, encoding: .utf8) == expected)
+}
+
+@Test func registrationAttestationBlobJSONOmitsHypervisorKeys() throws {
+    // The registration attestation blob is signed over its exact serialized
+    // bytes (sorted keys, ISO-8601 dates -- the same encoder settings
+    // AttestationBuilder.buildAttestation uses). The hypervisor concept was
+    // removed from the provider: pin that NO hypervisor key appears in the
+    // signed blob JSON.
+    let blob = AttestationBlob(
+        authenticatedRootEnabled: true,
+        binaryHash: "binhash",
+        chipName: "Apple M4 Max",
+        encryptionPublicKey: "ZW5jcnlwdGlvbi1rZXk=",
+        hardwareModel: "Mac16,5",
+        osVersion: "15.3.0",
+        publicKey: "cHVibGljLWtleQ==",
+        rdmaDisabled: true,
+        secureBootEnabled: true,
+        secureEnclaveAvailable: true,
+        serialNumber: "C02TESTSERIAL",
+        sipEnabled: true,
+        systemVolumeHash: "svhash",
+        timestamp: Date(timeIntervalSince1970: 1_766_000_000)
+    )
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    encoder.outputFormatting = .sortedKeys
+    let data = try encoder.encode(blob)
+
+    let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["hypervisorActive"] == nil)
+    #expect(object["hypervisor_active"] == nil)
+    // Sanity: the blob still carries its real posture fields.
+    #expect(object["sipEnabled"] as? Bool == true)
+    #expect(object["rdmaDisabled"] as? Bool == true)
 }
 
 @Test func statusCanonicalOmitsEmptyFieldsAndSerializesFalse() throws {

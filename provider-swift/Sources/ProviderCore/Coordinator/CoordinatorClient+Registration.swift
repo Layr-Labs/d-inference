@@ -10,7 +10,7 @@ import os
 extension CoordinatorClient {
     // MARK: - Registration
 
-    internal func sendRegistration(ws: URLSessionWebSocketTask) async throws {
+    internal func sendRegistration(connection: NWConnection) async throws {
         let privacyCapabilities = config.privacyCapabilities ?? PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
@@ -19,8 +19,7 @@ extension CoordinatorClient {
             sipEnabled: SecurityChecks.isSIPEnabled(),
             antiDebugEnabled: true,
             coreDumpsDisabled: true,
-            envScrubbed: true,
-            hypervisorActive: SecurityChecks.isHypervisorActive()
+            envScrubbed: true
         )
         // Read the live advertised list (startup ∪ prefetched builds) rather
         // than the immutable `config.models`, so a re-registration after a
@@ -35,7 +34,27 @@ extension CoordinatorClient {
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
             throw CoordinatorError.encodingFailed
         }
-        try await ws.send(.string(jsonString))
+        // Registration is a BLOCKING send: the reconnect loop must not proceed to
+        // the session tasks until the register frame is actually handed to the
+        // transport (and any immediate write error surfaces here, triggering
+        // backoff). Wrap the completion in a continuation to await it — unlike the
+        // fire-and-forget hot path, this is once per connection, not per chunk.
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
+        let context = NWConnection.ContentContext(identifier: "register", metadata: [metadata])
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            connection.send(
+                content: Data(jsonString.utf8),
+                contentContext: context,
+                isComplete: true,
+                completion: .contentProcessed { error in
+                    if let error {
+                        cont.resume(throwing: CoordinatorError.connectionClosed(error))
+                    } else {
+                        cont.resume()
+                    }
+                }
+            )
+        }
     }
 
     // MARK: - Heartbeat

@@ -64,17 +64,17 @@ console-ui/           Next.js 16 / React 19 frontend
 ├── src/components/providers/
 │   ├── PrivyClientProvider.tsx
 │   └── ThemeProvider.tsx
-├── src/lib/          API client (api.ts) + Zustand store (store.ts)
+├── src/lib/          API client (src/lib/api/) + Zustand store (store.ts)
 ├── src/hooks/        auth (useAuth.ts) + toast (useToast.ts)
-└── proxy.ts          Next.js 16 proxy (replaces middleware.ts)
+└── src/proxy.ts      Next.js 16 proxy (replaces middleware.ts)
 
 scripts/              build, signing, install, and deploy helpers
 ├── install.sh        end-user installer served from coordinator (hash + codesign verification)
 ├── admin.sh          admin CLI (Privy auth, release mgmt, API calls)
 ├── publish-model.sh  model registry publish workflow
 ├── deploy-acme.sh    nginx/step-ca helper
-├── fetch-metallib.sh MLX metallib fetcher
-└── entitlements.plist hardened runtime entitlements (hypervisor, network)
+├── fetch-metallib.sh MLX metallib builder (cmake from libs/mlx-swift source)
+└── entitlements.plist hardened runtime entitlements (network, keychain)
 
 docs/                 architecture, deploy runbooks, MDM/ACME notes, threat model
 .github/workflows/    CI (ci.yml), integration tests (integration.yml), Swift release (release-swift.yml),
@@ -144,13 +144,12 @@ make clean                    # remove built artifacts
 
 ## Deploying
 
-Canonical runbook: `docs/coordinator-deploy-runbook.md`
+Canonical runbook: `docs/operations/coordinator-deploy.md`
 
 Current release-sensitive pieces:
 
-- Prod coordinator runs on EigenCloud (TEE) as app `d-inference` at `api.darkbloom.dev`. Build target: `coordinator/Dockerfile`. Dev coordinator runs on Google Cloud (see `docs/dev-environment.md`).
-- Provider bundle creation lives in `scripts/build-bundle.sh`.
-- App bundle + DMG creation lives in `scripts/bundle-app.sh`.
+- Prod coordinator runs on EigenCloud (TEE) as app `d-inference` at `api.darkbloom.dev`. Build target: `coordinator/Dockerfile`. Dev coordinator runs on Google Cloud (see `docs/operations/dev-environment.md`).
+- Provider bundle creation (staging, .app wrapping, signing, notarization) lives inline in `.github/workflows/release-swift.yml` (bundle steps ~341-617); there is no standalone bundling script.
 - Installer flow lives in `scripts/install.sh`.
 - Provider update checks use `LatestProviderVersion` in `coordinator/api/server.go`, so bundle uploads and version bumps need to stay coordinated.
 - CI release workflow (`release-swift.yml`) signs binaries with Developer ID Application cert, notarizes with Apple, computes SHA-256 hashes after signing, embeds provisioning profile in .app bundle.
@@ -165,7 +164,7 @@ curl https://api.darkbloom.dev/health
 ecloud compute app logs d-inference
 ```
 
-Dev coordinator deploy (Google Cloud): see `docs/dev-environment.md`.
+Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
 
 ## Important Sync Points
 
@@ -178,14 +177,14 @@ Dev coordinator deploy (Google Cloud): see `docs/dev-environment.md`.
   Field allowlist additions need parallel updates in
   `coordinator/api/telemetry_handlers.go`,
   `provider-swift/Sources/ProviderCore/Telemetry/`, and the TS set above.
-- If you change provider bundle semantics, keep `scripts/build-bundle.sh`, `scripts/install.sh`, and `LatestProviderVersion` in sync.
+- If you change provider bundle semantics, keep the bundle steps in `.github/workflows/release-swift.yml`, `scripts/install.sh`, and `LatestProviderVersion` in sync.
 - If you change install paths or process invocation, update both the CLI and install flow.
 - Device linking changes often span both coordinator device auth endpoints and the provider `login` / `logout` commands.
 - Model registry changes span coordinator registry schema/endpoints, `provider-swift` manifest download/publish code, `scripts/publish-model.sh`, and the console UI. Do not add hardcoded provider `MODEL_CATALOG` lists.
 
 ## Common Pitfalls
 
-- `coordinator/coordinator` is a built binary checked into the tree. Do not model changes from it, and do not commit more built artifacts.
+- `coordinator/coordinator` may exist locally as a build artifact (it is gitignored, not tracked). Do not model changes from it, and never commit binaries or other built artifacts.
 - CI release workflow must compute binary SHA-256 hashes AFTER code signing, not before. Providers verify hashes of the signed binary.
 - Model scan uses fast discovery (no hashing) at startup. Weight hashing is on-demand via `compute_weight_hash()` only for the served model. Don't add hashing back to the scan path.
 - Provider auto-injects ChatML template for models missing `chat_template` field. This is intentional -- Qwen3.5 base models ship without it.

@@ -8,7 +8,17 @@ import os
 #endif
 
 extension CoordinatorClient {
-    internal func handleIncomingText(_ text: String, ws: URLSessionWebSocketTask) async {
+    /// Send a pre-encoded JSON frame on the current connection, if any. The
+    /// receive path's rejections (missing/invalid encrypted body) are
+    /// low-frequency, so routing them straight to the live NWConnection — rather
+    /// than through the outbound stream — keeps them adjacent to the decode that
+    /// produced them, matching the old direct `ws.send` on this path.
+    private func sendOnCurrentConnection(_ json: String, identifier: String) {
+        guard let connection = nwConnection else { return }
+        sendTextFrame(json, on: connection, identifier: identifier)
+    }
+
+    internal func handleIncomingText(_ text: String) async {
         guard let data = text.data(using: .utf8) else { return }
 
         let parsed: CoordinatorMessage
@@ -31,7 +41,7 @@ extension CoordinatorClient {
                     error: "coordinator text request missing encrypted body",
                     statusCode: 400
                 )
-                try? await ws.send(.string(errorResponse))
+                sendOnCurrentConnection(errorResponse, identifier: "inference_error")
                 return
             }
 
@@ -46,7 +56,7 @@ extension CoordinatorClient {
                     error: "ciphertext is not valid base64",
                     statusCode: 400
                 )
-                try? await ws.send(.string(errorResponse))
+                sendOnCurrentConnection(errorResponse, identifier: "inference_error")
                 return
             }
             let senderKeyBytes = Data(base64Encoded: encrypted.ephemeralPublicKey)
@@ -57,7 +67,7 @@ extension CoordinatorClient {
                     error: "invalid ephemeral_public_key",
                     statusCode: 400
                 )
-                try? await ws.send(.string(errorResponse))
+                sendOnCurrentConnection(errorResponse, identifier: "inference_error")
                 return
             }
 

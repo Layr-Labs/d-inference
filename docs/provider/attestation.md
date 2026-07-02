@@ -62,7 +62,6 @@ The blob contains:
 | `secureBootEnabled` | Secure Boot state |
 | `authenticatedRootEnabled` | Authenticated root volume state |
 | `rdmaDisabled` | RDMA safety signal |
-| `hypervisorActive` | Hypervisor state (reported only) |
 | `secureEnclaveAvailable` | Confirms SE presence |
 | `binaryHash` | SHA-256 of the provider binary |
 | `systemVolumeHash` | Signed system-volume snapshot hash |
@@ -73,6 +72,13 @@ The coordinator verifies the ECDSA signature over the exact attestation JSON
 bytes in `coordinator/attestation/attestation.go:128` and checks that the
 encryption public key in the blob matches the key supplied in the `register`
 message (`coordinator/api/provider.go:2130-2156`).
+
+> **Legacy field:** older provider builds also included a `hypervisorActive`
+> field in this blob and in the challenge-response canonical payload. It was a
+> hardcoded-`false` stub — hypervisor isolation was never implemented — and
+> current providers no longer report it. The coordinator still accepts it in
+> signed payloads from older providers so their signatures keep verifying, but
+> it carries no meaning and is not used in any routing or trust decision.
 
 ## Periodic challenge-response
 

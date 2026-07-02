@@ -10,8 +10,6 @@
          signed-binary value so the entitlement never ships without a push profile. -->
     <key>com.apple.developer.aps-environment</key>
     <string>production</string>
-    <key>com.apple.security.hypervisor</key>
-    <true/>
     <key>com.apple.security.network.client</key>
     <true/>
     <key>com.apple.security.network.server</key>

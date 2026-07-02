@@ -105,15 +105,33 @@ public enum VLMRequestInference {
         request.maxTokens ?? defaultMaxTokens
     }
 
-    /// Conservative per-image soft-token allotment for the KV-token estimate.
-    /// Gemma-4 pools every image to a FIXED `vision_soft_tokens_per_image` (256)
-    /// regardless of resolution; other VLMs run higher. 1024 (4× Gemma) is a
-    /// generous model-agnostic upper bound that is still bounded by the model's
-    /// context window via the clamp in `projectedKVTokens`.
+    /// Conservative per-image (and per-video-frame) soft-token allotment for the
+    /// KV-token estimate. Gemma-4 pools every image/frame to a FIXED soft-token
+    /// block (`image_seq_length`, default 280) regardless of resolution and wraps
+    /// it with 2 `boi`/`eoi` delimiter tokens; other VLMs run higher. 1024 is a
+    /// generous model-agnostic upper bound that over-covers that whole
+    /// `boi + soft_tokens + eoi` per-frame span, and is still bounded by the
+    /// model's context window via the clamp in `projectedKVTokens`.
     static let visionTokensPerImage = 1024
-    /// A video samples multiple frames, each contributing image-like soft tokens.
-    /// Charge a larger fixed allotment per video; still clamped to the context.
-    static let visionTokensPerVideo = 4096
+    /// Max frames Gemma-4 samples from a single video. Mirrors `maxFrames: 32`
+    /// in the Gemma4 video processor (`Gemma4Processor.prepare`), which samples
+    /// up to 32 frames spread uniformly across the clip and expands EACH into its
+    /// own image-like `boi + soft_token*image_seq_length + eoi` block. A video's
+    /// KV footprint therefore scales with the sampled frame count — it is NOT a
+    /// flat per-video allotment.
+    static let maxVideoFramesSampled = 32
+    /// A video reserves KV for EVERY sampled frame: the processor emits one
+    /// image-like soft-token block per sampled frame (up to
+    /// `maxVideoFramesSampled`), so the worst case is `maxVideoFramesSampled ×
+    /// visionTokensPerImage`. Because `visionTokensPerImage` already over-covers
+    /// a single frame's soft tokens AND its `boi`/`eoi` delimiters, this product
+    /// bounds the full `32 × (soft tokens + delimiters)` span the prefill
+    /// actually writes into KV. The previous flat 4096 covered only ~4 frames and
+    /// badly under-reserved a full clip (Gemma-4's real worst case is
+    /// 32 × (280 + 2) = 9024 soft tokens). Still clamped to the model's context
+    /// window via the clamp in `projectedKVTokens`, so over-reservation never
+    /// projects past a request the context could actually hold.
+    static let visionTokensPerVideo = maxVideoFramesSampled * visionTokensPerImage
     /// Conservative chars→tokens divisor for the text prompt estimate. Real
     /// tokenizers average ~4 chars/token; dividing by 3 OVER-estimates the token
     /// count (the safe direction for a reservation).

@@ -7,13 +7,11 @@ package store
 // testing, and single-instance deployments where persistence across restarts
 // is not needed.
 //
-// API keys are stored as raw strings (no hashing) for simplicity in the
-// in-memory implementation. The PostgresStore uses SHA-256 hashing.
+// API keys and tokens are stored with the same SHA-256 hashing (hashKey) as
+// the PostgresStore, so lookup semantics match across backends.
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -298,7 +296,7 @@ func (s *MemoryStore) CreateAPIKey(accountID string, opts APIKeyCreate) (string,
 		OwnerAccountID: accountID,
 		Name:           opts.Name,
 		Label:          KeyLabel(raw),
-		KeyHash:        sha256Hex(raw),
+		KeyHash:        hashKey(raw),
 		LimitMicroUSD:  cloneInt64Ptr(opts.LimitMicroUSD),
 		LimitReset:     NormalizeResetWindow(opts.LimitReset),
 		RPMLimit:       cloneInt64Ptr(opts.RPMLimit),
@@ -486,7 +484,7 @@ func (s *MemoryStore) RotateAPIKey(accountID, id string) (string, *APIKey, error
 		OwnerAccountID: accountID,
 		Name:           old.Name,
 		Label:          KeyLabel(raw),
-		KeyHash:        sha256Hex(raw),
+		KeyHash:        hashKey(raw),
 		Disabled:       old.Disabled,
 		LimitMicroUSD:  cloneInt64Ptr(old.LimitMicroUSD),
 		LimitReset:     NormalizeResetWindow(old.LimitReset),
@@ -2302,7 +2300,7 @@ func (s *MemoryStore) GetProviderToken(token string) (*ProviderToken, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	h := sha256Hex(token)
+	h := hashKey(token)
 	pt, ok := s.providerTokens[h]
 	if !ok {
 		return nil, errors.New("provider token not found")
@@ -2318,7 +2316,7 @@ func (s *MemoryStore) RevokeProviderToken(token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	h := sha256Hex(token)
+	h := hashKey(token)
 	pt, ok := s.providerTokens[h]
 	if !ok {
 		return errors.New("provider token not found")
@@ -3196,10 +3194,4 @@ func (s *MemoryStore) CloseOpenProviderSessions(_ context.Context, staleBefore t
 		}
 	}
 	return n, nil
-}
-
-// sha256Hex returns the hex-encoded SHA-256 digest of s.
-func sha256Hex(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(h[:])
 }

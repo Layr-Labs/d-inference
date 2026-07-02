@@ -467,6 +467,91 @@ func TestMarshalSortedJSONWithEncryptionKey(t *testing.T) {
 	}
 }
 
+// TestMarshalSortedJSONLegacyHypervisorRoundTrip is the legacy-fleet
+// signature-compat guard for the SIGNED registration blob. Old providers
+// (< v0.6.31) include the retired, hardcoded-false "hypervisorActive"
+// key in the JSON they sign with the Secure Enclave. The coordinator
+// re-serializes the parsed blob via marshalSortedJSON on the fallback
+// verification path, so decode→re-encode MUST reproduce the exact
+// signed bytes — key present when the provider sent it, absent when it
+// didn't. Remove together with AttestationBlob.HypervisorActive once
+// the fleet floor passes v0.6.31.
+func TestMarshalSortedJSONLegacyHypervisorRoundTrip(t *testing.T) {
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB64 := base64.StdEncoding.EncodeToString(marshalUncompressedP256(privKey))
+
+	// Exactly what an old provider signs: alphabetically sorted keys,
+	// hypervisorActive present (always false — it was a stub).
+	legacyJSON := []byte(`{"authenticatedRootEnabled":true,"chipName":"Apple M3 Max","hardwareModel":"Mac15,8","hypervisorActive":false,"osVersion":"15.3.0","publicKey":"` + pubB64 + `","rdmaDisabled":true,"secureBootEnabled":true,"secureEnclaveAvailable":true,"sipEnabled":true,"timestamp":"2026-06-30T12:00:00Z"}`)
+
+	var blob AttestationBlob
+	if err := json.Unmarshal(legacyJSON, &blob); err != nil {
+		t.Fatalf("unmarshal legacy blob: %v", err)
+	}
+	if blob.HypervisorActive == nil || *blob.HypervisorActive {
+		t.Fatal("expected HypervisorActive to decode as non-nil false for a legacy blob")
+	}
+
+	reencoded, err := marshalSortedJSON(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(reencoded) != string(legacyJSON) {
+		t.Fatalf("legacy blob does not round-trip — old-fleet signatures would break\nwant: %s\ngot:  %s", legacyJSON, reencoded)
+	}
+
+	// Full signature verification through the marshalSortedJSON fallback
+	// path (AttestationRaw deliberately nil): sign the original bytes and
+	// verify the re-encoded reconstruction matches.
+	signed := signOverRawJSON(t, blob, legacyJSON, privKey)
+	result := Verify(signed)
+	if !result.Valid {
+		t.Fatalf("legacy blob with hypervisorActive failed verification: %s", result.Error)
+	}
+}
+
+// TestMarshalSortedJSONNewProviderOmitsHypervisor is the counterpart for
+// new (v0.6.31+) providers: the signed blob has NO hypervisorActive key,
+// the field decodes to nil, and re-encoding omits it — reproducing the
+// signed bytes exactly.
+func TestMarshalSortedJSONNewProviderOmitsHypervisor(t *testing.T) {
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB64 := base64.StdEncoding.EncodeToString(marshalUncompressedP256(privKey))
+
+	newJSON := []byte(`{"authenticatedRootEnabled":true,"chipName":"Apple M3 Max","hardwareModel":"Mac15,8","osVersion":"15.3.0","publicKey":"` + pubB64 + `","rdmaDisabled":true,"secureBootEnabled":true,"secureEnclaveAvailable":true,"sipEnabled":true,"timestamp":"2026-06-30T12:00:00Z"}`)
+
+	var blob AttestationBlob
+	if err := json.Unmarshal(newJSON, &blob); err != nil {
+		t.Fatalf("unmarshal new blob: %v", err)
+	}
+	if blob.HypervisorActive != nil {
+		t.Fatal("expected HypervisorActive to decode as nil when the key is absent")
+	}
+
+	reencoded, err := marshalSortedJSON(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(reencoded) != string(newJSON) {
+		t.Fatalf("new-provider blob does not round-trip\nwant: %s\ngot:  %s", newJSON, reencoded)
+	}
+	if findStringIndex(string(reencoded), "hypervisorActive") >= 0 {
+		t.Error("hypervisorActive must be omitted when the provider did not send it")
+	}
+
+	signed := signOverRawJSON(t, blob, newJSON, privKey)
+	result := Verify(signed)
+	if !result.Valid {
+		t.Fatalf("new-provider blob failed verification: %s", result.Error)
+	}
+}
+
 // --- helpers ---
 
 func createTestAttestation(t *testing.T) SignedAttestation {
@@ -517,6 +602,28 @@ func signBlob(t *testing.T, blob AttestationBlob, privKey *ecdsa.PrivateKey) Sig
 	return SignedAttestation{
 		Attestation:    blob,
 		AttestationRaw: blobJSON,
+		Signature:      base64.StdEncoding.EncodeToString(sigDER),
+	}
+}
+
+// signOverRawJSON signs the exact raw blob JSON (what a provider's Secure
+// Enclave signs) but returns a SignedAttestation WITHOUT AttestationRaw,
+// forcing Verify down the marshalSortedJSON reconstruction path.
+func signOverRawJSON(t *testing.T, blob AttestationBlob, rawJSON []byte, privKey *ecdsa.PrivateKey) SignedAttestation {
+	t.Helper()
+
+	hash := sha256.Sum256(rawJSON)
+	r, s, err := ecdsa.Sign(rand.Reader, privKey, hash[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sigDER, err := asn1.Marshal(ecdsaSig{R: r, S: s})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return SignedAttestation{
+		Attestation:    blob,
+		AttestationRaw: nil, // force the marshalSortedJSON fallback
 		Signature:      base64.StdEncoding.EncodeToString(sigDER),
 	}
 }

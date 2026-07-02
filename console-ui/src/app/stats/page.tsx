@@ -3183,7 +3183,7 @@ export default function StatsPage() {
         {/* Footer */}
         <div className="text-center pb-8">
           <p className="text-xs font-mono text-text-tertiary uppercase tracking-widest">
-            Auto-refreshes every 10 seconds
+            Auto-refreshes every 15 seconds
           </p>
         </div>
         </div>

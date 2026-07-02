@@ -16,19 +16,13 @@ public actor CoordinatorClient {
     /// Upper bound on a single inbound WebSocket message. The coordinator sends each
     /// inference request as ONE text frame carrying the base64 NaCl-box of the full
     /// body; for a vision request that frame includes base64-encoded image bytes and
-    /// can be several MiB. `URLSessionWebSocketTask` defaults to a 1 MiB cap and
-    /// THROWS on any larger frame, which tears down the entire session and cancels
-    /// every unrelated in-flight request on this provider (then reconnects with
-    /// backoff). Size this comfortably above the coordinator's 16 MiB sealed-body cap
-    /// after base64 expansion (×4/3 ≈ 21.3 MiB).
+    /// can be several MiB. Applied to the connection via
+    /// `NWProtocolWebSocket.Options.maximumMessageSize` at setup (see
+    /// `connectAndRun`): a larger frame is rejected by the transport, which tears
+    /// down the entire session and cancels every unrelated in-flight request on this
+    /// provider (then reconnects with backoff). Size this comfortably above the
+    /// coordinator's 16 MiB sealed-body cap after base64 expansion (×4/3 ≈ 21.3 MiB).
     static let maxInboundMessageBytes = 32 * 1024 * 1024
-
-    /// Raise a task's inbound message limit to ``maxInboundMessageBytes``. Factored
-    /// out so a unit test can assert the limit is applied without opening a live
-    /// socket.
-    static func applyInboundMessageLimit(to task: URLSessionWebSocketTask) {
-        task.maximumMessageSize = maxInboundMessageBytes
-    }
 
     internal let config: CoordinatorClientConfig
     internal let stats: AtomicProviderStats
@@ -46,8 +40,32 @@ public actor CoordinatorClient {
     /// one AsyncStream across reconnects silently kills outbound delivery.
     internal let outboundRouter = OutboundRouter()
 
-    internal var webSocketTask: URLSessionWebSocketTask?
-    internal var urlSession: URLSession?
+    /// Inference-chunk fast path. `chunkBatcher` owns the dedicated serial queue
+    /// + coalescing; `chunkSender` is the nonisolated, Sendable handle the
+    /// ProviderLoop captures so `emitSSE` can write chunks straight to the live
+    /// NWConnection — bypassing the OutboundRouter → AsyncStream → for-await
+    /// control path (whose cooperative-pool consumer is starved by MLX decode).
+    /// Both are `nonisolated` so the hot path never hops to this actor. The
+    /// batcher's connection sink is (re)bound per session in `connectAndRun`;
+    /// control messages (heartbeats, attestation, complete/error) keep flowing
+    /// through `outboundRouter`.
+    nonisolated internal let chunkBatcher: ChunkBatcher
+    nonisolated internal let chunkSender: ChunkSender
+
+    /// Active Network.framework WebSocket connection (replaces the prior
+    /// `URLSessionWebSocketTask`). Outbound frames are written with the
+    /// non-blocking `NWConnection.send`, which buffers in the kernel and returns
+    /// immediately instead of `await`-ing each TCP ACK — that is what unblocks
+    /// per-stream inference-chunk throughput under concurrent load.
+    internal var nwConnection: NWConnection?
+
+    /// Serial queue that drives the NWConnection state machine, receive
+    /// callbacks, send completions, and pong handlers. Kept off the cooperative
+    /// pool and the actor executor. `internal` (not `private`) because the
+    /// connection extension in `CoordinatorClient+Connection.swift` starts the
+    /// connection and registers the pong handler on it (Swift `private` is
+    /// file-scoped, and this actor is split across files).
+    internal let connectionQueue = DispatchQueue(label: "dev.darkbloom.coordinator.nw")
     /// Device token that arrived after the initial registration (APNs slow at
     /// startup). Once set, every (re)registration carries it. See refreshAPNsToken.
     internal var apnsTokenOverride: String?
@@ -71,7 +89,16 @@ public actor CoordinatorClient {
     /// registrations consistent.
     internal var modelWeightHashOverrides: [String: String] = [:]
 
-    internal var shutdownRequested = false
+    private let shutdownFlag = ShutdownFlag()
+
+    /// Fast, thread-safe shutdown visibility for connection tasks.
+    ///
+    /// The outbound WebSocket writer checks this once per inference chunk. Keep
+    /// the read nonisolated so the hot path does not hop back to the
+    /// CoordinatorClient actor just to read a Bool.
+    nonisolated internal var shutdownRequested: Bool {
+        shutdownFlag.isRequested
+    }
 
     /// Mutable advertised-model list. Seeded from `config.models`; background
     /// prefetch (Layer 3) appends newly-verified builds so re-registration and
@@ -89,6 +116,31 @@ public actor CoordinatorClient {
         self.state = state
         self.advertisedModelStore = AdvertisedModelStore(config.models)
         self.liveAPNsToken = liveAPNsToken ?? { APNsBridge.shared.currentDeviceToken() }
+
+        // Inference-chunk fast path. The encode closure is the same pure static
+        // codec the control path uses; on the (effectively impossible) encode
+        // failure of a fixed-shape chunk it returns nil so SendHandle falls back
+        // to the control path. A local logger is captured (not `self.logger`,
+        // which isn't available while initializing stored properties) to avoid a
+        // retain cycle through the actor.
+        let chunkLogger = CoordinatorWSLogger(
+            subsystem: "dev.darkbloom.provider", category: "coordinator.chunks")
+        let batcher = ChunkBatcher()
+        self.chunkBatcher = batcher
+        self.chunkSender = ChunkSender(batcher: batcher, encode: { message in
+            do {
+                return try CoordinatorClientCodec.encodeOutboundMessage(message)
+            } catch {
+                chunkLogger.error("chunk encode failed: \(error.localizedDescription)")
+                TelemetryClient.shared.emit(
+                    kind: .protocolError,
+                    severity: .error,
+                    message: "outbound chunk encode failed",
+                    fields: ["error": .string(error.localizedDescription)]
+                )
+                return nil
+            }
+        })
     }
 
     /// Add a runtime-verified build to the advertised set so the coordinator
@@ -155,10 +207,40 @@ public actor CoordinatorClient {
     }
 
     public func shutdown() {
-        shutdownRequested = true
-        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        shutdownFlag.request()
+        closeCurrentConnection()
         eventContinuation?.finish()
         outboundRouter.finish()
+    }
+
+    /// Send a WebSocket close frame (going-away) on the current connection and
+    /// then tear it down. Mirrors the old
+    /// `URLSessionWebSocketTask.cancel(with: .goingAway, reason: nil)`: a clean
+    /// close lets the coordinator deregister us promptly instead of waiting out a
+    /// ping/pong timeout. `cancel()` runs in the send completion so the close
+    /// frame is handed to the transport first. Used both for permanent shutdown
+    /// and for the APNs-refresh forced reconnect (the reconnect loop re-runs
+    /// registration while `shutdownRequested` is still false). Fire-and-forget:
+    /// the actor is not blocked waiting for the frame to flush.
+    private func closeCurrentConnection() {
+        guard let connection = nwConnection else { return }
+        nwConnection = nil
+        // Best-effort close frame: enqueue a .goingAway close frame so the
+        // coordinator sees a clean WS shutdown. Then cancel immediately —
+        // don't gate on the close frame flushing, because if the connection is
+        // still handshaking, the write side is wedged, or the peer is
+        // unreachable, the completion handler never fires and cancel() never
+        // runs, leaving the connection (and its reconnect-blocking state) alive.
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
+        metadata.closeCode = .protocolCode(.goingAway)
+        let context = NWConnection.ContentContext(identifier: "close", metadata: [metadata])
+        connection.send(
+            content: nil,
+            contentContext: context,
+            isComplete: true,
+            completion: .contentProcessed { _ in }
+        )
+        connection.cancel()
     }
 
     /// Re-register over a fresh connection carrying a device token that arrived
@@ -170,7 +252,7 @@ public actor CoordinatorClient {
     public func refreshAPNsToken(_ token: String) {
         guard apnsTokenOverride != token else { return }
         apnsTokenOverride = token
-        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        closeCurrentConnection()
     }
 
     /// Record refreshed per-model weight hashes for use in future
@@ -190,10 +272,6 @@ public actor CoordinatorClient {
 enum SecurityChecks {
     static func isSIPEnabled() -> Bool {
         SIPStatusChecker().isFullyEnabled()
-    }
-
-    static func isHypervisorActive() -> Bool {
-        false
     }
 }
 

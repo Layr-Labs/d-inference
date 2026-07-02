@@ -145,7 +145,6 @@ public struct AttestationResponsePayload: Sendable {
     public let signature: String
     public let statusSignature: String?
     public let publicKey: String
-    public let hypervisorActive: Bool?
     public let rdmaDisabled: Bool?
     public let sipEnabled: Bool?
     public let secureBootEnabled: Bool?
@@ -161,7 +160,6 @@ public struct AttestationResponsePayload: Sendable {
         signature: String,
         statusSignature: String? = nil,
         publicKey: String,
-        hypervisorActive: Bool? = nil,
         rdmaDisabled: Bool? = nil,
         sipEnabled: Bool? = nil,
         secureBootEnabled: Bool? = nil,
@@ -176,7 +174,6 @@ public struct AttestationResponsePayload: Sendable {
         self.signature = signature
         self.statusSignature = statusSignature
         self.publicKey = publicKey
-        self.hypervisorActive = hypervisorActive
         self.rdmaDisabled = rdmaDisabled
         self.sipEnabled = sipEnabled
         self.secureBootEnabled = secureBootEnabled

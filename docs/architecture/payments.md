@@ -9,7 +9,7 @@ referrals. Implementation:
 
 - `coordinator/payments/pricing.go` — pricing models and per-request cost
   estimation.
-- `coordinator/payments/ledger.go` — ledger operations.
+- `coordinator/payments/payments.go` — ledger operations.
 - `coordinator/api/provider.go` around lines 1640–1944 — settlement path.
 
 ## Pricing

@@ -467,7 +467,7 @@ type Provider struct {
 	// Phase 7: Privacy invariant attestation.
 	// Self-reported by the provider at registration. SIPEnabled is overridden
 	// by the coordinator after each attestation challenge response with a
-	// coordinator-verified value. HypervisorActive is informational.
+	// coordinator-verified value.
 	PrivacyCapabilities *protocol.PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
 
 	// Coordinator-verified SIP status from the most recent attestation challenge.

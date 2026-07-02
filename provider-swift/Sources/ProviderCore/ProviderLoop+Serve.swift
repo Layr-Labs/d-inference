@@ -125,7 +125,10 @@ extension ProviderLoop {
         await coordinator.updateModelWeightHashes(liveModelHashes)
 
         let (events, sendFn) = await coordinator.start()
-        let send = SendHandle(sendFn)
+        // Wire the direct inference-chunk fast path (Optimizations 1-3) alongside
+        // the control path. `chunkSender` is a nonisolated handle on the actor;
+        // its connection sink is (re)bound per session inside the client.
+        let send = SendHandle(sendFn, chunkSender: coordinator.chunkSender)
 
         // APNs code-identity (v0.6.0): answer pushed code-identity challenges by
         // decrypting E_K(nonce) with K and signing the nonce with the SE key, then
@@ -317,9 +320,6 @@ extension ProviderLoop {
         // pythonRuntimeLocked + dangerousModulesBlocked: report false. There
         //   is no Python runtime to lock anymore. Coordinator's Swift-runtime
         //   trust path (registry.BackendUsesSwiftRuntime) doesn't read these.
-        // hypervisorActive: false -- Hypervisor.framework Stage 2 page tables
-        //   were dropped at the migration; trust is RDMA discipline + SE
-        //   attestation.
         if let posture = securityPosture {
             return PrivacyCapabilities(
                 textBackendInprocess: true,
@@ -329,8 +329,7 @@ extension ProviderLoop {
                 sipEnabled: posture.sipEnabled,
                 antiDebugEnabled: posture.antiDebugEnabled,
                 coreDumpsDisabled: posture.coreDumpsDisabled,
-                envScrubbed: posture.envScrubbed,
-                hypervisorActive: false
+                envScrubbed: posture.envScrubbed
             )
         }
 
@@ -343,8 +342,7 @@ extension ProviderLoop {
             sipEnabled: SecurityChecks.isSIPEnabled(),
             antiDebugEnabled: false,
             coreDumpsDisabled: false,
-            envScrubbed: false,
-            hypervisorActive: false
+            envScrubbed: false
         )
     }
 

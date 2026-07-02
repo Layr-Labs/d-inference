@@ -13,12 +13,30 @@ const EARNINGS_GRID = "grid grid-cols-[64px_minmax(0,1fr)_130px_130px_130px] gap
 const TOKENS_GRID = "grid grid-cols-[64px_minmax(0,1fr)_140px] gap-3";
 
 // Gold / silver / bronze rank treatment, built from the app's accent tokens so
-// it holds up in both light and dark themes.
-const MEDAL_STYLES: Record<number, { pill: string; icon: LucideIcon }> = {
-  1: { pill: "border-accent-amber/40 bg-accent-amber/15 text-accent-amber", icon: Crown },
-  2: { pill: "border-border-subtle bg-bg-elevated text-text-secondary", icon: Medal },
-  3: { pill: "border-accent-brand/30 bg-accent-brand/10 text-accent-brand", icon: Award },
+// it holds up in both light and dark themes. `row` is a subtle background tint
+// that sets the top-3 rows apart from the rest of the table.
+const MEDAL_STYLES: Record<number, { pill: string; row: string; icon: LucideIcon }> = {
+  1: {
+    pill: "border-accent-amber/40 bg-accent-amber/15 text-accent-amber",
+    row: "bg-accent-amber/5",
+    icon: Crown,
+  },
+  2: {
+    pill: "border-border-subtle bg-bg-elevated text-text-secondary",
+    row: "bg-bg-secondary/60",
+    icon: Medal,
+  },
+  3: {
+    pill: "border-accent-brand/30 bg-accent-brand/10 text-accent-brand",
+    row: "bg-accent-brand/5",
+    icon: Award,
+  },
 };
+
+/** Subtle background tint for top-3 rows, empty string for everyone else. */
+function rankRowTint(rank: number): string {
+  return MEDAL_STYLES[rank]?.row ?? "";
+}
 
 /** Medal pill for ranks 1–3, plain "#N" for everyone else. */
 function RankCell({ rank }: { rank: number }) {
@@ -70,7 +88,7 @@ function EarningsRows({ entries }: { entries: LeaderboardEntry[] }) {
       {entries.map((entry) => (
         <div
           key={`${entry.rank}-${entry.pseudonym}`}
-          className={`${EARNINGS_GRID} border-t border-border-dim px-4 py-3 text-sm`}
+          className={`${EARNINGS_GRID} border-t border-border-dim px-4 py-3 text-sm ${rankRowTint(entry.rank)}`}
         >
           <RankCell rank={entry.rank} />
           <span className="self-center truncate font-mono text-text-secondary">{entry.pseudonym}</span>
@@ -102,7 +120,7 @@ function TokensRows({ entries }: { entries: LeaderboardEntry[] }) {
       {entries.map((entry) => (
         <div
           key={`${entry.rank}-${entry.pseudonym}`}
-          className={`${TOKENS_GRID} border-t border-border-dim px-4 py-3 text-sm`}
+          className={`${TOKENS_GRID} border-t border-border-dim px-4 py-3 text-sm ${rankRowTint(entry.rank)}`}
         >
           <RankCell rank={entry.rank} />
           <span className="self-center truncate font-mono text-text-secondary">{entry.pseudonym}</span>

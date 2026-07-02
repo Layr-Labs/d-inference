@@ -64,7 +64,18 @@ public actor EngineV2Bridge {
     let maxConcurrentRequests: Int
     /// Per-token KV byte cost for bytes→tokens capacity derivation
     /// (0 = unknown; capacity then falls back to the engine's token counts).
+    /// This is the UNQUANTIZED (fp16) rate: engine_v2 builds fp16 caches even
+    /// when the provider's `kv_quant` is on (KV-quant unsupported by v2), so
+    /// heartbeat token budgets AND the shared-budget reservation below are
+    /// sized to the caches actually built — see `EngineV2KVSizing`.
     let kvBytesPerToken: Int
+    /// Process-wide KV reservation ledger shared with the legacy schedulers.
+    /// When set (production), each in-flight v2 request records its worst-case
+    /// KV footprint here so the model-LOAD gate and the legacy live-KV gate
+    /// see v2 slots' committed KV (nil in unit tests ⇒ no shared accounting).
+    /// This is bookkeeping ONLY: it never gates v2 admission (the v2 engine's
+    /// own byte ledger does that) — see `GlobalKVCacheBudget.recordEngineKV`.
+    let kvBudget: GlobalKVCacheBudget?
     /// Injectable telemetry sink (tests); nil ⇒ `TelemetryClient.shared`.
     let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
 
@@ -106,6 +117,7 @@ public actor EngineV2Bridge {
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
         kvBytesPerToken: Int = 0,
+        kvBudget: GlobalKVCacheBudget? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
         self.engine = engine
@@ -120,6 +132,7 @@ public actor EngineV2Bridge {
         self.defaultMaxTokens = defaultMaxTokens
         self.maxConcurrentRequests = maxConcurrentRequests
         self.kvBytesPerToken = kvBytesPerToken
+        self.kvBudget = kvBudget
         self.emitTelemetry = emitTelemetry
     }
 
@@ -296,6 +309,16 @@ public actor EngineV2Bridge {
         continuation: AsyncStream<GenerationEvent>.Continuation,
         logprobsChannel: EngineV2LogprobsChannel? = nil
     ) async {
+        // Record this request's worst-case KV footprint in the shared budget
+        // so the model-LOAD gate and the legacy live-KV gate see the v2
+        // engine's committed KV (bookkeeping only — never gates v2 admission;
+        // released on every terminal path below). No-op when kvBudget is nil
+        // (unit tests) or kvBytesPerToken is unknown (0).
+        if let state = active[id] {
+            await kvBudget?.recordEngineKV(
+                requestID: id, kvBytesPerToken: kvBytesPerToken,
+                tokenCount: state.promptTokens + state.maxTokens)
+        }
         var sawFirstToken = false
         var sawTerminal = false
         for await event in events {
@@ -333,6 +356,9 @@ public actor EngineV2Bridge {
                     id: id, reason: reason, usage: usage,
                     sawFirstToken: sawFirstToken, continuation: continuation
                 )
+                // Release the shared-budget KV reservation on the terminal
+                // (idempotent; no-op when none was recorded).
+                await kvBudget?.release(requestID: id)
                 continuation.finish()
                 return
             }
@@ -346,6 +372,7 @@ public actor EngineV2Bridge {
                 wedgeMonitor.recordTerminalWithoutFirstToken()
             }
             dropRequest(id: id)
+            await kvBudget?.release(requestID: id)
             continuation.finish()
         }
     }

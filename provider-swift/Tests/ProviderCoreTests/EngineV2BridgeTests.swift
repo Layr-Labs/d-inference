@@ -203,6 +203,7 @@ private func makeBridge(
     extraEOSTokens: [String] = [],
     defaultMaxTokens: Int = 4096,
     kvBytesPerToken: Int = 0,
+    kvBudget: GlobalKVCacheBudget? = nil,
     telemetry: TelemetrySink? = nil
 ) -> EngineV2Bridge {
     EngineV2Bridge(
@@ -214,6 +215,7 @@ private func makeBridge(
         defaultMaxTokens: defaultMaxTokens,
         maxConcurrentRequests: 4,
         kvBytesPerToken: kvBytesPerToken,
+        kvBudget: kvBudget,
         emitTelemetry: telemetry?.callback()
     )
 }
@@ -1082,5 +1084,93 @@ struct EngineV2ShutdownTests {
         let bridge = makeBridge(engine: engine)
         await bridge.shutdown()
         #expect(engine.shutdownCalls == 1)
+    }
+}
+
+// MARK: - Shared-budget KV accounting (fix #2)
+
+@Suite("EngineV2 shared-budget KV accounting")
+struct EngineV2SharedBudgetTests {
+
+    @Test("kv_quant → fp16 sizing decision (EngineV2KVSizing)")
+    func fp16SizingDecision() {
+        // kv_quant OFF (rates equal): use the rate, no WARN.
+        let off = EngineV2KVSizing.resolve(quantizedRate: 400_000, fp16Rate: 400_000)
+        #expect(off.rate == 400_000)
+        #expect(!off.warnKVQuantUnsupported)
+        // kv_quant ON (quantized below fp16): pick fp16, WARN.
+        let on = EngineV2KVSizing.resolve(quantizedRate: 100_000, fp16Rate: 400_000)
+        #expect(on.rate == 400_000)
+        #expect(on.warnKVQuantUnsupported)
+        // fp16 unknown: fall back to the quantized rate, never WARN.
+        let unknown = EngineV2KVSizing.resolve(quantizedRate: 100_000, fp16Rate: 0)
+        #expect(unknown.rate == 100_000)
+        #expect(!unknown.warnKVQuantUnsupported)
+    }
+
+    @Test("an in-flight v2 request records its worst-case KV in the shared budget, released on finish")
+    func recordsAndReleasesReservation() async {
+        // Manual script so the request stays in-flight until we drive the terminal.
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let budget = GlobalKVCacheBudget()
+        // 4000 B/token × (5 prompt + 16 maxTokens) = 84_000 bytes.
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, kvBudget: budget)
+        #expect(await budget.outstandingReservedBytes() == 0)
+
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5],
+            request: makeRequest(maxTokens: 16),
+            requestId: "req-acct-1")
+        // Consume the stream on a separate task so the pump runs.
+        let consumer = Task { await record(stream) }
+        // The pump records the reservation shortly after submit.
+        for _ in 0..<200 where await budget.outstandingReservedBytes() == 0 {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await budget.outstandingReservedBytes() == 84_000)
+
+        // Terminal → the reservation is released.
+        engine.manualContinuation?.yield(
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)))
+        engine.manualContinuation?.finish()
+        _ = await consumer.value
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    @Test("teardown without a terminal still releases the reservation")
+    func teardownReleasesReservation() async {
+        // A stream that yields no terminal, then closes (engine torn down).
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .delta(text: "partial", tokens: [10], logprobs: nil)
+        ]))
+        let budget = GlobalKVCacheBudget()
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, kvBudget: budget)
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5],
+            request: makeRequest(maxTokens: 16),
+            requestId: "req-acct-2"))
+        // The stream closed without a terminal — the pump's teardown path
+        // must still have released the reservation.
+        #expect(await budget.outstandingReservedBytes() == 0)
+        let counters = await bridge._testCounters()
+        #expect(counters.active == 0)
+    }
+
+    @Test("no reservation when kvBytesPerToken is unknown (0)")
+    func noReservationWhenRateUnknown() async {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let budget = GlobalKVCacheBudget()
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 0, kvBudget: budget)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 8),
+            requestId: "req-acct-3")
+        let consumer = Task { await record(stream) }
+        // Give the pump time to run; with an unknown rate nothing is recorded.
+        try? await Task.sleep(for: .milliseconds(30))
+        #expect(await budget.outstandingReservedBytes() == 0)
+        engine.manualContinuation?.yield(
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 3, completionTokens: 0)))
+        engine.manualContinuation?.finish()
+        _ = await consumer.value
     }
 }

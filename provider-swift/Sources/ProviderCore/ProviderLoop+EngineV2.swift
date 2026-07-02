@@ -99,7 +99,19 @@ extension ProviderLoop {
         // Legacy-comparable knobs, read from the already-loaded scheduler so
         // v2 heartbeat numbers and max-token defaulting match what the
         // legacy engine would have reported for the same model.
-        let kvBytesPerToken = await scheduler.kvBytesPerToken
+        //
+        // KV byte cost: engine_v2 builds UNQUANTIZED (fp16) caches even when
+        // the provider's `kv_quant` is on (KV-quant is not yet composed with
+        // v2). The scheduler's live `kvBytesPerToken` is the QUANTIZED rate in
+        // that case; sizing the bridge with it would overstate v2 token
+        // budgets 2–4× and under-size the shared KV reservation. Pick the fp16
+        // rate for v2 and WARN once that kv_quant is being ignored on this
+        // path — see `EngineV2KVSizing`.
+        let quantizedKVBytesPerToken = await scheduler.kvBytesPerToken
+        let fp16KVBytesPerToken = await scheduler.fp16KVBytesPerToken
+        let kvSizing = EngineV2KVSizing.resolve(
+            quantizedRate: quantizedKVBytesPerToken, fp16Rate: fp16KVBytesPerToken)
+        let kvBytesPerToken = kvSizing.rate
         let defaultMaxTokens = await scheduler.defaultMaxTokens
         let weightBytes = await scheduler.modelWeightBytes
         // KNOWN LIMIT (acceptable for the flag-gated rollout): this ceiling
@@ -156,6 +168,14 @@ extension ProviderLoop {
             }
         }
 
+        // WARN once (per load) that kv_quant is being ignored on the v2 path.
+        // Emitted after `emitTelemetry` is resolved so it routes through the
+        // test sink when hooks are installed.
+        if kvSizing.warnKVQuantUnsupported {
+            EngineV2Factory.emitKVQuantUnsupportedTelemetry(
+                modelId: modelId, emitTelemetry: emitTelemetry)
+        }
+
         guard
             let bridge = EngineV2Factory.makeBridgeIfSelected(
                 modelId: modelId,
@@ -167,6 +187,10 @@ extension ProviderLoop {
                 defaultMaxTokens: defaultMaxTokens,
                 maxConcurrentRequests: EngineV2Factory.productionMaxConcurrentRequests,
                 kvBytesPerToken: kvBytesPerToken,
+                // Shared KV ledger so v2 in-flight requests are visible to the
+                // model-LOAD gate + legacy live-KV gate (fix #2). nil ⇒ no
+                // shared accounting (unit tests / the standalone path).
+                kvBudget: kvBudget,
                 emitTelemetry: emitTelemetry,
                 makeEngine: makeEngine)
         else {

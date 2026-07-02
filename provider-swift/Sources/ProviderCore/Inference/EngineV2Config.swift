@@ -149,6 +149,7 @@ public enum EngineV2Factory {
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
         kvBytesPerToken: Int = 0,
+        kvBudget: GlobalKVCacheBudget? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngine: () throws -> any CBv2Engine
     ) -> EngineV2Bridge? {
@@ -170,6 +171,7 @@ public enum EngineV2Factory {
                 defaultMaxTokens: defaultMaxTokens,
                 maxConcurrentRequests: maxConcurrentRequests,
                 kvBytesPerToken: kvBytesPerToken,
+                kvBudget: kvBudget,
                 emitTelemetry: emitTelemetry
             )
         } catch {
@@ -205,6 +207,35 @@ public enum EngineV2Factory {
             "backend": .string("engine_v2"),
             "model": .string(modelId),
             "error_class": .string(String(reflecting: type(of: error))),
+        ])
+        if let emitTelemetry {
+            emitTelemetry(event)
+        } else {
+            TelemetryClient.shared.emit(event)
+        }
+    }
+
+    /// WARN `engine_health` event when a model configured for `kv_quant` is
+    /// served through engine_v2, which does NOT yet support KV-quant and
+    /// silently falls back to fp16 caches (`makeProductionEngine` builds
+    /// `CBv2LayerCache`, never a quantized cache). Surfacing this keeps the
+    /// operator from assuming the memory savings apply on the v2 path.
+    /// Allowlisted fields only.
+    static func emitKVQuantUnsupportedTelemetry(
+        modelId: String,
+        emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
+    ) {
+        var event = TelemetryEvent(
+            source: .provider,
+            severity: .warn,
+            kind: .engineHealth,
+            message: "engine_v2: kv_quant not supported — using fp16 caches"
+        )
+        event.fields = TelemetryFieldFilter.filter([
+            "component": .string("engine"),
+            "operation": .string("engine_v2_kv_quant_unsupported"),
+            "backend": .string("engine_v2"),
+            "model": .string(modelId),
         ])
         if let emitTelemetry {
             emitTelemetry(event)

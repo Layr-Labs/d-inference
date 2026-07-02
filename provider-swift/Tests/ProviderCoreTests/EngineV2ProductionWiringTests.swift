@@ -413,6 +413,80 @@ struct EngineV2SlotFactoryTests {
         }
     }
 
+    @Test("kv_quant off: bridge sized at the scheduler rate, no kv_quant WARN")
+    func kvQuantOffNoWarn() async throws {
+        let loop = try makeWiringLoop(engineV2Enabled: true)
+        let runtime = EngineV2Runtime()
+        let telemetry = WiringTelemetrySink()
+        let engine = WiringScriptedEngine(script: .manual)
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        await loop.setEngineV2SlotHooksForTesting(
+            ProviderLoop.EngineV2SlotHooks(
+                environment: ["DARKBLOOM_ENGINE_V2": "1"],
+                eosTokenIds: [2],
+                emitTelemetry: telemetry.callback(),
+                makeEngine: { _ in engine }))
+
+        // Rates equal ⇒ kv_quant not engaged.
+        let scheduler = BatchScheduler()
+        await scheduler._setKVRatesForTest(
+            kvBytesPerToken: 400_000, fp16KVBytesPerToken: 400_000)
+        let bridge = await loop.makeEngineV2BridgeForSlotForTesting(
+            modelId: "gemma-4-27b-it",
+            modelType: "gemma4_text",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            scheduler: scheduler
+        )
+        _ = try #require(bridge)
+        // No kv_quant WARN fired.
+        #expect(telemetry.events.allSatisfy {
+            $0.fields?["operation"]?.description != "engine_v2_kv_quant_unsupported"
+        })
+    }
+
+    @Test("kv_quant on: WARN engine_v2_kv_quant_unsupported + fp16 sizing")
+    func kvQuantOnWarnsAndSizesFP16() async throws {
+        let loop = try makeWiringLoop(engineV2Enabled: true)
+        let runtime = EngineV2Runtime()
+        let telemetry = WiringTelemetrySink()
+        // A stream so the bridge admits + heartbeats; the capacity math uses
+        // the fp16 rate the factory chose.
+        let engine = WiringScriptedEngine(script: .manual)
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        await loop.setEngineV2SlotHooksForTesting(
+            ProviderLoop.EngineV2SlotHooks(
+                environment: ["DARKBLOOM_ENGINE_V2": "1"],
+                eosTokenIds: [2],
+                emitTelemetry: telemetry.callback(),
+                makeEngine: { _ in engine }))
+
+        // Quantized rate below fp16 ⇒ kv_quant engaged for this model.
+        let scheduler = BatchScheduler()
+        await scheduler._setKVRatesForTest(
+            kvBytesPerToken: 100_000, fp16KVBytesPerToken: 400_000)
+        let bridge = try #require(await loop.makeEngineV2BridgeForSlotForTesting(
+            modelId: "gemma-4-27b-it",
+            modelType: "gemma4_text",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            scheduler: scheduler
+        ))
+        // WARN fired with allowlisted fields.
+        let warn = telemetry.events.first {
+            $0.fields?["operation"]?.description == "engine_v2_kv_quant_unsupported"
+        }
+        #expect(warn != nil)
+        #expect(warn?.severity == .warn)
+        #expect(warn?.kind == .engineHealth)
+        #expect(warn?.fields?["backend"]?.description == "engine_v2")
+        #expect(warn?.fields?["model"]?.description == "gemma-4-27b-it")
+        // The bridge was sized at the fp16 rate (400_000), not the quantized
+        // 100_000: the heartbeat slot reports kvBytesPerToken == fp16.
+        let slot = await bridge.backendSlotCapacity()
+        #expect(slot.kvBytesPerToken == 400_000)
+    }
+
     @Test("engine init failure: legacy fallback + WARN engine_v2_fallback telemetry")
     func initFailureFallsBackWithTelemetry() async throws {
         struct InitFailure: Error {}

@@ -33,17 +33,27 @@ import (
 // Wave sizing: 3 waves x 8 streams x <=56 tokens keeps total decode work
 // around 1.3k tokens, bounded to a couple of minutes even on ~30-60 TPS CI
 // GPUs (plus one warmup request that absorbs the cold model load).
+//
+// Shedding: on small-capacity CI hardware (e.g. a large MoE on a 48GB
+// virtual runner) the coordinator's token-budget admission correctly sheds
+// most of a wave with 429/503 before any stream content — that is the
+// admission system working, not a failure, so shed volume is unbounded here.
+// The waves still exercise concurrent admission timing either way: shed
+// decisions race the admitted streams' decode, which is exactly the batch
+// join/leave churn this test exists to stress. What must hold is that every
+// request the system ACCEPTED (2xx, stream started) reaches a clean terminal
+// outcome.
 const (
-	stressNumWaves       = 3                      // overlapping waves of concurrent streams
-	stressWaveSize       = 8                      // concurrent streams started per wave
-	stressCancelsPerWave = stressWaveSize / 4     // ~25% of a wave cancelled mid-stream (last wave: none)
-	stressMaxTokens      = 56                     // small per-request budget so runtime stays bounded
-	stressRequestTimeout = 180 * time.Second      // per-request hang guard (terminal-outcome enforcement)
-	stressWarmupTimeout  = 5 * time.Minute        // first request absorbs the cold model load
-	stressMidstreamWait  = 90 * time.Second       // max wait for a wave to reach mid-stream before the next joins
-	stressCancelDelay    = 200 * time.Millisecond // gap between next-wave join and victim cancels landing
-	stressMax5xx         = 1                      // >1 provider/coordinator 5xx = failure (a "cluster")
-	stressMinSuccessRate = 0.8                    // non-cancelled requests must overwhelmingly succeed
+	stressNumWaves            = 3                      // overlapping waves of concurrent streams
+	stressWaveSize            = 8                      // concurrent streams started per wave
+	stressCancelsPerWave      = stressWaveSize / 4     // ~25% of a wave cancelled mid-stream (last wave: none)
+	stressMaxTokens           = 56                     // small per-request budget so runtime stays bounded
+	stressRequestTimeout      = 180 * time.Second      // per-request hang guard (terminal-outcome enforcement)
+	stressWarmupTimeout       = 5 * time.Minute        // first request absorbs the cold model load
+	stressMidstreamWait       = 90 * time.Second       // max wait for a wave to reach mid-stream before the next joins
+	stressCancelDelay         = 200 * time.Millisecond // gap between next-wave join and victim cancels landing
+	stressMax5xx              = 1                      // >1 provider/coordinator 5xx = failure (a "cluster")
+	stressMinAcceptedComplete = 0.9                    // non-cancelled ACCEPTED streams must complete cleanly
 )
 
 // stressResult is the terminal outcome of one streaming request.
@@ -118,14 +128,23 @@ func TestStress_ConcurrentAdmission(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Tally outcomes before any assertion so a crashed run still logs the
-	// full per-request outcome table for triage.
+	// full per-request outcome table for triage. "Accepted" = the coordinator
+	// committed to serving the request (2xx, stream started), as opposed to
+	// shedding it with 429/503 before any stream content.
 	var completed, cancelled, shed, serverErrs, hung int
+	var accepted, acceptedCancelled int
 	var failures []string
 	total := 0
 	for _, wave := range waves {
 		for _, r := range wave.results {
 			total++
 			outcome, detail := classifyStressOutcome(r)
+			if r.statusCode == http.StatusOK {
+				accepted++
+				if outcome == "cancelled" {
+					acceptedCancelled++
+				}
+			}
 			switch outcome {
 			case "completed":
 				completed++
@@ -144,8 +163,8 @@ func TestStress_ConcurrentAdmission(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("outcomes: completed=%d cancelled=%d shed(429/503)=%d server_5xx=%d hung=%d failed=%d",
-		completed, cancelled, shed, serverErrs, hung, len(failures)-serverErrs-hung)
+	t.Logf("outcomes: completed=%d cancelled=%d shed(429/503)=%d server_5xx=%d hung=%d failed=%d accepted=%d",
+		completed, cancelled, shed, serverErrs, hung, len(failures)-serverErrs-hung, accepted)
 	for _, f := range failures {
 		t.Logf("  failure: %s", f)
 	}
@@ -165,12 +184,21 @@ func TestStress_ConcurrentAdmission(t *testing.T) {
 	otherFailures := len(failures) - serverErrs - hung
 	require.Zero(t, otherFailures, "requests with malformed/unexpected terminal outcomes")
 
-	nonCancelled := total - cancelled
-	require.Greater(t, completed, 0, "no request completed successfully")
-	successRate := float64(completed) / float64(nonCancelled)
-	require.GreaterOrEqual(t, successRate, stressMinSuccessRate,
-		"non-cancelled requests should overwhelmingly succeed: %d/%d completed (%.0f%%, shed=%d)",
-		completed, nonCancelled, successRate*100, shed)
+	// (c') Sanity: the model actually serves under concurrent load — at least
+	// one request must complete end-to-end regardless of how much was shed.
+	require.Greater(t, completed, 0, "no request completed successfully — model never served under concurrent load (shed=%d)", shed)
+
+	// Shed (429/503 before any stream content) is unbounded — on
+	// small-capacity CI hardware the admission system correctly rejects most
+	// of a wave (see the shedding note on the wave-sizing comment). But of
+	// the requests the system ACCEPTED, the non-cancelled ones must
+	// overwhelmingly run to clean completion.
+	acceptedNonCancelled := accepted - acceptedCancelled
+	require.Greater(t, acceptedNonCancelled, 0, "no accepted non-cancelled requests to evaluate (accepted=%d, acceptedCancelled=%d)", accepted, acceptedCancelled)
+	acceptedCompleteRate := float64(completed) / float64(acceptedNonCancelled)
+	require.GreaterOrEqual(t, acceptedCompleteRate, stressMinAcceptedComplete,
+		"accepted non-cancelled streams should overwhelmingly complete: %d/%d completed (%.0f%%, accepted=%d, shed=%d)",
+		completed, acceptedNonCancelled, acceptedCompleteRate*100, accepted, shed)
 
 	// (d) Accounting integrity. The suite runs on the in-memory store, so the
 	// Postgres ledger asserter does not apply; the store-level asserter still
@@ -178,7 +206,7 @@ func TestStress_ConcurrentAdmission(t *testing.T) {
 	storeReport := tbassert.NewAccountingAsserter(s.PgStore).EvaluateAll(s.Ctx)
 	require.True(t, storeReport.Passed, "store-level accounting check failed after stress\n%s", storeReport.SummaryTable())
 
-	t.Logf("stress: %d requests, %d completed, %d cancelled mid-stream, %d shed — provider survived", total, completed, cancelled, shed)
+	t.Logf("stress: %d requests, %d accepted, %d completed, %d cancelled mid-stream, %d shed — provider survived", total, accepted, completed, cancelled, shed)
 }
 
 // stressWarmup issues a single small request and requires it to succeed,

@@ -272,7 +272,9 @@ func TestIntegration_MultipleRequestsAccounting(t *testing.T) {
 func TestIntegration_E2EEncryptionCorrectness(t *testing.T) {
 	s := startSuite(t)
 
-	resp := postChatCompletions(t, s, "What is 2+2? Answer with just the number.", false, 20)
+	// max_tokens is generous (128) because reasoning models (e.g. gpt-oss)
+	// spend budget on the reasoning channel before emitting final content.
+	resp := postChatCompletions(t, s, "What is 2+2? Answer with just the number.", false, 128)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -281,7 +283,8 @@ func TestIntegration_E2EEncryptionCorrectness(t *testing.T) {
 	var result struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content   string `json:"content"`
+				Reasoning string `json:"reasoning"`
 			} `json:"message"`
 		} `json:"choices"`
 		Usage struct {
@@ -292,22 +295,27 @@ func TestIntegration_E2EEncryptionCorrectness(t *testing.T) {
 	require.NoError(t, json.Unmarshal(respBody, &result))
 	require.Len(t, result.Choices, 1)
 
+	// Reasoning models (gpt-oss) may spend the whole token budget on the
+	// reasoning channel and leave content empty; decrypted reasoning text
+	// proves E2E decryption exactly as well as decrypted content does.
 	content := result.Choices[0].Message.Content
-	require.NotEmpty(t, content, "response content should not be empty — if this were still encrypted/ciphertext, content would be binary garbage")
+	reasoning := result.Choices[0].Message.Reasoning
+	decrypted := content + reasoning
+	require.NotEmpty(t, decrypted, "response content+reasoning should not both be empty — if this were still encrypted/ciphertext, the decrypted fields would be binary garbage or absent")
 	require.Greater(t, result.Usage.PromptTokens, 0, "prompt_tokens should be positive")
 	require.Greater(t, result.Usage.CompletionTokens, 0, "completion_tokens should be positive")
 
 	var printable int
-	for _, r := range content {
+	for _, r := range decrypted {
 		if r >= 32 && r < 127 {
 			printable++
 		}
 	}
-	printableRatio := float64(printable) / float64(len(content))
+	printableRatio := float64(printable) / float64(len(decrypted))
 	require.Greater(t, printableRatio, 0.8, "response should be mostly printable text (got %.0f%%), not encrypted binary", printableRatio*100)
 
-	t.Logf("E2E encryption: content is valid decrypted text (%d chars, %d prompt / %d completion tokens)",
-		len(content), result.Usage.PromptTokens, result.Usage.CompletionTokens)
+	t.Logf("E2E encryption: response is valid decrypted text (%d content chars, %d reasoning chars, %d prompt / %d completion tokens)",
+		len(content), len(reasoning), result.Usage.PromptTokens, result.Usage.CompletionTokens)
 }
 
 func TestIntegration_BillingBalanceDeduction(t *testing.T) {

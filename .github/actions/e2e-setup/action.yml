@@ -10,6 +10,12 @@ inputs:
   model:
     description: Coordinator catalog model ID to download via `darkbloom models download`.
     required: true
+  coordinator-url:
+    description: >
+      Coordinator base URL the `darkbloom models download` step resolves the
+      model catalog against.
+    required: false
+    default: https://api.darkbloom.dev
 
 runs:
   using: composite
@@ -56,10 +62,13 @@ runs:
     - name: Download model via darkbloom CLI
       shell: bash
       env:
+        # Env-var indirection (not raw ${{ }} interpolation into the script
+        # body) so the input values are never parsed as shell.
         MODEL_ID: ${{ inputs.model }}
+        COORDINATOR_URL: ${{ inputs.coordinator-url }}
       run: |
         # Zero-config: `models download` falls back to hardware defaults when
         # no ~/.darkbloom config exists, and --coordinator overrides the URL
         # (see provider-swift/Sources/darkbloom/ModelsCommand.swift).
         /tmp/provider-artifact/darkbloom models download "$MODEL_ID" \
-          --coordinator https://api.darkbloom.dev
+          --coordinator "$COORDINATOR_URL"

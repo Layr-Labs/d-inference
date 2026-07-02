@@ -188,6 +188,17 @@ func (s *Server) forgetProviderPendingKeys(provider *registry.Provider) {
 	for _, key := range provider.PendingSessionKeys() {
 		s.chunkKeys.forgetAndZero(key)
 	}
+	// Catch-all for REGISTRY-INITIATED disconnects (stale eviction,
+	// duplicate-serial eviction, forced removal): those call
+	// Registry.Disconnect directly, which wipes the pending map BEFORE its
+	// CloseNow unblocks this read loop — the snapshot above is then empty and
+	// the wiped requests' cache entries are unreachable per-request. Sweep
+	// everything cached under this provider's public key instead (the cache
+	// stores it per entry; no pending-map state needed). Plain delete, NO
+	// zeroing and NO tombstoning: a same-keypair replacement session
+	// (duplicate-serial eviction) may be decrypting with a matching entry
+	// right now on its own read loop — it just recomputes on its next chunk.
+	s.chunkKeys.forgetPeer(provider.PublicKey)
 }
 
 // providerReadLoop reads messages from the provider WebSocket and dispatches

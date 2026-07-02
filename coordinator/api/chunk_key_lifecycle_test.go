@@ -193,6 +193,92 @@ func TestForgetProviderPendingKeysDirect(t *testing.T) {
 	}
 }
 
+// End-to-end: a REGISTRY-INITIATED disconnect (stale eviction, duplicate-
+// serial eviction, forced removal — anything that calls Registry.Disconnect
+// directly) wipes the provider's pending map BEFORE its CloseNow unblocks the
+// read loop, so the defer's per-request key snapshot is empty. The peer-key
+// sweep (chunkKeys.forgetPeer) must still drop every entry cached under the
+// provider's public key — WITHOUT zeroing, since a same-keypair replacement
+// session could be decrypting with a matching entry.
+func TestRegistryInitiatedDisconnectSweepsChunkKeys(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "test done")
+
+	peerPubB64, _, _ := testPeerKeyB64(t)
+	regMsg := protocol.RegisterMessage{
+		Type:      protocol.TypeRegister,
+		Hardware:  protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
+		Models:    []protocol.ModelInfo{{ID: "evict-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:   "mlx-swift",
+		PublicKey: peerPubB64,
+	}
+	regData, _ := json.Marshal(regMsg)
+	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
+		t.Fatalf("write register: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var p *registry.Provider
+	for time.Now().Before(deadline) {
+		if p = findProviderByModel(reg, "evict-model"); p != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if p == nil {
+		t.Fatal("provider never registered")
+	}
+
+	priv := &[32]byte{6}
+	p.AddPending(&registry.PendingRequest{
+		RequestID:      "req-evicted",
+		ProviderID:     p.ID,
+		Model:          "evict-model",
+		SessionPrivKey: priv,
+		ChunkCh:        make(chan string, 1),
+		CompleteCh:     make(chan protocol.UsageInfo, 1),
+		ErrorCh:        make(chan protocol.InferenceErrorMessage, 1),
+	})
+	// The real decrypt path caches under the provider's registered public key.
+	shared, err := srv.chunkKeys.sharedKey(priv, p.PublicKey)
+	if err != nil {
+		t.Fatalf("seed sharedKey under provider key: %v", err)
+	}
+	want := *shared
+
+	// Registry-initiated: wipes the pending map, THEN CloseNow unblocks the
+	// server read loop, whose defer must sweep by peer key.
+	reg.Disconnect(p.ID)
+
+	for time.Now().Before(deadline) {
+		if !chunkKeyCached(&srv.chunkKeys, priv) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if chunkKeyCached(&srv.chunkKeys, priv) {
+		t.Fatal("registry-initiated disconnect never swept the orphaned chunk key")
+	}
+	if *shared != want {
+		t.Error("the peer-key sweep must NOT zero (possible same-keypair replacement session)")
+	}
+}
+
 // End-to-end: a provider WebSocket disconnect runs providerReadLoop's cleanup
 // defer, which must forget (and zero) the chunk keys of every request still
 // in-flight on that provider — BEFORE registry.Disconnect wipes the pending map.

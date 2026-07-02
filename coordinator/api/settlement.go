@@ -81,6 +81,17 @@ func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 	// cancellation. A genuine after-commit client disconnect returns WITHOUT
 	// refunding, so it is not yet finalized and is still parked + counted.
 	if pr.IsReservationFinalized() {
+		// Finalized-and-never-parked is still a request TERMINAL: the
+		// consumer handler has returned and this record will never be held,
+		// so no late provider terminal can claim it to drop its memoized
+		// chunk key — without this it pins the session key until the cap
+		// reset. Usually a no-op (handleComplete/handleInferenceError already
+		// forgetAndZero'd before finalizing), but the relay's stream-timeout/
+		// provider-incomplete refund paths finalize WITHOUT a read-loop
+		// terminal ever running. Plain forget, NO zeroing: consumer
+		// goroutine — a late chunk decrypt may be in flight on the provider
+		// read loop (see chunkKeyCache's zeroing policy).
+		s.chunkKeys.forget(pr.SessionPrivKey)
 		return
 	}
 	// Single chokepoint for post-commit consumer disconnects: the request

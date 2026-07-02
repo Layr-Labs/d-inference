@@ -125,6 +125,14 @@ extension EngineV2Bridge {
         active.count
     }
 
+    /// This engine's KV admission ceiling in bytes (construction-fixed).
+    /// Read by the slot factory when sizing a LATER v2 engine so that
+    /// Σ(engine ceilings) stays within the process-wide KV budget — see
+    /// `EngineV2KVSizing.engineKVBytesCapacity`.
+    public func engineKVBytesCapacity() -> Int {
+        engine.capacity().kvBytesCapacity
+    }
+
     // MARK: - engine_v2.step_wedge
 
     /// Emit an `engine_health` telemetry event on a wedge-suspected

@@ -256,7 +256,7 @@ struct EngineV2SlotFactoryTests {
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
                 environment: [:],
-                makeEngine: { _ in
+                makeEngine: { _, _ in
                     counter.increment()
                     return WiringScriptedEngine(script: .manual)
                 }))
@@ -283,7 +283,7 @@ struct EngineV2SlotFactoryTests {
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
                 environment: [:],
-                makeEngine: { _ in
+                makeEngine: { _, _ in
                     counter.increment()
                     return WiringScriptedEngine(script: .manual)
                 }))
@@ -313,7 +313,7 @@ struct EngineV2SlotFactoryTests {
             ProviderLoop.EngineV2SlotHooks(
                 environment: ["DARKBLOOM_ENGINE_V2": "1"],
                 eosTokenIds: [2],
-                makeEngine: { _ in engine }))
+                makeEngine: { _, _ in engine }))
 
         let bridge = await loop.makeEngineV2BridgeForSlotForTesting(
             modelId: "gemma-4-27b-it",
@@ -366,7 +366,7 @@ struct EngineV2SlotFactoryTests {
             ProviderLoop.EngineV2SlotHooks(
                 environment: ["DARKBLOOM_ENGINE_V2": "1"],
                 emitTelemetry: telemetry.callback(),
-                makeEngine: { _ in
+                makeEngine: { _, _ in
                     counter.increment()
                     return WiringScriptedEngine(script: .manual)
                 }))
@@ -438,7 +438,7 @@ struct EngineV2SlotFactoryTests {
                 environment: ["DARKBLOOM_ENGINE_V2": "1"],
                 eosTokenIds: [2],
                 emitTelemetry: telemetry.callback(),
-                makeEngine: { _ in engine }))
+                makeEngine: { _, _ in engine }))
 
         // Rates equal ⇒ kv_quant not engaged.
         let scheduler = BatchScheduler()
@@ -472,7 +472,7 @@ struct EngineV2SlotFactoryTests {
                 environment: ["DARKBLOOM_ENGINE_V2": "1"],
                 eosTokenIds: [2],
                 emitTelemetry: telemetry.callback(),
-                makeEngine: { _ in engine }))
+                makeEngine: { _, _ in engine }))
 
         // Quantized rate below fp16 ⇒ kv_quant engaged for this model.
         let scheduler = BatchScheduler()
@@ -511,7 +511,7 @@ struct EngineV2SlotFactoryTests {
             ProviderLoop.EngineV2SlotHooks(
                 environment: [:],
                 emitTelemetry: telemetry.callback(),
-                makeEngine: { _ in throw InitFailure() }))
+                makeEngine: { _, _ in throw InitFailure() }))
 
         let bridge = await loop.makeEngineV2BridgeForSlotForTesting(
             modelId: "gpt-oss-20b",
@@ -530,6 +530,177 @@ struct EngineV2SlotFactoryTests {
         #expect(events.first?.fields?["operation"]?.description == "engine_v2_fallback")
         #expect(events.first?.fields?["backend"]?.description == "engine_v2")
         #expect(events.first?.fields?["error_class"]?.description.contains("InitFailure") == true)
+    }
+}
+
+// MARK: - Multi-slot KV capacity sizing (fleet-wide ceilings)
+
+/// Engine stub that reports a construction-granted KV admission ceiling —
+/// what the slot factory reads back (via
+/// `EngineV2Bridge.engineKVBytesCapacity`) when sizing a LATER engine.
+private final class CapacityReportingEngine: CBv2Engine, @unchecked Sendable {
+    let kvBytesCapacity: Int
+    init(kvBytesCapacity: Int) { self.kvBytesCapacity = kvBytesCapacity }
+
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
+        continuation.finish()
+        return stream
+    }
+    func cancel(_ id: CBv2RequestID) {}
+    func capacity() -> CBv2CapacitySnapshot {
+        CBv2CapacitySnapshot(
+            activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
+            kvBytesCapacity: kvBytesCapacity, activeTokens: 0)
+    }
+    func shutdown() async {}
+}
+
+/// Thread-safe recorder for the kvBytesCapacity values handed to the hooks.
+private final class CapacityRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _granted: [Int] = []
+    var granted: [Int] { lock.withLock { _granted } }
+    func record(_ capacity: Int) { lock.withLock { _granted.append(capacity) } }
+}
+
+@Suite("EngineV2 production wiring: multi-slot KV capacity")
+struct EngineV2MultiSlotCapacityTests {
+
+    private static let gib: UInt64 = 1024 * 1024 * 1024
+
+    @Test("pure sizing: the second engine's ceiling subtracts co-resident weights AND the first ceiling")
+    func pureSizingSubtractsFleetResidency() {
+        let physical = 64 * Self.gib
+        let wA = Int(8 * Self.gib)
+        let wB = Int(12 * Self.gib)
+        // First engine, alone on the box: the whole budget under its weights.
+        let capA = EngineV2KVSizing.engineKVBytesCapacity(
+            newModelWeightBytes: wA, coResidentWeightBytes: 0,
+            existingEngineKVCapacities: [], physicalBytes: physical)
+        #expect(UInt64(capA) == UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: physical, residentWeightBytes: UInt64(wA)))
+        // Second engine: fleet budget now counts BOTH models' weights, and
+        // the first engine's construction-fixed grant comes off the top.
+        // Here the first grant already consumed everything (kvBudget(wA+wB)
+        // = capA − wB < capA), so the second slot gets 0 → the factory
+        // throws noKVHeadroom and the slot serves via the legacy scheduler
+        // (v2 effectively single-slot when the first engine took the pie).
+        let capB = EngineV2KVSizing.engineKVBytesCapacity(
+            newModelWeightBytes: wB, coResidentWeightBytes: UInt64(wA),
+            existingEngineKVCapacities: [capA], physicalBytes: physical)
+        #expect(capB == 0)
+        // The pre-fix behavior — sizing B as if ONLY its weights were
+        // resident — would have granted far more than the fleet budget:
+        let naiveB = UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: physical, residentWeightBytes: UInt64(wB))
+        let fleetBudget = UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: physical, residentWeightBytes: UInt64(wA) + UInt64(wB))
+        #expect(UInt64(capA) + naiveB > fleetBudget)   // the bug this fixes
+        #expect(UInt64(capA + capB)
+            <= UnifiedMemoryCap.kvBudgetBytes(
+                physicalBytes: physical, residentWeightBytes: UInt64(wA)))
+    }
+
+    @Test("pure sizing: two-slot ceilings sum exactly to the fleet budget when headroom remains")
+    func pureSizingSumsWithinBudget() {
+        let physical = 64 * Self.gib
+        let wA = Int(8 * Self.gib)
+        let wB = Int(4 * Self.gib)
+        // First engine granted under a TIGHTER view (e.g. operator cap /
+        // memory pressure at its load): 10 GiB ceiling.
+        let capA = Int(10 * Self.gib)
+        let capB = EngineV2KVSizing.engineKVBytesCapacity(
+            newModelWeightBytes: wB, coResidentWeightBytes: UInt64(wA),
+            existingEngineKVCapacities: [capA], physicalBytes: physical)
+        let fleetBudget = UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: physical, residentWeightBytes: UInt64(wA) + UInt64(wB))
+        #expect(capB > 0)
+        // Σ(ceilings) lands exactly ON the fleet-wide KV budget — the
+        // process-wide invariant the pre-fix per-slot sizing violated.
+        #expect(UInt64(capA + capB) == fleetBudget)
+    }
+
+    @Test("pure sizing: degenerate inputs clamp to zero, never trap")
+    func pureSizingDegenerateInputs() {
+        // Grants already exceed the budget → 0, not negative.
+        #expect(EngineV2KVSizing.engineKVBytesCapacity(
+            newModelWeightBytes: Int(4 * Self.gib), coResidentWeightBytes: 0,
+            existingEngineKVCapacities: [Int.max, Int.max],
+            physicalBytes: 16 * Self.gib) == 0)
+        // Negative weight/grant inputs are treated as 0.
+        #expect(EngineV2KVSizing.engineKVBytesCapacity(
+            newModelWeightBytes: -1, coResidentWeightBytes: 0,
+            existingEngineKVCapacities: [-5],
+            physicalBytes: 16 * Self.gib)
+            == Int(UnifiedMemoryCap.kvBudgetBytes(
+                physicalBytes: 16 * Self.gib, residentWeightBytes: 0)))
+        // Weights alone exceed the cap → 0 budget.
+        #expect(EngineV2KVSizing.engineKVBytesCapacity(
+            newModelWeightBytes: Int(20 * Self.gib), coResidentWeightBytes: 0,
+            existingEngineKVCapacities: [], physicalBytes: 16 * Self.gib) == 0)
+    }
+
+    @Test("slot factory sizes a second v2 engine against the first slot's weights and ceiling")
+    func slotFactoryUsesFleetResidency() async throws {
+        let loop = try makeWiringLoop(engineV2Enabled: true)
+        let runtime = EngineV2Runtime()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        let recorder = CapacityRecorder()
+        await loop.setEngineV2SlotHooksForTesting(
+            ProviderLoop.EngineV2SlotHooks(
+                environment: ["DARKBLOOM_ENGINE_V2": "1"],
+                eosTokenIds: [2],
+                makeEngine: { _, kvBytesCapacity in
+                    recorder.record(kvBytesCapacity)
+                    return CapacityReportingEngine(kvBytesCapacity: kvBytesCapacity)
+                }))
+
+        // Slot A: 1 GiB of resident weights, empty fleet.
+        let weightsA = Int(1 * Self.gib)
+        let schedulerA = BatchScheduler()
+        await schedulerA._setModelWeightBytesForTest(weightsA)
+        let bridgeA = try #require(await loop.makeEngineV2BridgeForSlotForTesting(
+            modelId: "gemma-4-27b-it",
+            modelType: "gemma4_text",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            scheduler: schedulerA))
+        await loop.installModelSlotForTesting(
+            modelId: "gemma-4-27b-it",
+            scheduler: schedulerA,
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            engineV2: bridgeA,
+            modelType: "gemma4_text")
+
+        // Slot B: 2 GiB of weights, loaded WITH A resident.
+        let weightsB = Int(2 * Self.gib)
+        let schedulerB = BatchScheduler()
+        await schedulerB._setModelWeightBytesForTest(weightsB)
+        _ = await loop.makeEngineV2BridgeForSlotForTesting(
+            modelId: "gpt-oss-20b",
+            modelType: "gpt_oss",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            scheduler: schedulerB)
+
+        let granted = recorder.granted
+        #expect(granted.count == 2)
+        // A was sized alone; B's ceiling subtracts A's weights AND A's
+        // construction-fixed grant — the exact fleet-aware derivation
+        // (computed here with the same pure helper on this machine's
+        // physical memory, so the assertion is machine-independent).
+        #expect(granted[0] == EngineV2KVSizing.engineKVBytesCapacity(
+            newModelWeightBytes: weightsA, coResidentWeightBytes: 0,
+            existingEngineKVCapacities: []))
+        #expect(granted[1] == EngineV2KVSizing.engineKVBytesCapacity(
+            newModelWeightBytes: weightsB,
+            coResidentWeightBytes: UInt64(weightsA),
+            existingEngineKVCapacities: [granted[0]]))
+        // And the fleet invariant: B's grant never lets the pair exceed the
+        // budget A was granted under.
+        #expect(granted[1] <= max(0, granted[0] - weightsB))
     }
 }
 

@@ -37,14 +37,18 @@ extension ProviderLoop {
         let eosTokenIds: Set<Int>
         let extraEOSTokens: [String]
         let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
-        let makeEngine: @Sendable (String) throws -> any CBv2Engine
+        /// Scripted engine builder: (modelId, kvBytesCapacity) — the second
+        /// argument is the FLEET-SIZED admission ceiling the production path
+        /// would hand `makeProductionEngine`, exposed so tests can assert the
+        /// multi-slot capacity derivation without building a real engine.
+        let makeEngine: @Sendable (String, Int) throws -> any CBv2Engine
 
         init(
             environment: [String: String],
             eosTokenIds: Set<Int> = [],
             extraEOSTokens: [String] = [],
             emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
-            makeEngine: @escaping @Sendable (String) throws -> any CBv2Engine
+            makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
         ) {
             self.environment = environment
             self.eosTokenIds = eosTokenIds
@@ -114,17 +118,35 @@ extension ProviderLoop {
         let kvBytesPerToken = kvSizing.rate
         let defaultMaxTokens = await scheduler.defaultMaxTokens
         let weightBytes = await scheduler.modelWeightBytes
-        // KNOWN LIMIT (acceptable for the flag-gated rollout): this ceiling
-        // is computed ONCE at load from THIS model's weights only — it does
-        // not track co-resident models or live legacy KV afterwards, unlike
-        // the legacy scheduler's live headroom checks. The engine admission
-        // cap (no preallocation) plus the conservative v2 concurrency (4)
-        // bound the exposure; revisit before enabling v2 on multi-slot boxes.
-        let kvBytesCapacity = Int(
-            min(
-                UnifiedMemoryCap.kvBudgetBytes(
-                    residentWeightBytes: UInt64(max(0, weightBytes))),
-                UInt64(Int.max)))
+        // FLEET-WIDE ceiling (round-2 PR#499 P2): size this engine's KV
+        // admission cap against ALL resident models' weights plus the
+        // ceilings already granted to co-resident v2 engines — not just this
+        // slot's weights — so Σ(v2 ceilings) can never exceed the
+        // unified-memory KV budget on a multi-slot provider. Snapshot the
+        // slots once (each read awaits an actor hop; `modelSlots` could
+        // mutate across suspensions otherwise). The new model's own slot is
+        // not installed yet at this point; a same-id slot present during a
+        // reload is excluded so its weights are not double-counted against
+        // the fresh scheduler's figure. When nothing is left under the
+        // budget the capacity is 0 and `makeProductionEngine` throws
+        // `noKVHeadroom` → this slot serves via the legacy scheduler (whose
+        // per-request shared-budget gate needs no static ceiling).
+        var coResidentWeightBytes: UInt64 = 0
+        var existingEngineKVCapacities: [Int] = []
+        for (slotModelId, slot) in modelSlots where slotModelId != modelId {
+            let slotWeights = await slot.scheduler.modelWeightBytes
+            let (sum, overflow) = coResidentWeightBytes
+                .addingReportingOverflow(UInt64(max(0, slotWeights)))
+            coResidentWeightBytes = overflow ? .max : sum
+            if let existingBridge = slot.engineV2 {
+                existingEngineKVCapacities.append(
+                    await existingBridge.engineKVBytesCapacity())
+            }
+        }
+        let kvBytesCapacity = EngineV2KVSizing.engineKVBytesCapacity(
+            newModelWeightBytes: weightBytes,
+            coResidentWeightBytes: coResidentWeightBytes,
+            existingEngineKVCapacities: existingEngineKVCapacities)
 
         // Resolve the EOS/stop inputs + engine builder: from the test hooks
         // when installed, otherwise from the loaded container (production).
@@ -137,7 +159,7 @@ extension ProviderLoop {
             extraEOSTokens = hooks.extraEOSTokens
             emitTelemetry = hooks.emitTelemetry
             let hookBuilder = hooks.makeEngine
-            makeEngine = { try hookBuilder(modelId) }
+            makeEngine = { try hookBuilder(modelId, kvBytesCapacity) }
         } else {
             // Snapshot the model handle + EOS config out of the container.
             // Handing the module reference to the v2 engine mirrors the
@@ -179,9 +201,11 @@ extension ProviderLoop {
                 defaultMaxTokens: defaultMaxTokens,
                 maxConcurrentRequests: EngineV2Factory.productionMaxConcurrentRequests,
                 kvBytesPerToken: kvBytesPerToken,
-                // Shared KV ledger so v2 in-flight requests are visible to the
-                // model-LOAD gate + legacy live-KV gate (fix #2). nil ⇒ no
-                // shared accounting (unit tests / the standalone path).
+                // Shared KV ledger: v2 submissions RESERVE their worst-case
+                // KV here before engine admission (process-wide gate) and the
+                // reservation is what the model-LOAD gate + legacy live-KV
+                // gate subtract. nil ⇒ no shared gating/accounting (unit
+                // tests / the standalone path).
                 kvBudget: kvBudget,
                 emitTelemetry: emitTelemetry,
                 makeEngine: makeEngine)

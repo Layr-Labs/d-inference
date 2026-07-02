@@ -29,6 +29,15 @@ extension BatchScheduler {
         self.fp16KVBytesPerToken = fp16KVBytesPerToken
     }
 
+    /// TEST SEAM: pin the resident-weight figure without loading a model, so
+    /// the v2 slot factory's FLEET-WIDE KV-capacity derivation
+    /// (`EngineV2KVSizing.engineKVBytesCapacity`) can be exercised with
+    /// scripted hooks across multiple co-resident slots. Not used in
+    /// production.
+    func _setModelWeightBytesForTest(_ bytes: Int) {
+        self.modelWeightBytes = bytes
+    }
+
     /// TEST SEAM: install a checkpoint manager + capture hook onto the live
     /// engine, replicating exactly what `makeBatchedEngine` wires for a
     /// `.checkpoint` model. Production builds the manager with an SE-wrapped

@@ -335,6 +335,27 @@ public actor ProviderLoop {
     /// Tracks coordinator-driven preload tasks so they can be cancelled on shutdown.
     internal var preloadTasks: [String: Task<Void, Never>] = [:]
 
+    /// Startup preload driver (`ProviderLoop+StartupPreload`). Non-nil while
+    /// the boot-time preload of the configured/previously-served model set is
+    /// still running — it may outlive the registration gate when the
+    /// `startup_preload_timeout_secs` deadline passes (loads continue in the
+    /// background). Cancelled and awaited on shutdown alongside the
+    /// coordinator-driven preloads.
+    internal var startupPreloadTask: Task<Void, Never>?
+
+    /// Test seam: overrides the loaded-models persistence file
+    /// (default: `LoadedModelsStore.path()`).
+    internal var loadedModelsFileOverride: URL?
+
+    /// Test seams for the startup preload driver: replace the real
+    /// `ensureModelLoaded` / self-test decode / free-memory probe with
+    /// scripted stubs so the plan, gate timing, admission, and
+    /// fail-open/closed paths run without model weights or a live memory
+    /// reading. nil in production.
+    internal var startupPreloadLoadOverride: (@Sendable (String) async throws -> Void)?
+    internal var startupSelfTestOverride: (@Sendable (String) async throws -> Duration)?
+    internal var startupPreloadFreeMemoryOverride: (@Sendable () async -> Double)?
+
     /// Senders waiting for the terminal status of an in-flight preload.
     internal var preloadStatusSubscribers: [String: [SendHandle]] = [:]
 
@@ -557,6 +578,7 @@ public actor ProviderLoop {
     //   - ProviderLoop+Serve.swift               run() loop + registration setup
     //   - ProviderLoop+InferenceHandler.swift    handleInferenceRequest + draining gates
     //   - ProviderLoop+Preload.swift             load_model preload + preload/shutdown waits
+    //   - ProviderLoop+StartupPreload.swift      boot-time preload + registration readiness gate
     //   - ProviderLoop+Prefetch.swift            background prefetch + desired-models reconcile
     //   - ProviderLoop+Testing.swift             test-only seams (ProviderCoreTests)
     //   - ProviderLoop+Trust.swift               trust status + one-time auto-report

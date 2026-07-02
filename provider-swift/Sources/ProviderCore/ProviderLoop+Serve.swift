@@ -66,6 +66,14 @@ extension ProviderLoop {
         // 1. Apply security hardening
         try await applySecurityHardening()
 
+        // 1.5 Startup preload + readiness gate (ProviderLoop+StartupPreload):
+        // load the previously-served / configured model set BEFORE the
+        // coordinator client exists, so a release restart never advertises
+        // models it hasn't warmed (the v0.6.30 first_chunk_timeout storm).
+        // Bounded by startup_preload_timeout_secs — on timeout we register
+        // anyway and the remaining loads continue in the background.
+        await runStartupPreloadGate()
+
         // 2. Build attestation blob for registration
         let attestation = buildRegistrationAttestation()
 
@@ -93,11 +101,15 @@ extension ProviderLoop {
         }
         #endif
 
-        // 4. Create coordinator client config
+        // 4. Create coordinator client config. The model list is filtered
+        // through the live advertised set: identical to loopConfig.models at
+        // defaults, minus any model the startup self-test retired when the
+        // operator opted into startup_selftest_fail_closed.
+        let registrationModels = loopConfig.models.filter { advertisedModels[$0.id] != nil }
         let coordinatorConfig = CoordinatorClientConfig(
             url: loopConfig.coordinatorURL,
             hardware: loopConfig.hardware,
-            models: loopConfig.models,
+            models: registrationModels,
             backendName: "mlx-swift",
             heartbeatInterval: TimeInterval(loopConfig.config.coordinator.heartbeatIntervalSecs),
             publicKey: keyPair.publicKeyBase64,
@@ -264,13 +276,20 @@ extension ProviderLoop {
         if let prefetchCoordinator {
             await prefetchCoordinator.shutdown(timeout: Self.preloadShutdownTimeout)
         }
-        let preloads = Array(preloadTasks.values)
+        // Cancel BOTH preload flavors: coordinator-driven load_model tasks and
+        // any still-running startup preload driver (it outlives the readiness
+        // gate when the timeout passed).
+        var preloads = Array(preloadTasks.values)
+        if let startupTask = startupPreloadTask {
+            preloads.append(startupTask)
+        }
         for task in preloads { task.cancel() }
         cancelLoadWaiters()
         let preloadsFinished = await waitForPreloads(preloads, timeout: Self.preloadShutdownTimeout)
         if !preloadsFinished {
             logger.warning("Timed out waiting for coordinator-driven preloads to cancel during shutdown")
         }
+        startupPreloadTask = nil
         preloadTasks.removeAll()
         preloadTaskIds.removeAll()
         preloadStatusSubscribers.removeAll()

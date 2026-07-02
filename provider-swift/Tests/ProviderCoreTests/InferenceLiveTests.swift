@@ -481,6 +481,12 @@ struct InferenceLiveTests {
                 await loadGate.waitBeforeLoading(modelId)
             }
         )
+        // Keep the live loop's loaded-model persistence (and its startup
+        // preload plan) off the developer machine's real
+        // ~/.darkbloom/loaded-models.json.
+        await loop.setLoadedModelsFileForTesting(
+            FileManager.default.temporaryDirectory
+                .appendingPathComponent("darkbloom-live-loaded-models-\(UUID().uuidString).json"))
         let loopTask = Task { try await loop.run() }
 
         do {

@@ -334,6 +334,9 @@ extension ProviderLoop {
             )
 
             syncWarmModelState()
+            // Remember the serving set across restarts: the persisted file is
+            // the default startup preload plan (ProviderLoop+StartupPreload).
+            persistLoadedModelSet()
             await updateAggregateCapacity()
             logger.info("Model loaded: \(modelId) (\(modelSlots.count) model(s) in memory)")
 
@@ -394,6 +397,13 @@ extension ProviderLoop {
         let waiters = unloadingWaiters.removeValue(forKey: modelId) ?? []
         for waiter in waiters { waiter.resume() }
         syncWarmModelState()
+        // A NON-shutdown unload (idle timeout, eviction, retirement) drops the
+        // model from the persisted serving set. Shutdown teardown skips this on
+        // purpose: a stop/update/restart must remember what was being served so
+        // the next boot's startup preload can re-warm it.
+        if !isShuttingDown {
+            persistLoadedModelSet()
+        }
         await updateAggregateCapacity()
         logger.info("Unloaded model: \(modelId) (\(modelSlots.count) model(s) remaining)")
     }
@@ -448,7 +458,11 @@ extension ProviderLoop {
     /// `doctor`'s model-fit check shares the SAME arithmetic via
     /// `ModelLoadAdmission`, so the operator-facing verdict can never drift from
     /// what this method enforces at load time.
-    private func availableMemoryGb() async -> Double {
+    ///
+    /// `internal` (not `private`): also the admission probe for the startup
+    /// preload (`ProviderLoop+StartupPreload`), which must skip — never evict
+    /// for — a preload candidate that doesn't fit.
+    internal func availableMemoryGb() async -> Double {
         let outstanding = await kvBudget.outstandingReservedBytes()
         // Hold back enough to honor the 90% unified cap: max(configured reserve,
         // physical − cap). Without this the free-memory gate would load models

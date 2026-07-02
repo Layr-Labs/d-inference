@@ -63,6 +63,68 @@ extension ProviderLoop {
         if let send { self.outboundSend = send }
     }
 
+    // MARK: - Startup preload seams
+
+    /// Test seam: redirect the loaded-models persistence file to a temp path
+    /// so persistence tests never touch the operator's real
+    /// `~/.darkbloom/loaded-models.json`.
+    func setLoadedModelsFileForTesting(_ url: URL?) {
+        loadedModelsFileOverride = url
+    }
+
+    /// Test seam: replace `ensureModelLoaded` in the startup preload driver
+    /// with a scripted loader (no weights, no disk).
+    func setStartupPreloadLoadOverrideForTesting(
+        _ load: (@Sendable (String) async throws -> Void)?
+    ) {
+        startupPreloadLoadOverride = load
+    }
+
+    /// Test seam: replace the startup self-test decode with a scripted stub.
+    func setStartupSelfTestOverrideForTesting(
+        _ selfTest: (@Sendable (String) async throws -> Duration)?
+    ) {
+        startupSelfTestOverride = selfTest
+    }
+
+    /// Test seam: replace the preload admission's free-memory probe with a
+    /// scripted value (the real probe reads live machine memory).
+    func setStartupPreloadFreeMemoryOverrideForTesting(
+        _ freeMemoryGb: (@Sendable () async -> Double)?
+    ) {
+        startupPreloadFreeMemoryOverride = freeMemoryGb
+    }
+
+    /// Test seam: the ordered startup preload plan (config list vs persisted
+    /// set, dedup, advertised filter, slot cap).
+    func startupPreloadPlanForTesting() -> [StartupPreloader.Candidate] {
+        startupPreloadPlan()
+    }
+
+    /// Test seam: run the registration readiness gate (the production entry
+    /// point is `run()`, which needs a live coordinator).
+    func runStartupPreloadGateForTesting() async -> StartupPreloadGateOutcome {
+        await runStartupPreloadGate()
+    }
+
+    /// Test seam: write the current loaded-model set to the persistence file
+    /// (production write points are `ensureModelLoaded` / `unloadModel`).
+    func persistLoadedModelSetForTesting() {
+        persistLoadedModelSet()
+    }
+
+    /// Test seam: mark the loop as shutting down, so tests can assert the
+    /// shutdown-teardown guard (unloads during shutdown must NOT rewrite the
+    /// persisted serving set).
+    func beginShutdownForTesting() {
+        isShuttingDown = true
+    }
+
+    /// Test seam: whether the startup preload driver is still running.
+    func startupPreloadTaskRunningForTesting() -> Bool {
+        startupPreloadTask != nil
+    }
+
     // MARK: - ContinuousBatchingV2 seams
 
     /// Test seam: swap the process-global v2 runtime for an isolated

@@ -40,6 +40,11 @@ export function KeyForm({
 
   const visibleModels = selfRouteOnly ? selfRouteModels : models;
   const hasModels = visibleModels.length > 0;
+  // Selections made in the other route mode stay in `allowed` (so toggling
+  // back restores them) but must never be submitted: the coordinator checks
+  // the allow-list before self-route routing, so a hidden public id on a
+  // "My Machine only" key would block the machine models the picker shows.
+  const visibleAllowed = allowed.filter((m) => visibleModels.includes(m));
   const nameTrim = name.trim();
   const canSubmit = !!nameTrim && !submitting;
 
@@ -55,7 +60,7 @@ export function KeyForm({
     if (!canSubmit) return;
     const clear = mode === "edit";
     const selectedModels = hasModels
-      ? allowed
+      ? visibleAllowed
       : modelText.split(",").map((s) => s.trim()).filter(Boolean);
 
     const body: UpdateKeyBody = {
@@ -216,8 +221,8 @@ export function KeyForm({
           />
         )}
         <p className="mt-1.5 text-xs text-text-tertiary">
-          {allowed.length > 0 && hasModels
-            ? `${plural(allowed.length, "model")} selected.`
+          {visibleAllowed.length > 0 && hasModels
+            ? `${plural(visibleAllowed.length, "model")} selected.`
             : "Leave empty to allow all models."}
         </p>
       </div>

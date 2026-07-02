@@ -170,4 +170,39 @@ describe("KeyForm self_route_only", () => {
     expect(screen.getByText("local/llama-3.1-8b")).toBeInTheDocument();
     expect(screen.queryByText("gpt-oss-20b")).toBeNull();
   });
+
+  it("never submits models hidden by the current route mode", () => {
+    let submitted: UpdateKeyBody | null = null;
+    render(
+      <KeyForm
+        models={["gpt-oss-20b"]}
+        selfRouteModels={["local/llama-3.1-8b"]}
+        mode="create"
+        submitting={false}
+        onCancel={() => {}}
+        onSubmit={(b) => {
+          submitted = b;
+        }}
+      />
+    );
+    fireEvent.change(screen.getByPlaceholderText("e.g. Production server"), {
+      target: { value: "mode-switch-key" },
+    });
+
+    // Select a public model, then switch to "My Machine only": the hidden
+    // public selection must not reach the allow-list, or the self-route key
+    // would reject the machine models the picker now shows.
+    fireEvent.click(screen.getByText("gpt-oss-20b"));
+    fireEvent.click(screen.getByText("My Machine only — free"));
+    fireEvent.click(screen.getByText("local/llama-3.1-8b"));
+    fireEvent.click(screen.getByText("Create key"));
+
+    expect(submitted).not.toBeNull();
+    expect(submitted!.allowed_models).toEqual(["local/llama-3.1-8b"]);
+
+    // Switching back restores the public selection (it was hidden, not lost).
+    fireEvent.click(screen.getByText("My Machine only — free"));
+    fireEvent.click(screen.getByText("Create key"));
+    expect(submitted!.allowed_models).toEqual(["gpt-oss-20b"]);
+  });
 });

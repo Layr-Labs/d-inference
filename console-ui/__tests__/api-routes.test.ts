@@ -87,28 +87,30 @@ describe("GET /api/me/providers", () => {
 
 describe("GET /api/me/provider-models", () => {
   it("returns deduped model ids from eligible owned providers", async () => {
+    const fresh = new Date().toISOString();
     upstreamFetch.mockResolvedValueOnce(
       upstreamOk({
+        challenge_max_age_seconds: 360,
         providers: [
           {
             online: true,
             status: "online",
             runtime_verified: true,
-            last_challenge_verified: "2026-06-26T00:00:00Z",
+            last_challenge_verified: fresh,
             models: [{ id: "local/b" }, { id: "local/a" }],
           },
           {
             online: true,
             status: "serving",
             runtime_verified: true,
-            last_challenge_verified: "2026-06-26T00:00:00Z",
+            last_challenge_verified: fresh,
             models: [{ id: "local/a" }],
           },
           {
             online: false,
             status: "offline",
             runtime_verified: true,
-            last_challenge_verified: "2026-06-26T00:00:00Z",
+            last_challenge_verified: fresh,
             models: [{ id: "offline/model" }],
           },
         ],
@@ -126,6 +128,48 @@ describe("GET /api/me/provider-models", () => {
     const [upstreamUrl, upstreamOpts] = upstreamFetch.mock.calls[0];
     expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/me/providers`);
     expect(upstreamOpts.headers.Authorization).toBe("Bearer privy-token-123");
+  });
+
+  it("excludes providers with stale or unparseable challenges", async () => {
+    const staleSec = 400; // over the 360s max age below
+    upstreamFetch.mockResolvedValueOnce(
+      upstreamOk({
+        challenge_max_age_seconds: 360,
+        providers: [
+          {
+            online: true,
+            status: "online",
+            runtime_verified: true,
+            last_challenge_verified: new Date(Date.now() - staleSec * 1000).toISOString(),
+            models: [{ id: "stale/model" }],
+          },
+          {
+            online: true,
+            status: "online",
+            runtime_verified: true,
+            last_challenge_verified: "not-a-timestamp",
+            models: [{ id: "garbled/model" }],
+          },
+          {
+            online: true,
+            status: "online",
+            runtime_verified: true,
+            last_challenge_verified: new Date(Date.now() - 60 * 1000).toISOString(),
+            models: [{ id: "fresh/model" }],
+          },
+        ],
+      })
+    );
+
+    const { GET } = await import("@/app/api/me/provider-models/route");
+    const res = await GET(
+      makeRequest("/api/me/provider-models", {
+        headers: { authorization: "Bearer privy-token-123" },
+      })
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ models: ["fresh/model"] });
   });
 
   it("rejects missing auth", async () => {

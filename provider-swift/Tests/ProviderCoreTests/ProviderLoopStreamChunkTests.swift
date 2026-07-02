@@ -378,3 +378,72 @@ func injectReasoningTokensMergesExistingDetails() throws {
     #expect((details["reasoning_tokens"] as? Int) == 4)
     #expect((details["audio_tokens"] as? Int) == 3)
 }
+
+// MARK: - injectLogprobs (engine-v2 logprobs passthrough)
+
+private func sampleLogprobEntries() -> [SSETokenLogprob] {
+    [
+        SSETokenLogprob(
+            token: "Hello", logprob: -0.25, bytes: [72, 101, 108, 108, 111],
+            topLogprobs: [
+                .init(token: "Hello", logprob: -0.25, bytes: [72, 101, 108, 108, 111]),
+                .init(token: "Hi", logprob: -1.5, bytes: [72, 105]),
+            ]
+        )
+    ]
+}
+
+@Test("injectLogprobs splices the OpenAI logprobs.content shape into a content frame")
+func injectLogprobsContentFrame() throws {
+    let frame = try encodeChunk(content: "Hello")
+    let rewritten = try #require(
+        ProviderLoop.injectLogprobs(into: frame, entries: sampleLogprobEntries())
+    )
+    // Content preserved; the rewritten frame still parses.
+    let parsed = try #require(ProviderLoop.parseStreamChunk(rewritten))
+    #expect(parsed.contentDelta == "Hello")
+    // OpenAI wire shape:
+    // choices[0].logprobs.content[].{token, logprob, bytes, top_logprobs}.
+    let payload = try #require(ProviderLoop.joinedDataPayload(rewritten))
+    let obj = try #require(
+        try JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any]
+    )
+    let choices = try #require(obj["choices"] as? [[String: Any]])
+    let logprobs = try #require(choices[0]["logprobs"] as? [String: Any])
+    let content = try #require(logprobs["content"] as? [[String: Any]])
+    #expect(content.count == 1)
+    #expect((content[0]["token"] as? String) == "Hello")
+    let lp = try #require(content[0]["logprob"] as? Double)
+    #expect(abs(lp - (-0.25)) < 1e-6)
+    #expect((content[0]["bytes"] as? [Int]) == [72, 101, 108, 108, 111])
+    let top = try #require(content[0]["top_logprobs"] as? [[String: Any]])
+    #expect(top.count == 2)
+    #expect((top[1]["token"] as? String) == "Hi")
+    #expect((top[1]["bytes"] as? [Int]) == [72, 105])
+}
+
+@Test("injectLogprobs returns nil for non-content frames (entries stay pending)")
+func injectLogprobsSkipsNonContentFrames() throws {
+    let entries = sampleLogprobEntries()
+    // Role-only preamble.
+    #expect(ProviderLoop.injectLogprobs(
+        into: try encodeChunk(role: "assistant"), entries: entries) == nil)
+    // Reasoning-only delta (logprobs.content covers CONTENT tokens).
+    #expect(ProviderLoop.injectLogprobs(
+        into: try encodeChunk(reasoningContent: "thinking"), entries: entries) == nil)
+    // Terminal/usage chunk.
+    #expect(ProviderLoop.injectLogprobs(
+        into: try encodeChunk(
+            finishReason: "stop",
+            usage: OpenAIUsage(promptTokens: 1, completionTokens: 2)),
+        entries: entries) == nil)
+    // Empty content string is not content-bearing.
+    #expect(ProviderLoop.injectLogprobs(
+        into: try encodeChunk(content: ""), entries: entries) == nil)
+    // [DONE] sentinel and unparseable payloads are never touched.
+    #expect(ProviderLoop.injectLogprobs(into: "data: [DONE]\n\n", entries: entries) == nil)
+    #expect(ProviderLoop.injectLogprobs(into: "data: {not json}\n\n", entries: entries) == nil)
+    // No entries → nothing to splice, even into a content frame.
+    #expect(ProviderLoop.injectLogprobs(
+        into: try encodeChunk(content: "x"), entries: []) == nil)
+}

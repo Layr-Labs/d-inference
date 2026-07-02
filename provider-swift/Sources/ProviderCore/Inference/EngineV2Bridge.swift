@@ -31,32 +31,6 @@ import Foundation
 import MLXLMCommon
 import ProviderCoreFoundation
 
-/// `CBv2Engine` is not declared `Sendable` in the frozen contract, but its
-/// whole API surface (submit/cancel/capacity/shutdown) is the engine's
-/// cross-actor entry point (the engine serializes internally on its own
-/// step loop). Box it — and funnel ALL engine access through the box's
-/// wrappers — so the bridge actor can hold and use it under Swift 6 strict
-/// concurrency. Recorded in docs/engine-v2/CONTRACT-ISSUES-H-provider.md.
-struct EngineV2EngineBox: @unchecked Sendable {
-    let engine: any CBv2Engine
-
-    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
-        try engine.submit(request)
-    }
-
-    func cancel(_ id: CBv2RequestID) {
-        engine.cancel(id)
-    }
-
-    func capacity() -> CBv2CapacitySnapshot {
-        engine.capacity()
-    }
-
-    func shutdown() async {
-        await engine.shutdown()
-    }
-}
-
 /// Bridges one `CBv2Engine` (one loaded model) to the provider's
 /// `GenerationEvent` streaming surface.
 ///
@@ -73,7 +47,13 @@ public actor EngineV2Bridge {
 
     // MARK: - Immutable configuration
 
-    let engineBox: EngineV2EngineBox
+    /// The v2 engine. `CBv2Engine` is declared `Sendable` in the contract
+    /// (the engine serializes all cross-actor entry points —
+    /// submit/cancel/capacity/shutdown — on its own step loop), so the
+    /// bridge actor holds and calls it directly. The former
+    /// `@unchecked Sendable` box workaround (CONTRACT-ISSUES-H-provider.md
+    /// §1) is resolved.
+    let engine: any CBv2Engine
     public let modelId: String
     let tokenizer: TokenizerHandle
     /// Resolved stop-token set (model EOS ∪ tokenizer EOS ∪ extra EOS
@@ -106,14 +86,12 @@ public actor EngineV2Bridge {
     // MARK: - Health / telemetry state
 
     /// Same monitor type + semantics as the legacy engine's first-token
-    /// wedge instrumentation (`WedgeMonitor`). The v2 contract exposes no
-    /// engine step counter, so loop progress is proxied by
-    /// `eventsObserved` — any event from any request proves the engine
-    /// loop advanced (see CONTRACT-ISSUES-H-provider.md).
+    /// wedge instrumentation (`WedgeMonitor`). Loop progress is sampled
+    /// from the engine's own monotonic `CBv2CapacitySnapshot.stepsExecuted`
+    /// counter on the heartbeat cadence — the direct analogue of the
+    /// legacy `EngineCore.stepsExecuted` signal (the event-count proxy
+    /// recorded in CONTRACT-ISSUES-H-provider.md §3 is resolved).
     var wedgeMonitor = WedgeMonitor()
-    /// Monotonic count of CBv2 events observed across all requests — the
-    /// v2 stand-in for `EngineCore.stepsExecuted`.
-    var eventsObserved: Int = 0
     var observedDecodeTpsEwma: Double = 0
     var ewmaInitialized = false
     /// Last wedge verdict emitted, for transition-edge telemetry.
@@ -130,7 +108,7 @@ public actor EngineV2Bridge {
         kvBytesPerToken: Int = 0,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
-        self.engineBox = EngineV2EngineBox(engine: engine)
+        self.engine = engine
         self.modelId = modelId
         self.tokenizer = tokenizer
         self.stopTokenIds = EngineV2Translation.stopTokenIds(
@@ -150,9 +128,15 @@ public actor EngineV2Bridge {
     /// Tokenize + submit an OpenAI-shaped chat request. Mirrors the legacy
     /// `BatchScheduler.submit(request:)` tokenization path (role/content
     /// dict + Harmony channel-tag stripping for assistant turns).
+    ///
+    /// The per-tenant prefix-cache scope is derived from the request itself
+    /// (`prompt_cache_key`/`user` → `ChatCompletionRequest.cacheScope`);
+    /// callers that decode the scope out-of-band (the coordinator path)
+    /// use `submitTokenized(..., cacheScope:)` directly.
     public func submit(
         request: ChatCompletionRequest,
-        requestId: String? = nil
+        requestId: String? = nil,
+        logprobsChannel: EngineV2LogprobsChannel? = nil
     ) -> AsyncStream<GenerationEvent> {
         let messages: [[String: any Sendable]] = request.messages.map { msg in
             [
@@ -174,7 +158,8 @@ public actor EngineV2Bridge {
             return stream
         }
         return submitTokenized(
-            promptTokens: promptTokens, request: request, requestId: requestId
+            promptTokens: promptTokens, request: request, requestId: requestId,
+            cacheScope: request.cacheScope, logprobsChannel: logprobsChannel
         )
     }
 
@@ -182,10 +167,26 @@ public actor EngineV2Bridge {
     /// path, which tokenizes the full OpenAI request — tools included —
     /// itself). Sampling/stop/max-token translation still comes from the
     /// request so both entry points share one translation source.
+    ///
+    /// `cacheScope` is the per-tenant prefix-cache scope
+    /// (`SHA256(prompt_cache_key)`/`SHA256(user)`, "" ⇒ unscoped) — the
+    /// same value the legacy `BatchScheduler.submitTokenized(cacheScope:)`
+    /// receives. It maps onto `CBv2Request.cacheSalt` (TB-007): non-empty
+    /// scopes can never share cached KV across tenants; "" maps to nil
+    /// (cache-level salt fallback). Inert in production today — the v2
+    /// prefix cache is constructed OFF (`prefixCache: nil` in
+    /// `EngineV2Factory.makeProductionEngine`).
+    ///
+    /// `logprobsChannel`, when non-nil, receives OpenAI-shaped logprob
+    /// entries for every engine delta that carries them (requires
+    /// `request.logprobs == true` so the translated sampling params ask
+    /// the engine to capture them).
     public func submitTokenized(
         promptTokens: [Int],
         request: ChatCompletionRequest,
-        requestId: String? = nil
+        requestId: String? = nil,
+        cacheScope: String = "",
+        logprobsChannel: EngineV2LogprobsChannel? = nil
     ) -> AsyncStream<GenerationEvent> {
         let id = requestId ?? "req-\(UUID().uuidString.prefix(12))"
         let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
@@ -208,12 +209,13 @@ public actor EngineV2Bridge {
             promptTokens: promptTokens,
             request: request,
             defaultMaxTokens: defaultMaxTokens,
-            stopTokenIds: stopTokenIds
+            stopTokenIds: stopTokenIds,
+            cacheScope: cacheScope
         )
 
         let events: AsyncStream<CBv2Event>
         do {
-            events = try engineBox.submit(cbv2Request)
+            events = try engine.submit(cbv2Request)
         } catch {
             // Admission failure. The message keeps the canonical
             // `token_budget_exhausted:` prefix contract so
@@ -233,7 +235,10 @@ public actor EngineV2Bridge {
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(now: .now)
 
-        runPump(id: id, events: events, continuation: continuation)
+        runPump(
+            id: id, events: events, continuation: continuation,
+            logprobsChannel: logprobsChannel
+        )
 
         let bridge = self
         continuation.onTermination = { @Sendable termination in
@@ -252,20 +257,20 @@ public actor EngineV2Bridge {
     /// which drives the normal bookkeeping/teardown in the pump.
     public func cancel(requestId: String) {
         guard let cbv2Id = idMap[requestId] else { return }
-        engineBox.cancel(cbv2Id)
+        engine.cancel(cbv2Id)
     }
 
     /// Runtime fan-out helper: cancel iff this bridge owns the request-id.
     func cancelIfOwned(requestId: String) -> Bool {
         guard let cbv2Id = idMap[requestId] else { return false }
-        engineBox.cancel(cbv2Id)
+        engine.cancel(cbv2Id)
         return true
     }
 
     /// Graceful drain (unload / process shutdown): running requests finish,
     /// new submissions are rejected by the engine.
     public func shutdown() async {
-        await engineBox.shutdown()
+        await engine.shutdown()
     }
 
     // MARK: - Event pump (CBv2Event → GenerationEvent)
@@ -273,25 +278,29 @@ public actor EngineV2Bridge {
     private func runPump(
         id: String,
         events: AsyncStream<CBv2Event>,
-        continuation: AsyncStream<GenerationEvent>.Continuation
+        continuation: AsyncStream<GenerationEvent>.Continuation,
+        logprobsChannel: EngineV2LogprobsChannel? = nil
     ) {
         let bridge = self
         Task {
-            await bridge.pump(id: id, events: events, continuation: continuation)
+            await bridge.pump(
+                id: id, events: events, continuation: continuation,
+                logprobsChannel: logprobsChannel
+            )
         }
     }
 
     private func pump(
         id: String,
         events: AsyncStream<CBv2Event>,
-        continuation: AsyncStream<GenerationEvent>.Continuation
+        continuation: AsyncStream<GenerationEvent>.Continuation,
+        logprobsChannel: EngineV2LogprobsChannel? = nil
     ) async {
         var sawFirstToken = false
         var sawTerminal = false
         for await event in events {
-            noteEngineProgress()
             switch event {
-            case .delta(let text, let tokens, _):
+            case .delta(let text, let tokens, let logprobs):
                 // Key first-token on TOKEN count, not text: some tokens
                 // (BPE intermediates, specials) detokenize to "" and would
                 // otherwise leave the first-token bookkeeping unset.
@@ -300,6 +309,21 @@ public actor EngineV2Bridge {
                     recordFirstToken(id: id)
                 }
                 recordProgress(id: id, newTokens: tokens.count)
+                // Logprobs passthrough: convert to the OpenAI streaming
+                // entry shape and publish to the per-request channel BEFORE
+                // yielding the chunk, so by the time the SSE frame carrying
+                // this delta's text reaches the frame decorator its entries
+                // are already drainable (happens-before via the yield).
+                if let logprobsChannel, let logprobs, !logprobs.isEmpty {
+                    logprobsChannel.append(
+                        EngineV2Translation.sseTokenLogprobs(
+                            logprobs,
+                            decodeToken: { [inner = tokenizer.inner] id in
+                                inner.decode(tokenIds: [id], skipSpecialTokens: false)
+                            }
+                        )
+                    )
+                }
                 if !text.isEmpty {
                     continuation.yield(.chunk(text))
                 }
@@ -381,12 +405,6 @@ public actor EngineV2Bridge {
         guard newTokens > 0, var state = active[id] else { return }
         state.completionTokens += newTokens
         active[id] = state
-    }
-
-    /// Progress proxy for the wedge monitor's step sampling: every event
-    /// received from the engine proves its loop advanced.
-    private func noteEngineProgress() {
-        eventsObserved += 1
     }
 
     /// Finish bookkeeping with the legacy billing-zero defense: the
@@ -472,8 +490,8 @@ public actor EngineV2Bridge {
     // MARK: - Test seams (internal; reachable via @testable only)
 
     /// Snapshot of internal counters for unit assertions.
-    func _testCounters() -> (active: Int, eventsObserved: Int, admits: Int, firstTokens: Int) {
-        (active.count, eventsObserved, wedgeMonitor.admits, wedgeMonitor.firstTokens)
+    func _testCounters() -> (active: Int, admits: Int, firstTokens: Int) {
+        (active.count, wedgeMonitor.admits, wedgeMonitor.firstTokens)
     }
 
     /// The engine request-id minted for a provider request-id, if active.

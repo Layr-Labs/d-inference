@@ -10,10 +10,13 @@
 //     (`kvBytesInUse / kvBytesPerToken`), not worst-case reservations.
 //
 //   * `engine_v2.step_wedge`: the same `WedgeMonitor` primitive the legacy
-//     engine uses (admits vs first tokens vs loop progress), fed from
-//     bridge-observable signals, emitted through the existing
-//     `engine_health` telemetry plumbing with `backend=engine_v2` on a
-//     wedge-suspected TRANSITION edge (both directions).
+//     engine uses (admits vs first tokens vs loop progress), with loop
+//     progress sampled from the engine's own monotonic
+//     `CBv2CapacitySnapshot.stepsExecuted` counter (published every step —
+//     the direct analogue of `EngineCore.stepsExecuted`), emitted through
+//     the existing `engine_health` telemetry plumbing with
+//     `backend=engine_v2` on a wedge-suspected TRANSITION edge (both
+//     directions).
 
 import Foundation
 import MLXLMCommon
@@ -26,12 +29,15 @@ extension EngineV2Bridge {
     public func backendSlotCapacity(
         now: ContinuousClock.Instant = .now
     ) -> BackendSlotCapacity {
-        let snapshot = engineBox.capacity()
+        let snapshot = engine.capacity()
 
         // Sample loop progress into the wedge monitor on the heartbeat
         // cadence (mirrors `sampleEngineSteps`), then emit the step_wedge
-        // transition signal if the verdict flipped.
-        wedgeMonitor.sampleSteps(eventsObserved, now: now)
+        // transition signal if the verdict flipped. `stepsExecuted` is the
+        // engine's own monotonic step counter — a stalled engine stops
+        // incrementing it, which is exactly the flatline term
+        // `wedgeSuspected` requires.
+        wedgeMonitor.sampleSteps(snapshot.stepsExecuted, now: now)
         emitStepWedgeTransitionIfNeeded(now: now)
 
         // Worst-case potential is bridge bookkeeping (the snapshot has no

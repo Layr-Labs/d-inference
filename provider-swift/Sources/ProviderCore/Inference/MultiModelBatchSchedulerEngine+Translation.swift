@@ -39,9 +39,17 @@ extension MultiModelBatchSchedulerEngine {
     /// repurpose `user` for cancellation / request-id correlation in
     /// the future and double-booking that field would be a layering
     /// trap.
+    /// `logprobs`/`topLogprobs` overlay the OpenAI knobs of the same names
+    /// onto the internal shape. Like `seed`, the upstream
+    /// `OpenAIChatCompletionRequest` does not model them, so on the
+    /// coordinator path they are decoded from the sealed body and threaded
+    /// in via `EngineV2LogprobsPlumbing` (v2 engine path only; the legacy
+    /// engine ignores the fields).
     static func translate(
         openAIRequest request: OpenAIChatCompletionRequest,
-        defaultMaxTokens: Int
+        defaultMaxTokens: Int,
+        logprobs: Bool? = nil,
+        topLogprobs: Int? = nil
     ) -> ChatCompletionRequest {
         let stop: StopSequences? = {
             guard let stops = request.stop, !stops.isEmpty else { return nil }
@@ -65,7 +73,9 @@ extension MultiModelBatchSchedulerEngine {
             tools: nil,
             tool_choice: nil,
             response_format: nil,
-            user: nil
+            user: nil,
+            logprobs: logprobs,
+            top_logprobs: topLogprobs
         )
     }
 }

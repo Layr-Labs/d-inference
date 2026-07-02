@@ -100,6 +100,27 @@ extension ProviderLoop {
         return ""
     }
 
+    /// OpenAI `logprobs` / `top_logprobs` for this request. Like
+    /// `reasoning_effort` and the cache scope, neither field is on the
+    /// upstream `OpenAIChatCompletionRequest`, so decode them straight from
+    /// the sealed body. Returns nil unless `logprobs == true` (per the
+    /// OpenAI contract `top_logprobs` is only meaningful alongside it);
+    /// `topLogprobs` passes through un-clamped — the engine translation
+    /// (`EngineV2Translation.topLogprobs`) owns the 1...20 clamp policy.
+    /// Consumed by the v2 engine path only; legacy serving ignores it.
+    internal static func extractLogprobsSpec(
+        from data: Data
+    ) -> (topLogprobs: Int?, requested: Bool)? {
+        struct Probe: Decodable {
+            let logprobs: Bool?
+            let top_logprobs: Int?
+        }
+        guard let probe = try? JSONDecoder().decode(Probe.self, from: data),
+              probe.logprobs == true
+        else { return nil }
+        return (topLogprobs: probe.top_logprobs, requested: true)
+    }
+
     /// Prompt-token floor for requests whose usage chunk never arrived (cancelled
     /// stream / upstream regression). Re-runs the engine's exact applyChatTemplate
     /// path so the count matches what was prefilled; VLM parts aren't in the text

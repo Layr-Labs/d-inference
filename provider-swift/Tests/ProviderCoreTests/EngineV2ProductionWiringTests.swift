@@ -106,7 +106,11 @@ private struct WiringStubTokenizer: MLXLMCommon.Tokenizer {
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
         Array(repeating: 0, count: text.count)
     }
-    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "" }
+    /// Deterministic per-id text ("t<id>") so logprob-entry conversion is
+    /// assertable (mirrors the EngineV2BridgeTests stub).
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        tokenIds.map { "t\($0)" }.joined()
+    }
     func convertTokenToId(_ token: String) -> Int? { ["</s>": 2][token] }
     func convertIdToToken(_ id: Int) -> String? { nil }
     var bosToken: String? { nil }
@@ -475,6 +479,45 @@ struct EngineV2RequestRoutingTests {
         #expect(events.last == .info(prompt: 5, completion: 2))
         #expect(engine.submitted.count == 1)
         #expect(engine.submitted[0].promptTokens == [1, 2, 3, 4, 5])
+    }
+
+    @Test("coordinator path threads cacheScope and logprobs plumbing into the bridge")
+    func coordinatorPathThreadsSaltAndLogprobs() async throws {
+        let engine = WiringScriptedEngine(script: .stream([
+            .delta(
+                text: "Hello", tokens: [10],
+                logprobs: [CBv2TokenLogprob(token: 10, logprob: -0.25)]),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let channel = EngineV2LogprobsChannel()
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "gemma-4-27b-it": .init(
+                        scheduler: BatchScheduler(),
+                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        modelType: "gemma4_text",
+                        engineV2Bridge: bridge)
+                ]
+            },
+            cacheScope: "tenant-hash",
+            engineV2Logprobs: EngineV2LogprobsPlumbing(topLogprobs: 3, channel: channel)
+        )
+        let stream = try await providerEngine.streamChatCompletion(request: makeOpenAIRequest())
+        _ = try await recordServerStream(stream)
+        #expect(engine.submitted.count == 1)
+        // TB-007: the tenant scope rode through as the per-request cache
+        // salt (inert — production builds the v2 engine with the prefix
+        // cache off).
+        #expect(engine.submitted[0].cacheSalt == "tenant-hash")
+        // The logprobs plumbing flipped the sampling translation on.
+        #expect(engine.submitted[0].sampling.topLogprobs == 3)
+        // Entries reached the per-request channel in OpenAI shape.
+        let entries = channel.drain()
+        #expect(entries.count == 1)
+        #expect(entries[0].token == "t10")
+        #expect(entries[0].logprob == -0.25)
     }
 
     @Test("local-endpoint acquire path routes through the bridge and releases the token")

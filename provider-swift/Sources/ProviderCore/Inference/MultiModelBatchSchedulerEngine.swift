@@ -82,8 +82,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     private let reasoningEffort: String?
     /// Per-tenant prefix-cache scope (`SHA256(prompt_cache_key)`/`user`, ""
     /// ⇒ unscoped). Threaded into `submitTokenized` so the checkpoint cache is
-    /// partitioned per consumer (closes the TB-007 cross-tenant channel).
+    /// partitioned per consumer (closes the TB-007 cross-tenant channel). On
+    /// the v2 path the same value maps onto `CBv2Request.cacheSalt` (inert
+    /// today — the production v2 engine is built with `prefixCache: nil`).
     private let cacheScope: String
+    /// Per-request logprobs plumbing (v2 engine path only; the legacy engine
+    /// never emitted logprobs). Non-nil ⇒ the sealed request asked for
+    /// logprobs: the v2 translation flips `logprobs`/`top_logprobs` on so
+    /// the engine captures them, and the bridge publishes OpenAI-shaped
+    /// entries to `engineV2Logprobs.channel` for the caller's SSE frame
+    /// decorator. Ignored (silently) when the model serves via legacy.
+    private let engineV2Logprobs: EngineV2LogprobsPlumbing?
 
     public init(
         registryProvider: @escaping @Sendable () async -> Registry,
@@ -92,7 +101,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         releaseModel: @escaping @Sendable (String) async -> Void = { _ in },
         defaultMaxTokens: Int = 4096,
         reasoningEffort: String? = nil,
-        cacheScope: String = ""
+        cacheScope: String = "",
+        engineV2Logprobs: EngineV2LogprobsPlumbing? = nil
     ) {
         self.registryProvider = registryProvider
         self.ensureLoaded = ensureLoaded
@@ -101,6 +111,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.defaultMaxTokens = defaultMaxTokens
         self.reasoningEffort = reasoningEffort
         self.cacheScope = cacheScope
+        self.engineV2Logprobs = engineV2Logprobs
         self.acquire = nil
         self.tokenizerProvider = nil
         self.availableModelsOverride = nil
@@ -139,6 +150,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // ⇒ unscoped (default). Set via DARKBLOOM_PREFIX_CACHE_SCOPE; used to
         // exercise/validate cross-tenant isolation on a single box.
         self.cacheScope = cacheScope
+        // The --local path serves SSE frames inside the upstream router, so
+        // there is no provider seam to decorate frames with logprobs on this
+        // init (same visible behavior as the legacy engine: none emitted).
+        self.engineV2Logprobs = nil
     }
 
     // MARK: - MLXServerEngine
@@ -366,10 +381,20 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 promptTokens: promptTokens,
                 // Sampling/stop/max-token translation reuses the OpenAI →
                 // internal request mapping (`EngineV2Translation` reads the
-                // internal shape).
+                // internal shape). `logprobs`/`top_logprobs` are not on the
+                // upstream request shape, so they arrive via the
+                // `engineV2Logprobs` plumbing and are overlaid here.
                 request: Self.translate(
-                    openAIRequest: request, defaultMaxTokens: defaultMaxTokens),
-                requestId: requestId
+                    openAIRequest: request, defaultMaxTokens: defaultMaxTokens,
+                    logprobs: engineV2Logprobs != nil ? true : nil,
+                    topLogprobs: engineV2Logprobs?.topLogprobs),
+                requestId: requestId,
+                // Same per-tenant scope the legacy submit threads into the
+                // checkpoint cache; the bridge maps it to CBv2Request.cacheSalt
+                // (TB-007; inert — production builds the engine with
+                // prefixCache: nil).
+                cacheScope: cacheScope,
+                logprobsChannel: engineV2Logprobs?.channel
             )
             cancelUpstream = { await bridge.cancel(requestId: requestId) }
         } else {

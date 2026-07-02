@@ -25,12 +25,21 @@ enum EngineV2Translation {
     ///   and batched requests stop identically.
     /// * `stopStrings` carries the request's `stop` sequences; the v2
     ///   engine matches them against held-back detokenized text.
+    /// * `cacheScope` is the provider's per-tenant prefix-cache scope
+    ///   (`SHA256(prompt_cache_key)`/`SHA256(user)`, "" ⇒ unscoped). It
+    ///   maps onto `CBv2Request.cacheSalt` (TB-007): a non-empty scope
+    ///   REPLACES the cache-level salt in the first block hash so tenants
+    ///   can never share cached KV; "" maps to nil (cache-level salt
+    ///   fallback — byte-identical hashes to the pre-salt behavior).
+    ///   Forward plumbing only today: the production v2 engine is built
+    ///   with `prefixCache: nil`.
     static func cbv2Request(
         id: CBv2RequestID,
         promptTokens: [Int],
         request: ChatCompletionRequest,
         defaultMaxTokens: Int,
-        stopTokenIds: Set<Int>
+        stopTokenIds: Set<Int>,
+        cacheScope: String = ""
     ) -> CBv2Request {
         CBv2Request(
             id: id,
@@ -39,7 +48,8 @@ enum EngineV2Translation {
             maxTokens: request.max_tokens ?? defaultMaxTokens,
             stopTokens: stopTokenIds,
             stopStrings: request.stop?.asArray ?? [],
-            priority: 0
+            priority: 0,
+            cacheSalt: cacheScope.isEmpty ? nil : cacheScope
         )
     }
 
@@ -95,6 +105,36 @@ enum EngineV2Translation {
         guard logprobs == true else { return 0 }
         let requested = topLogprobs ?? 0
         return min(20, max(1, requested))
+    }
+
+    // MARK: - Logprobs translation (CBv2TokenLogprob → OpenAI entry shape)
+
+    /// Convert engine-emitted logprobs into the OpenAI streaming entry
+    /// shape (`choices[].logprobs.content[]`): token text via the caller's
+    /// detokenizer, raw UTF-8 `bytes` (the OpenAI escape hatch for BPE
+    /// intermediates whose text is not valid standalone UTF-8), and the
+    /// `top_logprobs` alternatives. Pure — the decode closure is the only
+    /// dependency, so this is unit-testable without an engine.
+    static func sseTokenLogprobs(
+        _ logprobs: [CBv2TokenLogprob],
+        decodeToken: (Int) -> String
+    ) -> [SSETokenLogprob] {
+        logprobs.map { entry in
+            let token = decodeToken(entry.token)
+            return SSETokenLogprob(
+                token: token,
+                logprob: entry.logprob,
+                bytes: Array(token.utf8).map(Int.init),
+                topLogprobs: entry.topLogprobs.map { alt in
+                    let altToken = decodeToken(alt.token)
+                    return SSETokenLogprob.Top(
+                        token: altToken,
+                        logprob: alt.logprob,
+                        bytes: Array(altToken.utf8).map(Int.init)
+                    )
+                }
+            )
+        }
     }
 
     // MARK: - Stop resolution (buildStopTokenIds semantics)

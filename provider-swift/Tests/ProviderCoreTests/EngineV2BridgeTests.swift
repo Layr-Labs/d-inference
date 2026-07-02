@@ -47,7 +47,10 @@ private final class ScriptedCBv2Engine: CBv2Engine, @unchecked Sendable {
     private var _submitted: [CBv2Request] = []
     private var _cancelled: [CBv2RequestID] = []
     private var _shutdownCalls = 0
-    private var _manualContinuation: AsyncStream<CBv2Event>.Continuation?
+    /// ALL manual continuations, in submit order — retained so an earlier
+    /// request's event stream is not torn down (continuation deinit ⇒
+    /// stream finish) when a later manual submit arrives.
+    private var _manualContinuations: [AsyncStream<CBv2Event>.Continuation] = []
     var capacitySnapshot: CBv2CapacitySnapshot
 
     init(
@@ -65,7 +68,7 @@ private final class ScriptedCBv2Engine: CBv2Engine, @unchecked Sendable {
     var cancelled: [CBv2RequestID] { lock.withLock { _cancelled } }
     var shutdownCalls: Int { lock.withLock { _shutdownCalls } }
     var manualContinuation: AsyncStream<CBv2Event>.Continuation? {
-        lock.withLock { _manualContinuation }
+        lock.withLock { _manualContinuations.last }
     }
 
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
@@ -85,7 +88,7 @@ private final class ScriptedCBv2Engine: CBv2Engine, @unchecked Sendable {
             return stream
         case .manual:
             let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
-            lock.withLock { _manualContinuation = continuation }
+            lock.withLock { _manualContinuations.append(continuation) }
             return stream
         }
     }
@@ -116,7 +119,11 @@ private struct StubTokenizer: MLXLMCommon.Tokenizer {
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
         Array(repeating: 0, count: text.count)
     }
-    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "" }
+    /// Deterministic per-id text ("t<id>") so logprob-entry conversion
+    /// (token string + UTF-8 bytes) is assertable.
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        tokenIds.map { "t\($0)" }.joined()
+    }
     func convertTokenToId(_ token: String) -> Int? { tokenTable[token] }
     func convertIdToToken(_ id: Int) -> String? { nil }
     var bosToken: String? { nil }
@@ -221,6 +228,8 @@ private func makeRequest(
     frequencyPenalty: Float? = nil,
     stop: StopSequences? = nil,
     seed: UInt64? = nil,
+    user: String? = nil,
+    promptCacheKey: String? = nil,
     logitBias: [String: Float]? = nil,
     logprobs: Bool? = nil,
     topLogprobs: Int? = nil
@@ -237,6 +246,8 @@ private func makeRequest(
         frequency_penalty: frequencyPenalty,
         stop: stop,
         seed: seed,
+        user: user,
+        prompt_cache_key: promptCacheKey,
         logit_bias: logitBias,
         logprobs: logprobs,
         top_logprobs: topLogprobs
@@ -330,6 +341,47 @@ struct EngineV2TranslationTests {
         #expect(EngineV2Translation.topLogprobs(logprobs: true, topLogprobs: 50) == 20)
     }
 
+    @Test("cacheScope maps onto CBv2Request.cacheSalt; \"\" maps to nil")
+    func cacheSaltMapping() {
+        // TB-007 forward plumbing: a non-empty tenant scope becomes the
+        // per-request salt; unscoped ("") falls back to nil so the engine
+        // uses its cache-level salt (byte-identical pre-salt hashes).
+        let salted = EngineV2Translation.cbv2Request(
+            id: CBv2RequestID(1), promptTokens: [1], request: makeRequest(),
+            defaultMaxTokens: 16, stopTokenIds: [], cacheScope: "tenant-a")
+        #expect(salted.cacheSalt == "tenant-a")
+        let unsalted = EngineV2Translation.cbv2Request(
+            id: CBv2RequestID(2), promptTokens: [1], request: makeRequest(),
+            defaultMaxTokens: 16, stopTokenIds: [])
+        #expect(unsalted.cacheSalt == nil)
+    }
+
+    @Test("engine logprobs convert to the OpenAI streaming entry shape")
+    func sseTokenLogprobConversion() {
+        let names = [10: "Hi", 11: "Yo"]
+        let entries = EngineV2Translation.sseTokenLogprobs(
+            [
+                CBv2TokenLogprob(
+                    token: 10, logprob: -0.25,
+                    topLogprobs: [(token: 10, logprob: -0.25), (token: 11, logprob: -1.5)]
+                ),
+                CBv2TokenLogprob(token: 11, logprob: -0.5),
+            ],
+            decodeToken: { names[$0] ?? "?" }
+        )
+        #expect(entries.count == 2)
+        #expect(entries[0].token == "Hi")
+        #expect(entries[0].logprob == -0.25)
+        #expect(entries[0].bytes == [72, 105])  // UTF-8 of "Hi"
+        #expect(entries[0].topLogprobs.count == 2)
+        #expect(entries[0].topLogprobs[1].token == "Yo")
+        #expect(entries[0].topLogprobs[1].logprob == -1.5)
+        #expect(entries[0].topLogprobs[1].bytes == [89, 111])
+        // No alternatives requested → empty top_logprobs, entry still carried.
+        #expect(entries[1].token == "Yo")
+        #expect(entries[1].topLogprobs.isEmpty)
+    }
+
     @Test("stop resolution follows buildStopTokenIds semantics")
     func stopResolution() {
         // model EOS ∪ tokenizer EOS ∪ resolvable extra EOS tokens.
@@ -359,6 +411,34 @@ struct EngineV2TranslationTests {
         #expect(engine.submitted[0].stopTokens == [1, 2, 7])
         // Tokenization went through the tokenizer's chat-template path.
         #expect(engine.submitted[0].promptTokens == [1, 2, 3, 4, 5])
+    }
+
+    @Test("bridge stamps the tenant cache scope as CBv2Request.cacheSalt")
+    func bridgeStampsCacheSalt() async {
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 0))
+        ]))
+        let bridge = makeBridge(engine: engine)
+        // Coordinator path shape: scope decoded out-of-band, passed explicitly.
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2], request: makeRequest(), requestId: "req-salt-1",
+            cacheScope: "tenant-scope"))
+        // Internal-shape path: scope derived from the request's own
+        // prompt_cache_key via `ChatCompletionRequest.cacheScope`.
+        _ = await record(await bridge.submit(
+            request: makeRequest(promptCacheKey: "consumer-key"),
+            requestId: "req-salt-2"))
+        // `user` is the fallback identity when prompt_cache_key is absent.
+        _ = await record(await bridge.submit(
+            request: makeRequest(user: "user-77"), requestId: "req-salt-3"))
+        // No tenant identity at all → nil (engine cache-level salt fallback).
+        _ = await record(await bridge.submit(
+            request: makeRequest(), requestId: "req-salt-4"))
+        #expect(engine.submitted.count == 4)
+        #expect(engine.submitted[0].cacheSalt == "tenant-scope")
+        #expect(engine.submitted[1].cacheSalt == ChatCompletionRequest.scopeHash("consumer-key"))
+        #expect(engine.submitted[2].cacheSalt == ChatCompletionRequest.scopeHash("user-77"))
+        #expect(engine.submitted[3].cacheSalt == nil)
     }
 }
 
@@ -503,6 +583,84 @@ struct EngineV2EventFramingTests {
     }
 }
 
+// MARK: - Logprobs passthrough (delta logprobs → per-request channel)
+
+@Suite("EngineV2 logprobs passthrough")
+struct EngineV2LogprobsPassthroughTests {
+
+    @Test("delta logprobs publish to the channel in OpenAI entry shape, in order")
+    func logprobsFlowToChannel() async {
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .delta(
+                text: "He", tokens: [10],
+                logprobs: [
+                    CBv2TokenLogprob(
+                        token: 10, logprob: -0.1,
+                        topLogprobs: [(token: 10, logprob: -0.1), (token: 12, logprob: -2.0)]
+                    )
+                ]),
+            .delta(
+                text: "llo", tokens: [11],
+                logprobs: [CBv2TokenLogprob(token: 11, logprob: -0.9)]),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 2)),
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let channel = EngineV2LogprobsChannel()
+        let (events, _) = await record(await bridge.submit(
+            request: makeRequest(logprobs: true, topLogprobs: 2),
+            requestId: "req-lp",
+            logprobsChannel: channel
+        ))
+        // The GenerationEvent stream is untouched — logprobs ride out-of-band.
+        #expect(events == [
+            .chunk("He"), .chunk("llo"), .info(prompt: 5, completion: 2),
+        ])
+        // Sampling translation asked the engine to capture logprobs.
+        #expect(engine.submitted[0].sampling.topLogprobs == 2)
+        // Entries arrive converted (StubTokenizer decodes id → "t<id>"),
+        // in emission order, with alternatives preserved.
+        let entries = channel.drain()
+        #expect(entries.count == 2)
+        #expect(entries[0].token == "t10")
+        #expect(entries[0].logprob == -0.1)
+        #expect(entries[0].bytes == Array("t10".utf8).map(Int.init))
+        #expect(entries[0].topLogprobs.count == 2)
+        #expect(entries[0].topLogprobs[1].token == "t12")
+        #expect(entries[1].token == "t11")
+        #expect(entries[1].topLogprobs.isEmpty)
+        // drain() empties the channel.
+        #expect(channel.drain().isEmpty)
+    }
+
+    @Test("nil/empty delta logprobs leave the channel empty")
+    func noLogprobsNoEntries() async {
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .delta(text: "x", tokens: [10], logprobs: nil),
+            .delta(text: "y", tokens: [11], logprobs: []),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 2)),
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let channel = EngineV2LogprobsChannel()
+        _ = await record(await bridge.submit(
+            request: makeRequest(), requestId: "req-nolp", logprobsChannel: channel
+        ))
+        #expect(channel.drain().isEmpty)
+    }
+
+    @Test("no channel wired → logprob-bearing deltas stream normally (dropped)")
+    func logprobsWithoutChannelAreDropped() async {
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .delta(
+                text: "x", tokens: [10],
+                logprobs: [CBv2TokenLogprob(token: 10, logprob: -0.5)]),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let (events, _) = await record(await bridge.submit(request: makeRequest()))
+        #expect(events == [.chunk("x"), .info(prompt: 5, completion: 1)])
+    }
+}
+
 // MARK: - Error mapping (capacity → retryable class)
 
 @Suite("EngineV2 admission-error mapping")
@@ -643,7 +801,8 @@ struct EngineV2CapacityTests {
                 waitingRequests: 3,
                 kvBytesInUse: 4_000_000,
                 kvBytesCapacity: 40_000_000,
-                activeTokens: 1000
+                activeTokens: 1000,
+                stepsExecuted: 12345
             ))
         let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000)
         let slot = await bridge.backendSlotCapacity()
@@ -656,6 +815,8 @@ struct EngineV2CapacityTests {
         #expect(slot.activeTokenBudgetMax == 10000)   // 40 MB / 4000 B-per-token
         #expect(slot.kvBytesPerToken == 4000)
         #expect(slot.maxConcurrency == 4)
+        // The engine's own monotonic step counter flows straight through.
+        #expect(slot.stepsExecuted == 12345)
         #expect(!slot.wedgeSuspected)
     }
 
@@ -677,19 +838,58 @@ struct EngineV2CapacityTests {
         #expect(slot.activeTokenBudgetMax == 0)
     }
 
-    @Test("wedge counters flow into the slot (admits / first tokens / steps)")
+    @Test("wedge counters flow into the slot (admits / first tokens / engine steps)")
     func wedgeCountersInSlot() async {
-        let engine = ScriptedCBv2Engine(script: .stream([
-            .delta(text: "hello", tokens: [10], logprobs: nil),
-            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
-        ]))
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
+                .delta(text: "hello", tokens: [10], logprobs: nil),
+                .finished(
+                    reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
+            ]),
+            capacity: CBv2CapacitySnapshot(
+                activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
+                kvBytesCapacity: 0, activeTokens: 0, stepsExecuted: 42
+            ))
         let bridge = makeBridge(engine: engine)
         _ = await record(await bridge.submit(request: makeRequest()))
         let slot = await bridge.backendSlotCapacity()
         #expect(slot.admits == 1)
         #expect(slot.firstTokensEmitted == 1)
-        // Loop-progress proxy: 2 events were observed.
-        #expect(slot.stepsExecuted == 2)
+        // Loop progress is the ENGINE's monotonic step counter (published in
+        // the capacity snapshot every step), not an event-count proxy.
+        #expect(slot.stepsExecuted == 42)
+    }
+
+    @Test("wedge trips only when the engine step counter flatlines under hanging admits")
+    func wedgeRequiresStepFlatline() async {
+        let engine = ScriptedCBv2Engine(
+            script: .manual,
+            capacity: CBv2CapacitySnapshot(
+                activeRequests: 3, waitingRequests: 0, kvBytesInUse: 0,
+                kvBytesCapacity: 0, activeTokens: 0, stepsExecuted: 100
+            ))
+        let bridge = makeBridge(engine: engine)
+        let t0 = ContinuousClock.Instant.now
+        // Three admits that never produce a first token.
+        for i in 0..<3 {
+            _ = await bridge.submit(request: makeRequest(), requestId: "req-hang-\(i)")
+        }
+        // Baseline heartbeat: step counter first observed at 100.
+        _ = await bridge.backendSlotCapacity(now: t0)
+        // 11s later, counter still 100 → frozen loop + 3 hanging admits over
+        // the stall threshold ⇒ wedge suspected; slot derates to "crashed".
+        let wedged = await bridge.backendSlotCapacity(now: t0.advanced(by: .seconds(11)))
+        #expect(wedged.wedgeSuspected)
+        #expect(wedged.state == "crashed")
+        // The counter advancing is proof of loop progress: same hanging
+        // admits, but a moving engine is a slow prefill — NOT a wedge.
+        engine.capacitySnapshot = CBv2CapacitySnapshot(
+            activeRequests: 3, waitingRequests: 0, kvBytesInUse: 0,
+            kvBytesCapacity: 0, activeTokens: 0, stepsExecuted: 101
+        )
+        let recovered = await bridge.backendSlotCapacity(now: t0.advanced(by: .seconds(22)))
+        #expect(!recovered.wedgeSuspected)
+        #expect(recovered.stepsExecuted == 101)
     }
 
     @Test("runtime capacity summary aggregates registered bridges")

@@ -174,6 +174,11 @@ extension ProviderLoop {
         // the sealed body like reasoning_effort; threaded into the engine so the
         // checkpoint cache is partitioned per consumer. "" ⇒ unscoped.
         let cacheScope = Self.extractCacheScope(from: decryptedData)
+        // OpenAI `logprobs` / `top_logprobs` (also absent from the upstream
+        // request shape). Non-nil only when the request asked for logprobs;
+        // honored on the v2 engine path (the legacy engine never emitted
+        // logprobs — see EngineV2Logprobs.swift).
+        let logprobsSpec = Self.extractLogprobsSpec(from: decryptedData)
 
         // 3. Fast pre-accept admission check. The coordinator accepts fast and
         // then waits for the first chunk with the full inference timeout, so we
@@ -276,6 +281,13 @@ extension ProviderLoop {
         // loaded with a v2 bridge. The engine below routes text generation
         // through it; nil keeps the legacy scheduler path byte-identical.
         let slotEngineV2 = slot.engineV2
+        // Logprobs passthrough (v2 only): a per-request channel the bridge
+        // pump fills with OpenAI-shaped entries and the frames loop below
+        // drains into content-bearing SSE chunks. nil (request didn't ask,
+        // or the slot serves via legacy) ⇒ frames pass through untouched.
+        let logprobsChannel: EngineV2LogprobsChannel? =
+            (logprobsSpec != nil && slotEngineV2 != nil)
+            ? EngineV2LogprobsChannel() : nil
 
         // 8. Spawn inference task. The streaming pipeline now flows through
         // the upstream `MLXLMServer` library:
@@ -373,7 +385,11 @@ extension ProviderLoop {
                 releaseModel: { _ in },
                 defaultMaxTokens: Self.schedulerDefaultMaxTokens,
                 reasoningEffort: reasoningEffort,
-                cacheScope: cacheScope
+                cacheScope: cacheScope,
+                engineV2Logprobs: logprobsChannel.map {
+                    EngineV2LogprobsPlumbing(
+                        topLogprobs: logprobsSpec?.topLogprobs, channel: $0)
+                }
             )
 
             // Force-stream so we get SSE frames even if the original request
@@ -474,6 +490,13 @@ extension ProviderLoop {
             // A cancelled request that already streamed output settles through
             // the completion path below with real usage, not a bare 499 ($0).
             var cancelledMidStream = false
+            // Logprobs entries drained from the v2 bridge but not yet
+            // attached to a frame. Entries attach to the NEXT content-
+            // bearing chunk (role preambles / reasoning-only deltas /
+            // usage chunks are skipped); consumers accumulate
+            // `logprobs.content` across chunks, so chunk-boundary
+            // alignment is not load-bearing — order and exactly-once are.
+            var pendingLogprobs: [SSETokenLogprob] = []
             do {
                 for try await frame in frames {
                     if token.isCancelled {
@@ -554,6 +577,22 @@ extension ProviderLoop {
                                     into: frame, reasoningTokens: reasoningTokens
                                 )
                             }
+                        }
+                    }
+                    // Logprobs passthrough (v2 only): splice pending entries
+                    // into this frame if it carries content; otherwise keep
+                    // them pending. Runs AFTER the hash/usage bookkeeping
+                    // above, which reads the original `frame` — logprobs
+                    // never alter `delta.content`, so the response hash and
+                    // billing extraction are unaffected.
+                    if let logprobsChannel {
+                        pendingLogprobs += logprobsChannel.drain()
+                        if !pendingLogprobs.isEmpty,
+                            let injected = Self.injectLogprobs(
+                                into: frameToEmit, entries: pendingLogprobs)
+                        {
+                            frameToEmit = injected
+                            pendingLogprobs = []
                         }
                     }
                     if !emitSSE(frameToEmit) { return }

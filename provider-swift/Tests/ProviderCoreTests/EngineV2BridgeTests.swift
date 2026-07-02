@@ -331,6 +331,21 @@ struct EngineV2TranslationTests {
         #expect(EngineV2Translation.parseLogitBias([:]).isEmpty)
     }
 
+    @Test("parseLogitBias reports a dropped-key count for the silent-drop signal (fix #9)")
+    func logitBiasDroppedCount() {
+        let result = EngineV2Translation.parseLogitBiasCountingDropped([
+            "50256": -100,   // valid
+            "abc": 5,        // non-numeric → dropped
+            "-7": 3,         // negative → dropped
+            " 9 ": 1,        // valid (whitespace tolerant)
+        ])
+        #expect(result.bias == [50256: -100, 9: 1])
+        #expect(result.dropped == 2)
+        // All-valid → zero dropped; nil/empty → zero dropped.
+        #expect(EngineV2Translation.parseLogitBiasCountingDropped(["1": 2]).dropped == 0)
+        #expect(EngineV2Translation.parseLogitBiasCountingDropped(nil).dropped == 0)
+    }
+
     @Test("logprobs/top_logprobs mapping (0 = none; chosen-token → 1; clamp 20)")
     func topLogprobsMapping() {
         #expect(EngineV2Translation.topLogprobs(logprobs: nil, topLogprobs: nil) == 0)
@@ -1172,5 +1187,132 @@ struct EngineV2SharedBudgetTests {
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 3, completionTokens: 0)))
         engine.manualContinuation?.finish()
         _ = await consumer.value
+    }
+}
+
+// MARK: - Hardening (request-id validation, id overflow, pump lifecycle)
+
+@Suite("EngineV2 bridge hardening")
+struct EngineV2HardeningTests {
+
+    @Test("request-id validation: nil / empty / over-long / control chars → fresh id (fix #4)")
+    func requestIdValidation() {
+        // Valid ids pass through verbatim.
+        #expect(EngineV2Bridge.isValidRequestId("req-abc123"))
+        #expect(EngineV2Bridge.isValidRequestId(String(repeating: "a", count: 256)))
+        #expect(EngineV2Bridge.normalizedRequestId("req-coord-1") == "req-coord-1")
+        // Invalid ids are rejected and replaced with a generated one.
+        #expect(!EngineV2Bridge.isValidRequestId(""))
+        #expect(!EngineV2Bridge.isValidRequestId(String(repeating: "a", count: 257)))
+        #expect(!EngineV2Bridge.isValidRequestId("req\u{0}embedded-nul"))
+        #expect(!EngineV2Bridge.isValidRequestId("req\u{7f}del"))
+        #expect(!EngineV2Bridge.isValidRequestId("line\nbreak"))
+        // nil and each invalid form normalize to a fresh, valid `req-…` id.
+        for bad in [nil, "", "line\nbreak", String(repeating: "z", count: 300)] {
+            let normalized = EngineV2Bridge.normalizedRequestId(bad)
+            #expect(normalized.hasPrefix("req-"))
+            #expect(EngineV2Bridge.isValidRequestId(normalized))
+        }
+    }
+
+    @Test("a malformed request-id is normalized before it becomes a cancel handle")
+    func malformedIdNormalizedInSubmit() async {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        // Submit with a control-char id: the bridge must NOT key its state on it.
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3], request: makeRequest(), requestId: "bad\u{0}id")
+        // The raw malformed id maps to nothing (a fresh id was minted).
+        #expect(await bridge._testEngineRequestId(for: "bad\u{0}id") == nil)
+        // Exactly one request is live under the normalized id.
+        let counters = await bridge._testCounters()
+        #expect(counters.active == 1)
+        withExtendedLifetime(stream) {}
+    }
+
+    @Test("shutdown cancels live pump tasks and releases their reservations (fix #7)")
+    func shutdownCancelsLivePumps() async {
+        // A manual engine keeps the request in-flight (stream never finishes)
+        // so the pump is parked on `for await`. Shutdown must cancel it.
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let budget = GlobalKVCacheBudget()
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, kvBudget: budget)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(maxTokens: 16),
+            requestId: "req-live-1")
+        let consumer = Task { await record(stream) }
+        // Wait for the pump to run + record its reservation.
+        for _ in 0..<200 where await budget.outstandingReservedBytes() == 0 {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await bridge._testLivePumpCount() == 1)
+        #expect(await budget.outstandingReservedBytes() == 84_000)
+
+        await bridge.shutdown()
+        #expect(engine.shutdownCalls == 1)
+        // The cancelled pump unwinds (AsyncStream.next() returns nil under
+        // cancellation → teardown path), releasing its reservation and
+        // clearing its task handle.
+        _ = await consumer.value
+        for _ in 0..<200 where await bridge._testLivePumpCount() != 0 {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await bridge._testLivePumpCount() == 0)
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    @Test("nextRawId uses wrapping increment (fix #5)")
+    func nextRawIdWraps() async {
+        // A stream engine so each submit runs to a terminal and self-clears,
+        // letting the same provider id be reused across submits.
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 1, completionTokens: 0))
+        ]))
+        let bridge = makeBridge(engine: engine)
+        // Two sequential submits mint two distinct engine ids (raw 1, 2).
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1], request: makeRequest(), requestId: "r1"))
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1], request: makeRequest(), requestId: "r2"))
+        #expect(engine.submitted.count == 2)
+        #expect(engine.submitted[0].id == CBv2RequestID(1))
+        #expect(engine.submitted[1].id == CBv2RequestID(2))
+    }
+}
+
+// MARK: - Logprobs channel cap (fix #8)
+
+@Suite("EngineV2 logprobs channel bounding")
+struct EngineV2LogprobsChannelCapTests {
+
+    private func entry(_ token: String) -> SSETokenLogprob {
+        SSETokenLogprob(token: token, logprob: -0.1, bytes: nil, topLogprobs: [])
+    }
+
+    @Test("undrained channel is capped at maxEntries with drop-oldest")
+    func channelCapsWithDropOldest() {
+        let channel = EngineV2LogprobsChannel()
+        let cap = EngineV2LogprobsChannel.maxEntries
+        // Append cap + 10 entries, tagged by index, without ever draining.
+        for i in 0..<(cap + 10) {
+            channel.append([entry("t\(i)")])
+        }
+        let drained = channel.drain()
+        // Buffer never exceeds the cap; the 10 OLDEST were dropped.
+        #expect(drained.count == cap)
+        #expect(channel.droppedCount == 10)
+        // The freshest entries are retained (drop-oldest): first kept is t10,
+        // last is t<cap+9>.
+        #expect(drained.first?.token == "t10")
+        #expect(drained.last?.token == "t\(cap + 9)")
+    }
+
+    @Test("under the cap nothing is dropped; drain empties the buffer")
+    func channelUnderCapNoDrops() {
+        let channel = EngineV2LogprobsChannel()
+        for i in 0..<100 { channel.append([entry("t\(i)")]) }
+        #expect(channel.droppedCount == 0)
+        #expect(channel.drain().count == 100)
+        #expect(channel.drain().isEmpty)
     }
 }

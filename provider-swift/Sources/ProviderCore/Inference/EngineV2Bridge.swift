@@ -30,6 +30,9 @@
 import Foundation
 import MLXLMCommon
 import ProviderCoreFoundation
+#if canImport(os)
+import os
+#endif
 
 /// Bridges one `CBv2Engine` (one loaded model) to the provider's
 /// `GenerationEvent` streaming surface.
@@ -93,6 +96,22 @@ public actor EngineV2Bridge {
     /// Provider request-id → engine request-id, for `cancel`.
     var idMap: [String: CBv2RequestID] = [:]
     var nextRawId: UInt64 = 1
+    /// Live per-request pump tasks, so `shutdown()` can cancel any that
+    /// outlive the engine drain (defense against a leaked stream). Keyed by
+    /// the (normalized) provider request-id; each entry removes itself when
+    /// its pump returns (`clearPumpTask`).
+    var pumpTasks: [String: Task<Void, Never>] = [:]
+
+    /// Upper bound on a caller-supplied request-id we will use verbatim.
+    /// Coordinator/provider ids are short (`req-<uuid-prefix>` or a
+    /// coordinator UUID); anything longer is malformed and is replaced with a
+    /// fresh generated id rather than used as a dictionary key / cancel
+    /// correlation handle.
+    static let maxRequestIdLength = 256
+
+    #if canImport(os)
+    private static let logger = Logger(subsystem: "com.darkbloom.provider", category: "engine_v2")
+    #endif
 
     // MARK: - Health / telemetry state
 
@@ -201,7 +220,12 @@ public actor EngineV2Bridge {
         cacheScope: String = "",
         logprobsChannel: EngineV2LogprobsChannel? = nil
     ) -> AsyncStream<GenerationEvent> {
-        let id = requestId ?? "req-\(UUID().uuidString.prefix(12))"
+        // Validate the caller-supplied id before it becomes a dictionary key /
+        // cancel-correlation handle: a nil / empty / over-long / non-printable
+        // id is replaced with a fresh generated one (it could never correlate
+        // a cancel reliably anyway, and an unbounded/control-char key is a
+        // hardening risk). See `normalizedRequestId`.
+        let id = Self.normalizedRequestId(requestId)
         let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
 
         // Duplicate request-id guard (legacy: the planner's
@@ -216,7 +240,12 @@ public actor EngineV2Bridge {
         }
 
         let cbv2Id = CBv2RequestID(nextRawId)
-        nextRawId += 1
+        // Wrapping increment: 2^64 request ids is unreachable in practice
+        // (billions of years at any real submit rate), but `&+` makes the
+        // theoretical overflow explicitly defined (wrap to 0) instead of a
+        // trap. Collisions after a wrap are still impossible in practice —
+        // the engine id space is far larger than the live-request window.
+        nextRawId &+= 1
         let cbv2Request = EngineV2Translation.cbv2Request(
             id: cbv2Id,
             promptTokens: promptTokens,
@@ -228,6 +257,14 @@ public actor EngineV2Bridge {
 
         let events: AsyncStream<CBv2Event>
         do {
+            // `engine.submit` is an O(1) non-blocking ENQUEUE by contract
+            // (`CBv2Engine.submit`: "Cancel promptly … row is dropped O(1)";
+            // `EngineV2.submit` does a lock-guarded admission check +
+            // `loop.register` + `loop.enqueue`, all constant-time, and NO
+            // forward pass — that runs on the engine's own step thread).
+            // Tokenization already happened off this actor (in `submit`, or in
+            // the caller for `submitTokenized`), so calling it synchronously
+            // on the bridge actor does not stall other actor work.
             events = try engine.submit(cbv2Request)
         } catch {
             // Admission failure. The message keeps the canonical
@@ -282,7 +319,19 @@ public actor EngineV2Bridge {
 
     /// Graceful drain (unload / process shutdown): running requests finish,
     /// new submissions are rejected by the engine.
+    ///
+    /// The per-request pump tasks are tracked (`pumpTasks`) and cancelled here
+    /// so none outlives the bridge. Cancellation makes each pump's
+    /// `for await event in events` resume with nil (AsyncStream is
+    /// cancellation-aware), so the pump hits its teardown path — yielding the
+    /// closed-stream sentinel and releasing per-request state — instead of
+    /// leaking. We cancel BEFORE draining the engine so a wedged engine stream
+    /// can't keep a pump (and its KV reservation) alive past shutdown, then
+    /// await the engine drain.
     public func shutdown() async {
+        let live = pumpTasks
+        pumpTasks.removeAll()
+        for task in live.values { task.cancel() }
         await engine.shutdown()
     }
 
@@ -295,12 +344,20 @@ public actor EngineV2Bridge {
         logprobsChannel: EngineV2LogprobsChannel? = nil
     ) {
         let bridge = self
-        Task {
+        let task = Task {
             await bridge.pump(
                 id: id, events: events, continuation: continuation,
                 logprobsChannel: logprobsChannel
             )
+            await bridge.clearPumpTask(id: id)
         }
+        pumpTasks[id] = task
+    }
+
+    /// Remove a completed pump's task handle (called from the pump task after
+    /// `pump` returns, on every exit path).
+    func clearPumpTask(id: String) {
+        pumpTasks.removeValue(forKey: id)
     }
 
     private func pump(
@@ -514,7 +571,29 @@ public actor EngineV2Bridge {
         }
     }
 
+    // MARK: - Request-id validation
+
+    /// Return a request-id safe to use as a dictionary key and cancel
+    /// correlation handle. A caller-supplied id is accepted verbatim only
+    /// when it is non-empty, at most `maxRequestIdLength`, and printable
+    /// (no ASCII control chars); otherwise — and when nil — a fresh
+    /// `req-<uuid-prefix>` is generated. Pure/static so it is unit-testable.
+    static func normalizedRequestId(_ requestId: String?) -> String {
+        if let requestId, isValidRequestId(requestId) { return requestId }
+        return "req-\(UUID().uuidString.prefix(12))"
+    }
+
+    /// A request-id is valid when non-empty, within the length cap, and free
+    /// of ASCII control characters (`< 0x20` or DEL `0x7f`).
+    static func isValidRequestId(_ id: String) -> Bool {
+        guard !id.isEmpty, id.count <= maxRequestIdLength else { return false }
+        return !id.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7f }
+    }
+
     // MARK: - Test seams (internal; reachable via @testable only)
+
+    /// Number of live pump tasks (shutdown-tracking assertions).
+    func _testLivePumpCount() -> Int { pumpTasks.count }
 
     /// Snapshot of internal counters for unit assertions.
     func _testCounters() -> (active: Int, admits: Int, firstTokens: Int) {

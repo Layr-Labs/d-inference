@@ -413,6 +413,19 @@ struct EngineV2SlotFactoryTests {
         }
     }
 
+    @Test("kvBytesCapacity clamp: a ceiling above physical RAM is capped (fix #10)")
+    func kvBytesCapacityClamp() {
+        let physical: UInt64 = 16 * 1024 * 1024 * 1024  // 16 GiB
+        // A sane budget passes through untouched.
+        #expect(EngineV2Factory.clampKVBytesCapacity(
+            4 * 1024 * 1024 * 1024, physicalBytes: physical) == 4 * 1024 * 1024 * 1024)
+        // A ceiling larger than physical is clamped to physical.
+        #expect(EngineV2Factory.clampKVBytesCapacity(
+            Int.max, physicalBytes: physical) == Int(physical))
+        // Negative degrades to 0 (the > 0 guard then rejects it upstream).
+        #expect(EngineV2Factory.clampKVBytesCapacity(-1, physicalBytes: physical) == 0)
+    }
+
     @Test("kv_quant off: bridge sized at the scheduler rate, no kv_quant WARN")
     func kvQuantOffNoWarn() async throws {
         let loop = try makeWiringLoop(engineV2Enabled: true)

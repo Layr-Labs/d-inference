@@ -52,6 +52,19 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
 
 extension EngineV2Factory {
 
+    /// Clamp a KV admission ceiling to physical unified memory. A ceiling
+    /// above physical RAM can only come from a mis-derivation upstream; the
+    /// engine would then admit requests that can never fit. Pure/static so it
+    /// is unit-testable without building an engine. `physicalBytes` defaults
+    /// to the machine's real memory; `Int.max`-safe.
+    static func clampKVBytesCapacity(
+        _ kvBytesCapacity: Int,
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
+    ) -> Int {
+        let physicalCap = Int(min(physicalBytes, UInt64(Int.max)))
+        return min(max(0, kvBytesCapacity), physicalCap)
+    }
+
     /// Scheduler knobs for the production v2 engine. `maxConcurrentRequests`
     /// follows the CBv2 product target (4, max 8) rather than the legacy
     /// scheduler's 24-way ceiling — the v2 rollout is deliberately
@@ -76,6 +89,13 @@ extension EngineV2Factory {
         guard kvBytesCapacity > 0 else {
             throw EngineV2ProductionError.noKVHeadroom
         }
+        // Upper-bound sanity: a KV admission ceiling larger than physical
+        // unified memory is nonsensical (only reachable via a bad upstream
+        // computation) and would make the engine admit far past what can ever
+        // fit. Clamp to physical RAM as a cheap guard so a mis-derived budget
+        // degrades to "all of memory" instead of an absurd ceiling. Real
+        // budgets (cap − weights − activations) are always well under this.
+        let cappedCapacity = clampKVBytesCapacity(kvBytesCapacity)
 
         // Model adaptation: layer kinds + per-layer caches come from the
         // model's own CBv2 hooks so the derivation can never drift from the
@@ -105,7 +125,7 @@ extension EngineV2Factory {
         }
 
         let backend = CBv2ContiguousKVBackend(
-            config: CBv2ContiguousBackendConfig(bytesCapacity: kvBytesCapacity))
+            config: CBv2ContiguousBackendConfig(bytesCapacity: cappedCapacity))
         return EngineV2(
             model: CBv2SteppableLanguageModelAdapter(model),
             layerKinds: layerKinds,

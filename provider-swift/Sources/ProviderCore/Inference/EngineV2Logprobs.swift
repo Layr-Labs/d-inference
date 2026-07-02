@@ -42,6 +42,9 @@
 // exactly like `delta.content`; nothing here flows into telemetry or logs.
 
 import Foundation
+#if canImport(os)
+import os
+#endif
 
 /// One OpenAI streaming logprobs entry (`choices[].logprobs.content[]`).
 public struct SSETokenLogprob: Codable, Sendable, Equatable {
@@ -123,16 +126,59 @@ public struct EngineV2LogprobsPlumbing: Sendable {
 /// only when the sealed request asked for logprobs AND the slot serves via
 /// the v2 engine). Appended by the bridge pump task, drained by the frames
 /// loop — a plain lock keeps it allocation-cheap on the hot path.
+///
+/// BOUNDED (hardening): the pump appends BEFORE yielding each text chunk and
+/// the frames loop drains per SSE frame, so in the steady state the buffer
+/// holds ~1 frame's worth of entries. But if the frames loop stalls or never
+/// drains (a slow/stuck consumer, a torn-down SSE stream), an unbounded
+/// buffer would grow with every decoded token for the life of the request.
+/// The buffer is therefore capped at `maxEntries` with drop-OLDEST eviction:
+/// under overflow the freshest entries — the ones a resuming consumer would
+/// splice into upcoming frames — are kept, and a dropped count is recorded
+/// (logged once). Dropping logprobs never affects `delta.content`, billing,
+/// or the response hash (they ride out-of-band), so a cap is safe.
 public final class EngineV2LogprobsChannel: @unchecked Sendable {
+    /// Max buffered entries before drop-oldest kicks in. ~4096 tokens of
+    /// undrained logprobs is already far past any real frame cadence.
+    public static let maxEntries = 4096
+
     private let lock = NSLock()
     private var entries: [SSETokenLogprob] = []
+    private var _droppedCount = 0
+    private var loggedDrop = false
+
+    #if canImport(os)
+    private static let logger = Logger(
+        subsystem: "com.darkbloom.provider", category: "engine_v2_logprobs")
+    #endif
 
     public init() {}
 
-    /// Append entries in emission order (pump side).
+    /// Append entries in emission order (pump side). Enforces the `maxEntries`
+    /// cap by dropping the OLDEST entries; the first time any are dropped it
+    /// logs a one-line warning (count only — never token text).
     public func append(_ new: [SSETokenLogprob]) {
         guard !new.isEmpty else { return }
-        lock.withLock { entries.append(contentsOf: new) }
+        let shouldLog: Int? = lock.withLock {
+            entries.append(contentsOf: new)
+            guard entries.count > Self.maxEntries else { return nil }
+            let overflow = entries.count - Self.maxEntries
+            entries.removeFirst(overflow)
+            _droppedCount += overflow
+            if !loggedDrop {
+                loggedDrop = true
+                return _droppedCount
+            }
+            return nil
+        }
+        #if canImport(os)
+        if let total = shouldLog {
+            Self.logger.warning(
+                "engine_v2 logprobs buffer hit \(Self.maxEntries) cap; dropping oldest (\(total) so far) — consumer not draining")
+        }
+        #else
+        _ = shouldLog
+        #endif
     }
 
     /// Remove and return everything appended so far (frames-loop side).
@@ -142,5 +188,10 @@ public final class EngineV2LogprobsChannel: @unchecked Sendable {
             entries = []
             return out
         }
+    }
+
+    /// Total entries evicted by the cap (drop-oldest). 0 in the steady state.
+    public var droppedCount: Int {
+        lock.withLock { _droppedCount }
     }
 }

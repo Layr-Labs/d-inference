@@ -9,8 +9,16 @@
 
 import Foundation
 import MLXLMCommon
+#if canImport(os)
+import os
+#endif
 
 enum EngineV2Translation {
+
+    #if canImport(os)
+    private static let logger = Logger(
+        subsystem: "com.darkbloom.provider", category: "engine_v2")
+    #endif
 
     // MARK: - Request translation
 
@@ -59,7 +67,17 @@ enum EngineV2Translation {
     /// no-op values so the v2 sampler applies no transform the legacy
     /// sampler would not have applied).
     static func samplingParams(from request: ChatCompletionRequest) -> CBv2SamplingParams {
-        CBv2SamplingParams(
+        let (logitBias, droppedBiasKeys) = parseLogitBiasCountingDropped(request.logit_bias)
+        if droppedBiasKeys > 0 {
+            // Count only — NEVER the keys/values (they are request content).
+            // Silent drops make a client's typo'd bias vanish with no signal;
+            // this one-line WARN surfaces it without touching the E2E body.
+            #if canImport(os)
+            Self.logger.warning(
+                "engine_v2: dropped \(droppedBiasKeys) invalid logit_bias key(s) (non-numeric or negative)")
+            #endif
+        }
+        return CBv2SamplingParams(
             temperature: request.temperature ?? 0.0,
             topP: request.top_p ?? 1.0,
             topK: request.top_k ?? 0,
@@ -68,7 +86,7 @@ enum EngineV2Translation {
             frequencyPenalty: request.frequency_penalty ?? 0,
             presencePenalty: request.presence_penalty ?? 0,
             seed: request.seed,
-            logitBias: parseLogitBias(request.logit_bias),
+            logitBias: logitBias,
             topLogprobs: topLogprobs(
                 logprobs: request.logprobs, topLogprobs: request.top_logprobs
             )
@@ -80,16 +98,28 @@ enum EngineV2Translation {
     /// Non-numeric keys are dropped (never guessed) — an invalid key can't
     /// silently bias a random token id.
     static func parseLogitBias(_ raw: [String: Float]?) -> [Int: Float] {
-        guard let raw, !raw.isEmpty else { return [:] }
+        parseLogitBiasCountingDropped(raw).bias
+    }
+
+    /// Same parse as `parseLogitBias`, but also returns how many keys were
+    /// dropped (non-numeric or negative) so the caller can surface a signal
+    /// for an otherwise-silent drop. Pure — no logging here so it stays
+    /// unit-testable field-by-field.
+    static func parseLogitBiasCountingDropped(
+        _ raw: [String: Float]?
+    ) -> (bias: [Int: Float], dropped: Int) {
+        guard let raw, !raw.isEmpty else { return ([:], 0) }
         var out: [Int: Float] = [:]
         out.reserveCapacity(raw.count)
+        var dropped = 0
         for (key, value) in raw {
             guard let id = Int(key.trimmingCharacters(in: .whitespaces)), id >= 0 else {
+                dropped += 1
                 continue
             }
             out[id] = value
         }
-        return out
+        return (out, dropped)
     }
 
     /// OpenAI `logprobs`/`top_logprobs` → contract `topLogprobs`.

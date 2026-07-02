@@ -73,11 +73,14 @@ public actor EngineV2Bridge {
     /// sized to the caches actually built — see `EngineV2KVSizing`.
     let kvBytesPerToken: Int
     /// Process-wide KV reservation ledger shared with the legacy schedulers.
-    /// When set (production), each in-flight v2 request records its worst-case
-    /// KV footprint here so the model-LOAD gate and the legacy live-KV gate
-    /// see v2 slots' committed KV (nil in unit tests ⇒ no shared accounting).
-    /// This is bookkeeping ONLY: it never gates v2 admission (the v2 engine's
-    /// own byte ledger does that) — see `GlobalKVCacheBudget.recordEngineKV`.
+    /// When set (production), each v2 submission must RESERVE its worst-case
+    /// KV footprint here BEFORE it is handed to the engine — the reservation
+    /// both GATES v2 admission against the process-wide unified-memory cap
+    /// (the engine's private byte ledger only knows its own slot; with
+    /// another slot's live KV already reserved, this shared pool is the only
+    /// gate that sees the whole process) and is the accounting entry the
+    /// model-LOAD gate and the legacy live-KV gate subtract. nil in unit
+    /// tests ⇒ no shared gating/accounting.
     let kvBudget: GlobalKVCacheBudget?
     /// Injectable telemetry sink (tests); nil ⇒ `TelemetryClient.shared`.
     let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
@@ -255,6 +258,40 @@ public actor EngineV2Bridge {
             cacheScope: cacheScope
         )
 
+        // SHARED-BUDGET ADMISSION GATE: reserve this request's worst-case KV
+        // footprint (prompt + maxTokens at the fp16 rate — the caches v2
+        // actually builds) in the process-wide ledger BEFORE handing the
+        // request to the engine. The engine's private byte ledger
+        // (`AdmissionV2`, sized to its own `kvBytesCapacity`) only knows its
+        // own slot; when another slot (legacy or v2) already has live KV
+        // reserved, this shared pool is the only gate that sees the WHOLE
+        // process — without it, concurrent requests across co-resident models
+        // could overcommit unified memory (default `max_model_slots` allows
+        // several). `reserve` is atomic on the budget actor (check + record in
+        // one hop — no TOCTOU window between a probe and a later record), so
+        // once it returns true the reservation is already visible to the
+        // model-LOAD gate and the legacy live-KV gate; it is released on every
+        // terminal/teardown path in the pump, and below when the engine
+        // rejects the submission. A gate failure maps to the canonical
+        // retryable capacity error (429/503), exactly like the legacy
+        // scheduler's KV-reserve rejection. Skipped when kvBudget is nil
+        // (unit tests / standalone), the per-token rate is unknown (0), or
+        // maxTokens ≤ 0 (degenerate request — the engine finishes it
+        // immediately without allocating any KV).
+        let worstCaseTokens = promptTokens.count + cbv2Request.maxTokens
+        var sharedKVReserved = false
+        if let kvBudget, kvBytesPerToken > 0, cbv2Request.maxTokens > 0 {
+            sharedKVReserved = await kvBudget.reserve(
+                requestID: id, kvBytesPerToken: kvBytesPerToken, tokenCount: worstCaseTokens)
+            guard sharedKVReserved else {
+                continuation.yield(.error(
+                    "token_budget_exhausted: request requires \(worstCaseTokens) tokens "
+                        + "but the shared KV budget has no headroom"))
+                continuation.finish()
+                return stream
+            }
+        }
+
         let events: AsyncStream<CBv2Event>
         do {
             // `engine.submit` is an O(1) non-blocking ENQUEUE by contract
@@ -267,6 +304,9 @@ public actor EngineV2Bridge {
             // on the bridge actor does not stall other actor work.
             events = try engine.submit(cbv2Request)
         } catch {
+            // Engine rejected AFTER the shared reservation was taken — release
+            // it before surfacing the error (no pump will ever finish it).
+            if sharedKVReserved { await kvBudget?.release(requestID: id) }
             // Admission failure. The message keeps the canonical
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity
@@ -284,17 +324,6 @@ public actor EngineV2Bridge {
         idMap[id] = cbv2Id
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(now: .now)
-
-        // Record the request's worst-case KV footprint in the shared budget
-        // SYNCHRONOUSLY with admission — before returning the stream and
-        // before the pump task is even scheduled — so a concurrent model-load
-        // gate can never observe zero v2 KV in the gap between engine
-        // admission and the pump starting. Bookkeeping only (never gates v2
-        // admission); released on every terminal/teardown path in the pump.
-        // No-op when kvBudget is nil (unit tests) or kvBytesPerToken is 0.
-        await kvBudget?.recordEngineKV(
-            requestID: id, kvBytesPerToken: kvBytesPerToken,
-            tokenCount: promptTokens.count + cbv2Request.maxTokens)
 
         runPump(
             id: id, events: events, continuation: continuation,

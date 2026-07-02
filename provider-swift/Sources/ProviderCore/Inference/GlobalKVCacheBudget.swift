@@ -97,29 +97,6 @@ public actor GlobalKVCacheBudget {
         reservations.removeValue(forKey: requestID)
     }
 
-    /// Record an ENGINE-managed KV reservation for one in-flight
-    /// ContinuousBatchingV2 request. Unlike `reserve`, this is UNCONDITIONAL
-    /// (never rejects) and does not gate admission: the v2 engine runs its
-    /// OWN optimistic + preemption admission against its private byte ledger
-    /// (`AdmissionV2`, sized to the engine's `kvBytesCapacity`), so it — not
-    /// this shared budget — stays authoritative for whether a v2 request is
-    /// accepted. This exists ONLY so `outstandingReservedBytes()` (which the
-    /// model-LOAD gate `availableMemoryGb` and the legacy live-KV gate both
-    /// subtract) truthfully includes v2 in-flight KV. Without it, a legacy
-    /// model loaded (or a legacy request admitted) alongside an active v2
-    /// slot computes headroom blind to the v2 engine's committed KV and could
-    /// over-commit unified memory. Sizes the worst-case footprint
-    /// (prompt + maxTokens) at the UNQUANTIZED rate — engine_v2 builds fp16
-    /// caches — exactly mirroring the legacy per-request `reserve` amount, so
-    /// the two engines contribute to the shared ledger on the same basis.
-    /// Idempotent on a duplicate id; released via `release(requestID:)`.
-    public func recordEngineKV(requestID: String, kvBytesPerToken: Int, tokenCount: Int) {
-        guard kvBytesPerToken > 0, tokenCount > 0, reservations[requestID] == nil else { return }
-        let (bytes, overflow) = UInt64(kvBytesPerToken)
-            .multipliedReportingOverflow(by: UInt64(tokenCount))
-        reservations[requestID] = overflow ? .max : bytes
-    }
-
     /// Reserve an arbitrary BYTE amount against the same live cap headroom KV
     /// uses. For non-KV unified-memory consumers that the cap would otherwise be
     /// blind to — notably VLM media decode (CIImage rasters + Swift Data pixel

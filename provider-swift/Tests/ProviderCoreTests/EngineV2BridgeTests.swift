@@ -1104,6 +1104,33 @@ struct EngineV2ShutdownTests {
 
 // MARK: - Shared-budget KV accounting (fix #2)
 
+/// Deterministic shared budgets driven by SCRIPTED memory snapshots (never
+/// the real machine's memory) — live-isolated per the testing rules.
+private enum TestBudgets {
+    /// A budget with plenty of headroom: 8 GiB box, nothing used.
+    /// Effective cap = min(0.9 × 8 GiB, 8 GiB − 2 GiB) = 6 GiB.
+    static func ample() -> GlobalKVCacheBudget {
+        let gib: UInt64 = 1024 * 1024 * 1024
+        return GlobalKVCacheBudget(
+            capFraction: 0.9,
+            activationReserveBytes: 0,
+            memorySnapshot: {
+                .init(total: 8 * gib, active: 0, cache: 0, systemAvailable: 8 * gib)
+            })
+    }
+
+    /// A budget with ZERO headroom: everything under the cap already used.
+    static func exhausted() -> GlobalKVCacheBudget {
+        let gib: UInt64 = 1024 * 1024 * 1024
+        return GlobalKVCacheBudget(
+            capFraction: 0.9,
+            activationReserveBytes: 0,
+            memorySnapshot: {
+                .init(total: 8 * gib, active: 8 * gib, cache: 0, systemAvailable: 0)
+            })
+    }
+}
+
 @Suite("EngineV2 shared-budget KV accounting")
 struct EngineV2SharedBudgetTests {
 
@@ -1123,11 +1150,11 @@ struct EngineV2SharedBudgetTests {
         #expect(!unknown.warnKVQuantUnsupported)
     }
 
-    @Test("an in-flight v2 request records its worst-case KV in the shared budget, released on finish")
+    @Test("an in-flight v2 request reserves its worst-case KV in the shared budget, released on finish")
     func recordsAndReleasesReservation() async {
         // Manual script so the request stays in-flight until we drive the terminal.
         let engine = ScriptedCBv2Engine(script: .manual)
-        let budget = GlobalKVCacheBudget()
+        let budget = TestBudgets.ample()
         // 4000 B/token × (5 prompt + 16 maxTokens) = 84_000 bytes.
         let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, kvBudget: budget)
         #expect(await budget.outstandingReservedBytes() == 0)
@@ -1136,11 +1163,12 @@ struct EngineV2SharedBudgetTests {
             promptTokens: [1, 2, 3, 4, 5],
             request: makeRequest(maxTokens: 16),
             requestId: "req-acct-1")
-        // No-gap invariant: the reservation is recorded SYNCHRONOUSLY with
-        // admission, so it is already visible the instant submit returns —
-        // before the pump task runs and before the stream is consumed. No
-        // polling: a concurrent model-load gate can never observe zero in the
-        // window between engine admission and the pump starting.
+        // No-gap invariant: the reservation is taken atomically WITH (in fact
+        // strictly before) engine admission, so it is already visible the
+        // instant submit returns — before the pump task runs and before the
+        // stream is consumed. No polling: a concurrent model-load gate can
+        // never observe zero in the window between engine admission and the
+        // pump starting.
         #expect(await budget.outstandingReservedBytes() == 84_000)
         // Consume the stream on a separate task so the pump runs to terminal.
         let consumer = Task { await record(stream) }
@@ -1159,7 +1187,7 @@ struct EngineV2SharedBudgetTests {
         let engine = ScriptedCBv2Engine(script: .stream([
             .delta(text: "partial", tokens: [10], logprobs: nil)
         ]))
-        let budget = GlobalKVCacheBudget()
+        let budget = TestBudgets.ample()
         let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, kvBudget: budget)
         _ = await record(await bridge.submitTokenized(
             promptTokens: [1, 2, 3, 4, 5],
@@ -1175,7 +1203,7 @@ struct EngineV2SharedBudgetTests {
     @Test("no reservation when kvBytesPerToken is unknown (0)")
     func noReservationWhenRateUnknown() async {
         let engine = ScriptedCBv2Engine(script: .manual)
-        let budget = GlobalKVCacheBudget()
+        let budget = TestBudgets.ample()
         let bridge = makeBridge(engine: engine, kvBytesPerToken: 0, kvBudget: budget)
         let stream = await bridge.submitTokenized(
             promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 8),
@@ -1188,6 +1216,92 @@ struct EngineV2SharedBudgetTests {
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 3, completionTokens: 0)))
         engine.manualContinuation?.finish()
         _ = await consumer.value
+    }
+
+    @Test("shared-budget gate: exhausted pool rejects as capacity BEFORE the engine sees the request")
+    func sharedBudgetGateRejectsBeforeEngine() async {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let budget = TestBudgets.exhausted()
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, kvBudget: budget)
+        let (events, _) = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5],
+            request: makeRequest(maxTokens: 16),
+            requestId: "req-gate-1"))
+        // Single canonical capacity error (5 prompt + 16 max = 21 tokens).
+        #expect(events == [.error(
+            "token_budget_exhausted: request requires 21 tokens "
+                + "but the shared KV budget has no headroom")])
+        // The gate fired BEFORE submission: the engine never saw the request,
+        // and no bookkeeping leaked.
+        #expect(engine.submitted.isEmpty)
+        #expect(await budget.outstandingReservedBytes() == 0)
+        let counters = await bridge._testCounters()
+        #expect(counters.active == 0)
+        // Classified exactly like the legacy KV-reserve rejection: retryable
+        // capacity (→ 429/503 upstream), so the coordinator reroutes.
+        if case .error(let message)? = events.first {
+            let classified = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
+            #expect(classified == .tokenBudgetExhausted(message))
+        }
+    }
+
+    @Test("shared-budget gate: another request's live reservation blocks a worst case that no longer fits")
+    func sharedBudgetGateSeesOtherLiveReservations() async {
+        // A pool with exactly 200_000 bytes of live headroom: 3 GiB box at
+        // capFraction 1.0 ⇒ effective cap = 3 GiB − 2 GiB OS floor = 1 GiB;
+        // MLX usage pinned 200_000 bytes below that cap.
+        let budget = GlobalKVCacheBudget(
+            capFraction: 1.0,
+            activationReserveBytes: 0,
+            memorySnapshot: {
+                let gib: UInt64 = 1024 * 1024 * 1024
+                return .init(
+                    total: 3 * gib, active: gib - 200_000, cache: 0,
+                    systemAvailable: 200_000)
+            })
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, kvBudget: budget)
+        // First request: 21 tokens × 4000 = 84_000 bytes — fits.
+        let first = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(maxTokens: 16),
+            requestId: "req-gate-a")
+        #expect(engine.submitted.count == 1)
+        // Second identical worst case would need another 84_000 with only
+        // 116_000 left… fits. Third does not (232_000 > 200_000).
+        let second = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(maxTokens: 16),
+            requestId: "req-gate-b")
+        #expect(engine.submitted.count == 2)
+        let (events, _) = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(maxTokens: 16),
+            requestId: "req-gate-c"))
+        #expect(engine.submitted.count == 2)  // third never reached the engine
+        if case .error(let message)? = events.first {
+            #expect(message.hasPrefix("token_budget_exhausted:"))
+        } else {
+            Issue.record("expected a capacity error, got \(events)")
+        }
+        withExtendedLifetime((first, second)) {}
+    }
+
+    @Test("engine rejection after the gate releases the shared reservation")
+    func engineRejectionReleasesSharedReservation() async {
+        let engine = ScriptedCBv2Engine(
+            script: .throwOnSubmit(
+                CBv2KVError.capacityExhausted(needed: 5120, available: 1024)))
+        let budget = TestBudgets.ample()
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, kvBudget: budget)
+        let (events, _) = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5],
+            request: makeRequest(maxTokens: 16),
+            requestId: "req-gate-2"))
+        // The engine's own rejection surfaced (its private ledger stays
+        // authoritative for its slot)…
+        #expect(events == [.error(
+            "token_budget_exhausted: request requires 5120 tokens but only 1024 available")])
+        // …and the shared reservation taken by the gate was rolled back, so
+        // a rejected request can never pin shared headroom.
+        #expect(await budget.outstandingReservedBytes() == 0)
     }
 }
 
@@ -1236,7 +1350,7 @@ struct EngineV2HardeningTests {
         // A manual engine keeps the request in-flight (stream never finishes)
         // so the pump is parked on `for await`. Shutdown must cancel it.
         let engine = ScriptedCBv2Engine(script: .manual)
-        let budget = GlobalKVCacheBudget()
+        let budget = TestBudgets.ample()
         let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, kvBudget: budget)
         let stream = await bridge.submitTokenized(
             promptTokens: [1, 2, 3, 4, 5], request: makeRequest(maxTokens: 16),

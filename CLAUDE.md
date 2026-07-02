@@ -97,8 +97,11 @@ swift build -c release
 ```
 
 The Swift package depends on `../libs/mlx-swift` and `../libs/mlx-swift-lm`
-(git submodules; a third submodule, `libs/mlx`, provides the MLX source that
-`scripts/fetch-metallib.sh` builds the metallib from).
+(git submodules). `scripts/fetch-metallib.sh` (and the release workflow)
+build `mlx.metallib` from the MLX source **nested inside mlx-swift** —
+`libs/mlx-swift/Source/Cmlx/mlx`, the tree the Cmlx target actually compiles
+against — NOT from the top-level `libs/mlx` submodule; updating `libs/mlx`
+alone does not change the generated kernels.
 
 ### Console UI (Next.js 16)
 ```bash

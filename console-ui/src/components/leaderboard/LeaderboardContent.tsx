@@ -5,10 +5,9 @@ import { TopBar } from "@/components/TopBar";
 import type { LeaderboardEntry, LeaderboardMetric } from "./types";
 import { useLeaderboard } from "./useLeaderboard";
 import { MetricToggle } from "./Controls";
-import { PodiumCard } from "./PodiumCard";
 import { RankingsTable } from "./RankingsTable";
 
-/** Loading / error / empty / podium+table states below the header. */
+/** Loading / error / empty / table states below the header. */
 function RankingsBody({
   loading,
   error,
@@ -41,16 +40,7 @@ function RankingsBody({
       </div>
     );
   }
-  return (
-    <>
-      <div className="mt-5 grid gap-3 md:grid-cols-3">
-        {entries.slice(0, 3).map((entry) => (
-          <PodiumCard key={entry.rank} entry={entry} metric={metric} />
-        ))}
-      </div>
-      <RankingsTable entries={entries} metric={metric} />
-    </>
-  );
+  return <RankingsTable entries={entries} metric={metric} />;
 }
 
 /**

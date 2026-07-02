@@ -2,43 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   formatAnnualizedUSD,
   formatDailyUSD,
-  formatEarningsBreakdown,
-  formatLeaderboardValue,
   formatNumber,
   formatUSDFromMicro,
   rewardToneClass,
 } from "./format";
-import type { LeaderboardEntry } from "./types";
-
-// A tiny stub matching the shape of `formatUSDFromMicro` so the breakdown
-// logic can be tested without the real number formatter.
-const usd = (micro: number) => `$${(micro / 1_000_000).toFixed(2)}`;
-
-describe("formatEarningsBreakdown", () => {
-  it("labels work and rewards in order", () => {
-    expect(formatEarningsBreakdown(1_200_000, 300_000, usd)).toBe(
-      "Work $1.20 · Rewards $0.30",
-    );
-  });
-
-  it("maps work micros to Work and reward micros to Rewards (no swap)", () => {
-    // Distinct values catch an accidental argument swap.
-    expect(formatEarningsBreakdown(5_000_000, 1_000_000, usd)).toBe(
-      "Work $5.00 · Rewards $1.00",
-    );
-  });
-
-  it("handles a zero reward split", () => {
-    expect(formatEarningsBreakdown(2_000_000, 0, usd)).toBe(
-      "Work $2.00 · Rewards $0.00",
-    );
-  });
-
-  it("uses the injected formatter for both values", () => {
-    const tagged = (micro: number) => `#${micro}`;
-    expect(formatEarningsBreakdown(10, 20, tagged)).toBe("Work #10 · Rewards #20");
-  });
-});
 
 describe("rewardToneClass", () => {
   it("uses the amber accent when rewards are paid out", () => {
@@ -104,25 +71,5 @@ describe("formatDailyUSD", () => {
 
   it("handles zero", () => {
     expect(formatDailyUSD(0)).toBe("$0.00/day");
-  });
-});
-
-describe("formatLeaderboardValue", () => {
-  const entry: LeaderboardEntry = {
-    rank: 1,
-    pseudonym: "swift-otter-42",
-    earnings_micro_usd: 2_000_000,
-    work_earnings_micro_usd: 1_500_000,
-    reward_earnings_micro_usd: 500_000,
-    tokens: 1_500_000,
-    jobs: 120,
-  };
-
-  it("annualizes earnings", () => {
-    expect(formatLeaderboardValue(entry, "earnings")).toBe("$730");
-  });
-
-  it("shows raw 24h token counts for the tokens metric", () => {
-    expect(formatLeaderboardValue(entry, "tokens")).toBe("1.5M");
   });
 });

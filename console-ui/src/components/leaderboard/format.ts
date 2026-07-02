@@ -1,8 +1,6 @@
 // Pure, dependency-free leaderboard formatting helpers, unit tested in
 // isolation (see format.test.ts).
 
-import type { LeaderboardEntry, LeaderboardMetric } from "./types";
-
 export function formatNumber(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
   if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
@@ -32,29 +30,6 @@ export function formatAnnualizedUSD(micro24h: number): string {
  */
 export function formatDailyUSD(micro24h: number): string {
   return `${formatUSDFromMicro(micro24h)}/day`;
-}
-
-/** Big headline value for a ranked entry: annualized earnings or 24h tokens. */
-export function formatLeaderboardValue(
-  entry: LeaderboardEntry,
-  metric: LeaderboardMetric,
-): string {
-  if (metric === "earnings") return formatAnnualizedUSD(entry.earnings_micro_usd);
-  return formatNumber(entry.tokens);
-}
-
-/**
- * Builds the "Work $X/yr · Rewards $Y/yr" breakdown sub-line under combined
- * earnings figures. The work/reward split is the whole point of the
- * leaderboard rewards feature, so this pins the label order and which
- * micro-USD value maps to which label.
- */
-export function formatEarningsBreakdown(
-  workMicroUsd: number,
-  rewardMicroUsd: number,
-  formatUSD: (micro: number) => string,
-): string {
-  return `Work ${formatUSD(workMicroUsd)} · Rewards ${formatUSD(rewardMicroUsd)}`;
 }
 
 /**

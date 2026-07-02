@@ -1,5 +1,6 @@
 "use client";
 
+import { Award, Crown, Medal, type LucideIcon } from "lucide-react";
 import type { LeaderboardEntry, LeaderboardMetric } from "./types";
 import {
   formatAnnualizedUSD,
@@ -8,8 +9,33 @@ import {
   rewardToneClass,
 } from "./format";
 
-const EARNINGS_GRID = "grid grid-cols-[56px_minmax(0,1fr)_130px_130px_130px] gap-3";
-const TOKENS_GRID = "grid grid-cols-[56px_minmax(0,1fr)_140px] gap-3";
+const EARNINGS_GRID = "grid grid-cols-[64px_minmax(0,1fr)_130px_130px_130px] gap-3";
+const TOKENS_GRID = "grid grid-cols-[64px_minmax(0,1fr)_140px] gap-3";
+
+// Gold / silver / bronze rank treatment, built from the app's accent tokens so
+// it holds up in both light and dark themes.
+const MEDAL_STYLES: Record<number, { pill: string; icon: LucideIcon }> = {
+  1: { pill: "border-accent-amber/40 bg-accent-amber/15 text-accent-amber", icon: Crown },
+  2: { pill: "border-border-subtle bg-bg-elevated text-text-secondary", icon: Medal },
+  3: { pill: "border-accent-brand/30 bg-accent-brand/10 text-accent-brand", icon: Award },
+};
+
+/** Medal pill for ranks 1–3, plain "#N" for everyone else. */
+function RankCell({ rank }: { rank: number }) {
+  const medal = MEDAL_STYLES[rank];
+  if (!medal) {
+    return <span className="self-center font-mono font-semibold text-text-primary">#{rank}</span>;
+  }
+  const MedalIcon = medal.icon;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 self-center justify-self-start rounded-full border px-2 py-0.5 font-mono text-xs font-bold ${medal.pill}`}
+    >
+      <MedalIcon size={12} />
+      {rank}
+    </span>
+  );
+}
 
 /** Annualized value with the per-day rate as quieter secondary text below. */
 function EarningsCell({
@@ -46,8 +72,8 @@ function EarningsRows({ entries }: { entries: LeaderboardEntry[] }) {
           key={`${entry.rank}-${entry.pseudonym}`}
           className={`${EARNINGS_GRID} border-t border-border-dim px-4 py-3 text-sm`}
         >
-          <span className="font-mono font-semibold text-text-primary">#{entry.rank}</span>
-          <span className="truncate font-mono text-text-secondary">{entry.pseudonym}</span>
+          <RankCell rank={entry.rank} />
+          <span className="self-center truncate font-mono text-text-secondary">{entry.pseudonym}</span>
           <EarningsCell
             micro24h={entry.earnings_micro_usd}
             toneClass="font-semibold text-text-primary"
@@ -78,9 +104,9 @@ function TokensRows({ entries }: { entries: LeaderboardEntry[] }) {
           key={`${entry.rank}-${entry.pseudonym}`}
           className={`${TOKENS_GRID} border-t border-border-dim px-4 py-3 text-sm`}
         >
-          <span className="font-mono font-semibold text-text-primary">#{entry.rank}</span>
-          <span className="truncate font-mono text-text-secondary">{entry.pseudonym}</span>
-          <span className="text-right font-mono font-semibold text-text-primary">
+          <RankCell rank={entry.rank} />
+          <span className="self-center truncate font-mono text-text-secondary">{entry.pseudonym}</span>
+          <span className="self-center text-right font-mono font-semibold text-text-primary">
             {formatNumber(entry.tokens)}
           </span>
         </div>

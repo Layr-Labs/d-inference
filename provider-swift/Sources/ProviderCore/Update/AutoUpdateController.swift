@@ -111,6 +111,11 @@ public struct AutoUpdateController: Sendable {
     public enum Outcome: Sendable, Equatable {
         /// A cycle was already in progress; this call did nothing.
         case alreadyRunning
+        /// The cycle was cancelled (provider shutdown / monitor teardown)
+        /// during the pre-install rollover-jitter wait. Nothing was drained,
+        /// committed, or restarted; the staged bundle is discarded by
+        /// `resumeServing` and a later tick can retry.
+        case cancelled
         /// Already on the latest version.
         case upToDate
         /// The version check failed.
@@ -172,6 +177,17 @@ public struct AutoUpdateController: Sendable {
                 // bundle is verified + staged and we are STILL serving; this
                 // staggers the drain+restart across the fleet.
                 await deps.waitBeforeInstall()
+                // A cancelled cycle (provider shutdown / monitor teardown
+                // landing in the jitter window) must NOT proceed: the sleep
+                // returning early on cancellation is not permission to
+                // install. Abort before any drain/commit/restart side effect;
+                // resumeServing discards the staged bundle and a later tick
+                // retries.
+                if Task.isCancelled {
+                    deps.log("auto-update: cycle cancelled during the pre-install wait; aborting before drain")
+                    await deps.resumeServing()
+                    return .cancelled
+                }
                 deps.log("auto-update: v\(release.version) staged; draining in-flight requests before install + restart")
                 await deps.beginDraining()
 

@@ -65,6 +65,10 @@ extension ProviderLoop {
     /// remembers what was being served — that persisted set is the default
     /// startup preload plan.
     internal func persistLoadedModelSet() {
+        // Inert until run() (or the test seam) enables it: a ProviderLoop
+        // that never serves — every unit test exercising load/unload — must
+        // not write the operator's real loaded-models file.
+        guard loadedModelsPersistenceEnabled else { return }
         let loaded = modelSlots.keys.filter { !modelsUnloading.contains($0) }.sorted()
         LoadedModelsStore.write(loaded, to: loadedModelsFileURL())
     }
@@ -221,7 +225,14 @@ extension ProviderLoop {
             try await override(modelId)
             return
         }
-        try await ensureModelLoaded(modelId: modelId)
+        // allowEviction: false — the preloader's freeMemoryGb pre-check is a
+        // fast skip, but the authoritative no-evict enforcement lives INSIDE
+        // ensureModelLoaded's serialized critical section, so an interleaved
+        // local-endpoint load can't make it stale. A candidate that would
+        // require evicting an earlier preload (or any resident model) fails
+        // here and is WARN-logged by the preloader; the lazy-load path (which
+        // MAY evict, as always) remains the fallback for live traffic.
+        try await ensureModelLoaded(modelId: modelId, allowEviction: false)
     }
 
     private func startupPreloadSelfTest(modelId: String) async throws -> Duration {
@@ -248,9 +259,23 @@ extension ProviderLoop {
     /// advertised set for this run, so registration (which filters
     /// `loopConfig.models` through `advertisedModels`) never announces it.
     /// The persisted loaded-model set is updated by `unloadModel`.
+    ///
+    /// Post-registration retirement (the gate timed out, so the coordinator
+    /// client is already live and the initial `register` carried this model):
+    /// registration is the only wire mechanism that communicates a REMOVAL
+    /// from the advertised set (`models_update` is additive), so mirror the
+    /// hard-swap drop (`dropAdvertisedBuild`) — remove it from the client's
+    /// advertised store — and force a reconnect so a fresh `register`
+    /// announces the shrunken set. Pre-registration (the common case:
+    /// preload finished inside the gate) both are nil and the `run()` filter
+    /// handles it with no extra traffic.
     private func retireModelAfterFailedSelfTest(modelId: String) async {
         await unloadModel(modelId)
         advertisedModels.removeValue(forKey: modelId)
+        if let client = coordinatorClient {
+            await client.unadvertiseModel(modelId)
+            await client.forceReconnect()
+        }
     }
 
     // MARK: - Self-test decode (the serving path)

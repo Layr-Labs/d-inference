@@ -191,6 +191,34 @@ struct LoadedModelsPersistenceWiringTests {
         #expect(LoadedModelsStore.read(from: url) == [])
     }
 
+    @Test("persistence is inert on a loop that never serves (unit tests can't clobber the real file)")
+    func persistenceInertUntilEnabled() async throws {
+        let url = tempFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let loop = try makePersistLoop()
+        // Path override WITHOUT the serving gate: simulates any unrelated
+        // unit test that installs + unloads slots on a loop that never ran
+        // run() — the production write points must stay silent.
+        await loop.setLoadedModelsFileForTesting(url)
+        await loop.setLoadedModelsPersistenceEnabledForTesting(false)
+
+        await loop.installModelSlotForTesting(
+            modelId: "gemma-4-26b-it",
+            scheduler: BatchScheduler(maxConcurrentRequests: 2, defaultMaxTokens: 64),
+            container: makePersistStubContainer(),
+            tokenizer: TokenizerHandle(PersistStubTokenizer())
+        )
+        await loop.persistLoadedModelSetForTesting()
+        await loop.unloadModel("gemma-4-26b-it")
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+
+        // Arming the gate (what run() does at startup) activates the same
+        // write points.
+        await loop.setLoadedModelsPersistenceEnabledForTesting(true)
+        await loop.persistLoadedModelSetForTesting()
+        #expect(LoadedModelsStore.read(from: url) == [])
+    }
+
     @Test("shutdown teardown preserves the persisted set for the next boot")
     func shutdownUnloadPreservesPersistedSet() async throws {
         let url = tempFile()

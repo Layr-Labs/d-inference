@@ -67,6 +67,39 @@ struct UpdateJitterTests {
 
 // MARK: - AutoUpdateController sequencing
 
+/// Minimal async gate for the cancellation test (file-private copy of the
+/// ModelPrefetchCoordinatorTests helper).
+private final class JitterGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var permits = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func signal() {
+        let waiter: CheckedContinuation<Void, Never>? = lock.withLock {
+            if waiters.isEmpty {
+                permits += 1
+                return nil
+            }
+            return waiters.removeFirst()
+        }
+        waiter?.resume()
+    }
+
+    func wait() async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let resumeNow: Bool = lock.withLock {
+                if permits > 0 {
+                    permits -= 1
+                    return true
+                }
+                waiters.append(cont)
+                return false
+            }
+            if resumeNow { cont.resume() }
+        }
+    }
+}
+
 @Suite("AutoUpdateController rollover jitter")
 struct AutoUpdateJitterSequencingTests {
 
@@ -150,5 +183,49 @@ struct AutoUpdateJitterSequencingTests {
         #expect(outcome == .stageFailed("disk full"))
         #expect(!recorder.events.contains("jitter"))
         #expect(!recorder.events.contains("beginDraining"))
+    }
+
+    @Test("cancellation during the jitter window aborts the cycle before any install side effect")
+    func cancellationDuringJitterAborts() async {
+        let recorder = Recorder()
+        let jitterStarted = JitterGate()
+        // A jitter that parks like the production wiring does: `try? await
+        // Task.sleep` returns EARLY on cancellation — the regression this
+        // pins is that an early return must not be read as permission to
+        // drain + commit + restart a shutting-down provider.
+        let deps = AutoUpdateController.Dependencies(
+            claimStart: { recorder.record("claim"); return true },
+            resumeServing: { recorder.record("resume") },
+            check: {
+                recorder.record("check")
+                return .updateAvailable(current: "1.0.0", latest: Self.release)
+            },
+            downloadVerifyStage: { _ in recorder.record("stage"); return .completed },
+            waitBeforeInstall: {
+                recorder.record("jitter")
+                jitterStarted.signal()
+                try? await Task.sleep(for: .seconds(300))
+            },
+            beginDraining: { recorder.record("beginDraining") },
+            waitForDrain: { _ in recorder.record("waitForDrain"); return true },
+            forceCancelInflight: { recorder.record("forceCancel") },
+            commitInstall: { recorder.record("commit"); return .completed },
+            restart: { recorder.record("restart") },
+            log: { _ in }
+        )
+        let controller = AutoUpdateController(deps: deps, drainTimeout: .milliseconds(10))
+
+        let cycle = Task { await controller.run() }
+        await jitterStarted.wait()
+        cycle.cancel()
+        let outcome = await cycle.value
+
+        #expect(outcome == .cancelled)
+        // No install side effect after the cancelled jitter — and the cycle
+        // resumed serving so a later tick can retry.
+        #expect(recorder.events == ["claim", "check", "stage", "jitter", "resume"])
+        #expect(!recorder.events.contains("beginDraining"))
+        #expect(!recorder.events.contains("commit"))
+        #expect(!recorder.events.contains("restart"))
     }
 }

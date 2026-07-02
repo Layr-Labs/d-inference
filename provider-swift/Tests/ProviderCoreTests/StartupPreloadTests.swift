@@ -16,6 +16,9 @@
 ///     advertised set.
 
 import Foundation
+import MLX
+import MLXLMCommon
+import MLXNN
 import Testing
 
 @testable import ProviderCore
@@ -534,5 +537,223 @@ struct StartupPreloadGateTests {
         await #expect(throws: InferenceError.self) {
             _ = try await loop.runStartupSelfTestDecode(modelId: "a")
         }
+    }
+}
+
+// MARK: - No-evict enforcement (production ensureModelLoaded path)
+
+/// Stub tokenizer/model/container so real `ModelSlot`s can exist without
+/// weights (file-private copy of the LoadedModelsStoreTests pattern).
+private struct NoEvictStubTokenizer: MLXLMCommon.Tokenizer {
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [0] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "" }
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { nil }
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+    func applyChatTemplate(
+        messages: [[String: any Sendable]],
+        tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] { [0] }
+}
+
+private final class NoEvictStubLanguageModel: Module, LanguageModel {
+    func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
+        .tokens(input.text)
+    }
+    func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }
+}
+
+private struct NoEvictStubProcessorError: Error {}
+private struct NoEvictStubProcessor: UserInputProcessor {
+    func prepare(input: UserInput) async throws -> LMInput {
+        throw NoEvictStubProcessorError()
+    }
+}
+
+private func makeNoEvictStubContainer() -> ModelContainer {
+    ModelContainer(
+        context: ModelContext(
+            configuration: ModelConfiguration(id: "test/stub-model"),
+            model: NoEvictStubLanguageModel(),
+            processor: NoEvictStubProcessor(),
+            tokenizer: NoEvictStubTokenizer()
+        ))
+}
+
+/// Create a minimal fake HF-cache snapshot so `ModelScanner.resolveLocalPath`
+/// resolves `modelId` (ensureModelLoaded requires an on-disk snapshot BEFORE
+/// it reaches the admission gates under test). Returns the `models--...`
+/// directory for cleanup.
+private func makeFakeHFSnapshot(modelId: String) throws -> URL {
+    let cacheDir = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
+    let modelDir = cacheDir.appendingPathComponent(
+        "models--\(modelId.replacingOccurrences(of: "/", with: "--"))", isDirectory: true)
+    let snapshot = modelDir
+        .appendingPathComponent("snapshots", isDirectory: true)
+        .appendingPathComponent("main", isDirectory: true)
+    try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+    try Data("{}".utf8).write(to: snapshot.appendingPathComponent("config.json"))
+    return modelDir
+}
+
+@Suite("Startup preload no-evict enforcement (production load path)")
+struct StartupPreloadNoEvictTests {
+
+    private func installStubSlot(_ loop: ProviderLoop, _ id: String) async {
+        await loop.installModelSlotForTesting(
+            modelId: id,
+            scheduler: BatchScheduler(maxConcurrentRequests: 2, defaultMaxTokens: 64),
+            container: makeNoEvictStubContainer(),
+            tokenizer: TokenizerHandle(NoEvictStubTokenizer())
+        )
+    }
+
+    @Test("slot-cap: no-evict load refuses instead of evicting an idle resident model")
+    func slotCapNoEvictRefuses() async throws {
+        let fakeId = "darkbloom-tests/noevict-slot-\(UUID().uuidString.prefix(8))"
+        let fakeDir = try makeFakeHFSnapshot(modelId: fakeId)
+        defer { try? FileManager.default.removeItem(at: fakeDir) }
+
+        let loop = try await makePreloadLoop(
+            models: [
+                preloadModelInfo("stub-a", memoryGb: 0.01),
+                preloadModelInfo("stub-b", memoryGb: 0.01),
+                preloadModelInfo(fakeId, memoryGb: 0.01),
+            ],
+            backend: BackendSettings(maxModelSlots: 2))
+        await installStubSlot(loop, "stub-a")
+        await installStubSlot(loop, "stub-b")
+
+        // Both resident models are idle and WOULD be evictable — the no-evict
+        // load must refuse (503-shaped "slot" capacity error), not churn one.
+        do {
+            try await loop.ensureModelLoaded(modelId: fakeId, allowEviction: false)
+            Issue.record("expected the no-evict load to throw at the slot cap")
+        } catch let InferenceError.invalidModelDirectory(message) {
+            #expect(message.contains("slot"))
+            #expect(ProviderLoop.loadErrorStatusCode(for: InferenceError.invalidModelDirectory(message)) == 503)
+        }
+
+        let resident = await loop.modelSlots.keys.sorted()
+        #expect(resident == ["stub-a", "stub-b"])
+
+        // Contrast: the default (live-traffic) path evicts the idle LRU slot.
+        // The load then proceeds and fails on the fake weights — irrelevant
+        // here; the point is that eviction HAPPENED with the default policy
+        // and did NOT with allowEviction: false.
+        do {
+            try await loop.ensureModelLoaded(modelId: fakeId)
+            Issue.record("expected the fake-weights load to fail after eviction")
+        } catch {
+            // expected: fake snapshot has no loadable weights
+        }
+        let after = await loop.modelSlots.keys.sorted()
+        #expect(after.count == 1, "default policy should have evicted one idle model, got \(after)")
+    }
+
+    @Test("memory: no-evict load fails with a WARN-able error, resident model untouched")
+    func memoryNoEvictRefuses() async throws {
+        let fakeId = "darkbloom-tests/noevict-mem-\(UUID().uuidString.prefix(8))"
+        let fakeDir = try makeFakeHFSnapshot(modelId: fakeId)
+        defer { try? FileManager.default.removeItem(at: fakeDir) }
+
+        let loop = try await makePreloadLoop(
+            models: [
+                preloadModelInfo("stub-a", memoryGb: 0.01),
+                // Impossible footprint: the memory gate must refuse without
+                // touching the idle (evictable) resident model.
+                preloadModelInfo(fakeId, memoryGb: 100_000),
+            ],
+            backend: BackendSettings(maxModelSlots: 3))
+        await installStubSlot(loop, "stub-a")
+
+        do {
+            try await loop.ensureModelLoaded(modelId: fakeId, allowEviction: false)
+            Issue.record("expected the no-evict load to throw at the memory gate")
+        } catch let InferenceError.modelLoadFailed(message) {
+            #expect(message.contains("without evicting"))
+        }
+
+        let resident = await loop.modelSlots.keys.sorted()
+        #expect(resident == ["stub-a"])
+    }
+}
+
+// MARK: - Post-registration fail-closed retirement (end-to-end)
+
+@Suite("Startup preload post-registration retirement", .serialized)
+struct StartupPreloadPostRegistrationRetirementTests {
+
+    @Test("fail-closed retirement after registration re-registers without the retired model")
+    func postRegistrationRetirementReRegistersWithoutModel() async throws {
+        let mock = MockCoordinator()
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        // A REAL CoordinatorClient connected to the mock — the same
+        // registration path production uses. Its advertised store is what
+        // sendRegistration reads, so the retirement must shrink it AND force
+        // a reconnect for the coordinator to learn about the removal.
+        let keys = NodeKeyPair.generate()
+        let client = CoordinatorClient(
+            config: CoordinatorClientConfig(
+                url: baseURL.mockProviderWebSocketURL(),
+                hardware: HardwareInfo(
+                    machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
+                    memoryGb: 128, memoryAvailableGb: 124,
+                    cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
+                    gpuCores: 40, memoryBandwidthGbs: 546
+                ),
+                models: [
+                    preloadModelInfo("flaky", memoryGb: 2),
+                    preloadModelInfo("healthy", memoryGb: 2),
+                ],
+                backendName: "mlx-swift",
+                heartbeatInterval: 60,
+                publicKey: keys.publicKeyBase64
+            ),
+            stats: AtomicProviderStats(),
+            state: ProviderState()
+        )
+        let (_, _) = await client.start()
+        defer { Task { await client.shutdown() } }
+
+        let first = try await mock.awaitFirstRegister(timeout: .seconds(10))
+        let firstRegister = try #require(first)
+        #expect(firstRegister.models.map(\.id).sorted() == ["flaky", "healthy"])
+
+        // Simulate the timed-out-gate world: the client is live (registration
+        // already announced flaky) when the self-test retires it fail-closed.
+        let loop = try await makePreloadLoop(
+            models: [
+                preloadModelInfo("flaky", memoryGb: 2),
+                preloadModelInfo("healthy", memoryGb: 2),
+            ],
+            backend: BackendSettings(
+                preloadModels: ["flaky", "healthy"],
+                startupPreloadTimeoutSecs: 30,
+                startupSelftest: true,
+                startupSelftestFailClosed: true))
+        await loop.setCoordinatorClientForTesting(client)
+        await loop.setStartupPreloadLoadOverrideForTesting({ _ in })
+        await loop.setStartupSelfTestOverrideForTesting({ id in
+            if id == "flaky" { throw PreloadStubError.selfTestExploded }
+            return .milliseconds(1)
+        })
+
+        _ = await loop.runStartupPreloadGateForTesting()
+
+        // Retirement must have shrunk the client's advertised store and
+        // forced a reconnect whose fresh register no longer announces flaky.
+        let snap = try await mock.waitForSnapshot(timeout: .seconds(10)) { $0.registers.count >= 2 }
+        let registers = try #require(snap).registers
+        let second = try #require(registers.last)
+        #expect(!second.models.map(\.id).contains("flaky"))
+        #expect(second.models.map(\.id).contains("healthy"))
+        #expect(await client.currentAdvertisedModels().map(\.id) == ["healthy"])
     }
 }

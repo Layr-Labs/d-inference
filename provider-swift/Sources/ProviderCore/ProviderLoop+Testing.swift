@@ -67,9 +67,17 @@ extension ProviderLoop {
 
     /// Test seam: redirect the loaded-models persistence file to a temp path
     /// so persistence tests never touch the operator's real
-    /// `~/.darkbloom/loaded-models.json`.
+    /// `~/.darkbloom/loaded-models.json`, and arm the persistence gate
+    /// (production arms it in `run()`).
     func setLoadedModelsFileForTesting(_ url: URL?) {
         loadedModelsFileOverride = url
+        loadedModelsPersistenceEnabled = url != nil
+    }
+
+    /// Test seam: toggle the persistence gate independently of the path
+    /// override (pins the "inert unless serving" guard).
+    func setLoadedModelsPersistenceEnabledForTesting(_ enabled: Bool) {
+        loadedModelsPersistenceEnabled = enabled
     }
 
     /// Test seam: replace `ensureModelLoaded` in the startup preload driver
@@ -123,6 +131,14 @@ extension ProviderLoop {
     /// Test seam: whether the startup preload driver is still running.
     func startupPreloadTaskRunningForTesting() -> Bool {
         startupPreloadTask != nil
+    }
+
+    /// Test seam: install a live coordinator client (without the prefetch
+    /// machinery `installPrefetchCoordinatorForTesting` requires) so the
+    /// post-registration fail-closed retirement path can be exercised
+    /// against a real client + mock coordinator.
+    func setCoordinatorClientForTesting(_ client: CoordinatorClient) {
+        coordinatorClient = client
     }
 
     // MARK: - ContinuousBatchingV2 seams

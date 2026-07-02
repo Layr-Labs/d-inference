@@ -347,6 +347,14 @@ public actor ProviderLoop {
     /// (default: `LoadedModelsStore.path()`).
     internal var loadedModelsFileOverride: URL?
 
+    /// Gate on the loaded-models persistence writes. `run()` flips it on at
+    /// startup; it stays FALSE for `ProviderLoop` instances that never serve
+    /// (unit tests exercising load/unload paths), so an unrelated test can
+    /// never clobber the operator's real `~/.darkbloom/loaded-models.json`
+    /// — that file is the next boot's preload plan. The test seam
+    /// `setLoadedModelsFileForTesting` enables it together with a temp path.
+    internal var loadedModelsPersistenceEnabled = false
+
     /// Test seams for the startup preload driver: replace the real
     /// `ensureModelLoaded` / self-test decode / free-memory probe with
     /// scripted stubs so the plan, gate timing, admission, and

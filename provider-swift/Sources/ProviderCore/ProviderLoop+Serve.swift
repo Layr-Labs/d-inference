@@ -66,6 +66,11 @@ extension ProviderLoop {
         // 1. Apply security hardening
         try await applySecurityHardening()
 
+        // Arm the loaded-models persistence now that this loop is actually
+        // serving (test instances never flip this, so their unload paths
+        // cannot clobber the real ~/.darkbloom/loaded-models.json).
+        loadedModelsPersistenceEnabled = true
+
         // 1.5 Startup preload + readiness gate (ProviderLoop+StartupPreload):
         // load the previously-served / configured model set BEFORE the
         // coordinator client exists, so a release restart never advertises

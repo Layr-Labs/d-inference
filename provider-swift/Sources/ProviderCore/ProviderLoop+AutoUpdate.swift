@@ -121,6 +121,8 @@ extension ProviderLoop {
         switch outcome {
         case .alreadyRunning:
             logger.info("Auto-update: cycle already in progress; skipping this tick")
+        case .cancelled:
+            logger.info("Auto-update: cycle cancelled during the pre-install wait; nothing installed")
         case .upToDate:
             logger.info("Auto-update: already running latest version")
         case .checkFailed(let reason):

@@ -93,6 +93,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// entries to `engineV2Logprobs.channel` for the caller's SSE frame
     /// decorator. Ignored (silently) when the model serves via legacy.
     private let engineV2Logprobs: EngineV2LogprobsPlumbing?
+    /// OpenAI `logit_bias`/`seed` decoded out-of-band from the sealed body
+    /// (the upstream `OpenAIChatCompletionRequest` models neither — same
+    /// pattern as `engineV2Logprobs`/`reasoningEffort`/`cacheScope`).
+    /// Overlaid onto the v2 translation so
+    /// `EngineV2Translation.samplingParams` sees the real values; ignored
+    /// (silently) when the model serves via legacy, which never honored
+    /// either knob.
+    private let engineV2Sampling: EngineV2SamplingOverrides?
 
     public init(
         registryProvider: @escaping @Sendable () async -> Registry,
@@ -102,7 +110,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         defaultMaxTokens: Int = 4096,
         reasoningEffort: String? = nil,
         cacheScope: String = "",
-        engineV2Logprobs: EngineV2LogprobsPlumbing? = nil
+        engineV2Logprobs: EngineV2LogprobsPlumbing? = nil,
+        engineV2Sampling: EngineV2SamplingOverrides? = nil
     ) {
         self.registryProvider = registryProvider
         self.ensureLoaded = ensureLoaded
@@ -112,6 +121,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.reasoningEffort = reasoningEffort
         self.cacheScope = cacheScope
         self.engineV2Logprobs = engineV2Logprobs
+        self.engineV2Sampling = engineV2Sampling
         self.acquire = nil
         self.tokenizerProvider = nil
         self.availableModelsOverride = nil
@@ -154,6 +164,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // there is no provider seam to decorate frames with logprobs on this
         // init (same visible behavior as the legacy engine: none emitted).
         self.engineV2Logprobs = nil
+        // Same reason: the --local path decodes the raw body inside the
+        // upstream router, so `logit_bias`/`seed` cannot be recovered here
+        // (the upstream request shape omits them — see the KNOWN DEVIATION on
+        // `translate(...)`).
+        self.engineV2Sampling = nil
     }
 
     // MARK: - MLXServerEngine
@@ -381,13 +396,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 promptTokens: promptTokens,
                 // Sampling/stop/max-token translation reuses the OpenAI →
                 // internal request mapping (`EngineV2Translation` reads the
-                // internal shape). `logprobs`/`top_logprobs` are not on the
-                // upstream request shape, so they arrive via the
-                // `engineV2Logprobs` plumbing and are overlaid here.
+                // internal shape). `logprobs`/`top_logprobs` and
+                // `logit_bias`/`seed` are not on the upstream request shape,
+                // so they arrive via the `engineV2Logprobs`/`engineV2Sampling`
+                // plumbing (decoded from the sealed body) and are overlaid
+                // here.
                 request: Self.translate(
                     openAIRequest: request, defaultMaxTokens: defaultMaxTokens,
                     logprobs: engineV2Logprobs != nil ? true : nil,
-                    topLogprobs: engineV2Logprobs?.topLogprobs),
+                    topLogprobs: engineV2Logprobs?.topLogprobs,
+                    logitBias: engineV2Sampling?.logitBias,
+                    seed: engineV2Sampling?.seed),
                 requestId: requestId,
                 // Same per-tenant scope the legacy submit threads into the
                 // checkpoint cache; the bridge maps it to CBv2Request.cacheSalt

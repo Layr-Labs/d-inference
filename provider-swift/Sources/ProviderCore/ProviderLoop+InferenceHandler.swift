@@ -179,6 +179,10 @@ extension ProviderLoop {
         // honored on the v2 engine path (the legacy engine never emitted
         // logprobs — see EngineV2Logprobs.swift).
         let logprobsSpec = Self.extractLogprobsSpec(from: decryptedData)
+        // OpenAI `logit_bias` / `seed` (also absent from the upstream request
+        // shape). Overlaid onto the v2 engine translation; the legacy path
+        // never honored either knob and is untouched.
+        let samplingOverrides = Self.extractSamplingOverrides(from: decryptedData)
 
         // 3. Fast pre-accept admission check. The coordinator accepts fast and
         // then waits for the first chunk with the full inference timeout, so we
@@ -389,7 +393,8 @@ extension ProviderLoop {
                 engineV2Logprobs: logprobsChannel.map {
                     EngineV2LogprobsPlumbing(
                         topLogprobs: logprobsSpec?.topLogprobs, channel: $0)
-                }
+                },
+                engineV2Sampling: samplingOverrides
             )
 
             // Force-stream so we get SSE frames even if the original request

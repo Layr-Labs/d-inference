@@ -520,6 +520,36 @@ struct EngineV2RequestRoutingTests {
         #expect(entries[0].logprob == -0.25)
     }
 
+    @Test("coordinator path threads sealed-body logit_bias and seed into the engine")
+    func coordinatorPathThreadsSamplingOverrides() async throws {
+        let engine = WiringScriptedEngine(script: .stream([
+            .delta(text: "Hello", tokens: [10], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "gemma-4-27b-it": .init(
+                        scheduler: BatchScheduler(),
+                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        modelType: "gemma4_text",
+                        engineV2Bridge: bridge)
+                ]
+            },
+            // The shape `ProviderLoop.extractSamplingOverrides` produces from
+            // a sealed body carrying {"logit_bias":{"7":-100,"junk":1},"seed":42}.
+            engineV2Sampling: EngineV2SamplingOverrides(
+                logitBias: ["7": -100, "junk": 1], seed: 42)
+        )
+        let stream = try await providerEngine.streamChatCompletion(request: makeOpenAIRequest())
+        _ = try await recordServerStream(stream)
+        #expect(engine.submitted.count == 1)
+        // Parsed bias reached the engine ("junk" dropped, never guessed).
+        #expect(engine.submitted[0].sampling.logitBias == [7: -100])
+        #expect(engine.submitted[0].sampling.seed == 42)
+    }
+
     @Test("local-endpoint acquire path routes through the bridge and releases the token")
     func localAcquirePathRoutesThroughBridge() async throws {
         let engine = WiringScriptedEngine(script: .stream([

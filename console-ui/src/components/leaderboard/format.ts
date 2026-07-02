@@ -16,20 +16,29 @@ export function formatUSDFromMicro(value: number): string {
   return `$${dollars.toFixed(2)}`;
 }
 
+/**
+ * Annualized rate from a 24h earnings figure: micro-USD earned in the last
+ * 24 hours extrapolated to a yearly rate ("$X/yr"). All leaderboard earnings
+ * are displayed this way — never as raw daily amounts.
+ */
+export function formatAnnualizedUSD(micro24h: number): string {
+  return `${formatUSDFromMicro(micro24h * 365)}/yr`;
+}
+
+/** Big headline value for a ranked entry: annualized earnings or 24h tokens. */
 export function formatLeaderboardValue(
   entry: LeaderboardEntry,
   metric: LeaderboardMetric,
 ): string {
-  if (metric === "earnings") return formatUSDFromMicro(entry.earnings_micro_usd);
-  if (metric === "tokens") return formatNumber(entry.tokens);
-  return formatNumber(entry.jobs);
+  if (metric === "earnings") return formatAnnualizedUSD(entry.earnings_micro_usd);
+  return formatNumber(entry.tokens);
 }
 
 /**
- * Builds the "Work $X · Rewards $Y" breakdown sub-line used under combined
- * earnings figures (totals strip + podium cards). The work/reward split is the
- * whole point of the leaderboard rewards feature, so this pins the label order
- * and which micro-USD value maps to which label.
+ * Builds the "Work $X/yr · Rewards $Y/yr" breakdown sub-line under combined
+ * earnings figures. The work/reward split is the whole point of the
+ * leaderboard rewards feature, so this pins the label order and which
+ * micro-USD value maps to which label.
  */
 export function formatEarningsBreakdown(
   workMicroUsd: number,

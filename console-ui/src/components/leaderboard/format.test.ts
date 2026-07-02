@@ -1,10 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
+  formatAnnualizedUSD,
   formatEarningsBreakdown,
+  formatLeaderboardValue,
   formatNumber,
   formatUSDFromMicro,
   rewardToneClass,
 } from "./format";
+import type { LeaderboardEntry } from "./types";
 
 // A tiny stub matching the shape of `formatUSDFromMicro` so the breakdown
 // logic can be tested without the real number formatter.
@@ -73,5 +76,41 @@ describe("formatUSDFromMicro", () => {
 
   it("abbreviates $1000 and up", () => {
     expect(formatUSDFromMicro(1_500_000_000_000)).toBe("$1.5M");
+  });
+});
+
+describe("formatAnnualizedUSD", () => {
+  it("extrapolates a 24h figure to a yearly rate", () => {
+    // $1.00 earned in 24h -> $365/yr
+    expect(formatAnnualizedUSD(1_000_000)).toBe("$365/yr");
+  });
+
+  it("handles zero", () => {
+    expect(formatAnnualizedUSD(0)).toBe("$0.00/yr");
+  });
+
+  it("abbreviates large annualized figures", () => {
+    // $10 earned in 24h -> $3,650/yr -> abbreviated
+    expect(formatAnnualizedUSD(10_000_000)).toBe("$3.6K/yr");
+  });
+});
+
+describe("formatLeaderboardValue", () => {
+  const entry: LeaderboardEntry = {
+    rank: 1,
+    pseudonym: "swift-otter-42",
+    earnings_micro_usd: 2_000_000,
+    work_earnings_micro_usd: 1_500_000,
+    reward_earnings_micro_usd: 500_000,
+    tokens: 1_500_000,
+    jobs: 120,
+  };
+
+  it("annualizes earnings", () => {
+    expect(formatLeaderboardValue(entry, "earnings")).toBe("$730/yr");
+  });
+
+  it("shows raw 24h token counts for the tokens metric", () => {
+    expect(formatLeaderboardValue(entry, "tokens")).toBe("1.5M");
   });
 });

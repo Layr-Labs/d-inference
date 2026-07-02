@@ -2,14 +2,17 @@
 
 import type { LeaderboardEntry, LeaderboardMetric } from "./types";
 import {
+  formatAnnualizedUSD,
   formatEarningsBreakdown,
   formatLeaderboardValue,
-  formatNumber,
-  formatUSDFromMicro,
   leaderboardRankTone,
 } from "./format";
 
-/** Top-3 podium card: pseudonym, earnings/tokens sub-lines, big metric value. */
+/**
+ * Top-3 podium card. Earnings mode shows the annualized total with the
+ * work/rewards split (no token counts); tokens mode shows 24h tokens only
+ * (no earnings).
+ */
 export function PodiumCard({
   entry,
   metric,
@@ -22,21 +25,9 @@ export function PodiumCard({
   return (
     <div className="rounded-xl border border-border-dim bg-bg-secondary p-4">
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate font-mono text-sm font-semibold text-text-primary">
-            {entry.pseudonym}
-          </p>
-          <p className="mt-1 text-xs font-mono text-text-tertiary">
-            {formatUSDFromMicro(entry.earnings_micro_usd)} / {formatNumber(entry.tokens)} tokens
-          </p>
-          <p className="mt-0.5 text-[10px] font-mono text-text-tertiary">
-            {formatEarningsBreakdown(
-              entry.work_earnings_micro_usd,
-              entry.reward_earnings_micro_usd,
-              formatUSDFromMicro,
-            )}
-          </p>
-        </div>
+        <p className="min-w-0 truncate font-mono text-sm font-semibold text-text-primary">
+          {entry.pseudonym}
+        </p>
         <span className={`rounded-lg border px-2 py-1 text-xs font-mono font-bold ${rankTone}`}>
           #{entry.rank}
         </span>
@@ -45,8 +36,17 @@ export function PodiumCard({
         {formatLeaderboardValue(entry, metric)}
       </p>
       <p className="mt-1 text-[10px] font-mono uppercase tracking-wider text-text-tertiary">
-        Ranked by {metric}
+        {metric === "earnings" ? "Annualized rate · last 24h" : "Tokens served · last 24h"}
       </p>
+      {metric === "earnings" && (
+        <p className="mt-2 text-[11px] font-mono text-text-tertiary">
+          {formatEarningsBreakdown(
+            entry.work_earnings_micro_usd,
+            entry.reward_earnings_micro_usd,
+            formatAnnualizedUSD,
+          )}
+        </p>
+      )}
     </div>
   );
 }

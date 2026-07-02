@@ -1,6 +1,9 @@
 package testbed
 
-import "time"
+import (
+	"os"
+	"time"
+)
 
 type ModelSpec struct {
 	// ModelID is the single-model shorthand. ModelIDs takes precedence when set.
@@ -20,9 +23,45 @@ func (ms ModelSpec) IDs() []string {
 	return nil
 }
 
+// builtinDefaultModelID is the model exercised when no env override is set.
+// gpt-oss-20b is the smallest production model in the registry.
+const builtinDefaultModelID = "gpt-oss-20b"
+
+// DefaultModelID resolves the primary model under test. Priority:
+//  1. TESTBED_MODEL (model registry ID, e.g. "gemma-4-26b-qat-4bit")
+//  2. TESTBED_MODEL_ID (legacy alias, kept for backwards compatibility)
+//  3. builtinDefaultModelID
+//
+// Every default model reference in the e2e suites routes through this
+// function so a single env knob switches the model for a whole run.
+func DefaultModelID() string {
+	if env := os.Getenv("TESTBED_MODEL"); env != "" {
+		return env
+	}
+	if env := os.Getenv("TESTBED_MODEL_ID"); env != "" {
+		return env
+	}
+	return builtinDefaultModelID
+}
+
+// KnownModelSizes maps model IDs to the human-readable weight size that is
+// advertised in reports (e.g. the benchmark RAM column). TESTBED_MODEL_GB
+// (a human string like "15.6 GB") inserts or overrides the entry for the
+// active model — see init below — so arbitrary models work without code
+// changes.
 var KnownModelSizes = map[string]string{
 	"mlx-community/Qwen3.5-0.8B-MLX-4bit": "0.5 GB",
 	"mlx-community/gemma-3-270m-4bit":     "0.2 GB",
+	"gemma-4-26b-qat-4bit":                "15.6 GB",
+	"gpt-oss-20b":                         "12.1 GB",
+}
+
+func init() {
+	// Applied once at package init: TESTBED_MODEL_GB describes the model
+	// selected via TESTBED_MODEL (or the built-in default).
+	if gb := os.Getenv("TESTBED_MODEL_GB"); gb != "" {
+		KnownModelSizes[DefaultModelID()] = gb
+	}
 }
 
 type TrustLevel string
@@ -114,7 +153,7 @@ type SuiteConfig struct {
 
 func DefaultSuiteConfig() SuiteConfig {
 	return SuiteConfig{
-		ModelSpecs:    []ModelSpec{{ModelID: "mlx-community/Qwen3.5-0.8B-MLX-4bit", NumProviders: 1}},
+		ModelSpecs:    []ModelSpec{{ModelID: DefaultModelID(), NumProviders: 1}},
 		NumUsers:      1,
 		QueueCapacity: 100,
 		QueueTimeout:  120 * time.Second,
@@ -151,5 +190,5 @@ func (sc SuiteConfig) PrimaryModelID() string {
 			return ids[0]
 		}
 	}
-	return "mlx-community/Qwen3.5-0.8B-MLX-4bit"
+	return DefaultModelID()
 }

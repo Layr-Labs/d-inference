@@ -1,0 +1,65 @@
+name: E2E test setup
+description: >
+  Shared setup for the e2e integration/stress/profile/benchmark jobs:
+  Go toolchain, Postgres, the prebuilt provider binary artifact from the
+  build job, the tiny Hugging Face swap-target model, and the matrix model
+  via the provider's own `models download` path (the real fleet code path:
+  R2 download with per-file + aggregate SHA-256 verification).
+
+inputs:
+  model:
+    description: Coordinator catalog model ID to download via `darkbloom models download`.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+      with:
+        go-version-file: go.mod
+
+    - name: Install Postgres
+      shell: bash
+      run: |
+        brew install postgresql@16
+        echo "$(brew --prefix postgresql@16)/bin" >> "$GITHUB_PATH"
+
+    - name: Download provider binary artifact
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: provider-binary
+        path: /tmp/provider-artifact
+
+    - name: Install provider binary
+      shell: bash
+      run: |
+        # Artifacts do not preserve the executable bit.
+        chmod +x /tmp/provider-artifact/darkbloom
+        # Also place the binary + metallib where the testbed's BuildProvider
+        # cached-binary check looks (provider-swift/.build/<config>/ with
+        # TESTBED_PROVIDER_CONFIG=debug), so the suite short-circuits instead
+        # of invoking `swift build` — this checkout has no submodules, so a
+        # rebuild here cannot succeed. DARKBLOOM_PROVIDER_BINARY /
+        # MLX_METALLIB_PATH cover the direct-path contract as well.
+        mkdir -p provider-swift/.build/debug
+        cp /tmp/provider-artifact/darkbloom provider-swift/.build/debug/darkbloom
+        cp /tmp/provider-artifact/mlx.metallib provider-swift/.build/debug/mlx.metallib
+
+    - name: Download swap-target model (Hugging Face)
+      shell: bash
+      run: |
+        # Tiny model used as the multi-model swap target in the e2e suite.
+        python3 -m venv /tmp/hfvenv
+        /tmp/hfvenv/bin/pip install --quiet huggingface_hub
+        /tmp/hfvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-3-270m-4bit')"
+
+    - name: Download model via darkbloom CLI
+      shell: bash
+      env:
+        MODEL_ID: ${{ inputs.model }}
+      run: |
+        # Zero-config: `models download` falls back to hardware defaults when
+        # no ~/.darkbloom config exists, and --coordinator overrides the URL
+        # (see provider-swift/Sources/darkbloom/ModelsCommand.swift).
+        /tmp/provider-artifact/darkbloom models download "$MODEL_ID" \
+          --coordinator https://api.darkbloom.dev

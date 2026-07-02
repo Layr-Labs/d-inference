@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api"
@@ -77,6 +78,9 @@ type Provider struct {
 
 	cmd    *os.Process
 	cancel context.CancelFunc
+
+	exited   atomic.Bool
+	exitCode atomic.Int64
 }
 
 func NewSuite(cfg SuiteConfig) *Suite {
@@ -126,10 +130,7 @@ func resolveModelID(modelID string) string {
 	if modelID != "" {
 		return modelID
 	}
-	if env := os.Getenv("TESTBED_MODEL_ID"); env != "" {
-		return env
-	}
-	return "mlx-community/Qwen3.5-0.8B-MLX-4bit"
+	return DefaultModelID()
 }
 
 func (s *Suite) PrimaryModelID() string {
@@ -452,12 +453,34 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 
 	go func() {
 		state, _ := cmd.Process.Wait()
+		code := -1
+		if state != nil {
+			code = state.ExitCode()
+		}
+		p.exitCode.Store(int64(code))
+		p.exited.Store(true)
 		if state != nil && state.ExitCode() >= 0 {
 			p.Logger.Warn("provider process exited", "exit_code", state.ExitCode())
 		}
 	}()
 
 	return nil
+}
+
+// Alive reports whether the provider process is still running. It flips to
+// false as soon as the process exits for any reason (crash, signal, or
+// orderly shutdown), so tests can assert engine liveness after a load phase.
+func (p *Provider) Alive() bool {
+	return p.cmd != nil && !p.exited.Load()
+}
+
+// ExitCode returns the provider process exit code. Only meaningful once
+// Alive() reports false; returns -1 while running or when killed by signal.
+func (p *Provider) ExitCode() int {
+	if !p.exited.Load() {
+		return -1
+	}
+	return int(p.exitCode.Load())
 }
 
 func (p *Provider) Stop() {

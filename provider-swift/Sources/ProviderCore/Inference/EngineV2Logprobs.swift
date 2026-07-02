@@ -203,4 +203,24 @@ public final class EngineV2LogprobsChannel: @unchecked Sendable {
     public var droppedCount: Int {
         lock.withLock { _droppedCount }
     }
+
+    /// Enforce the channel's `maxEntries` cap on a CALLER-held pending buffer
+    /// (round-3 PR#499 P2). The frames loop drains this channel into a local
+    /// `pendingLogprobs` array and only clears it when a content-bearing
+    /// frame arrives — so a stream that emits many reasoning-only/tool-only
+    /// chunks before any visible `delta.content` (GPT-OSS reasoning) would
+    /// re-accumulate everything the channel cap just bounded. Same policy as
+    /// `append`: drop-OLDEST, keep the freshest window (the entries closest
+    /// to the content that will eventually render), report how many were
+    /// dropped so the caller can log it (count only — never token text).
+    /// Pure and synchronous so it is unit-testable.
+    public static func capPending(
+        _ pending: inout [SSETokenLogprob],
+        maxEntries: Int = EngineV2LogprobsChannel.maxEntries
+    ) -> Int {
+        guard pending.count > maxEntries else { return 0 }
+        let overflow = pending.count - maxEntries
+        pending.removeFirst(overflow)
+        return overflow
+    }
 }

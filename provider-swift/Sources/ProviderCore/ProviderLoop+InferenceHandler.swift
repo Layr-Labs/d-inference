@@ -501,7 +501,16 @@ extension ProviderLoop {
             // usage chunks are skipped); consumers accumulate
             // `logprobs.content` across chunks, so chunk-boundary
             // alignment is not load-bearing — order and exactly-once are.
+            //
+            // BOUNDED (round-3 PR#499 P2): a long reasoning-only/tool-only
+            // prefix (GPT-OSS) drains the capped channel here every frame
+            // without ever clearing, so this buffer is re-capped after each
+            // drain with the SAME drop-oldest policy as the channel
+            // (`EngineV2LogprobsChannel.capPending`); the freshest window —
+            // the entries nearest the content that eventually renders — is
+            // kept and the dropped count is logged (never token text).
             var pendingLogprobs: [SSETokenLogprob] = []
+            var pendingLogprobsDropped = 0
             do {
                 for try await frame in frames {
                     if token.isCancelled {
@@ -592,6 +601,20 @@ extension ProviderLoop {
                     // billing extraction are unaffected.
                     if let logprobsChannel {
                         pendingLogprobs += logprobsChannel.drain()
+                        // Re-cap after every drain: without a content-bearing
+                        // frame this buffer would grow unbounded past the
+                        // channel's own cap (see the declaration comment).
+                        let dropped = EngineV2LogprobsChannel.capPending(&pendingLogprobs)
+                        if dropped > 0 {
+                            if pendingLogprobsDropped == 0 {
+                                log.warning(
+                                    "[\(requestId)] pending logprobs hit the "
+                                    + "\(EngineV2LogprobsChannel.maxEntries)-entry cap before a "
+                                    + "content-bearing frame; dropping oldest entries (count only)"
+                                )
+                            }
+                            pendingLogprobsDropped += dropped
+                        }
                         if !pendingLogprobs.isEmpty,
                             let injected = Self.injectLogprobs(
                                 into: frameToEmit, entries: pendingLogprobs)
@@ -633,6 +656,15 @@ extension ProviderLoop {
                 }
             }
             if token.isCancelled { cancelledMidStream = true }
+
+            if pendingLogprobsDropped > 0 {
+                // Surface the request's TOTAL evicted-entry count once at
+                // stream end (the in-loop WARN fires only on the first drop).
+                log.warning(
+                    "[\(requestId)] dropped \(pendingLogprobsDropped) pending logprob "
+                    + "entries in total (buffer cap \(EngineV2LogprobsChannel.maxEntries))"
+                )
+            }
 
             if cancelledMidStream {
                 if reasoningTokens == 0 && !reasoningText.isEmpty {

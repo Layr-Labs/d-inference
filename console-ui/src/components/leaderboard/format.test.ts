@@ -1,8 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { formatEarningsBreakdown, rewardToneClass } from "./format";
+import {
+  formatEarningsBreakdown,
+  formatNumber,
+  formatUSDFromMicro,
+  rewardToneClass,
+} from "./format";
 
 // A tiny stub matching the shape of `formatUSDFromMicro` so the breakdown
-// logic can be tested without the shared page-level number formatter.
+// logic can be tested without the real number formatter.
 const usd = (micro: number) => `$${(micro / 1_000_000).toFixed(2)}`;
 
 describe("formatEarningsBreakdown", () => {
@@ -43,5 +48,30 @@ describe("rewardToneClass", () => {
 
   it("treats negative values as no reward", () => {
     expect(rewardToneClass(-5)).toBe("text-text-tertiary");
+  });
+});
+
+describe("formatNumber", () => {
+  it("abbreviates thousands and millions", () => {
+    expect(formatNumber(1_500)).toBe("1.5K");
+    expect(formatNumber(2_300_000)).toBe("2.3M");
+  });
+
+  it("leaves small numbers as locale strings", () => {
+    expect(formatNumber(999)).toBe("999");
+  });
+});
+
+describe("formatUSDFromMicro", () => {
+  it("shows cents below $10", () => {
+    expect(formatUSDFromMicro(1_230_000)).toBe("$1.23");
+  });
+
+  it("drops cents from $10 up", () => {
+    expect(formatUSDFromMicro(42_000_000)).toBe("$42");
+  });
+
+  it("abbreviates $1000 and up", () => {
+    expect(formatUSDFromMicro(1_500_000_000_000)).toBe("$1.5M");
   });
 });

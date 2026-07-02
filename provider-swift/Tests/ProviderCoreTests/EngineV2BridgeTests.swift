@@ -1323,6 +1323,25 @@ struct EngineV2SharedBudgetTests {
         withExtendedLifetime((first, second)) {}
     }
 
+    @Test("degenerate maxTokens <= 0 skips the gate (engine finishes it without KV)")
+    func degenerateRequestSkipsGate() async {
+        // Even on an EXHAUSTED pool, a request that can allocate no KV must
+        // not be capacity-rejected by the gate — the engine's own degenerate
+        // path finishes it immediately (immediate .length terminal).
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .finished(reason: .length, usage: CBv2Usage(promptTokens: 3, completionTokens: 0))
+        ]))
+        let budget = TestBudgets.exhausted()
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, kvBudget: budget)
+        let (events, _) = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 0),
+            requestId: "req-degenerate"))
+        // Reached the engine (no gate rejection), reserved nothing.
+        #expect(engine.submitted.count == 1)
+        #expect(events == [.info(prompt: 3, completion: 0)])
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
     @Test("engine rejection after the gate releases the shared reservation")
     func engineRejectionReleasesSharedReservation() async {
         let engine = ScriptedCBv2Engine(

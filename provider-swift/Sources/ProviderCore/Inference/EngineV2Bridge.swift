@@ -306,6 +306,19 @@ public actor EngineV2Bridge {
                 continuation.finish()
                 return stream
             }
+            // Re-check the duplicate guard: `reserve` suspended this actor,
+            // so a concurrent submit under the SAME id that skipped the gate
+            // (degenerate maxTokens / unknown rate ⇒ no suspension) could
+            // have been admitted in the gap. Reject THIS submission and roll
+            // back its reservation — never overwrite live bookkeeping. (A
+            // gate-taking duplicate can't get here: its own `reserve` fails
+            // on this id's existing entry.)
+            guard active[id] == nil else {
+                await kvBudget.release(requestID: id)
+                continuation.yield(.error("token_budget_exhausted: duplicate request ID"))
+                continuation.finish()
+                return stream
+            }
         }
 
         // Mint the engine request id: monotonic by default, STABLE
@@ -354,6 +367,7 @@ public actor EngineV2Bridge {
 
         runPump(
             id: id, events: events, continuation: continuation,
+            holdsSharedReservation: sharedKVReserved,
             logprobsChannel: logprobsChannel
         )
 
@@ -408,12 +422,14 @@ public actor EngineV2Bridge {
         id: String,
         events: AsyncStream<CBv2Event>,
         continuation: AsyncStream<GenerationEvent>.Continuation,
+        holdsSharedReservation: Bool,
         logprobsChannel: EngineV2LogprobsChannel? = nil
     ) {
         let bridge = self
         let task = Task {
             await bridge.pump(
                 id: id, events: events, continuation: continuation,
+                holdsSharedReservation: holdsSharedReservation,
                 logprobsChannel: logprobsChannel
             )
             await bridge.clearPumpTask(id: id)
@@ -431,11 +447,15 @@ public actor EngineV2Bridge {
         id: String,
         events: AsyncStream<CBv2Event>,
         continuation: AsyncStream<GenerationEvent>.Continuation,
+        holdsSharedReservation: Bool,
         logprobsChannel: EngineV2LogprobsChannel? = nil
     ) async {
-        // NOTE: the shared-budget KV reservation is recorded in
-        // `submitTokenized` (synchronously with admission), NOT here — the
-        // pump only RELEASES it on the terminal/teardown paths below.
+        // NOTE: the shared-budget KV reservation is taken in `submitTokenized`
+        // (the pre-engine admission gate), NOT here — the pump only RELEASES
+        // it on the terminal/teardown paths below, and ONLY when THIS request
+        // took one (`holdsSharedReservation`): an unconditional release could
+        // drop a same-keyed reservation owned by a different submission in
+        // the pathological duplicate-id corner.
         var sawFirstToken = false
         var sawTerminal = false
         for await event in events {
@@ -474,8 +494,10 @@ public actor EngineV2Bridge {
                     sawFirstToken: sawFirstToken, continuation: continuation
                 )
                 // Release the shared-budget KV reservation on the terminal
-                // (idempotent; no-op when none was recorded).
-                await kvBudget?.release(requestID: id)
+                // (only when this request took one; release is idempotent).
+                if holdsSharedReservation {
+                    await kvBudget?.release(requestID: id)
+                }
                 continuation.finish()
                 return
             }
@@ -489,7 +511,9 @@ public actor EngineV2Bridge {
                 wedgeMonitor.recordTerminalWithoutFirstToken()
             }
             dropRequest(id: id)
-            await kvBudget?.release(requestID: id)
+            if holdsSharedReservation {
+                await kvBudget?.release(requestID: id)
+            }
             continuation.finish()
         }
     }

@@ -1,8 +1,9 @@
 /// The crash-recovery policy (pure, no I/O).
 ///
 /// A crash = the provider's launchd job is loaded but not running (`KeepAlive=false`
-/// leaves a crashed job loaded). `darkbloom stop` unloads it (`bootout`), so
-/// `providerLoaded == false` means the user disabled it — never restarted.
+/// leaves a crashed job loaded). `darkbloom stop` unloads it (`bootout` +
+/// persistent `launchctl disable`), so `providerLoaded == false` means the user
+/// disabled it — never restarted.
 /// `auto_restart = false` opts out. A crashed provider is restarted only after it
 /// stays down `graceSeconds` (default 5 min): long enough to clear the
 /// self-updater's kill+relaunch and to avoid tight crash-loops.

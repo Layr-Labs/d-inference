@@ -2052,13 +2052,17 @@ func (r *Registry) providerAdvertisesModelLocked(p *Provider, model string) bool
 
 // providerServesVisionModelLocked reports whether the provider advertises the
 // model as a vision-capable (VLM) build — required to route image/video requests
-// so the media is actually perceived rather than silently dropped. Caller must
-// hold r.mu AND p.mu (mirrors providerServesCatalogModelLocked): p.Models is
-// guarded by p.mu and mutated by MergeProviderModels/UpdateModelWeightHashes.
-// Pre-0.6.0 providers never set IsVision, so they are correctly excluded.
-func (r *Registry) providerServesVisionModelLocked(p *Provider, model string) bool {
+// so the media is actually perceived rather than silently dropped. allowOffCatalog
+// is the owner self-route context (mirrors providerServesRoutableModelLocked's
+// allowDedicated): an owner's off-catalog local VLM passes the routable gate, so
+// the vision gate must accept the same advertisement or media requests would be
+// listed/accepted but never routable. Caller must hold r.mu AND p.mu (mirrors
+// providerServesCatalogModelLocked): p.Models is guarded by p.mu and mutated by
+// MergeProviderModels/UpdateModelWeightHashes. Pre-0.6.0 providers never set
+// IsVision, so they are correctly excluded.
+func (r *Registry) providerServesVisionModelLocked(p *Provider, model string, allowOffCatalog bool) bool {
 	for _, m := range p.Models {
-		if m.ID == model && m.IsVision && r.modelAllowedByCatalogLocked(m) {
+		if m.ID == model && m.IsVision && (allowOffCatalog || r.modelAllowedByCatalogLocked(m)) {
 			return true
 		}
 	}
@@ -2093,7 +2097,7 @@ func (r *Registry) HasVisionProviderForModel(model string, allowedSerials ...str
 		// whole eligibility read must happen under the provider lock.
 		p.mu.Lock()
 		eligible := p.Status != StatusOffline && p.Status != StatusUntrusted &&
-			r.providerServesVisionModelLocked(p, model)
+			r.providerServesVisionModelLocked(p, model, false)
 		p.mu.Unlock()
 		if eligible {
 			return true
@@ -2112,6 +2116,42 @@ func (r *Registry) catalogSizeGBLocked(model string) float64 {
 		return e.SizeGB
 	}
 	return 0
+}
+
+// advertisedModelSizeGBLocked returns the provider-advertised on-disk weight
+// size for model in decimal GB (SizeBytes/1e9 — the same unpadded basis as the
+// catalog's SizeGB), or 0 when the provider does not advertise the model or
+// reports no size. Caller must hold p.mu.
+func advertisedModelSizeGBLocked(p *Provider, model string) float64 {
+	for _, m := range p.Models {
+		if m.ID == model && m.SizeBytes > 0 {
+			return float64(m.SizeBytes) / 1e9
+		}
+	}
+	return 0
+}
+
+// modelSizeGBForFitLocked returns the weight footprint (GB) the hardware-fit
+// and free-memory admission gates should use for a provider/model pair: the
+// catalog's authoritative SizeGB when present, else — for a model with NO
+// catalog entry (an owner's off-catalog local model, reachable only via
+// self-route) — the provider-advertised size. Without the fallback an
+// off-catalog model snapshots as size 0, disabling both gates, so routing
+// could pick a machine whose oversized local model can never load and turn a
+// deterministic model_too_large into a provider-side load failure. A nil
+// catalog (dev/test: filtering disabled) and a catalog entry the operator left
+// unsized both keep the gate disabled, as before. Caller holds r.mu and p.mu.
+func (r *Registry) modelSizeGBForFitLocked(p *Provider, model string) float64 {
+	if size := r.catalogSizeGBLocked(model); size > 0 {
+		return size
+	}
+	if r.modelCatalog == nil {
+		return 0
+	}
+	if _, ok := r.modelCatalog[model]; ok {
+		return 0
+	}
+	return advertisedModelSizeGBLocked(p, model)
 }
 
 // catalogMinRAMGbLocked returns the model's authoritative minimum-RAM

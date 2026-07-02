@@ -2,6 +2,8 @@ package registry
 
 import (
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func setProviderAccount(p *Provider, accountID string) {
@@ -341,4 +343,97 @@ func lowerTrust(p *Provider, level TrustLevel) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.TrustLevel = level
+}
+
+// TestSelfRouteVisionRoutesToOwnedOffCatalogVLM verifies that a self-route
+// media request reaches the owner's off-catalog VLM: the owner context that
+// admits an off-catalog model past the routable gate must also carry through
+// the vision gate, or the model would be listed/accepted but never selectable
+// for image/video input. The same off-catalog VLM stays invisible to public
+// media requests.
+func TestSelfRouteVisionRoutesToOwnedOffCatalogVLM(t *testing.T) {
+	reg := New(testLogger())
+	model := "local/off-catalog-vlm"
+
+	mine := makeSchedulerProvider(t, reg, "mine", model, 100)
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", IsVision: true}}
+	mine.mu.Unlock()
+	setProviderAccount(mine, "acct-A")
+	reg.SetModelCatalog([]CatalogEntry{{ID: "catalog-only-model"}})
+
+	owner := &PendingRequest{
+		RequestID:          "req-vlm",
+		Model:              model,
+		RequestedMaxTokens: 128,
+		SelfRouteOnly:      true,
+		OwnerAccountID:     "acct-A",
+		RequiresVision:     true,
+	}
+	selected, decision := reg.ReserveProviderEx(model, owner)
+	if selected == nil {
+		t.Fatalf("owner media request failed to reach their off-catalog VLM; decision=%+v", decision)
+	}
+	if selected.ID != mine.ID {
+		t.Fatalf("selected %q, want %q", selected.ID, mine.ID)
+	}
+
+	// Contrast: a public media request must not route to the off-catalog model.
+	public := &PendingRequest{RequestID: "req-pub", Model: model, RequestedMaxTokens: 128, RequiresVision: true}
+	if selected := reg.ReserveProvider(model, public); selected != nil {
+		t.Fatalf("public media request reached off-catalog model on %q", selected.ID)
+	}
+
+	// A text-only off-catalog build must still be rejected for media, even for
+	// its owner — the owner context relaxes the catalog filter, not the
+	// vision-capability requirement.
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", IsVision: false}}
+	mine.mu.Unlock()
+	if selected, _ := reg.ReserveProviderEx(model, owner); selected != nil {
+		t.Fatalf("owner media request reached a text-only build on %q", selected.ID)
+	}
+}
+
+// TestSelfRouteOffCatalogFitGateUsesAdvertisedSize verifies that the
+// hardware-fit gate does not fail open for an off-catalog model: with no
+// catalog sizing, the provider-advertised SizeBytes must be used, so a local
+// model that can never fit the machine is rejected deterministically as
+// model-too-large instead of dispatching into a provider-side load failure.
+func TestSelfRouteOffCatalogFitGateUsesAdvertisedSize(t *testing.T) {
+	reg := New(testLogger())
+	model := "local/off-catalog-huge"
+
+	mine := makeSchedulerProvider(t, reg, "mine", model, 100)
+	mine.mu.Lock()
+	// 200 GB advertised weights on a 64 GB machine, and the model is NOT
+	// resident (slot unknown) so the cold-load fit gate applies.
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", SizeBytes: 200_000_000_000}}
+	mine.BackendCapacity.Slots[0].State = "unknown"
+	mine.mu.Unlock()
+	setProviderAccount(mine, "acct-A")
+	reg.SetModelCatalog([]CatalogEntry{{ID: "catalog-only-model"}})
+
+	owner := &PendingRequest{
+		RequestID:          "req-huge",
+		Model:              model,
+		RequestedMaxTokens: 128,
+		SelfRouteOnly:      true,
+		OwnerAccountID:     "acct-A",
+	}
+	selected, decision := reg.ReserveProviderEx(model, owner)
+	if selected != nil {
+		t.Fatalf("selected %q for a 200GB model on a 64GB machine; fit gate failed open", selected.ID)
+	}
+	if decision.ModelTooLargeRejections != 1 {
+		t.Fatalf("ModelTooLargeRejections=%d, want 1; decision=%+v", decision.ModelTooLargeRejections, decision)
+	}
+
+	// A right-sized off-catalog model on the same machine routes fine.
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", SizeBytes: 5_000_000_000}}
+	mine.mu.Unlock()
+	if selected, decision := reg.ReserveProviderEx(model, owner); selected == nil {
+		t.Fatalf("right-sized off-catalog model failed to route; decision=%+v", decision)
+	}
 }

@@ -337,7 +337,7 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		}
 	}
 	if !r.providerCanAdmitLockedEx(p, model, pr.Traits, relaxTrust, ignoreBreaker) ||
-		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model)) {
+		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model, relaxTrust)) {
 		return nil, RoutingDecision{
 			Model:                   model,
 			CandidateCount:          candidateCount,
@@ -560,7 +560,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 		// released p.mu, so re-take it for the p.Models read.
 		if pr.RequiresVision {
 			p.mu.Lock()
-			servesVision := r.providerServesVisionModelLocked(p, model)
+			servesVision := r.providerServesVisionModelLocked(p, model, relaxTrust)
 			p.mu.Unlock()
 			if !servesVision {
 				visionRejections++
@@ -998,7 +998,7 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 		decodeTPS:     resolvedDecodeTPS(p),
 		prefillTPS:    resolvedPrefillTPS(p),
 		totalMemoryGB: float64(p.Hardware.MemoryGB),
-		modelSizeGB:   r.catalogSizeGBLocked(model),
+		modelSizeGB:   r.modelSizeGBForFitLocked(p, model),
 		minRAMGb:      r.catalogMinRAMGbLocked(model),
 	}
 
@@ -1844,7 +1844,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			p.mu.Unlock()
 			continue
 		}
-		if requiresVision && !r.providerServesVisionModelLocked(p, model) {
+		if requiresVision && !r.providerServesVisionModelLocked(p, model, false) {
 			p.mu.Unlock()
 			continue
 		}
@@ -1869,7 +1869,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			decodeTPS:          resolvedDecodeTPS(p),
 			prefillTPS:         resolvedPrefillTPS(p),
 			totalMemoryGB:      float64(p.Hardware.MemoryGB),
-			modelSizeGB:        r.catalogSizeGBLocked(model),
+			modelSizeGB:        r.modelSizeGBForFitLocked(p, model),
 			minRAMGb:           r.catalogMinRAMGbLocked(model),
 			hasBackendCapacity: p.BackendCapacity != nil,
 		}

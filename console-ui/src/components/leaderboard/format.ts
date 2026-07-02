@@ -65,10 +65,3 @@ export function formatEarningsBreakdown(
 export function rewardToneClass(rewardMicroUsd: number): string {
   return rewardMicroUsd > 0 ? "text-accent-amber" : "text-text-tertiary";
 }
-
-/** Rank badge tone for the top-3 podium cards. */
-export function leaderboardRankTone(rank: number): string {
-  if (rank === 1) return "border-accent-brand/35 bg-accent-brand/10 text-accent-brand";
-  if (rank === 2) return "border-accent-green/30 bg-accent-green/10 text-accent-green";
-  return "border-accent-amber/30 bg-accent-amber-dim text-accent-amber";
-}

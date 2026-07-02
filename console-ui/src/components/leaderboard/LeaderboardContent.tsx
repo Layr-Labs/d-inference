@@ -1,7 +1,6 @@
 "use client";
 
-import Link from "next/link";
-import { Loader2, Trophy, Zap } from "lucide-react";
+import { Loader2, Trophy } from "lucide-react";
 import { TopBar } from "@/components/TopBar";
 import { useLeaderboard } from "./useLeaderboard";
 import { MetricToggle } from "./Controls";
@@ -43,13 +42,6 @@ export function LeaderboardContent() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <MetricToggle metric={metric} onChange={setMetric} />
-                <Link
-                  href="/providers/setup"
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-accent-brand px-3 py-1.5 text-sm font-semibold text-bg-primary shadow-sm transition-colors hover:bg-accent-brand/90"
-                >
-                  <Zap size={14} />
-                  Earn Now
-                </Link>
               </div>
             </div>
 

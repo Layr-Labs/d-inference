@@ -621,6 +621,81 @@ struct EngineV2MultiSlotCapacityTests {
         #expect(UInt64(capA + capB) == fleetBudget)
     }
 
+    @Test("pure sizing honors memory_reserve_gb in both regimes (round-3 PR#499 P2)")
+    func pureSizingHonorsMemoryReserve() {
+        // 32 GiB box: cap = 0.9 × 32 = 28.8 GiB ⇒ cap-implied reserve 3.2 GiB.
+        let physical = 32 * Self.gib
+        let weights = Int(8 * Self.gib)
+        let unreserved = EngineV2KVSizing.engineKVBytesCapacity(
+            newModelWeightBytes: weights, coResidentWeightBytes: 0,
+            existingEngineKVCapacities: [], physicalBytes: physical)
+        // Regime 1 — reserve BELOW the cap-implied reserve (2 GiB < 3.2 GiB):
+        // the cap already holds back more; the configured reserve is a no-op.
+        #expect(EngineV2KVSizing.engineKVBytesCapacity(
+            newModelWeightBytes: weights, coResidentWeightBytes: 0,
+            existingEngineKVCapacities: [], configReserveBytes: 2 * Self.gib,
+            physicalBytes: physical) == unreserved)
+        // Regime 2 — reserve ABOVE the cap-implied reserve (the DEFAULT
+        // memory_reserve_gb of 4 GiB on a 32 GiB box): the effective cap
+        // drops to physical − reserve = 28 GiB, the same hold-back the
+        // shared KV gate and the load gate apply, so the v2 ceiling can no
+        // longer advertise capacity the shared gate would reject.
+        let reserved = EngineV2KVSizing.engineKVBytesCapacity(
+            newModelWeightBytes: weights, coResidentWeightBytes: 0,
+            existingEngineKVCapacities: [], configReserveBytes: 4 * Self.gib,
+            physicalBytes: physical)
+        #expect(reserved < unreserved)
+        #expect(UInt64(reserved) == UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: physical, residentWeightBytes: UInt64(weights),
+            configReserveBytes: 4 * Self.gib))
+        // Exact delta: the cap shrank by (configReserve − capImplied).
+        let cap = UnifiedMemoryCap.hardCapBytes(physicalBytes: physical)
+        let capImplied = physical - cap
+        #expect(UInt64(unreserved - reserved) == 4 * Self.gib - capImplied)
+    }
+
+    @Test("live budget clamp: a later load shrinks the REPORTED budget, never the grant")
+    func liveBudgetClampTracksFleetResidency() {
+        let physical = 64 * Self.gib
+        let wA = Int(8 * Self.gib)
+        let grantA = EngineV2KVSizing.engineKVBytesCapacity(
+            newModelWeightBytes: wA, coResidentWeightBytes: 0,
+            existingEngineKVCapacities: [], physicalBytes: physical)
+        // Nothing changed since construction ⇒ the current answer IS the
+        // grant (no spurious shrink, and never inflation past the grant).
+        #expect(EngineV2KVSizing.liveEngineKVBytesBudget(
+            grantedKVBytesCapacity: grantA,
+            totalResidentWeightBytes: UInt64(wA),
+            otherEngineKVCapacities: [], physicalBytes: physical) == grantA)
+        // A 12 GiB LEGACY model loads later (subtracts nothing from any v2
+        // grant): the reported budget shrinks by exactly its weights.
+        let wB = 12 * Self.gib
+        #expect(EngineV2KVSizing.liveEngineKVBytesBudget(
+            grantedKVBytesCapacity: grantA,
+            totalResidentWeightBytes: UInt64(wA) + wB,
+            otherEngineKVCapacities: [], physicalBytes: physical)
+            == grantA - Int(wB))
+        // A co-resident v2 engine's construction grant comes off the top the
+        // same way the sizing pass subtracted it.
+        let grantC = Int(4 * Self.gib)
+        #expect(EngineV2KVSizing.liveEngineKVBytesBudget(
+            grantedKVBytesCapacity: grantA,
+            totalResidentWeightBytes: UInt64(wA) + wB,
+            otherEngineKVCapacities: [grantC], physicalBytes: physical)
+            == grantA - Int(wB) - grantC)
+        // Fleet growth past the budget clamps to 0, never negative.
+        #expect(EngineV2KVSizing.liveEngineKVBytesBudget(
+            grantedKVBytesCapacity: grantA,
+            totalResidentWeightBytes: physical,
+            otherEngineKVCapacities: [], physicalBytes: physical) == 0)
+        // The clamp can only ever SHRINK the report: with fleet residency
+        // BELOW construction-time reality the grant still bounds the report.
+        #expect(EngineV2KVSizing.liveEngineKVBytesBudget(
+            grantedKVBytesCapacity: grantA,
+            totalResidentWeightBytes: 0,
+            otherEngineKVCapacities: [], physicalBytes: physical) == grantA)
+    }
+
     @Test("pure sizing: degenerate inputs clamp to zero, never trap")
     func pureSizingDegenerateInputs() {
         // Grants already exceed the budget → 0, not negative.
@@ -690,17 +765,97 @@ struct EngineV2MultiSlotCapacityTests {
         // A was sized alone; B's ceiling subtracts A's weights AND A's
         // construction-fixed grant — the exact fleet-aware derivation
         // (computed here with the same pure helper on this machine's
-        // physical memory, so the assertion is machine-independent).
+        // physical memory, so the assertion is machine-independent). The
+        // loop's configured memory_reserve_gb (1 GiB in makeWiringLoop)
+        // threads into the derivation too (round-3 PR#499 P2).
         #expect(granted[0] == EngineV2KVSizing.engineKVBytesCapacity(
             newModelWeightBytes: weightsA, coResidentWeightBytes: 0,
-            existingEngineKVCapacities: []))
+            existingEngineKVCapacities: [], configReserveBytes: 1 * Self.gib))
         #expect(granted[1] == EngineV2KVSizing.engineKVBytesCapacity(
             newModelWeightBytes: weightsB,
             coResidentWeightBytes: UInt64(weightsA),
-            existingEngineKVCapacities: [granted[0]]))
+            existingEngineKVCapacities: [granted[0]],
+            configReserveBytes: 1 * Self.gib))
         // And the fleet invariant: B's grant never lets the pair exceed the
         // budget A was granted under.
         #expect(granted[1] <= max(0, granted[0] - weightsB))
+    }
+
+    @Test("heartbeat budget max shrinks when a second slot's weights register later (round-3 PR#499 P2)")
+    func heartbeatBudgetShrinksWhenSecondSlotLoads() async throws {
+        let loop = try makeWiringLoop(engineV2Enabled: true)
+        let runtime = EngineV2Runtime()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        let recorder = CapacityRecorder()
+        await loop.setEngineV2SlotHooksForTesting(
+            ProviderLoop.EngineV2SlotHooks(
+                environment: ["DARKBLOOM_ENGINE_V2": "1"],
+                eosTokenIds: [2],
+                makeEngine: { _, kvBytesCapacity in
+                    recorder.record(kvBytesCapacity)
+                    // The engine reports its construction grant back in the
+                    // capacity snapshot, exactly like the production engine.
+                    return CapacityReportingEngine(kvBytesCapacity: kvBytesCapacity)
+                }))
+
+        // Slot A: v2-served, 1 GiB of weights, a known per-token KV rate so
+        // the heartbeat derives token budgets (bytes / rate).
+        let rate = 4096
+        let weightsA = Int(1 * Self.gib)
+        let schedulerA = BatchScheduler()
+        await schedulerA._setModelWeightBytesForTest(weightsA)
+        await schedulerA._setKVRatesForTest(kvBytesPerToken: rate, fp16KVBytesPerToken: rate)
+        let bridgeA = try #require(await loop.makeEngineV2BridgeForSlotForTesting(
+            modelId: "gemma-4-27b-it",
+            modelType: "gemma4_text",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            scheduler: schedulerA))
+        await loop.installModelSlotForTesting(
+            modelId: "gemma-4-27b-it",
+            scheduler: schedulerA,
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            engineV2: bridgeA,
+            modelType: "gemma4_text")
+
+        func v2BudgetMax() async throws -> Int64 {
+            await loop.updateAggregateCapacity()
+            let capacity = try #require(await loop.backendCapacityForTesting())
+            let slot = try #require(
+                capacity.slots.first(where: { $0.model == "gemma-4-27b-it" }))
+            return slot.activeTokenBudgetMax
+        }
+
+        // Alone on the box the heartbeat reports the construction grant.
+        let grant = try #require(recorder.granted.first)
+        let before = try await v2BudgetMax()
+        #expect(before == Int64(grant / rate))
+
+        // A second slot's weights register LATER — a LEGACY (non-v2) slot,
+        // which subtracts nothing from A's construction-fixed ceiling. The
+        // heartbeat must nonetheless reflect fleet reality: the reported max
+        // shrinks by exactly the newcomer's weights (in tokens), while A's
+        // engine keeps its private grant.
+        let weightsB = Int(2 * Self.gib)
+        let schedulerB = BatchScheduler()
+        await schedulerB._setModelWeightBytesForTest(weightsB)
+        await loop.installModelSlotForTesting(
+            modelId: "gpt-oss-20b",
+            scheduler: schedulerB,
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            engineV2: nil,
+            modelType: "gpt_oss")
+
+        let after = try await v2BudgetMax()
+        // weightsB is a whole multiple of the rate, so the integer-division
+        // shrink is exact: wB / rate tokens.
+        #expect(before - after == Int64(weightsB / rate))
+        #expect(after < before)
+        // The clamp is heartbeat-side only: the engine's own snapshot still
+        // carries the construction grant.
+        #expect(await bridgeA.engineKVBytesCapacity() == grant)
     }
 }
 

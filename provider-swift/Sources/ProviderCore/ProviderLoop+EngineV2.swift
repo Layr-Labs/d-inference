@@ -143,10 +143,17 @@ extension ProviderLoop {
                     await existingBridge.engineKVBytesCapacity())
             }
         }
+        // `memory_reserve_gb` (round-3 PR#499 P2): the shared KV gate and the
+        // load gate hold back max(configReserve, cap-implied reserve); the
+        // static v2 ceiling must be derived under the same effective cap or a
+        // 16/32 GiB box (default 4 GiB reserve > implied reserve) advertises
+        // capacity the shared gate rejects post-acceptance.
         let kvBytesCapacity = EngineV2KVSizing.engineKVBytesCapacity(
             newModelWeightBytes: weightBytes,
             coResidentWeightBytes: coResidentWeightBytes,
-            existingEngineKVCapacities: existingEngineKVCapacities)
+            existingEngineKVCapacities: existingEngineKVCapacities,
+            configReserveBytes: Self.memoryReserveBytes(
+                forGiB: loopConfig.config.provider.memoryReserveGB))
 
         // Resolve the EOS/stop inputs + engine builder: from the test hooks
         // when installed, otherwise from the loaded container (production).

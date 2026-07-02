@@ -60,7 +60,28 @@ extension ProviderLoop {
         // steady state pays ZERO extra cost here — no runtime actor hop, no
         // allocations; legacy behavior is byte-identical.
         if hasEngineV2Slots {
-            let engineV2 = await engineV2Runtime.capacitySummary()
+            // Fleet context for the v2 budget clamp (round-3 PR#499 P2): v2
+            // ceilings are construction-fixed, so a model loaded AFTER a
+            // bridge (legacy or v2) would otherwise leave that bridge's
+            // heartbeat advertising a stale `activeTokenBudgetMax` — the
+            // coordinator keeps routing what the shared KV gate then rejects
+            // post-acceptance. Snapshot the CURRENT resident set (ALL slots'
+            // weights — v2 and legacy, including slots mid-unload whose
+            // weights are still resident) + the operator reserve so the
+            // runtime can recompute each bridge's live budget and clamp the
+            // reported max. Heartbeat cadence only — never the submit path.
+            var totalResidentWeightBytes: UInt64 = 0
+            for (_, slot) in modelSlots {
+                let weights = await slot.scheduler.modelWeightBytes
+                let (sum, overflow) = totalResidentWeightBytes
+                    .addingReportingOverflow(UInt64(max(0, weights)))
+                totalResidentWeightBytes = overflow ? .max : sum
+            }
+            let engineV2 = await engineV2Runtime.capacitySummary(
+                fleetKV: EngineV2Runtime.FleetKVContext(
+                    totalResidentWeightBytes: totalResidentWeightBytes,
+                    configReserveBytes: Self.memoryReserveBytes(
+                        forGiB: loopConfig.config.provider.memoryReserveGB)))
             allSlots.append(contentsOf: engineV2.slots)
             totalActive += engineV2.activeRequests
         }

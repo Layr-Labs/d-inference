@@ -62,23 +62,67 @@ enum EngineV2KVSizing {
     /// v2 requests now also do — so the runtime double-gate stays consistent
     /// with these static ceilings.
     ///
+    /// `configReserveBytes` is the operator's `memory_reserve_gb` (round-3
+    /// PR#499 P2): the shared `GlobalKVCacheBudget` and load/free-for-load
+    /// paths hold back `max(configReserve, physical − cap)`, so the static v2
+    /// ceiling must derive from the SAME effective cap — otherwise a bridge on
+    /// a 16/32 GiB box (where the default 4 GiB reserve exceeds the
+    /// cap-implied reserve) advertises and privately admits a budget the
+    /// shared gate then rejects post-acceptance.
+    ///
     /// Pure policy (no MLX globals) so it is unit-testable; `physicalBytes`
     /// defaults to the machine's real memory in production.
     static func engineKVBytesCapacity(
         newModelWeightBytes: Int,
         coResidentWeightBytes: UInt64,
         existingEngineKVCapacities: [Int],
+        configReserveBytes: UInt64 = 0,
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
     ) -> Int {
         let totalWeights = saturatingAdd(
             UInt64(max(0, newModelWeightBytes)), coResidentWeightBytes)
         let fleetBudget = UnifiedMemoryCap.kvBudgetBytes(
-            physicalBytes: physicalBytes, residentWeightBytes: totalWeights)
+            physicalBytes: physicalBytes, residentWeightBytes: totalWeights,
+            configReserveBytes: configReserveBytes)
         let granted = existingEngineKVCapacities.reduce(UInt64(0)) {
             saturatingAdd($0, UInt64(max(0, $1)))
         }
         let remaining = fleetBudget > granted ? fleetBudget - granted : 0
         return Int(min(remaining, UInt64(Int.max)))
+    }
+
+    /// CURRENT KV byte budget for an EXISTING v2 engine — the HEARTBEAT
+    /// figure, not an engine resize (round-3 PR#499 P2).
+    ///
+    /// A v2 engine's admission ceiling is construction-fixed (the backend's
+    /// byte capacity cannot shrink after the fact), so when ANOTHER model
+    /// loads later — especially a legacy/non-allowlisted slot, whose load
+    /// subtracts nothing from existing v2 ceilings — the engine's private cap
+    /// goes stale against fleet reality: the coordinator keeps routing
+    /// requests that fit the stale budget and the provider's shared KV gate
+    /// rejects them after `inference_accepted`. The fix is a CLAMP on the
+    /// REPORTED max: re-ask the same sizing function with the CURRENT
+    /// resident set (this engine's own weights are inside
+    /// `totalResidentWeightBytes`; co-resident v2 engines' construction
+    /// grants come off the top exactly as at sizing time) and report
+    /// `min(construction grant, current answer)`. The engine's private
+    /// ledger keeps its original grant — only the coordinator-visible budget
+    /// shrinks, so routing converges on what the shared gate will actually
+    /// admit. Σ(reported) never exceeds the current fleet budget.
+    static func liveEngineKVBytesBudget(
+        grantedKVBytesCapacity: Int,
+        totalResidentWeightBytes: UInt64,
+        otherEngineKVCapacities: [Int],
+        configReserveBytes: UInt64 = 0,
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
+    ) -> Int {
+        let current = engineKVBytesCapacity(
+            newModelWeightBytes: 0,
+            coResidentWeightBytes: totalResidentWeightBytes,
+            existingEngineKVCapacities: otherEngineKVCapacities,
+            configReserveBytes: configReserveBytes,
+            physicalBytes: physicalBytes)
+        return min(max(0, grantedKVBytesCapacity), current)
     }
 
     private static func saturatingAdd(_ a: UInt64, _ b: UInt64) -> UInt64 {

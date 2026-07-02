@@ -58,3 +58,17 @@ func RequiredServiceAgreement(platformCountry, accountCountry string) string {
 	}
 	return ServiceAgreementRecipient
 }
+
+// NormalizeServiceAgreement maps the tos_acceptance.service_agreement value
+// from a Stripe account API response onto ServiceAgreementFull/Recipient.
+//
+// Verified against the live API: accounts under the full agreement OMIT the
+// field entirely (tos_acceptance only carries date/ip), so an empty value
+// means `full` — NOT "unknown". Treating it as unknown would silently skip
+// agreement-mismatch detection for exactly the accounts that need it.
+func NormalizeServiceAgreement(s string) string {
+	if s == "" {
+		return ServiceAgreementFull
+	}
+	return s
+}

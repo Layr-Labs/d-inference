@@ -92,7 +92,7 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 	}
 	requiredAgreement := billing.RequiredServiceAgreement(
 		s.billing.StripeConnect().PlatformCountry(), acct.Country)
-	if acct.ServiceAgreement != "" && acct.ServiceAgreement != requiredAgreement {
+	if billing.NormalizeServiceAgreement(acct.ServiceAgreement) != requiredAgreement {
 		// The agreement is immutable — this account can never receive
 		// transfers. Flip the local status so the UI prompts the user to
 		// re-run payout setup, which recreates the account correctly.
@@ -103,7 +103,7 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		}
 		s.logger.Warn("stripe payout: service agreement mismatch — user must re-onboard",
 			"stripe_account_id", user.StripeAccountID, "country", acct.Country,
-			"have", acct.ServiceAgreement, "want", requiredAgreement)
+			"have", billing.NormalizeServiceAgreement(acct.ServiceAgreement), "want", requiredAgreement)
 		writeJSON(w, http.StatusConflict, errorResponse("stripe_account_recreate_required",
 			"your payout account can't receive transfers in your country — re-run payout setup from the billing page to recreate it"))
 		return

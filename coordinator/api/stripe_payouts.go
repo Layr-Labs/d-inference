@@ -160,11 +160,12 @@ func (s *Server) handleStripeOnboard(w http.ResponseWriter, r *http.Request) {
 			}
 			required := billing.RequiredServiceAgreement(
 				s.billing.StripeConnect().PlatformCountry(), acct.Country)
-			agreementMismatch := acct.ServiceAgreement != "" && acct.ServiceAgreement != required
+			have := billing.NormalizeServiceAgreement(acct.ServiceAgreement)
+			agreementMismatch := have != required
 			if agreementMismatch {
 				s.logger.Warn("stripe connect: service agreement mismatch — recreating account",
 					"stripe_account_id", stripeAcctID, "country", acct.Country,
-					"have", acct.ServiceAgreement, "want", required)
+					"have", have, "want", required)
 			}
 			needNewAccount = countryChanged || agreementMismatch
 			if !needNewAccount && acct.PayoutInterval == "manual" {

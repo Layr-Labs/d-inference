@@ -205,3 +205,16 @@ func TestIsServiceAgreementErr(t *testing.T) {
 		t.Error("nil is not a service agreement error")
 	}
 }
+
+func TestNormalizeServiceAgreement(t *testing.T) {
+	// Live-API fact: full-agreement accounts omit the field entirely.
+	if got := NormalizeServiceAgreement(""); got != ServiceAgreementFull {
+		t.Errorf("absent field must normalize to full, got %q", got)
+	}
+	if got := NormalizeServiceAgreement("recipient"); got != ServiceAgreementRecipient {
+		t.Errorf("recipient must pass through, got %q", got)
+	}
+	if got := NormalizeServiceAgreement("full"); got != ServiceAgreementFull {
+		t.Errorf("full must pass through, got %q", got)
+	}
+}

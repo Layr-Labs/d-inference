@@ -67,12 +67,11 @@ type providerWriter struct {
 
 	// writeDeadline is the UnixNano deadline of the in-flight conn.Write
 	// (0 = no write in progress). Published by writeFrame, enforced by
-	// watchWrites.
+	// watchWrites. The deadline value doubles as a CAS token: exactly one
+	// of writeFrame (releaseWriteDeadline) and the watchdog
+	// (claimExpiredWriteDeadline) swaps it to 0 and thereby owns the
+	// frame's outcome. See those methods for the protocol.
 	writeDeadline atomic.Int64
-	// writeTimedOut records that the watchdog closed the socket due to a
-	// write deadline, so writeFrame can surface a timeout error instead of
-	// the generic connection-closed error.
-	writeTimedOut atomic.Bool
 
 	// timeoutFor overrides the per-frame write timeout in tests. Nil means
 	// the default providerWriteTimeout schedule.
@@ -161,6 +160,20 @@ func (w *providerWriter) writeLane(ctx context.Context, data []byte, control boo
 	if err := w.submit(lane, req); err != nil {
 		return err
 	}
+	return w.awaitWriteResult(ctx, req)
+}
+
+// awaitWriteResult blocks until the frame's outcome is known: the serve loop
+// delivered a result, the caller's ctx expired before the write started, or
+// the writer stopped.
+//
+// When <-w.done and req.done are ready simultaneously (writer stopped right
+// after serving this frame), select picks randomly — so the w.done branches
+// must NOT unconditionally report errProviderWriterStopped: the frame may
+// already have been written successfully, and reporting "stopped" would make
+// the caller re-dispatch a request that is already running on this provider.
+// stoppedResult drains req.done first and prefers the real outcome.
+func (w *providerWriter) awaitWriteResult(ctx context.Context, req *providerWriteRequest) error {
 	select {
 	case err := <-req.done:
 		return err
@@ -168,13 +181,30 @@ func (w *providerWriter) writeLane(ctx context.Context, data []byte, control boo
 		if req.state.CompareAndSwap(0, 1) {
 			return ctx.Err()
 		}
+		// The write already started; its result is authoritative.
 		select {
 		case err := <-req.done:
 			return err
 		case <-w.done:
-			return errProviderWriterStopped
+			return w.stoppedResult(req)
 		}
 	case <-w.done:
+		return w.stoppedResult(req)
+	}
+}
+
+// stoppedResult resolves a frame's outcome after the writer stopped. Every
+// accepted frame receives a result on req.done before w.done closes (serve
+// delivers in-flight results; drainAll covers queued frames; submit's
+// acceptMu/dead handshake orders enqueue before drain), so a final
+// non-blocking drain returns the frame's true result — including a nil for a
+// frame that hit the wire just before shutdown. The errProviderWriterStopped
+// fallback is defensive.
+func (w *providerWriter) stoppedResult(req *providerWriteRequest) error {
+	select {
+	case err := <-req.done:
+		return err
+	default:
 		return errProviderWriterStopped
 	}
 }
@@ -289,10 +319,13 @@ func (w *providerWriter) drainLane(lane chan *providerWriteRequest, err error) {
 
 // watchWrites enforces per-frame write deadlines with one goroutine per
 // connection instead of a goroutine+timer per frame. writeFrame publishes its
-// deadline before the blocking conn.Write and clears it after; when a deadline
-// is exceeded the watchdog closes the socket, which unblocks Write with an
-// error. Granularity is providerWriteWatchdogInterval, acceptable slack on a
-// >=5s timeout floor.
+// deadline before the blocking conn.Write and releases it after; when a
+// deadline is exceeded the watchdog claims the frame via CAS and closes the
+// socket, which unblocks Write with an error. The CAS guarantees exactly one
+// side owns an expired frame's outcome — the watchdog never tears down the
+// socket for a write that already completed, and writeFrame never reports
+// success for a frame whose socket the watchdog is killing. Granularity is
+// providerWriteWatchdogInterval, acceptable slack on a >=5s timeout floor.
 func (w *providerWriter) watchWrites(stop <-chan struct{}) {
 	ticker := time.NewTicker(providerWriteWatchdogInterval)
 	defer ticker.Stop()
@@ -303,16 +336,47 @@ func (w *providerWriter) watchWrites(stop <-chan struct{}) {
 		case <-w.stop:
 			return
 		case <-ticker.C:
-			d := w.writeDeadline.Load()
-			if d != 0 && time.Now().UnixNano() > d {
-				w.writeTimedOut.Store(true)
-				if w.conn != nil {
-					_ = w.conn.CloseNow()
-				}
-				return
+			if !w.claimExpiredWriteDeadline(time.Now().UnixNano()) {
+				continue
 			}
+			if w.conn != nil {
+				_ = w.conn.CloseNow()
+			}
+			return
 		}
 	}
+}
+
+// claimExpiredWriteDeadline is the watchdog's side of the deadline CAS
+// protocol. It returns true when an in-flight write's deadline has expired
+// AND the watchdog won the race to claim it (CAS deadline -> 0); only then
+// may the watchdog close the socket. A false return means either no write is
+// in flight, the write is not yet expired, or writeFrame released the
+// deadline between our Load and CAS — the write completed in time and must
+// not be treated as a timeout.
+//
+// ABA safety: a lost CAS can only be caused by writeFrame releasing to 0;
+// a subsequent frame's freshly published deadline is strictly in the future
+// while the loaded expired value is in the past, so the CAS can never
+// mistakenly claim the next frame.
+func (w *providerWriter) claimExpiredWriteDeadline(nowNano int64) bool {
+	d := w.writeDeadline.Load()
+	if d == 0 || nowNano <= d {
+		return false
+	}
+	return w.writeDeadline.CompareAndSwap(d, 0)
+}
+
+// releaseWriteDeadline is writeFrame's side of the deadline CAS protocol.
+// It returns true when the frame still owned its published deadline (the
+// normal case: conn.Write returned before expiry, or after a non-timeout
+// failure). A false return means the watchdog claimed the deadline and is
+// closing (or has closed) the socket: the frame must be reported as
+// errProviderWriteTimeout even if conn.Write returned nil, because the
+// socket is dead and the caller has to fail over now — not on the next
+// frame.
+func (w *providerWriter) releaseWriteDeadline(deadline int64) bool {
+	return w.writeDeadline.CompareAndSwap(deadline, 0)
 }
 
 func (w *providerWriter) writeFrame(data []byte) error {
@@ -324,10 +388,15 @@ func (w *providerWriter) writeFrame(data []byte) error {
 	if w.timeoutFor != nil {
 		timeout = w.timeoutFor(len(data))
 	}
-	w.writeDeadline.Store(time.Now().Add(timeout).UnixNano())
+	deadline := time.Now().Add(timeout).UnixNano()
+	w.writeDeadline.Store(deadline)
 	err := w.conn.Write(context.Background(), websocket.MessageText, data)
-	w.writeDeadline.Store(0)
-	if err != nil && w.writeTimedOut.Load() {
+	if !w.releaseWriteDeadline(deadline) {
+		// The watchdog claimed this frame: the socket is being torn down.
+		// Even a nil err from Write means nothing reached a live peer —
+		// surface the timeout so serve() closes the writer and the caller
+		// fails over immediately. Timeout attribution is per frame: only
+		// the frame that lost its own CAS reports errProviderWriteTimeout.
 		return errProviderWriteTimeout
 	}
 	return err

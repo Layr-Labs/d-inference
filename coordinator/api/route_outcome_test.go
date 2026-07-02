@@ -53,6 +53,61 @@ func TestPostCommitProviderDisconnectOutcome(t *testing.T) {
 	}
 }
 
+// A consumer-cancel terminal after commit (the coordinator's overflow-499
+// abort, or a client cancel the provider acknowledged) is NOT a provider
+// fault: partial_success with the cancel class, AdmittedButFailed false, and
+// the "cancelled" reason — it must never pollute provider_error calibration.
+func TestPostCommitConsumerCancelOutcome(t *testing.T) {
+	pr := &registry.PendingRequest{RequestID: "req-overflow-cancel"}
+	out := postCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
+		Error:      "request cancelled: consumer stream stalled (chunk buffer overflow)",
+		StatusCode: statusClientClosedRequest,
+	})
+	if out.FinalStatus != finalStatusPartialSuccess {
+		t.Fatalf("FinalStatus = %q, want partial_success", out.FinalStatus)
+	}
+	if out.ErrorClass != errorClassConsumerCancelAfterCommit {
+		t.Fatalf("ErrorClass = %q, want %q", out.ErrorClass, errorClassConsumerCancelAfterCommit)
+	}
+	if out.AdmittedButFailed {
+		t.Fatal("consumer cancel must not be recorded as admitted_but_failed (provider fault)")
+	}
+	if out.ErrorReason != errorReasonCancelled {
+		t.Fatalf("ErrorReason = %q, want %q", out.ErrorReason, errorReasonCancelled)
+	}
+	if out.ErrorCode != statusClientClosedRequest {
+		t.Fatalf("ErrorCode = %d, want %d", out.ErrorCode, statusClientClosedRequest)
+	}
+
+	// A bare 499 with no message classifies the same way.
+	bare := postCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{StatusCode: statusClientClosedRequest})
+	if bare.ErrorClass != errorClassConsumerCancelAfterCommit || bare.AdmittedButFailed {
+		t.Fatalf("bare 499 outcome = %+v, want consumer-cancel classification", bare)
+	}
+}
+
+// A genuine post-commit provider error (non-disconnect 502) keeps the provider
+// fault classification — the cancel carve-out must not over-match.
+func TestPostCommitProviderErrorStillProviderFault(t *testing.T) {
+	pr := &registry.PendingRequest{RequestID: "req-real-502"}
+	out := postCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
+		Error:      "upstream engine returned garbage",
+		StatusCode: 502,
+	})
+	if out.FinalStatus != finalStatusPartialSuccess {
+		t.Fatalf("FinalStatus = %q, want partial_success", out.FinalStatus)
+	}
+	if out.ErrorClass != "provider_error_after_commit" {
+		t.Fatalf("ErrorClass = %q, want provider_error_after_commit", out.ErrorClass)
+	}
+	if !out.AdmittedButFailed {
+		t.Fatal("a real provider error after commit must stay admitted_but_failed")
+	}
+	if out.ErrorReason != errorReasonProviderError {
+		t.Fatalf("ErrorReason = %q, want %q", out.ErrorReason, errorReasonProviderError)
+	}
+}
+
 func TestPreCommitProviderDisconnectOutcome(t *testing.T) {
 	pr := &registry.PendingRequest{RequestID: "req-disconnect-pre"}
 	out := preCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{

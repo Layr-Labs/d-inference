@@ -134,6 +134,95 @@ func TestNormalConsumerStillUsesSynchronousDebit(t *testing.T) {
 	}
 }
 
+// countingCreditFailStore fails every Credit write (simulating DB pressure on
+// the refund path) while counting the attempts. The always-failing sibling
+// without a counter is billing_integration_test.go's failingCreditStore.
+type countingCreditFailStore struct {
+	store.Store
+
+	mu        sync.Mutex
+	credits   int
+	creditErr error
+}
+
+func (s *countingCreditFailStore) Credit(accountID string, amountMicroUSD int64, entryType store.LedgerEntryType, reference string) error {
+	s.mu.Lock()
+	s.credits++
+	err := s.creditErr
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return s.Store.Credit(accountID, amountMicroUSD, entryType, reference)
+}
+
+func (s *countingCreditFailStore) CreditCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.credits
+}
+
+// A reservation refund whose store Credit fails must not be swallowed: the
+// failure is surfaced on billing.refund_failures (the alerting hook) and the
+// release path must not panic. No inline retry — the metric/log is the fix.
+func TestReleaseInitialReservationCreditFailureEmitsMetric(t *testing.T) {
+	collector := newUDPCollector(t)
+	defer collector.Close()
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	mem := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := &countingCreditFailStore{Store: mem, creditErr: errors.New("db write failed")}
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	ddClient := newTestDD(t, collector)
+	defer ddClient.Close()
+	srv.SetDatadog(ddClient)
+
+	srv.releaseInitialReservation("acct-refund-fail", "test-model", 250_000, false)
+
+	if got := st.CreditCount(); got != 1 {
+		t.Fatalf("Credit calls = %d, want 1 (refund attempted exactly once, no inline retry)", got)
+	}
+	_ = ddClient.Statsd.Flush()
+	packets := collector.drain()
+	failures := findMetrics(packets, "billing.refund_failures")
+	if len(failures) == 0 {
+		t.Fatalf("missing billing.refund_failures metric; packets=%v", packets)
+	}
+	if !hasMetric(failures, "model:test-model") {
+		t.Fatalf("refund_failures missing model tag; metrics=%v", failures)
+	}
+	if !hasMetric(failures, "mode:ledger") {
+		t.Fatalf("refund_failures missing mode tag; metrics=%v", failures)
+	}
+}
+
+// A successful refund must NOT emit the failure metric.
+func TestReleaseInitialReservationCreditSuccessNoFailureMetric(t *testing.T) {
+	collector := newUDPCollector(t)
+	defer collector.Close()
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	ddClient := newTestDD(t, collector)
+	defer ddClient.Close()
+	srv.SetDatadog(ddClient)
+
+	srv.releaseInitialReservation("acct-refund-ok", "test-model", 250_000, false)
+
+	if got := st.GetBalance("acct-refund-ok"); got != 250_000 {
+		t.Fatalf("balance = %d, want 250000 (refund credited)", got)
+	}
+	_ = ddClient.Statsd.Flush()
+	packets := collector.drain()
+	if hasMetric(packets, "billing.refund_failures") {
+		t.Fatalf("billing.refund_failures emitted on a successful refund; packets=%v", packets)
+	}
+	if !hasMetric(packets, "billing.reservation_refunds") {
+		t.Fatalf("missing billing.reservation_refunds metric; packets=%v", packets)
+	}
+}
+
 func TestServiceReservationRefundReleasesHoldWithoutCredit(t *testing.T) {
 	srv, st := newReservationTestServer(t, ServerConfig{ServiceReservations: true}, nil)
 	createServiceUser(t, st, "svc-refund")

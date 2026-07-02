@@ -126,3 +126,67 @@ func TestHoldForSettlementNilHolderRefunds(t *testing.T) {
 		t.Fatalf("balance = %d, want %d (nil holder must refund immediately)", got, base+reserved)
 	}
 }
+
+// Settlement-grace expiry is a request terminal: the abandoned request's
+// memoized chunk key must be forgotten — but NOT zeroed, because the AfterFunc
+// timer goroutine can race a late chunk decrypt on the provider read loop.
+func TestHoldForSettlementExpiryForgetsChunkKey(t *testing.T) {
+	srv, _, _ := billingTestServer(t)
+	srv.settleGrace = 30 * time.Millisecond
+
+	priv := &[32]byte{11}
+	pr := &registry.PendingRequest{
+		RequestID:            "settle-forget-key",
+		Model:                "m",
+		ConsumerKey:          testConsumerID,
+		BaseReservedMicroUSD: 100_000,
+		ReservedMicroUSD:     100_000,
+		SessionPrivKey:       priv,
+	}
+	shared := seedChunkKey(t, srv, priv)
+	want := *shared
+
+	srv.holdForSettlement(pr)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !chunkKeyCached(&srv.chunkKeys, priv) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if chunkKeyCached(&srv.chunkKeys, priv) {
+		t.Fatal("grace expiry never forgot the chunk key")
+	}
+	if *shared != want {
+		t.Error("grace-expiry forget is cross-goroutine: it must NOT zero the shared key")
+	}
+}
+
+// The defensive nil-holder branch is also a terminal: it must forget the key
+// immediately (plain forget — consumer goroutine).
+func TestHoldForSettlementNilHolderForgetsChunkKey(t *testing.T) {
+	srv, _, _ := billingTestServer(t)
+	srv.settlements = nil
+
+	priv := &[32]byte{12}
+	pr := &registry.PendingRequest{
+		RequestID:            "nil-holder-key",
+		Model:                "m",
+		ConsumerKey:          testConsumerID,
+		BaseReservedMicroUSD: 100_000,
+		ReservedMicroUSD:     100_000,
+		SessionPrivKey:       priv,
+	}
+	shared := seedChunkKey(t, srv, priv)
+	want := *shared
+
+	srv.holdForSettlement(pr)
+
+	if chunkKeyCached(&srv.chunkKeys, priv) {
+		t.Fatal("nil-holder terminal should forget the chunk key")
+	}
+	if *shared != want {
+		t.Error("nil-holder forget must NOT zero the shared key")
+	}
+}

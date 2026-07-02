@@ -173,6 +173,23 @@ func (s *Server) closeSessionWithReason(providerID, reason string) {
 	}
 }
 
+// forgetProviderPendingKeys drops (and zeroes) the memoized chunk-decryption
+// key of every request still pending on the given provider. Called from
+// providerReadLoop's cleanup defer, BEFORE registry.Disconnect clears the
+// pending map — Disconnect orphans the keys otherwise. It must only run on the
+// provider's read-loop goroutine after the read loop has exited: that is the
+// only goroutine that decrypts with these keys, so zeroing cannot race an
+// in-flight decrypt (see chunkKeyCache's zeroing policy). nil provider (never
+// registered) is a no-op.
+func (s *Server) forgetProviderPendingKeys(provider *registry.Provider) {
+	if provider == nil {
+		return
+	}
+	for _, key := range provider.PendingSessionKeys() {
+		s.chunkKeys.forgetAndZero(key)
+	}
+}
+
 // providerReadLoop reads messages from the provider WebSocket and dispatches
 // them. It runs until the connection closes or the context is cancelled.
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
@@ -183,6 +200,13 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer func() {
 		loopCancel()
+		// Drop the memoized chunk-decryption keys of every request still
+		// in-flight on this provider BEFORE Disconnect wipes the pending map
+		// (after the wipe the keys are unreachable and would pin their cache
+		// entries until the cap-reset). Zeroing is safe here: this defer runs
+		// on the provider's read-loop goroutine — the only goroutine that ever
+		// decrypts with these keys — after conn.Read has returned for good.
+		s.forgetProviderPendingKeys(provider)
 		s.registry.Disconnect(providerID)
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
@@ -1448,13 +1472,14 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		)
 		s.ddIncr("inference.chunk_overflow_abort", []string{})
 		s.sendProviderCancel(provider, msg.RequestID)
-		// 499 + "request cancelled" classifies as a consumer-side terminal in
-		// handleInferenceError: no provider reputation hit for our backpressure.
+		// 499 + "request cancelled" classifies as a consumer-side terminal
+		// (isConsumerCancelTerminal) in handleInferenceError and the route
+		// outcome: no provider reputation hit for our backpressure.
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:       protocol.TypeInferenceError,
 			RequestID:  msg.RequestID,
 			Error:      "request cancelled: consumer stream stalled (chunk buffer overflow)",
-			StatusCode: 499,
+			StatusCode: statusClientClosedRequest,
 		})
 	}
 }
@@ -1576,8 +1601,11 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		s.logger.Warn("complete for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
 		return
 	}
-	// The request is terminal — drop its memoized chunk-decryption key.
-	s.chunkKeys.forget(pr.SessionPrivKey)
+	// The request is terminal — drop its memoized chunk-decryption key and
+	// scrub it. Zeroing is safe: the WS delivers every chunk before the
+	// complete frame, so all decrypts for this request finished on the read
+	// loop before this handler was spawned (see chunkKeyCache zeroing policy).
+	s.chunkKeys.forgetAndZero(pr.SessionPrivKey)
 	// A parked record means the consumer handler already returned: there is no
 	// channel reader, and registry.Disconnect may have already CLOSED the
 	// channels (park-before-remove leaves a window where the record is in both
@@ -2072,8 +2100,11 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		s.logger.Warn("error for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
 		return
 	}
-	// The request is terminal — drop its memoized chunk-decryption key.
-	s.chunkKeys.forget(pr.SessionPrivKey)
+	// The request is terminal — drop its memoized chunk-decryption key and
+	// scrub it. Zeroing is safe: this handler runs on the provider read-loop
+	// goroutine, the only goroutine that decrypts with this key (see
+	// chunkKeyCache zeroing policy).
+	s.chunkKeys.forgetAndZero(pr.SessionPrivKey)
 	consumerGone := parked != nil
 
 	// Record a job failure, but not for capacity rejections or consumer
@@ -2088,8 +2119,7 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		msg.StatusCode == http.StatusTooManyRequests ||
 		strings.Contains(loweredErr, "token_budget_exhausted") ||
 		strings.Contains(loweredErr, "insufficient memory")
-	cancelTerminal := msg.StatusCode == 499 ||
-		strings.Contains(loweredErr, "request cancelled")
+	cancelTerminal := isConsumerCancelTerminal(msg.StatusCode, msg.Error)
 	if !capacityRejection && !cancelTerminal {
 		s.registry.RecordJobFailure(providerID)
 	}

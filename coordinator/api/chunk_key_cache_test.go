@@ -145,8 +145,76 @@ func TestChunkKeyCacheForgetRemoves(t *testing.T) {
 
 func TestChunkKeyCacheForgetNilAndEmptyAreSafe(t *testing.T) {
 	var c chunkKeyCache
-	c.forget(nil)           // nil priv is a documented no-op
-	c.forget(new([32]byte)) // forget on a zero-value cache (nil map) must not panic
+	c.forget(nil)                  // nil priv is a documented no-op
+	c.forget(new([32]byte))        // forget on a zero-value cache (nil map) must not panic
+	c.forgetAndZero(nil)           // same no-op guarantees for the zeroing variant
+	c.forgetAndZero(new([32]byte)) // absent entry on a nil map must not panic
+}
+
+// forgetAndZero removes the entry AND scrubs the 32-byte shared key so the
+// secret does not linger on the heap (read-loop terminal paths only — see the
+// zeroing policy on chunkKeyCache).
+func TestChunkKeyCacheForgetAndZeroRemovesAndZeroes(t *testing.T) {
+	var c chunkKeyCache
+	peerPub, _, _ := testPeerKeyB64(t)
+	priv := new([32]byte)
+	if _, err := rand.Read(priv[:]); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+
+	shared, err := c.sharedKey(priv, peerPub)
+	if err != nil {
+		t.Fatalf("sharedKey: %v", err)
+	}
+	if *shared == ([32]byte{}) {
+		t.Fatal("sanity: freshly computed shared key should not be all-zero")
+	}
+
+	c.forgetAndZero(priv)
+
+	c.mu.Lock()
+	_, stillThere := c.m[priv]
+	c.mu.Unlock()
+	if stillThere {
+		t.Fatal("forgetAndZero should remove the entry")
+	}
+	if *shared != ([32]byte{}) {
+		t.Error("forgetAndZero should zero the shared key array")
+	}
+
+	// Cache still functions: the same inputs recompute the same value under a
+	// fresh array (the zeroed one is never reused).
+	recomputed, err := c.sharedKey(priv, peerPub)
+	if err != nil {
+		t.Fatalf("sharedKey after forgetAndZero: %v", err)
+	}
+	if recomputed == shared {
+		t.Error("recompute after forgetAndZero must allocate a new array, not reuse the zeroed one")
+	}
+	if *recomputed == ([32]byte{}) {
+		t.Error("recomputed shared key should be the real value, not zeroes")
+	}
+}
+
+// The plain forget must NOT zero — cross-goroutine callers rely on the array
+// staying intact for a possibly-in-flight decrypt on the provider read loop.
+func TestChunkKeyCacheForgetDoesNotZero(t *testing.T) {
+	var c chunkKeyCache
+	peerPub, _, _ := testPeerKeyB64(t)
+	priv := new([32]byte)
+	if _, err := rand.Read(priv[:]); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+
+	shared, err := c.sharedKey(priv, peerPub)
+	if err != nil {
+		t.Fatalf("sharedKey: %v", err)
+	}
+	want := *shared
+	c.forget(priv)
+	if *shared != want {
+		t.Error("forget must leave the shared key array intact (no zeroing cross-goroutine)")
+	}
 }
 
 func TestChunkKeyCacheInvalidPeerKeyNotCached(t *testing.T) {

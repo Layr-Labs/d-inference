@@ -3,12 +3,31 @@
 import type { LeaderboardEntry, LeaderboardMetric } from "./types";
 import {
   formatAnnualizedUSD,
+  formatDailyUSD,
   formatNumber,
   rewardToneClass,
 } from "./format";
 
 const EARNINGS_GRID = "grid grid-cols-[56px_minmax(0,1fr)_130px_130px_130px] gap-3";
 const TOKENS_GRID = "grid grid-cols-[56px_minmax(0,1fr)_140px] gap-3";
+
+/** Annualized value with the per-day rate as quieter secondary text below. */
+function EarningsCell({
+  micro24h,
+  toneClass = "text-text-secondary",
+}: {
+  micro24h: number;
+  toneClass?: string;
+}) {
+  return (
+    <span className="text-right">
+      <span className={`block font-mono ${toneClass}`}>{formatAnnualizedUSD(micro24h)}</span>
+      <span className="block text-[10px] font-mono text-text-tertiary">
+        {formatDailyUSD(micro24h)}
+      </span>
+    </span>
+  );
+}
 
 function EarningsRows({ entries }: { entries: LeaderboardEntry[] }) {
   return (
@@ -29,17 +48,15 @@ function EarningsRows({ entries }: { entries: LeaderboardEntry[] }) {
         >
           <span className="font-mono font-semibold text-text-primary">#{entry.rank}</span>
           <span className="truncate font-mono text-text-secondary">{entry.pseudonym}</span>
-          <span className="text-right font-mono font-semibold text-text-primary">
-            {formatAnnualizedUSD(entry.earnings_micro_usd)}
-          </span>
-          <span className="text-right font-mono text-text-secondary">
-            {formatAnnualizedUSD(entry.work_earnings_micro_usd)}
-          </span>
-          <span
-            className={`text-right font-mono ${rewardToneClass(entry.reward_earnings_micro_usd)}`}
-          >
-            {formatAnnualizedUSD(entry.reward_earnings_micro_usd)}
-          </span>
+          <EarningsCell
+            micro24h={entry.earnings_micro_usd}
+            toneClass="font-semibold text-text-primary"
+          />
+          <EarningsCell micro24h={entry.work_earnings_micro_usd} />
+          <EarningsCell
+            micro24h={entry.reward_earnings_micro_usd}
+            toneClass={rewardToneClass(entry.reward_earnings_micro_usd)}
+          />
         </div>
       ))}
     </>

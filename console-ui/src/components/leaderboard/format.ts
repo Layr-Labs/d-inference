@@ -18,11 +18,20 @@ export function formatUSDFromMicro(value: number): string {
 
 /**
  * Annualized rate from a 24h earnings figure: micro-USD earned in the last
- * 24 hours extrapolated to a yearly rate ("$X/yr"). All leaderboard earnings
- * are displayed this way — never as raw daily amounts.
+ * 24 hours extrapolated to a yearly rate. No "/yr" suffix — the surrounding
+ * context (column header or card label) states the unit.
  */
 export function formatAnnualizedUSD(micro24h: number): string {
-  return `${formatUSDFromMicro(micro24h * 365)}/yr`;
+  return formatUSDFromMicro(micro24h * 365);
+}
+
+/**
+ * Per-day rate from a 24h earnings figure (the 24h amount IS the daily rate).
+ * Carries its own "/day" suffix because it appears as secondary text under
+ * annualized values, outside the header's "/ yr" context.
+ */
+export function formatDailyUSD(micro24h: number): string {
+  return `${formatUSDFromMicro(micro24h)}/day`;
 }
 
 /** Big headline value for a ranked entry: annualized earnings or 24h tokens. */

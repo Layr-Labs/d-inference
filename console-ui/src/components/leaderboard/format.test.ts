@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   formatAnnualizedUSD,
+  formatDailyUSD,
   formatEarningsBreakdown,
   formatLeaderboardValue,
   formatNumber,
@@ -80,18 +81,28 @@ describe("formatUSDFromMicro", () => {
 });
 
 describe("formatAnnualizedUSD", () => {
-  it("extrapolates a 24h figure to a yearly rate", () => {
+  it("extrapolates a 24h figure to a yearly rate without a suffix", () => {
     // $1.00 earned in 24h -> $365/yr
-    expect(formatAnnualizedUSD(1_000_000)).toBe("$365/yr");
+    expect(formatAnnualizedUSD(1_000_000)).toBe("$365");
   });
 
   it("handles zero", () => {
-    expect(formatAnnualizedUSD(0)).toBe("$0.00/yr");
+    expect(formatAnnualizedUSD(0)).toBe("$0.00");
   });
 
   it("abbreviates large annualized figures", () => {
     // $10 earned in 24h -> $3,650/yr -> abbreviated
-    expect(formatAnnualizedUSD(10_000_000)).toBe("$3.6K/yr");
+    expect(formatAnnualizedUSD(10_000_000)).toBe("$3.6K");
+  });
+});
+
+describe("formatDailyUSD", () => {
+  it("shows the 24h amount as a daily rate with suffix", () => {
+    expect(formatDailyUSD(1_230_000)).toBe("$1.23/day");
+  });
+
+  it("handles zero", () => {
+    expect(formatDailyUSD(0)).toBe("$0.00/day");
   });
 });
 
@@ -107,7 +118,7 @@ describe("formatLeaderboardValue", () => {
   };
 
   it("annualizes earnings", () => {
-    expect(formatLeaderboardValue(entry, "earnings")).toBe("$730/yr");
+    expect(formatLeaderboardValue(entry, "earnings")).toBe("$730");
   });
 
   it("shows raw 24h token counts for the tokens metric", () => {

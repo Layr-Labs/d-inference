@@ -48,6 +48,18 @@ enum LaunchctlControl {
         )
     }
 
+    /// `launchctl enable|disable gui/$UID/<label>`.
+    ///
+    /// Unlike `bootout` — which only deregisters the job from the CURRENT login
+    /// session — the enabled/disabled state lives in launchd's per-user override
+    /// database and PERSISTS across logins and reboots. This is what keeps a
+    /// stopped agent stopped after a reboot even though its plist
+    /// (RunAtLoad=true) stays in ~/Library/LaunchAgents.
+    @discardableResult
+    static func setEnabled(_ enabled: Bool, label: String, uid: uid_t = getuid()) -> Output {
+        run([enabled ? "enable" : "disable", target(label: label, uid: uid)], captureStderr: true)
+    }
+
     /// `launchctl print` exit-0 check — i.e. the job is loaded.
     static func printSucceeds(label: String, uid: uid_t = getuid()) -> Bool {
         run(["print", target(label: label, uid: uid)]).succeeded

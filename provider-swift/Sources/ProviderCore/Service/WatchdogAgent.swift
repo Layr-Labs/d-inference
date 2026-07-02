@@ -1,8 +1,10 @@
 /// The crash-recovery watchdog's launchd agent (`io.darkbloom.watchdog`),
 /// separate from the provider service. Runs `darkbloom watchdog` once a minute
 /// (`StartInterval`) as a check-and-exit one-shot, so a wedged tick can't stall
-/// recovery. Lifecycle mirrors the provider agent: `start` installs+loads it,
-/// `stop` bootouts it (plist stays for reboot), `stop --uninstall` deletes it.
+/// recovery. Lifecycle mirrors the provider agent: `start` installs+loads it
+/// (re-enabling any persistent disable), `stop` bootouts it AND persistently
+/// disables it so RunAtLoad/StartInterval can't resurrect it at the next
+/// login/reboot (plist stays on disk), `stop --uninstall` deletes it.
 
 import Foundation
 
@@ -41,9 +43,15 @@ public enum WatchdogAgent: Sendable {
         try loadService()
     }
 
-    /// Unload (no-op if not loaded); leaves the plist on disk.
+    /// Unload (no-op if not loaded) and persistently disable, so the plist left
+    /// on disk (RunAtLoad=true) cannot resurrect the watchdog at the next
+    /// login/reboot. `installAndStart()` re-enables.
     public static func stop() throws {
         if isLoaded() { try bootout() }
+        let result = LaunchctlControl.setEnabled(false, label: label)
+        if !result.succeeded {
+            throw WatchdogAgentError.disableFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
     }
 
     /// Unload and delete the plist.
@@ -84,6 +92,9 @@ public enum WatchdogAgent: Sendable {
     }
 
     private static func loadService() throws {
+        // Clear any persistent disable left by `stop()`; best-effort — a real
+        // failure surfaces via the bootstrap below.
+        LaunchctlControl.setEnabled(true, label: label)
         let bootstrap = LaunchctlControl.run(["bootstrap", LaunchctlControl.guiDomain(), plistPath().path], captureStderr: true)
         // Error 37 = "already loaded" — benign.
         if !bootstrap.succeeded, !bootstrap.stderr.contains("37:"), !bootstrap.stderr.contains("already loaded") {
@@ -109,12 +120,14 @@ public enum WatchdogAgentError: Error, CustomStringConvertible, Sendable {
     case bootstrapFailed(String)
     case bootoutFailed(String)
     case kickstartFailed(String)
+    case disableFailed(String)
 
     public var description: String {
         switch self {
         case .bootstrapFailed(let d): return "watchdog launchctl bootstrap failed: \(d)"
         case .bootoutFailed(let d): return "watchdog launchctl bootout failed: \(d)"
         case .kickstartFailed(let d): return "watchdog launchctl kickstart failed: \(d)"
+        case .disableFailed(let d): return "watchdog launchctl disable failed (it may auto-start again at next login): \(d)"
         }
     }
 }

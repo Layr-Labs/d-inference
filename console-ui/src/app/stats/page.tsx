@@ -1,13 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useVisiblePolling } from "@/hooks/useVisiblePolling";
 import {
   Activity,
-  BarChart3,
   CheckCircle2,
-  CircleDollarSign,
   Clock,
   Cpu,
   HardDrive,
@@ -21,8 +18,6 @@ import {
   Search,
   Server,
   SlidersHorizontal,
-  Trophy,
-  Users,
   XCircle,
   Zap,
 } from "lucide-react";
@@ -50,7 +45,6 @@ import {
   ZoomableMapViewport,
   type MarkerDatum,
 } from "@/components/stats/network-map";
-import { formatEarningsBreakdown, rewardToneClass } from "./leaderboard/format";
 
 const COORDINATOR_URL = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
 
@@ -217,9 +211,6 @@ interface ProviderAttestation {
 type NodeStatusFilter = "all" | "routable" | "serving" | "online" | "attention";
 type NodeTrustFilter = "all" | "hardware" | "none";
 type NodeSortKey = "capacity" | "requests" | "tokens" | "chip";
-type StatsTab = "overview" | "leaderboard";
-type LeaderboardMetric = "earnings" | "tokens" | "jobs";
-type LeaderboardWindow = "24h" | "7d" | "30d" | "all";
 
 const GEMMA_PUBLIC_ID = "gemma-4-26b";
 const GEMMA_QAT_ID = "gemma-4-26b-qat-4bit";
@@ -244,34 +235,6 @@ type ActiveModelInventory = ModelInventory & {
   capacity?: CapacityModelSummary;
 };
 
-interface LeaderboardEntry {
-  rank: number;
-  pseudonym: string;
-  earnings_micro_usd: number; // TOTAL = work + reward
-  work_earnings_micro_usd: number; // inference work
-  reward_earnings_micro_usd: number; // non-inference network rewards
-  tokens: number;
-  jobs: number;
-}
-
-interface LeaderboardResponse {
-  metric: LeaderboardMetric;
-  window: LeaderboardWindow;
-  entries: LeaderboardEntry[];
-  updated_at: string;
-}
-
-interface NetworkTotalsResponse {
-  window: LeaderboardWindow;
-  earnings_micro_usd: number; // TOTAL = work + reward
-  work_earnings_micro_usd: number; // inference work
-  reward_earnings_micro_usd: number; // non-inference network rewards
-  tokens: number;
-  jobs: number;
-  active_accounts: number;
-  updated_at: string;
-}
-
 function formatNumber(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
   if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
@@ -283,19 +246,6 @@ function formatPercent(ratio: number): string {
   const pct = ratio * 100;
   if (pct > 0 && pct < 1) return "<1%";
   return `${Math.round(pct)}%`;
-}
-
-function formatUSDFromMicro(value: number): string {
-  const dollars = value / 1_000_000;
-  if (dollars >= 1000) return `$${formatNumber(Math.round(dollars))}`;
-  if (dollars >= 10) return `$${dollars.toFixed(0)}`;
-  return `$${dollars.toFixed(2)}`;
-}
-
-function formatLeaderboardValue(entry: LeaderboardEntry, metric: LeaderboardMetric): string {
-  if (metric === "earnings") return formatUSDFromMicro(entry.earnings_micro_usd);
-  if (metric === "tokens") return formatNumber(entry.tokens);
-  return formatNumber(entry.jobs);
 }
 
 function formatChartMinute(timestamp: string): string {
@@ -367,23 +317,6 @@ async function fetchModelCapacity(): Promise<CapacityModelSummary[] | null> {
   }
 
   return null;
-}
-
-async function fetchLeaderboard(
-  metric: LeaderboardMetric,
-  window: LeaderboardWindow,
-): Promise<LeaderboardResponse> {
-  const params = new URLSearchParams({ metric, window, limit: "50" });
-  const res = await fetch(`/api/leaderboard?${params.toString()}`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Leaderboard HTTP ${res.status}`);
-  return res.json();
-}
-
-async function fetchNetworkTotals(window: LeaderboardWindow): Promise<NetworkTotalsResponse> {
-  const params = new URLSearchParams({ window });
-  const res = await fetch(`/api/network/totals?${params.toString()}`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Network totals HTTP ${res.status}`);
-  return res.json();
 }
 
 function formatGB(value?: number): string | null {
@@ -2112,305 +2045,6 @@ function VerifyStepLine({ step }: { step: VerificationStep }) {
   );
 }
 
-function LeaderboardSection() {
-  const [metric, setMetric] = useState<LeaderboardMetric>("earnings");
-  const [window, setWindow] = useState<LeaderboardWindow>("7d");
-  const [leaderboard, setLeaderboard] = useState<LeaderboardResponse | null>(null);
-  const [totals, setTotals] = useState<NetworkTotalsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const windowOptions: Array<{ value: LeaderboardWindow; label: string }> = [
-    { value: "24h", label: "24h" },
-    { value: "7d", label: "7d" },
-    { value: "30d", label: "30d" },
-    { value: "all", label: "All" },
-  ];
-  const metricOptions: Array<{ value: LeaderboardMetric; label: string }> = [
-    { value: "earnings", label: "Earnings" },
-    { value: "tokens", label: "Tokens" },
-    { value: "jobs", label: "Jobs" },
-  ];
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-
-    async function loadLeaderboard() {
-      try {
-        const [nextLeaderboard, nextTotals] = await Promise.all([
-          fetchLeaderboard(metric, window),
-          fetchNetworkTotals(window),
-        ]);
-        if (cancelled) return;
-        setLeaderboard(nextLeaderboard);
-        setTotals(nextTotals);
-      } catch (err: unknown) {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Failed to load leaderboard");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    void loadLeaderboard();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [metric, window]);
-
-  const entries = leaderboard?.entries ?? [];
-  const podium = entries.slice(0, 3);
-  const updatedAt = leaderboard?.updated_at
-    ? new Date(leaderboard.updated_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-    : "";
-
-  return (
-    <section className="space-y-5">
-      <div className="rounded-xl border border-border-dim bg-bg-white p-5 shadow-sm">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <Trophy size={16} className="text-accent-brand" />
-              <h2 className="text-sm font-semibold text-text-primary">Provider Earnings Leaderboard</h2>
-            </div>
-            <p className="mt-1 max-w-2xl text-xs text-text-tertiary">
-              Pseudonymized provider accounts ranked from the coordinator leaderboard. Earnings
-              combine <span className="text-text-secondary">inference work</span> (serving requests)
-              and <span className="text-accent-amber">network rewards</span> (incentives the network
-              pays providers for participation). Each window is a{" "}
-              <span className="text-text-secondary">rolling lookback</span> ending now
-              (e.g. 24h = the last 24 hours), not a fixed calendar day.
-            </p>
-            <p className="mt-2 max-w-2xl rounded-lg border border-border-dim bg-bg-secondary px-3 py-2 text-xs text-text-tertiary">
-              These are <span className="text-text-secondary">actual earnings during early network ramp-up</span>,
-              not steady-state figures. Request acceptance is intentionally conservative today and is being
-              scaled up as we validate the data, so live numbers run well below the{" "}
-              <Link href="/earn" className="text-accent-brand hover:underline">
-                earnings calculator
-              </Link>{" "}
-              projection, which estimates potential at full utilization.
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Link
-              href="/providers/setup"
-              className="inline-flex items-center gap-1.5 rounded-lg bg-accent-brand px-3 py-1.5 text-sm font-semibold text-bg-primary shadow-sm transition-colors hover:bg-accent-brand/90"
-            >
-              <Zap size={14} />
-              Earn Now
-            </Link>
-            {windowOptions.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => setWindow(option.value)}
-                className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
-                  window === option.value
-                    ? "border-accent-brand/35 bg-accent-brand/10 text-accent-brand"
-                    : "border-border-dim bg-bg-secondary text-text-secondary hover:border-border-subtle hover:bg-bg-hover"
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4">
-          <LeaderboardTotal
-            icon={<CircleDollarSign size={14} />}
-            label="Total earnings"
-            value={totals ? formatUSDFromMicro(totals.earnings_micro_usd) : "--"}
-            sub={
-              totals
-                ? formatEarningsBreakdown(
-                    totals.work_earnings_micro_usd,
-                    totals.reward_earnings_micro_usd,
-                    formatUSDFromMicro,
-                  )
-                : undefined
-            }
-          />
-          <LeaderboardTotal
-            icon={<BarChart3 size={14} />}
-            label="Tokens served"
-            value={totals ? formatNumber(totals.tokens) : "--"}
-          />
-          <LeaderboardTotal
-            icon={<Activity size={14} />}
-            label="Jobs"
-            value={totals ? formatNumber(totals.jobs) : "--"}
-          />
-          <LeaderboardTotal
-            icon={<Users size={14} />}
-            label="Active accounts"
-            value={totals ? formatNumber(totals.active_accounts) : "--"}
-          />
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-border-dim bg-bg-white p-5 shadow-sm">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h3 className="text-sm font-semibold text-text-primary">Rankings</h3>
-            <p className="mt-1 text-xs text-text-tertiary">
-              {updatedAt ? `Updated ${updatedAt}` : "Fresh values load from the coordinator"}
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {metricOptions.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => setMetric(option.value)}
-                className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
-                  metric === option.value
-                    ? "border-accent-green/35 bg-accent-green/10 text-accent-green"
-                    : "border-border-dim bg-bg-secondary text-text-secondary hover:border-border-subtle hover:bg-bg-hover"
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {loading ? (
-          <div className="mt-8 flex items-center justify-center py-12 text-text-tertiary">
-            <Loader2 size={22} className="animate-spin" />
-          </div>
-        ) : error ? (
-          <div className="mt-5 rounded-xl border border-accent-red/20 bg-accent-red/5 p-5 text-sm text-accent-red">
-            {error}
-          </div>
-        ) : entries.length === 0 ? (
-          <div className="mt-5 rounded-xl border border-dashed border-border-dim bg-bg-secondary p-8 text-center text-sm text-text-tertiary">
-            No leaderboard activity for this window yet.
-          </div>
-        ) : (
-          <>
-            <div className="mt-5 grid gap-3 md:grid-cols-3">
-              {podium.map((entry) => (
-                <LeaderboardPodiumCard key={entry.rank} entry={entry} metric={metric} />
-              ))}
-            </div>
-
-            <div className="mt-5 overflow-x-auto rounded-xl border border-border-dim">
-              <div className="min-w-[760px]">
-                <div className="grid grid-cols-[56px_minmax(0,1fr)_110px_110px_110px_96px_72px] gap-3 bg-bg-secondary px-4 py-2.5 text-[10px] font-mono uppercase tracking-wider text-text-tertiary">
-                  <span>Rank</span>
-                  <span>Provider</span>
-                  <span className="text-right">Earnings</span>
-                  <span className="text-right">Work</span>
-                  <span className="text-right">Rewards</span>
-                  <span className="text-right">Tokens</span>
-                  <span className="text-right">Jobs</span>
-                </div>
-                {entries.map((entry) => (
-                  <div
-                    key={`${entry.rank}-${entry.pseudonym}`}
-                    className="grid grid-cols-[56px_minmax(0,1fr)_110px_110px_110px_96px_72px] gap-3 border-t border-border-dim px-4 py-3 text-sm"
-                  >
-                    <span className="font-mono font-semibold text-text-primary">#{entry.rank}</span>
-                    <span className="truncate font-mono text-text-secondary">{entry.pseudonym}</span>
-                    <span className="text-right font-mono font-semibold text-text-primary">
-                      {formatUSDFromMicro(entry.earnings_micro_usd)}
-                    </span>
-                    <span className="text-right font-mono text-text-secondary">
-                      {formatUSDFromMicro(entry.work_earnings_micro_usd)}
-                    </span>
-                    <span
-                      className={`text-right font-mono ${rewardToneClass(entry.reward_earnings_micro_usd)}`}
-                    >
-                      {formatUSDFromMicro(entry.reward_earnings_micro_usd)}
-                    </span>
-                    <span className="text-right font-mono text-text-secondary">{formatNumber(entry.tokens)}</span>
-                    <span className="text-right font-mono text-text-secondary">{formatNumber(entry.jobs)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function LeaderboardTotal({
-  icon,
-  label,
-  value,
-  sub,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string;
-  sub?: ReactNode;
-}) {
-  return (
-    <div className="rounded-xl border border-border-dim bg-bg-secondary px-4 py-3">
-      <div className="flex items-center gap-2 text-text-tertiary">
-        {icon}
-        <p className="text-[10px] font-mono uppercase tracking-wider">{label}</p>
-      </div>
-      <p className="mt-2 text-xl font-mono font-bold text-text-primary">{value}</p>
-      {sub ? (
-        <p className="mt-0.5 truncate text-[11px] font-mono text-text-tertiary">{sub}</p>
-      ) : null}
-    </div>
-  );
-}
-
-function leaderboardRankTone(rank: number): string {
-  if (rank === 1) return "border-accent-brand/35 bg-accent-brand/10 text-accent-brand";
-  if (rank === 2) return "border-accent-green/30 bg-accent-green/10 text-accent-green";
-  return "border-accent-amber/30 bg-accent-amber-dim text-accent-amber";
-}
-
-function LeaderboardPodiumCard({
-  entry,
-  metric,
-}: {
-  entry: LeaderboardEntry;
-  metric: LeaderboardMetric;
-}) {
-  const rankTone = leaderboardRankTone(entry.rank);
-
-  return (
-    <div className="rounded-xl border border-border-dim bg-bg-secondary p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate font-mono text-sm font-semibold text-text-primary">
-            {entry.pseudonym}
-          </p>
-          <p className="mt-1 text-xs font-mono text-text-tertiary">
-            {formatUSDFromMicro(entry.earnings_micro_usd)} / {formatNumber(entry.tokens)} tokens
-          </p>
-          <p className="mt-0.5 text-[10px] font-mono text-text-tertiary">
-            {formatEarningsBreakdown(
-              entry.work_earnings_micro_usd,
-              entry.reward_earnings_micro_usd,
-              formatUSDFromMicro,
-            )}
-          </p>
-        </div>
-        <span className={`rounded-lg border px-2 py-1 text-xs font-mono font-bold ${rankTone}`}>
-          #{entry.rank}
-        </span>
-      </div>
-      <p className="mt-4 text-2xl font-mono font-bold text-text-primary">
-        {formatLeaderboardValue(entry, metric)}
-      </p>
-      <p className="mt-1 text-[10px] font-mono uppercase tracking-wider text-text-tertiary">
-        Ranked by {metric}
-      </p>
-    </div>
-  );
-}
-
 function NodeRow({
   provider,
   selected,
@@ -2925,7 +2559,6 @@ export default function StatsPage() {
   const [stats, setStats] = useState<PlatformStats | null>(null);
   const [catalogData, setCatalogData] = useState<CatalogDataSummary | null>(null);
   const [capacityModels, setCapacityModels] = useState<CapacityModelSummary[] | null>(null);
-  const [activeTab, setActiveTab] = useState<StatsTab>("overview");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -3005,10 +2638,6 @@ export default function StatsPage() {
     nu && nu.bottleneck_model && (nu.bottleneck_utilization ?? 0) > (nu.utilization ?? 0)
       ? `peak ${formatPercent(nu.bottleneck_utilization ?? 0)} · ${nu.bottleneck_model}`
       : "in use";
-  const tabs: Array<{ value: StatsTab; label: string }> = [
-    { value: "overview", label: "Overview" },
-    { value: "leaderboard", label: "Leaderboard" },
-  ];
 
   return (
     <div className="flex flex-col h-full">
@@ -3044,27 +2673,6 @@ export default function StatsPage() {
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2 rounded-xl border border-border-dim bg-bg-white p-1.5 shadow-sm">
-          {tabs.map((tab) => (
-            <button
-              key={tab.value}
-              type="button"
-              onClick={() => setActiveTab(tab.value)}
-              className={`flex min-h-9 flex-1 items-center justify-center rounded-lg px-4 text-sm font-medium transition-colors sm:flex-none ${
-                activeTab === tab.value
-                  ? "bg-accent-brand text-bg-primary shadow-sm"
-                  : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        {activeTab === "leaderboard" ? (
-          <LeaderboardSection />
-        ) : (
-          <>
         {/* Hero section -- big numbers */}
         <div className="bg-bg-white rounded-2xl p-8 shadow-sm">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
@@ -3177,8 +2785,6 @@ export default function StatsPage() {
         )}
 
         <NetworkNodes providers={stats.providers} />
-          </>
-        )}
 
         {/* Footer */}
         <div className="text-center pb-8">

@@ -37,6 +37,13 @@ import Testing
     #expect(object["encrypted_response_chunks"] as? Bool == true)
     #expect(json.contains(#""attestation":\#(rawAttestation)"#))
 
+    // The hypervisor concept was removed: the registration frame's
+    // privacy_capabilities must carry NO hypervisor key on the wire.
+    let caps = object["privacy_capabilities"] as? [String: Any]
+    #expect(caps != nil)
+    #expect(caps?["hypervisor_active"] == nil)
+    #expect(caps?["hypervisorActive"] == nil)
+
     let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: data)
     guard case .register(let register) = decoded else {
         throw ClientTestFailure.unexpectedMessage
@@ -458,8 +465,7 @@ private func clientPrivacyCapabilities() -> PrivacyCapabilities {
         sipEnabled: true,
         antiDebugEnabled: true,
         coreDumpsDisabled: true,
-        envScrubbed: true,
-        hypervisorActive: false
+        envScrubbed: true
     )
 }
 

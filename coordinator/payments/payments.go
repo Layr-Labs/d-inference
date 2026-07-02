@@ -14,7 +14,6 @@
 package payments
 
 import (
-	"fmt"
 	"sync"
 	"time"
 
@@ -50,11 +49,6 @@ func NewLedger(s store.Store) *Ledger {
 		store: s,
 		usage: make(map[string][]UsageEntry),
 	}
-}
-
-// Deposit credits a consumer's balance.
-func (l *Ledger) Deposit(consumerID string, amountMicroUSD int64) error {
-	return l.store.Credit(consumerID, amountMicroUSD, store.LedgerDeposit, "")
 }
 
 // Charge debits a consumer's balance for inference. Returns an error if
@@ -94,25 +88,6 @@ func (l *Ledger) Usage(consumerID string) []UsageEntry {
 	return out
 }
 
-// PendingPayouts returns a copy of all unsettled payouts.
-func (l *Ledger) PendingPayouts() []Payout {
-	payouts, err := l.store.ListProviderPayouts()
-	if err != nil {
-		return []Payout{}
-	}
-
-	var out []Payout
-	for _, p := range payouts {
-		if !p.Settled {
-			out = append(out, p)
-		}
-	}
-	if out == nil {
-		return []Payout{}
-	}
-	return out
-}
-
 // AllPayouts returns a copy of all payouts (settled and unsettled).
 func (l *Ledger) AllPayouts() []Payout {
 	payouts, err := l.store.ListProviderPayouts()
@@ -120,19 +95,4 @@ func (l *Ledger) AllPayouts() []Payout {
 		return []Payout{}
 	}
 	return payouts
-}
-
-// SettlePayout marks the payout at the given index as settled.
-func (l *Ledger) SettlePayout(index int) error {
-	payouts, err := l.store.ListProviderPayouts()
-	if err != nil {
-		return fmt.Errorf("list payouts: %w", err)
-	}
-	if index < 0 || index >= len(payouts) {
-		return fmt.Errorf("payout index %d out of range (have %d payouts)", index, len(payouts))
-	}
-	if payouts[index].Settled {
-		return fmt.Errorf("payout at index %d is already settled", index)
-	}
-	return l.store.SettleProviderPayout(payouts[index].ID)
 }

@@ -14,7 +14,7 @@ When users ask "what is Darkbloom" or about the platform, use ONLY these facts:
 - Every provider machine is verified through Apple's Secure Enclave, MDM, and Managed Device Attestation (MDA)
 - All prompts are end-to-end encrypted using X25519 NaCl box encryption — the node operator never sees your data
 - The coordinator routes traffic but cannot read plaintext prompts
-- Runtime integrity is enforced on every node: SIP, Hardened Runtime, binary self-hash, Hypervisor.framework memory isolation
+- Runtime integrity is enforced on every node: SIP, Hardened Runtime, and binary self-hash
 - The full attestation chain is public and independently verifiable at /v1/providers/attestation
 - Darkbloom is an Eigen Labs project, currently in public alpha (https://darkbloom.dev)
 

@@ -393,8 +393,7 @@ extension BatchScheduler {
         // directories. (Keying the dir by weightHash would create a fresh,
         // never-swept directory on every re-download.)
         let bindingId = prefixCacheBindingId(modelId: modelId, weightHash: weightHash)
-        let modelKey = SHA256.hash(data: Data(modelId.utf8))
-            .map { String(format: "%02x", $0) }.joined().prefix(12)
+        let modelKey = SHA256.hash(data: Data(modelId.utf8)).hexString.prefix(12)
         let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         let dir = root.appendingPathComponent("darkbloom/kv/\(modelKey)", isDirectory: true)

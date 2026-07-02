@@ -7,7 +7,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -30,19 +29,17 @@ import (
 //	Provider = 95%, Platform = 4%, Referrer = 1%
 type ReferralService struct {
 	store                store.Store
-	ledger               *payments.Ledger
 	logger               *slog.Logger
 	referralSharePercent int64 // percentage of platform fee that goes to referrer
 }
 
 // NewReferralService creates a new referral service.
-func NewReferralService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, sharePercent int64) *ReferralService {
+func NewReferralService(st store.Store, logger *slog.Logger, sharePercent int64) *ReferralService {
 	if sharePercent <= 0 || sharePercent > 50 {
 		sharePercent = 20
 	}
 	return &ReferralService{
 		store:                st,
-		ledger:               ledger,
 		logger:               logger,
 		referralSharePercent: sharePercent,
 	}

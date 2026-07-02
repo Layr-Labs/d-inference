@@ -303,7 +303,6 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     public var antiDebugEnabled: Bool
     public var coreDumpsDisabled: Bool
     public var envScrubbed: Bool
-    public var hypervisorActive: Bool
 
     enum CodingKeys: String, CodingKey {
         case textBackendInprocess = "text_backend_inprocess"
@@ -314,7 +313,6 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         case antiDebugEnabled = "anti_debug_enabled"
         case coreDumpsDisabled = "core_dumps_disabled"
         case envScrubbed = "env_scrubbed"
-        case hypervisorActive = "hypervisor_active"
     }
 
     public init(
@@ -325,8 +323,7 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         sipEnabled: Bool,
         antiDebugEnabled: Bool,
         coreDumpsDisabled: Bool,
-        envScrubbed: Bool,
-        hypervisorActive: Bool = false
+        envScrubbed: Bool
     ) {
         self.textBackendInprocess = textBackendInprocess
         self.textProxyDisabled = textProxyDisabled
@@ -336,20 +333,6 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         self.antiDebugEnabled = antiDebugEnabled
         self.coreDumpsDisabled = coreDumpsDisabled
         self.envScrubbed = envScrubbed
-        self.hypervisorActive = hypervisorActive
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        textBackendInprocess = try container.decode(Bool.self, forKey: .textBackendInprocess)
-        textProxyDisabled = try container.decode(Bool.self, forKey: .textProxyDisabled)
-        pythonRuntimeLocked = try container.decode(Bool.self, forKey: .pythonRuntimeLocked)
-        dangerousModulesBlocked = try container.decode(Bool.self, forKey: .dangerousModulesBlocked)
-        sipEnabled = try container.decode(Bool.self, forKey: .sipEnabled)
-        antiDebugEnabled = try container.decode(Bool.self, forKey: .antiDebugEnabled)
-        coreDumpsDisabled = try container.decode(Bool.self, forKey: .coreDumpsDisabled)
-        envScrubbed = try container.decode(Bool.self, forKey: .envScrubbed)
-        hypervisorActive = try container.decodeIfPresent(Bool.self, forKey: .hypervisorActive) ?? false
     }
 }
 

@@ -627,8 +627,7 @@ private func makeClient(
             sipEnabled: true,
             antiDebugEnabled: false,
             coreDumpsDisabled: false,
-            envScrubbed: false,
-            hypervisorActive: false
+            envScrubbed: false
         )
     )
     return CoordinatorClient(

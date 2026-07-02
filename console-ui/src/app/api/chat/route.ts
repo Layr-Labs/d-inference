@@ -19,13 +19,7 @@ export async function POST(req: NextRequest) {
   // Forward the body bytes verbatim. For plaintext we keep the existing
   // JSON-roundtrip behavior (preserves the existing tests); for sealed we
   // must not touch the bytes — JSON.parse + stringify would reformat them.
-  const bodyBytes = isSealed
-    ? new Uint8Array(await req.arrayBuffer())
-    : (() => {
-        // small allocation for plaintext path; stay byte-clean here too so
-        // we don't accidentally drop fields some sender added.
-        return undefined;
-      })();
+  const bodyBytes = isSealed ? new Uint8Array(await req.arrayBuffer()) : undefined;
 
   const fetchInit: RequestInit = {
     method: "POST",

@@ -169,7 +169,7 @@ struct ChunkSenderTests {
         batcher.installSinkForTesting { frames in
             order.append("chunkBatch(\(frames.count))")
         }
-        let sender = ChunkSender(batcher: batcher, encode: { _ in "{}" })
+        let sender = ChunkSender(batcher: batcher, encode: { _ in Data("{}".utf8) })
         let handle = SendHandle({ message in
             if case .inferenceComplete = message { order.append("complete") }
         }, chunkSender: sender)

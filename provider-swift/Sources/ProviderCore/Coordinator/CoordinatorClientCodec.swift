@@ -133,7 +133,6 @@ public enum CoordinatorClientCodec {
                 signature: payload.signature,
                 statusSignature: payload.statusSignature,
                 publicKey: payload.publicKey,
-                hypervisorActive: payload.hypervisorActive,
                 rdmaDisabled: payload.rdmaDisabled,
                 sipEnabled: payload.sipEnabled,
                 secureBootEnabled: payload.secureBootEnabled,

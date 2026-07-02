@@ -7,10 +7,11 @@
 // latency this work removes). ChunkSender is the captured handle that does the
 // nonisolated encode + enqueue.
 //
-// Encoding (`CoordinatorClientCodec.encodeOutboundMessageString`) is a pure
-// static codec — already nonisolated in the existing design — so it runs inline
-// on the inference task. The encoded JSON is then handed to the batcher's serial
-// queue for direct delivery.
+// Encoding (`CoordinatorClientCodec.encodeOutboundMessage`) is a pure static
+// codec — already nonisolated in the existing design — so it runs inline on
+// the inference task. The encoder's Data output is handed straight to the
+// batcher's serial queue for direct delivery (no Data -> String -> Data round
+// trip on the per-token path; WebSocket text frames carry raw UTF-8 bytes).
 
 import Foundation
 
@@ -19,9 +20,9 @@ import Foundation
 /// batcher and an injected `@Sendable` encoder; it holds no mutable state).
 final class ChunkSender: @unchecked Sendable {
     private let batcher: ChunkBatcher
-    private let encode: @Sendable (OutboundMessage) -> String?
+    private let encode: @Sendable (OutboundMessage) -> Data?
 
-    init(batcher: ChunkBatcher, encode: @escaping @Sendable (OutboundMessage) -> String?) {
+    init(batcher: ChunkBatcher, encode: @escaping @Sendable (OutboundMessage) -> Data?) {
         self.batcher = batcher
         self.encode = encode
     }
@@ -34,8 +35,8 @@ final class ChunkSender: @unchecked Sendable {
     /// later connection).
     @discardableResult
     func sendChunk(_ message: OutboundMessage) -> Bool {
-        guard let json = encode(message) else { return false }
-        batcher.enqueue(Data(json.utf8))
+        guard let frame = encode(message) else { return false }
+        batcher.enqueue(frame)
         return true
     }
 

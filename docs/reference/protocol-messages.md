@@ -103,7 +103,7 @@ Go: [`AttestationResponseMessage`](../../coordinator/protocol/messages.go); Swif
 | `signature` | string | Base64 signature of `nonce+timestamp` |
 | `status_signature` | string | Base64 signature of canonical status JSON (v0.3.11+) |
 | `public_key` | string | Base64 X25519 public key |
-| `hypervisor_active` | bool / null | |
+| `hypervisor_active` | bool / null | Legacy: hardcoded-`false` stub, no longer sent by current providers; accepted in older providers' signed payloads for verification compat only |
 | `rdma_disabled` | bool / null | |
 | `sip_enabled` | bool / null | |
 | `secure_boot_enabled` | bool / null | |
@@ -359,4 +359,3 @@ Go: [`PrivacyCapabilities`](../../coordinator/protocol/messages.go); Swift: `Pri
 | `anti_debug_enabled` | bool |
 | `core_dumps_disabled` | bool |
 | `env_scrubbed` | bool |
-| `hypervisor_active` | bool |

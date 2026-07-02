@@ -2,9 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   MICRO_PER_USD,
   microToUsd,
-  usdToMicro,
   formatUsd,
-  formatUsdSigned,
   formatUsdWhole,
   formatUsdMicro,
 } from "@/lib/format/currency";
@@ -25,19 +23,11 @@ describe("format/currency", () => {
     expect(MICRO_PER_USD).toBe(1_000_000);
     expect(microToUsd(1_500_000)).toBe(1.5);
     expect(microToUsd(0)).toBe(0);
-    expect(usdToMicro(1.5)).toBe(1_500_000);
-    // integer rounding matches the server's integer math
-    expect(usdToMicro(0.0000005)).toBe(1);
   });
 
   it("formatUsd is fixed-decimals, unsigned", () => {
     expect(formatUsd(1.2)).toBe("$1.20");
     expect(formatUsd(1.239, 3)).toBe("$1.239");
-  });
-
-  it("formatUsdSigned prefixes negatives", () => {
-    expect(formatUsdSigned(-2.5)).toBe("-$2.50");
-    expect(formatUsdSigned(2.5)).toBe("$2.50");
   });
 
   it("formatUsdWhole uses separators and signs", () => {

@@ -19,8 +19,7 @@ extension CoordinatorClient {
             sipEnabled: SecurityChecks.isSIPEnabled(),
             antiDebugEnabled: true,
             coreDumpsDisabled: true,
-            envScrubbed: true,
-            hypervisorActive: SecurityChecks.isHypervisorActive()
+            envScrubbed: true
         )
         // Read the live advertised list (startup ∪ prefetched builds) rather
         // than the immutable `config.models`, so a re-registration after a

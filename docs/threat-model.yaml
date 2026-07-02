@@ -1449,7 +1449,11 @@ threats:
         status: implemented
       - description: GPU-side MLX buffers (Metal) are not explicitly zeroed between requests.
         status: open
-      - description: Hypervisor memory isolation (Stage 2 page tables) not implemented in Swift provider.
+      - description: >
+          No hardware memory isolation exists for inference memory. Hypervisor
+          Stage 2 page-table isolation was never implemented; the
+          hypervisor_active attestation field was a hardcoded-false stub and
+          has been removed from provider and coordinator.
         status: open
     open_findings: []
     severity: medium

@@ -927,8 +927,12 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		// tampering or the provider is signing a different canonical
 		// payload than this code expects.
 		statusInput := attestation.StatusCanonicalInput{
-			Nonce:             pc.nonce,
-			Timestamp:         pc.timestamp,
+			Nonce:     pc.nonce,
+			Timestamp: pc.timestamp,
+			// Legacy fleet compat only: old providers (< v0.6.31) sign
+			// hypervisor_active into the canonical status, so it must be
+			// carried into the reconstruction when reported. New providers
+			// omit it (nil). See attestation.StatusCanonicalInput.
 			HypervisorActive:  resp.HypervisorActive,
 			RDMADisabled:      resp.RDMADisabled,
 			SIPEnabled:        resp.SIPEnabled,
@@ -1049,7 +1053,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	// cluster runtimes. RDMA enablement is not itself a challenge failure:
 	// Apple Silicon Thunderbolt RDMA is IOMMU-scoped to registered buffers,
 	// so the security boundary is the signed runtime's buffer-registration
-	// discipline, not a hypervisor flag.
+	// discipline.
 	if resp.RDMADisabled == nil {
 		s.handleChallengeFailure(providerID, "RDMA status not reported — provider must update to v0.2.0+")
 		return
@@ -1058,7 +1062,6 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		s.logger.Info("provider RDMA enabled — accepting under registered-buffer RDMA policy",
 			"provider_id", providerID,
 			"backend", provider.Backend,
-			"hypervisor_active", resp.HypervisorActive,
 		)
 	}
 
@@ -1287,17 +1290,13 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		return
 	}
 
-	// Override self-reported privacy capabilities with coordinator-verified
-	// values from the challenge response. The coordinator independently checks
-	// SIP during each attestation challenge. Hypervisor status is preserved as
-	// a reported capability only; it is not the RDMA safety proof.
+	// Override the self-reported SIP capability with the coordinator-verified
+	// value from the challenge response. The coordinator independently checks
+	// SIP during each attestation challenge.
 	provider.Mu().Lock()
 	if provider.PrivacyCapabilities != nil {
 		if resp.SIPEnabled != nil {
 			provider.PrivacyCapabilities.SIPEnabled = *resp.SIPEnabled
-		}
-		if resp.HypervisorActive != nil {
-			provider.PrivacyCapabilities.HypervisorActive = *resp.HypervisorActive
 		}
 	}
 	provider.ChallengeVerifiedSIP = resp.SIPEnabled != nil && *resp.SIPEnabled
@@ -1330,7 +1329,6 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		"sip_enabled", resp.SIPEnabled,
 		"secure_boot_enabled", resp.SecureBootEnabled,
 		"rdma_disabled", resp.RDMADisabled,
-		"hypervisor_active", resp.HypervisorActive,
 		"binary_hash", resp.BinaryHash,
 		"active_model_hash", resp.ActiveModelHash,
 		"model_hashes_count", len(resp.ModelHashes),

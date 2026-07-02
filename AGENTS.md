@@ -74,7 +74,7 @@ scripts/              build, signing, install, and deploy helpers
 ├── publish-model.sh  model registry publish workflow
 ├── deploy-acme.sh    nginx/step-ca helper
 ├── fetch-metallib.sh MLX metallib builder (cmake from libs/mlx-swift source)
-└── entitlements.plist hardened runtime entitlements (hypervisor, network)
+└── entitlements.plist hardened runtime entitlements (network, keychain)
 
 docs/                 architecture, deploy runbooks, MDM/ACME notes, threat model
 .github/workflows/    CI (ci.yml), integration tests (integration.yml), Swift release (release-swift.yml),

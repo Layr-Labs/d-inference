@@ -50,16 +50,21 @@ type AttestationBlob struct {
 	ChipName                 string `json:"chipName"`
 	EncryptionPublicKey      string `json:"encryptionPublicKey,omitempty"`
 	HardwareModel            string `json:"hardwareModel"`
-	HypervisorActive         bool   `json:"hypervisorActive"`
-	OSVersion                string `json:"osVersion"`
-	PublicKey                string `json:"publicKey"`
-	RDMADisabled             bool   `json:"rdmaDisabled"`
-	SecureBootEnabled        bool   `json:"secureBootEnabled"`
-	SecureEnclaveAvailable   bool   `json:"secureEnclaveAvailable"`
-	SerialNumber             string `json:"serialNumber,omitempty"`
-	SIPEnabled               bool   `json:"sipEnabled"`
-	SystemVolumeHash         string `json:"systemVolumeHash,omitempty"`
-	Timestamp                string `json:"timestamp"`
+	// HypervisorActive — legacy fleet compat only: old providers (< v0.6.31)
+	// include this hardcoded-false field in their SIGNED blob JSON, so it must
+	// keep decoding (non-nil) for marshalSortedJSON to reconstruct the exact
+	// signed bytes. New providers omit it (nil). Remove once the fleet floor
+	// passes v0.6.31.
+	HypervisorActive       *bool  `json:"hypervisorActive,omitempty"`
+	OSVersion              string `json:"osVersion"`
+	PublicKey              string `json:"publicKey"`
+	RDMADisabled           bool   `json:"rdmaDisabled"`
+	SecureBootEnabled      bool   `json:"secureBootEnabled"`
+	SecureEnclaveAvailable bool   `json:"secureEnclaveAvailable"`
+	SerialNumber           string `json:"serialNumber,omitempty"`
+	SIPEnabled             bool   `json:"sipEnabled"`
+	SystemVolumeHash       string `json:"systemVolumeHash,omitempty"`
+	Timestamp              string `json:"timestamp"`
 }
 
 // SignedAttestation is a signed attestation blob with a base64-encoded
@@ -103,7 +108,6 @@ type VerificationResult struct {
 	SecureEnclaveAvailable   bool
 	SIPEnabled               bool
 	SecureBootEnabled        bool
-	HypervisorActive         bool
 	RDMADisabled             bool
 	AuthenticatedRootEnabled bool
 	SystemVolumeHash         string
@@ -136,7 +140,6 @@ func Verify(signed SignedAttestation) VerificationResult {
 		SecureEnclaveAvailable:   signed.Attestation.SecureEnclaveAvailable,
 		SIPEnabled:               signed.Attestation.SIPEnabled,
 		SecureBootEnabled:        signed.Attestation.SecureBootEnabled,
-		HypervisorActive:         signed.Attestation.HypervisorActive,
 		RDMADisabled:             signed.Attestation.RDMADisabled,
 		AuthenticatedRootEnabled: signed.Attestation.AuthenticatedRootEnabled,
 		SystemVolumeHash:         signed.Attestation.SystemVolumeHash,
@@ -299,7 +302,6 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 		"authenticatedRootEnabled": blob.AuthenticatedRootEnabled,
 		"chipName":                 blob.ChipName,
 		"hardwareModel":            blob.HardwareModel,
-		"hypervisorActive":         blob.HypervisorActive,
 		"osVersion":                blob.OSVersion,
 		"publicKey":                blob.PublicKey,
 		"rdmaDisabled":             blob.RDMADisabled,
@@ -316,6 +318,12 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 	}
 	if blob.EncryptionPublicKey != "" {
 		m["encryptionPublicKey"] = blob.EncryptionPublicKey
+	}
+	// Legacy fleet compat (< v0.6.31): old providers include the retired
+	// hypervisorActive field in the signed blob — reproduce it EXACTLY when
+	// present so their signatures keep verifying; new providers omit it.
+	if blob.HypervisorActive != nil {
+		m["hypervisorActive"] = *blob.HypervisorActive
 	}
 	if blob.SerialNumber != "" {
 		m["serialNumber"] = blob.SerialNumber
@@ -335,15 +343,18 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 // Go's encoding/json map ordering and the Swift provider's canonical
 // encoder, which produce identical bytes for equivalent content).
 //
-// Fields that are absent on the provider side (e.g. hypervisor not
-// active, no model loaded yet) are omitted from the canonical payload —
-// "unknown" must serialize differently than "false" so a downgrade
-// attacker can't strip a sip_enabled=true claim and have it look like
-// the provider just didn't report it. Both sides must follow the same
-// convention.
+// Fields that are absent on the provider side (e.g. no model loaded
+// yet) are omitted from the canonical payload — "unknown" must
+// serialize differently than "false" so a downgrade attacker can't
+// strip a sip_enabled=true claim and have it look like the provider
+// just didn't report it. Both sides must follow the same convention.
 type StatusCanonicalInput struct {
-	Nonce             string
-	Timestamp         string
+	Nonce     string
+	Timestamp string
+	// HypervisorActive — legacy fleet compat only: old providers (< v0.6.31)
+	// sign hypervisor_active into the canonical status. The concept is
+	// retired — new providers omit it. Remove once the fleet floor passes
+	// v0.6.31.
 	HypervisorActive  *bool
 	RDMADisabled      *bool
 	SIPEnabled        *bool
@@ -381,6 +392,9 @@ func BuildStatusCanonical(in StatusCanonicalInput) ([]byte, error) {
 		"nonce":     in.Nonce,
 		"timestamp": in.Timestamp,
 	}
+	// Legacy fleet compat only: old providers (< v0.6.31) sign
+	// hypervisor_active into the canonical status. The concept is retired —
+	// new providers omit it. Remove once the fleet floor passes v0.6.31.
 	if in.HypervisorActive != nil {
 		m["hypervisor_active"] = *in.HypervisorActive
 	}

@@ -368,7 +368,7 @@ public struct SecurityPosture: Sendable {
 ///
 /// Throws `SecurityError.sipDisabled` if SIP is off. RDMA is no longer a
 /// startup-fatal condition; it is included in the signed posture report.
-public func verifySecurityPosture(hypervisorActive _: Bool = false) throws -> SecurityPosture {
+public func verifySecurityPosture() throws -> SecurityPosture {
     let sipEnabled = checkSIPEnabled()
     if !sipEnabled {
         throw SecurityError.sipDisabled

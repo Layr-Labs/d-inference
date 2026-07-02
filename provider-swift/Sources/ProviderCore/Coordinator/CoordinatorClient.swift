@@ -273,10 +273,6 @@ enum SecurityChecks {
     static func isSIPEnabled() -> Bool {
         SIPStatusChecker().isFullyEnabled()
     }
-
-    static func isHypervisorActive() -> Bool {
-        false
-    }
 }
 
 

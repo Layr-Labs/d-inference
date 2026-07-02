@@ -167,6 +167,11 @@ type RegisterMessage struct {
 }
 
 // PrivacyCapabilities describes the provider's privacy invariants at registration time.
+//
+// Note: legacy providers (< v0.6.31) also send a `hypervisor_active` key here.
+// The concept is retired (Darkbloom never uses hypervisors — it was a
+// hardcoded-false stub) and is intentionally not modeled; encoding/json drops
+// unknown fields, so old providers remain wire-compatible.
 type PrivacyCapabilities struct {
 	TextBackendInprocess    bool `json:"text_backend_inprocess"`
 	TextProxyDisabled       bool `json:"text_proxy_disabled"`
@@ -176,7 +181,6 @@ type PrivacyCapabilities struct {
 	AntiDebugEnabled        bool `json:"anti_debug_enabled"`
 	CoreDumpsDisabled       bool `json:"core_dumps_disabled"`
 	EnvScrubbed             bool `json:"env_scrubbed"`
-	HypervisorActive        bool `json:"hypervisor_active"`
 }
 
 // HeartbeatMessage is sent periodically by connected providers.
@@ -488,12 +492,17 @@ type AttestationChallengeMessage struct {
 // which case the status fields are treated as advisory (not a basis for
 // trust upgrades).
 type AttestationResponseMessage struct {
-	Type              string `json:"type"`
-	Nonce             string `json:"nonce"`                         // echoed back from the challenge
-	Signature         string `json:"signature"`                     // base64-encoded signature of nonce+timestamp
-	StatusSignature   string `json:"status_signature,omitempty"`    // base64-encoded signature of canonical status JSON (see attestation.BuildStatusCanonical)
-	PublicKey         string `json:"public_key"`                    // base64-encoded public key
-	HypervisorActive  *bool  `json:"hypervisor_active,omitempty"`   // reported hypervisor containment status, if any
+	Type            string `json:"type"`
+	Nonce           string `json:"nonce"`                      // echoed back from the challenge
+	Signature       string `json:"signature"`                  // base64-encoded signature of nonce+timestamp
+	StatusSignature string `json:"status_signature,omitempty"` // base64-encoded signature of canonical status JSON (see attestation.BuildStatusCanonical)
+	PublicKey       string `json:"public_key"`                 // base64-encoded public key
+	// HypervisorActive — legacy fleet compat only: old providers (< v0.6.31)
+	// sign hypervisor_active into the canonical status (see
+	// attestation.BuildStatusCanonical), so this field must keep decoding for
+	// their StatusSignature to verify. The concept is retired — new providers
+	// omit it. Remove once the fleet floor passes v0.6.31.
+	HypervisorActive  *bool  `json:"hypervisor_active,omitempty"`
 	RDMADisabled      *bool  `json:"rdma_disabled,omitempty"`       // fresh RDMA status (true = disabled, false = enabled)
 	SIPEnabled        *bool  `json:"sip_enabled,omitempty"`         // fresh SIP status at challenge time
 	SecureBootEnabled *bool  `json:"secure_boot_enabled,omitempty"` // fresh Secure Boot status

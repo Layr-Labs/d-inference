@@ -246,7 +246,6 @@ public enum ProviderMessage: Sendable, Equatable {
         public var signature: String
         public var statusSignature: String?
         public var publicKey: String
-        public var hypervisorActive: Bool?
         public var rdmaDisabled: Bool?
         public var sipEnabled: Bool?
         public var secureBootEnabled: Bool?
@@ -262,7 +261,6 @@ public enum ProviderMessage: Sendable, Equatable {
             signature: String,
             statusSignature: String? = nil,
             publicKey: String,
-            hypervisorActive: Bool? = nil,
             rdmaDisabled: Bool? = nil,
             sipEnabled: Bool? = nil,
             secureBootEnabled: Bool? = nil,
@@ -277,7 +275,6 @@ public enum ProviderMessage: Sendable, Equatable {
             self.signature = signature
             self.statusSignature = statusSignature
             self.publicKey = publicKey
-            self.hypervisorActive = hypervisorActive
             self.rdmaDisabled = rdmaDisabled
             self.sipEnabled = sipEnabled
             self.secureBootEnabled = secureBootEnabled
@@ -364,7 +361,6 @@ extension ProviderMessage: Codable {
         // AttestationResponse
         case nonce, signature
         case statusSignature = "status_signature"
-        case hypervisorActive = "hypervisor_active"
         case rdmaDisabled = "rdma_disabled"
         case sipEnabled = "sip_enabled"
         case secureBootEnabled = "secure_boot_enabled"
@@ -455,7 +451,6 @@ extension ProviderMessage: Codable {
             try container.encode(a.signature, forKey: .signature)
             try container.encodeIfPresent(a.statusSignature, forKey: .statusSignature)
             try container.encode(a.publicKey, forKey: .publicKey)
-            try container.encodeIfPresent(a.hypervisorActive, forKey: .hypervisorActive)
             try container.encodeIfPresent(a.rdmaDisabled, forKey: .rdmaDisabled)
             try container.encodeIfPresent(a.sipEnabled, forKey: .sipEnabled)
             try container.encodeIfPresent(a.secureBootEnabled, forKey: .secureBootEnabled)
@@ -574,7 +569,6 @@ extension ProviderMessage: Codable {
                 signature: try container.decode(String.self, forKey: .signature),
                 statusSignature: try container.decodeIfPresent(String.self, forKey: .statusSignature),
                 publicKey: try container.decode(String.self, forKey: .publicKey),
-                hypervisorActive: try container.decodeIfPresent(Bool.self, forKey: .hypervisorActive),
                 rdmaDisabled: try container.decodeIfPresent(Bool.self, forKey: .rdmaDisabled),
                 sipEnabled: try container.decodeIfPresent(Bool.self, forKey: .sipEnabled),
                 secureBootEnabled: try container.decodeIfPresent(Bool.self, forKey: .secureBootEnabled),

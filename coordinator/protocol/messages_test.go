@@ -822,6 +822,33 @@ func TestProviderMessageUnmarshalRegister(t *testing.T) {
 	}
 }
 
+// TestProviderMessageUnmarshalRegisterLegacyHypervisorCapability is the
+// legacy-fleet wire guard for the retired hypervisor_active capability.
+// Old providers (< v0.6.31) still send it inside privacy_capabilities;
+// the Go field was removed, so it must decode as a harmless unknown
+// field — no error, all remaining capabilities intact.
+func TestProviderMessageUnmarshalRegisterLegacyHypervisorCapability(t *testing.T) {
+	raw := `{"type":"register","hardware":{"chip_name":"Apple M3 Max","memory_gb":64},"models":[{"id":"m1","model_type":"chat","quantization":"4bit"}],"backend":"mlx_swift","privacy_capabilities":{"text_backend_inprocess":true,"text_proxy_disabled":true,"python_runtime_locked":true,"dangerous_modules_blocked":true,"sip_enabled":true,"anti_debug_enabled":true,"core_dumps_disabled":true,"env_scrubbed":true,"hypervisor_active":false}}`
+
+	var pm ProviderMessage
+	if err := json.Unmarshal([]byte(raw), &pm); err != nil {
+		t.Fatalf("legacy register frame with hypervisor_active must decode: %v", err)
+	}
+
+	reg, ok := pm.Payload.(*RegisterMessage)
+	if !ok {
+		t.Fatalf("payload type = %T, want *RegisterMessage", pm.Payload)
+	}
+	caps := reg.PrivacyCapabilities
+	if caps == nil {
+		t.Fatal("privacy_capabilities missing after decode")
+	}
+	if !caps.TextBackendInprocess || !caps.TextProxyDisabled || !caps.SIPEnabled ||
+		!caps.AntiDebugEnabled || !caps.CoreDumpsDisabled || !caps.EnvScrubbed {
+		t.Fatalf("privacy capabilities lost around the ignored hypervisor_active field: %+v", caps)
+	}
+}
+
 func TestProviderMessageUnmarshalHeartbeat(t *testing.T) {
 	raw := `{"type":"heartbeat","status":"idle","active_model":null,"stats":{"requests_served":0,"tokens_generated":0}}`
 

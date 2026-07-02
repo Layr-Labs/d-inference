@@ -92,7 +92,6 @@ sequenceDiagram
 | In-process inference | MLX runs inside the provider process — no subprocess, local server, or IPC to observe |
 | Hardened Runtime + SIP | Blocks debugger attachment, memory reads, and code injection; immutable for the process lifetime |
 | `PT_DENY_ATTACH` | Kernel-level denial of debugger attach |
-| Hypervisor memory isolation | `Hypervisor.framework` Stage-2 page tables protect inference memory from RDMA/DMA attacks |
 
 ### Attestation & trust
 

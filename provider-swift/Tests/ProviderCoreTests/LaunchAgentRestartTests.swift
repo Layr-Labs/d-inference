@@ -21,6 +21,27 @@ struct LaunchAgentRestartTests {
         #expect(message.contains("kickstart"))
         #expect(message.contains("boom"))
     }
+
+    // `darkbloom stop` must persistently disable the agent (launchctl disable)
+    // in addition to bootout: bootout only affects the current login session,
+    // and the plist left on disk (RunAtLoad=true) would otherwise restart the
+    // provider at the next reboot/login. If the disable fails, the error must
+    // warn the user about exactly that.
+    @Test("disableFailed warns the provider may auto-start at next login")
+    func disableFailedDescription() {
+        let message = LaunchAgentError.disableFailed("boom").description
+        #expect(message.contains("disable"))
+        #expect(message.contains("auto-start"))
+        #expect(message.contains("boom"))
+    }
+
+    @Test("watchdog disableFailed warns it may auto-start at next login")
+    func watchdogDisableFailedDescription() {
+        let message = WatchdogAgentError.disableFailed("boom").description
+        #expect(message.contains("disable"))
+        #expect(message.contains("auto-start"))
+        #expect(message.contains("boom"))
+    }
 }
 
 @Suite("LaunchAgent environment passthrough")

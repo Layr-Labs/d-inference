@@ -9,10 +9,10 @@ export function formatNumber(n: number): string {
   return n.toLocaleString();
 }
 
+// Never abbreviated (no K/M) — full dollar amounts with thousands separators.
 export function formatUSDFromMicro(value: number): string {
   const dollars = value / 1_000_000;
-  if (dollars >= 1000) return `$${formatNumber(Math.round(dollars))}`;
-  if (dollars >= 10) return `$${dollars.toFixed(0)}`;
+  if (dollars >= 10) return `$${Math.round(dollars).toLocaleString("en-US")}`;
   return `$${dollars.toFixed(2)}`;
 }
 

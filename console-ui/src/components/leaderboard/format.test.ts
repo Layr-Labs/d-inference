@@ -75,8 +75,9 @@ describe("formatUSDFromMicro", () => {
     expect(formatUSDFromMicro(42_000_000)).toBe("$42");
   });
 
-  it("abbreviates $1000 and up", () => {
-    expect(formatUSDFromMicro(1_500_000_000_000)).toBe("$1.5M");
+  it("never abbreviates — full number with separators", () => {
+    expect(formatUSDFromMicro(1_500_000_000_000)).toBe("$1,500,000");
+    expect(formatUSDFromMicro(2_190_000_000)).toBe("$2,190");
   });
 });
 
@@ -90,9 +91,9 @@ describe("formatAnnualizedUSD", () => {
     expect(formatAnnualizedUSD(0)).toBe("$0.00");
   });
 
-  it("abbreviates large annualized figures", () => {
-    // $10 earned in 24h -> $3,650/yr -> abbreviated
-    expect(formatAnnualizedUSD(10_000_000)).toBe("$3.6K");
+  it("shows large annualized figures in full", () => {
+    // $10 earned in 24h -> $3,650/yr
+    expect(formatAnnualizedUSD(10_000_000)).toBe("$3,650");
   });
 });
 

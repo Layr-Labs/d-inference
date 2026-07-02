@@ -39,6 +39,11 @@ export function LeaderboardContent() {
                     : " Ranked by tokens served in the 24h window."}
                   {updatedAt ? ` Updated ${updatedAt}.` : ""}
                 </p>
+                <p className="mt-2 max-w-xl rounded-lg border border-border-dim bg-bg-secondary px-3 py-2 text-xs text-text-tertiary">
+                  These figures are a <span className="text-text-secondary">snapshot of the last 24 hours</span>,
+                  not a guarantee. Real-world demand fluctuates and the network is still in early ramp-up,
+                  so annualized rates will shift as request volume, pricing, and provider participation change.
+                </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <MetricToggle metric={metric} onChange={setMetric} />

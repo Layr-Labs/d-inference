@@ -2,6 +2,7 @@ package api
 
 import (
 	"sync"
+	"unsafe"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 )
@@ -66,11 +67,24 @@ type chunkKeyCache struct {
 	m  map[*[32]byte]chunkKeyEntry
 	// dead tombstones privs whose request hit a terminal path (forget /
 	// forgetAndZero). sharedKey refuses to (re-)cache a tombstoned priv.
-	// Bounded by chunkKeyDeadMax with a wholesale drop, like m. Note the
-	// entries pin their 32-byte priv arrays from the GC until that drop —
-	// bounded and secret-free (the SHARED key is what the cache zeroes; the
-	// priv array lives on in its PendingRequest anyway).
-	dead map[*[32]byte]struct{}
+	// Bounded by chunkKeyDeadMax with a wholesale drop, like m.
+	//
+	// Keyed by the priv's ADDRESS (uintptr), not the pointer, so a tombstone
+	// never pins the 32-byte private-key array in the heap after its
+	// PendingRequest is gone — retaining dead key material would undermine
+	// the forget-on-terminal hygiene this cache exists for. The trade is a
+	// benign ABA: after the GC reclaims a tombstoned array, a future
+	// SessionPrivKey allocated at the same address is falsely treated as
+	// dead — its stream still decrypts correctly (sharedKey always returns a
+	// freshly computed key), it just recomputes per chunk until the wholesale
+	// drop clears the stale tombstone. Perf-only, rare, self-healing.
+	//
+	// Why a tombstone rather than refcounting or an owner-managed lifecycle:
+	// the racing readers (late chunks on the provider read loop) are
+	// fire-and-forget with no owner to release against, and the race window
+	// is milliseconds; a lock-only O(1) set that self-expires via the
+	// wholesale drop is the smallest mechanism that closes it.
+	dead map[uintptr]struct{}
 }
 
 type chunkKeyEntry struct {
@@ -96,7 +110,7 @@ func (c *chunkKeyCache) sharedKey(priv *[32]byte, peerPub string) (*[32]byte, er
 	shared := e2e.PrecomputeSharedKey(&pub, priv)
 
 	c.mu.Lock()
-	if _, gone := c.dead[priv]; gone {
+	if _, gone := c.dead[uintptr(unsafe.Pointer(priv))]; gone {
 		// The request hit a terminal path while the lock was dropped for the
 		// compute (or this is a late chunk of an already-forgotten request):
 		// hand the key back for this one decrypt but do NOT cache it — no
@@ -123,9 +137,9 @@ func (c *chunkKeyCache) sharedKey(priv *[32]byte, peerPub string) (*[32]byte, er
 // path can race a late decrypt (see the field comment).
 func (c *chunkKeyCache) markDeadLocked(priv *[32]byte) {
 	if c.dead == nil || len(c.dead) >= chunkKeyDeadMax {
-		c.dead = make(map[*[32]byte]struct{})
+		c.dead = make(map[uintptr]struct{})
 	}
-	c.dead[priv] = struct{}{}
+	c.dead[uintptr(unsafe.Pointer(priv))] = struct{}{}
 }
 
 // forget drops the cached shared key for a finished request WITHOUT zeroing

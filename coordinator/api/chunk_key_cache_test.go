@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -291,10 +292,17 @@ func TestChunkKeyCacheDeadTombstoneCapResets(t *testing.T) {
 	first[0] = 0xF1
 	c.forget(first)
 	// chunkKeyDeadMax more tombstones guarantee at least one wholesale reset
-	// after first's tombstone landed.
+	// after first's tombstone landed. The fillers must be KEPT ALIVE for the
+	// duration of the loop: tombstones are keyed by address (uintptr, no GC
+	// pinning — that's the point of the design), so letting the GC reclaim
+	// fillers mid-loop would reuse addresses and the set would never reach
+	// the cap.
+	fillers := make([]*[32]byte, chunkKeyDeadMax)
 	for i := 0; i < chunkKeyDeadMax; i++ {
-		c.forget(new([32]byte))
+		fillers[i] = new([32]byte)
+		c.forget(fillers[i])
 	}
+	runtime.KeepAlive(fillers)
 	c.mu.Lock()
 	deadLen := len(c.dead)
 	c.mu.Unlock()

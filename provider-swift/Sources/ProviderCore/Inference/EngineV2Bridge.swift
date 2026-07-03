@@ -40,9 +40,10 @@ import os
 /// Event framing intentionally mirrors `BatchScheduler+EngineBridge`
 /// exactly (fixture-pinned in `EngineV2BridgeTests`):
 ///   * text deltas       → `.chunk(text)` (empty deltas suppressed)
-///   * finish stop/length→ `.info(prompt, completion, tps)` then finish
-///   * cancelled         → `.info(usage)` if any tokens were produced,
-///                         then `.error("request cancelled")`
+///   * finish stop/length→ `.info(prompt, completion, tps, reason)` then
+///                         finish (reason "stop"/"length" preserved)
+///   * cancelled         → `.info(usage, reason: nil)` if any tokens were
+///                         produced, then `.error("request cancelled")`
 ///   * engine error      → `.error(message)` (no `.info` — matches legacy)
 ///   * admission failure → single `.error("token_budget_exhausted: …")`
 ///   * stream torn down  → `.error("request stream closed by engine teardown")`

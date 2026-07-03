@@ -38,8 +38,10 @@ struct LegacyCompiledDecodeGateTests {
             LegacyCompiledDecodeGate.resolvedOverride(
                 configEnabled: true,
                 environment: ["DARKBLOOM_COMPILED_DECODE": "0"]) == nil)
-        // Empty string counts as unset (matches the library's read, which
-        // only sees set-and-nonempty as an operator decision).
+        // Empty string counts as unset by the GATE (an empty export is not
+        // an operator decision), so it forces "0". Note the library itself
+        // would treat a set-but-empty var as "not in the off-set" (ON) —
+        // stomping it to "0" here keeps the release posture deterministic.
         #expect(
             LegacyCompiledDecodeGate.resolvedOverride(
                 configEnabled: false,

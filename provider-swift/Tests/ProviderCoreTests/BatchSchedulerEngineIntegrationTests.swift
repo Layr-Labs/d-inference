@@ -211,7 +211,7 @@ struct BatchSchedulerEngineIntegrationTests {
 
     /// Loads a real model and submits a request through `BatchScheduler`,
     /// verifying the event order: at least one `.chunk(...)`, then
-    /// exactly one `.info(promptTokens, completionTokens, _)` with
+    /// exactly one `.info(promptTokens, completionTokens, _, _)` with
     /// non-zero counts, then the stream finishes.
     @Test(
         "submit yields chunks followed by exactly one .info, then finishes",

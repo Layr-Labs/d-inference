@@ -323,15 +323,19 @@ extension ProviderLoop {
             // selects the v2 engine for this model, build the real CBv2 engine
             // over the SAME loaded container, wrap it in an EngineV2Bridge, and
             // register it with the runtime so capacity/cancel fan-out works
-            // from the first request. nil on every legacy path — flag off,
-            // non-allowlisted model, VLM slot, or v2 init failure (which emits
-            // WARN engine_health telemetry and falls back to the scheduler
-            // below).
+            // from the first request. Allowlisted VLM slots (all prod Gemma 4
+            // checkpoints ship a vision tower) serve TEXT through v2 via the
+            // weight-sharing text-model extraction; the model directory is
+            // threaded through for its config.json. nil on every legacy path —
+            // flag off, non-allowlisted model, or v2 init/extraction failure
+            // (which emits WARN engine_health telemetry and falls back to the
+            // scheduler below).
             let slotIsVLM = Self.modelIsVLM(at: modelPath)
             let engineV2Bridge = await makeEngineV2BridgeForSlot(
                 modelId: modelId,
                 modelType: modelInfo.modelType,
                 isVLM: slotIsVLM,
+                modelDirectory: modelPath,
                 container: container,
                 tokenizer: tokenizer,
                 scheduler: scheduler

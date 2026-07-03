@@ -225,6 +225,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // Multimodal (image/video) requests can't flow through the token-only
         // batched engine. For VLM models, serve them via the container's
         // non-batched prepare/generate vision path.
+        //
+        // ORDERING CONTRACT (v0.7.2 VLM text routing): this media check MUST
+        // stay ABOVE the engineV2Bridge branch below. A VLM slot may carry a
+        // v2 bridge built over its extracted text model — text-only requests
+        // route through that bridge, but image/video requests must keep this
+        // legacy vision path (the extracted text model cannot embed pixels).
         if isVLM, let container, VLMRequestInference.hasMedia(request) {
             // Decode + validate inline media SYNCHRONOUSLY, before returning the
             // stream. A MediaError (oversized/malformed/non-`data:` payload) thrown

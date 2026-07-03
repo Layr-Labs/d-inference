@@ -31,6 +31,7 @@
 import Foundation
 import MLXLMCommon
 import MLXLMServer
+import ProviderCoreFoundation
 
 /// Bridges `MLXServerEngine` to Darkbloom's multi-model `BatchScheduler`
 /// registry. One instance per process; dispatches each request to the
@@ -340,11 +341,25 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 modelId: request.model,
                 modelType: modelType
             )
-            promptTokens = try tokenizer.inner.applyChatTemplate(
-                messages: ChatTemplateFixes.normalizeMessages(messages, context: fixContext),
-                tools: ChatTemplateFixes.normalizeTools(toolSpecs, context: fixContext),
-                additionalContext: additionalContext
-            )
+            if DeepseekV4TemplateFix.applies(to: fixContext) {
+                // DeepSeek-V4 ships no Jinja chat_template at all — render
+                // the prompt with the native DSML encoder and tokenize the
+                // resulting string directly instead of going through
+                // `applyChatTemplate` (which would throw
+                // `missingChatTemplate`).
+                let promptString = try DeepseekV4Encoding.encode(
+                    messages: messages,
+                    tools: toolSpecs,
+                    reasoningEffort: reasoningEffort
+                )
+                promptTokens = tokenizer.inner.encode(text: promptString, addSpecialTokens: false)
+            } else {
+                promptTokens = try tokenizer.inner.applyChatTemplate(
+                    messages: ChatTemplateFixes.normalizeMessages(messages, context: fixContext),
+                    tools: ChatTemplateFixes.normalizeTools(toolSpecs, context: fixContext),
+                    additionalContext: additionalContext
+                )
+            }
         } catch {
             await releaseBox.fire()
             throw error
@@ -555,11 +570,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // Drop JSON `null` / `Optional` leaves the Jinja bridge
         // can't convert before rendering (mirrors `streamChatCompletion`).
         let fixContext = ChatTemplateFixContext(modelId: request.model)
-        let tokens = try tokenizer.inner.applyChatTemplate(
-            messages: ChatTemplateFixes.normalizeMessages(messages, context: fixContext),
-            tools: ChatTemplateFixes.normalizeTools(tools, context: fixContext),
-            additionalContext: nil
-        )
+        let tokens: [Int]
+        if DeepseekV4TemplateFix.applies(to: fixContext) {
+            let promptString = try DeepseekV4Encoding.encode(messages: messages, tools: tools)
+            tokens = tokenizer.inner.encode(text: promptString, addSpecialTokens: false)
+        } else {
+            tokens = try tokenizer.inner.applyChatTemplate(
+                messages: ChatTemplateFixes.normalizeMessages(messages, context: fixContext),
+                tools: ChatTemplateFixes.normalizeTools(tools, context: fixContext),
+                additionalContext: nil
+            )
+        }
         return TokenizeResponse(tokens: tokens)
     }
 

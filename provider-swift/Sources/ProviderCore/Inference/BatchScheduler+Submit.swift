@@ -390,9 +390,20 @@ extension BatchScheduler {
         }
         let promptTokens: [Int]
         do {
-            promptTokens = try tk.inner.applyChatTemplate(
-                messages: messages, tools: nil, additionalContext: nil
-            )
+            let fixContext = ChatTemplateFixContext(modelId: modelId)
+            if DeepseekV4TemplateFix.applies(to: fixContext) {
+                // DeepSeek-V4 has no Jinja chat_template; this legacy
+                // role/content-only path (no tools, no reasoning_content —
+                // see the comment above `messages`) still needs the native
+                // DSML encoder instead of `applyChatTemplate`, which would
+                // throw `missingChatTemplate`.
+                let promptString = try DeepseekV4Encoding.encode(messages: messages)
+                promptTokens = tk.inner.encode(text: promptString, addSpecialTokens: false)
+            } else {
+                promptTokens = try tk.inner.applyChatTemplate(
+                    messages: messages, tools: nil, additionalContext: nil
+                )
+            }
         } catch {
             continuation.yield(.error("Failed to tokenize: \(error.localizedDescription)"))
             continuation.finish()

@@ -125,4 +125,6 @@ export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([
   "reservations",
   "request_id",
   "age_seconds",
+  // Vision-through-engine_v2 tag (mirror of Go + Swift allowlists).
+  "multimodal",
 ]);

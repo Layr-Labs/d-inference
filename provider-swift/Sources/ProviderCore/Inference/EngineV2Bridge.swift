@@ -234,12 +234,20 @@ public actor EngineV2Bridge {
     /// entries for every engine delta that carries them (requires
     /// `request.logprobs == true` so the translated sampling params ask
     /// the engine to capture them).
+    ///
+    /// `multimodal` (v0.7.4) is the precomputed vision-prefill input for an
+    /// image request (`EngineV2VisionPrefill.PreparedSubmission
+    /// .multimodalInput()` — spans over `promptTokens`' placeholder runs,
+    /// embeddings already evaluated). nil ⇒ text request, byte-identical to
+    /// the pre-multimodal path. Submit-time `CBv2MultimodalError` rejections
+    /// surface as `multimodal_rejected: …` stream errors (→ 400).
     public func submitTokenized(
         promptTokens: [Int],
         request: ChatCompletionRequest,
         requestId: String? = nil,
         cacheScope: String = "",
-        logprobsChannel: EngineV2LogprobsChannel? = nil
+        logprobsChannel: EngineV2LogprobsChannel? = nil,
+        multimodal: CBv2MultimodalInput? = nil
     ) async -> AsyncStream<GenerationEvent> {
         // Validate the caller-supplied id before it becomes a dictionary key /
         // cancel-correlation handle: a nil / empty / over-long / non-printable
@@ -272,7 +280,8 @@ public actor EngineV2Bridge {
             request: request,
             defaultMaxTokens: defaultMaxTokens,
             stopTokenIds: stopTokenIds,
-            cacheScope: cacheScope
+            cacheScope: cacheScope,
+            multimodal: multimodal
         )
 
         // SHARED-BUDGET ADMISSION GATE: reserve this request's worst-case KV
@@ -365,6 +374,14 @@ public actor EngineV2Bridge {
         idMap[id] = cbv2Id
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(now: .now)
+
+        // Vision-through-v2 engagement signal (v0.7.4): one INFO per image
+        // request the engine ACCEPTED, tagged `multimodal=true` on the
+        // existing engine_v2 fields so prod adoption is observable next to
+        // the `engine_v2_vision_fallback` WARNs. Allowlisted fields only.
+        if multimodal != nil {
+            emitVisionSubmitTelemetry(requestId: id)
+        }
 
         runPump(
             id: id, events: events, continuation: continuation,
@@ -629,6 +646,30 @@ public actor EngineV2Bridge {
             observedDecodeTpsEwma = tps
             ewmaInitialized = true
         }
+    }
+
+    /// Vision-through-v2 engagement (v0.7.4): INFO per engine-accepted image
+    /// request. PRIVACY: allowlisted operational fields only — the request's
+    /// media/prompt content never rides telemetry; `multimodal` is a bare
+    /// boolean tag.
+    private func emitVisionSubmitTelemetry(requestId: String) {
+        var event = TelemetryEvent(
+            source: .provider,
+            severity: .info,
+            kind: .engineHealth,
+            message: "engine_v2: vision request served via ContinuousBatchingV2"
+        )
+        // Filter-at-source, matching the other engine_health builders —
+        // every key is allowlisted already; the filter enforces it stays so.
+        event.fields = TelemetryFieldFilter.filter([
+            "component": .string("engine"),
+            "operation": .string("engine_v2_vision"),
+            "backend": .string("engine_v2"),
+            "model": .string(modelId),
+            "multimodal": .bool(true),
+        ])
+        event.requestId = requestId
+        emit(event)
     }
 
     /// PRIVACY: engine-error telemetry carries only allowlisted operational

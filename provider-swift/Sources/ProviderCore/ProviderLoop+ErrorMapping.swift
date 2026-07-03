@@ -58,6 +58,14 @@ extension ProviderLoop {
                 // Client fault: media sent to a non-VLM model. Fails
                 // identically on retry, so 400 (not a 5xx/retry signal).
                 return 400
+            case .multimodalRejected:
+                // v2 engine rejected the vision submission at submit time
+                // (bad spans / embedding mismatch / block over the per-step
+                // budget / non-multimodal model or backend). Deterministic
+                // for this request/engine pairing — 400, never a retry
+                // signal. (Provider-side construction failures never get
+                // here; they fall back to the legacy VLM path instead.)
+                return 400
             case .generationFailed:
                 return 500
             }

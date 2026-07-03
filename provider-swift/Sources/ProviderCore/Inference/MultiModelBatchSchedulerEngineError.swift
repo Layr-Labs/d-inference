@@ -56,6 +56,13 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// will fail identically on retry, so it surfaces as 400 — never let
     /// media silently fall through to the text-only path.
     case mediaUnsupportedByModel(String)
+    /// The v2 engine rejected a vision (multimodal) submission at submit
+    /// time (`CBv2MultimodalError` → the canonical `multimodal_rejected:`
+    /// message, see `EngineV2Translation.admissionErrorMessage`). Every
+    /// such rejection is deterministic for the request/engine pairing —
+    /// never transient capacity — so it surfaces as 400, not a retry
+    /// signal.
+    case multimodalRejected(String)
 
     public var errorDescription: String? {
         switch self {
@@ -78,6 +85,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
         case .mediaUnsupportedByModel(let id):
             return
                 "Model '\(id)' does not support image or video input on this provider"
+        case .multimodalRejected(let message):
+            return message
         }
     }
 
@@ -93,6 +102,13 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// `token_budget_exhausted: request queue full`.
     static func fromSchedulerMessage(_ message: String) -> MultiModelBatchSchedulerEngineError {
         let lowercased = message.lowercased()
+        // v2 vision submit rejections (`EngineV2Translation
+        // .admissionErrorMessage` for `CBv2MultimodalError`). Checked first:
+        // deterministic 400s that must never be mistaken for retryable
+        // capacity by the broader substring checks below.
+        if lowercased.hasPrefix(EngineV2Translation.multimodalRejectedPrefix) {
+            return .multimodalRejected(message)
+        }
         // Planner validation failures share the `token_budget_exhausted:`
         // prefix but are request-shape errors, NOT transient capacity
         // exhaustion. Map them to 400 (`.requestRejected`) so clients

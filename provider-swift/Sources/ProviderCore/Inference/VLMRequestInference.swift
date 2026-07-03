@@ -90,6 +90,24 @@ public enum VLMRequestInference {
         return false
     }
 
+    /// True when any message carries a video content part. v0.7.4 GATE: video
+    /// requests stay on this legacy path even when the slot carries an
+    /// engine_v2 bridge — the v2 vision-prefill seam is images-only for now.
+    /// Video is deliberately NOT half-supported on v2: Gemma-4 videos expand
+    /// to up to 32 per-frame placeholder blocks with per-frame (data-driven)
+    /// soft-token counts interleaved with timestamp text, and wiring that
+    /// span/embedding pairing has its own validation surface. The legacy
+    /// wrapper path serves video exactly as before.
+    public static func hasVideo(_ request: OpenAIChatCompletionRequest) -> Bool {
+        for message in request.messages {
+            guard case .parts(let parts) = message.content else { continue }
+            for part in parts {
+                if case .videoURL = part { return true }
+            }
+        }
+        return false
+    }
+
     /// Build the engine sampling parameters from an OpenAI request. Forwards all
     /// sampling penalties — repetition, presence, and frequency — so they take
     /// effect on image/video (VLM) requests, matching the text/batched engine.

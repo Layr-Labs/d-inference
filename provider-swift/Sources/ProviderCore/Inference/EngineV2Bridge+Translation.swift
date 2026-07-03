@@ -41,13 +41,17 @@ enum EngineV2Translation {
     ///   fallback — byte-identical hashes to the pre-salt behavior).
     ///   Forward plumbing only today: the production v2 engine is built
     ///   with `prefixCache: nil`.
+    /// * `multimodal` (v0.7.4) carries the precomputed vision-prefill spans
+    ///   + embeddings for image requests (`EngineV2VisionPrefill`); nil for
+    ///   text requests keeps the engine's text path byte-identical.
     static func cbv2Request(
         id: CBv2RequestID,
         promptTokens: [Int],
         request: ChatCompletionRequest,
         defaultMaxTokens: Int,
         stopTokenIds: Set<Int>,
-        cacheScope: String = ""
+        cacheScope: String = "",
+        multimodal: CBv2MultimodalInput? = nil
     ) -> CBv2Request {
         CBv2Request(
             id: id,
@@ -57,7 +61,8 @@ enum EngineV2Translation {
             stopTokens: stopTokenIds,
             stopStrings: request.stop?.asArray ?? [],
             priority: 0,
-            cacheSalt: cacheScope.isEmpty ? nil : cacheScope
+            cacheSalt: cacheScope.isEmpty ? nil : cacheScope,
+            multimodal: multimodal
         )
     }
 
@@ -201,7 +206,38 @@ enum EngineV2Translation {
     /// .fromSchedulerMessage` (and the coordinator) string-match to produce
     /// the retryable 429/503 classification — identical to the legacy
     /// engine's admission rejections.
+    /// Canonical marker for submit-time `CBv2MultimodalError` rejections.
+    /// `MultiModelBatchSchedulerEngineError.fromSchedulerMessage` maps it to
+    /// `.multimodalRejected` → 400: every case is a deterministic property
+    /// of the request/engine pairing (bad spans, mismatched embeddings, an
+    /// image block over the per-step budget, a non-multimodal model or
+    /// backend), never transient capacity — a retry fails identically, so a
+    /// retryable 429/503 signal would be a lie. In practice the provider's
+    /// own construction (`EngineV2VisionPrefill`) validates spans/embeddings
+    /// before submit and production engines always run the contiguous
+    /// backend, so these rejections indicate a provider-side gating bug and
+    /// double as its loud signal.
+    static let multimodalRejectedPrefix = "multimodal_rejected"
+
     static func admissionErrorMessage(for error: Error) -> String {
+        if let mmError = error as? CBv2MultimodalError {
+            switch mmError {
+            case .unsupportedModel(let detail):
+                return "\(multimodalRejectedPrefix): model cannot serve vision "
+                    + "through engine_v2 (\(detail))"
+            case .unsupportedBackend(let detail):
+                return "\(multimodalRejectedPrefix): backend cannot serve vision "
+                    + "through engine_v2 (\(detail))"
+            case .invalidSpans(let detail):
+                return "\(multimodalRejectedPrefix): invalid image spans (\(detail))"
+            case .spanTooLong(let blockTokens, let maxBatchedTokensPerStep):
+                return "\(multimodalRejectedPrefix): image block of \(blockTokens) "
+                    + "tokens exceeds the engine's per-step budget "
+                    + "(\(maxBatchedTokensPerStep))"
+            case .embeddingMismatch(let detail):
+                return "\(multimodalRejectedPrefix): image embeddings mismatch (\(detail))"
+            }
+        }
         if let kvError = error as? CBv2KVError {
             switch kvError {
             case .capacityExhausted(let needed, let available):

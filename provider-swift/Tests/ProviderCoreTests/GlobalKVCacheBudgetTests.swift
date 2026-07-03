@@ -1,4 +1,6 @@
+import Foundation
 import Testing
+
 @testable import ProviderCore
 
 // These exercise GlobalKVCacheBudget against the unified-cap headroom formula
@@ -143,4 +145,121 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 @Test func providerLoopMemoryReserveBytesSaturatesOnOverflow() {
     #expect(ProviderLoop.memoryReserveBytes(forGiB: 4) == 4 * 1024 * 1024 * 1024)
     #expect(ProviderLoop.memoryReserveBytes(forGiB: UInt64.max) == UInt64.max)
+}
+
+// MARK: - Sustained-rejection reservation audit (v0.7.3 black-hole hardening)
+
+/// Thread-safe capture sink for the budget's audit telemetry closure.
+private final class AuditEventLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [(severity: TelemetrySeverity, message: String, fields: [String: AnyCodableValue])] = []
+
+    func append(_ severity: TelemetrySeverity, _ message: String, _ fields: [String: AnyCodableValue]) {
+        lock.lock()
+        defer { lock.unlock() }
+        events.append((severity, message, fields))
+    }
+
+    func operations() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return events.compactMap { $0.fields["operation"]?.description }
+    }
+}
+
+/// Build a budget with tiny audit thresholds: 6 GiB cap headroom, so a leaked
+/// 6 GiB reservation makes EVERY later commit fail — the black-hole shape.
+private func makeAuditBudget(
+    log: AuditEventLog,
+    staleTTL: Duration = .milliseconds(50)
+) -> GlobalKVCacheBudget {
+    GlobalKVCacheBudget(
+        capFraction: 1.0,
+        activationReserveBytes: 0,
+        memorySnapshot: {
+            GlobalKVCacheBudget.MemorySnapshot(
+                total: 8 * gib, active: 0, cache: 0, systemAvailable: .max)
+        },
+        sustainedRejectionAuditThreshold: .milliseconds(40),
+        staleReservationTTL: staleTTL,
+        auditMinInterval: .milliseconds(10),
+        emitAuditEvent: { severity, message, fields in
+            log.append(severity, message, fields)
+        }
+    )
+}
+
+/// The incident shape, generalized: a reservation that never gets released
+/// wedges the budget into 100% rejection. After the sustained-rejection
+/// threshold, the audit must log the table, drop the stale entry, and the
+/// next commit must succeed — permanent black hole → self-healed blip.
+@Test func sustainedRejectionAuditDropsStaleReservationAndHeals() async throws {
+    let log = AuditEventLog()
+    let budget = makeAuditBudget(log: log)
+
+    // The leak: consumes the whole 6 GiB effective cap (8 GiB − 2 GiB floor).
+    await budget.reservePendingLoad(requestID: "pending-load:leaked", bytes: 6 * gib)
+
+    // Rejections must persist past BOTH the stale TTL and the audit
+    // threshold. Loop instead of one long sleep so the streak has failures
+    // on both ends of the threshold window.
+    var healed = false
+    for _ in 0 ..< 30 {
+        if await budget.reserve(requestID: "req-\(UUID().uuidString)", kvBytesPerToken: 1, tokenCount: Int(gib)) {
+            healed = true
+            break
+        }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+
+    #expect(healed, "budget never healed — the stale reservation was not dropped")
+    let ids = await budget.reservationIDsForTesting()
+    #expect(!ids.contains("pending-load:leaked"))
+    let operations = log.operations()
+    #expect(operations.contains("kv_budget_sustained_rejection"))
+    #expect(operations.contains("kv_budget_stale_reservation_dropped"))
+}
+
+/// Fresh (younger than the TTL) reservations are live work and must survive
+/// the audit even during a full-rejection streak — the audit only ever drops
+/// entries no plausible request/load lifetime can explain.
+@Test func sustainedRejectionAuditKeepsFreshReservations() async throws {
+    let log = AuditEventLog()
+    // TTL far above the test duration: everything stays "fresh".
+    let budget = makeAuditBudget(log: log, staleTTL: .seconds(60))
+
+    await budget.reservePendingLoad(requestID: "pending-load:live", bytes: 6 * gib)
+
+    for _ in 0 ..< 12 {
+        _ = await budget.reserve(
+            requestID: "req-\(UUID().uuidString)", kvBytesPerToken: 1, tokenCount: Int(gib))
+        try await Task.sleep(for: .milliseconds(10))
+    }
+
+    // The audit fired (CRITICAL visibility)…
+    #expect(log.operations().contains("kv_budget_sustained_rejection"))
+    // …but dropped nothing.
+    #expect(!log.operations().contains("kv_budget_stale_reservation_dropped"))
+    let ids = await budget.reservationIDsForTesting()
+    #expect(ids.contains("pending-load:live"))
+}
+
+/// A successful commit resets the rejection streak: intermittent capacity
+/// pressure (rejections interleaved with successes) must never trigger the
+/// audit — it is reserved for the every-commit-fails black hole.
+@Test func successfulCommitsResetTheRejectionStreak() async throws {
+    let log = AuditEventLog()
+    let budget = makeAuditBudget(log: log)
+
+    for i in 0 ..< 8 {
+        // Too big — rejected (5 GiB headroom left under the 6 GiB cap after
+        // the small success below on later iterations).
+        _ = await budget.reserve(requestID: "big-\(i)", kvBytesPerToken: 1, tokenCount: Int(7 * gib))
+        // Small — succeeds, resetting the streak.
+        #expect(await budget.reserve(requestID: "small-\(i)", kvBytesPerToken: 1, tokenCount: 1024))
+        await budget.release(requestID: "small-\(i)")
+        try await Task.sleep(for: .milliseconds(10))
+    }
+
+    #expect(log.operations().isEmpty, "audit fired despite interleaved successful commits")
 }

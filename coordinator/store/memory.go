@@ -2136,7 +2136,7 @@ func (s *MemoryStore) GetStripeWithdrawalByPayoutID(payoutID string) (*StripeWit
 	defer s.mu.RUnlock()
 	id, ok := s.stripeWithdrawalsByPayoutID[payoutID]
 	if !ok {
-		return nil, fmt.Errorf("stripe withdrawal with payout %q not found", payoutID)
+		return nil, fmt.Errorf("stripe withdrawal with payout %q: %w", payoutID, ErrNotFound)
 	}
 	w := s.stripeWithdrawalsByID[id]
 	cp := *w
@@ -2148,7 +2148,7 @@ func (s *MemoryStore) GetStripeWithdrawalByTransferID(transferID string) (*Strip
 	defer s.mu.RUnlock()
 	id, ok := s.stripeWithdrawalsByTransferID[transferID]
 	if !ok {
-		return nil, fmt.Errorf("stripe withdrawal with transfer %q not found", transferID)
+		return nil, fmt.Errorf("stripe withdrawal with transfer %q: %w", transferID, ErrNotFound)
 	}
 	w := s.stripeWithdrawalsByID[id]
 	cp := *w

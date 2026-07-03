@@ -1795,7 +1795,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/billing/stripe/status", s.requireAuth(s.handleStripeStatus))
 	s.mux.HandleFunc("POST /v1/billing/withdraw/stripe", s.requireAuth(s.handleStripeWithdraw))
 	s.mux.HandleFunc("GET /v1/billing/stripe/withdrawals", s.requireAuth(s.handleStripeWithdrawals))
-	s.mux.HandleFunc("DELETE /v1/billing/stripe/account", s.requireAuth(s.handleStripeUnlink))
+	// requirePrivyAuth (not requireAuth): unlink is an account-management
+	// operation — a leaked inference API key must not be able to detach the
+	// user's payout account.
+	s.mux.HandleFunc("DELETE /v1/billing/stripe/account", s.requirePrivyAuth(s.handleStripeUnlink))
 	s.mux.HandleFunc("POST /v1/billing/stripe/connect/webhook", s.handleStripeConnectWebhook) // no auth — Stripe signs it
 
 	// Pricing — GET is public, PUT/DELETE require auth

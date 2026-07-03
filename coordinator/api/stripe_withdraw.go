@@ -1,15 +1,12 @@
 package api
 
-// Stripe withdrawal handler — POST /v1/billing/withdraw/stripe.
-// Split from stripe_payouts.go (onboard/status/unlink) and
-// stripe_payouts_webhooks.go (Connect webhook state machine).
-
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -115,14 +112,20 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 	}
 	if acct.PayoutInterval == "manual" {
 		// Self-heal accounts created by older code: a manual schedule strands
-		// transferred funds in the connected account balance forever.
+		// transferred funds in the connected account balance forever. Delivery
+		// depends entirely on the daily sweep (the instant path falls back to
+		// it too), so if the heal fails we abort BEFORE the ledger debit
+		// rather than park the user's money behind a schedule that never pays
+		// out — the exact bug this path exists to fix.
 		if herr := s.billing.StripeConnect().UpdateAccountPayoutScheduleDaily(user.StripeAccountID); herr != nil {
-			s.logger.Warn("stripe payout: payout schedule self-heal failed",
+			s.logger.Error("stripe payout: payout schedule self-heal failed — refusing withdrawal",
 				"stripe_account_id", user.StripeAccountID, "error", herr)
-		} else {
-			s.logger.Info("stripe payout: payout schedule healed to daily",
-				"stripe_account_id", user.StripeAccountID)
+			writeJSON(w, http.StatusBadGateway, errorResponse("stripe_error",
+				"could not enable automatic payouts on your account — try again shortly"))
+			return
 		}
+		s.logger.Info("stripe payout: payout schedule healed to daily",
+			"stripe_account_id", user.StripeAccountID)
 	}
 	// Instant requires a debit-card destination. Trust either the fresh
 	// snapshot or the webhook-maintained flag — if both are stale and Stripe
@@ -260,11 +263,13 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 	}
 	wd.TransferID = transfer.ID
 	wd.Status = "transferred"
-	if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
-		// Transfer succeeded but we lost track of it. Money is in the
-		// connected account; the daily auto-payout will move it. Don't
-		// refund — that would double-credit the user.
-		s.logger.Error("stripe payout: persist transfer_id failed",
+	if err := s.persistWithdrawalUpdate(wd, "transfer_id"); err != nil {
+		// Transfer succeeded but we lost track of it: the row is stuck
+		// "pending" with no transfer_id, invisible to the webhook matcher and
+		// sweep reconciler. Money is in the connected account and the daily
+		// auto-payout still delivers it — don't refund (double-credit). The
+		// reconciler's stale-pending alert surfaces the row for ops.
+		s.logger.Error("stripe payout: persist transfer_id failed after retries — row stuck pending, funds deliver via sweep",
 			"error", err, "withdrawal_id", withdrawalID, "transfer_id", transfer.ID)
 	}
 
@@ -320,6 +325,7 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 				s.logger.Error("stripe payout: instant fee refund failed",
 					"error", rerr, "withdrawal_id", withdrawalID)
 			} else {
+				wd.FeeRefunded = true
 				wd.FailureReason += " (instant fee refunded)"
 			}
 		}
@@ -343,12 +349,12 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wd.PayoutID = payout.ID
-	if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
+	if err := s.persistWithdrawalUpdate(wd, "payout_id"); err != nil {
 		// Payout succeeded but we couldn't persist the ID. Webhook will
 		// arrive with the payout ID — without the index entry the sweep
 		// matcher will still reconcile it by connected account. Log loudly
 		// so ops can double-check via the Stripe dashboard.
-		s.logger.Error("stripe payout: persist payout_id failed",
+		s.logger.Error("stripe payout: persist payout_id failed after retries",
 			"error", err, "withdrawal_id", withdrawalID,
 			"transfer_id", transfer.ID, "payout_id", payout.ID)
 	}
@@ -375,4 +381,23 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		"arrival_unix":      payout.ArrivalDate,
 		"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
 	})
+}
+
+// persistWithdrawalUpdate retries a withdrawal-row update with short backoff.
+// Used after money has moved (transfer/payout created): losing the update
+// strands the row in a state the webhook matcher and sweep reconciler don't
+// look at, so it's worth riding out a transient store blip in-request.
+func (s *Server) persistWithdrawalUpdate(wd *store.StripeWithdrawal, stage string) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+		}
+		if err = s.billing.Store().UpdateStripeWithdrawal(wd); err == nil {
+			return nil
+		}
+		s.logger.Warn("stripe payout: persist "+stage+" attempt failed",
+			"attempt", attempt+1, "error", err, "withdrawal_id", wd.ID)
+	}
+	return err
 }

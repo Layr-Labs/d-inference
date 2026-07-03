@@ -668,6 +668,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_stripe_withdrawals_payout ON stripe_withdrawals(payout_id) WHERE payout_id != ''`,
 		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_status ON stripe_withdrawals(status, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_stripe_account ON stripe_withdrawals(stripe_account_id, status)`,
+		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS fee_refunded BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
 
 		// Telemetry events table + indices removed.
 		// Datadog is the sole durable sink for telemetry — the Postgres table
@@ -3295,11 +3296,11 @@ func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
 		`INSERT INTO stripe_withdrawals
 		 (id, account_id, stripe_account_id, transfer_id, payout_id,
 		  amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
-		  failure_reason, refunded, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		  failure_reason, refunded, fee_refunded, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
 		w.ID, w.AccountID, w.StripeAccountID, w.TransferID, w.PayoutID,
 		w.AmountMicroUSD, w.FeeMicroUSD, w.NetMicroUSD, w.Method, w.Status,
-		w.FailureReason, w.Refunded, w.CreatedAt, w.UpdatedAt,
+		w.FailureReason, w.Refunded, w.FeeRefunded, w.CreatedAt, w.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create stripe withdrawal: %w", err)
@@ -3309,13 +3310,13 @@ func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
 
 const stripeWithdrawalSelectColumns = `id, account_id, stripe_account_id, transfer_id, payout_id,
 	amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
-	failure_reason, refunded, created_at, updated_at`
+	failure_reason, refunded, fee_refunded, created_at, updated_at`
 
 func scanStripeWithdrawal(row interface{ Scan(...any) error }) (*StripeWithdrawal, error) {
 	var w StripeWithdrawal
 	if err := row.Scan(&w.ID, &w.AccountID, &w.StripeAccountID, &w.TransferID, &w.PayoutID,
 		&w.AmountMicroUSD, &w.FeeMicroUSD, &w.NetMicroUSD, &w.Method, &w.Status,
-		&w.FailureReason, &w.Refunded, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		&w.FailureReason, &w.Refunded, &w.FeeRefunded, &w.CreatedAt, &w.UpdatedAt); err != nil {
 		return nil, err
 	}
 	return &w, nil
@@ -3340,7 +3341,10 @@ func (s *PostgresStore) GetStripeWithdrawalByPayoutID(payoutID string) (*StripeW
 		`SELECT `+stripeWithdrawalSelectColumns+` FROM stripe_withdrawals WHERE payout_id = $1`, payoutID)
 	w, err := scanStripeWithdrawal(row)
 	if err != nil {
-		return nil, fmt.Errorf("store: stripe withdrawal with payout %q not found: %w", payoutID, err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("store: stripe withdrawal with payout %q: %w", payoutID, ErrNotFound)
+		}
+		return nil, fmt.Errorf("store: get stripe withdrawal by payout %q: %w", payoutID, err)
 	}
 	return w, nil
 }
@@ -3352,7 +3356,10 @@ func (s *PostgresStore) GetStripeWithdrawalByTransferID(transferID string) (*Str
 		`SELECT `+stripeWithdrawalSelectColumns+` FROM stripe_withdrawals WHERE transfer_id = $1`, transferID)
 	w, err := scanStripeWithdrawal(row)
 	if err != nil {
-		return nil, fmt.Errorf("store: stripe withdrawal with transfer %q not found: %w", transferID, err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("store: stripe withdrawal with transfer %q: %w", transferID, ErrNotFound)
+		}
+		return nil, fmt.Errorf("store: get stripe withdrawal by transfer %q: %w", transferID, err)
 	}
 	return w, nil
 }
@@ -3366,9 +3373,9 @@ func (s *PostgresStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE stripe_withdrawals SET
 			transfer_id = $2, payout_id = $3, status = $4,
-			failure_reason = $5, refunded = $6, updated_at = NOW()
+			failure_reason = $5, refunded = $6, fee_refunded = $7, updated_at = NOW()
 		 WHERE id = $1`,
-		w.ID, w.TransferID, w.PayoutID, w.Status, w.FailureReason, w.Refunded,
+		w.ID, w.TransferID, w.PayoutID, w.Status, w.FailureReason, w.Refunded, w.FeeRefunded,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update stripe withdrawal: %w", err)

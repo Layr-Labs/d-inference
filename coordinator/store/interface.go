@@ -24,6 +24,12 @@ import (
 // errors.Is to distinguish this from transient DB errors.
 var ErrInsufficientBalance = errors.New("insufficient balance or account not found")
 
+// ErrNotFound is wrapped by lookup methods when no row matches. Callers that
+// take a different action on a true miss vs a transient store failure (e.g.
+// the Stripe webhook state machine) must check with errors.Is rather than
+// treating every error as not-found.
+var ErrNotFound = errors.New("not found")
+
 // Store is the union of every storage-domain sub-interface (defined in
 // interface_domains.go). It was split from a single ~150-method god-interface
 // into composed domains so callers can depend on a narrow slice of the
@@ -567,6 +573,7 @@ type StripeWithdrawal struct {
 	Status          string    `json:"status"`                   // "pending" | "transferred" | "paid" | "failed"
 	FailureReason   string    `json:"failure_reason,omitempty"` // populated when Status="failed"
 	Refunded        bool      `json:"refunded,omitempty"`       // true after the failure refund is credited
+	FeeRefunded     bool      `json:"fee_refunded,omitempty"`   // true after the instant fee is credited back (instant payout fell back to the standard sweep)
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }

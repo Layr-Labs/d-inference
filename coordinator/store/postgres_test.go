@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -578,6 +579,27 @@ func TestPostgresStripeWithdrawalCRUD(t *testing.T) {
 	}
 	if byPo.Status != "paid" {
 		t.Errorf("status = %q", byPo.Status)
+	}
+	if byPo.FeeRefunded {
+		t.Error("FeeRefunded should default to false")
+	}
+
+	// FeeRefunded round-trips (idempotency key for instant-fee refunds).
+	byPo.FeeRefunded = true
+	if err := s.UpdateStripeWithdrawal(byPo); err != nil {
+		t.Fatalf("update fee_refunded: %v", err)
+	}
+	if again, _ := s.GetStripeWithdrawal("wd-pg-1"); !again.FeeRefunded {
+		t.Error("FeeRefunded not persisted")
+	}
+
+	// Misses wrap ErrNotFound so the webhook state machine can distinguish
+	// a true miss from a transient failure.
+	if _, err := s.GetStripeWithdrawalByPayoutID("po_pg_missing"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing payout lookup err = %v, want ErrNotFound", err)
+	}
+	if _, err := s.GetStripeWithdrawalByTransferID("tr_pg_missing"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing transfer lookup err = %v, want ErrNotFound", err)
 	}
 
 	// List for account.

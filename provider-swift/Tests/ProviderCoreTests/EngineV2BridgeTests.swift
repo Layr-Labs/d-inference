@@ -1130,23 +1130,28 @@ struct EngineV2ConfigGatingTests {
         #expect(!EngineV2Config.flagEnabled(environment: ["DARKBLOOM_ENGINE_V2": "maybe"], configEnabled: true))
     }
 
-    @Test("default allowlist: EXACT production checkpoint ids only")
+    @Test("default allowlist: fleet catalog model ids only")
     func defaultAllowlist() {
-        // The two checkpoints v2 was parity/soak-validated on — the default-on
-        // scope must equal the real-model-validated scope, nothing broader.
-        #expect(EngineV2Config.modelAllowlisted("mlx-community/gpt-oss-20b-MXFP4-Q8"))
-        #expect(EngineV2Config.modelAllowlisted("mlx-community/gemma-4-26b-a4b-it-8bit"))
-        // Case-insensitive + last-path-component matching still applies.
-        #expect(EngineV2Config.modelAllowlisted("MLX-Community/GPT-OSS-20B-MXFP4-Q8"))
-        #expect(EngineV2Config.modelAllowlisted("gpt-oss-20b-MXFP4-Q8"))
-        // Other quantizations of the SAME families are NOT default-enabled —
-        // they were not validated on real weights. Operators widen via
+        // The three coordinator-catalog ids the production fleet advertises —
+        // the default-on scope must equal the parity/soak-validated scope,
+        // nothing broader. These are NOT HuggingFace repo ids.
+        #expect(EngineV2Config.modelAllowlisted("gpt-oss-20b"))
+        #expect(EngineV2Config.modelAllowlisted("gemma-4-26b-8bit"))
+        #expect(EngineV2Config.modelAllowlisted("gemma-4-26b-qat-4bit"))
+        // Case-insensitive matching still applies.
+        #expect(EngineV2Config.modelAllowlisted("GPT-OSS-20B"))
+        #expect(EngineV2Config.modelAllowlisted("Gemma-4-26B-QAT-4bit"))
+        // The old HuggingFace repo ids are now REJECTED: their last path
+        // component (`gpt-oss-20b-mxfp4-q8`, `gemma-4-26b-a4b-it-8bit`) differs
+        // from the fleet catalog id, so v2 must NOT engage on them. This is the
+        // exact mismatch that made v0.7.0 inert fleet-wide.
+        #expect(!EngineV2Config.modelAllowlisted("mlx-community/gpt-oss-20b-MXFP4-Q8"))
+        #expect(!EngineV2Config.modelAllowlisted("mlx-community/gemma-4-26b-a4b-it-8bit"))
+        // Other quantizations / families are NOT default-enabled — they were
+        // not validated on real weights. Operators widen via
         // DARKBLOOM_ENGINE_V2_MODELS.
-        #expect(!EngineV2Config.modelAllowlisted("mlx-community/gpt-oss-20b-4bit"))
-        #expect(!EngineV2Config.modelAllowlisted("mlx-community/gemma-4-27b-it-4bit"))
-        #expect(!EngineV2Config.modelAllowlisted("gemma-4-26B-A4B-it-qat-4bit"))
+        #expect(!EngineV2Config.modelAllowlisted("gemma-4-27b-it-4bit"))
         #expect(!EngineV2Config.modelAllowlisted("qwen3-8b"))
-        #expect(!EngineV2Config.modelAllowlisted("mlx-community/Qwen3.5-0.8B-MLX-4bit"))
         #expect(!EngineV2Config.modelAllowlisted("llama-3.3-70b"))
         #expect(!EngineV2Config.modelAllowlisted(""))
     }
@@ -1163,7 +1168,7 @@ struct EngineV2ConfigGatingTests {
 
     @Test("selection matrix")
     func selectionMatrix() {
-        let prodGemma = "mlx-community/gemma-4-26b-a4b-it-8bit"
+        let prodGemma = "gemma-4-26b-8bit"
         // Config off (explicit opt-out) → legacy even for allowlisted models.
         #expect(EngineV2Config.selection(
             modelId: prodGemma, environment: [:], configEnabled: false
@@ -1175,7 +1180,7 @@ struct EngineV2ConfigGatingTests {
             configEnabled: BackendSettings().engineV2
         ) == .v2)
         #expect(EngineV2Config.selection(
-            modelId: "mlx-community/gpt-oss-20b-MXFP4-Q8", environment: [:],
+            modelId: "gpt-oss-20b", environment: [:],
             configEnabled: BackendSettings().engineV2
         ) == .v2)
         #expect(EngineV2Config.selection(
@@ -1244,7 +1249,7 @@ struct EngineV2ConfigGatingTests {
         struct InitFailure: Error {}
         let telemetry = TelemetrySink()
         let bridge = EngineV2Factory.makeBridgeIfSelected(
-            modelId: "mlx-community/gpt-oss-20b-MXFP4-Q8",
+            modelId: "gpt-oss-20b",
             configEnabled: true,
             environment: [:],
             tokenizer: TokenizerHandle(StubTokenizer()),
@@ -1259,7 +1264,7 @@ struct EngineV2ConfigGatingTests {
         #expect(events.first?.severity == .warn)
         #expect(events.first?.fields?["operation"]?.description == "engine_v2_fallback")
         #expect(events.first?.fields?["backend"]?.description == "engine_v2")
-        #expect(events.first?.fields?["model"]?.description == "mlx-community/gpt-oss-20b-MXFP4-Q8")
+        #expect(events.first?.fields?["model"]?.description == "gpt-oss-20b")
         #expect(events.first?.fields?["error_class"]?.description.contains("InitFailure") == true)
         // Default-on posture: the fallback is load-bearing, so the event must
         // carry the human-readable reason too, not just the error type.
@@ -1269,7 +1274,7 @@ struct EngineV2ConfigGatingTests {
     @Test("factory: selected + healthy builder → v2 bridge")
     func factorySelectedBuilds() {
         let bridge = EngineV2Factory.makeBridgeIfSelected(
-            modelId: "mlx-community/gemma-4-26b-a4b-it-8bit",
+            modelId: "gemma-4-26b-8bit",
             configEnabled: true,
             environment: [:],
             tokenizer: TokenizerHandle(StubTokenizer()),

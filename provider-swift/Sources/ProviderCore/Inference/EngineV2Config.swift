@@ -28,10 +28,11 @@
 //      — **default true** (v0.7.0). Rollback = env kill switch or release
 //      rollback.
 //
-// Per-model allowlist: default is the EXACT production checkpoint ids —
-// default-on scope == real-model-validated scope. Operators can widen it
-// via env `DARKBLOOM_ENGINE_V2_MODELS` (comma-separated patterns, e.g. to
-// stage a QAT-4bit build later).
+// Per-model allowlist: default is the set of coordinator-catalog model ids
+// the production fleet actually advertises (these are the registry/heartbeat
+// ids, NOT HuggingFace repo ids) — all three were parity/soak-validated on
+// real weights. Operators can widen it via env `DARKBLOOM_ENGINE_V2_MODELS`
+// (comma-separated patterns, e.g. to stage another checkpoint quantization).
 
 import Foundation
 import MLXLMCommon
@@ -47,19 +48,24 @@ public enum EngineV2Config {
     /// Optional comma-separated allowlist pattern override
     /// (exact ids or trailing-`*` prefix globs). Empty/absent keeps the
     /// default. Use to widen the default-on scope for staged rollout
-    /// (e.g. a QAT-4bit checkpoint later).
+    /// (e.g. another checkpoint quantization).
     public static let environmentAllowlist = "DARKBLOOM_ENGINE_V2_MODELS"
 
-    /// The models the v2 engine serves by default: the EXACT checkpoint ids
-    /// production serves today — default-on scope == real-model-validated
-    /// scope (both were parity/soak-validated on real weights). Matched
-    /// case-insensitively against the model id and its last path component
-    /// (registry ids are `org/name` shaped). Every other model — including
-    /// other gemma-4 / gpt-oss quantizations — keeps the legacy engine
-    /// until an operator widens the list via `DARKBLOOM_ENGINE_V2_MODELS`.
+    /// The models the v2 engine serves by default: the coordinator-catalog
+    /// model ids the production fleet actually advertises (these are the
+    /// registry/heartbeat ids, NOT HuggingFace repo ids). All three were
+    /// parity/soak-validated on real weights — `gpt-oss-20b` and
+    /// `gemma-4-26b-8bit` are the two 8-bit / GPT-OSS production models, and
+    /// `gemma-4-26b-qat-4bit` passed strict batch-invariance and benchmarked
+    /// faster. Matched case-insensitively against the model id and its last
+    /// path component (some ids may be `org/name` shaped). Every other model
+    /// — including other gemma-4 / gpt-oss quantizations — keeps the legacy
+    /// engine until an operator widens the list via
+    /// `DARKBLOOM_ENGINE_V2_MODELS`.
     public static let defaultModelAllowlist = [
-        "mlx-community/gpt-oss-20b-MXFP4-Q8",
-        "mlx-community/gemma-4-26b-a4b-it-8bit",
+        "gpt-oss-20b",
+        "gemma-4-26b-8bit",
+        "gemma-4-26b-qat-4bit",
     ]
 
     public enum Selection: String, Sendable, Equatable {
@@ -99,9 +105,9 @@ public enum EngineV2Config {
     /// Does `modelId` match any allowlist pattern? Patterns are
     /// case-insensitive; a trailing `*` makes them prefix globs, otherwise
     /// they must match exactly. Both the full id and its last `/` component
-    /// are tried on BOTH sides, so `mlx-community/gemma-4-26b-a4b-it-8bit`
-    /// matches the bare pattern `gemma-4-26b-a4b-it-8bit` AND the bare id
-    /// `gpt-oss-20b-MXFP4-Q8` matches the org-qualified default pattern.
+    /// are tried on BOTH sides, so an org-qualified id like
+    /// `some-org/gpt-oss-20b` still matches the bare pattern `gpt-oss-20b`,
+    /// and a bare id matches an org-qualified pattern by last component.
     public static func modelAllowlisted(
         _ modelId: String,
         patterns: [String] = defaultModelAllowlist

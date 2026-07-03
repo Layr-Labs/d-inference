@@ -534,7 +534,7 @@ struct EngineV2SlotFactoryTests {
                 makeEngine: { _, _ in throw InitFailure() }))
 
         let bridge = await loop.makeEngineV2BridgeForSlotForTesting(
-            modelId: "mlx-community/gpt-oss-20b-MXFP4-Q8",
+            modelId: "gpt-oss-20b",
             modelType: "gpt_oss",
             container: makeStubContainer(),
             tokenizer: TokenizerHandle(WiringStubTokenizer()),
@@ -542,7 +542,7 @@ struct EngineV2SlotFactoryTests {
         )
         #expect(bridge == nil)
         // Nothing registered — the slot serves legacy.
-        #expect(await runtime.bridge(forModel: "mlx-community/gpt-oss-20b-MXFP4-Q8") == nil)
+        #expect(await runtime.bridge(forModel: "gpt-oss-20b") == nil)
         let events = telemetry.events
         #expect(events.count == 1)
         #expect(events.first?.kind == .engineHealth)

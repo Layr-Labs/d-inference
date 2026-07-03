@@ -91,8 +91,9 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// fixed 512-token production path. Enable with `adaptive_prefill = true`
     /// under `[backend]` in provider.toml.
     public var adaptivePrefill: Bool
-    /// ContinuousBatchingV2 engine for the allowlisted models (the exact
-    /// production checkpoints — see `EngineV2Config.defaultModelAllowlist`).
+    /// ContinuousBatchingV2 engine for the allowlisted models (the
+    /// coordinator-catalog fleet model ids — see
+    /// `EngineV2Config.defaultModelAllowlist`).
     /// **Default true as of v0.7.0**: v2 ships on by default for the
     /// allowlisted models; every other model keeps the legacy
     /// `BatchedEngine` path byte-identical. Rollback is the env kill

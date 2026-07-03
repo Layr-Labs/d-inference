@@ -494,3 +494,66 @@ func TestSelfRoute_UnfundedFallbackDoesNotPayProvider(t *testing.T) {
 		t.Errorf("provider earnings = %d, want 0 (no payout from an unfunded balance)", len(earnings))
 	}
 }
+
+// TestSelfRouteOnlyKeyListsAliasForOwnedCatalogBuild verifies the self-route
+// /v1/models view preserves public alias naming: an owned machine serving a
+// catalog build behind an active alias is listed under the alias id (the
+// documented name inference resolves), the concrete build is hidden like the
+// public list, and retrieve-by-exact-id still works for both names.
+func TestSelfRouteOnlyKeyListsAliasForOwnedCatalogBuild(t *testing.T) {
+	srv, st, _ := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const owner = "owner-alias"
+	raw, _, err := st.CreateAPIKey(owner, store.APIKeyCreate{Name: "mine", SelfRouteOnly: true})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+
+	const build = "gemma-4-26b-8bit"
+	const alias = "gemma-4-26b"
+	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, build)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, owner)
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: build}})
+	if err := st.UpsertModelAlias(&store.ModelAlias{AliasID: alias, DesiredBuild: build, Active: true}); err != nil {
+		t.Fatalf("UpsertModelAlias: %v", err)
+	}
+
+	fetch := func(path string) (int, []byte) {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+path, nil)
+		req.Header.Set("Authorization", "Bearer "+raw)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, body
+	}
+
+	status, body := fetch("/v1/models")
+	if status != http.StatusOK {
+		t.Fatalf("list status = %d body = %s", status, body)
+	}
+	var listed types.ModelListResponse
+	if err := json.Unmarshal(body, &listed); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(listed.Data) != 1 || listed.Data[0].ID != alias {
+		t.Fatalf("listed = %+v, want only the alias %q (build hidden)", listed.Data, alias)
+	}
+
+	// Retrieve works for the alias AND for the concrete build (exact-id parity
+	// with the public retrieve endpoint's hidden-build behavior).
+	if status, body := fetch("/v1/models/" + alias); status != http.StatusOK {
+		t.Fatalf("retrieve alias status = %d body = %s", status, body)
+	}
+	if status, body := fetch("/v1/models/" + build); status != http.StatusOK {
+		t.Fatalf("retrieve hidden build status = %d body = %s", status, body)
+	}
+}

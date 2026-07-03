@@ -466,6 +466,12 @@ func TestSelfRouteCatalogModelKeepsWeightHashGate(t *testing.T) {
 	if selected, _ := reg.ReserveProviderEx(model, owner); selected != nil {
 		t.Fatalf("owner self-route reached a catalog model with mismatched weight hash on %q", selected.ID)
 	}
+	// List/route agreement: the unroutable stale-hash build must not be
+	// advertised by OwnedModels either (a listed model every request then
+	// fails to dispatch is worse than an absent one).
+	if listed := reg.OwnedModels("acct-A"); len(listed) != 0 {
+		t.Fatalf("OwnedModels advertises unroutable stale-hash build: %+v", listed)
+	}
 
 	// Matching hash routes.
 	mine.mu.Lock()
@@ -473,6 +479,9 @@ func TestSelfRouteCatalogModelKeepsWeightHashGate(t *testing.T) {
 	mine.mu.Unlock()
 	if selected, decision := reg.ReserveProviderEx(model, owner); selected == nil {
 		t.Fatalf("hash-matching catalog model failed to self-route; decision=%+v", decision)
+	}
+	if listed := reg.OwnedModels("acct-A"); len(listed) != 1 || listed[0].ID != model {
+		t.Fatalf("OwnedModels = %+v, want the hash-matching catalog build %q", listed, model)
 	}
 
 	// A provider that omits the hash entirely is admitted (grading happens at

@@ -3930,6 +3930,13 @@ func (r *Registry) OwnedModels(accountID string) []AggregateModel {
 			if m.ID == "" {
 				continue
 			}
+			// List/route agreement: only builds the routing path would admit for
+			// this owner appear in the list — an off-catalog local model, or a
+			// catalog build passing the weight-hash gate. A stale-hash catalog
+			// build must not be advertised here only to fail every dispatch.
+			if !r.modelServableForOwnerLocked(m) {
+				continue
+			}
 			a, ok := agg[m.ID]
 			if !ok {
 				a = &AggregateModel{

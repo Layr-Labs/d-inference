@@ -817,7 +817,11 @@ func (r *Registry) OwnedProviderSummary(accountID, model string) (online, serves
 			continue
 		}
 		online++
-		serves := r.providerAdvertisesModelLocked(p, model) &&
+		// Owner-servability (not bare advertisement) so the self-route error
+		// messaging matches what routing would actually admit: an owned box
+		// advertising a stale-hash catalog build reports "model not loaded"
+		// instead of proceeding into a dispatch that can only be rejected.
+		serves := r.providerServesOwnedRoutableModelLocked(p, model) &&
 			p.RuntimeVerified &&
 			r.providerSupportsPrivateTextLocked(p) &&
 			!p.LastChallengeVerified.IsZero() &&

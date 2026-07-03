@@ -154,6 +154,11 @@ struct GemmaVLMParityProbeMemoryLiveTests {
         let fusedBytes = slot.model.namedModules()
             .compactMap { ($0.1 as? SwitchGLU)?.fusedGateUpCacheBytes }
             .reduce(0, +)
+        // The extraction's own measurement — what the slot factory nets out
+        // of the v2 KV ceiling (PR#508 finding 2) — must agree with the
+        // wrapper-side sum (shared arrays, counted once).
+        #expect(extraction.fusedMoECacheBytes == fusedBytes)
+        #expect(extraction.fusedMoECacheBytes > 0)
         print(
             "[parity-mem] post-extraction: active=\(Self.gib(activeAfter)) "
                 + "cache=\(Self.gib(cacheAfter)) activeGrowth=\(Self.gib(activeGrowth)) "
@@ -234,5 +239,47 @@ struct GemmaVLMParityProbeMemoryLiveTests {
                     + "64 GB profile after the parity probe — the v0.7.2 black-hole signature"))
         await budget.release(requestID: "incident-probe")
         #expect(await budget.reservationIDsForTesting().isEmpty)
+
+        // 4. CAPACITY CONSISTENCY (PR#508 finding 2): the v2 static ceiling —
+        //    the weights-derived grant netted of the MEASURED fused cache,
+        //    exactly what the slot factory now hands `makeProductionEngine`
+        //    and the heartbeat advertises — must equal the shared gate's
+        //    live headroom on the same simulated 64 GB profile. Pre-fix the
+        //    unadjusted grant exceeded that headroom by the cache size
+        //    (~1.7×), so the coordinator over-routed into gate rejects.
+        MLX.Stream().synchronize()
+        MLX.Memory.clearCache()
+        let mlxUsedNow =
+            UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+        // Resident weights as the static derivation would see them: live MLX
+        // usage minus the (measured) engine-retained cache.
+        let residentWeights =
+            mlxUsedNow > UInt64(extraction.fusedMoECacheBytes)
+            ? mlxUsedNow - UInt64(extraction.fusedMoECacheBytes) : 0
+        let baseCeiling = EngineV2KVSizing.engineKVBytesCapacity(
+            newModelWeightBytes: Int(min(residentWeights, UInt64(Int.max))),
+            coResidentWeightBytes: 0,
+            existingEngineKVCapacities: [],
+            physicalBytes: totalBytes)
+        let grantedCeiling = EngineV2KVSizing.netOfEngineResidentOverhead(
+            baseCeiling, overheadBytes: extraction.fusedMoECacheBytes)
+        let gateHeadroom = UnifiedMemoryCap.liveKVHeadroomBytes(
+            physicalBytes: totalBytes,
+            mlxUsedBytes: mlxUsedNow,
+            systemAvailableBytes: .max)
+        print(
+            "[parity-mem] 64GB-profile capacity: base=\(Self.gib(baseCeiling)) "
+                + "granted=\(Self.gib(grantedCeiling)) gateHeadroom=\(Self.gib(Int(gateHeadroom)))")
+        #expect(
+            UInt64(grantedCeiling) == gateHeadroom,
+            Comment(
+                rawValue: "advertised v2 ceiling \(Self.gib(grantedCeiling)) != shared-gate "
+                    + "headroom \(Self.gib(Int(gateHeadroom))) — heartbeat max and the gate "
+                    + "would disagree (the finding-2 over-routing shape)"))
+        #expect(
+            UInt64(baseCeiling) > gateHeadroom,
+            Comment(
+                rawValue: "pre-fix (weights-only) ceiling no longer exceeds the gate headroom "
+                    + "— the regression premise vanished; re-derive this stage"))
     }
 }

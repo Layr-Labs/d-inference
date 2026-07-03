@@ -355,7 +355,20 @@ extension ProviderLoop {
             // legacy (nil bridge) has still grown resident memory. Trim the
             // pool first, mirroring the post-load check. (unregister/shutdown
             // are safe no-ops on the nil-bridge path.)
+            var engineResidentOverheadBytes: UInt64 = 0
             if engineV2Bridge != nil || slotIsVLM {
+                // Measure the engine build's retained residency overhead —
+                // the shared MoE fused gate+up cache the VLM extraction
+                // eagerly builds (resident even when the bridge then FAILED,
+                // e.g. a parity mismatch after the cache build). Recorded on
+                // the slot so later v2 engine ceilings and the heartbeat
+                // fleet-budget clamp count it like resident weights
+                // (`modelWeightBytes` is a parameters() sum and cannot see
+                // it). The wrapper tree carries the shared arrays on every
+                // path, so scanning the loaded model is sufficient.
+                engineResidentOverheadBytes = await container.perform { ctx in
+                    UInt64(max(0, EngineV2VLMTextExtraction.fusedMoECacheBytes(of: [ctx.model])))
+                }
                 MLX.Memory.clearCache()
                 if !(await scheduler.hasServeableKVHeadroom()) {
                     let headroomGb = String(
@@ -379,6 +392,7 @@ extension ProviderLoop {
                 tokenizer: tokenizer,
                 isVLM: slotIsVLM,
                 modelType: modelInfo.modelType,
+                engineResidentOverheadBytes: engineResidentOverheadBytes,
                 lastInferenceAt: .now
             )
 

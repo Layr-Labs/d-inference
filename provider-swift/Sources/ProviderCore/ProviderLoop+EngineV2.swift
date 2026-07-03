@@ -142,8 +142,18 @@ extension ProviderLoop {
         var existingEngineKVCapacities: [Int] = []
         for (slotModelId, slot) in modelSlots where slotModelId != modelId {
             let slotWeights = await slot.scheduler.modelWeightBytes
+            // Count the slot's engine-retained residency overhead (the
+            // shared MoE fused gate+up cache a VLM extraction eagerly
+            // built) like weights: it is module-retained ACTIVE memory that
+            // `modelWeightBytes` (a parameters() sum) does not see, so
+            // omitting it would size THIS engine's ceiling against memory
+            // that co-resident slot is already holding.
+            var slotResident = UInt64(max(0, slotWeights))
+            let (withOverhead, overheadOverflow) = slotResident
+                .addingReportingOverflow(slot.engineResidentOverheadBytes)
+            slotResident = overheadOverflow ? .max : withOverhead
             let (sum, overflow) = coResidentWeightBytes
-                .addingReportingOverflow(UInt64(max(0, slotWeights)))
+                .addingReportingOverflow(slotResident)
             coResidentWeightBytes = overflow ? .max : sum
             if let existingBridge = slot.engineV2 {
                 existingEngineKVCapacities.append(
@@ -205,18 +215,41 @@ extension ProviderLoop {
                 // build the engine on that; any extraction/verify/parity
                 // failure throws into the factory's engine_v2_fallback WARN.
                 let servingModel: any LanguageModel
+                var grantedKVBytesCapacity = kvBytesCapacity
                 if isVLM {
                     guard let loadedModelDirectory else {
                         throw EngineV2VLMTextExtractionError.missingModelDirectory
                     }
                     let extraction = try EngineV2VLMTextExtraction.extractTextModel(
                         from: snapshot.model, modelDirectory: loadedModelDirectory)
+                    // PR#508 finding 2: `kvBytesCapacity` was derived from
+                    // WEIGHTS before this extraction materialized the shared
+                    // MoE fused gate+up cache (~8–15 GiB on Gemma 4) —
+                    // module-retained active memory the shared KV gate sees
+                    // in live MLX usage but the static derivation did not.
+                    // Net the MEASURED cache out of the engine's admission
+                    // ceiling so the heartbeat max (derived from the
+                    // engine's grant), the engine's private ledger, and the
+                    // shared gate agree; an unadjusted ceiling over-routes
+                    // by exactly the cache size (~1.7× on the incident's
+                    // 64 GB profile) and replays a mild v0.7.2. A 0 result
+                    // throws noKVHeadroom below → legacy fallback.
+                    grantedKVBytesCapacity = EngineV2KVSizing.netOfEngineResidentOverhead(
+                        kvBytesCapacity, overheadBytes: extraction.fusedMoECacheBytes)
                     if let parityDiff = extraction.parityMaxAbsLogitDiff {
+                        let fusedGiB = String(
+                            format: "%.2f",
+                            Double(extraction.fusedMoECacheBytes) / (1024 * 1024 * 1024))
+                        let grantedGiB = String(
+                            format: "%.2f",
+                            Double(grantedKVBytesCapacity) / (1024 * 1024 * 1024))
                         slotLogger.info(
                             "engine_v2: \(modelId) VLM text-model extraction passed the "
                                 + "load-time forward parity gate (max |Δlogit| \(parityDiff), "
                                 + "fused MoE gate+up cache shared across "
-                                + "\(extraction.sharedFusedMoELayerCount) layer(s))")
+                                + "\(extraction.sharedFusedMoELayerCount) layer(s), "
+                                + "\(fusedGiB) GiB netted out of the KV ceiling → "
+                                + "\(grantedGiB) GiB)")
                     }
                     servingModel = extraction.model
                 } else {
@@ -225,7 +258,7 @@ extension ProviderLoop {
                 return try EngineV2Factory.makeProductionEngine(
                     model: servingModel,
                     tokenizer: tokenizer.inner,
-                    kvBytesCapacity: kvBytesCapacity)
+                    kvBytesCapacity: grantedKVBytesCapacity)
             }
         }
 

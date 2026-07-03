@@ -73,8 +73,18 @@ extension ProviderLoop {
             var totalResidentWeightBytes: UInt64 = 0
             for (_, slot) in modelSlots {
                 let weights = await slot.scheduler.modelWeightBytes
+                // Engine-retained residency overhead (the shared MoE fused
+                // gate+up cache a VLM extraction built) counts like weights:
+                // module-retained active memory that `modelWeightBytes`
+                // cannot see. Omitting it would let the live budget clamp
+                // recompute OTHER bridges' budgets against a rosier resident
+                // set than the shared KV gate actually observes.
+                var slotResident = UInt64(max(0, weights))
+                let (withOverhead, overheadOverflow) = slotResident
+                    .addingReportingOverflow(slot.engineResidentOverheadBytes)
+                slotResident = overheadOverflow ? .max : withOverhead
                 let (sum, overflow) = totalResidentWeightBytes
-                    .addingReportingOverflow(UInt64(max(0, weights)))
+                    .addingReportingOverflow(slotResident)
                 totalResidentWeightBytes = overflow ? .max : sum
             }
             let engineV2 = await engineV2Runtime.capacitySummary(

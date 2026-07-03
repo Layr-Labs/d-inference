@@ -101,13 +101,17 @@ enum EngineV2VLMTextExtraction {
 
     /// Result of one extraction: the CBv2-adapted text model (sharing the
     /// wrapper's weight arrays) plus the parity probe's max |Δlogit| for the
-    /// slot factory's log line (nil when the parity gate was disabled), and
-    /// the number of MoE layers whose fused gate+up cache is shared between
-    /// the wrapper and the extracted model (the v0.7.3 black-hole fix).
+    /// slot factory's log line (nil when the parity gate was disabled), the
+    /// number of MoE layers whose fused gate+up cache is shared between
+    /// the wrapper and the extracted model (the v0.7.3 black-hole fix), and
+    /// the MEASURED total bytes of that fused cache — module-retained
+    /// active memory the slot factory must net out of the v2 engine's
+    /// weights-derived KV admission ceiling (PR#508 finding 2).
     struct Extraction {
         let model: Gemma4TextModel
         let parityMaxAbsLogitDiff: Float?
         let sharedFusedMoELayerCount: Int
+        let fusedMoECacheBytes: Int
     }
 
     /// Build an MLXLLM `Gemma4TextModel` over the weight arrays of a loaded
@@ -191,10 +195,42 @@ enum EngineV2VLMTextExtraction {
                 wrapper: wrapper, extracted: skeleton, vocabSize: textConfig.vocabSize)
         }
 
+        // Measure AFTER the probe: on the (defensive) path where some layer
+        // pair was NOT shared, the probe's forwards are what lazily built
+        // each tree's private cache, and the capacity derivation must see
+        // the full retained footprint either way.
+        let fusedBytes = fusedMoECacheBytes(of: [wrapper, skeleton])
+
         return Extraction(
             model: skeleton,
             parityMaxAbsLogitDiff: parityDiff,
-            sharedFusedMoELayerCount: sharedFusedLayers)
+            sharedFusedMoELayerCount: sharedFusedLayers,
+            fusedMoECacheBytes: fusedBytes)
+    }
+
+    /// Total bytes of MoE fused gate+up caches retained across `roots`,
+    /// counting each cache ONCE even when it is shared between trees
+    /// (`shareFusedGateUpCache` hands the SAME `MLXArray` instances to both
+    /// SwitchGLUs, so dedup is by weight-buffer identity). This is the
+    /// engine-retained residency overhead the v2 capacity derivation nets
+    /// out (`EngineV2KVSizing.netOfEngineResidentOverhead`) and the load
+    /// path records on the model slot — the fused arrays are plain module
+    /// properties, so they appear in neither `parameters()` sums nor
+    /// `scheduler.modelWeightBytes`. Zero for dense checkpoints and before
+    /// any cache is built.
+    static func fusedMoECacheBytes(of roots: [Module]) -> Int {
+        var seen = Set<ObjectIdentifier>()
+        var total = 0
+        for root in roots {
+            for (_, module) in root.namedModules() {
+                guard let glu = module as? SwitchGLU,
+                    let weight = glu.fusedGateUpWeightForVerification
+                else { continue }
+                guard seen.insert(ObjectIdentifier(weight)).inserted else { continue }
+                total += glu.fusedGateUpCacheBytes
+            }
+        }
+        return total
     }
 
     /// Pair every MoE `SwitchGLU` in the wrapper's language model with its

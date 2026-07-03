@@ -59,6 +59,12 @@ extension Start {
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
 
+        // Before any engine/model code latches CompiledDecode.isEnabled:
+        // legacy compiled decode is opt-in (config legacy_compiled_decode /
+        // explicit env DARKBLOOM_COMPILED_DECODE — see LegacyCompiledDecodeGate).
+        LegacyCompiledDecodeGate.apply(
+            configEnabled: config.backend.legacyCompiledDecode)
+
         let server = StandaloneServer(
             config: StandaloneServerConfig(
                 port: port,

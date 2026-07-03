@@ -19,6 +19,18 @@ extension ProviderLoop {
     // MARK: - Main Run Loop
 
     public func run() async throws {
+        // FIRST, before any engine/model code can latch the library's
+        // `CompiledDecode.isEnabled` static: force the legacy engine's
+        // compiled decode OFF unless the operator opted in via config
+        // (`legacy_compiled_decode = true`) or set the env var explicitly
+        // (which always wins). Keeps release behavior identical to prod
+        // v0.6.30 — see `LegacyCompiledDecodeGate`.
+        if LegacyCompiledDecodeGate.apply(
+            configEnabled: loopConfig.config.backend.legacyCompiledDecode)
+        {
+            logger.info("Legacy compiled decode disabled (legacy_compiled_decode=false, env unset)")
+        }
+
         logger.info("darkbloom \(ProviderCore.version) starting")
         logger.info("Hardware: \(loopConfig.hardware.chipName), \(loopConfig.hardware.memoryGb) GB RAM, \(loopConfig.hardware.gpuCores) GPU cores")
         logger.info("Models: \(loopConfig.models.count) advertised")

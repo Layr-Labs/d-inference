@@ -466,9 +466,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                 continuation.yield(.content(text))
                             }
                         }
-                    case .info(let p, let c, _):
+                    case .info(let p, let c, _, let reason):
                         promptTokenCount = p
                         completionTokens = c
+                        // Engine-reported finish reason ("stop"/"length");
+                        // nil (cancel-partials, older paths) keeps "stop".
+                        // Threaded into ServerGenerationInfo.stopReason below,
+                        // which MLXOpenAIService emits as finish_reason —
+                        // max_tokens truncations now reach clients as "length".
+                        if let reason { stopReason = reason }
                     case .error(let message):
                         failed = message
                     }

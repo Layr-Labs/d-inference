@@ -4,29 +4,34 @@
 //
 // The v2 engine (`MLXLMCommon.CBv2Engine`, see
 // libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift)
-// is strictly OPT-IN and additive:
+// ships DEFAULT-ON for the allowlisted models as of v0.7.0:
 //
-//   * Flag OFF (default)          → the legacy `BatchedEngine` path runs,
-//                                   byte-identical to today.
-//   * Flag ON + allowlisted model → `EngineV2Factory.makeBridgeIfSelected`
+//   * Allowlisted model (default) → `EngineV2Factory.makeBridgeIfSelected`
 //                                   builds an `EngineV2Bridge` over the v2
 //                                   engine.
-//   * Flag ON + other model       → legacy path (per-model allowlist).
+//   * Any other model             → legacy `BatchedEngine` path,
+//                                   byte-identical to today.
+//   * Kill switch / config off    → legacy path for everything.
 //   * v2 engine init throws       → legacy path + a WARN `engine_health`
-//                                   telemetry event (`engine_v2_fallback`)
-//                                   so a silent fleet-wide fallback is
-//                                   impossible.
+//                                   telemetry event (`engine_v2_fallback`,
+//                                   carrying the model id + error) so a
+//                                   silent fleet-wide fallback is
+//                                   impossible. This fallback is
+//                                   load-bearing for the fleet now that v2
+//                                   is the default.
 //
 // Selection sources, in precedence order:
-//   1. env `DARKBLOOM_ENGINE_V2` — explicit "1"/"true"/"yes"/"on" enables,
-//      explicit "0"/"false"/"no"/"off" force-disables (operator kill switch
-//      that beats the config file).
-//   2. provider config key `engine_v2` under `[backend]` in provider.toml.
+//   1. env `DARKBLOOM_ENGINE_V2` — explicit "0"/"false"/"no"/"off" is the
+//      ABSOLUTE per-box kill switch (beats config, no release needed);
+//      explicit "1"/"true"/"yes"/"on" force-enables.
+//   2. provider config key `engine_v2` under `[backend]` in provider.toml
+//      — **default true** (v0.7.0). Rollback = env kill switch or release
+//      rollback.
 //
-// Per-model allowlist: default `gemma-4*` / `gpt-oss*` glob-prefix patterns
-// (the two families the v2 engine is correct-by-construction for first),
-// overridable via env `DARKBLOOM_ENGINE_V2_MODELS` (comma-separated
-// patterns) for staged rollout.
+// Per-model allowlist: default is the EXACT production checkpoint ids —
+// default-on scope == real-model-validated scope. Operators can widen it
+// via env `DARKBLOOM_ENGINE_V2_MODELS` (comma-separated patterns, e.g. to
+// stage a QAT-4bit build later).
 
 import Foundation
 import MLXLMCommon
@@ -34,19 +39,28 @@ import MLXLMCommon
 // MARK: - Selection
 
 public enum EngineV2Config {
-    /// Master opt-in flag. "1"/"true"/"yes"/"on" enable; "0"/"false"/"no"/
-    /// "off" force-disable (overrides the config key); absent/other defers
-    /// to the `engine_v2` provider-config value.
+    /// Master flag. "0"/"false"/"no"/"off" is the absolute per-box KILL
+    /// SWITCH (beats the config key); "1"/"true"/"yes"/"on" force-enables;
+    /// absent/other defers to the `engine_v2` provider-config value
+    /// (default true as of v0.7.0).
     public static let environmentFlag = "DARKBLOOM_ENGINE_V2"
     /// Optional comma-separated allowlist pattern override
-    /// (e.g. `gemma-4*,gpt-oss*,qwen3*`). Empty/absent keeps the default.
+    /// (exact ids or trailing-`*` prefix globs). Empty/absent keeps the
+    /// default. Use to widen the default-on scope for staged rollout
+    /// (e.g. a QAT-4bit checkpoint later).
     public static let environmentAllowlist = "DARKBLOOM_ENGINE_V2_MODELS"
 
-    /// Model families the v2 engine serves by default when the flag is on.
-    /// Glob-prefix patterns (trailing `*`), matched case-insensitively
-    /// against the model id and its last path component (registry ids can be
-    /// `org/name` shaped, e.g. `mlx-community/gpt-oss-20b-4bit`).
-    public static let defaultModelAllowlist = ["gemma-4*", "gpt-oss*"]
+    /// The models the v2 engine serves by default: the EXACT checkpoint ids
+    /// production serves today — default-on scope == real-model-validated
+    /// scope (both were parity/soak-validated on real weights). Matched
+    /// case-insensitively against the model id and its last path component
+    /// (registry ids are `org/name` shaped). Every other model — including
+    /// other gemma-4 / gpt-oss quantizations — keeps the legacy engine
+    /// until an operator widens the list via `DARKBLOOM_ENGINE_V2_MODELS`.
+    public static let defaultModelAllowlist = [
+        "mlx-community/gpt-oss-20b-MXFP4-Q8",
+        "mlx-community/gemma-4-26b-a4b-it-8bit",
+    ]
 
     public enum Selection: String, Sendable, Equatable {
         case legacy
@@ -85,7 +99,9 @@ public enum EngineV2Config {
     /// Does `modelId` match any allowlist pattern? Patterns are
     /// case-insensitive; a trailing `*` makes them prefix globs, otherwise
     /// they must match exactly. Both the full id and its last `/` component
-    /// are tried so `mlx-community/gemma-4-27b-it-4bit` matches `gemma-4*`.
+    /// are tried on BOTH sides, so `mlx-community/gemma-4-26b-a4b-it-8bit`
+    /// matches the bare pattern `gemma-4-26b-a4b-it-8bit` AND the bare id
+    /// `gpt-oss-20b-MXFP4-Q8` matches the org-qualified default pattern.
     public static func modelAllowlisted(
         _ modelId: String,
         patterns: [String] = defaultModelAllowlist
@@ -101,8 +117,11 @@ public enum EngineV2Config {
                 if id.hasPrefix(prefix) || lastComponent.hasPrefix(prefix) {
                     return true
                 }
-            } else if id == p || lastComponent == p {
-                return true
+            } else {
+                let pLast = p.split(separator: "/").last.map(String.init) ?? p
+                if id == p || lastComponent == p || lastComponent == pLast {
+                    return true
+                }
             }
         }
         return false
@@ -207,6 +226,11 @@ public enum EngineV2Factory {
             "backend": .string("engine_v2"),
             "model": .string(modelId),
             "error_class": .string(String(reflecting: type(of: error))),
+            // Human-readable reason ("error" is allowlisted on both sides).
+            // v2 is default-on for the allowlisted models, so this fallback
+            // is load-bearing — the dashboard needs model + why, not just
+            // the error type.
+            "error": .string(String(describing: error)),
         ])
         if let emitTelemetry {
             emitTelemetry(event)

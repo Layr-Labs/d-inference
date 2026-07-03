@@ -244,7 +244,7 @@ struct BatchSchedulerEngineIntegrationTests {
             case .chunk:
                 chunkCount += 1
                 lastEventWasInfo = false
-            case .info(let pt, let ct, _):
+            case .info(let pt, let ct, _, _):
                 infoCount += 1
                 promptTokens = pt
                 completionTokens = ct

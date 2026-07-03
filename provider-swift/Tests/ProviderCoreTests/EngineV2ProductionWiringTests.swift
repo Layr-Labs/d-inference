@@ -311,7 +311,12 @@ struct EngineV2SlotFactoryTests {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
-                environment: ["DARKBLOOM_ENGINE_V2": "1"],
+                environment: [
+                    "DARKBLOOM_ENGINE_V2": "1",
+                    // The default allowlist is now the exact prod checkpoint ids;
+                    // these wiring fixtures use family-glob test ids, so widen it.
+                    "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*,gpt-oss*",
+                ],
                 eosTokenIds: [2],
                 makeEngine: { _, _ in engine }))
 
@@ -340,7 +345,7 @@ struct EngineV2SlotFactoryTests {
             case .chunk(let text):
                 #expect(text == "Hello")
                 sawChunk = true
-            case .info(let prompt, let completion, _):
+            case .info(let prompt, let completion, _, _):
                 #expect(prompt == 5)
                 #expect(completion == 1)
                 sawInfo = true
@@ -364,7 +369,12 @@ struct EngineV2SlotFactoryTests {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
-                environment: ["DARKBLOOM_ENGINE_V2": "1"],
+                environment: [
+                    "DARKBLOOM_ENGINE_V2": "1",
+                    // The default allowlist is now the exact prod checkpoint ids;
+                    // these wiring fixtures use family-glob test ids, so widen it.
+                    "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*,gpt-oss*",
+                ],
                 emitTelemetry: telemetry.callback(),
                 makeEngine: { _, _ in
                     counter.increment()
@@ -435,7 +445,12 @@ struct EngineV2SlotFactoryTests {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
-                environment: ["DARKBLOOM_ENGINE_V2": "1"],
+                environment: [
+                    "DARKBLOOM_ENGINE_V2": "1",
+                    // The default allowlist is now the exact prod checkpoint ids;
+                    // these wiring fixtures use family-glob test ids, so widen it.
+                    "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*,gpt-oss*",
+                ],
                 eosTokenIds: [2],
                 emitTelemetry: telemetry.callback(),
                 makeEngine: { _, _ in engine }))
@@ -469,7 +484,12 @@ struct EngineV2SlotFactoryTests {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
-                environment: ["DARKBLOOM_ENGINE_V2": "1"],
+                environment: [
+                    "DARKBLOOM_ENGINE_V2": "1",
+                    // The default allowlist is now the exact prod checkpoint ids;
+                    // these wiring fixtures use family-glob test ids, so widen it.
+                    "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*,gpt-oss*",
+                ],
                 eosTokenIds: [2],
                 emitTelemetry: telemetry.callback(),
                 makeEngine: { _, _ in engine }))
@@ -514,7 +534,7 @@ struct EngineV2SlotFactoryTests {
                 makeEngine: { _, _ in throw InitFailure() }))
 
         let bridge = await loop.makeEngineV2BridgeForSlotForTesting(
-            modelId: "gpt-oss-20b",
+            modelId: "mlx-community/gpt-oss-20b-MXFP4-Q8",
             modelType: "gpt_oss",
             container: makeStubContainer(),
             tokenizer: TokenizerHandle(WiringStubTokenizer()),
@@ -522,7 +542,7 @@ struct EngineV2SlotFactoryTests {
         )
         #expect(bridge == nil)
         // Nothing registered — the slot serves legacy.
-        #expect(await runtime.bridge(forModel: "gpt-oss-20b") == nil)
+        #expect(await runtime.bridge(forModel: "mlx-community/gpt-oss-20b-MXFP4-Q8") == nil)
         let events = telemetry.events
         #expect(events.count == 1)
         #expect(events.first?.kind == .engineHealth)
@@ -724,7 +744,12 @@ struct EngineV2MultiSlotCapacityTests {
         let recorder = CapacityRecorder()
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
-                environment: ["DARKBLOOM_ENGINE_V2": "1"],
+                environment: [
+                    "DARKBLOOM_ENGINE_V2": "1",
+                    // The default allowlist is now the exact prod checkpoint ids;
+                    // these wiring fixtures use family-glob test ids, so widen it.
+                    "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*,gpt-oss*",
+                ],
                 eosTokenIds: [2],
                 makeEngine: { _, kvBytesCapacity in
                     recorder.record(kvBytesCapacity)
@@ -789,7 +814,12 @@ struct EngineV2MultiSlotCapacityTests {
         let recorder = CapacityRecorder()
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
-                environment: ["DARKBLOOM_ENGINE_V2": "1"],
+                environment: [
+                    "DARKBLOOM_ENGINE_V2": "1",
+                    // The default allowlist is now the exact prod checkpoint ids;
+                    // these wiring fixtures use family-glob test ids, so widen it.
+                    "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*,gpt-oss*",
+                ],
                 eosTokenIds: [2],
                 makeEngine: { _, kvBytesCapacity in
                     recorder.record(kvBytesCapacity)

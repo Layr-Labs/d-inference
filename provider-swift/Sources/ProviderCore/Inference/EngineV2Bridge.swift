@@ -529,10 +529,14 @@ public actor EngineV2Bridge {
         switch reason {
         case .stop, .length:
             let final = recordFinish(id: id, usage: usage, success: true)
+            // Preserve the v2 engine's truncation signal: `.length` must
+            // reach the client as finish_reason "length", not be flattened
+            // to "stop" (max_tokens truncation was invisible on v2).
             continuation.yield(.info(
                 promptTokens: final.prompt,
                 completionTokens: final.completion,
-                tokensPerSecond: final.tps
+                tokensPerSecond: final.tps,
+                finishReason: reason == .length ? "length" : "stop"
             ))
         case .cancelled:
             let final = recordFinish(id: id, usage: usage, success: false)
@@ -543,7 +547,8 @@ public actor EngineV2Bridge {
                 continuation.yield(.info(
                     promptTokens: final.prompt,
                     completionTokens: final.completion,
-                    tokensPerSecond: final.tps
+                    tokensPerSecond: final.tps,
+                    finishReason: nil
                 ))
             }
             continuation.yield(.error("request cancelled"))

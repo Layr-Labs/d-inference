@@ -183,7 +183,7 @@ private func record(
         switch event {
         case .chunk(let text):
             events.append(.chunk(text))
-        case .info(let prompt, let completion, let tokensPerSecond):
+        case .info(let prompt, let completion, let tokensPerSecond, _):
             events.append(.info(prompt: prompt, completion: completion))
             tps.append(tokensPerSecond)
         case .error(let message):
@@ -490,7 +490,7 @@ struct EngineV2EventFramingTests {
         #expect(tps[0] >= 0)
     }
 
-    @Test("length finish frames identically to stop")
+    @Test("length finish frames usage like stop but preserves finish_reason 'length'")
     func lengthFramesLikeStop() async {
         let engine = ScriptedCBv2Engine(script: .stream([
             .delta(text: "x", tokens: [10], logprobs: nil),
@@ -501,6 +501,32 @@ struct EngineV2EventFramingTests {
         let bridge = makeBridge(engine: engine)
         let (events, _) = await record(await bridge.submit(request: makeRequest()))
         #expect(events == [.chunk("x"), .info(prompt: 5, completion: 1)])
+    }
+
+    /// Regression: the v2 bridge used to flatten `.length` into the same
+    /// `.info` shape as `.stop`, so clients saw finish_reason "stop" on a
+    /// max_tokens truncation. The reason now rides on GenerationEvent.info.
+    @Test("finish reason threads through: .length => 'length', .stop => 'stop', cancel partial => nil")
+    func finishReasonThreadsThroughInfoEvent() async {
+        func terminalReason(_ finish: CBv2FinishReason) async -> String?? {
+            let engine = ScriptedCBv2Engine(script: .stream([
+                .delta(text: "x", tokens: [10], logprobs: nil),
+                .finished(reason: finish, usage: CBv2Usage(promptTokens: 4, completionTokens: 1)),
+            ]))
+            let bridge = makeBridge(engine: engine)
+            var got: String?? = nil
+            for await event in await bridge.submit(request: makeRequest()) {
+                if case .info(_, _, _, let reason) = event {
+                    got = .some(reason)
+                }
+            }
+            return got
+        }
+        #expect(await terminalReason(.length) == .some("length"))
+        #expect(await terminalReason(.stop) == .some("stop"))
+        // Cancelled-with-work emits its usage info with a nil reason (the
+        // terminal signal is the trailing "request cancelled" error).
+        #expect(await terminalReason(.cancelled) == .some(String?.none))
     }
 
     @Test("terminal usage can only raise observed counts (billing-zero defense)")
@@ -1104,14 +1130,23 @@ struct EngineV2ConfigGatingTests {
         #expect(!EngineV2Config.flagEnabled(environment: ["DARKBLOOM_ENGINE_V2": "maybe"], configEnabled: true))
     }
 
-    @Test("default allowlist: gemma-4* and gpt-oss*, incl. org-prefixed ids")
+    @Test("default allowlist: EXACT production checkpoint ids only")
     func defaultAllowlist() {
-        #expect(EngineV2Config.modelAllowlisted("gemma-4-27b-it"))
-        #expect(EngineV2Config.modelAllowlisted("Gemma-4-9B"))
-        #expect(EngineV2Config.modelAllowlisted("gpt-oss-20b-4bit"))
-        #expect(EngineV2Config.modelAllowlisted("mlx-community/gpt-oss-20b-4bit"))
-        #expect(EngineV2Config.modelAllowlisted("mlx-community/gemma-4-27b-it-4bit"))
+        // The two checkpoints v2 was parity/soak-validated on — the default-on
+        // scope must equal the real-model-validated scope, nothing broader.
+        #expect(EngineV2Config.modelAllowlisted("mlx-community/gpt-oss-20b-MXFP4-Q8"))
+        #expect(EngineV2Config.modelAllowlisted("mlx-community/gemma-4-26b-a4b-it-8bit"))
+        // Case-insensitive + last-path-component matching still applies.
+        #expect(EngineV2Config.modelAllowlisted("MLX-Community/GPT-OSS-20B-MXFP4-Q8"))
+        #expect(EngineV2Config.modelAllowlisted("gpt-oss-20b-MXFP4-Q8"))
+        // Other quantizations of the SAME families are NOT default-enabled —
+        // they were not validated on real weights. Operators widen via
+        // DARKBLOOM_ENGINE_V2_MODELS.
+        #expect(!EngineV2Config.modelAllowlisted("mlx-community/gpt-oss-20b-4bit"))
+        #expect(!EngineV2Config.modelAllowlisted("mlx-community/gemma-4-27b-it-4bit"))
+        #expect(!EngineV2Config.modelAllowlisted("gemma-4-26B-A4B-it-qat-4bit"))
         #expect(!EngineV2Config.modelAllowlisted("qwen3-8b"))
+        #expect(!EngineV2Config.modelAllowlisted("mlx-community/Qwen3.5-0.8B-MLX-4bit"))
         #expect(!EngineV2Config.modelAllowlisted("llama-3.3-70b"))
         #expect(!EngineV2Config.modelAllowlisted(""))
     }
@@ -1128,13 +1163,34 @@ struct EngineV2ConfigGatingTests {
 
     @Test("selection matrix")
     func selectionMatrix() {
-        // Flag off → legacy even for allowlisted models.
+        let prodGemma = "mlx-community/gemma-4-26b-a4b-it-8bit"
+        // Config off (explicit opt-out) → legacy even for allowlisted models.
         #expect(EngineV2Config.selection(
-            modelId: "gemma-4-27b-it", environment: [:], configEnabled: false
+            modelId: prodGemma, environment: [:], configEnabled: false
+        ) == .legacy)
+        // DEFAULT-ON posture (v0.7.0): config default true + no env
+        // → v2 for the exact prod checkpoints, legacy for everything else.
+        #expect(EngineV2Config.selection(
+            modelId: prodGemma, environment: [:],
+            configEnabled: BackendSettings().engineV2
+        ) == .v2)
+        #expect(EngineV2Config.selection(
+            modelId: "mlx-community/gpt-oss-20b-MXFP4-Q8", environment: [:],
+            configEnabled: BackendSettings().engineV2
+        ) == .v2)
+        #expect(EngineV2Config.selection(
+            modelId: "mlx-community/Qwen3.5-0.8B-MLX-4bit", environment: [:],
+            configEnabled: BackendSettings().engineV2
+        ) == .legacy)
+        // Env kill switch is absolute — beats the default-on config.
+        #expect(EngineV2Config.selection(
+            modelId: prodGemma,
+            environment: ["DARKBLOOM_ENGINE_V2": "0"],
+            configEnabled: BackendSettings().engineV2
         ) == .legacy)
         // Flag on + allowlisted → v2.
         #expect(EngineV2Config.selection(
-            modelId: "gemma-4-27b-it",
+            modelId: prodGemma,
             environment: ["DARKBLOOM_ENGINE_V2": "1"], configEnabled: false
         ) == .v2)
         // Flag on + non-allowlisted → legacy.
@@ -1188,7 +1244,7 @@ struct EngineV2ConfigGatingTests {
         struct InitFailure: Error {}
         let telemetry = TelemetrySink()
         let bridge = EngineV2Factory.makeBridgeIfSelected(
-            modelId: "gpt-oss-20b",
+            modelId: "mlx-community/gpt-oss-20b-MXFP4-Q8",
             configEnabled: true,
             environment: [:],
             tokenizer: TokenizerHandle(StubTokenizer()),
@@ -1203,14 +1259,17 @@ struct EngineV2ConfigGatingTests {
         #expect(events.first?.severity == .warn)
         #expect(events.first?.fields?["operation"]?.description == "engine_v2_fallback")
         #expect(events.first?.fields?["backend"]?.description == "engine_v2")
-        #expect(events.first?.fields?["model"]?.description == "gpt-oss-20b")
+        #expect(events.first?.fields?["model"]?.description == "mlx-community/gpt-oss-20b-MXFP4-Q8")
         #expect(events.first?.fields?["error_class"]?.description.contains("InitFailure") == true)
+        // Default-on posture: the fallback is load-bearing, so the event must
+        // carry the human-readable reason too, not just the error type.
+        #expect(events.first?.fields?["error"]?.description.contains("InitFailure") == true)
     }
 
     @Test("factory: selected + healthy builder → v2 bridge")
     func factorySelectedBuilds() {
         let bridge = EngineV2Factory.makeBridgeIfSelected(
-            modelId: "gemma-4-27b-it",
+            modelId: "mlx-community/gemma-4-26b-a4b-it-8bit",
             configEnabled: true,
             environment: [:],
             tokenizer: TokenizerHandle(StubTokenizer()),
@@ -1220,19 +1279,22 @@ struct EngineV2ConfigGatingTests {
         #expect(bridge != nil)
     }
 
-    @Test("backend config decodes engine_v2 key (default false)")
+    @Test("backend config decodes engine_v2 key (default TRUE as of v0.7.0)")
     func backendConfigKey() throws {
         let decoder = JSONDecoder()
-        let on = try decoder.decode(
+        let off = try decoder.decode(
             BackendSettings.self,
-            from: Data(#"{"engine_v2": true}"#.utf8)
+            from: Data(#"{"engine_v2": false}"#.utf8)
         )
-        #expect(on.engineV2)
+        #expect(!off.engineV2)
+        // v0.7.0 ships v2 default-on for the exact-id allowlist; rollback is
+        // the DARKBLOOM_ENGINE_V2=0 kill switch or a release rollback.
         let absent = try decoder.decode(
             BackendSettings.self,
             from: Data(#"{}"#.utf8)
         )
-        #expect(!absent.engineV2)
+        #expect(absent.engineV2)
+        #expect(BackendSettings().engineV2)
     }
 }
 

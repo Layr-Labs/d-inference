@@ -91,12 +91,25 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// fixed 512-token production path. Enable with `adaptive_prefill = true`
     /// under `[backend]` in provider.toml.
     public var adaptivePrefill: Bool
-    /// Opt-in ContinuousBatchingV2 engine for the allowlisted model families
-    /// (gemma-4*, gpt-oss* — see `EngineV2Config`). Default false keeps the
-    /// legacy `BatchedEngine` path byte-identical. Enable with
-    /// `engine_v2 = true` under `[backend]` in provider.toml, or override
-    /// either way via env `DARKBLOOM_ENGINE_V2`.
+    /// ContinuousBatchingV2 engine for the allowlisted models (the exact
+    /// production checkpoints — see `EngineV2Config.defaultModelAllowlist`).
+    /// **Default true as of v0.7.0**: v2 ships on by default for the
+    /// allowlisted models; every other model keeps the legacy
+    /// `BatchedEngine` path byte-identical. Rollback is the env kill
+    /// switch `DARKBLOOM_ENGINE_V2=0` (absolute — beats config, per-box,
+    /// no release needed) or a release rollback. v2 init failure falls
+    /// back to legacy with WARN `engine_health` telemetry (model id +
+    /// error reason).
     public var engineV2: Bool
+    /// Opt-in compiled decode for the LEGACY engine (default false). The
+    /// mlx-swift-lm library defaults its `DARKBLOOM_COMPILED_DECODE` env
+    /// gate ON; the provider forces it OFF at startup unless this is true
+    /// or the operator set the env var explicitly (which always wins —
+    /// see `LegacyCompiledDecodeGate`). Off keeps release behavior
+    /// identical to prod v0.6.30 (the compiled-decode rollback):
+    /// no compile-on-first-dispatch cold start, no B=1 window-straddle
+    /// divergence. Single-stream speedups ship via the v2 engine instead.
+    public var legacyCompiledDecode: Bool
     /// Startup model preload (default true). On boot the provider loads the
     /// `preload_models` set (or, when that is empty, the models it was serving
     /// before the last restart — see `LoadedModelsStore`) BEFORE registering
@@ -138,7 +151,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         maxModelSlots: UInt64 = 3,
         kvQuant: Bool = false,
         adaptivePrefill: Bool = false,
-        engineV2: Bool = false,
+        engineV2: Bool = true,
+        legacyCompiledDecode: Bool = false,
         startupPreload: Bool = true,
         preloadModels: [String] = [],
         startupPreloadTimeoutSecs: UInt64 = 120,
@@ -154,6 +168,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.kvQuant = kvQuant
         self.adaptivePrefill = adaptivePrefill
         self.engineV2 = engineV2
+        self.legacyCompiledDecode = legacyCompiledDecode
         self.startupPreload = startupPreload
         self.preloadModels = preloadModels
         self.startupPreloadTimeoutSecs = startupPreloadTimeoutSecs
@@ -171,6 +186,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case kvQuant = "kv_quant"
         case adaptivePrefill = "adaptive_prefill"
         case engineV2 = "engine_v2"
+        case legacyCompiledDecode = "legacy_compiled_decode"
         case startupPreload = "startup_preload"
         case preloadModels = "preload_models"
         case startupPreloadTimeoutSecs = "startup_preload_timeout_secs"
@@ -188,7 +204,9 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
         self.kvQuant = try container.decodeIfPresent(Bool.self, forKey: .kvQuant) ?? false
         self.adaptivePrefill = try container.decodeIfPresent(Bool.self, forKey: .adaptivePrefill) ?? false
-        self.engineV2 = try container.decodeIfPresent(Bool.self, forKey: .engineV2) ?? false
+        self.engineV2 = try container.decodeIfPresent(Bool.self, forKey: .engineV2) ?? true
+        self.legacyCompiledDecode =
+            try container.decodeIfPresent(Bool.self, forKey: .legacyCompiledDecode) ?? false
         self.startupPreload = try container.decodeIfPresent(Bool.self, forKey: .startupPreload) ?? true
         self.preloadModels = try container.decodeIfPresent([String].self, forKey: .preloadModels) ?? []
         self.startupPreloadTimeoutSecs =

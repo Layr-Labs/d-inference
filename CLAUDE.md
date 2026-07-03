@@ -22,7 +22,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── registry/         Provider registry, queueing, routing, reputation, token-budget admission,
 │                     warm-pool controller, two-lane provider WS writer (provider_writer.go), routingsim/
 ├── saferun/          Panic-safe goroutine runners
-├── stateexport/      Consistent encrypted archive of step-ca/MicroMDM state (migration)
+├── stateexport/      Consistent encrypted archive of MicroMDM (+ legacy step-ca) state (migration)
 ├── store/            Persistence (in-memory or Postgres)
 ├── telemetry/        Telemetry event emitter (process logs + Datadog forwarding)
 ├── datadog/          Datadog APM / DogStatsD / Logs API client
@@ -64,12 +64,11 @@ scripts/
 ├── install.sh        curl one-liner installer (fetches release, verifies SHA-256 + code signature)
 ├── admin.sh          Admin CLI (Privy auth, release mgmt, API calls)
 ├── publish-model.sh  Model registry publish workflow
-├── deploy-acme.sh    nginx/step-ca helper
 ├── fetch-metallib.sh MLX metallib builder (cmake from libs/mlx-swift source)
 ├── smoke-dev.sh      Dev-coordinator smoke test
 └── entitlements.plist Hardened Runtime entitlements (network, keychain)
 
-docs/                 Architecture docs, deploy runbook, MDM/ACME notes, threat model
+docs/                 Architecture docs, deploy runbook, MDM notes, threat model
 .github/workflows/    CI (ci.yml), integration tests (integration.yml), Swift release (release-swift.yml),
                       model registration (register-model.yml), threat model review (threat-model-review.yml)
 ```
@@ -166,9 +165,9 @@ Deploy time: ~5-7 minutes. Env vars/secrets are managed via EigenCloud KMS — s
 
 ### Coordinator (dev, Google Cloud)
 
-The dev coordinator runs on GCP (project `sepolia-ai`) — separate domain (`api.dev.darkbloom.xyz`), separate R2 bucket (`d-inf-app-dev`), **same** trust level as prod (`MIN_TRUST=hardware`, full MDM + step-ca stack), and a dev-only BIP39 mnemonic (never prod's). **Never** used for prod traffic. Full wiring in [docs/operations/dev-environment.md](docs/operations/dev-environment.md).
+The dev coordinator runs on GCP (project `sepolia-ai`) — separate domain (`api.dev.darkbloom.xyz`), separate R2 bucket (`d-inf-app-dev`), **same** trust level as prod (`MIN_TRUST=hardware`, full MDM stack), and a dev-only BIP39 mnemonic (never prod's). **Never** used for prod traffic. Full wiring in [docs/operations/dev-environment.md](docs/operations/dev-environment.md).
 
-Shape: GCE Ubuntu VM + Docker + systemd (coordinator + step-ca + MicroMDM need persistent disk state), Cloud SQL Postgres via cloud-sql-proxy, **Vercel**-hosted console UI, Cloud Build auto-deploys on master push. ~2–4 min coordinator upgrades.
+Shape: GCE Ubuntu VM + Docker + systemd (coordinator + MicroMDM need persistent disk state), Cloud SQL Postgres via cloud-sql-proxy, **Vercel**-hosted console UI, Cloud Build auto-deploys on master push. ~2–4 min coordinator upgrades.
 
 ### Provider bundle
 
@@ -181,12 +180,12 @@ CI (`.github/workflows/release-swift.yml`) builds, signs, notarizes, and uploads
 | Coordinator host | EigenCloud app `d-inference` | GCE VM `d-inference-dev` (us-central1-a, Ubuntu + Docker + systemd) |
 | Console UI | EigenCloud app | Vercel (separate dev project, `NEXT_PUBLIC_COORDINATOR_URL=https://api.dev.darkbloom.xyz`) |
 | Domain | `api.darkbloom.dev` | `api.dev.darkbloom.xyz` |
-| TLS | Caddy + EigenCloud-injected certs | Caddy in-container (step-ca or Let's Encrypt ACME, VM :443) |
+| TLS | Caddy + EigenCloud-injected certs | Caddy in-container (Let's Encrypt ACME, VM :443) |
 | Database | AWS RDS PostgreSQL (managed) | Cloud SQL Postgres 16 `d-inference-dev-db` via cloud-sql-proxy sidecar |
 | Persistent storage | `/mnt/disks/userdata` (EigenCloud blue-green) | GCE persistent disk `d-inference-dev-data`, 30 GB, mounted at `/mnt/disks/userdata` |
 | Logs | `ecloud compute app logs d-inference` | `gcloud logging read ...` (VM + Cloud SQL in Cloud Logging) |
 | Release bucket | R2 `d-inf-app` | R2 `d-inf-app-dev` |
-| Trust level | `hardware` (MDM enrollment required) | `hardware` (same — full MDM + step-ca stack) |
+| Trust level | `hardware` (MDM enrollment required) | `hardware` (same — full MDM stack) |
 | Provider install | `curl -fsSL https://api.darkbloom.dev/install.sh \| bash` | `curl -fsSL https://api.dev.darkbloom.xyz/install.sh \| bash` |
 
 ## Key Design Decisions

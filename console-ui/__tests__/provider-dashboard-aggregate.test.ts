@@ -27,8 +27,8 @@ describe("buildAttentionGroups", () => {
     const groups = buildAttentionGroups(
       [
         baseProvider({ id: "a", trust_level: "self_signed" }), // blocking
-        baseProvider({ id: "b", mda_verified: false }), // degrading
-        baseProvider({ id: "c", mda_verified: false }), // degrading
+        baseProvider({ id: "b", system_metrics: { memory_pressure: 0.2, cpu_usage: 0.1, thermal_state: "serious" } }), // degrading
+        baseProvider({ id: "c", system_metrics: { memory_pressure: 0.2, cpu_usage: 0.1, thermal_state: "serious" } }), // degrading
       ],
       ctx
     );
@@ -67,7 +67,7 @@ describe("deriveFleetVerdict", () => {
   });
 
   it("never shows a false all-clear for a degraded fleet", () => {
-    const providers = [baseProvider({ mda_verified: false })];
+    const providers = [baseProvider({ system_metrics: { memory_pressure: 0.2, cpu_usage: 0.1, thermal_state: "serious" } })];
     const v = deriveFleetVerdict(providers, ctx);
     expect(v.state).toBe("degraded");
     expect(v.state).not.toBe("routable");

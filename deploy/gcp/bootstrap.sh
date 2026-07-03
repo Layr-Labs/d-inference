@@ -2,11 +2,11 @@
 # One-shot GCP bootstrap for the d-inference DEV environment.
 #
 # Creates: Artifact Registry repos, Cloud SQL (Postgres), a GCE VM running the
-# coordinator container (with a persistent data disk for step-ca/MicroMDM),
+# coordinator container (with a persistent data disk for MicroMDM),
 # Cloud Run for console-ui, service accounts, Secret Manager entries
 # (placeholders), firewall rules. Idempotent: safe to re-run.
 #
-# Why GCE VM for the coordinator: step-ca writes CA state and MicroMDM uses
+# Why GCE VM for the coordinator: MicroMDM uses
 # BoltDB. Both need reliable local filesystem semantics, so the coordinator
 # mounts a persistent disk at /mnt/disks/userdata (same path as EigenCloud).
 #
@@ -266,7 +266,7 @@ if ! gcloud sql users list --instance="$SQL_INSTANCE" --format='value(name)' | g
   echo "==> DB URL stored in Secret Manager eigeninference-database-url"
 fi
 
-echo "==> Creating persistent data disk for step-ca + MicroMDM state"
+echo "==> Creating persistent data disk for MicroMDM state"
 gcloud compute disks describe "$DATA_DISK" --zone="$ZONE" >/dev/null 2>&1 || \
   gcloud compute disks create "$DATA_DISK" \
     --zone="$ZONE" \

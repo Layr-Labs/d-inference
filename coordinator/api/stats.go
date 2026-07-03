@@ -165,7 +165,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			"current_model":                  p.CurrentModel,
 			"attested":                       p.Attested,
 			"mda_verified":                   p.MDAVerified,
-			"acme_verified":                  p.ACMEVerified,
+			"acme_verified":                  false, // deprecated: ACME leg removed; key kept for older consumers
 			"runtime_verified":               p.RuntimeVerified,
 			"certificate_available":          len(p.MDACertChain) > 0,
 			"last_challenge_verified":        lastChallengeVerified,

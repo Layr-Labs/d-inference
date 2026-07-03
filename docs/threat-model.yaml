@@ -135,9 +135,15 @@ assets:
 
   - id: A-012
     name: step_ca_private_key
-    description: step-ca CA private key used to issue device TLS certs for ACME enrollment.
+    description: >
+      HISTORICAL (removed 2026-07-03): step-ca CA private key formerly used to issue
+      device TLS certs for the ACME device-attest-01 enrollment leg. The ACME leg and
+      the step-ca sidecar have been removed; the coordinator no longer holds this asset.
     sensitivity: critical
-    notes: Stored on persistent disk in coordinator container. Compromise breaks ACME trust chain.
+    notes: >
+      Retained as a record only. The ACME leg was never wired end-to-end and was removed
+      on 2026-07-03; hardware trust is MDM SecurityInfo only. Any residual step-ca state
+      on old persistent disks should be destroyed, not migrated.
 
   - id: A-013
     name: profile_signing_identity
@@ -1285,27 +1291,34 @@ threats:
   - id: T-022
     trust_boundary: TB-005
     stride: Tampering
-    title: ACME device identity spoofable via proxy header injection
+    title: ACME device identity spoofable via proxy header injection (resolved by removal)
     description: >
-      ACME device identity is carried via X-Ssl-Client-* proxy headers. If the
-      coordinator is reachable directly or the proxy fails to strip these headers,
-      an attacker can present a spoofed certificate identity without completing TLS
-      client auth.
+      RESOLVED BY REMOVAL (2026-07-03): ACME device identity used to be carried via
+      X-Ssl-Client-* proxy headers read by api/acme_verify.go; a directly-reachable
+      coordinator or a proxy that failed to strip these headers would have allowed a
+      spoofed certificate identity. The entire ACME trust leg — acme_verify.go, the
+      header parsing, and the trust grant — was deleted on 2026-07-03, eliminating
+      this attack surface. Hardware trust is MDM SecurityInfo only.
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-010, A-012]
     affected_files:
-      - coordinator/api/acme_verify.go
       - coordinator/api/provider.go
     mitigations:
-      - description: Coordinator verifies the presented cert chain and binds the ACME key to SE attestation.
+      - description: >
+          ACME leg removed 2026-07-03; the coordinator no longer parses X-Ssl-Client-*
+          headers and no trust path consumes proxy-supplied client-cert identity.
         status: implemented
-      - description: Requires proxy to strip spoofed inbound X-Ssl-Client-* headers; not enforced at app layer.
+      - description: >
+          If a cert-based trust leg is ever reintroduced, carry the proof in-band over
+          the provider WebSocket (never proxy headers) and fail closed on Apple
+          SIP/SecureBoot posture OIDs.
         status: open
     open_findings: [SEC-005]
     severity: medium
     detection_hint: >
-      Changes to acme_verify.go or provider.go cert-header parsing should verify
-      the coordinator cannot be reached directly bypassing proxy header stripping.
+      Any reintroduction of client-cert header parsing (X-Ssl-Client-*) or an ACME/mTLS
+      trust path in provider.go or a new verify file should re-open this threat and
+      verify the coordinator cannot be reached directly bypassing proxy header stripping.
 
   - id: T-023
     trust_boundary: TB-005
@@ -1881,7 +1894,8 @@ threats:
       - description: baseURL should be set in production; fallback to Host header is the risk.
         status: open
       - description: >
-          enroll.go now generates SCEP/MDM/ACME URLs via the shared resolveBaseURL
+          enroll.go now generates SCEP/MDM URLs (the ACME payload was removed
+          2026-07-03) via the shared resolveBaseURL
           (configured EIGENINFERENCE_BASE_URL), not a separate Host-derived value, so
           when baseURL is set the Host-header fallback is unreachable for the profile.
           This matters more now that the profile is CMS-signed (a spoofed Host would

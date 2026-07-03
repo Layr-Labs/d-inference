@@ -73,7 +73,6 @@ interface ProviderStats {
   tokens_generated: number;
   attested?: boolean;
   mda_verified?: boolean;
-  acme_verified?: boolean;
   runtime_verified?: boolean;
   certificate_available?: boolean;
   last_challenge_verified?: string;
@@ -196,7 +195,6 @@ interface ProviderAttestation {
   serial_number?: string;
   se_public_key?: string;
   mda_verified?: boolean;
-  acme_verified?: boolean;
   secure_enclave?: boolean;
   sip_enabled?: boolean;
   secure_boot_enabled?: boolean;
@@ -1014,7 +1012,6 @@ function maskSerial(serial?: string): string {
 function verificationLabel(provider: ProviderStats): string {
   if (isProviderRoutable(provider)) return "Routable";
   if (provider.mda_verified) return "Apple MDA";
-  if (provider.acme_verified) return "ACME bound";
   if (provider.runtime_verified && provider.trust_level === "hardware") return "Challenge fresh";
   if (provider.trust_level === "hardware") return "Hardware";
   return "Unverified";
@@ -1034,8 +1031,10 @@ function isProviderRoutable(provider: ProviderStats): boolean {
   const statusOK = provider.status === "online" || provider.status === "serving";
   const trustOK = provider.trust_level === "hardware";
   const runtimeOK = provider.runtime_verified !== false;
-  const certificateOK = provider.certificate_available || provider.mda_verified;
-  return statusOK && trustOK && runtimeOK && hasFreshChallenge(provider.last_challenge_verified) && Boolean(certificateOK);
+  // Note: MDA/certificate proofs deliberately NOT required — they are
+  // informational and do not gate routing (mirror of the coordinator's
+  // providerLivenessGateLocked).
+  return statusOK && trustOK && runtimeOK && hasFreshChallenge(provider.last_challenge_verified);
 }
 
 function relativeChallengeLabel(iso?: string): string {

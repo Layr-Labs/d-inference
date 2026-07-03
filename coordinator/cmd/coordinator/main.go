@@ -21,9 +21,7 @@ package main
 
 import (
 	"context"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -709,44 +707,6 @@ func main() {
 			logger.Warn("EIGENINFERENCE_MDM_WEBHOOK_SECRET not set — MDM webhook relies solely on the CommandUUID gate; set it + keep MicroMDM bound to localhost for defense in depth")
 		}
 		logger.Info("MDM verification enabled", "url", mdmCfg.URL)
-	}
-
-	// Configure step-ca root CA for ACME client cert verification.
-	if stepCARoot := os.Getenv("EIGENINFERENCE_STEP_CA_ROOT"); stepCARoot != "" {
-		rootPEM, err := os.ReadFile(stepCARoot)
-		if err != nil {
-			logger.Error("failed to read step-ca root CA", "path", stepCARoot, "error", err)
-		} else {
-			block, _ := pem.Decode(rootPEM)
-			if block != nil {
-				rootCert, err := x509.ParseCertificate(block.Bytes)
-				if err != nil {
-					logger.Error("failed to parse step-ca root CA", "error", err)
-				} else {
-					var intCert *x509.Certificate
-					stepCAInt := os.Getenv("EIGENINFERENCE_STEP_CA_INTERMEDIATE")
-					if stepCAInt != "" {
-						intPEM, err := os.ReadFile(stepCAInt)
-						if err == nil {
-							intBlock, _ := pem.Decode(intPEM)
-							if intBlock != nil {
-								intCert, _ = x509.ParseCertificate(intBlock.Bytes)
-							}
-						}
-					}
-					srv.SetStepCACerts(rootCert, intCert)
-					logger.Info("step-ca ACME client cert verification enabled", "root", stepCARoot)
-				}
-			}
-		}
-	} else {
-		// ACME is the no-live-command leg of the OR-trust model: a provider that
-		// presents a valid, bound device-attest-01 mTLS client cert earns hardware
-		// trust without any MDM SecurityInfo round-trip. Without the step-ca root
-		// that leg is dormant, so every provider must earn hardware trust via the
-		// live MDM SecurityInfo path (subject to APNs delivery). Surface the
-		// dormancy at startup so activation can be planned + validated.
-		logger.Warn("ACME device-cert verification disabled — EIGENINFERENCE_STEP_CA_ROOT not set; providers earn hardware trust via MDM SecurityInfo only")
 	}
 
 	// Optional profile signing: when a code-signing identity (e.g. Developer ID

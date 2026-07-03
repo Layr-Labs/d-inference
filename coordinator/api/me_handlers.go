@@ -58,9 +58,11 @@ type myProvider struct {
 	SerialNumber string               `json:"serial_number,omitempty"`
 
 	// Trust & attestation
-	TrustLevel   string `json:"trust_level"`
-	Attested     bool   `json:"attested"`
-	MDAVerified  bool   `json:"mda_verified"`
+	TrustLevel  string `json:"trust_level"`
+	Attested    bool   `json:"attested"`
+	MDAVerified bool   `json:"mda_verified"`
+	// Deprecated: the ACME device-attest-01 leg was removed. Key kept (always
+	// false) because shipped provider builds decode it as a required field.
 	ACMEVerified bool   `json:"acme_verified"`
 	SEKeyBound   bool   `json:"se_key_bound"`
 	SEPublicKey  string `json:"se_public_key,omitempty"`
@@ -468,7 +470,6 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.TrustLevel = rec.TrustLevel
 		mp.Attested = rec.Attested
 		mp.MDAVerified = rec.MDAVerified
-		mp.ACMEVerified = rec.ACMEVerified
 		mp.SEPublicKey = rec.SEPublicKey
 		// X25519 E2E key from the persisted record so OFFLINE machines still
 		// resolve per-node earnings. The live branch below overrides
@@ -548,7 +549,6 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.TrustLevel = string(live.TrustLevel)
 		mp.Attested = live.Attested
 		mp.MDAVerified = live.MDAVerified
-		mp.ACMEVerified = live.ACMEVerified
 		mp.SEKeyBound = live.SEKeyBound
 		mp.RuntimeVerified = live.RuntimeVerified
 		mp.PythonHash = live.PythonHash

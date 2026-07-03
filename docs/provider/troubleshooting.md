@@ -102,7 +102,7 @@ usually clears it.
 
 ### `trust_level` stays `self_signed`
 
-`hardware` trust requires MDM/ACME/MDA verification. Run:
+`hardware` trust requires MDM SecurityInfo verification. Run:
 
 ```bash
 darkbloom enroll

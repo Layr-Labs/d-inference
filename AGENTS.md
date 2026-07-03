@@ -12,10 +12,9 @@ coordinator/          Go control plane (packages live at top level, not internal
 │   ├── provider.go         provider registration, heartbeats, attestation, relay
 │   ├── billing_handlers.go Stripe/referral/pricing endpoints
 │   ├── device_auth.go      device code flow for linking providers to user accounts
-│   ├── enroll.go           MDM + ACME enrollment profile generation
+│   ├── enroll.go           MDM enrollment profile generation
 │   ├── invite_handlers.go  invite code admin/user flows
 │   ├── release_handlers.go binary release registration (GitHub Actions integration)
-│   ├── acme_verify.go      ACME device-attest-01 client cert verification
 │   ├── chunk_key_cache.go  per-request X25519 shared-key memoization for chunk decrypt
 │   ├── stats.go            public network stats
 │   ├── types/              canonical JSON shapes for consumer-facing endpoints
@@ -35,11 +34,11 @@ coordinator/          Go control plane (packages live at top level, not internal
 │                     warm-pool controller, two-lane provider WS writer (provider_writer.go),
 │                     routingsim/ (trace-driven routing simulation harness)
 ├── saferun/          panic-safe goroutine runners
-├── stateexport/      consistent encrypted archive of step-ca/MicroMDM state (migration)
+├── stateexport/      consistent encrypted archive of MicroMDM (+ legacy step-ca) state (migration)
 ├── store/            in-memory or Postgres persistence
 ├── telemetry/        telemetry event emitter (process logs + Datadog forwarding)
 ├── datadog/          Datadog APM / DogStatsD / Logs API client
-├── deploy/           container entrypoint (start.sh) + ACME profile template
+├── deploy/           container entrypoint (start.sh)
 └── internal/e2e/     X25519 request-encryption helpers (+ cross-compat/tamper tests)
 
 e2e/                  System-level E2E testing framework
@@ -88,7 +87,6 @@ scripts/              build, signing, install, and deploy helpers
 ├── install.sh        end-user installer served from coordinator (hash + codesign verification)
 ├── admin.sh          admin CLI (Privy auth, release mgmt, API calls)
 ├── publish-model.sh  model registry publish workflow
-├── deploy-acme.sh    nginx/step-ca helper
 ├── fetch-metallib.sh MLX metallib builder (cmake from libs/mlx-swift source)
 ├── smoke-dev.sh      dev-coordinator smoke test
 ├── benchmark-models.py, load_soak.py, …  benchmark + soak helpers
@@ -97,7 +95,7 @@ scripts/              build, signing, install, and deploy helpers
 deploy/               infra config: gcp/ (Cloud Build + VM bootstrap), environments/ (dev/prod env),
                       datadog/ (dashboard JSON), provider-fleet/ (fleet update helper)
 
-docs/                 architecture, deploy runbooks, MDM/ACME notes, threat model
+docs/                 architecture, deploy runbooks, MDM notes, threat model
 .github/workflows/    CI (ci.yml), integration tests (integration.yml), Swift release (release-swift.yml),
                       model registration (register-model.yml), threat model review (threat-model-review.yml)
 ```

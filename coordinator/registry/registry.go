@@ -399,7 +399,6 @@ type Provider struct {
 	MDAVerified       bool                   // true if Apple Device Attestation cert chain verified
 	MDACertChain      [][]byte               // DER-encoded Apple MDA certificate chain (leaf first)
 	MDAResult         *attestation.MDAResult // parsed OIDs from Apple cert
-	ACMEVerified      bool                   // true if ACME device-attest-01 client cert verified (SE key proven)
 	SEKeyBound        bool                   // true if SE key was bound to device via MDA nonce
 
 	// restoredMDAChain holds the durable Apple-signed MDA cert chain recovered
@@ -647,17 +646,6 @@ func (p *Provider) GetStatus() ProviderStatus {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.Status
-}
-
-// SetACMEVerified sets the ACME-verified flag (thread-safe). Used to clear a
-// flag that applyACMETrust set optimistically (it marks the cert verified before
-// the SE-key binding completes) when a trust-reuse fast-skip grants hardware via
-// MDM-reuse and the stashed ACME never bound (DAR-326 FIX 4a) — so the attestation
-// report does not claim acme_verified for an unproven binding.
-func (p *Provider) SetACMEVerified(v bool) {
-	p.mu.Lock()
-	p.ACMEVerified = v
-	p.mu.Unlock()
 }
 
 // SetMDMFailureReason records the bucketed reason this connection's MDM

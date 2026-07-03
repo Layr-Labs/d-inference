@@ -27,13 +27,24 @@ public enum ExpertStreamingAdmission {
     /// Foundation-only / Linux-buildable).
     public static let defaultOverheadFactor = 1.2
 
-    /// Lower/upper clamp (GiB) for the auto-sized expert cache when the
-    /// operator leaves `expert_cache_gb` at its default (0 = auto). 8 GiB is
-    /// enough to keep a handful of hot experts resident; 70 GiB caps how much
-    /// of a very large box the cache alone can claim, leaving room for KV +
-    /// OS regardless of how much headroom the naive subtraction implies.
-    public static let autoCacheFloorGb = 8.0
+    /// Upper clamp (GiB) for the auto-sized expert cache when the operator
+    /// leaves `expert_cache_gb` at its default (0 = auto). Caps how much of a
+    /// very large box the cache alone can claim; there is deliberately NO
+    /// floor — the cache must never be sized past what the unified-memory cap
+    /// leaves over (a floor on a small box would push
+    /// `resident + cache` OVER the cap, so the scanner would advertise a model
+    /// the post-load serveability guard then unloads). A tiny (even zero)
+    /// cache still serves correctly, just with more cold-miss disk reads.
     public static let autoCacheCeilingGb = 70.0
+
+    /// KV-cache room (GiB) the auto-sizer reserves under the cap before
+    /// giving the remainder to the expert cache. Deliberately larger than
+    /// `UnifiedMemoryCap`'s 1 GiB minimum-serveable floor: a serving box
+    /// wants real context room, and shrinking the expert cache only costs
+    /// throughput (more disk reads) while shrinking KV costs ADMISSION
+    /// (requests reject). When even this can't be met, the cache goes to 0
+    /// and the load-time serveability guard remains the final arbiter.
+    public static let autoCacheKVTargetGb = 8.0
 
     /// Bytes-per-GiB used throughout (binary GiB, matching `ModelScanner`).
     public static let bytesPerGiB = 1024.0 * 1024.0 * 1024.0
@@ -52,31 +63,53 @@ public enum ExpertStreamingAdmission {
         return (Double(nonExpertBytes) / bytesPerGiB) * overheadFactor
     }
 
-    /// Auto-size the expert cache budget (GiB) from physical RAM and the
-    /// resident-weights-only estimate (i.e. NOT including the cache itself —
-    /// computing the cache from a resident estimate that already includes it
-    /// would be circular). Leaves 24 GiB of headroom for KV cache + the OS on
-    /// top of the resident weights, clamped to
-    /// `[autoCacheFloorGb, autoCacheCeilingGb]` so a huge box doesn't let the
-    /// cache alone crowd out all KV headroom, and a tight box still gets a
-    /// usable minimum cache.
+    /// Auto-size the expert cache budget (GiB) UNDER THE UNIFIED-MEMORY CAP.
+    ///
+    /// The provider may never plan against physical RAM: `UnifiedMemoryCap`
+    /// grants MLX at most `min(0.90 × physical, physical − 2 GiB)` for
+    /// EVERYTHING (weights + KV + activations), and the expert cache is
+    /// MLX-resident memory like any other weights. So the budget is what the
+    /// CAP leaves after the resident weights, the activation reserve, and a
+    /// real KV allowance — never a subtraction from physical RAM (which
+    /// over-grants by the OS share) and never floored (a floor would push
+    /// `resident + cache` past the cap on small boxes, admitting a model the
+    /// post-load serveability guard immediately unloads).
+    ///
+    /// `hardCapGb`/`activationReserveGb` are parameters (not read here)
+    /// because this file is Foundation-only and `UnifiedMemoryCap` lives in
+    /// `ProviderCore` — callers pass `UnifiedMemoryCap.hardCapBytes()` /
+    /// `loadHeadroomBytes()`-derived values so there is exactly one source of
+    /// truth for the cap arithmetic.
     public static func autoExpertCacheGb(
-        physicalMemoryGb: Double,
+        hardCapGb: Double,
         residentWeightsGb: Double,
-        headroomGb: Double = 24.0
+        activationReserveGb: Double,
+        kvTargetGb: Double = autoCacheKVTargetGb
     ) -> Double {
-        max(autoCacheFloorGb, min(autoCacheCeilingGb, physicalMemoryGb - residentWeightsGb - headroomGb))
+        let available = hardCapGb - residentWeightsGb - activationReserveGb - kvTargetGb
+        return max(0, min(autoCacheCeilingGb, available))
     }
 
     /// The expert cache budget (GiB) to use: the operator's explicit
-    /// `expert_cache_gb` when positive, otherwise the auto-sized value.
+    /// `expert_cache_gb` when positive — clamped so even an operator typo can
+    /// never size the cache past what the cap leaves above the resident
+    /// weights + activation reserve + minimum serveable KV — otherwise the
+    /// cap-derived auto size.
     public static func expertCacheGb(
         configuredGb: Double,
-        physicalMemoryGb: Double,
-        residentWeightsGb: Double
+        hardCapGb: Double,
+        residentWeightsGb: Double,
+        activationReserveGb: Double,
+        minimumKVGb: Double = 1.0
     ) -> Double {
-        configuredGb > 0 ? configuredGb : autoExpertCacheGb(
-            physicalMemoryGb: physicalMemoryGb, residentWeightsGb: residentWeightsGb)
+        if configuredGb > 0 {
+            let ceiling = max(
+                0, hardCapGb - residentWeightsGb - activationReserveGb - minimumKVGb)
+            return min(configuredGb, ceiling)
+        }
+        return autoExpertCacheGb(
+            hardCapGb: hardCapGb, residentWeightsGb: residentWeightsGb,
+            activationReserveGb: activationReserveGb)
     }
 
     /// Full streaming-aware memory estimate for a model: resident weights
@@ -95,15 +128,16 @@ public enum ExpertStreamingAdmission {
     public static func estimate(
         totalBytes: UInt64,
         switchMlpBytes: UInt64,
-        physicalMemoryGb: Double,
+        hardCapGb: Double,
+        activationReserveGb: Double,
         configuredExpertCacheGb: Double,
         overheadFactor: Double = defaultOverheadFactor
     ) -> Estimate {
         let resident = residentWeightsGb(
             totalBytes: totalBytes, switchMlpBytes: switchMlpBytes, overheadFactor: overheadFactor)
         let cache = expertCacheGb(
-            configuredGb: configuredExpertCacheGb, physicalMemoryGb: physicalMemoryGb,
-            residentWeightsGb: resident)
+            configuredGb: configuredExpertCacheGb, hardCapGb: hardCapGb,
+            residentWeightsGb: resident, activationReserveGb: activationReserveGb)
         return Estimate(residentWeightsGb: resident, expertCacheGb: cache)
     }
 

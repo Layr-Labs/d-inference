@@ -87,9 +87,17 @@ private func testHardware(memoryGb: UInt64) -> HardwareInfo {
 
     let switchMlpBytesMeasured = try SafetensorsSizing.sumTensorBytes(
         in: dir, matching: ExpertStreamingAdmission.isSwitchMlpKey)
+    // Mirror the scanner's cap derivation: budgets come from the unified-
+    // memory cap (min(0.9 × physical, physical − 2 GiB)), never physical RAM.
+    let physicalBytes = UInt64(hardware.memoryGb) * UInt64(1 << 30)
+    let hardCapGb =
+        Double(UnifiedMemoryCap.hardCapBytes(physicalBytes: physicalBytes)) / Double(1 << 30)
     let expected = ExpertStreamingAdmission.estimate(
         totalBytes: info.sizeBytes, switchMlpBytes: switchMlpBytesMeasured,
-        physicalMemoryGb: Double(hardware.memoryGb), configuredExpertCacheGb: 0
+        hardCapGb: hardCapGb,
+        activationReserveGb:
+            Double(UnifiedMemoryCap.activationReserveBytesForPlanning()) / Double(1 << 30),
+        configuredExpertCacheGb: 0
     ).totalGb
 
     #expect(abs(info.estimatedMemoryGb - expected) < 0.01)

@@ -39,49 +39,75 @@ final class ExpertStreamingAdmissionTests: XCTestCase {
         XCTAssertEqual(resident, ordinary, accuracy: 0.0001)
     }
 
-    // MARK: - autoExpertCacheGb
+    // MARK: - autoExpertCacheGb (cap-derived, never physical RAM)
 
-    func testAutoExpertCacheGbLeavesTwentyFourGbHeadroom() {
-        // 64 GB box, 19.2 GB resident → 64 - 19.2 - 24 = 20.8 GB cache.
+    /// The invariant the whole budget hangs off: resident + cache +
+    /// activations + KV target ≤ hard cap. On a 64 GB box the cap is
+    /// min(0.9 × 64, 64 − 2) = 57.6.
+    func testAutoExpertCacheGbBudgetsUnderTheHardCap() {
+        // 57.6 cap − 19.2 resident − 3 activations − 8 KV target = 27.4.
         let cache = ExpertStreamingAdmission.autoExpertCacheGb(
-            physicalMemoryGb: 64, residentWeightsGb: 19.2)
-        XCTAssertEqual(cache, 20.8, accuracy: 0.01)
+            hardCapGb: 57.6, residentWeightsGb: 19.2, activationReserveGb: 3)
+        XCTAssertEqual(cache, 27.4, accuracy: 0.01)
+        XCTAssertLessThanOrEqual(
+            19.2 + cache + 3 + ExpertStreamingAdmission.autoCacheKVTargetGb,
+            57.6 + 1e-9,  // exact-budget equality, float-addition tolerance only
+            "resident + cache + activations + KV must fit under the cap")
     }
 
-    func testAutoExpertCacheGbFloorsAtEightGb() {
-        // A tight box where the naive subtraction goes negative still gets
-        // the 8 GiB floor (not zero, not negative).
-        let cache = ExpertStreamingAdmission.autoExpertCacheGb(
-            physicalMemoryGb: 32, residentWeightsGb: 19.2)
-        XCTAssertEqual(cache, ExpertStreamingAdmission.autoCacheFloorGb)
+    func testAutoExpertCacheGbClampsToZeroOnTightBoxes() {
+        // 36 GB box (cap 32.4): 32.4 − 19.2 − 3 − 8 = 2.2 → small cache.
+        let smallBox = ExpertStreamingAdmission.autoExpertCacheGb(
+            hardCapGb: 32.4, residentWeightsGb: 19.2, activationReserveGb: 3)
+        XCTAssertEqual(smallBox, 2.2, accuracy: 0.01)
+        // A box where the subtraction goes negative gets ZERO — never a
+        // floor that would push resident + cache past the cap (the old
+        // 8 GiB floor admitted models the post-load serveability guard
+        // then immediately unloaded).
+        let tinyBox = ExpertStreamingAdmission.autoExpertCacheGb(
+            hardCapGb: 21.6, residentWeightsGb: 19.2, activationReserveGb: 3)
+        XCTAssertEqual(tinyBox, 0)
     }
 
     func testAutoExpertCacheGbCeilingCapsAtSeventyGb() {
-        // 128 GB box, ~19.2 GB resident → naive 84.8 GB clamps to the 70 GB
-        // ceiling so the cache alone can't crowd out all KV headroom.
+        // 128 GB box (cap 115.2), ~19.2 GB resident → naive 85 GB clamps to
+        // the 70 GB ceiling so the cache alone can't crowd out KV headroom.
         let cache = ExpertStreamingAdmission.autoExpertCacheGb(
-            physicalMemoryGb: 128, residentWeightsGb: 19.2)
+            hardCapGb: 115.2, residentWeightsGb: 19.2, activationReserveGb: 3)
         XCTAssertEqual(cache, ExpertStreamingAdmission.autoCacheCeilingGb)
     }
 
-    // MARK: - expertCacheGb (configured overrides auto)
+    // MARK: - expertCacheGb (configured overrides auto, but never past the cap)
 
     func testExpertCacheGbUsesConfiguredValueWhenPositive() {
         let cache = ExpertStreamingAdmission.expertCacheGb(
-            configuredGb: 12, physicalMemoryGb: 128, residentWeightsGb: 19.2)
+            configuredGb: 12, hardCapGb: 115.2, residentWeightsGb: 19.2,
+            activationReserveGb: 3)
         XCTAssertEqual(cache, 12)
+    }
+
+    func testExpertCacheGbClampsAnOversizedConfiguredValueToTheCap() {
+        // Operator asks for 100 GB on a 64 GB box (cap 57.6): clamp to
+        // cap − resident − activations − 1 GB minimum KV = 34.4, instead of
+        // letting a typo overcommit unified memory.
+        let cache = ExpertStreamingAdmission.expertCacheGb(
+            configuredGb: 100, hardCapGb: 57.6, residentWeightsGb: 19.2,
+            activationReserveGb: 3)
+        XCTAssertEqual(cache, 57.6 - 19.2 - 3 - 1, accuracy: 0.01)
     }
 
     func testExpertCacheGbAutoSizesWhenConfiguredIsZeroOrNegative() {
         let autoSized = ExpertStreamingAdmission.autoExpertCacheGb(
-            physicalMemoryGb: 64, residentWeightsGb: 19.2)
+            hardCapGb: 57.6, residentWeightsGb: 19.2, activationReserveGb: 3)
         XCTAssertEqual(
             ExpertStreamingAdmission.expertCacheGb(
-                configuredGb: 0, physicalMemoryGb: 64, residentWeightsGb: 19.2),
+                configuredGb: 0, hardCapGb: 57.6, residentWeightsGb: 19.2,
+                activationReserveGb: 3),
             autoSized)
         XCTAssertEqual(
             ExpertStreamingAdmission.expertCacheGb(
-                configuredGb: -5, physicalMemoryGb: 64, residentWeightsGb: 19.2),
+                configuredGb: -5, hardCapGb: 57.6, residentWeightsGb: 19.2,
+                activationReserveGb: 3),
             autoSized)
     }
 
@@ -90,15 +116,36 @@ final class ExpertStreamingAdmissionTests: XCTestCase {
     func test141GbCheckpointFitsA128GbBoxViaStreaming() {
         let totalBytes = UInt64(141 * 1024 * 1024 * 1024)
         let switchMlpBytes = UInt64(125 * 1024 * 1024 * 1024)
+        // 128 GB box: hard cap = min(0.9 × 128, 126) = 115.2.
         let estimate = ExpertStreamingAdmission.estimate(
             totalBytes: totalBytes, switchMlpBytes: switchMlpBytes,
-            physicalMemoryGb: 128, configuredExpertCacheGb: 0)
+            hardCapGb: 115.2, activationReserveGb: 3, configuredExpertCacheGb: 0)
 
-        // Resident weights alone (~19.2 GB) plus even the max 70 GB cache
-        // leaves well under the 128 GB box, unlike the naive 141*1.2=169.2 GB
-        // full-footprint estimate that would refuse to load at all.
-        XCTAssertLessThan(estimate.totalGb, 128)
+        // Resident weights (~19.2 GB) + auto cache must fit under the CAP
+        // (115.2), not merely under physical RAM — with room for the
+        // activation reserve and the KV target on top.
         XCTAssertEqual(estimate.residentWeightsGb, 19.2, accuracy: 0.01)
+        XCTAssertLessThanOrEqual(
+            estimate.totalGb + 3 + ExpertStreamingAdmission.autoCacheKVTargetGb,
+            115.2 + 0.01,
+            "streaming estimate must leave activation + KV room under the 90% cap")
+    }
+
+    /// The user-visible fleet boxes: every supported RAM size must produce a
+    /// plan where resident + cache + activations + minimum KV fits the cap.
+    func testStreamingPlanFitsUnderCapAcrossFleetBoxSizes() {
+        let totalBytes = UInt64(141 * 1024 * 1024 * 1024)
+        let switchMlpBytes = UInt64(125 * 1024 * 1024 * 1024)
+        for physicalGb in [36.0, 48.0, 64.0, 96.0, 128.0] {
+            let capGb = min(0.9 * physicalGb, physicalGb - 2)
+            let estimate = ExpertStreamingAdmission.estimate(
+                totalBytes: totalBytes, switchMlpBytes: switchMlpBytes,
+                hardCapGb: capGb, activationReserveGb: 3, configuredExpertCacheGb: 0)
+            XCTAssertLessThanOrEqual(
+                estimate.totalGb + 3 + 1, capGb + 0.01,
+                "\(physicalGb) GB box: resident + cache + activations + min KV must fit cap \(capGb)")
+            XCTAssertGreaterThanOrEqual(estimate.expertCacheGb, 0)
+        }
     }
 
     func testNonStreamingEstimateIsUnaffectedByExpertCacheConfig() {
@@ -109,7 +156,7 @@ final class ExpertStreamingAdmissionTests: XCTestCase {
         let totalBytes = UInt64(20 * 1024 * 1024 * 1024)
         let estimate = ExpertStreamingAdmission.estimate(
             totalBytes: totalBytes, switchMlpBytes: 0,
-            physicalMemoryGb: 64, configuredExpertCacheGb: 8)
+            hardCapGb: 57.6, activationReserveGb: 3, configuredExpertCacheGb: 8)
         XCTAssertEqual(estimate.residentWeightsGb, 24.0, accuracy: 0.01)  // 20 * 1.2
         XCTAssertEqual(estimate.expertCacheGb, 8)
         XCTAssertEqual(estimate.totalGb, 32.0, accuracy: 0.01)

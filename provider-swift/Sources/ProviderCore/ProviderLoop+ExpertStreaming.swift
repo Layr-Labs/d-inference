@@ -54,10 +54,17 @@ public enum ExpertStreamingConfigurator {
         let switchMlpBytes = (try? SafetensorsSizing.sumTensorBytes(
             in: modelDirectory, matching: ExpertStreamingAdmission.isSwitchMlpKey)) ?? 0
         let (totalBytes, _) = ModelScanner.collectWeightFiles(in: modelDirectory)
-        let physicalMemoryGb = Double(ProcessInfo.processInfo.physicalMemory) / bytesPerGiBDouble
+        // Budget against the unified-memory CAP (min(0.90 × physical,
+        // physical − 2 GiB)), never physical RAM — the expert cache lives
+        // inside the same weights+KV+activations ≤ cap invariant everything
+        // else in the provider enforces.
+        let hardCapGb = Double(UnifiedMemoryCap.hardCapBytes()) / bytesPerGiBDouble
+        let activationReserveGb =
+            Double(UnifiedMemoryCap.activationReserveBytesForPlanning()) / bytesPerGiBDouble
         let estimate = ExpertStreamingAdmission.estimate(
             totalBytes: totalBytes, switchMlpBytes: switchMlpBytes,
-            physicalMemoryGb: physicalMemoryGb, configuredExpertCacheGb: expertCacheGb)
+            hardCapGb: hardCapGb, activationReserveGb: activationReserveGb,
+            configuredExpertCacheGb: expertCacheGb)
 
         setenv("DSV4_EXPERT_CACHE_GB", String(format: "%.3f", estimate.expertCacheGb), 1)
         MLXLLM.DeepseekV4ExpertStreaming.modelDirectory = modelDirectory

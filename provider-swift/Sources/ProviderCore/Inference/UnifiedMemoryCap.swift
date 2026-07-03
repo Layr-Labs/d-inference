@@ -234,6 +234,14 @@ public enum UnifiedMemoryCap {
     /// `0` reserve would remove the activation headroom the cap exists to
     /// guarantee, so an operator can RAISE the reserve but not silently disable it
     /// via env. An explicit programmatic value (tests) is honored as given.
+    /// Public planning accessor for the resolved activation reserve, so
+    /// budget planners OUTSIDE this file (expert-streaming cache sizing in
+    /// `ModelScanner`/`ProviderLoop`) subtract the SAME reserve the runtime
+    /// KV gates subtract — one source of truth, env override included.
+    public static func activationReserveBytesForPlanning() -> UInt64 {
+        resolvedActivationReserveBytes()
+    }
+
     static func resolvedActivationReserveBytes(
         explicit: UInt64? = nil,
         env: [String: String] = ProcessInfo.processInfo.environment

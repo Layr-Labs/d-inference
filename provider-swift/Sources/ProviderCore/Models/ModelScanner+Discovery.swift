@@ -206,9 +206,20 @@ extension ModelScanner {
             // rather than silently under-counting admission.
             return nil
         }
+        // Budget against the unified-memory CAP, never physical RAM: the
+        // provider's invariant is weights + KV + activations ≤
+        // min(0.90 × physical, physical − 2 GiB) (UnifiedMemoryCap), and the
+        // expert cache is MLX-resident memory inside that invariant.
+        let physicalBytes = UInt64(hardwareInfo.memoryGb) * UInt64(1 << 30)
+        let hardCapGb =
+            Double(UnifiedMemoryCap.hardCapBytes(physicalBytes: physicalBytes))
+            / Double(1 << 30)
+        let activationReserveGb =
+            Double(UnifiedMemoryCap.activationReserveBytesForPlanning()) / Double(1 << 30)
         let estimate = ExpertStreamingAdmission.estimate(
             totalBytes: sizeBytes, switchMlpBytes: switchMlpBytes,
-            physicalMemoryGb: Double(hardwareInfo.memoryGb),
+            hardCapGb: hardCapGb,
+            activationReserveGb: activationReserveGb,
             configuredExpertCacheGb: backend.expertCacheGb,
             overheadFactor: memoryOverheadFactor)
         return estimate.totalGb

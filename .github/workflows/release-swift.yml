@@ -315,8 +315,16 @@ jobs:
         working-directory: provider-swift
         run: |
           set -euo pipefail
-          swift build -c release --product darkbloom
-          swift build -c release --product darkbloom-enclave
+          # MLX_METAL_NO_NAX: the M5 NAX (Neural Accelerator) steel-GEMM
+          # kernels are nondeterministic for some bf16 shapes (intermittent
+          # garbage/NaN — see docs/spikes/nax-nondeterminism-m5.md, 10-second
+          # repro: DSV4Smoke --op-stress). Fleet A/B on Gemma-4 measured NO
+          # decode or prefill cost from disabling them (MoE serving is
+          # quantized-matmul dominated). There is no runtime toggle — the gate
+          # is compile-time — so releases ship with NAX off until the upstream
+          # kernel fix lands; re-test on every mlx bump.
+          swift build -c release --product darkbloom -Xcc -DMLX_METAL_NO_NAX
+          swift build -c release --product darkbloom-enclave -Xcc -DMLX_METAL_NO_NAX
           BIN_DIR=$(swift build -c release --show-bin-path)
           test -x "$BIN_DIR/$CLI_NAME"
           test -x "$BIN_DIR/$ENCLAVE_NAME"

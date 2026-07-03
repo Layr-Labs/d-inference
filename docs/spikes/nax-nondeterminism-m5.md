@@ -92,9 +92,34 @@ swift build -c release --product DSV4Smoke --scratch-path .build-nonax -Xcc -DML
 ./.build-nonax/arm64-apple-macosx/release/DSV4Smoke --op-stress 16   # clean
 ```
 
+## Fleet perf A/B (2026-07-03, M5 Max, Gemma-4-26B-A4B-4bit)
+
+Measured via DSV4Smoke's single-stream generate path, greedy, 3 runs per build:
+
+| | NAX | no-NAX (`MLX_METAL_NO_NAX`) |
+|---|---|---|
+| decode (192 tok) | 11.4 tok/s ×3 | 11.4 tok/s ×3 |
+| TTFT (525-token prefill) | 2.32 s | 2.07 s |
+| run-to-run determinism | deterministic (3× same hash) | deterministic (3× same hash) |
+
+- **Zero measurable cost** to disabling NAX for MoE-family serving: decode is
+  quantized-matmul dominated (NAX only accelerates dense GEMM), and even the
+  prefill-heavy case showed no NAX win at these shapes.
+- Gemma is internally deterministic under NAX — the drift is **shape-dependent**;
+  the op-stress repro's failing shape (`[7,4096] × [4096,1024]` bf16) is exactly
+  DeepSeek-V4's hyper-connection mixes GEMM, which is why V4 surfaced it.
+  NAX-vs-no-NAX outputs differ from each other (different kernels, different
+  rounding) — expected and fine.
+- Caveat: single-stream harness; the batched engine's large-batch prefill GEMMs
+  weren't A/B'd. If batched prefill regresses on fleet telemetry, revisit.
+
+**Decision: build release binaries with `-Xcc -DMLX_METAL_NO_NAX`** (wired in
+`release-swift.yml`) until the upstream kernel is fixed. No runtime toggle
+exists, and a proven silent-corruption risk outweighs an unmeasurable perf win.
+
 ## Follow-ups
 
-- [ ] A/B fleet-model perf (Gemma-4, GPT-OSS) with/without NAX on M5 Max
-- [ ] Decide release posture (`MLX_METAL_NO_NAX` in `release-swift.yml` vs waiting on upstream)
+- [x] A/B fleet-model perf (Gemma-4) with/without NAX on M5 Max — no measurable cost
+- [x] Decide release posture — ship `MLX_METAL_NO_NAX` (see above)
 - [ ] Standalone upstream repro + issue on ml-explore/mlx (include macOS/Xcode/Metal toolchain versions)
 - [ ] Re-test on each mlx bump; remove the flag when fixed upstream

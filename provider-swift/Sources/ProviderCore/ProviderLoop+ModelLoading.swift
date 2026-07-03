@@ -343,15 +343,19 @@ extension ProviderLoop {
 
             // Post-BRIDGE measured-headroom guard (v0.7.3): the engine build
             // can retain additional load-time memory beyond the weights the
-            // check above measured — the VLM extraction's parity probe
-            // materializes the (shared) MoE fused gate+up cache, ~15 GiB on
-            // gemma-4-26b-8bit. Re-measure AFTER the bridge so a box whose
-            // full load-time footprint leaves no serveable KV unloads and
-            // 503s (coordinator reroutes, telemetry fires) instead of
-            // advertising a model whose every request the shared KV gate
-            // rejects — the v0.7.2 black-hole failure shape. Trim the pool
-            // first, mirroring the post-load check.
-            if engineV2Bridge != nil {
+            // check above measured — the VLM extraction eagerly builds the
+            // (shared) MoE fused gate+up cache, ~15 GiB on gemma-4-26b-8bit.
+            // Re-measure AFTER the bridge so a box whose full load-time
+            // footprint leaves no serveable KV unloads and 503s (coordinator
+            // reroutes, telemetry fires) instead of advertising a model whose
+            // every request the shared KV gate rejects — the v0.7.2
+            // black-hole failure shape. Runs for ANY VLM slot, not just when
+            // the bridge built: the extraction builds the fused cache BEFORE
+            // its parity gate, so a parity/init failure that fell back to
+            // legacy (nil bridge) has still grown resident memory. Trim the
+            // pool first, mirroring the post-load check. (unregister/shutdown
+            // are safe no-ops on the nil-bridge path.)
+            if engineV2Bridge != nil || slotIsVLM {
                 MLX.Memory.clearCache()
                 if !(await scheduler.hasServeableKVHeadroom()) {
                     let headroomGb = String(

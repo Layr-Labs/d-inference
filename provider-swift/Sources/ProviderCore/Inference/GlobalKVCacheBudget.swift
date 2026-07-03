@@ -45,7 +45,7 @@ public actor GlobalKVCacheBudget {
     // can't help because the binding term isn't the reclaimable pool. These
     // fields turn that permanent black hole into a bounded blip: when every
     // commit has failed for `sustainedRejectionAuditThreshold` straight, the
-    // budget logs the FULL reservation table at CRITICAL severity and drops
+    // budget logs the FULL reservation table at ERROR severity and drops
     // any reservation older than `staleReservationTTL` with a WARN. Live
     // requests/loads hold their reservations for seconds-to-minutes, so a
     // multi-minute-old reservation during a full-rejection streak is leaked

@@ -223,8 +223,12 @@ enum EngineV2VLMTextExtraction {
                 let extractedGLU =
                     extractedSwitchGLUs[String(path.dropFirst(languageModelPrefix.count))]
             else { continue }
-            wrapperGLU.shareFusedGateUpCache(with: extractedGLU)
-            shared += 1
+            // Counts only pairs where a cache actually exists and is shared —
+            // an ineligible layer (opt-out env, cache limit, non-quantized)
+            // propagates its no-fusion verdict but is not "shared".
+            if wrapperGLU.shareFusedGateUpCache(with: extractedGLU) {
+                shared += 1
+            }
         }
         return shared
     }

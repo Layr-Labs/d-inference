@@ -28,6 +28,32 @@ final class SequentialServingTests: XCTestCase {
             "the admission fence must block until the previous submit resolves")
     }
 
+    // MARK: - Runner dispatch (review P1-3: sequential requests must never
+    // hit mlx-swift-lm's tool-aware text loop, tool-bearing or not)
+
+    func testSequentialAlwaysUsesRawTextRunnerRegardlessOfTools() {
+        // The dispatch decision does not take an `allowFastPath`/tools
+        // parameter at all — sequential-serving models route EVERY request
+        // (tool-bearing or plain text) through the raw-text loop, because a
+        // false-positive tool-call parse is unsafe for both shapes (see
+        // BatchScheduler+SequentialRawRunner.swift). This test documents that
+        // by checking both "intents" resolve identically.
+        let toolBearingIntent = BatchScheduler.fastPathRunnerKind(useSequential: true)
+        let plainTextIntent = BatchScheduler.fastPathRunnerKind(useSequential: true)
+        XCTAssertEqual(toolBearingIntent, .rawTextLoop,
+            "sequential + tools must use the raw runner, never container.generate's tool parser")
+        XCTAssertEqual(plainTextIntent, .rawTextLoop,
+            "sequential + no tools must ALSO use the raw runner — a false-positive tool-call "
+                + "parse on plain generated text is unsafe even without tools declared")
+    }
+
+    func testNonSequentialUsesToolAwareGenerateForTheGemmaFastPath() {
+        XCTAssertEqual(
+            BatchScheduler.fastPathRunnerKind(useSequential: false), .toolAwareGenerate,
+            "the B=1 Gemma greedy fast path is the only caller of container.generate's "
+                + "tool-aware loop, and only reaches it via its own allowFastPath gate")
+    }
+
     // MARK: - Batching-support classifier (drives requiresSequentialServing)
 
     func testDeepseekV4CacheLayoutClassifiesAsSequential() {

@@ -34,7 +34,6 @@
 import Foundation
 import MLX
 import MLXLMCommon
-import MLXRandom
 
 extension BatchScheduler {
 
@@ -205,6 +204,14 @@ extension BatchScheduler {
     /// bookkeeping and terminal `.info` / `.error` mapping) but sources tokens
     /// from the single-sequence generator instead of `engine.core.streamOutputs`.
     ///
+    /// ONLY the B=1 Gemma greedy fast path uses this runner (temperature 0,
+    /// no seed — `b1FastPathEligiblePure` requires both). The sequential-
+    /// serving route (DeepSeek-V4) uses `runSequentialRawTextPath` instead —
+    /// see `BatchScheduler+SequentialRawRunner.swift` for why: this runner's
+    /// `ModelContainer.generate` attaches a tool-call parser that can consume
+    /// generated text into a `.toolCall` event, which is unsafe for that
+    /// route regardless of whether the request carries tools.
+    ///
     /// The spawned task is tracked in `fastPathTasks[id]` so `cancel` /
     /// `cancelAll` / `stopCurrentEngine` can tear it down; it removes its own
     /// handle on completion. The caller (`submitTokenized`) is responsible for
@@ -215,8 +222,6 @@ extension BatchScheduler {
         container: ModelContainer,
         promptTokens: [Int],
         maxTokens: Int,
-        parameters: GenerateParameters? = nil,
-        seed: UInt64? = nil,
         continuation: AsyncStream<GenerationEvent>.Continuation
     ) {
         let scheduler = self
@@ -225,16 +230,10 @@ extension BatchScheduler {
             // Token-only input (no media). `MLXArray(promptTokens)` is a cheap
             // host-side copy; the GPU work happens inside `generate`.
             let lmInput = LMInput(tokens: MLXArray(promptTokens))
-            // Default (fast path): temperature 0 ⇒ ArgMaxSampler; topP/topK/
-            // penalties left at their defaults are inert under greedy. The
-            // sequential-serving route passes explicit sampling parameters.
-            let params = parameters ?? GenerateParameters(maxTokens: maxTokens, temperature: 0)
-            // OpenAI `seed` parity for the sequential route: GenerateParameters
-            // has no per-request seed, so seed MLX's global RNG. Safe ONLY
-            // because this path is single-request-exclusive (the admission gate
-            // rejects any concurrent work) — nothing else samples while this
-            // request runs. The engine path seeds per-request via SamplingParams.
-            if let seed { MLXRandom.seed(seed) }
+            // Greedy only: temperature 0 ⇒ ArgMaxSampler; topP/topK/penalties
+            // left at their defaults are inert under greedy. No seed — the
+            // eligibility gate rejects any request that supplies one.
+            let params = GenerateParameters(maxTokens: maxTokens, temperature: 0)
 
             // Admission ≈ now: prefill is about to begin. Drives the
             // pending-timeout predicate and starts the prefill-EWMA window.

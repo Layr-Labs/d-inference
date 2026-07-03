@@ -185,26 +185,49 @@ extension BatchScheduler {
                 continuation.finish()
                 return stream
             }
-            // Sequential-serving requests carry their real sampling parameters
-            // (incl. seed — honored via the exclusive-path global RNG seed in
-            // the runner); the greedy fast path keeps its temperature-0
-            // default (nil params, seed rejected upstream by eligibility).
-            var sequentialParams: GenerateParameters? = nil
-            if useSequential {
+            // Dispatch to the runner matching this admission (see
+            // `fastPathRunnerKind`): sequential-serving models carry their
+            // real sampling parameters (incl. seed — honored via the
+            // exclusive-path global RNG seed in the runner); the Gemma greedy
+            // fast path keeps its temperature-0 default (no seed — rejected
+            // upstream by eligibility).
+            switch Self.fastPathRunnerKind(useSequential: useSequential) {
+            case .rawTextLoop:
+                // Sequential-serving models (DeepSeek-V4) ALWAYS use the raw
+                // text loop — tool-bearing or not — since mlx-swift-lm's
+                // tool-aware `container.generate` loop is unsafe for both
+                // (see BatchScheduler+SequentialRawRunner.swift). `tokenizer`
+                // is guaranteed non-nil here: a live `modelContainer` is only
+                // ever set alongside its `tokenizer` in `loadModel`.
                 var gp = GenerateParameters(maxTokens: maxTokens, temperature: temperature)
                 if let topP, topP > 0 { gp.topP = topP }
                 if let topK, topK > 0 { gp.topK = topK }
-                sequentialParams = gp
+                guard let tokenizer = self.tokenizer else {
+                    fastPathAdmitting = false
+                    await releaseRequestResources(id)
+                    continuation.yield(.error("model reloaded during submit; please retry"))
+                    continuation.finish()
+                    return stream
+                }
+                runSequentialRawTextPath(
+                    requestId: id,
+                    container: container,
+                    tokenizer: tokenizer,
+                    promptTokens: promptTokens,
+                    maxTokens: maxTokens,
+                    parameters: gp,
+                    seed: seed,
+                    continuation: continuation
+                )
+            case .toolAwareGenerate:
+                runGreedyFastPath(
+                    requestId: id,
+                    container: container,
+                    promptTokens: promptTokens,
+                    maxTokens: maxTokens,
+                    continuation: continuation
+                )
             }
-            runGreedyFastPath(
-                requestId: id,
-                container: container,
-                promptTokens: promptTokens,
-                maxTokens: maxTokens,
-                parameters: sequentialParams,
-                seed: useSequential ? seed : nil,
-                continuation: continuation
-            )
             // The task is now tracked in `fastPathTasks`, which the concurrency
             // gates check — hand the fence off to it and clear the admitting flag.
             fastPathAdmitting = false

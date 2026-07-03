@@ -99,17 +99,30 @@ public enum UnifiedMemoryCap {
     /// This is the core of the policy: `cap − Σweights − activations − ramPrefix`.
     /// It is recomputed whenever a model loads or unloads, so it rises as models
     /// leave and shrinks as they join, with no special-casing of model count.
+    ///
+    /// `configReserveBytes` is the operator's `memory_reserve_gb`. When it
+    /// exceeds the cap's own implied OS reserve (`physical − cap` — on 16/32 GiB
+    /// boxes the default 4 GiB reserve does), the effective cap drops to
+    /// `physical − configReserve`, the SAME `max(configReserve, capImplied)`
+    /// hold-back the model-LOAD gate (``loadReserveBytes``) and the runtime KV
+    /// gate (``liveKVHeadroomBytes``) apply — so a static budget derived here
+    /// can never promise memory the operator explicitly reserved. No-op when
+    /// `configReserve ≤ physical − cap` (the common case on big boxes).
     public static func kvBudgetBytes(
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         residentWeightBytes: UInt64,
         activationReserveBytes: UInt64? = nil,
         ramPrefixAllowanceBytes: UInt64 = 0,
+        configReserveBytes: UInt64 = 0,
         capFraction: Double? = nil
     ) -> UInt64 {
         let cap = hardCapBytes(physicalBytes: physicalBytes, capFraction: capFraction)
+        let reserveFloor =
+            physicalBytes > configReserveBytes ? physicalBytes - configReserveBytes : 0
+        let effectiveCap = min(cap, reserveFloor)
         let activations = activationReserveBytes ?? resolvedActivationReserveBytes()
         let claimed = saturatingAdd(residentWeightBytes, activations, ramPrefixAllowanceBytes)
-        return cap > claimed ? cap - claimed : 0
+        return effectiveCap > claimed ? effectiveCap - claimed : 0
     }
 
     /// Live KV headroom in bytes: how many more bytes may be committed to KV

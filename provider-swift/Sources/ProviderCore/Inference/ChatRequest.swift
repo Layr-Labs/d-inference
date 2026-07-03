@@ -32,6 +32,15 @@ public struct ChatCompletionRequest: Codable, Sendable {
     /// checkpoint tier). Rides INSIDE the E2E-sealed body, so the coordinator
     /// never sees it; the provider reads it after decryption.
     public let prompt_cache_key: String?
+    /// OpenAI `logit_bias`: token-id (STRING keys on the wire) → additive
+    /// bias. Consumed by the v2 engine path (`EngineV2Translation`); the
+    /// legacy engine path ignores it (unchanged behavior).
+    public let logit_bias: [String: Float]?
+    /// OpenAI `logprobs` switch. v2 engine path only; ignored by legacy.
+    public let logprobs: Bool?
+    /// OpenAI `top_logprobs` (0–20, meaningful when `logprobs == true`).
+    /// v2 engine path only; ignored by legacy.
+    public let top_logprobs: Int?
 
     public init(
         model: String,
@@ -50,7 +59,10 @@ public struct ChatCompletionRequest: Codable, Sendable {
         tool_choice: ToolChoice? = nil,
         response_format: ResponseFormat? = nil,
         user: String? = nil,
-        prompt_cache_key: String? = nil
+        prompt_cache_key: String? = nil,
+        logit_bias: [String: Float]? = nil,
+        logprobs: Bool? = nil,
+        top_logprobs: Int? = nil
     ) {
         self.model = model
         self.messages = messages
@@ -69,6 +81,9 @@ public struct ChatCompletionRequest: Codable, Sendable {
         self.response_format = response_format
         self.user = user
         self.prompt_cache_key = prompt_cache_key
+        self.logit_bias = logit_bias
+        self.logprobs = logprobs
+        self.top_logprobs = top_logprobs
     }
 
     /// Per-tenant prefix-cache scope for this request. Policy (provider-only):

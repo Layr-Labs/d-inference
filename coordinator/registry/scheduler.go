@@ -868,6 +868,8 @@ func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *
 //   - dispatch-load cooldown (pair instant-503'd on "insufficient memory")
 //   - inference-error cooldown, SHAPE-KEYED to traits.CooldownShape() (pair
 //     returning repeated provider-side 5xx for THIS request shape)
+//   - capacity-reject cooldown (pair capacity-rejecting everything with ZERO
+//     interleaved accepts — the black-hole signature)
 //   - status not offline/untrusted
 //   - private-only admission (only the owner's self-route may use it)
 //   - hardware-trust floor (relaxed to TrustNone for the owner's own machine)
@@ -916,6 +918,16 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 	// tool failure does not deroute clean text traffic. Cleared by
 	// RecordInferenceSuccess (same shape) or by TTL expiry.
 	if r.inferenceErrorCooldownActiveLocked(p.ID, model, traits.CooldownShape(), now) {
+		return false
+	}
+	// Skip a (provider, model) pair quarantined by the capacity-reject cooldown:
+	// it kept capacity-rejecting with ZERO interleaved accepts (the black-hole
+	// signature — e.g. a box whose engine misreports its token budget), so a
+	// dispatch here is a guaranteed bounce while its idle-looking heartbeats
+	// keep winning the cost scheduler. A busy box that is also SERVING never
+	// trips this (any accept resets the streak), and the pair is re-probed once
+	// its TTL expires. See capacity_cooldown.go.
+	if r.capacityCooldownActiveLocked(p.ID, model, now) {
 		return false
 	}
 	// Skip a provider quarantined by the per-provider node-health breaker: a

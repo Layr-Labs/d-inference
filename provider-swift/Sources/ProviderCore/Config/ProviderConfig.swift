@@ -26,12 +26,27 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
     /// When true (default), the watchdog relaunches the provider ~5 min after a
     /// crash. `false` opts out while keeping the provider installed.
     public var autoRestart: Bool
+    /// Maximum random delay (seconds) inserted between staging a verified
+    /// background auto-update bundle and beginning the drain+restart. Staggers
+    /// fleet restarts after a release so every provider is not cold at once (the
+    /// first_chunk_timeout storm at rollover). The delay sits strictly AFTER the
+    /// download/verify security checks and the provider keeps serving while it
+    /// waits. 0 disables jitter. Manual (`darkbloom update`) and startup updates
+    /// are never jittered. Set `update_jitter_seconds` under `[provider]`.
+    public var updateJitterSeconds: UInt64
 
-    public init(name: String, memoryReserveGB: UInt64 = 4, autoUpdate: Bool = true, autoRestart: Bool = true) {
+    public init(
+        name: String,
+        memoryReserveGB: UInt64 = 4,
+        autoUpdate: Bool = true,
+        autoRestart: Bool = true,
+        updateJitterSeconds: UInt64 = 300
+    ) {
         self.name = name
         self.memoryReserveGB = memoryReserveGB
         self.autoUpdate = autoUpdate
         self.autoRestart = autoRestart
+        self.updateJitterSeconds = updateJitterSeconds
     }
 
     enum CodingKeys: String, CodingKey {
@@ -39,6 +54,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
         case memoryReserveGB = "memory_reserve_gb"
         case autoUpdate = "auto_update"
         case autoRestart = "auto_restart"
+        case updateJitterSeconds = "update_jitter_seconds"
     }
 
     public init(from decoder: Decoder) throws {
@@ -47,6 +63,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
         self.memoryReserveGB = try container.decodeIfPresent(UInt64.self, forKey: .memoryReserveGB) ?? 4
         self.autoUpdate = try container.decodeIfPresent(Bool.self, forKey: .autoUpdate) ?? true
         self.autoRestart = try container.decodeIfPresent(Bool.self, forKey: .autoRestart) ?? true
+        self.updateJitterSeconds = try container.decodeIfPresent(UInt64.self, forKey: .updateJitterSeconds) ?? 300
     }
 }
 
@@ -74,6 +91,57 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// fixed 512-token production path. Enable with `adaptive_prefill = true`
     /// under `[backend]` in provider.toml.
     public var adaptivePrefill: Bool
+    /// ContinuousBatchingV2 engine for the allowlisted models (the
+    /// coordinator-catalog fleet model ids — see
+    /// `EngineV2Config.defaultModelAllowlist`).
+    /// **Default true as of v0.7.0**: v2 ships on by default for the
+    /// allowlisted models; every other model keeps the legacy
+    /// `BatchedEngine` path byte-identical. Rollback is the env kill
+    /// switch `DARKBLOOM_ENGINE_V2=0` (absolute — beats config, per-box,
+    /// no release needed) or a release rollback. v2 init failure falls
+    /// back to legacy with WARN `engine_health` telemetry (model id +
+    /// error reason).
+    public var engineV2: Bool
+    /// Opt-in compiled decode for the LEGACY engine (default false). The
+    /// mlx-swift-lm library defaults its `DARKBLOOM_COMPILED_DECODE` env
+    /// gate ON; the provider forces it OFF at startup unless this is true
+    /// or the operator set the env var explicitly (which always wins —
+    /// see `LegacyCompiledDecodeGate`). Off keeps release behavior
+    /// identical to prod v0.6.30 (the compiled-decode rollback):
+    /// no compile-on-first-dispatch cold start, no B=1 window-straddle
+    /// divergence. Single-stream speedups ship via the v2 engine instead.
+    public var legacyCompiledDecode: Bool
+    /// Startup model preload (default true). On boot the provider loads the
+    /// `preload_models` set (or, when that is empty, the models it was serving
+    /// before the last restart — see `LoadedModelsStore`) BEFORE registering
+    /// with the coordinator, so a release restart never advertises models it
+    /// hasn't warmed. `startup_preload = false` restores the old
+    /// register-immediately behavior.
+    public var startupPreload: Bool
+    /// Models to preload at startup, in this order. Empty (default) means
+    /// "the models that were loaded before the last restart" (persisted set,
+    /// loaded biggest-first). Ids not in the advertised model set are skipped
+    /// with a warning. Set `preload_models = ["..."]` under `[backend]`.
+    public var preloadModels: [String]
+    /// Upper bound (seconds) the provider defers coordinator registration while
+    /// the startup preload runs. If the preload finishes sooner, it registers
+    /// warm immediately; on timeout it registers anyway (availability beats
+    /// perfection — a lone provider for a model must still serve it cold) and
+    /// the remaining loads finish in the background. Default 120s covers a
+    /// ~26 GB weight load + engine warmup with margin.
+    public var startupPreloadTimeoutSecs: UInt64
+    /// After each startup preload, run a 1-token greedy decode through the real
+    /// serving path (v2 bridge when flagged, else the legacy scheduler) so
+    /// Metal JIT, compiled buckets, and the chat-template render are warm
+    /// before the first routed request. Default true. Failure is fail-open
+    /// (WARN telemetry, model stays advertised) unless
+    /// `startup_selftest_fail_closed = true`.
+    public var startupSelftest: Bool
+    /// When true, a model whose startup self-test decode fails is unloaded and
+    /// dropped from the advertised set for this run (fail-closed). Default
+    /// false: availability beats perfection — a self-test failure may be
+    /// transient and the model can still serve via the lazy-load path.
+    public var startupSelftestFailClosed: Bool
 
     public init(
         port: UInt16 = 8100,
@@ -83,7 +151,14 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         idleTimeoutMins: UInt64 = 60,
         maxModelSlots: UInt64 = 3,
         kvQuant: Bool = false,
-        adaptivePrefill: Bool = false
+        adaptivePrefill: Bool = false,
+        engineV2: Bool = true,
+        legacyCompiledDecode: Bool = false,
+        startupPreload: Bool = true,
+        preloadModels: [String] = [],
+        startupPreloadTimeoutSecs: UInt64 = 120,
+        startupSelftest: Bool = true,
+        startupSelftestFailClosed: Bool = false
     ) {
         self.port = port
         self.model = model
@@ -93,6 +168,13 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.maxModelSlots = maxModelSlots
         self.kvQuant = kvQuant
         self.adaptivePrefill = adaptivePrefill
+        self.engineV2 = engineV2
+        self.legacyCompiledDecode = legacyCompiledDecode
+        self.startupPreload = startupPreload
+        self.preloadModels = preloadModels
+        self.startupPreloadTimeoutSecs = startupPreloadTimeoutSecs
+        self.startupSelftest = startupSelftest
+        self.startupSelftestFailClosed = startupSelftestFailClosed
     }
 
     enum CodingKeys: String, CodingKey {
@@ -104,6 +186,13 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case maxModelSlots = "max_model_slots"
         case kvQuant = "kv_quant"
         case adaptivePrefill = "adaptive_prefill"
+        case engineV2 = "engine_v2"
+        case legacyCompiledDecode = "legacy_compiled_decode"
+        case startupPreload = "startup_preload"
+        case preloadModels = "preload_models"
+        case startupPreloadTimeoutSecs = "startup_preload_timeout_secs"
+        case startupSelftest = "startup_selftest"
+        case startupSelftestFailClosed = "startup_selftest_fail_closed"
     }
 
     public init(from decoder: Decoder) throws {
@@ -116,6 +205,16 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
         self.kvQuant = try container.decodeIfPresent(Bool.self, forKey: .kvQuant) ?? false
         self.adaptivePrefill = try container.decodeIfPresent(Bool.self, forKey: .adaptivePrefill) ?? false
+        self.engineV2 = try container.decodeIfPresent(Bool.self, forKey: .engineV2) ?? true
+        self.legacyCompiledDecode =
+            try container.decodeIfPresent(Bool.self, forKey: .legacyCompiledDecode) ?? false
+        self.startupPreload = try container.decodeIfPresent(Bool.self, forKey: .startupPreload) ?? true
+        self.preloadModels = try container.decodeIfPresent([String].self, forKey: .preloadModels) ?? []
+        self.startupPreloadTimeoutSecs =
+            try container.decodeIfPresent(UInt64.self, forKey: .startupPreloadTimeoutSecs) ?? 120
+        self.startupSelftest = try container.decodeIfPresent(Bool.self, forKey: .startupSelftest) ?? true
+        self.startupSelftestFailClosed =
+            try container.decodeIfPresent(Bool.self, forKey: .startupSelftestFailClosed) ?? false
     }
 }
 

@@ -74,6 +74,45 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(kv == 0)
 }
 
+@Test func kvBudgetHonorsConfigReserveWhenItExceedsCapImpliedReserve() {
+    // 16 GiB box: hard cap = min(0.9×16 = 14.4, 16 − 2 = 14) = 14 GiB, so the
+    // cap-implied reserve is 2 GiB. The DEFAULT memory_reserve_gb (4 GiB)
+    // exceeds it → the effective cap drops to 16 − 4 = 12 GiB, exactly the
+    // hold-back the load gate and the runtime KV gate apply.
+    let phys = 16 * gib
+    let weights = 6 * gib
+    let noReserve = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: phys, residentWeightBytes: weights, activationReserveBytes: 1 * gib)
+    let withReserve = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: phys, residentWeightBytes: weights, activationReserveBytes: 1 * gib,
+        configReserveBytes: 4 * gib)
+    #expect(noReserve == 7 * gib)  // 14 − 6 − 1
+    #expect(withReserve == 5 * gib)  // 12 − 6 − 1
+}
+
+@Test func kvBudgetConfigReserveIsANoOpWhenCapImpliedReserveIsLarger() {
+    // 64 GiB box: cap 57.6 GiB ⇒ implied reserve 6.4 GiB > the default 4 GiB
+    // reserve, so the configured reserve must change nothing.
+    let phys = 64 * gib
+    let base = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: phys, residentWeightBytes: 10 * gib, activationReserveBytes: 3 * gib)
+    let withReserve = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: phys, residentWeightBytes: 10 * gib, activationReserveBytes: 3 * gib,
+        configReserveBytes: 4 * gib)
+    #expect(withReserve == base)
+}
+
+@Test func kvBudgetConfigReserveClampsToZeroNeverNegative() {
+    // A pathological reserve at/above physical memory zeroes the budget
+    // rather than underflowing.
+    #expect(UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: 16 * gib, residentWeightBytes: 0,
+        activationReserveBytes: 0, configReserveBytes: 16 * gib) == 0)
+    #expect(UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: 16 * gib, residentWeightBytes: 0,
+        activationReserveBytes: 0, configReserveBytes: 20 * gib) == 0)
+}
+
 @Test func activationReserveDefaultsToFloorAndReadsEnv() {
     #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(explicit: nil, env: [:]) == 3 * gib)
     #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(

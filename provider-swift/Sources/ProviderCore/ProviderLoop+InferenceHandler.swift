@@ -174,6 +174,15 @@ extension ProviderLoop {
         // the sealed body like reasoning_effort; threaded into the engine so the
         // checkpoint cache is partitioned per consumer. "" ⇒ unscoped.
         let cacheScope = Self.extractCacheScope(from: decryptedData)
+        // OpenAI `logprobs` / `top_logprobs` (also absent from the upstream
+        // request shape). Non-nil only when the request asked for logprobs;
+        // honored on the v2 engine path (the legacy engine never emitted
+        // logprobs — see EngineV2Logprobs.swift).
+        let logprobsSpec = Self.extractLogprobsSpec(from: decryptedData)
+        // OpenAI `logit_bias` / `seed` (also absent from the upstream request
+        // shape). Overlaid onto the v2 engine translation; the legacy path
+        // never honored either knob and is untouched.
+        let samplingOverrides = Self.extractSamplingOverrides(from: decryptedData)
 
         // 3. Fast pre-accept admission check. The coordinator accepts fast and
         // then waits for the first chunk with the full inference timeout, so we
@@ -272,6 +281,17 @@ extension ProviderLoop {
         let modelType = slot.modelType
         let slotContainer = slot.container
         let slotIsVLM = slot.isVLM
+        // ContinuousBatchingV2 (flag-gated): non-nil only when the slot was
+        // loaded with a v2 bridge. The engine below routes text generation
+        // through it; nil keeps the legacy scheduler path byte-identical.
+        let slotEngineV2 = slot.engineV2
+        // Logprobs passthrough (v2 only): a per-request channel the bridge
+        // pump fills with OpenAI-shaped entries and the frames loop below
+        // drains into content-bearing SSE chunks. nil (request didn't ask,
+        // or the slot serves via legacy) ⇒ frames pass through untouched.
+        let logprobsChannel: EngineV2LogprobsChannel? =
+            (logprobsSpec != nil && slotEngineV2 != nil)
+            ? EngineV2LogprobsChannel() : nil
 
         // 8. Spawn inference task. The streaming pipeline now flows through
         // the upstream `MLXLMServer` library:
@@ -361,14 +381,20 @@ extension ProviderLoop {
                 registryProvider: { @Sendable in
                     [chatRequest.model: .init(
                         scheduler: sched, tokenizer: tokenizer, modelType: modelType,
-                        container: slotContainer, isVLM: slotIsVLM)]
+                        container: slotContainer, isVLM: slotIsVLM,
+                        engineV2Bridge: slotEngineV2)]
                 },
                 ensureLoaded: { _ in },
                 reserveModel: { _ in },
                 releaseModel: { _ in },
                 defaultMaxTokens: Self.schedulerDefaultMaxTokens,
                 reasoningEffort: reasoningEffort,
-                cacheScope: cacheScope
+                cacheScope: cacheScope,
+                engineV2Logprobs: logprobsChannel.map {
+                    EngineV2LogprobsPlumbing(
+                        topLogprobs: logprobsSpec?.topLogprobs, channel: $0)
+                },
+                engineV2Sampling: samplingOverrides
             )
 
             // Force-stream so we get SSE frames even if the original request
@@ -469,6 +495,22 @@ extension ProviderLoop {
             // A cancelled request that already streamed output settles through
             // the completion path below with real usage, not a bare 499 ($0).
             var cancelledMidStream = false
+            // Logprobs entries drained from the v2 bridge but not yet
+            // attached to a frame. Entries attach to the NEXT content-
+            // bearing chunk (role preambles / reasoning-only deltas /
+            // usage chunks are skipped); consumers accumulate
+            // `logprobs.content` across chunks, so chunk-boundary
+            // alignment is not load-bearing — order and exactly-once are.
+            //
+            // BOUNDED (round-3 PR#499 P2): a long reasoning-only/tool-only
+            // prefix (GPT-OSS) drains the capped channel here every frame
+            // without ever clearing, so this buffer is re-capped after each
+            // drain with the SAME drop-oldest policy as the channel
+            // (`EngineV2LogprobsChannel.capPending`); the freshest window —
+            // the entries nearest the content that eventually renders — is
+            // kept and the dropped count is logged (never token text).
+            var pendingLogprobs: [SSETokenLogprob] = []
+            var pendingLogprobsDropped = 0
             do {
                 for try await frame in frames {
                     if token.isCancelled {
@@ -551,6 +593,36 @@ extension ProviderLoop {
                             }
                         }
                     }
+                    // Logprobs passthrough (v2 only): splice pending entries
+                    // into this frame if it carries content; otherwise keep
+                    // them pending. Runs AFTER the hash/usage bookkeeping
+                    // above, which reads the original `frame` — logprobs
+                    // never alter `delta.content`, so the response hash and
+                    // billing extraction are unaffected.
+                    if let logprobsChannel {
+                        pendingLogprobs += logprobsChannel.drain()
+                        // Re-cap after every drain: without a content-bearing
+                        // frame this buffer would grow unbounded past the
+                        // channel's own cap (see the declaration comment).
+                        let dropped = EngineV2LogprobsChannel.capPending(&pendingLogprobs)
+                        if dropped > 0 {
+                            if pendingLogprobsDropped == 0 {
+                                log.warning(
+                                    "[\(requestId)] pending logprobs hit the "
+                                    + "\(EngineV2LogprobsChannel.maxEntries)-entry cap before a "
+                                    + "content-bearing frame; dropping oldest entries (count only)"
+                                )
+                            }
+                            pendingLogprobsDropped += dropped
+                        }
+                        if !pendingLogprobs.isEmpty,
+                            let injected = Self.injectLogprobs(
+                                into: frameToEmit, entries: pendingLogprobs)
+                        {
+                            frameToEmit = injected
+                            pendingLogprobs = []
+                        }
+                    }
                     if !emitSSE(frameToEmit) { return }
                 }
             } catch {
@@ -584,6 +656,15 @@ extension ProviderLoop {
                 }
             }
             if token.isCancelled { cancelledMidStream = true }
+
+            if pendingLogprobsDropped > 0 {
+                // Surface the request's TOTAL evicted-entry count once at
+                // stream end (the in-loop WARN fires only on the first drop).
+                log.warning(
+                    "[\(requestId)] dropped \(pendingLogprobsDropped) pending logprob "
+                    + "entries in total (buffer cap \(EngineV2LogprobsChannel.maxEntries))"
+                )
+            }
 
             if cancelledMidStream {
                 if reasoningTokens == 0 && !reasoningText.isEmpty {

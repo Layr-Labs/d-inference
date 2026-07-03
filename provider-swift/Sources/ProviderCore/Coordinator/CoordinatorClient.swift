@@ -255,6 +255,19 @@ public actor CoordinatorClient {
         closeCurrentConnection()
     }
 
+    /// Tear down the current connection (clean close frame) WITHOUT setting
+    /// `shutdownRequested`, so the reconnect loop re-runs `sendRegistration`
+    /// with the CURRENT advertised set. Used when the advertised set SHRINKS
+    /// after registration (e.g. a startup self-test retirement under
+    /// `startup_selftest_fail_closed`): `models_update` is additive, so a
+    /// fresh `register` is the existing wire mechanism that communicates a
+    /// removal. Same reconnect path the coordinator handles on any network
+    /// blip; no-op when no connection is up (registration hasn't happened
+    /// yet — the register that follows will already carry the current set).
+    public func forceReconnect() {
+        closeCurrentConnection()
+    }
+
     /// Record refreshed per-model weight hashes for use in future
     /// (re)registrations. Called by the provider loop after a model (re)load
     /// recomputes the on-disk weight hash. See `modelWeightHashOverrides`.

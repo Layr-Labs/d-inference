@@ -115,4 +115,14 @@ export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([
   "prefill_samples_dropped_ceiling",
   "last_prefill_sample_tps",
   "observed_prefill_tps_ewma",
+  // KV-budget sustained-rejection audit (v0.7.3 black-hole hardening,
+  // mirror of Go + Swift allowlists).
+  "streak_seconds",
+  "reservation_count",
+  "reserved_bytes",
+  "mlx_cache_bytes",
+  "system_available_bytes",
+  "reservations",
+  "request_id",
+  "age_seconds",
 ]);

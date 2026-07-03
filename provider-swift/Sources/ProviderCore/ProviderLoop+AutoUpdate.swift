@@ -81,6 +81,7 @@ extension ProviderLoop {
         let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
         let me = self
         let logger = self.logger
+        let jitterMaxSeconds = loopConfig.config.provider.updateJitterSeconds
 
         let deps = AutoUpdateController.Dependencies(
             claimStart: { await me.claimUpdateStart() },
@@ -88,6 +89,20 @@ extension ProviderLoop {
             check: { await updater.checkForUpdate() },
             downloadVerifyStage: { release in
                 await me.stageUpdateBundle(release: release, updater: updater)
+            },
+            // Rollover jitter: random 0..update_jitter_seconds sleep between
+            // stage and drain so a fleet never restarts (and goes cold) in
+            // unison. Background auto-update only — the manual `darkbloom
+            // update` command and the startup update check bypass this
+            // controller entirely and stay immediate.
+            waitBeforeInstall: {
+                let delay = UpdateJitter.delay(maxSeconds: jitterMaxSeconds)
+                guard delay > .zero else { return }
+                let secs = Double(delay.components.seconds)
+                    + Double(delay.components.attoseconds) / 1e18
+                logger.info(
+                    "Auto-update: bundle staged; waiting \(String(format: "%.0f", secs))s rollover jitter before draining (update_jitter_seconds=\(jitterMaxSeconds))")
+                try? await Task.sleep(for: delay)
             },
             beginDraining: { await me.beginUpdateDraining() },
             waitForDrain: { timeout in await me.waitForInflightDrain(timeout: timeout) },
@@ -106,6 +121,8 @@ extension ProviderLoop {
         switch outcome {
         case .alreadyRunning:
             logger.info("Auto-update: cycle already in progress; skipping this tick")
+        case .cancelled:
+            logger.info("Auto-update: cycle cancelled during the pre-install wait; nothing installed")
         case .upToDate:
             logger.info("Auto-update: already running latest version")
         case .checkFailed(let reason):

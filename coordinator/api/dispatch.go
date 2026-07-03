@@ -392,6 +392,13 @@ func (d *dispatchState) commitFirstContent(pr *registry.PendingRequest, chunk st
 	// ever stamps FirstContentAt for the attempt that actually delivered content —
 	// never a late-completing abandoned/retried attempt sharing the same Timing.
 	pr.MarkContentCommitted()
+	// First CONTENT chunk == the provider ACCEPTED and is serving: clear the
+	// pair's capacity-reject streak NOW rather than at completion. A long
+	// generation on a busy box must keep vouching for the pair while the box
+	// legitimately sheds concurrent dispatches — waiting for the completion
+	// accept (noteInferenceSuccess) would let transient fullness masquerade as
+	// the zero-accepts black-hole signature. See registry/capacity_cooldown.go.
+	d.s.registry.RecordCapacityAccept(pr.ProviderID, pr.Model)
 }
 
 // successRoutingOutcome builds a success outcome for the committed attempt.

@@ -75,5 +75,14 @@ public enum ProviderCore {
     // jinja_null_bridge / jinja_template / model_load), so durable telemetry can
     // tell the two indistinguishable gpt-oss 500 modes apart. Wire-compatible:
     // `error_reason` is an optional inference-error field, omitted when nil.
-    public static let version = "0.7.1"
+    // 0.7.2 lets engine_v2 (continuous batching) serve TEXT requests on
+    // allowlisted VLM-loaded Gemma 4 slots. Every prod Gemma 4 checkpoint
+    // ships a vision tower, so it loads via VLMModelFactory and the per-slot
+    // isVLM gate previously kept 100% of Gemma traffic on the legacy engine.
+    // The slot factory now extracts the CBv2-adapted MLXLLM text model over
+    // the SAME weight arrays (zero extra weight memory) and serves text
+    // through v2; image/video requests keep the legacy VLM path. No protocol
+    // change — capability is behavioral, gated by the existing engine_v2
+    // allowlist + flag.
+    public static let version = "0.7.2"
 }

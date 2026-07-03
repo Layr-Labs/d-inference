@@ -4,10 +4,22 @@ import { BaseRewardsPanel } from "@/components/earn/BaseRewardsPanel";
 import { FLOOR_TIERS } from "@/app/earn/calc";
 
 describe("BaseRewardsPanel", () => {
-  it("renders the 64GB floor at $18 (the Netflix anchor)", () => {
+  it("is a collapsed accordion by default", () => {
+    const { container } = render(<BaseRewardsPanel />);
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details!.open).toBe(false);
+  });
+
+  it("renders monthly and annualized floors as a static table", () => {
     render(<BaseRewardsPanel />);
     expect(screen.getByText("64GB")).toBeInTheDocument();
     expect(screen.getByText("$18")).toBeInTheDocument();
+    expect(screen.getByText("$216")).toBeInTheDocument(); // 18 × 12
+    expect(screen.getByText("$192")).toBeInTheDocument(); // 16 × 12 (48GB tier)
+    // Sub-24GB earns no floor: both cells are em-dashes.
+    expect(screen.getByText("Under 24GB")).toBeInTheDocument();
+    expect(screen.getAllByText("—")).toHaveLength(2);
   });
 
   it("frames the base reward as additive — paid on top of usage earnings", () => {
@@ -16,18 +28,6 @@ describe("BaseRewardsPanel", () => {
     expect(container.textContent).toMatch(/on top of the base reward/i);
     expect(container.textContent).toMatch(/keep 100% of both/i);
     expect(container.textContent).toMatch(/settle every 5 minutes/i);
-  });
-
-  it("anchors the Netflix claim to 64GB+ and marks sub-24GB as usage only", () => {
-    render(<BaseRewardsPanel />);
-    // 64GB+ is the Netflix-Standard qualifying class.
-    expect(screen.getByText(/64GB\+ Mac/)).toBeInTheDocument();
-    // 24GB and 32GB earn a floor (incentivize mid-range Macs).
-    expect(screen.getByText("24GB")).toBeInTheDocument();
-    expect(screen.getByText("32GB")).toBeInTheDocument();
-    // Sub-24GB earns nothing as a floor.
-    expect(screen.getByText("Under 24GB")).toBeInTheDocument();
-    expect(screen.getAllByText("Usage only").length).toBeGreaterThan(0);
   });
 
   it("never uses the word 'guarantee' as a promise (honesty constraint)", () => {

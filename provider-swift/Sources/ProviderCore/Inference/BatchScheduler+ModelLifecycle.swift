@@ -17,7 +17,7 @@ extension BatchScheduler {
 
     public func loadModel(
         container: ModelContainer, modelId: String, weightHash: String? = nil,
-        expertStreamingCacheBytes: UInt64 = 0
+        expertStreamingCacheBytes: UInt64 = 0, expertStreamingConfigured: Bool = false
     ) async {
         // Hard-fail if Metal is unavailable; CPU inference is not acceptable.
         do {
@@ -59,6 +59,7 @@ extension BatchScheduler {
         self.tokenizer = snapshot.tokenizer
         self.requiresSequentialServing = !snapshot.supportsBatchedServing
         self.expertStreamingCacheBytes = expertStreamingCacheBytes
+        self.expertStreamingConfigured = expertStreamingConfigured
         if requiresSequentialServing {
             FileHandle.standardError.write(Data(
                 "[scheduler] \(modelId): cache layout unsupported by the batched engine — serving sequentially (single request at a time)\n"

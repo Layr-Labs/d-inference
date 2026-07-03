@@ -238,7 +238,7 @@ extension ProviderLoop {
                 try Task.checkCancellation()
                 if isShuttingDown { throw CancellationError() }
             }
-            let (container, expertStreamingCacheBytes) = try await loadModelContainer(from: modelPath)
+            let (container, expertStreaming) = try await loadModelContainer(from: modelPath)
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
@@ -273,7 +273,8 @@ extension ProviderLoop {
                 container: container,
                 modelId: modelId,
                 weightHash: liveModelHashes[modelId] ?? modelInfo.weightHash,
-                expertStreamingCacheBytes: expertStreamingCacheBytes
+                expertStreamingCacheBytes: expertStreaming.cacheBytes,
+                expertStreamingConfigured: expertStreaming.enabled
             )
             // Weights are resident now (reflected in MLX active/cache), so hand
             // off from the pending-load reservation to the live mlxUsed view —
@@ -646,16 +647,21 @@ extension ProviderLoop {
         }
     }
 
-    /// Returns the loaded container plus the MoE expert-streaming cache byte
-    /// budget configured for this load (0 when streaming isn't active for
-    /// this model) — the caller threads the latter into
-    /// `BatchScheduler.loadModel` so the static token-budget math accounts
-    /// for the cache's eventual resident footprint (see
-    /// `BatchScheduler.expertStreamingCacheBytes`).
+    /// Returns the loaded container plus the MoE expert-streaming
+    /// configuration for this load (`enabled == false` / `cacheBytes == 0`
+    /// when streaming isn't active for this model) — the caller threads
+    /// both into `BatchScheduler.loadModel` so (a) the static token-budget
+    /// math accounts for the cache's eventual resident footprint (see
+    /// `BatchScheduler.expertStreamingCacheBytes`), and (b) teardown knows
+    /// whether to purge the shared cache when this model unloads (see
+    /// `BatchScheduler.expertStreamingConfigured`).
     private func loadModelContainer(
         from directory: URL
-    ) async throws -> (container: MLXLMCommon.ModelContainer, expertStreamingCacheBytes: UInt64) {
-        let expertStreamingCacheBytes = configureDeepseekV4ExpertStreamingIfNeeded(modelDirectory: directory)
+    ) async throws -> (
+        container: MLXLMCommon.ModelContainer,
+        expertStreaming: ExpertStreamingConfigurator.ConfigurationResult
+    ) {
+        let expertStreaming = configureDeepseekV4ExpertStreamingIfNeeded(modelDirectory: directory)
 
         // Vision-language models (config declares `vision_config`) load via
         // VLMModelFactory so image/video requests can run the container's
@@ -673,7 +679,7 @@ extension ProviderLoop {
                 using: LocalTokenizerLoader()
             )
         }
-        return (container, expertStreamingCacheBytes)
+        return (container, expertStreaming)
     }
 
     /// A model is a vision-language model when its `config.json` declares a

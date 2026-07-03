@@ -33,9 +33,31 @@ public enum ExpertStreamingConfigurator {
 
     static var bytesPerGiBDouble: Double { 1024.0 * 1024.0 * 1024.0 }
 
+    /// Result of `configure(...)`: whether THIS load configured MoE expert
+    /// SSD streaming, plus the resulting cache byte budget.
+    ///
+    /// `enabled` is intentionally its own field rather than something a
+    /// caller derives from `cacheBytes > 0` or from
+    /// `BatchScheduler.requiresSequentialServing`: the latter is set for
+    /// EVERY DeepSeek-V4 load (its cache layout isn't representable by the
+    /// batched engine) whether or not streaming is active, so it is
+    /// correlated with but independent of "does this load's teardown need
+    /// to purge the shared expert cache" — using it as a proxy would purge
+    /// (or skip purging) incorrectly whenever streaming is off/on out of
+    /// step with sequential-serving.
+    public struct ConfigurationResult: Sendable, Equatable {
+        public let enabled: Bool
+        public let cacheBytes: UInt64
+
+        public init(enabled: Bool, cacheBytes: UInt64) {
+            self.enabled = enabled
+            self.cacheBytes = cacheBytes
+        }
+    }
+
     /// Core of `ProviderLoop.configureDeepseekV4ExpertStreamingIfNeeded` (see
-    /// that method's doc comment for semantics + the known static-let cache
-    /// budget limitation). Returns the expert cache byte budget (0 when
+    /// that method's doc comment for semantics). Returns whether this load
+    /// configured streaming plus the expert cache byte budget (0/false when
     /// streaming is not enabled for this load).
     @discardableResult
     public static func configure(
@@ -43,10 +65,10 @@ public enum ExpertStreamingConfigurator {
         expertCacheGb: Double,
         modelDirectory: URL,
         log: (String) -> Void = { _ in }
-    ) -> UInt64 {
+    ) -> ConfigurationResult {
         guard streamExperts, modelType(at: modelDirectory) == "deepseek_v4" else {
             MLXLLM.DeepseekV4ExpertStreaming.enabled = false
-            return 0
+            return ConfigurationResult(enabled: false, cacheBytes: 0)
         }
 
         // Header-only: sums `data_offsets` deltas from the safetensors shard
@@ -66,17 +88,30 @@ public enum ExpertStreamingConfigurator {
             hardCapGb: hardCapGb, activationReserveGb: activationReserveGb,
             configuredExpertCacheGb: expertCacheGb)
 
-        setenv("DSV4_EXPERT_CACHE_GB", String(format: "%.3f", estimate.expertCacheGb), 1)
+        let cacheGb = max(0, estimate.expertCacheGb)
+        let cacheBytesDouble = cacheGb * bytesPerGiBDouble
+        let cacheBytes: UInt64 = cacheBytesDouble >= Double(UInt64.max) ? .max : UInt64(cacheBytesDouble)
+
         MLXLLM.DeepseekV4ExpertStreaming.modelDirectory = modelDirectory
         MLXLLM.DeepseekV4ExpertStreaming.enabled = true
+        // Resize the shared cache directly rather than relying solely on
+        // `setenv` + the cache's lazy first-touch initialization: a provider
+        // that already streamed a DeepSeek-V4 model earlier in this process's
+        // lifetime has a live `DeepseekV4ExpertStreaming.cache` whose budget
+        // this call must be able to change (e.g. the operator reconfigured
+        // `expert_cache_gb` between loads). `setenv` is kept too — it's the
+        // ONLY way a separate process (the DSV4Smoke CLI harness) picks up
+        // the budget, and it keeps the cache's bootstrap value correct for
+        // the very first access in THIS process if that ever races ahead of
+        // this call for some reason.
+        setenv("DSV4_EXPERT_CACHE_GB", String(format: "%.3f", estimate.expertCacheGb), 1)
+        MLXLLM.DeepseekV4ExpertStreaming.setCacheBudgetBytes(Int(clamping: cacheBytes))
         log(
             "MoE expert streaming enabled for \(modelDirectory.lastPathComponent): "
                 + "resident≈\(String(format: "%.1f", estimate.residentWeightsGb))GB "
                 + "expert_cache=\(String(format: "%.1f", estimate.expertCacheGb))GB "
                 + "(switch_mlp on-disk≈\(switchMlpBytes / (1024 * 1024 * 1024))GB)")
-        let cacheGb = max(0, estimate.expertCacheGb)
-        let cacheBytesDouble = cacheGb * bytesPerGiBDouble
-        return cacheBytesDouble >= Double(UInt64.max) ? .max : UInt64(cacheBytesDouble)
+        return ConfigurationResult(enabled: true, cacheBytes: cacheBytes)
     }
 }
 
@@ -104,24 +139,28 @@ extension ProviderLoop {
     /// weight-sanitize code ever reads the flag), but keeping it correct
     /// costs nothing and avoids a future footgun if that changes.
     ///
-    /// KNOWN LIMITATION (reported, not fixed — would require a mlx-swift-lm
-    /// change): the expert cache's byte budget (`DeepseekV4ExpertStreaming
-    /// .cache`) is a `static let`, lazily initialized from the
-    /// `DSV4_EXPERT_CACHE_GB` env var on the FIRST process-wide access —
-    /// there is no settable-budget API on the type. `setenv()` here works
-    /// for the FIRST DeepSeek-V4 streaming load in this process's lifetime;
-    /// if the operator changes `expert_cache_gb` and the provider later
-    /// unloads/reloads the SAME (or another) DeepSeek-V4 model WITHOUT a
-    /// process restart, the cache keeps the first load's budget. A full
-    /// restart (`darkbloom restart`) picks up a new budget.
+    /// The expert cache's byte budget is resized directly via
+    /// `DeepseekV4ExpertStreaming.setCacheBudgetBytes(_:)` on every call
+    /// (not just the first) — a provider that unloads/reloads a DeepSeek-V4
+    /// model with a different configured `expert_cache_gb` gets the new
+    /// budget immediately, no process restart required. (Previously the
+    /// cache was a `static let` sized once from `DSV4_EXPERT_CACHE_GB` on
+    /// first access, with no settable-budget API — see mlx-swift-lm's
+    /// `ExpertCache.setByteBudget`/`DeepseekV4ExpertStreaming
+    /// .setCacheBudgetBytes`.)
     ///
-    /// Returns the configured expert cache byte budget (0 when streaming is
-    /// not enabled for this load) — the caller threads it into
-    /// `BatchScheduler.loadModel` so the static token-budget math accounts
-    /// for the cache's eventual resident footprint (see
-    /// `BatchScheduler.expertStreamingCacheBytes`).
+    /// Returns whether this load configured streaming plus the expert cache
+    /// byte budget (false/0 when streaming is not enabled for this load).
+    /// The caller threads BOTH into `BatchScheduler.loadModel`: the byte
+    /// budget so the static token-budget math accounts for the cache's
+    /// eventual resident footprint (see `BatchScheduler
+    /// .expertStreamingCacheBytes`), and the enabled flag so
+    /// `stopCurrentEngine()` knows whether to purge the shared cache when
+    /// THIS model unloads (see `BatchScheduler.expertStreamingConfigured`).
     @discardableResult
-    func configureDeepseekV4ExpertStreamingIfNeeded(modelDirectory: URL) -> UInt64 {
+    func configureDeepseekV4ExpertStreamingIfNeeded(
+        modelDirectory: URL
+    ) -> ExpertStreamingConfigurator.ConfigurationResult {
         let backend = loopConfig.config.backend
         return ExpertStreamingConfigurator.configure(
             streamExperts: backend.streamExperts,

@@ -315,6 +315,18 @@ public actor BatchScheduler {
     /// with); reset in `stopCurrentEngine`.
     var expertStreamingCacheBytes: UInt64 = 0
 
+    /// Whether THIS load configured MoE expert SSD streaming (i.e.
+    /// `ExpertStreamingConfigurator.configure` returned `enabled == true`
+    /// for the model currently loaded into this scheduler). Deliberately
+    /// NOT derived from `expertStreamingCacheBytes > 0` (a theoretical
+    /// zero-budget streaming load would under-report) or from
+    /// `requiresSequentialServing` (set for every DeepSeek-V4 load
+    /// regardless of streaming — correlated, not equivalent). Read by
+    /// `stopCurrentEngine()` to decide whether to purge the shared,
+    /// process-wide `DeepseekV4ExpertStreaming.cache` when this model
+    /// unloads; set from the load snapshot, reset in `stopCurrentEngine`.
+    var expertStreamingConfigured: Bool = false
+
     // MARK: - Telemetry state (read by `backendCapacity`)
 
     var observedDecodeTpsEwma: Double = 0
@@ -511,6 +523,23 @@ public actor BatchScheduler {
         checkpointBoundaries = []
         checkpointLayerSignatures = []
 
+        // If this model configured MoE expert SSD streaming, its shared,
+        // process-wide `DeepseekV4ExpertStreaming.cache` can hold up to the
+        // configured `expert_cache_gb` (tens of GB) of streamed expert
+        // weights. Nothing else purges it on unload — release it now so an
+        // idle-timeout/explicit-unload/reload actually frees that memory
+        // instead of leaving it resident until process restart. Safe here:
+        // every in-flight forward pass is fenced by this point
+        // (`waitForFastPathTasks()` + `engine.core.stopAndWait()` above
+        // already awaited), so nothing can be mid-fetch against the cache.
+        // Must run BEFORE `MLX.Memory.clearCache()` below so the freed
+        // expert arrays return to the OS in the same sweep as the rest of
+        // this model's resident weights, rather than sitting in MLX's
+        // cache-memory pool until some later, unrelated clearCache.
+        if expertStreamingConfigured {
+            MLXLLM.DeepseekV4ExpertStreaming.purgeCache()
+        }
+
         // Now that everything holding KV is released — the engine chain (batch KV),
         // the capture pipeline (retained snapshots) and the RAM prefix tier — return
         // the freed pool to the OS. Done here, after those releases, so the flush
@@ -581,6 +610,7 @@ public actor BatchScheduler {
         lastAdmissionRejectAt = nil
         requiresSequentialServing = false
         expertStreamingCacheBytes = 0
+        expertStreamingConfigured = false
     }
 
     /// Cumulative active-bridge gate, called from tests.

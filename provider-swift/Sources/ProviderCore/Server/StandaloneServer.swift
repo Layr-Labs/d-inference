@@ -284,8 +284,18 @@ public actor StandaloneServer {
     /// `schedulers`. The caller runs the post-load KV-headroom guard and only
     /// publishes (`schedulers[modelId] = …`) if it passes — so a concurrent
     /// request can never route to a model that's about to be rejected/unloaded.
+    /// Non-forcing `model_type` lookup for an already-resident model — used
+    /// as `MultiModelBatchSchedulerEngine`'s `modelTypeProvider` so the
+    /// local endpoint can auto-select a reasoning parser. Reads only the
+    /// currently-cached scheduler entry; never triggers a load.
+    func modelType(forLoadedModel modelId: String) -> String? {
+        schedulers[modelId]?.modelType
+    }
+
     private func buildLoadedScheduler(
-        _ modelId: String, container: MLXLMCommon.ModelContainer
+        _ modelId: String, container: MLXLMCommon.ModelContainer,
+        expertStreaming: ExpertStreamingConfigurator.ConfigurationResult
+            = .init(enabled: false, cacheBytes: 0)
     ) async -> CachedScheduler {
         let scheduler = BatchScheduler(
             maxConcurrentRequests: Self.schedulerMaxConcurrent,
@@ -297,7 +307,10 @@ public actor StandaloneServer {
             adaptivePrefillEnabled: config.adaptivePrefill,
             hardwareInfo: config.hardware
         )
-        await scheduler.loadModel(container: container, modelId: modelId)
+        await scheduler.loadModel(
+            container: container, modelId: modelId,
+            expertStreamingCacheBytes: expertStreaming.cacheBytes,
+            expertStreamingConfigured: expertStreaming.enabled)
         let tokenizer: TokenizerHandle = await container.perform { ctx in
             TokenizerHandle(ctx.tokenizer)
         }
@@ -588,8 +601,13 @@ public actor StandaloneServer {
             // Same expert-streaming opt-in the ProviderLoop path applies: the
             // scan that admitted this model used the config-aware estimate, so
             // the load must configure streaming consistently or a 141 GB
-            // DeepSeek-V4 would be loaded fully resident.
-            ExpertStreamingConfigurator.configure(
+            // DeepSeek-V4 would be loaded fully resident. Threaded into
+            // `buildLoadedScheduler` below so the scheduler's static
+            // token-budget math AND its unload-time purge decision both see
+            // it — previously this result was discarded, so a streamed
+            // DeepSeek-V4 model loaded via `darkbloom local` never told its
+            // scheduler `expertStreamingCacheBytes`/`expertStreamingConfigured`.
+            let expertStreaming = ExpertStreamingConfigurator.configure(
                 streamExperts: config.streamExperts,
                 expertCacheGb: config.expertCacheGb,
                 modelDirectory: modelPath,
@@ -601,7 +619,8 @@ public actor StandaloneServer {
             try Task.checkCancellation()
             // Build + load the scheduler WITHOUT publishing it, so a concurrent
             // request can't route to a model the guard is about to reject.
-            let cached = await buildLoadedScheduler(modelId, container: container)
+            let cached = await buildLoadedScheduler(
+                modelId, container: container, expertStreaming: expertStreaming)
             if Task.isCancelled {
                 await cached.scheduler.unloadModel()
                 MLX.Memory.clearCache()

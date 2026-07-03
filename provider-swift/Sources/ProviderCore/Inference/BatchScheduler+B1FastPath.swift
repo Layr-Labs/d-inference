@@ -423,4 +423,15 @@ extension BatchScheduler {
     func _setRequiresSequentialServingForTest(_ value: Bool) {
         requiresSequentialServing = value
     }
+
+    /// Force `expertStreamingConfigured` without a full `loadModel(container:)`
+    /// call (which needs a real, loaded `ModelContainer`), so tests can pin
+    /// the "did this load configure MoE expert streaming" flag and exercise
+    /// `stopCurrentEngine()`'s purge-on-unload decision in isolation.
+    func _setExpertStreamingConfiguredForTest(_ value: Bool) {
+        expertStreamingConfigured = value
+    }
+
+    /// Test accessor for `expertStreamingConfigured`.
+    func _expertStreamingConfiguredForTest() -> Bool { expertStreamingConfigured }
 }

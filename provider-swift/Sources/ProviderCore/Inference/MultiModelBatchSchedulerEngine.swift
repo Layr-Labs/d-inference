@@ -65,6 +65,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// warm right now" is reported separately via the backend
     /// capacity payload.
     private let availableModelsOverride: (@Sendable () async -> [String])?
+    /// Non-forcing `model_type` lookup for `defaultReasoningParser(for:)`
+    /// when the engine was constructed via the atomic-`acquire` init (which
+    /// has no `registryProvider` snapshot to peek at). MUST NOT trigger a
+    /// load or take a reservation — it is called by `MLXOpenAIService`
+    /// AFTER `streamChatCompletion` already resolved/acquired the model for
+    /// this request, purely to look up the modelType of an
+    /// already-resident model. `nil` (the default) means "no opinion",
+    /// same as any other `MLXServerEngine` conformer.
+    private let modelTypeProvider: (@Sendable (String) async -> String?)?
 
     private let registryProvider: (@Sendable () async -> Registry)?
     private let ensureLoaded: @Sendable (String) async throws -> Void
@@ -126,6 +135,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.acquire = nil
         self.tokenizerProvider = nil
         self.availableModelsOverride = nil
+        self.modelTypeProvider = nil
     }
 
     /// I1: atomic-acquire init. Use this when the backing store can
@@ -145,11 +155,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         tokenizerProvider: @escaping @Sendable (String?) async throws -> TokenizerHandle,
         availableModels: @escaping @Sendable () async -> [String],
         defaultMaxTokens: Int = 4096,
-        cacheScope: String = ""
+        cacheScope: String = "",
+        modelTypeProvider: (@Sendable (String) async -> String?)? = nil
     ) {
         self.acquire = acquire
         self.tokenizerProvider = tokenizerProvider
         self.availableModelsOverride = availableModels
+        self.modelTypeProvider = modelTypeProvider
         self.registryProvider = nil
         self.ensureLoaded = { _ in }
         self.reserveModel = { _ in }
@@ -180,6 +192,35 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         }
         let registry = await (registryProvider?() ?? [:])
         return registry.keys.sorted().map { MLXServerModel(id: $0) }
+    }
+
+    /// Model-type-derived default reasoning parser (`MLXServerEngine`
+    /// conformance) — same `model_type` → `ReasoningParserFormat` inference
+    /// `ProviderLoop+InferenceHandler`/`+StartupPreload` already apply by
+    /// mutating the request directly on the coordinator WebSocket path.
+    /// This is the seam for the paths that DON'T get a chance to touch the
+    /// request before it reaches `MLXOpenAIService` — `darkbloom local`
+    /// (`StandaloneServer`) and the unified local endpoint
+    /// (`ProviderLoop+LocalEndpoint`), both of which construct this engine
+    /// via the atomic-`acquire` init.
+    ///
+    /// Never forces a load or takes a reservation: `registryProvider` is a
+    /// pure snapshot read, and `modelTypeProvider` is documented (at its
+    /// declaration) to be non-invasive too. Always returns a concrete
+    /// format (never nil) once ANY model-type source is configured —
+    /// matching `ProviderLoop.inferReasoningParser`'s existing "safe
+    /// default" contract, which resolves even a nil/unknown `modelType` to
+    /// `.qwen3` (harmless no-op for models that don't emit `<think>` tags).
+    public func defaultReasoningParser(for modelId: String) async -> ReasoningParserFormat? {
+        let modelType: String?
+        if let registryProvider {
+            modelType = await registryProvider()[modelId]?.modelType
+        } else if let modelTypeProvider {
+            modelType = await modelTypeProvider(modelId)
+        } else {
+            return nil
+        }
+        return ProviderLoop.inferReasoningParser(for: modelType)
     }
 
     public func streamChatCompletion(

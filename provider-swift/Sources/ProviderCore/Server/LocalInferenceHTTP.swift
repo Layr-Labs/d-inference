@@ -61,6 +61,12 @@ func makeLocalInferenceApplication(
     tokenizerProvider: @escaping @Sendable (String?) async throws -> TokenizerHandle,
     availableModels: @escaping @Sendable () async -> [String],
     cacheScope: String = "",
+    // Non-forcing `model_type` lookup for an already-resident model — lets
+    // the local endpoint auto-select a reasoning parser the same way the
+    // coordinator WebSocket path does (`MultiModelBatchSchedulerEngine
+    // .defaultReasoningParser(for:)`). nil (the default) preserves prior
+    // behavior (no per-model reasoning parser default).
+    modelTypeProvider: (@Sendable (String) async -> String?)? = nil,
     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
 ) -> LocalInferenceApplication {
     let engine = MultiModelBatchSchedulerEngine(
@@ -68,7 +74,8 @@ func makeLocalInferenceApplication(
         tokenizerProvider: tokenizerProvider,
         availableModels: availableModels,
         defaultMaxTokens: defaultMaxTokens,
-        cacheScope: cacheScope
+        cacheScope: cacheScope,
+        modelTypeProvider: modelTypeProvider
     )
     let service = MLXOpenAIService(engine: engine)
     let router = MLXServerApplication.buildRouter(service: service)

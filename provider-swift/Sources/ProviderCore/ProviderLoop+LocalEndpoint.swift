@@ -50,6 +50,14 @@ extension ProviderLoop {
             // DARKBLOOM_PREFIX_CACHE_SCOPE here too. "" => unscoped. The
             // coordinator WS path is unaffected (it carries per-request scope).
             cacheScope: ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_SCOPE"] ?? "",
+            // Non-forcing modelType lookup so the unified local endpoint
+            // auto-selects a reasoning parser the same way the coordinator
+            // WebSocket path already does (`ProviderLoop+InferenceHandler`'s
+            // `inferReasoningParser` call) — see
+            // `MultiModelBatchSchedulerEngine.defaultReasoningParser(for:)`.
+            modelTypeProvider: { [weak self] modelId in
+                await self?.modelTypeForLocalModel(modelId)
+            },
             // Fires only once OUR server has actually bound the socket — the
             // authoritative bind signal. We publish discovery here (never from a
             // best-effort HTTP probe that a foreign process on the same port
@@ -178,5 +186,13 @@ extension ProviderLoop {
     /// this provider is configured to serve, not just the resident subset.
     func advertisedLocalModelIds() -> [String] {
         advertisedModels.keys.sorted()
+    }
+
+    /// Non-forcing `model_type` lookup for an already-resident model — used
+    /// as `MultiModelBatchSchedulerEngine`'s `modelTypeProvider` so the
+    /// unified local endpoint can auto-select a reasoning parser. Reads
+    /// only the currently-loaded slot; never triggers a load.
+    func modelTypeForLocalModel(_ modelId: String) -> String? {
+        modelSlots[modelId]?.modelType
     }
 }

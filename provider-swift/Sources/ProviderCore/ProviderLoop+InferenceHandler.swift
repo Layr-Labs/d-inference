@@ -417,15 +417,15 @@ extension ProviderLoop {
             forcedStreamOptions.includeUsage = true
             streamingRequest.streamOptions = forcedStreamOptions
 
-            // Auto-select reasoning parser based on model type if the
-            // consumer didn't specify one. This ensures model-specific
-            // reasoning tokens (Harmony channels, Gemma4 channels,
-            // Qwen3/DeepSeek <think> tags) are parsed into
-            // reasoning_content rather than leaking as raw content.
-            if streamingRequest.reasoningParser == nil {
-                streamingRequest.reasoningParser = Self.inferReasoningParser(for: modelType)
-            }
-
+            // Reasoning-parser auto-selection (model-specific <think>/channel
+            // tags parsed into reasoning_content when the consumer didn't
+            // specify a parser) now happens uniformly inside
+            // `MLXOpenAIService`, which asks `providerEngine`
+            // (`MultiModelBatchSchedulerEngine.defaultReasoningParser(for:)`)
+            // for this model's inferred format — the same `modelType` ->
+            // `ReasoningParserFormat` mapping (`Self.inferReasoningParser`)
+            // this call site used to apply by hand. An explicit
+            // `streamingRequest.reasoningParser` still wins.
             let service = MLXOpenAIService(engine: providerEngine)
             let frames: AsyncThrowingStream<String, Error>
             do {

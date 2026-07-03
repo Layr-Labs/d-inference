@@ -1,4 +1,5 @@
 import Foundation
+import MLXLMCommon
 import MLXLMServer
 import Testing
 @testable import ProviderCore
@@ -322,9 +323,117 @@ func nonHarmonyEOSIsUnchanged() {
     #expect(ids == [151645])
 }
 
+// MARK: - defaultReasoningParser(for:) (Part 3: deepseek_v4 auto-split seam)
+//
+// `MLXServerEngine.defaultReasoningParser(for:)` is the seam that lets
+// `MLXOpenAIService` auto-select a reasoning parser from the resolved
+// model's `model_type` when the request didn't specify one — see
+// `libs/mlx-swift-lm`'s `MLXServerEngine`/`MLXOpenAIService`. These tests
+// pin that `MultiModelBatchSchedulerEngine` wires it correctly for BOTH
+// engine construction modes (registryProvider snapshot vs. the atomic
+// `acquire` init's `modelTypeProvider`), and that it never forces a load.
+
+@Test("defaultReasoningParser resolves deepseek_v4's model_type via the registryProvider snapshot")
+func defaultReasoningParserResolvesDeepseekV4ViaRegistryProvider() async {
+    let engine = MultiModelBatchSchedulerEngine(
+        registryProvider: { @Sendable in
+            ["dsv4-flash": .init(
+                scheduler: BatchScheduler(), tokenizer: TokenizerHandle(StubTokenizer()),
+                modelType: "deepseek_v4")]
+        }
+    )
+    let format = await engine.defaultReasoningParser(for: "dsv4-flash")
+    #expect(format == ProviderLoop.inferReasoningParser(for: "deepseek_v4"))
+}
+
+@Test("defaultReasoningParser resolves a non-DeepSeek model_type without changing its behavior")
+func defaultReasoningParserResolvesNonDeepseekModelType() async {
+    let engine = MultiModelBatchSchedulerEngine(
+        registryProvider: { @Sendable in
+            ["gemma": .init(
+                scheduler: BatchScheduler(), tokenizer: TokenizerHandle(StubTokenizer()),
+                modelType: "gemma3")]
+        }
+    )
+    let format = await engine.defaultReasoningParser(for: "gemma")
+    #expect(format == ProviderLoop.inferReasoningParser(for: "gemma3"))
+    #expect(format != ProviderLoop.inferReasoningParser(for: "deepseek_v4"),
+        "a non-DeepSeek model must resolve to a different default than deepseek_v4")
+}
+
+@Test("defaultReasoningParser resolves via modelTypeProvider on the atomic-acquire init")
+func defaultReasoningParserResolvesViaModelTypeProviderForAtomicAcquireEngine() async {
+    let engine = MultiModelBatchSchedulerEngine(
+        acquire: { modelId in
+            MultiModelBatchSchedulerEngine.AcquiredModel(
+                scheduler: BatchScheduler(),
+                tokenizer: TokenizerHandle(StubTokenizer()),
+                releaseToken: OneShotRelease(release: { _ in }, modelId: modelId),
+                modelType: "deepseek_v4")
+        },
+        tokenizerProvider: { _ in TokenizerHandle(StubTokenizer()) },
+        availableModels: { ["dsv4-flash"] },
+        modelTypeProvider: { _ in "deepseek_v4" }
+    )
+    let format = await engine.defaultReasoningParser(for: "dsv4-flash")
+    #expect(format == ProviderLoop.inferReasoningParser(for: "deepseek_v4"))
+}
+
+@Test("defaultReasoningParser returns nil for the atomic-acquire init without a modelTypeProvider")
+func defaultReasoningParserReturnsNilWithoutModelTypeProvider() async {
+    // Mirrors the protocol's documented default: an engine with no
+    // per-model opinion returns nil, and `MLXOpenAIService` falls back to
+    // its own service-wide default / `.none` -- existing (pre-Part-3)
+    // behavior for any caller that doesn't wire `modelTypeProvider`.
+    let engine = MultiModelBatchSchedulerEngine(
+        acquire: { modelId in
+            MultiModelBatchSchedulerEngine.AcquiredModel(
+                scheduler: BatchScheduler(),
+                tokenizer: TokenizerHandle(StubTokenizer()),
+                releaseToken: OneShotRelease(release: { _ in }, modelId: modelId),
+                modelType: "deepseek_v4")
+        },
+        tokenizerProvider: { _ in TokenizerHandle(StubTokenizer()) },
+        availableModels: { ["dsv4-flash"] }
+    )
+    let format = await engine.defaultReasoningParser(for: "dsv4-flash")
+    #expect(format == nil)
+}
+
+@Test("defaultReasoningParser returns nil for an unknown model id via registryProvider")
+func defaultReasoningParserReturnsNilForUnknownModelId() async {
+    let engine = MultiModelBatchSchedulerEngine(
+        registryProvider: { @Sendable in [:] }
+    )
+    let format = await engine.defaultReasoningParser(for: "missing/model")
+    // No registry entry -> modelType resolves to nil -> the provider's
+    // "safe default" (`inferReasoningParser(for: nil)`) still applies, same
+    // as the coordinator WebSocket path's existing unconditional behavior.
+    #expect(format == ProviderLoop.inferReasoningParser(for: nil))
+}
+
 // MARK: - Helpers
 
 private actor Counter {
     private(set) var value: Int = 0
     func increment() { value += 1 }
+}
+
+/// Minimal `Tokenizer` stub for tests that only need a `TokenizerHandle` to
+/// exist (never actually encode/decode real text) -- e.g. the
+/// `defaultReasoningParser` wiring tests above, which never submit a
+/// request through the tokenizer.
+private struct StubTokenizer: MLXLMCommon.Tokenizer {
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "" }
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { nil }
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+    func applyChatTemplate(
+        messages: [[String: any Sendable]],
+        tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] { [] }
 }

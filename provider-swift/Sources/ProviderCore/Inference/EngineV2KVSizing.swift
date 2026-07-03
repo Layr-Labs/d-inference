@@ -91,6 +91,35 @@ enum EngineV2KVSizing {
         return Int(min(remaining, UInt64(Int.max)))
     }
 
+    /// Net a v2 engine's admission ceiling of the slot's MEASURED
+    /// engine-retained residency overhead — the shared MoE fused gate+up
+    /// cache the VLM text extraction eagerly builds (v0.7.3, PR#508
+    /// finding 2).
+    ///
+    /// `engineKVBytesCapacity` derives the ceiling from WEIGHTS + reserves
+    /// BEFORE the engine build runs, but on a VLM-extracted Gemma slot the
+    /// build then materializes ~8–15 GiB of fused expert cache —
+    /// module-retained ACTIVE memory that behaves exactly like weights (the
+    /// pool reclaimer cannot touch it) yet appears in neither
+    /// `scheduler.modelWeightBytes` nor any parameter sum. An unadjusted
+    /// ceiling — and the heartbeat `active_token_budget_max` derived from
+    /// it — therefore over-advertises by exactly the cache size (~1.7× on
+    /// the incident's 64 GB/8-bit profile): the coordinator over-routes and
+    /// the shared KV gate (which sees the cache in live MLX `active`)
+    /// rejects the excess post-acceptance — a mild replay of the v0.7.2
+    /// black hole, mitigated only by coordinator-side cooldowns. Subtracting
+    /// the measured cache here keeps the engine's private ledger, the
+    /// heartbeat max, and the shared gate consistent. Clamps to 0 — a slot
+    /// whose cache consumed the whole KV budget falls back to legacy via
+    /// `makeProductionEngine`'s `noKVHeadroom` throw.
+    static func netOfEngineResidentOverhead(
+        _ baseCapacity: Int, overheadBytes: Int
+    ) -> Int {
+        let base = max(0, baseCapacity)
+        let overhead = max(0, overheadBytes)
+        return base > overhead ? base - overhead : 0
+    }
+
     /// CURRENT KV byte budget for an EXISTING v2 engine — the HEARTBEAT
     /// figure, not an engine resize (round-3 PR#499 P2).
     ///

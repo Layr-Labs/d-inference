@@ -548,6 +548,16 @@ public actor ProviderLoop {
         /// drop window while the slot is still resident (a Gemma build would
         /// otherwise fall back to the qwen3 parser and leak <think> tokens).
         let modelType: String?
+        /// MEASURED engine-retained residency overhead beyond the weights —
+        /// the shared MoE fused gate+up cache the VLM text extraction
+        /// eagerly builds (~8–15 GiB on Gemma 4; PR#508 finding 2). Plain
+        /// module properties, so it appears in neither
+        /// `scheduler.modelWeightBytes` (a parameters() sum) nor any
+        /// pending-load estimate; the sizing paths that treat weights as
+        /// resident memory (later v2 engine ceilings, the heartbeat fleet
+        /// budget clamp) must add this alongside them. 0 for non-VLM slots
+        /// and dense checkpoints.
+        var engineResidentOverheadBytes: UInt64 = 0
         var lastInferenceAt: ContinuousClock.Instant
     }
 

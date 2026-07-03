@@ -162,6 +162,7 @@ extension ProviderLoop {
         modelId: String,
         modelType: String?,
         isVLM: Bool = false,
+        modelDirectory: URL? = nil,
         container: MLXLMCommon.ModelContainer,
         tokenizer: TokenizerHandle,
         scheduler: BatchScheduler
@@ -170,6 +171,7 @@ extension ProviderLoop {
             modelId: modelId,
             modelType: modelType,
             isVLM: isVLM,
+            modelDirectory: modelDirectory,
             container: container,
             tokenizer: tokenizer,
             scheduler: scheduler

@@ -64,10 +64,23 @@ extension ProviderLoop {
     ///
     ///   * flag off / model not allowlisted — the ZERO-OVERHEAD steady
     ///     state: no container access, no scheduler reads, no
-    ///     `EngineV2Runtime` hop, no allocations;
+    ///     `EngineV2Runtime` hop, no allocations. This also covers
+    ///     NON-allowlisted VLM builds (silent legacy — no WARN spam);
     ///   * v2 engine construction throws — WARN `engine_health` telemetry
     ///     (`engine_v2_fallback`) is emitted by the factory and the slot
-    ///     serves through the legacy scheduler exactly as before.
+    ///     serves through the legacy scheduler exactly as before. For an
+    ///     ALLOWLISTED VLM slot this covers text-model extraction failures
+    ///     (see below) — loud, never silently wrong.
+    ///
+    /// VLM slots (v0.7.2): every production Gemma 4 checkpoint ships a
+    /// vision tower, so its slot loads MLXVLM's wrapper — which has no CBv2
+    /// hooks. Instead of gating the whole slot out (which kept 100% of prod
+    /// Gemma traffic on legacy), an allowlisted VLM slot builds the engine
+    /// over `EngineV2VLMTextExtraction`'s weight-sharing MLXLLM text model:
+    /// TEXT requests then serve through v2 while image/video requests keep
+    /// the legacy VLM path (per-request routing in
+    /// `MultiModelBatchSchedulerEngine.streamChatCompletion`, which peels
+    /// media off to the vision path BEFORE the bridge branch).
     ///
     /// On success the bridge is registered with `engineV2Runtime` BEFORE the
     /// caller installs the slot, so a request routed the instant the slot
@@ -76,17 +89,11 @@ extension ProviderLoop {
         modelId: String,
         modelType: String?,
         isVLM: Bool = false,
+        modelDirectory: URL? = nil,
         container: ModelContainer,
         tokenizer: TokenizerHandle,
         scheduler: BatchScheduler
     ) async -> EngineV2Bridge? {
-        // VLM slots are permanently unsupported by the v2 engine (the loaded
-        // module is a vision wrapper, not a CBv2-adapted text model), so gate
-        // them out BEFORE selection: an allowlist name match on a vision
-        // build (e.g. `gemma-4*`) would otherwise emit a WARN
-        // `engine_v2_fallback` on every load of a shape that can never serve
-        // v2. Silent legacy is the correct steady state here.
-        guard !isVLM else { return nil }
         let configEnabled = loopConfig.config.backend.engineV2
         let environment = engineV2SlotHooks?.environment
             ?? ProcessInfo.processInfo.environment
@@ -135,8 +142,18 @@ extension ProviderLoop {
         var existingEngineKVCapacities: [Int] = []
         for (slotModelId, slot) in modelSlots where slotModelId != modelId {
             let slotWeights = await slot.scheduler.modelWeightBytes
+            // Count the slot's engine-retained residency overhead (the
+            // shared MoE fused gate+up cache a VLM extraction eagerly
+            // built) like weights: it is module-retained ACTIVE memory that
+            // `modelWeightBytes` (a parameters() sum) does not see, so
+            // omitting it would size THIS engine's ceiling against memory
+            // that co-resident slot is already holding.
+            var slotResident = UInt64(max(0, slotWeights))
+            let (withOverhead, overheadOverflow) = slotResident
+                .addingReportingOverflow(slot.engineResidentOverheadBytes)
+            slotResident = overheadOverflow ? .max : withOverhead
             let (sum, overflow) = coResidentWeightBytes
-                .addingReportingOverflow(UInt64(max(0, slotWeights)))
+                .addingReportingOverflow(slotResident)
             coResidentWeightBytes = overflow ? .max : sum
             if let existingBridge = slot.engineV2 {
                 existingEngineKVCapacities.append(
@@ -189,11 +206,59 @@ extension ProviderLoop {
             )
             extraEOSTokens = snapshot.extraEOSTokens
             emitTelemetry = nil  // production: TelemetryClient.shared
+            let loadedModelDirectory = modelDirectory
+            let slotLogger = logger
             makeEngine = {
-                try EngineV2Factory.makeProductionEngine(
-                    model: snapshot.model,
+                // VLM slot: the loaded module is a vision wrapper with no
+                // CBv2 hooks. Extract the CBv2-adapted MLXLLM text model
+                // over the SAME weight arrays (zero extra weight memory) and
+                // build the engine on that; any extraction/verify/parity
+                // failure throws into the factory's engine_v2_fallback WARN.
+                let servingModel: any LanguageModel
+                var grantedKVBytesCapacity = kvBytesCapacity
+                if isVLM {
+                    guard let loadedModelDirectory else {
+                        throw EngineV2VLMTextExtractionError.missingModelDirectory
+                    }
+                    let extraction = try EngineV2VLMTextExtraction.extractTextModel(
+                        from: snapshot.model, modelDirectory: loadedModelDirectory)
+                    // PR#508 finding 2: `kvBytesCapacity` was derived from
+                    // WEIGHTS before this extraction materialized the shared
+                    // MoE fused gate+up cache (~8–15 GiB on Gemma 4) —
+                    // module-retained active memory the shared KV gate sees
+                    // in live MLX usage but the static derivation did not.
+                    // Net the MEASURED cache out of the engine's admission
+                    // ceiling so the heartbeat max (derived from the
+                    // engine's grant), the engine's private ledger, and the
+                    // shared gate agree; an unadjusted ceiling over-routes
+                    // by exactly the cache size (~1.7× on the incident's
+                    // 64 GB profile) and replays a mild v0.7.2. A 0 result
+                    // throws noKVHeadroom below → legacy fallback.
+                    grantedKVBytesCapacity = EngineV2KVSizing.netOfEngineResidentOverhead(
+                        kvBytesCapacity, overheadBytes: extraction.fusedMoECacheBytes)
+                    if let parityDiff = extraction.parityMaxAbsLogitDiff {
+                        let fusedGiB = String(
+                            format: "%.2f",
+                            Double(extraction.fusedMoECacheBytes) / (1024 * 1024 * 1024))
+                        let grantedGiB = String(
+                            format: "%.2f",
+                            Double(grantedKVBytesCapacity) / (1024 * 1024 * 1024))
+                        slotLogger.info(
+                            "engine_v2: \(modelId) VLM text-model extraction passed the "
+                                + "load-time forward parity gate (max |Δlogit| \(parityDiff), "
+                                + "fused MoE gate+up cache shared across "
+                                + "\(extraction.sharedFusedMoELayerCount) layer(s), "
+                                + "\(fusedGiB) GiB netted out of the KV ceiling → "
+                                + "\(grantedGiB) GiB)")
+                    }
+                    servingModel = extraction.model
+                } else {
+                    servingModel = snapshot.model
+                }
+                return try EngineV2Factory.makeProductionEngine(
+                    model: servingModel,
                     tokenizer: tokenizer.inner,
-                    kvBytesCapacity: kvBytesCapacity)
+                    kvBytesCapacity: grantedKVBytesCapacity)
             }
         }
 
@@ -237,9 +302,19 @@ extension ProviderLoop {
         // Register before the slot goes live so capacity heartbeats and
         // cancellation fan-out see the bridge from the first request.
         await engineV2Runtime.register(modelId: modelId, bridge: bridge)
-        logger.info(
-            "engine_v2: serving \(modelId) via ContinuousBatchingV2 "
-                + "(legacy scheduler retained for fallback)")
+        if isVLM {
+            // Distinguish the VLM text-routing mode in prod logs: text
+            // requests serve via v2 over the extracted text model, image/
+            // video requests keep the legacy VLM path.
+            logger.info(
+                "engine_v2: serving \(modelId) via ContinuousBatchingV2 "
+                    + "(vlm_text_routing=true: text→v2, image/video→legacy VLM path; "
+                    + "legacy scheduler retained for fallback)")
+        } else {
+            logger.info(
+                "engine_v2: serving \(modelId) via ContinuousBatchingV2 "
+                    + "(legacy scheduler retained for fallback)")
+        }
         return bridge
     }
 }

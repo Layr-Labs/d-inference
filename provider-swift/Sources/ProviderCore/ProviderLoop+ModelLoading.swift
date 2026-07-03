@@ -341,6 +341,33 @@ extension ProviderLoop {
                 scheduler: scheduler
             )
 
+            // Post-BRIDGE measured-headroom guard (v0.7.3): the engine build
+            // can retain additional load-time memory beyond the weights the
+            // check above measured — the VLM extraction's parity probe
+            // materializes the (shared) MoE fused gate+up cache, ~15 GiB on
+            // gemma-4-26b-8bit. Re-measure AFTER the bridge so a box whose
+            // full load-time footprint leaves no serveable KV unloads and
+            // 503s (coordinator reroutes, telemetry fires) instead of
+            // advertising a model whose every request the shared KV gate
+            // rejects — the v0.7.2 black-hole failure shape. Trim the pool
+            // first, mirroring the post-load check.
+            if engineV2Bridge != nil {
+                MLX.Memory.clearCache()
+                if !(await scheduler.hasServeableKVHeadroom()) {
+                    let headroomGb = String(
+                        format: "%.1f",
+                        Double(await scheduler.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
+                    await engineV2Runtime.unregister(modelId: modelId)
+                    await engineV2Bridge?.shutdown()
+                    await scheduler.unloadModel()
+                    MLX.Memory.clearCache()
+                    let message = "Model '\(modelId)' loaded but its engine build left insufficient "
+                        + "KV headroom under the memory cap (\(headroomGb) GB free) — unloaded"
+                    recordModelLoadError(model: modelId, message: message)
+                    throw InferenceError.modelLoadFailed(message)
+                }
+            }
+
             modelSlots[modelId] = ModelSlot(
                 scheduler: scheduler,
                 engineV2: engineV2Bridge,

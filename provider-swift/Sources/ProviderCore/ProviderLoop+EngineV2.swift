@@ -214,7 +214,9 @@ extension ProviderLoop {
                     if let parityDiff = extraction.parityMaxAbsLogitDiff {
                         slotLogger.info(
                             "engine_v2: \(modelId) VLM text-model extraction passed the "
-                                + "load-time forward parity gate (max |Δlogit| \(parityDiff))")
+                                + "load-time forward parity gate (max |Δlogit| \(parityDiff), "
+                                + "fused MoE gate+up cache shared across "
+                                + "\(extraction.sharedFusedMoELayerCount) layer(s))")
                     }
                     servingModel = extraction.model
                 } else {

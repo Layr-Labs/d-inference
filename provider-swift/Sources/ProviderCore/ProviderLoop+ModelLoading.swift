@@ -238,7 +238,7 @@ extension ProviderLoop {
                 try Task.checkCancellation()
                 if isShuttingDown { throw CancellationError() }
             }
-            let container = try await loadModelContainer(from: modelPath)
+            let (container, expertStreamingCacheBytes) = try await loadModelContainer(from: modelPath)
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
@@ -272,7 +272,8 @@ extension ProviderLoop {
             await scheduler.loadModel(
                 container: container,
                 modelId: modelId,
-                weightHash: liveModelHashes[modelId] ?? modelInfo.weightHash
+                weightHash: liveModelHashes[modelId] ?? modelInfo.weightHash,
+                expertStreamingCacheBytes: expertStreamingCacheBytes
             )
             // Weights are resident now (reflected in MLX active/cache), so hand
             // off from the pending-load reservation to the live mlxUsed view —
@@ -645,21 +646,34 @@ extension ProviderLoop {
         }
     }
 
-    private func loadModelContainer(from directory: URL) async throws -> MLXLMCommon.ModelContainer {
+    /// Returns the loaded container plus the MoE expert-streaming cache byte
+    /// budget configured for this load (0 when streaming isn't active for
+    /// this model) — the caller threads the latter into
+    /// `BatchScheduler.loadModel` so the static token-budget math accounts
+    /// for the cache's eventual resident footprint (see
+    /// `BatchScheduler.expertStreamingCacheBytes`).
+    private func loadModelContainer(
+        from directory: URL
+    ) async throws -> (container: MLXLMCommon.ModelContainer, expertStreamingCacheBytes: UInt64) {
+        let expertStreamingCacheBytes = configureDeepseekV4ExpertStreamingIfNeeded(modelDirectory: directory)
+
         // Vision-language models (config declares `vision_config`) load via
         // VLMModelFactory so image/video requests can run the container's
         // prepare/generate vision path. Their text path still works through the
         // batched engine since VLMModel refines LanguageModel.
+        let container: MLXLMCommon.ModelContainer
         if Self.modelIsVLM(at: directory) {
-            return try await VLMModelFactory.shared.loadContainer(
+            container = try await VLMModelFactory.shared.loadContainer(
+                from: directory,
+                using: LocalTokenizerLoader()
+            )
+        } else {
+            container = try await LLMModelFactory.shared.loadContainer(
                 from: directory,
                 using: LocalTokenizerLoader()
             )
         }
-        return try await LLMModelFactory.shared.loadContainer(
-            from: directory,
-            using: LocalTokenizerLoader()
-        )
+        return (container, expertStreamingCacheBytes)
     }
 
     /// A model is a vision-language model when its `config.json` declares a

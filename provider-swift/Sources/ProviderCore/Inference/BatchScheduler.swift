@@ -298,6 +298,23 @@ public actor BatchScheduler {
     /// Set from the load snapshot; reset in `stopCurrentEngine`.
     var requiresSequentialServing: Bool = false
 
+    /// Byte budget of the MoE expert SSD-streaming cache (DeepSeek-V4's
+    /// `DeepseekV4ExpertStreaming.cache`, `libs/mlx-swift-lm`) for the
+    /// currently-loaded model, or 0 when streaming isn't active. The cache is
+    /// MLX-allocated but NOT part of `ctx.model.parameters()` (it lives
+    /// outside the model's registered parameter tree), so the load-time
+    /// snapshot's `bytes` under-counts eventual resident usage by up to this
+    /// much. `applyPostLoadBudgets` folds it into the STATIC
+    /// `UnifiedMemoryCap.kvBudgetBytes` "weights" term so the token-budget
+    /// ceiling set at load time doesn't assume headroom the cache will
+    /// eventually claim as it warms up. The LIVE per-request KV gate needs no
+    /// equivalent adjustment — it reads real MLX active/cache counters, which
+    /// already include the expert cache's bytes as they're allocated. Set
+    /// from `loadModel`'s caller (`ProviderLoop.ensureModelLoaded`, which
+    /// computes the same budget it configures `DeepseekV4ExpertStreaming`
+    /// with); reset in `stopCurrentEngine`.
+    var expertStreamingCacheBytes: UInt64 = 0
+
     // MARK: - Telemetry state (read by `backendCapacity`)
 
     var observedDecodeTpsEwma: Double = 0
@@ -563,6 +580,7 @@ public actor BatchScheduler {
         lastSuccessAt = nil
         lastAdmissionRejectAt = nil
         requiresSequentialServing = false
+        expertStreamingCacheBytes = 0
     }
 
     /// Cumulative active-bridge gate, called from tests.

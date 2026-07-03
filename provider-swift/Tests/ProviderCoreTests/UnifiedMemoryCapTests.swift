@@ -74,6 +74,50 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(kv == 0)
 }
 
+// MARK: - Expert-streaming cache budget folded into "weights" (Task B item 4)
+//
+// The MoE expert-streaming cache (DeepSeek-V4) is MLX-allocated but lives
+// OUTSIDE the model's registered parameter tree, so `snapshot.bytes` (the
+// scheduler's measured resident-weight byte count) never counts it.
+// `BatchScheduler.applyPostLoadBudgets` folds
+// `snapshot.bytes + expertStreamingCacheBytes` together before calling
+// `kvBudgetBytes`, so the STATIC token-budget ceiling set at load time
+// doesn't assume headroom the cache will eventually claim as it warms up.
+
+@Test func kvBudgetTreatsResidentWeightsPlusExpertCacheAsOneWeightTerm() {
+    // A model with residentWeightBytes=16 GiB alone would get a much bigger
+    // KV budget than the SAME model with a 40 GiB expert cache added on top
+    // (the streaming case) — proving the fold actually shrinks the static
+    // budget rather than silently ignoring the cache.
+    let phys = 128 * gib
+    let residentOnly = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: phys, residentWeightBytes: 16 * gib)
+    let residentPlusCache = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: phys,
+        residentWeightBytes: BatchScheduler.saturatingAddBytes(16 * gib, 40 * gib))
+    #expect(residentPlusCache == residentOnly - 40 * gib)
+}
+
+@Test func saturatingAddBytesNeverTrapsOnOverflow() {
+    #expect(BatchScheduler.saturatingAddBytes(UInt64.max, 1) == UInt64.max)
+    #expect(BatchScheduler.saturatingAddBytes(UInt64.max - 5, 10) == UInt64.max)
+    #expect(BatchScheduler.saturatingAddBytes(0, 0) == 0)
+    #expect(BatchScheduler.saturatingAddBytes(3 * gib, 0) == 3 * gib)
+}
+
+@Test func kvBudgetWithZeroExpertCacheBytesEqualsTheNonStreamingPath() {
+    // expertStreamingCacheBytes == 0 (non-streaming models, and streaming
+    // models before the feature existed) must be byte-identical to calling
+    // kvBudgetBytes with just the resident weights — the fold is a true no-op
+    // when there's no cache.
+    let phys = 64 * gib
+    let plain = UnifiedMemoryCap.kvBudgetBytes(physicalBytes: phys, residentWeightBytes: 20 * gib)
+    let folded = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: phys,
+        residentWeightBytes: BatchScheduler.saturatingAddBytes(20 * gib, 0))
+    #expect(plain == folded)
+}
+
 @Test func kvBudgetHonorsConfigReserveWhenItExceedsCapImpliedReserve() {
     // 16 GiB box: hard cap = min(0.9×16 = 14.4, 16 − 2 = 14) = 14 GiB, so the
     // cap-implied reserve is 2 GiB. The DEFAULT memory_reserve_gb (4 GiB)

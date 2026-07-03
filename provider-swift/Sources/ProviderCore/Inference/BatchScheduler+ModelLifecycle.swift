@@ -15,7 +15,10 @@ import os
 extension BatchScheduler {
     // MARK: - Model lifecycle
 
-    public func loadModel(container: ModelContainer, modelId: String, weightHash: String? = nil) async {
+    public func loadModel(
+        container: ModelContainer, modelId: String, weightHash: String? = nil,
+        expertStreamingCacheBytes: UInt64 = 0
+    ) async {
         // Hard-fail if Metal is unavailable; CPU inference is not acceptable.
         do {
             _ = try GPUEnforcement.requireMetal()
@@ -55,6 +58,7 @@ extension BatchScheduler {
         self.modelWeightBytes = snapshot.bytes
         self.tokenizer = snapshot.tokenizer
         self.requiresSequentialServing = !snapshot.supportsBatchedServing
+        self.expertStreamingCacheBytes = expertStreamingCacheBytes
         if requiresSequentialServing {
             FileHandle.standardError.write(Data(
                 "[scheduler] \(modelId): cache layout unsupported by the batched engine — serving sequentially (single request at a time)\n"
@@ -335,8 +339,17 @@ extension BatchScheduler {
         // Only the per-model clamp; cross-model headroom (other resident models'
         // weights/KV) is handled live by tokenBudgetMax / the shared
         // GlobalKVCacheBudget, which read process-global MLX usage.
+        //
+        // `expertStreamingCacheBytes` (MoE expert SSD-streaming cache, 0 when
+        // inactive) is added to `snapshot.bytes` here because the cache lives
+        // OUTSIDE the model's registered parameter tree — `snapshot.bytes`
+        // (measured from `ctx.model.parameters()`) never counts it, so without
+        // this the static budget would assume the cache's eventual footprint
+        // is free headroom. See `expertStreamingCacheBytes`'s doc comment.
+        let residentWeightBytes = Self.saturatingAddBytes(
+            UInt64(max(0, snapshot.bytes)), expertStreamingCacheBytes)
         let availableForKV = UnifiedMemoryCap.kvBudgetBytes(
-            residentWeightBytes: UInt64(max(0, snapshot.bytes)))
+            residentWeightBytes: residentWeightBytes)
         if availableForKV > 0 && kvBytesPerToken > 0 {
             let availInt = Int(min(availableForKV, UInt64(Int.max)))
             self.dynamicTokenBudgetMax = max(availInt / kvBytesPerToken, 1024)
@@ -438,6 +451,14 @@ extension BatchScheduler {
     /// or budgeting is disabled.
     public func releaseVisionRequest(requestId: String) async {
         await kvBudget?.release(requestID: requestId)
+    }
+
+    /// Saturating two-value byte add, used by `applyPostLoadBudgets` to fold
+    /// the expert-streaming cache budget into the resident-weight byte count
+    /// without a trapping overflow on pathological inputs.
+    static func saturatingAddBytes(_ a: UInt64, _ b: UInt64) -> UInt64 {
+        let (sum, overflow) = a.addingReportingOverflow(b)
+        return overflow ? UInt64.max : sum
     }
 
 }

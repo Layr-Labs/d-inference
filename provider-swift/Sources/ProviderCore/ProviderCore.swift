@@ -84,5 +84,16 @@ public enum ProviderCore {
     // through v2; image/video requests keep the legacy VLM path. No protocol
     // change — capability is behavioral, gated by the existing engine_v2
     // allowlist + flag.
-    public static let version = "0.7.2"
+    // 0.7.3 fixes the v0.7.2 black-hole incident: the VLM text extraction's
+    // two module trees each lazily built their own multi-GiB SwitchGLU fused
+    // gate+up expert cache at the load-time parity probe (~15 GiB × 2 on
+    // gemma-4-26b-8bit), pushing 64 GB (8-bit) and 36 GB (qat-4bit) boxes
+    // past the 90% unified-memory cap so the shared KV gate rejected every
+    // request forever. The trees now share ONE fused cache
+    // (SwitchGLU.shareFusedGateUpCache); the load path re-checks serveable
+    // KV headroom AFTER the engine build and unloads instead of advertising
+    // a dead model; and GlobalKVCacheBudget audits + drops stale
+    // reservations under sustained full-rejection (defense in depth). No
+    // protocol changes.
+    public static let version = "0.7.3"
 }

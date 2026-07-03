@@ -72,6 +72,21 @@ final class SequentialServingTests: XCTestCase {
                 + "batched factory would silently substitute BatchKVCache")
     }
 
+    /// Sequential-serving models must advertise exactly one slot to the
+    /// coordinator: the submit gate admits one request at a time, so a
+    /// higher advertised concurrency would guarantee bounced dispatches.
+    func testSequentialServingAdvertisesSingleSlot() async {
+        let scheduler = BatchScheduler(maxConcurrentRequests: 4)
+        await scheduler._setRequiresSequentialServingForTest(true)
+        let capacity = await scheduler.capacity()
+        XCTAssertEqual(
+            capacity.maxConcurrent, 1,
+            "sequential-serving models admit one request at a time; the heartbeat must say so")
+        await scheduler._setRequiresSequentialServingForTest(false)
+        let restored = await scheduler.capacity()
+        XCTAssertGreaterThan(restored.maxConcurrent, 1, "batched models keep the real cap")
+    }
+
     func testStandardLayoutsRemainBatched() {
         XCTAssertTrue(Scheduler.supportsBatchedServing(cacheLayout: [
             KVCacheSimple(), KVCacheSimple(),

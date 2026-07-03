@@ -124,7 +124,14 @@ extension BatchScheduler {
     /// so a momentary spike in `memoryBoundMaxConcurrentRequests`
     /// doesn't deadlock submission.
     var effectiveMaxConcurrentRequests: Int {
-        max(1, min(maxConcurrentRequests, dynamicMaxConcurrentRequests, memoryBoundMaxConcurrentRequests))
+        // Sequential-serving models (DeepSeek-V4: batched engine can't
+        // represent their cache layout) admit exactly ONE request at a time —
+        // the submit gate rejects everything else with a retryable error.
+        // Advertising anything higher here would make the coordinator
+        // dispatch concurrent requests that are guaranteed to bounce,
+        // burning failover retries and skewing its capacity model.
+        if requiresSequentialServing { return 1 }
+        return max(1, min(maxConcurrentRequests, dynamicMaxConcurrentRequests, memoryBoundMaxConcurrentRequests))
     }
 
     // MARK: - Heartbeat payload

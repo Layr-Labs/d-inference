@@ -417,4 +417,10 @@ extension BatchScheduler {
 
     /// Test accessor: number of in-flight fast-path tasks currently tracked.
     func _fastPathTaskCountForTest() -> Int { fastPathTasks.count }
+
+    /// Force the sequential-serving flag without loading a model, so tests can
+    /// pin the single-slot heartbeat clamp (`effectiveMaxConcurrentRequests`).
+    func _setRequiresSequentialServingForTest(_ value: Bool) {
+        requiresSequentialServing = value
+    }
 }

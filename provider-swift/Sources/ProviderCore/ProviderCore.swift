@@ -95,5 +95,12 @@ public enum ProviderCore {
     // a dead model; and GlobalKVCacheBudget audits + drops stale
     // reservations under sustained full-rejection (defense in depth). No
     // protocol changes.
-    public static let version = "0.7.3"
+    // 0.7.4 routes IMAGE requests on those same v2-bridged Gemma 4 slots
+    // through engine_v2 too (CBv2 multimodal prefill): the wrapper's vision
+    // tower + projector run once up front and the per-image embeddings are
+    // spliced at the placeholder-token spans by the engine
+    // (EngineV2VisionPrefill). Video requests and every construction-failure
+    // case keep the legacy VLM path (WARN engine_v2_vision_fallback — never
+    // a dropped request). No protocol change.
+    public static let version = "0.7.4"
 }

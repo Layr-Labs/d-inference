@@ -243,6 +243,38 @@ func TestConnectWebhookTransferReversedNetsOutRefundedFee(t *testing.T) {
 	}
 }
 
+// TestConnectWebhookTransferReversedDedupesFeeByLedgerRef: the fee dedupe
+// must hold even when the FeeRefunded FLAG was lost (persist failure after
+// the fee credit landed) — the ledger reference, not the flag, is the source
+// of truth.
+func TestConnectWebhookTransferReversedDedupesFeeByLedgerRef(t *testing.T) {
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer fakeStripe.Close()
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := readyUser(t, st, "acct-rev-flagless", "alice@example.com", true)
+
+	mkWithdrawal(t, st, store.StripeWithdrawal{
+		ID: "wd-rev-flagless", AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
+		AmountMicroUSD: 5_000_000, FeeMicroUSD: 500_000, NetMicroUSD: 4_500_000,
+		Method: "instant", Status: "transferred", TransferID: "tr_rev_fl",
+		FeeRefunded: false, // flag lost…
+	})
+	// …but the fee credit itself landed under its ledger reference.
+	if err := st.CreditWithdrawable(user.AccountID, 500_000, store.LedgerRefund,
+		"stripe_withdraw_fee:wd-rev-flagless"); err != nil {
+		t.Fatal(err)
+	}
+	balBefore := st.GetBalance(user.AccountID)
+
+	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rev_fl")); w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body.String())
+	}
+	// Only the net part credits; the fee ref already exists.
+	if bal := st.GetBalance(user.AccountID); bal != balBefore+4_500_000 {
+		t.Errorf("balance = %d, want %d (fee deduped by ledger ref despite lost flag)", bal, balBefore+4_500_000)
+	}
+}
+
 // TestConnectWebhookTransferReversedRefundsGrossWhenFeeNotRefunded: with no
 // prior fee refund, a reversal refunds the full gross (net + fee parts).
 func TestConnectWebhookTransferReversedRefundsGrossWhenFeeNotRefunded(t *testing.T) {

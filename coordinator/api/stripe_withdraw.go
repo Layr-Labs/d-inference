@@ -185,6 +185,13 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 	// inflation bug where Debit eats non-withdrawable credits and a
 	// subsequent refund via CreditWithdrawable restores the amount as
 	// withdrawable earnings.
+	//
+	// Known narrow window: a process crash between this debit and the row
+	// insert below leaves a debited balance with no withdrawal row (and no
+	// Stripe movement). The debit's ledger entry (type stripe_payout, ref
+	// stripe_withdraw:<uuid>) with no matching stripe_withdrawals row is the
+	// audit signature. Closing it needs a store-level debit+insert
+	// transaction — tracked as a follow-up.
 	if err := s.store.DebitWithdrawable(user.AccountID, grossMicroUSD, store.LedgerStripePayout, debitRef); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("insufficient_withdrawable", err.Error()))
 		return
@@ -202,30 +209,30 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.billing.Store().CreateStripeWithdrawal(wd); err != nil {
 		// No Stripe calls yet — refund and bail.
-		if rerr := s.billing.Store().CreditWithdrawable(user.AccountID, grossMicroUSD, store.LedgerRefund, debitRef); rerr != nil {
-			s.logger.Error("stripe payout: refund after persist failure failed",
-				"error", rerr, "withdrawal_id", withdrawalID)
+		msg := "failed to record withdrawal — refunded to your balance"
+		if !s.creditRefundOnceWithRetry(user.AccountID, grossMicroUSD, debitRef, withdrawalID) {
+			msg = "failed to record withdrawal — the refund to your balance is still pending; contact support if it doesn't appear shortly"
 		}
 		s.logger.Error("stripe payout: persist withdrawal failed", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error",
-			"failed to record withdrawal — refunded to your balance"))
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", msg))
 		return
 	}
 
-	markFailedRefund := func(reason string) {
-		// Refund the ledger and mark the row failed atomically (best-effort —
-		// neither store call has rollback). Refunded flag prevents webhook
-		// replay from double-crediting.
-		if rerr := s.billing.Store().CreditWithdrawable(user.AccountID, grossMicroUSD, store.LedgerRefund, debitRef); rerr != nil {
-			s.logger.Error("stripe payout: refund failed", "error", rerr, "withdrawal_id", withdrawalID)
-		} else {
+	// markFailedRefund refunds the ledger and marks the row failed
+	// (best-effort — neither store call has rollback). Returns whether the
+	// refund credit is durably applied; the Refunded flag prevents webhook
+	// replay from double-crediting.
+	markFailedRefund := func(reason string) bool {
+		refunded := s.creditRefundOnceWithRetry(user.AccountID, grossMicroUSD, debitRef, withdrawalID)
+		if refunded {
 			wd.Refunded = true
 		}
 		wd.Status = "failed"
 		wd.FailureReason = reason
-		if uerr := s.billing.Store().UpdateStripeWithdrawal(wd); uerr != nil {
+		if uerr := s.persistWithdrawalUpdate(wd, "failure"); uerr != nil {
 			s.logger.Error("stripe payout: mark failed failed", "error", uerr, "withdrawal_id", withdrawalID)
 		}
+		return refunded
 	}
 
 	// Step 2: transfer USD from platform balance to the connected account.
@@ -236,8 +243,12 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		Description:          "Darkbloom credit withdrawal",
 	})
 	if err != nil {
-		markFailedRefund("transfer_create_failed: " + err.Error())
+		refunded := markFailedRefund("transfer_create_failed: " + err.Error())
 		s.logger.Error("stripe payout: transfer failed", "error", err, "withdrawal_id", withdrawalID)
+		refundNote := "your balance was refunded"
+		if !refunded {
+			refundNote = "the refund to your balance is pending — contact support if it doesn't appear shortly"
+		}
 
 		// Classify permanent account problems (races with the pre-check) so
 		// the user gets an actionable error instead of a raw Stripe message.
@@ -247,17 +258,17 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 				s.logger.Error("stripe payout: unlink gone account failed", "error", perr)
 			}
 			writeJSON(w, http.StatusConflict, errorResponse("stripe_account_gone",
-				"your Stripe payout account no longer exists — your balance was refunded; set up payouts again from the billing page"))
+				"your Stripe payout account no longer exists — "+refundNote+"; set up payouts again from the billing page"))
 		case billing.IsServiceAgreementErr(err):
 			if perr := s.billing.Store().SetUserStripeAccount(user.AccountID, user.StripeAccountID,
 				stripeStatusRestricted, "", "", "", false); perr != nil {
 				s.logger.Error("stripe payout: persist restricted status failed", "error", perr)
 			}
 			writeJSON(w, http.StatusConflict, errorResponse("stripe_account_recreate_required",
-				"your payout account can't receive transfers in your country — your balance was refunded; re-run payout setup from the billing page to recreate it"))
+				"your payout account can't receive transfers in your country — "+refundNote+"; re-run payout setup from the billing page to recreate it"))
 		default:
 			writeJSON(w, http.StatusBadGateway, errorResponse("stripe_error",
-				"failed to transfer funds: "+err.Error()))
+				"failed to transfer funds ("+refundNote+"): "+err.Error()))
 		}
 		return
 	}
@@ -319,18 +330,15 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		// NOT refund the principal (that would double-credit), but we DO
 		// refund the instant fee: the user isn't getting instant delivery.
 		wd.FailureReason = "instant_payout_create_failed: " + err.Error()
-		if feeMicroUSD > 0 {
-			// Reference-idempotent: shares its ledger ref with the webhook
-			// fee-refund path, so no interleaving pays the fee twice — a
-			// later transfer.reversed re-checks the same reference.
-			if _, rerr := s.billing.Store().CreditWithdrawableOnce(user.AccountID, feeMicroUSD,
-				store.LedgerRefund, "stripe_withdraw_fee:"+withdrawalID); rerr != nil {
-				s.logger.Error("stripe payout: instant fee refund failed",
-					"error", rerr, "withdrawal_id", withdrawalID)
-			} else {
-				wd.FeeRefunded = true
-				wd.FailureReason += " (instant fee refunded)"
-			}
+		// Reference-idempotent: shares its ledger ref with the webhook
+		// fee-refund path, so no interleaving pays the fee twice — a later
+		// transfer.reversed re-checks the same reference.
+		feeRefunded := feeMicroUSD == 0
+		if feeMicroUSD > 0 &&
+			s.creditRefundOnceWithRetry(user.AccountID, feeMicroUSD, "stripe_withdraw_fee:"+withdrawalID, withdrawalID) {
+			feeRefunded = true
+			wd.FeeRefunded = true
+			wd.FailureReason += " (instant fee refunded)"
 		}
 		if uerr := s.persistWithdrawalUpdate(wd, "payout failure"); uerr != nil {
 			s.logger.Error("stripe payout: persist payout failure failed",
@@ -338,6 +346,10 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		}
 		s.logger.Error("stripe payout: create instant payout failed", "error", err,
 			"withdrawal_id", withdrawalID, "transfer_id", transfer.ID)
+		msg := "instant payout unavailable — the fee was refunded and funds will arrive via the standard daily payout"
+		if !feeRefunded {
+			msg = "instant payout unavailable — funds will arrive via the standard daily payout; the instant-fee refund is pending, contact support if it doesn't appear shortly"
+		}
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"status":            "transferred",
 			"withdrawal_id":     withdrawalID,
@@ -346,7 +358,7 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 			"fee_usd":           formatUSD(feeMicroUSD),
 			"net_usd":           formatUSD(netMicroUSD),
 			"method":            method,
-			"message":           "instant payout unavailable — the fee was refunded and funds will arrive via the standard daily payout",
+			"message":           msg,
 			"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
 		})
 		return
@@ -384,6 +396,26 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		"arrival_unix":      payout.ArrivalDate,
 		"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
 	})
+}
+
+// creditRefundOnceWithRetry credits a reference-idempotent refund, riding out
+// transient store blips with short retries (safe: duplicates are deduped on
+// the ledger reference). Returns whether the credit is durably applied.
+func (s *Server) creditRefundOnceWithRetry(accountID string, amountMicroUSD int64, ref, withdrawalID string) bool {
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+		}
+		_, err := s.billing.Store().CreditWithdrawableOnce(accountID, amountMicroUSD, store.LedgerRefund, ref)
+		if err == nil {
+			return true
+		}
+		s.logger.Warn("stripe payout: refund credit attempt failed",
+			"attempt", attempt+1, "error", err, "withdrawal_id", withdrawalID, "ledger_ref", ref)
+	}
+	s.logger.Error("stripe payout: refund credit failed after retries — MANUAL CREDIT REQUIRED",
+		"withdrawal_id", withdrawalID, "ledger_ref", ref, "amount_micro_usd", amountMicroUSD)
+	return false
 }
 
 // persistWithdrawalUpdate retries a withdrawal-row update with short backoff.

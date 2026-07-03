@@ -90,11 +90,31 @@ extension BatchScheduler {
             continuation.finish()
             return stream
         }
+        // Sequential-serving models (cache layout unsupported by the batched
+        // engine, e.g. DeepSeek-V4) serve EVERY request through the
+        // single-sequence runner — routing them into the batched engine would
+        // silently generate garbage. Exclusive: one request at a time; anything
+        // else gets the canonical retryable rejection so the coordinator
+        // requeues / routes elsewhere.
+        let useSequential = requiresSequentialServing
+        if useSequential {
+            guard Self.sequentialAdmissionAllowed(
+                activeBridgeCount: activeBridges.count,
+                fastPathTaskCount: fastPathTasks.count,
+                fastPathAdmitting: fastPathAdmitting)
+            else {
+                noteAdmissionReject()
+                continuation.yield(.error(
+                    "token_budget_exhausted: sequential-serving model is busy; retry shortly"))
+                continuation.finish()
+                return stream
+            }
+        }
         // B=1 greedy fast path eligibility — MUST be decided BEFORE inserting our
         // bridge (it checks `activeBridges.isEmpty` for exclusivity). When taken,
         // this bypasses the batched engine + planner for a single greedy request;
         // otherwise the unchanged batched-engine path below runs.
-        let useFastPath = b1FastPathEligible(
+        let useFastPath = useSequential || b1FastPathEligible(
             temperature: temperature,
             topP: topP,
             topK: topK,
@@ -165,11 +185,21 @@ extension BatchScheduler {
                 continuation.finish()
                 return stream
             }
+            // Sequential-serving requests carry their real sampling parameters;
+            // the greedy fast path keeps its temperature-0 default (nil).
+            var sequentialParams: GenerateParameters? = nil
+            if useSequential {
+                var gp = GenerateParameters(maxTokens: maxTokens, temperature: temperature)
+                if let topP, topP > 0 { gp.topP = topP }
+                if let topK, topK > 0 { gp.topK = topK }
+                sequentialParams = gp
+            }
             runGreedyFastPath(
                 requestId: id,
                 container: container,
                 promptTokens: promptTokens,
                 maxTokens: maxTokens,
+                parameters: sequentialParams,
                 continuation: continuation
             )
             // The task is now tracked in `fastPathTasks`, which the concurrency
@@ -346,6 +376,21 @@ extension BatchScheduler {
         let maxTokens = Self.resolvedMaxTokens(
             requested: request.max_tokens, defaultMaxTokens: defaultMaxTokens
         )
+
+        // Sequential-serving models: delegate to the tokenized path, which owns
+        // the single-sequence route (exclusivity gate + sequential runner).
+        if requiresSequentialServing {
+            return await submitTokenized(
+                promptTokens: promptTokens,
+                maxTokens: maxTokens,
+                temperature: request.temperature ?? 0.0,
+                topP: request.top_p,
+                topK: request.top_k,
+                seed: request.seed,
+                requestId: id,
+                cacheScope: request.cacheScope
+            )
+        }
 
         let requestBudget = promptTokens.count + maxTokens
         // Flush the reclaimable pool before the token gate if it's tight (the gate
@@ -569,6 +614,17 @@ extension BatchScheduler {
         }
         activeBridges.removeAll()
         timedOutBridges.removeAll()
+    }
+
+    /// Pure admission decision for sequential-serving models: exactly one
+    /// request at a time, and never overlapping a fast-path admission window.
+    /// Kept static + parameter-only so it is unit-testable without a model.
+    static func sequentialAdmissionAllowed(
+        activeBridgeCount: Int,
+        fastPathTaskCount: Int,
+        fastPathAdmitting: Bool
+    ) -> Bool {
+        activeBridgeCount == 0 && fastPathTaskCount == 0 && !fastPathAdmitting
     }
 
     // P1: disambiguate a batch-token-budget rejection so the coordinator never has

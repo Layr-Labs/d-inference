@@ -54,6 +54,12 @@ extension BatchScheduler {
         self.currentWeightHash = weightHash
         self.modelWeightBytes = snapshot.bytes
         self.tokenizer = snapshot.tokenizer
+        self.requiresSequentialServing = !snapshot.supportsBatchedServing
+        if requiresSequentialServing {
+            FileHandle.standardError.write(Data(
+                "[scheduler] \(modelId): cache layout unsupported by the batched engine — serving sequentially (single request at a time)\n"
+                    .utf8))
+        }
         let adaptivePrefillRuntime = makeAdaptivePrefillRuntime(
             modelId: modelId,
             weightHash: weightHash,
@@ -258,7 +264,9 @@ extension BatchScheduler {
                 tokenizer: TokenizerHandle(ctx.tokenizer),
                 eosTokenIds: ctx.configuration.eosTokenIds,
                 modelType: modelType,
-                architecture: architecture
+                architecture: architecture,
+                supportsBatchedServing: Scheduler.supportsBatchedServing(
+                    cacheLayout: ctx.model.newCache(parameters: nil))
             )
         }
     }

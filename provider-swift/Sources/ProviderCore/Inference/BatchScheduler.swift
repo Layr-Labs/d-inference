@@ -289,6 +289,15 @@ public actor BatchScheduler {
     /// (often cached) `ProcessInfo` environment mid-run. @testable-only.
     internal var _forceB1FastPathForTest: Bool? = nil
 
+    /// True when the loaded model's cache layout cannot be represented by the
+    /// batched engine (`Scheduler.supportsBatchedServing == false`, e.g.
+    /// DeepSeek-V4's custom layer caches). EVERY request is then served through
+    /// the sequential single-request path (`BatchScheduler+SequentialServing`)
+    /// — routing such a model into the batched engine would not crash, it would
+    /// silently generate garbage (the model's cache downcasts return nil).
+    /// Set from the load snapshot; reset in `stopCurrentEngine`.
+    var requiresSequentialServing: Bool = false
+
     // MARK: - Telemetry state (read by `backendCapacity`)
 
     var observedDecodeTpsEwma: Double = 0
@@ -553,6 +562,7 @@ public actor BatchScheduler {
         budgetCollapsedSince = nil
         lastSuccessAt = nil
         lastAdmissionRejectAt = nil
+        requiresSequentialServing = false
     }
 
     /// Cumulative active-bridge gate, called from tests.

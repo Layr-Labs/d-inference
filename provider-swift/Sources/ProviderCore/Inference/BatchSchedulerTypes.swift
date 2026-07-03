@@ -97,6 +97,12 @@ struct LoadSnapshot: @unchecked Sendable {
     let eosTokenIds: Set<Int>
     let modelType: String?
     let architecture: ModelArchitecture
+    /// Whether the continuous-batching engine can faithfully serve this model's
+    /// cache layout (`Scheduler.supportsBatchedServing`). False for models with
+    /// custom per-layer caches (DeepSeek-V4) that the batched cache factory
+    /// would silently replace with a plain BatchKVCache — those must serve
+    /// through the sequential (single-request) path instead.
+    let supportsBatchedServing: Bool
 }
 
 /// Sendable summary of the loaded model's per-layer KV cache class.

@@ -214,6 +214,7 @@ extension BatchScheduler {
         container: ModelContainer,
         promptTokens: [Int],
         maxTokens: Int,
+        parameters: GenerateParameters? = nil,
         continuation: AsyncStream<GenerationEvent>.Continuation
     ) {
         let scheduler = self
@@ -222,9 +223,10 @@ extension BatchScheduler {
             // Token-only input (no media). `MLXArray(promptTokens)` is a cheap
             // host-side copy; the GPU work happens inside `generate`.
             let lmInput = LMInput(tokens: MLXArray(promptTokens))
-            // temperature 0 ⇒ ArgMaxSampler. topP/topK/penalties left at their
-            // defaults are inert under greedy. maxTokens bounds the decode.
-            let params = GenerateParameters(maxTokens: maxTokens, temperature: 0)
+            // Default (fast path): temperature 0 ⇒ ArgMaxSampler; topP/topK/
+            // penalties left at their defaults are inert under greedy. The
+            // sequential-serving route passes explicit sampling parameters.
+            let params = parameters ?? GenerateParameters(maxTokens: maxTokens, temperature: 0)
 
             // Admission ≈ now: prefill is about to begin. Drives the
             // pending-timeout predicate and starts the prefill-EWMA window.

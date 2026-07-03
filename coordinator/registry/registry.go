@@ -1280,6 +1280,24 @@ type Registry struct {
 	providerBreakerOpenUntil map[string]time.Time             // breaker-open expiry per provider
 	providerBreakerTrips     map[string]int                   // trip count per provider (exponential backoff)
 
+	// capacityRejectStrikes / capacityCooldowns / capacityCooldownTrips
+	// implement the capacity-reject routing cooldown (capacity_cooldown.go),
+	// SEPARATE from every breaker above — all of which deliberately IGNORE
+	// capacity-class rejections (sound for occasional sheds from a busy box,
+	// catastrophic for a box that capacity-rejects EVERYTHING while its
+	// idle-looking heartbeats keep winning the cost scheduler: the 2026-07
+	// black-hole incident, 7 boxes, ~9k rejects/30min, zero successes). A
+	// (provider, model) pair that accumulates threshold-many capacity rejects
+	// inside the window with ZERO interleaved accepts enters a routing
+	// cooldown with exponential re-trip backoff; any accept (first content
+	// chunk or clean completion) clears all three entries. Config is
+	// env-tunable (EIGENINFERENCE_CAPACITY_COOLDOWN_*), loaded at
+	// construction. Guarded by r.mu like the maps above.
+	capacityCooldownCfg   capacityCooldownConfig
+	capacityRejectStrikes map[capacityRejectKey][]time.Time // recent capacity-reject strikes per (provider, model)
+	capacityCooldowns     map[capacityRejectKey]time.Time   // cooldown expiry per (provider, model)
+	capacityCooldownTrips map[capacityRejectKey]int         // trip count per (provider, model) (exponential backoff)
+
 	// Stable-identity health ejection (health_ejection.go). Keyed by a STABLE
 	// identity (serial/SE-key/account), NOT the session UUID, and DELIBERATELY
 	// NOT deleted on Disconnect — so a zombie that fails ~every request while
@@ -1367,6 +1385,10 @@ func New(logger *slog.Logger) *Registry {
 		providerOutcomes:         make(map[string]*providerHealthWindow),
 		providerBreakerOpenUntil: make(map[string]time.Time),
 		providerBreakerTrips:     make(map[string]int),
+		capacityCooldownCfg:      loadCapacityCooldownConfig(),
+		capacityRejectStrikes:    make(map[capacityRejectKey][]time.Time),
+		capacityCooldowns:        make(map[capacityRejectKey]time.Time),
+		capacityCooldownTrips:    make(map[capacityRejectKey]int),
 		healthEjectionWindows:    make(map[string]*providerHealthWindow),
 		healthEjectionUntil:      make(map[string]time.Time),
 		healthEjectionTrips:      make(map[string]int),

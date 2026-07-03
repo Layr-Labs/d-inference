@@ -360,8 +360,8 @@ struct EngineV2SlotFactoryTests {
         #expect(engine.submitted[0].promptTokens == [1, 2, 3, 4, 5])
     }
 
-    @Test("VLM slot: silently legacy even when flag on + name allowlisted (no WARN noise)")
-    func vlmSlotStaysLegacySilently() async throws {
+    @Test("non-allowlisted VLM slot: silently legacy (no WARN noise, builder never invoked)")
+    func nonAllowlistedVLMSlotStaysLegacySilently() async throws {
         let loop = try makeWiringLoop(engineV2Enabled: true)
         let runtime = EngineV2Runtime()
         let counter = BuilderCallCounter()
@@ -370,10 +370,9 @@ struct EngineV2SlotFactoryTests {
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
                 environment: [
-                    "DARKBLOOM_ENGINE_V2": "1",
-                    // The default allowlist is now the exact prod checkpoint ids;
-                    // these wiring fixtures use family-glob test ids, so widen it.
-                    "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*,gpt-oss*",
+                    "DARKBLOOM_ENGINE_V2": "1"
+                    // DEFAULT allowlist (exact prod checkpoint ids) — the
+                    // fixture id below is NOT on it.
                 ],
                 emitTelemetry: telemetry.callback(),
                 makeEngine: { _, _ in
@@ -381,11 +380,11 @@ struct EngineV2SlotFactoryTests {
                     return WiringScriptedEngine(script: .manual)
                 }))
 
-        // Name matches the gemma-4* allowlist, but the slot is a VLM — the
-        // loaded module is a vision wrapper the v2 engine can never serve,
-        // so this must be a SILENT legacy fallback (no per-load WARN).
+        // A VLM build that is NOT allowlisted (e.g. a bare vision conversion
+        // an operator never staged) must be a SILENT legacy skip — no
+        // extraction attempt, no per-load WARN spam.
         let bridge = await loop.makeEngineV2BridgeForSlotForTesting(
-            modelId: "gemma-4-27b-it-vision",
+            modelId: "gemma-4-27b-it-vision-experimental",
             modelType: "gemma4",
             isVLM: true,
             container: makeStubContainer(),
@@ -395,7 +394,78 @@ struct EngineV2SlotFactoryTests {
         #expect(bridge == nil)
         #expect(counter.calls == 0)
         #expect(telemetry.events.isEmpty)
-        #expect(await runtime.bridge(forModel: "gemma-4-27b-it-vision") == nil)
+        #expect(await runtime.bridge(forModel: "gemma-4-27b-it-vision-experimental") == nil)
+    }
+
+    @Test("allowlisted VLM slot: builds + registers a bridge (extraction seam via hooks)")
+    func allowlistedVLMSlotBuildsBridge() async throws {
+        // v0.7.2: allowlisted VLM slots are no longer gated out per-slot —
+        // the factory attempts the weight-sharing text-model extraction and
+        // serves TEXT through v2. The hooks' engine builder stands in for
+        // the extraction+engine step.
+        let loop = try makeWiringLoop(engineV2Enabled: true)
+        let runtime = EngineV2Runtime()
+        let engine = WiringScriptedEngine(script: .manual)
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        await loop.setEngineV2SlotHooksForTesting(
+            ProviderLoop.EngineV2SlotHooks(
+                environment: [
+                    "DARKBLOOM_ENGINE_V2": "1",
+                    "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*",
+                ],
+                eosTokenIds: [2],
+                makeEngine: { _, _ in engine }))
+
+        let bridge = await loop.makeEngineV2BridgeForSlotForTesting(
+            modelId: "gemma-4-26b-8bit",
+            modelType: "gemma4",
+            isVLM: true,
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            scheduler: BatchScheduler()
+        )
+        let unwrapped = try #require(bridge)
+        #expect(await runtime.bridge(forModel: "gemma-4-26b-8bit") === unwrapped)
+    }
+
+    @Test("allowlisted VLM slot: extraction failure → legacy + WARN engine_v2_fallback")
+    func allowlistedVLMExtractionFailureFallsBackWithWarn() async throws {
+        let loop = try makeWiringLoop(engineV2Enabled: true)
+        let runtime = EngineV2Runtime()
+        let telemetry = WiringTelemetrySink()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        await loop.setEngineV2SlotHooksForTesting(
+            ProviderLoop.EngineV2SlotHooks(
+                environment: [
+                    "DARKBLOOM_ENGINE_V2": "1",
+                    "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*",
+                ],
+                emitTelemetry: telemetry.callback(),
+                makeEngine: { _, _ in
+                    // Stands in for any extraction failure (config decode,
+                    // verify [.all] mismatch, forward-parity gate).
+                    throw EngineV2VLMTextExtractionError.parityMismatch("scripted")
+                }))
+
+        let bridge = await loop.makeEngineV2BridgeForSlotForTesting(
+            modelId: "gemma-4-26b-8bit",
+            modelType: "gemma4",
+            isVLM: true,
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            scheduler: BatchScheduler()
+        )
+        #expect(bridge == nil)
+        #expect(await runtime.bridge(forModel: "gemma-4-26b-8bit") == nil)
+        let events = telemetry.events
+        #expect(events.count == 1)
+        #expect(events.first?.kind == .engineHealth)
+        #expect(events.first?.severity == .warn)
+        #expect(events.first?.fields?["operation"]?.description == "engine_v2_fallback")
+        #expect(events.first?.fields?["model"]?.description == "gemma-4-26b-8bit")
+        #expect(
+            events.first?.fields?["error_class"]?.description
+                .contains("EngineV2VLMTextExtractionError") == true)
     }
 
     @Test("production factory: unsupported model class throws (→ fallback)")
@@ -1022,6 +1092,97 @@ struct EngineV2RequestRoutingTests {
         #expect(engine.submitted.count == 1)
         // The local reservation is dropped exactly once when the stream ends.
         #expect(released.calls == 1)
+    }
+
+    @Test("VLM slot with a bridge: text-only request routes through the bridge")
+    func vlmSlotTextRequestRoutesThroughBridge() async throws {
+        // v0.7.2 per-request routing: a VLM slot may carry a v2 bridge built
+        // over its extracted text model. TEXT requests must serve through
+        // the bridge exactly like a text-slot bridge would.
+        let engine = WiringScriptedEngine(script: .stream([
+            .delta(text: "Hello", tokens: [10], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
+        ]))
+        let bridge = makeBridge(engine: engine, modelId: "gemma-4-26b-8bit")
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "gemma-4-26b-8bit": .init(
+                        scheduler: BatchScheduler(),
+                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        modelType: "gemma4",
+                        container: makeStubContainer(),
+                        isVLM: true,
+                        engineV2Bridge: bridge)
+                ]
+            })
+
+        let stream = try await providerEngine.streamChatCompletion(
+            request: makeOpenAIRequest(model: "gemma-4-26b-8bit"))
+        let events = try await recordServerStream(stream)
+        #expect(events.first == .content("Hello"))
+        #expect(events.last == .info(prompt: 5, completion: 1))
+        #expect(engine.submitted.count == 1)
+        #expect(engine.submitted[0].promptTokens == [1, 2, 3, 4, 5])
+    }
+
+    @Test("VLM slot with a bridge: image-bearing request never reaches the bridge")
+    func vlmSlotMediaRequestBypassesBridge() async throws {
+        // The media check sits ABOVE the bridge branch (ordering contract in
+        // MultiModelBatchSchedulerEngine.streamChatCompletion): an
+        // image-bearing request on a bridge-carrying VLM slot must take the
+        // legacy vision path — here it fails inside that path (stub
+        // container / model-less scheduler), which is exactly the proof:
+        // the scripted v2 engine must never see a submission.
+        let engine = WiringScriptedEngine(script: .stream([
+            .delta(text: "must-not-appear", tokens: [10], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
+        ]))
+        let bridge = makeBridge(engine: engine, modelId: "gemma-4-26b-8bit")
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "gemma-4-26b-8bit": .init(
+                        scheduler: BatchScheduler(),
+                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        modelType: "gemma4",
+                        container: makeStubContainer(),
+                        isVLM: true,
+                        engineV2Bridge: bridge)
+                ]
+            })
+
+        // A real, round-trip-verified 1x1 PNG so hasMedia + media validation
+        // both engage (same fixture as VLMRequestInferenceTests).
+        let tinyPNG =
+            "data:image/png;base64,"
+            + "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAAXNSR0IArs4c6QAAAERl"
+            + "WElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAAB"
+            + "AAAAAaADAAQAAAABAAAAAQAAAAD5Ip3+AAAADElEQVQIHWP4z8AAAAMBAQBb2/lEAAAA"
+            + "AElFTkSuQmCC"
+        let mediaRequest = OpenAIChatCompletionRequest(
+            model: "gemma-4-26b-8bit",
+            messages: [
+                OpenAIChatMessage(
+                    role: .user,
+                    content: .parts([
+                        .text("what is this?"),
+                        .imageURL(tinyPNG),
+                    ]))
+            ]
+        )
+
+        // The vision path errors on the stub fixtures (model-less scheduler /
+        // throwing processor) — either shape proves the routing; what must
+        // NOT happen is a silent success through the bridge.
+        do {
+            let stream = try await providerEngine.streamChatCompletion(request: mediaRequest)
+            _ = try await recordServerStream(stream)
+            Issue.record("media request unexpectedly succeeded on stub fixtures")
+        } catch {
+            // expected: legacy vision path surfaced its failure
+        }
+        #expect(engine.submitted.isEmpty)
     }
 
     @Test("no bridge: the legacy scheduler path is taken unchanged")

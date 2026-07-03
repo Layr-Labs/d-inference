@@ -32,8 +32,10 @@ import MLXLMCommon
 /// Failure modes of production v2-engine construction. Each maps to the
 /// factory's safe-fallback path (WARN telemetry + legacy engine).
 enum EngineV2ProductionError: Error, CustomStringConvertible {
-    /// The loaded module is not a CBv2-adapted family (e.g. an allowlisted
-    /// model id resolved to a VLM wrapper or an unexpected architecture).
+    /// The loaded module is not a CBv2-adapted family (an unexpected
+    /// architecture). Allowlisted Gemma 4 VLM wrappers do NOT land here —
+    /// the slot factory extracts their CBv2-adapted text model first
+    /// (`EngineV2VLMTextExtraction`) and hands THAT to this factory.
     case unsupportedModel(String)
     /// No KV byte budget is left under the unified-memory cap — an engine
     /// admitted with a zero ceiling would reject every request, so fall

@@ -246,12 +246,15 @@ func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
 	s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + pr.Model})
 }
 
-// noteInferenceError feeds BOTH circuit breakers for a provider-side error
+// noteInferenceError feeds the circuit breakers for a provider-side error
 // received on a pending request's ErrorCh (any phase, pre- or post-commit):
 //   - the shape-keyed inference-error breaker (counts only sickness-shaped
-//     500/502/504 for the (provider, model, shape) triple), and
+//     500/502/504 for the (provider, model, shape) triple),
 //   - the per-provider node-health breaker, which also counts fault-shaped
-//     503s (errStr classifies capacity-503 vs fault-503).
+//     503s (errStr classifies capacity-503 vs fault-503),
+//   - the stable-identity ejection breaker (survives reconnect churn), and
+//   - the capacity-reject cooldown (the ONLY consumer of capacity-class
+//     rejections, which every breaker above deliberately ignores).
 //
 // It emits the cool-down metric on the inference-error transition and the
 // provider_breaker_open metric on the node-health transition into quarantine.
@@ -278,7 +281,38 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 			s.ddIncr("routing.provider_ejected", []string{"model:" + pr.Model})
 		}
 	}
+	// Feed the capacity-reject cooldown. Capacity-class rejections are
+	// DELIBERATELY invisible to reputation and to ALL the breakers above (a
+	// busy box must never be punished for shedding) — which turns a box that
+	// capacity-rejects EVERYTHING into a routing black hole: its idle-looking
+	// heartbeats keep winning the cost scheduler while every dispatch bounces
+	// (2026-07 incident: 7 boxes, ~9k "token_budget_exhausted" rejections in
+	// 30 min, zero successes). Strikes accumulate per (provider, model); any
+	// accept (first content chunk or clean completion) resets the streak, so
+	// transient fullness on a serving box can never trip. Gated to 429/5xx so
+	// a client-shape 4xx that happens to carry a capacity-looking string never
+	// strikes; explicit context-overflow rejections are excluded by
+	// isCapacityRejectStrike (they indict the request, not the provider).
+	if (statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError) &&
+		isCapacityRejectStrike(errStr) {
+		if s.registry.RecordCapacityReject(providerID, pr.Model) {
+			s.ddIncr(metricCapacityCooldownTripped, []string{"provider_id:" + providerID, "model:" + pr.Model})
+			s.logger.Warn("capacity-reject cooldown tripped: provider+model capacity-rejecting with zero interleaved accepts — routing will skip the pair until the cooldown expires",
+				"provider_id", providerID,
+				"model", pr.Model,
+				"status_code", statusCode,
+				"error", errStr,
+			)
+		}
+	}
 }
+
+// metricCapacityCooldownTripped counts transitions of a (provider, model) pair
+// into the capacity-reject routing cooldown (registry/capacity_cooldown.go),
+// tagged provider_id + model. Distinct from routing.cooldown_entered (the 5xx
+// inference-error breaker) and routing.provider_breaker_open (node health) so
+// black-hole trips are independently alertable.
+const metricCapacityCooldownTripped = "routing.capacity_cooldown_tripped"
 
 // noteInferenceSuccess clears the inference-error strike state for the serving
 // provider-model pair on a clean completion (streaming relay ended without a
@@ -288,6 +322,11 @@ func (s *Server) noteInferenceSuccess(pr *registry.PendingRequest) {
 		return
 	}
 	s.registry.RecordInferenceSuccess(pr.ProviderID, pr.Model, pr.Traits.CooldownShape())
+	// A clean completion is an ACCEPT for the capacity-reject cooldown: clear
+	// the pair's reject streak, any active capacity cooldown, and the re-trip
+	// backoff. Belt-and-braces with the commit-time accept (commitFirstContent)
+	// and the only accept signal on paths that never stream content.
+	s.registry.RecordCapacityAccept(pr.ProviderID, pr.Model)
 	// A clean completion proves the node is healthy — close its node-health
 	// breaker (and reset the exponential backoff) if it had tripped.
 	if _, closed := s.registry.RecordProviderOutcome(pr.ProviderID, true, 200, ""); closed {

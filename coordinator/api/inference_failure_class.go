@@ -212,6 +212,51 @@ func classifyRejection(reason, errStr string, providerBudget int64, modelContext
 	return rejectionTransientCapacity
 }
 
+// isCapacityRejectStrike reports whether a provider rejection should count
+// toward the capacity-reject routing cooldown (registry.RecordCapacityReject —
+// the black-hole breaker). It is BUCKET A (capacity-class) MINUS the
+// request-shape rejections that indict the REQUEST rather than the provider:
+// an explicit context-window/length overflow is deterministic for the MODEL
+// (every provider rejects that prompt identically), so counting it would cool
+// down healthy providers on a burst of oversized requests.
+//
+// Node-scoped capacity flavors all count — "exceeds active token budget",
+// "requires N tokens but only M available", "insufficient KV headroom",
+// "request exceeds batch token budget", "queue full", "draining", cold "not
+// loaded" misses, … For the SAME (provider, model) pair, threshold-many of
+// those inside the window with ZERO interleaved accepts is the black-hole
+// signature this cooldown exists for (2026-07 incident: 7 boxes rejecting
+// 100% of dispatches with "token_budget_exhausted" from their first request,
+// ~9k rejections/30min, zero successes — invisible to reputation and to both
+// fault breakers, which deliberately skip capacity-class errors). "batch token
+// budget" is deliberately INCLUDED even though classifyRejection may treat it
+// as deterministic for FAILOVER purposes: a pair emitting it repeatedly for
+// differently-sized prompts with zero accepts is exactly the misreported-
+// budget pathology; a rare false trip costs one pair a bounded, re-probed TTL.
+//
+// Matching mirrors isCapacityClassProviderError (substring, case-insensitive,
+// curly-apostrophe-normalised). The registry enforces the zero-interleaved-
+// accepts discriminator; this function only answers "is this reject about the
+// provider's capacity?".
+func isCapacityRejectStrike(errStr string) bool {
+	if !isCapacityClassProviderError(errStr) {
+		return false
+	}
+	s := strings.ToLower(strings.TrimSpace(errStr))
+	s = strings.ReplaceAll(s, "’", "'")
+	// Request-shape deterministic: the prompt is too big for the MODEL itself
+	// (both tenses + the bare context markers, mirroring classifyRejection).
+	// These reject identically fleet-wide and say nothing about this provider.
+	if strings.Contains(s, "context") &&
+		(strings.Contains(s, "exceeds") || strings.Contains(s, "exceeded")) {
+		return false
+	}
+	if strings.Contains(s, "context length") || strings.Contains(s, "context window") {
+		return false
+	}
+	return true
+}
+
 // capacityClassMarkers are BUCKET A substrings: ADMITTED-but-unservable or
 // lifecycle rejections that should reclassify a provider 5xx to an uptime-neutral
 // 429. Drop a newly-observed capacity string here (predicates that need more than

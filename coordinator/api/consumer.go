@@ -289,11 +289,22 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 	// (2026-07 incident: 7 boxes, ~9k "token_budget_exhausted" rejections in
 	// 30 min, zero successes). Strikes accumulate per (provider, model); any
 	// accept (first content chunk or clean completion) resets the streak, so
-	// transient fullness on a serving box can never trip. Gated to 429/5xx so
-	// a client-shape 4xx that happens to carry a capacity-looking string never
-	// strikes; explicit context-overflow rejections are excluded by
+	// transient fullness on a serving box can never trip. Gated to 429/404/5xx
+	// so a client-shape 4xx that happens to carry a capacity-looking string
+	// never strikes; explicit context-overflow rejections are excluded by
 	// isCapacityRejectStrike (they indict the request, not the provider).
-	if (statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError) &&
+	//
+	// 404 is included WITH CARE for the cold "model not loaded" miss: a lazy
+	// load on first touch makes a 404-then-load-then-serve sequence NORMAL
+	// lifecycle, so the zero-interleaved-accepts discriminator remains the
+	// safety — the first accept after the load clears the streak, and only a
+	// box that 404s FOREVER (never loads, zero accepts) trips. A 404 whose
+	// message is not capacity-class (e.g. "model not found" for an unknown
+	// model id — a request-shape error) never strikes, because
+	// isCapacityRejectStrike only matches the capacity vocabulary
+	// ("not loaded" / "no model loaded").
+	if (statusCode == http.StatusTooManyRequests || statusCode == http.StatusNotFound ||
+		statusCode >= http.StatusInternalServerError) &&
 		isCapacityRejectStrike(errStr) {
 		if s.registry.RecordCapacityReject(providerID, pr.Model) {
 			s.ddIncr(metricCapacityCooldownTripped, []string{"provider_id:" + providerID, "model:" + pr.Model})
@@ -3710,6 +3721,18 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			// this attempt committed so handleComplete's fallback is scoped to it.
 			pr.MarkFirstContentArrived()
 			pr.MarkContentCommitted()
+			// First chunk == the provider ACCEPTED and is serving: clear the
+			// pair's capacity-reject streak NOW, not at completion — a long
+			// generic (/v1/completions, /v1/messages) stream on a busy box must
+			// keep vouching for the pair while the box legitimately sheds
+			// concurrent dispatches, exactly like the chat path's
+			// commitFirstContent. Without this, generic-only traffic recorded
+			// accepts only at clean completion, so sheds during a long stream
+			// could masquerade as the zero-accepts black-hole signature. (The
+			// generic path has no preamble filter, so this is the first chunk of
+			// ANY kind rather than strictly first content — fine as an accept
+			// signal: a black hole capacity-rejects, it never emits a chunk.)
+			s.registry.RecordCapacityAccept(provider.ID, pr.Model)
 			committed = true
 		} else {
 			select {
@@ -3778,9 +3801,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				firstChunk = chunk
 				pr.MarkFirstChunkArrived()
 				// Stamp the actual_ttft_ms anchor + mark this attempt committed at
-				// first CONTENT (see the pre-accept branch above).
+				// first CONTENT (see the pre-accept branch above), and record the
+				// capacity-cooldown ACCEPT at first content for the same reason.
 				pr.MarkFirstContentArrived()
 				pr.MarkContentCommitted()
+				s.registry.RecordCapacityAccept(provider.ID, pr.Model)
 				committed = true
 			} else {
 				select {

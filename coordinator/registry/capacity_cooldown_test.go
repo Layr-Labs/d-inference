@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -18,8 +19,29 @@ func capacityCooldownActiveAt(r *Registry, providerID, modelID string, now time.
 func capacityCooldownExpiryOf(r *Registry, providerID, modelID string) (time.Time, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	expiry, ok := r.capacityCooldowns[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]
-	return expiry, ok
+	e, ok := r.capacityCooldowns[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]
+	if !ok {
+		return time.Time{}, false
+	}
+	return e.expiry, true
+}
+
+// claimCapacityProbe claims the pair's half-open probe as ReserveProviderEx
+// would at reservation commit (under the r.mu write lock).
+func claimCapacityProbe(r *Registry, providerID, modelID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.claimCapacityProbeLocked(providerID, modelID, time.Now())
+}
+
+// ageCapacityProbeClaim rewinds the pair's probe claim by d, simulating a
+// probe whose outcome never landed (stale claim) without sleeping.
+func ageCapacityProbeClaim(r *Registry, providerID, modelID string, d time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.capacityCooldowns[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]; ok && !e.probeAt.IsZero() {
+		e.probeAt = e.probeAt.Add(-d)
+	}
 }
 
 func capacityCooldownTripsOf(r *Registry, providerID, modelID string) int {
@@ -28,12 +50,16 @@ func capacityCooldownTripsOf(r *Registry, providerID, modelID string) int {
 	return r.capacityCooldownTrips[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]
 }
 
-// expireCapacityCooldown rewinds the pair's cooldown expiry into the past,
-// simulating the TTL elapsing (active -> half-open re-probe) without sleeping.
+// expireCapacityCooldown rewinds the pair's cooldown expiry into the past
+// (and clears any probe claim), simulating the TTL elapsing (active ->
+// half-open, probe unclaimed) without sleeping.
 func expireCapacityCooldown(r *Registry, providerID, modelID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.capacityCooldowns[capacityRejectKey{ProviderID: providerID, ModelID: modelID}] = time.Now().Add(-time.Second)
+	if e, ok := r.capacityCooldowns[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]; ok {
+		e.expiry = time.Now().Add(-time.Second)
+		e.probeAt = time.Time{}
+	}
 }
 
 // ageCapacityStrikes rewinds every recorded reject strike for the pair by d,
@@ -306,6 +332,124 @@ func TestCapacityCooldownConfigClamps(t *testing.T) {
 	}
 }
 
+// TRUE HALF-OPEN, claim lifecycle: after expiry the gate is open only while no
+// probe claim is fresh. A claim (as ReserveProviderEx makes at reservation
+// commit) closes it for everyone else; a stale claim (probe outcome never
+// landed) reopens it; a rejected probe re-arms with doubled TTL; an accepted
+// probe clears the pair entirely.
+func TestCapacityCooldownProbeClaimLifecycle(t *testing.T) {
+	r := New(nil)
+	const provider, model = "prov-probe", "gemma-4-26b-8bit"
+	cfg := r.capacityCooldownCfg
+
+	for i := 0; i < cfg.Threshold; i++ {
+		r.RecordCapacityReject(provider, model)
+	}
+	if !capacityCooldownActiveAt(r, provider, model, time.Now()) {
+		t.Fatal("setup: cooldown should be active")
+	}
+
+	// Expiry, unclaimed: gate open (a probe may be reserved).
+	expireCapacityCooldown(r, provider, model)
+	if capacityCooldownActiveAt(r, provider, model, time.Now()) {
+		t.Fatal("expired unclaimed cooldown still reads active")
+	}
+	// Claim the probe: gate closes for everyone else while the outcome pends.
+	claimCapacityProbe(r, provider, model)
+	if !capacityCooldownActiveAt(r, provider, model, time.Now()) {
+		t.Fatal("gate open to the herd while the probe outcome is pending")
+	}
+	// Probe outcome never lands: the claim goes stale after
+	// capacityProbeOutcomeWindow and the gate reopens for a fresh probe.
+	ageCapacityProbeClaim(r, provider, model, capacityProbeOutcomeWindow+time.Second)
+	if capacityCooldownActiveAt(r, provider, model, time.Now()) {
+		t.Fatal("stale probe claim wedged the pair closed")
+	}
+	// Fresh claim, probe REJECTED: immediate re-arm with doubled TTL, and the
+	// new entry's probe slot is unclaimed again.
+	claimCapacityProbe(r, provider, model)
+	if !r.RecordCapacityReject(provider, model) {
+		t.Fatal("rejected probe did not re-arm the cooldown")
+	}
+	expiry, _ := capacityCooldownExpiryOf(r, provider, model)
+	if got, want := time.Until(expiry), 2*cfg.BaseTTL; got > want || got < want-5*time.Second {
+		t.Fatalf("re-arm TTL ≈ %v, want doubled ≈ %v", got, want)
+	}
+	if !capacityCooldownActiveAt(r, provider, model, time.Now()) {
+		t.Fatal("re-armed cooldown not active")
+	}
+	// Next cycle: expire, claim, probe ACCEPTED: everything clears.
+	expireCapacityCooldown(r, provider, model)
+	claimCapacityProbe(r, provider, model)
+	r.RecordCapacityAccept(provider, model)
+	if capacityCooldownActiveAt(r, provider, model, time.Now()) {
+		t.Fatal("accepted probe did not clear the cooldown")
+	}
+	if trips := capacityCooldownTripsOf(r, provider, model); trips != 0 {
+		t.Fatalf("accepted probe did not reset the trip count: %d", trips)
+	}
+}
+
+// TRUE HALF-OPEN, concurrency: when a cooldown expires, EXACTLY ONE of N
+// concurrent reservations passes as the probe — the rest keep seeing the
+// cooldown (no thundering herd into a possibly-still-black-holed pair). The
+// claim rides ReserveProviderEx's r.mu write lock, so this drives the REAL
+// reservation path, not the gate helper in isolation.
+func TestCapacityCooldownHalfOpenExactlyOneProbe(t *testing.T) {
+	r := New(testLogger())
+	const model = "gemma-4-26b-8bit"
+	p := makeSchedulerProvider(t, r, "prov-halfopen", model, 100)
+
+	for i := 0; i < r.capacityCooldownCfg.Threshold; i++ {
+		r.RecordCapacityReject(p.ID, model)
+	}
+	expireCapacityCooldown(r, p.ID, model)
+
+	const n = 32
+	var wg sync.WaitGroup
+	got := make([]*Provider, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			prov, _ := r.ReserveProviderEx(model, &PendingRequest{
+				RequestID:             fmt.Sprintf("probe-%d", i),
+				Model:                 model,
+				EstimatedPromptTokens: 50,
+				RequestedMaxTokens:    32,
+			})
+			got[i] = prov
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	probes := 0
+	for _, prov := range got {
+		if prov != nil {
+			probes++
+		}
+	}
+	if probes != 1 {
+		t.Fatalf("%d of %d concurrent reservations passed the expired cooldown, want exactly 1 probe", probes, n)
+	}
+	// The claimed-probe window keeps the gate closed for any late arrival too.
+	if prov, _ := r.ReserveProviderEx(model, &PendingRequest{
+		RequestID: "late", Model: model, EstimatedPromptTokens: 50, RequestedMaxTokens: 32,
+	}); prov != nil {
+		t.Fatal("late reservation passed while the probe outcome was still pending")
+	}
+	// Probe REJECTED: re-arm; everyone (including a next fresh request) is out.
+	if !r.RecordCapacityReject(p.ID, model) {
+		t.Fatal("failed probe did not re-arm")
+	}
+	if !r.CapacityCooldownActive(p.ID, model) {
+		t.Fatal("cooldown not active after the failed probe")
+	}
+}
+
 // Map-bound sweep: expired cooldowns and idle strike lists are dropped once the
 // maps grow past the bound, so per-session UUID keys cannot leak forever.
 func TestCapacityCooldownMapsBounded(t *testing.T) {
@@ -318,7 +462,7 @@ func TestCapacityCooldownMapsBounded(t *testing.T) {
 	past := time.Now().Add(-time.Hour)
 	for i := 0; i < 1100; i++ {
 		key := capacityRejectKey{ProviderID: fmt.Sprintf("dead-%d", i), ModelID: model}
-		r.capacityCooldowns[key] = past
+		r.capacityCooldowns[key] = &capacityCooldownEntry{expiry: past}
 		r.capacityCooldownTrips[key] = 1
 		r.capacityRejectStrikes[key] = []time.Time{past.Add(-cfg.Window)}
 	}

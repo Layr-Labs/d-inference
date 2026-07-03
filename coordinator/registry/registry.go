@@ -1294,9 +1294,9 @@ type Registry struct {
 	// env-tunable (EIGENINFERENCE_CAPACITY_COOLDOWN_*), loaded at
 	// construction. Guarded by r.mu like the maps above.
 	capacityCooldownCfg   capacityCooldownConfig
-	capacityRejectStrikes map[capacityRejectKey][]time.Time // recent capacity-reject strikes per (provider, model)
-	capacityCooldowns     map[capacityRejectKey]time.Time   // cooldown expiry per (provider, model)
-	capacityCooldownTrips map[capacityRejectKey]int         // trip count per (provider, model) (exponential backoff)
+	capacityRejectStrikes map[capacityRejectKey][]time.Time            // recent capacity-reject strikes per (provider, model)
+	capacityCooldowns     map[capacityRejectKey]*capacityCooldownEntry // cooldown expiry + half-open probe claim per (provider, model)
+	capacityCooldownTrips map[capacityRejectKey]int                    // trip count per (provider, model) (exponential backoff)
 
 	// Stable-identity health ejection (health_ejection.go). Keyed by a STABLE
 	// identity (serial/SE-key/account), NOT the session UUID, and DELIBERATELY
@@ -1387,7 +1387,7 @@ func New(logger *slog.Logger) *Registry {
 		providerBreakerTrips:     make(map[string]int),
 		capacityCooldownCfg:      loadCapacityCooldownConfig(),
 		capacityRejectStrikes:    make(map[capacityRejectKey][]time.Time),
-		capacityCooldowns:        make(map[capacityRejectKey]time.Time),
+		capacityCooldowns:        make(map[capacityRejectKey]*capacityCooldownEntry),
 		capacityCooldownTrips:    make(map[capacityRejectKey]int),
 		healthEjectionWindows:    make(map[string]*providerHealthWindow),
 		healthEjectionUntil:      make(map[string]time.Time),

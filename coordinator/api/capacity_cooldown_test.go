@@ -48,6 +48,10 @@ func TestIsCapacityRejectStrike(t *testing.T) {
 		{"opaque foundation error", "The operation couldn’t be completed. (ProviderCore.InferenceError error 1.)", false},
 		{"cancel", "request cancelled", false},
 		{"empty", "", false},
+		// A 404-shaped "model not found" (unknown model id) is a request-shape
+		// error, NOT the cold "not loaded" capacity miss — never a strike.
+		{"unknown model not found", "model not found", false},
+		{"unknown model in registry", "model \"nope\" not found in registry", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

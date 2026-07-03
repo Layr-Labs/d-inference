@@ -154,8 +154,8 @@ func TestProviderPassesRoutingGatesBreakerBypass(t *testing.T) {
 	now := time.Now()
 	reg.mu.Lock()
 	p.mu.Lock()
-	honored := reg.providerPassesRoutingGatesLockedEx(p, model, RequestTraits{}, false, now, false)
-	bypassed := reg.providerPassesRoutingGatesLockedEx(p, model, RequestTraits{}, false, now, true)
+	honored := reg.providerPassesRoutingGatesLockedEx(p, model, RequestTraits{}, false, now, false, false)
+	bypassed := reg.providerPassesRoutingGatesLockedEx(p, model, RequestTraits{}, false, now, true, false)
 	p.mu.Unlock()
 	reg.mu.Unlock()
 	if honored {

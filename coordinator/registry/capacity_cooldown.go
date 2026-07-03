@@ -176,7 +176,14 @@ func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped boo
 	// expired/idle entries once they grow.
 	if len(r.capacityCooldowns) > 1024 {
 		for key, e := range r.capacityCooldowns {
-			if !now.Before(e.expiry) {
+			// Half-open entries live PAST their expiry by design: the fresh
+			// probe claim (probeAt) is the only thing keeping the gate closed
+			// while the single probe's outcome is pending. Sweeping such an
+			// entry would reopen the gate mid-probe and leak a thundering herd
+			// through the post-expiry window — keep entries whose claim is
+			// still fresh; they self-resolve within capacityProbeOutcomeWindow.
+			if !now.Before(e.expiry) &&
+				(e.probeAt.IsZero() || !now.Before(e.probeAt.Add(capacityProbeOutcomeWindow))) {
 				delete(r.capacityCooldowns, key)
 				delete(r.capacityCooldownTrips, key)
 			}

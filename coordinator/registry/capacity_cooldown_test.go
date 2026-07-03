@@ -480,3 +480,103 @@ func TestCapacityCooldownMapsBounded(t *testing.T) {
 		t.Fatalf("stale strike lists not swept: %d entries remain", strikes)
 	}
 }
+
+// Regression (PR #510 Codex P2): the >1024 bound sweep must NOT delete a
+// half-open entry whose probe claim is still fresh. In that state expiry is
+// deliberately in the past and probeAt is the only thing holding the gate
+// closed while the single probe's outcome pends — sweeping it (triggered by a
+// reject on ANY other pair) reopened the gate to a thundering herd mid-probe
+// and dropped the pair's exponential-backoff state.
+func TestCapacityCooldownSweepPreservesFreshProbeClaims(t *testing.T) {
+	r := New(nil)
+	const provider, model = "prov-probed", "gemma-4-26b-8bit"
+	cfg := r.capacityCooldownCfg
+
+	// Trip the pair, expire the TTL, claim the half-open probe.
+	for i := 0; i < cfg.Threshold; i++ {
+		r.RecordCapacityReject(provider, model)
+	}
+	expireCapacityCooldown(r, provider, model)
+	claimCapacityProbe(r, provider, model)
+	if !capacityCooldownActiveAt(r, provider, model, time.Now()) {
+		t.Fatal("setup: pending probe should hold the gate closed")
+	}
+
+	// Grow the map past the sweep bound with long-expired junk entries.
+	r.mu.Lock()
+	for i := 0; i < 1100; i++ {
+		key := capacityRejectKey{ProviderID: fmt.Sprintf("junk-%d", i), ModelID: model}
+		r.capacityCooldowns[key] = &capacityCooldownEntry{expiry: time.Now().Add(-time.Hour)}
+		r.capacityCooldownTrips[key] = 1
+	}
+	r.mu.Unlock()
+
+	// A reject on an unrelated pair triggers the opportunistic sweep.
+	r.RecordCapacityReject("prov-other", model)
+
+	key := capacityRejectKey{ProviderID: provider, ModelID: model}
+	r.mu.RLock()
+	_, probedAlive := r.capacityCooldowns[key]
+	trips := r.capacityCooldownTrips[key]
+	size := len(r.capacityCooldowns)
+	r.mu.RUnlock()
+	if !probedAlive {
+		t.Fatal("sweep deleted the half-open entry with a fresh probe claim")
+	}
+	if trips == 0 {
+		t.Fatal("sweep dropped the pair's backoff state mid-probe")
+	}
+	if size > 8 {
+		t.Fatalf("junk entries not bounded by the sweep: %d remain", size)
+	}
+	if !capacityCooldownActiveAt(r, provider, model, time.Now()) {
+		t.Fatal("gate reopened to the herd mid-probe after the sweep")
+	}
+
+	// A STALE claim (outcome never landed) must still be sweepable — the
+	// liveness bound, not the claim itself, decides retention.
+	ageCapacityProbeClaim(r, provider, model, capacityProbeOutcomeWindow+time.Second)
+	r.mu.Lock()
+	for i := 0; i < 1100; i++ {
+		key := capacityRejectKey{ProviderID: fmt.Sprintf("junk2-%d", i), ModelID: model}
+		r.capacityCooldowns[key] = &capacityCooldownEntry{expiry: time.Now().Add(-time.Hour)}
+	}
+	r.mu.Unlock()
+	r.RecordCapacityReject("prov-other-2", model)
+	r.mu.RLock()
+	_, staleAlive := r.capacityCooldowns[key]
+	r.mu.RUnlock()
+	if staleAlive {
+		t.Fatal("sweep retained an entry whose probe claim went stale")
+	}
+}
+
+// Regression (PR #510 Codex P2): the preflight's cooldown-only recheck must
+// apply the same structural filters as the main candidate path — vision in
+// particular. A capacity-cooled TEXT-ONLY pair can never serve a vision
+// request; counting it as a capacityRejection surfaced a false "at capacity"
+// 429 (retry forever) where the vision/model-unavailable path is the truth.
+func TestCapacityCooldownPreflightVisionExcludesTextOnlyCooledPairs(t *testing.T) {
+	r := New(testLogger())
+	const model = "gemma-4-26b-8bit"
+	p := makeSchedulerProvider(t, r, "text-only", model, 200) // IsVision unset → text build
+
+	for i := 0; i < r.capacityCooldownCfg.Threshold; i++ {
+		r.RecordCapacityReject(p.ID, model)
+	}
+
+	// Text request: the cooled pair IS transient capacity (429 + Retry-After).
+	_, capRejText, _, _, _ := r.QuickCapacityCheckWithTTFTForRequest(model, 10, 128, RequestTraits{}, false)
+	if capRejText != 1 {
+		t.Fatalf("text preflight capacityRejections = %d, want 1 (cooled pair is transient capacity)", capRejText)
+	}
+
+	// Vision request: same cooled pair is structurally unservable → not counted.
+	cc, capRejVis, _, _, _ := r.QuickCapacityCheckWithTTFTForRequest(model, 10, 128, RequestTraits{}, true)
+	if cc != 0 {
+		t.Fatalf("vision preflight candidates = %d, want 0", cc)
+	}
+	if capRejVis != 0 {
+		t.Fatalf("vision preflight capacityRejections = %d, want 0 (text-only cooled pair must not read as vision capacity)", capRejVis)
+	}
+}

@@ -1883,9 +1883,14 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			// "no providers" 503 — the cooldown must read as "busy fleet", never
 			// as "the model vanished". The ignoreCapacityCooldown re-check keeps
 			// a pair that ALSO fails a structural gate (offline, untrusted,
-			// render-broken, …) out of the count.
+			// render-broken, …) out of the count. Structural filters applied
+			// AFTER the gates on the main path must apply here too — vision in
+			// particular: a capacity-cooled text-only pair could never serve a
+			// vision request, so counting it would surface a false
+			// "at capacity" 429 where vision/model-unavailable is the truth.
 			if r.capacityCooldownActiveLocked(p.ID, model, now) &&
-				r.providerPassesRoutingGatesLockedEx(p, model, traits, false, now, true, true) {
+				r.providerPassesRoutingGatesLockedEx(p, model, traits, false, now, true, true) &&
+				(!requiresVision || r.providerServesVisionModelLocked(p, model)) {
 				capacityRejections++
 			}
 			p.mu.Unlock()

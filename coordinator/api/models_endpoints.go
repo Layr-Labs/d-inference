@@ -291,6 +291,21 @@ func (s *Server) selfRouteModelEntries(accountID string) []types.ModelEntry {
 // id, matching the behavior of requesting one for inference.
 func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	// Self-route-only keys retrieve from their owned live models (mirrors
+	// handleListModels): list and retrieve must agree, or an OpenAI client
+	// that validates a model id via retrieve-model can never use a listed
+	// local model.
+	if k := apiKeyFromContext(r.Context()); k != nil && k.SelfRouteOnly {
+		for _, entry := range s.selfRouteModelEntries(consumerKeyFromContext(r.Context())) {
+			if entry.ID == id {
+				writeJSON(w, http.StatusOK, entry)
+				return
+			}
+		}
+		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
+			fmt.Sprintf("model %q not found", id), withParam("model")))
+		return
+	}
 	data, err := s.listModelEntries(true)
 	if err != nil {
 		s.logger.Error("model registry: failed to list active models", "error", err)

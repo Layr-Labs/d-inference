@@ -437,3 +437,51 @@ func TestSelfRouteOffCatalogFitGateUsesAdvertisedSize(t *testing.T) {
 		t.Fatalf("right-sized off-catalog model failed to route; decision=%+v", decision)
 	}
 }
+
+// TestSelfRouteCatalogModelKeepsWeightHashGate verifies that the owner
+// self-route exemption widens WHICH models are reachable (off-catalog local
+// models) without lifting the weight-hash tamper tripwire on builds the
+// catalog DOES track: an owned box advertising a catalog model with a
+// mismatched weight hash stays unroutable even for its owner.
+func TestSelfRouteCatalogModelKeepsWeightHashGate(t *testing.T) {
+	reg := New(testLogger())
+	model := "catalog-model"
+
+	mine := makeSchedulerProvider(t, reg, "mine", model, 100)
+	setProviderAccount(mine, "acct-A")
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, WeightHash: "expected-hash"}})
+
+	owner := &PendingRequest{
+		RequestID:          "req-hash",
+		Model:              model,
+		RequestedMaxTokens: 128,
+		SelfRouteOnly:      true,
+		OwnerAccountID:     "acct-A",
+	}
+
+	// Advertised hash disagrees with the catalog: blocked, owner or not.
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", WeightHash: "tampered-hash"}}
+	mine.mu.Unlock()
+	if selected, _ := reg.ReserveProviderEx(model, owner); selected != nil {
+		t.Fatalf("owner self-route reached a catalog model with mismatched weight hash on %q", selected.ID)
+	}
+
+	// Matching hash routes.
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", WeightHash: "expected-hash"}}
+	mine.mu.Unlock()
+	if selected, decision := reg.ReserveProviderEx(model, owner); selected == nil {
+		t.Fatalf("hash-matching catalog model failed to self-route; decision=%+v", decision)
+	}
+
+	// A provider that omits the hash entirely is admitted (grading happens at
+	// registration; an absent hash is not a mismatch) — unchanged semantics of
+	// modelAllowedByCatalogLocked.
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
+	mine.mu.Unlock()
+	if selected, decision := reg.ReserveProviderEx(model, owner); selected == nil {
+		t.Fatalf("hash-less catalog model failed to self-route; decision=%+v", decision)
+	}
+}

@@ -319,6 +319,19 @@ func TestVisionRoutingHelpers(t *testing.T) {
 	if ownerTextOK {
 		t.Fatal("owner context must still require a vision-capable build")
 	}
+
+	// The owner context lifts catalog MEMBERSHIP only: a build the catalog
+	// tracks must still pass the weight-hash gate, mirroring the routable
+	// gate's tamper tripwire.
+	visProv.Models = []protocol.ModelInfo{{ID: "gemma-4-26b", IsVision: true, WeightHash: "tampered"}}
+	r.SetModelCatalog([]CatalogEntry{{ID: "gemma-4-26b", WeightHash: "expected"}})
+	r.mu.RLock()
+	ownerHashMismatchOK := r.providerServesVisionModelLocked(visProv, "gemma-4-26b", true)
+	r.mu.RUnlock()
+	if ownerHashMismatchOK {
+		t.Fatal("owner context must not admit a catalog VLM with a mismatched weight hash")
+	}
+	visProv.Models = []protocol.ModelInfo{{ID: "gemma-4-26b", IsVision: true}}
 	r.SetModelCatalog(nil)
 
 	if !r.HasVisionProviderForModel("gemma-4-26b") {

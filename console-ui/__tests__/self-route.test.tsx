@@ -153,6 +153,42 @@ describe("KeyForm self_route_only", () => {
     expect(submitted!.self_route_only).toBe(true);
   });
 
+  it("preserves saved allow-list entries that are in neither mode's list", () => {
+    // A saved allow-list can reference models currently in NEITHER list — a
+    // machine that is temporarily offline, or a since-delisted public model.
+    // An unrelated edit must not silently strip them; only ids that provably
+    // belong to the OTHER route mode's list are excluded from submission.
+    let submitted: UpdateKeyBody | null = null;
+    render(
+      <KeyForm
+        initial={{
+          id: "key_1",
+          name: "existing",
+          label: "sk-db-…",
+          disabled: false,
+          limit_reset: "none",
+          usage_usd: 0,
+          self_route_only: true,
+          allowed_models: ["ghost/offline-machine-model", "local/llama-3.1-8b"],
+          created_at: new Date().toISOString(),
+        }}
+        models={["gpt-oss-20b"]}
+        selfRouteModels={["local/llama-3.1-8b"]}
+        mode="edit"
+        submitting={false}
+        onCancel={() => {}}
+        onSubmit={(b) => {
+          submitted = b;
+        }}
+      />
+    );
+    fireEvent.click(screen.getByText("Save changes"));
+    expect(submitted!.allowed_models).toEqual([
+      "ghost/offline-machine-model",
+      "local/llama-3.1-8b",
+    ]);
+  });
+
   it("switches allowed models to machine models for self-route keys", () => {
     render(
       <KeyForm

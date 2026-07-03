@@ -2072,19 +2072,66 @@ func (r *Registry) providerAdvertisesModelLocked(p *Provider, model string) bool
 	return false
 }
 
+// modelTrackedByCatalogLocked reports whether the catalog has an entry for the
+// model id at all (regardless of weight-hash agreement). A nil catalog tracks
+// nothing — filtering is disabled and modelAllowedByCatalogLocked admits
+// everything, so callers never reach the off-catalog distinction. Caller must
+// hold r.mu.
+func (r *Registry) modelTrackedByCatalogLocked(id string) bool {
+	if r.modelCatalog == nil {
+		return false
+	}
+	_, ok := r.modelCatalog[id]
+	return ok
+}
+
+// modelServableForOwnerLocked is the owner self-route admission for a single
+// advertised build: a model the catalog does NOT track is servable on the
+// owner's box (the off-catalog local-model case), but a model the catalog DOES
+// track must still pass the catalog gate — including the weight-hash tamper
+// tripwire. The owner exemption widens WHICH models are reachable, never the
+// integrity check on catalog builds. Caller must hold r.mu.
+func (r *Registry) modelServableForOwnerLocked(m protocol.ModelInfo) bool {
+	return r.modelAllowedByCatalogLocked(m) || !r.modelTrackedByCatalogLocked(m.ID)
+}
+
+// providerServesOwnedRoutableModelLocked is providerServesCatalogModelLocked's
+// owner self-route counterpart: true when the provider advertises the model
+// and that build is servable for its owner (catalog-allowed, or absent from
+// the catalog entirely). Caller must hold r.mu and p.mu.
+func (r *Registry) providerServesOwnedRoutableModelLocked(p *Provider, model string) bool {
+	for _, m := range p.Models {
+		if m.ID == model && r.modelServableForOwnerLocked(m) {
+			return true
+		}
+	}
+	return false
+}
+
 // providerServesVisionModelLocked reports whether the provider advertises the
 // model as a vision-capable (VLM) build — required to route image/video requests
 // so the media is actually perceived rather than silently dropped. allowOffCatalog
 // is the owner self-route context (mirrors providerServesRoutableModelLocked's
 // allowDedicated): an owner's off-catalog local VLM passes the routable gate, so
 // the vision gate must accept the same advertisement or media requests would be
-// listed/accepted but never routable. Caller must hold r.mu AND p.mu (mirrors
+// listed/accepted but never routable. It relaxes only catalog MEMBERSHIP — a
+// catalog-tracked build still has to pass the weight-hash gate, mirroring the
+// routable gate. Caller must hold r.mu AND p.mu (mirrors
 // providerServesCatalogModelLocked): p.Models is guarded by p.mu and mutated by
 // MergeProviderModels/UpdateModelWeightHashes. Pre-0.6.0 providers never set
 // IsVision, so they are correctly excluded.
 func (r *Registry) providerServesVisionModelLocked(p *Provider, model string, allowOffCatalog bool) bool {
 	for _, m := range p.Models {
-		if m.ID == model && m.IsVision && (allowOffCatalog || r.modelAllowedByCatalogLocked(m)) {
+		if m.ID != model || !m.IsVision {
+			continue
+		}
+		if allowOffCatalog {
+			if r.modelServableForOwnerLocked(m) {
+				return true
+			}
+			continue
+		}
+		if r.modelAllowedByCatalogLocked(m) {
 			return true
 		}
 	}
@@ -3873,6 +3920,8 @@ func (r *Registry) OwnedModels(accountID string) []AggregateModel {
 			continue
 		}
 		trust := p.TrustLevel
+		attested := p.Attested
+		attestResult := p.AttestationResult
 		models := make([]protocol.ModelInfo, len(p.Models))
 		copy(models, p.Models)
 		p.mu.Unlock()
@@ -3884,16 +3933,32 @@ func (r *Registry) OwnedModels(accountID string) []AggregateModel {
 			a, ok := agg[m.ID]
 			if !ok {
 				a = &AggregateModel{
-					ID:           m.ID,
-					ModelType:    m.ModelType,
-					Quantization: m.Quantization,
-					TrustLevel:   TrustNone,
+					ID:         m.ID,
+					TrustLevel: TrustNone,
 				}
 				agg[m.ID] = a
+			}
+			// Metadata backfill rather than first-writer-wins: two owned boxes
+			// can advertise the same id with one omitting metadata, and map
+			// iteration order must not decide which copy the owner sees.
+			if a.ModelType == "" {
+				a.ModelType = m.ModelType
+			}
+			if a.Quantization == "" {
+				a.Quantization = m.Quantization
 			}
 			a.Providers++
 			if trustRank(trust) > trustRank(a.TrustLevel) {
 				a.TrustLevel = trust
+			}
+			if attested && attestResult != nil {
+				a.AttestedProviders++
+				if a.Attestation == nil {
+					a.Attestation = &AttestationSummary{}
+				}
+				a.Attestation.SecureEnclave = a.Attestation.SecureEnclave || attestResult.SecureEnclaveAvailable
+				a.Attestation.SIPEnabled = a.Attestation.SIPEnabled || attestResult.SIPEnabled
+				a.Attestation.SecureBoot = a.Attestation.SecureBoot || attestResult.SecureBootEnabled
 			}
 		}
 	}

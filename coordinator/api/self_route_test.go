@@ -183,6 +183,34 @@ func TestSelfRouteOnlyKeyUsesOwnedOffCatalogModel(t *testing.T) {
 		t.Fatalf("listed models = %+v, want one self-owned off-catalog model %q", listed.Data, model)
 	}
 
+	// Retrieve-model must agree with list: an OpenAI client that validates a
+	// model id via GET /v1/models/{id} before use must find every listed model.
+	getReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/v1/models/"+model, nil)
+	getReq.Header.Set("Authorization", "Bearer "+raw)
+	getResp, err := http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("retrieve model request: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(getResp.Body)
+		t.Fatalf("retrieve model status = %d body = %s", getResp.StatusCode, body)
+	}
+	var got types.ModelEntry
+	if err := json.NewDecoder(getResp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode retrieve model: %v", err)
+	}
+	if got.ID != model || got.OwnedBy != "self" {
+		t.Fatalf("retrieved model = %+v, want self-owned %q", got, model)
+	}
+
+	// Contrast: a PAID (non-self-route) key with balance must still get a 404
+	// for the off-catalog model at the API layer — the catalog bypass is
+	// exclusive-self-route only.
+	if status := sendSelfRouteRequest(t, ctx, ts.URL, model, "test-key", false); status != http.StatusNotFound {
+		t.Fatalf("paid key off-catalog status = %d, want 404", status)
+	}
+
 	providerDone := serveOneInference(ctx, t, conn, pubKey, protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 5})
 	if status := sendSelfRouteRequest(t, ctx, ts.URL, model, raw, false); status != http.StatusOK {
 		t.Fatalf("self-route-only key status = %d, want 200", status)

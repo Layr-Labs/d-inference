@@ -39,12 +39,19 @@ export function KeyForm({
   const [selfRouteOnly, setSelfRouteOnly] = useState(initial?.self_route_only ?? false);
 
   const visibleModels = selfRouteOnly ? selfRouteModels : models;
+  const otherModeModels = selfRouteOnly ? models : selfRouteModels;
   const hasModels = visibleModels.length > 0;
   // Selections made in the other route mode stay in `allowed` (so toggling
   // back restores them) but must never be submitted: the coordinator checks
   // the allow-list before self-route routing, so a hidden public id on a
   // "My Machine only" key would block the machine models the picker shows.
-  const visibleAllowed = allowed.filter((m) => visibleModels.includes(m));
+  // Only ids that provably belong to the OTHER mode's list are dropped —
+  // an allow-list entry in neither list (a temporarily offline machine's
+  // model, a since-delisted public model) is preserved, so an unrelated edit
+  // never silently strips it from the saved key.
+  const visibleAllowed = allowed.filter(
+    (m) => visibleModels.includes(m) || !otherModeModels.includes(m)
+  );
   const nameTrim = name.trim();
   const canSubmit = !!nameTrim && !submitting;
 

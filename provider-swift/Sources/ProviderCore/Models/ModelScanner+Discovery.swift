@@ -18,14 +18,24 @@ extension ModelScanner {
     /// Memory overhead multiplier for KV cache, activation buffers, etc.
     private static var memoryOverheadFactor: Double { 1.2 }
 
-    /// Scan for locally cached MLX models, filtering to those that fit in available memory.
-    public static func scanModels(hardwareInfo: HardwareInfo) -> [ModelInfo] {
+    /// model_type value the streaming-aware estimate applies to.
+    private static let deepseekV4ModelType = "deepseek_v4"
+
+    /// Scan for locally cached MLX models, filtering to those that fit in
+    /// available memory. `backend` (default: streaming off) drives the
+    /// streaming-aware DeepSeek-V4 memory estimate — see
+    /// `streamingAwareEstimatedMemoryGb`.
+    public static func scanModels(
+        hardwareInfo: HardwareInfo, backend: BackendSettings = BackendSettings()
+    ) -> [ModelInfo] {
         guard let cacheDir = defaultCacheDirectory(),
               FileManager.default.fileExists(atPath: cacheDir.path) else {
             discoveryLogger.debug("HuggingFace cache directory not found")
             return []
         }
-        return scanModels(in: cacheDir, availableMemoryGB: hardwareInfo.memoryAvailableGb)
+        return scanModels(
+            in: cacheDir, availableMemoryGB: hardwareInfo.memoryAvailableGb,
+            hardwareInfo: hardwareInfo, backend: backend)
     }
 
     /// Scan for ALL locally cached MLX models WITHOUT the available-memory
@@ -33,18 +43,23 @@ extension ModelScanner {
     /// model is too large for this box, `scanModels` drops it, which would make
     /// doctor diagnose some other (fitting) model instead of flagging the one
     /// the operator actually configured and that will never load.
-    public static func scanAllModels(hardwareInfo: HardwareInfo) -> [ModelInfo] {
+    public static func scanAllModels(
+        hardwareInfo: HardwareInfo, backend: BackendSettings = BackendSettings()
+    ) -> [ModelInfo] {
         guard let cacheDir = defaultCacheDirectory(),
               FileManager.default.fileExists(atPath: cacheDir.path) else {
             discoveryLogger.debug("HuggingFace cache directory not found")
             return []
         }
-        return scanAllModels(in: cacheDir)
+        return scanAllModels(in: cacheDir, hardwareInfo: hardwareInfo, backend: backend)
     }
 
     /// Scan for models in a specific cache directory, filtering by available memory.
-    public static func scanModels(in cacheDir: URL, availableMemoryGB: UInt64) -> [ModelInfo] {
-        scanAllModels(in: cacheDir).filter { info in
+    public static func scanModels(
+        in cacheDir: URL, availableMemoryGB: UInt64,
+        hardwareInfo: HardwareInfo? = nil, backend: BackendSettings = BackendSettings()
+    ) -> [ModelInfo] {
+        scanAllModels(in: cacheDir, hardwareInfo: hardwareInfo, backend: backend).filter { info in
             if info.estimatedMemoryGb <= Double(availableMemoryGB) {
                 return true
             }
@@ -58,7 +73,10 @@ extension ModelScanner {
     /// Scan for every MLX model in a cache directory, unfiltered. The shared
     /// discovery core for both the memory-filtered `scanModels(in:availableMemoryGB:)`
     /// and the diagnostics path.
-    public static func scanAllModels(in cacheDir: URL) -> [ModelInfo] {
+    public static func scanAllModels(
+        in cacheDir: URL, hardwareInfo: HardwareInfo? = nil,
+        backend: BackendSettings = BackendSettings()
+    ) -> [ModelInfo] {
         let fm = FileManager.default
         let entries: [URL]
         do {
@@ -90,7 +108,10 @@ extension ModelScanner {
 
             guard isMLXModel(snapshotDir: latestSnapshot, modelName: modelName) else { continue }
 
-            guard let info = parseModelInfo(snapshotDir: latestSnapshot, modelName: modelName) else {
+            guard let info = parseModelInfo(
+                snapshotDir: latestSnapshot, modelName: modelName,
+                hardwareInfo: hardwareInfo, backend: backend
+            ) else {
                 continue
             }
 
@@ -106,7 +127,14 @@ extension ModelScanner {
     // MARK: - Model Parsing
 
     /// Parse model info from a snapshot directory (fast, no weight hashing).
-    static func parseModelInfo(snapshotDir: URL, modelName: String) -> ModelInfo? {
+    /// `hardwareInfo`/`backend` are only consulted for the DeepSeek-V4
+    /// streaming-aware estimate (`streamingAwareEstimatedMemoryGb`); every
+    /// other model is unaffected and existing call sites (nil hardwareInfo,
+    /// default non-streaming backend) are byte-identical to before.
+    static func parseModelInfo(
+        snapshotDir: URL, modelName: String,
+        hardwareInfo: HardwareInfo? = nil, backend: BackendSettings = BackendSettings()
+    ) -> ModelInfo? {
         let configPath = snapshotDir.appendingPathComponent("config.json")
 
         let (modelType, parameters) = FileManager.default.fileExists(atPath: configPath.path)
@@ -118,7 +146,10 @@ extension ModelScanner {
 
         guard sizeBytes > 0 else { return nil }
 
-        let estimatedMemoryGb = (Double(sizeBytes) / (1024.0 * 1024.0 * 1024.0)) * memoryOverheadFactor
+        let estimatedMemoryGb = streamingAwareEstimatedMemoryGb(
+            snapshotDir: snapshotDir, modelType: modelType, sizeBytes: sizeBytes,
+            hardwareInfo: hardwareInfo, backend: backend
+        ) ?? (Double(sizeBytes) / (1024.0 * 1024.0 * 1024.0)) * memoryOverheadFactor
 
         // Advertise whether this build can serve image/video input so the
         // coordinator only routes media requests to a vision-capable provider.
@@ -145,6 +176,42 @@ extension ModelScanner {
             isVision: isVision ? true : nil,
             templateRenderOK: templateRenderOK
         )
+    }
+
+    /// Streaming-aware memory estimate for a DeepSeek-V4 model when this
+    /// provider has expert streaming enabled — nil for every other case
+    /// (non-DeepSeek-V4 model_type, streaming disabled, or no `hardwareInfo`
+    /// to size the auto expert cache against), in which case the caller falls
+    /// back to the ordinary full-footprint estimate.
+    ///
+    /// `ModelScanner`'s ordinary estimate (on-disk bytes × 1.2) treats the
+    /// ~125 GB of routed-expert (`switch_mlp`) tensors as resident, which
+    /// would refuse to load a 141 GB DeepSeek-V4-Flash checkpoint on a 128 GB
+    /// box even though streaming makes the real resident footprint only
+    /// ~16 GB (plus a bounded expert cache). See `ExpertStreamingAdmission`.
+    static func streamingAwareEstimatedMemoryGb(
+        snapshotDir: URL, modelType: String?, sizeBytes: UInt64,
+        hardwareInfo: HardwareInfo?, backend: BackendSettings
+    ) -> Double? {
+        guard backend.streamExperts, modelType == deepseekV4ModelType,
+            let hardwareInfo
+        else {
+            return nil
+        }
+        guard let switchMlpBytes = try? SafetensorsSizing.sumTensorBytes(
+            in: snapshotDir, matching: ExpertStreamingAdmission.isSwitchMlpKey)
+        else {
+            // Header parse failed (unexpected shape for a deepseek_v4
+            // checkpoint) — fall back to the ordinary full-footprint estimate
+            // rather than silently under-counting admission.
+            return nil
+        }
+        let estimate = ExpertStreamingAdmission.estimate(
+            totalBytes: sizeBytes, switchMlpBytes: switchMlpBytes,
+            physicalMemoryGb: Double(hardwareInfo.memoryGb),
+            configuredExpertCacheGb: backend.expertCacheGb,
+            overheadFactor: memoryOverheadFactor)
+        return estimate.totalGb
     }
 
     /// Whether config.json declares a vision tower (`vision_config`) — i.e. the

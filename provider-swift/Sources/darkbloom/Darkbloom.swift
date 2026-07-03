@@ -134,7 +134,7 @@ func loadRuntimeSnapshot(configPath rawPath: String?) throws -> RuntimeSnapshot 
     // Auto-migrate stale config values (idempotent, best-effort).
     config = migrateConfigIfNeeded(configPath: configPath, config: config)
 
-    let models = hardware.map { ModelScanner.scanModels(hardwareInfo: $0) } ?? []
+    let models = hardware.map { ModelScanner.scanModels(hardwareInfo: $0, backend: config.backend) } ?? []
 
     return RuntimeSnapshot(
         configPath: configPath,

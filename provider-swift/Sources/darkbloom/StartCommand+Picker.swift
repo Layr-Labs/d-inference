@@ -227,7 +227,9 @@ extension Start {
         // RAM, which would make a fully-downloaded-but-too-big model read "not
         // downloaded" forever on a marginal-RAM box. The filtered scan is only
         // used (via the renderer's budget check) to flag "won't fit".
-        let allLocal = snapshot.hardware.map { ModelScanner.scanAllModels(hardwareInfo: $0) } ?? []
+        let allLocal = snapshot.hardware.map {
+            ModelScanner.scanAllModels(hardwareInfo: $0, backend: snapshot.config.backend)
+        } ?? []
         let downloadedIDs = Set(allLocal.map(\.id))
         let localMemoryByID = Dictionary(allLocal.map { ($0.id, $0.estimatedMemoryGb) }, uniquingKeysWith: { first, _ in first })
         // Builds with an interrupted foreground download staged on disk: show

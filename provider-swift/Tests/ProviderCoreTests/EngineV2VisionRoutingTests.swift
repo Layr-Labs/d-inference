@@ -606,6 +606,78 @@ struct EngineV2VisionRoutingTests {
         #expect(submitted.multimodal == nil)
     }
 
+    @Test("cancel during vision construction propagates as cancellation (499), not fallback or 500")
+    func cancelDuringVisionConstructionPropagatesCancellation() async throws {
+        // The consumer cancelled while the vision features were being built
+        // (handleCancellation cancels the request task; the preparer's
+        // container/tokenizer work observes it as CancellationError). The
+        // routing seam must NOT burn a fallback WARN or re-serve through
+        // legacy — it releases and rethrows — and the handler-side mapping
+        // must report the canonical cancellation (499), never a 500
+        // .inferenceError (which would count as a provider fault and trip
+        // the (provider, model) 5xx routing cooldown for a client's own
+        // cancel).
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            GlobalKVCacheBudget.MemorySnapshot(
+                total: 64 * 1024 * 1024 * 1024, active: 0, cache: 0, systemAvailable: .max)
+        }
+        let scheduler = BatchScheduler(
+            maxConcurrentRequests: 4,
+            pendingTimeout: .seconds(30),
+            defaultMaxTokens: 64,
+            kvBudget: budget
+        )
+        let engine = VisionScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine)
+        let telemetry = VisionTelemetrySink()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _ in throw CancellationError() },
+            emitTelemetry: telemetry.callback()
+        )
+        let releaseCount = PrepareCallCounter()
+        let container = makeStubContainer()
+        let router = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "test/vlm-stub": .init(
+                        scheduler: scheduler,
+                        tokenizer: TokenizerHandle(VisionStubTokenizer()),
+                        modelType: "gemma4",
+                        container: container,
+                        isVLM: true,
+                        engineV2Bridge: bridge)
+                ]
+            },
+            releaseModel: { @Sendable _ in releaseCount.increment() },
+            defaultMaxTokens: 64,
+            engineV2Vision: plumbing
+        )
+
+        do {
+            _ = try await collectContent(
+                try await router.streamChatCompletion(request: imageRequest()))
+            Issue.record("expected CancellationError throw")
+        } catch is CancellationError {
+            // Handler-side contract: the pre-stream catch reports this as
+            // the canonical cancellation, and the generic mapper backstops
+            // every other call site with 499 — never 500.
+            #expect(ProviderLoop.mapInferenceErrorToStatus(CancellationError()) == 499)
+        } catch {
+            Issue.record("expected CancellationError, got \(error)")
+        }
+
+        // No fallback WARN (this was not a v2 failure), engine untouched
+        // (never submitted), model reservation released exactly once, and
+        // the vision memory reservation fully released.
+        #expect(
+            telemetry.events.allSatisfy {
+                $0.fields?["operation"]?.description != "engine_v2_vision_fallback"
+            })
+        #expect(engine.submitted.isEmpty)
+        #expect(releaseCount.count == 1)
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
     @Test("engine-side CBv2MultimodalError surfaces as .multimodalRejected → 400")
     func engineMultimodalRejectionMapsTo400() async throws {
         let engine = VisionScriptedEngine(

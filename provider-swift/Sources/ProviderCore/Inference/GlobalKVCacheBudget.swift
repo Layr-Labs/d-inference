@@ -44,15 +44,22 @@ public actor GlobalKVCacheBudget {
     // while the cache-pool reclaimer — the only self-heal that existed —
     // can't help because the binding term isn't the reclaimable pool. These
     // fields turn that permanent black hole into a bounded blip: when every
-    // commit has failed for `sustainedRejectionAuditThreshold` straight, the
-    // budget logs the FULL reservation table at ERROR severity and drops
-    // any reservation older than `staleReservationTTL` with a WARN. Live
-    // requests/loads hold their reservations for seconds-to-minutes, so a
-    // multi-minute-old reservation during a full-rejection streak is leaked
-    // bookkeeping, not live work.
+    // commit has failed for `sustainedRejectionAuditThreshold` straight —
+    // as one CONTINUOUS streak (gaps between rejections no longer than
+    // `rejectionStreakContinuityWindow`; a wedged box under coordinator
+    // routing rejects far more often than that) — the budget logs the FULL
+    // reservation table at ERROR severity and drops any reservation older
+    // than `staleReservationTTL` with a WARN. Live requests/loads hold
+    // their reservations for seconds-to-minutes, so a multi-minute-old
+    // reservation during a full-rejection streak is leaked bookkeeping,
+    // not live work. The streak resets on any successful commit AND on any
+    // release of a real reservation (either proves the system is making
+    // progress, so live work must never age into the stale-drop).
     private var rejectionStreakStart: ContinuousClock.Instant?
+    private var lastRejectionAt: ContinuousClock.Instant?
     private var lastAuditAt: ContinuousClock.Instant?
     private let sustainedRejectionAuditThreshold: Duration
+    private let rejectionStreakContinuityWindow: Duration
     private let staleReservationTTL: Duration
     private let auditMinInterval: Duration
     private let emitAuditEvent: @Sendable (TelemetrySeverity, String, [String: AnyCodableValue]) -> Void
@@ -61,6 +68,19 @@ public actor GlobalKVCacheBudget {
     /// Well above any transient rejection burst (the coordinator reroutes in
     /// seconds), far below the incident's 40+ minutes of black hole.
     static let defaultSustainedRejectionAuditThreshold: Duration = .seconds(120)
+    /// Maximum gap between two consecutive rejections for them to count as
+    /// ONE sustained streak; a longer gap RESTARTS the streak at the newer
+    /// rejection. Without this, sparse organic traffic (requests minutes
+    /// apart, each rejected) would satisfy the 120 s threshold by wall
+    /// clock alone and the audit could drop reservations backing LIVE
+    /// long-running work — a 32k-token decode at 10 tps holds its
+    /// reservation ~50 min, a slow pending model load can exceed 10 min.
+    /// 30 s: a genuinely black-holed box under coordinator routing sees
+    /// rejections many times per window (routing retries + heartbeat-driven
+    /// traffic are seconds apart), so the real incident shape always
+    /// sustains the streak, while anything sparser is idle-gapped traffic
+    /// the audit must ignore.
+    static let defaultRejectionStreakContinuityWindow: Duration = .seconds(30)
     /// A reservation older than this is considered leaked *during a
     /// sustained full-rejection streak*. Requests hold reservations for the
     /// request duration (worst realistic long decode: minutes); pending-load
@@ -87,6 +107,7 @@ public actor GlobalKVCacheBudget {
         self.activationReserveBytes = activationReserveBytes
         self.configReserveBytes = configReserveBytes
         self.sustainedRejectionAuditThreshold = Self.defaultSustainedRejectionAuditThreshold
+        self.rejectionStreakContinuityWindow = Self.defaultRejectionStreakContinuityWindow
         self.staleReservationTTL = Self.defaultStaleReservationTTL
         self.auditMinInterval = Self.defaultAuditMinInterval
         self.emitAuditEvent = { severity, message, fields in
@@ -122,6 +143,7 @@ public actor GlobalKVCacheBudget {
         selfHealMinInterval: Duration = GlobalKVCacheBudget.defaultSelfHealMinInterval,
         reclaimer: KVPoolReclaimer? = nil,
         sustainedRejectionAuditThreshold: Duration = GlobalKVCacheBudget.defaultSustainedRejectionAuditThreshold,
+        rejectionStreakContinuityWindow: Duration = GlobalKVCacheBudget.defaultRejectionStreakContinuityWindow,
         staleReservationTTL: Duration = GlobalKVCacheBudget.defaultStaleReservationTTL,
         auditMinInterval: Duration = GlobalKVCacheBudget.defaultAuditMinInterval,
         emitAuditEvent: @escaping @Sendable (TelemetrySeverity, String, [String: AnyCodableValue]) -> Void = { _, _, _ in }
@@ -131,6 +153,7 @@ public actor GlobalKVCacheBudget {
         self.configReserveBytes = configReserveBytes
         self.memorySnapshot = memorySnapshot
         self.sustainedRejectionAuditThreshold = sustainedRejectionAuditThreshold
+        self.rejectionStreakContinuityWindow = rejectionStreakContinuityWindow
         self.staleReservationTTL = staleReservationTTL
         self.auditMinInterval = auditMinInterval
         self.emitAuditEvent = emitAuditEvent
@@ -152,7 +175,15 @@ public actor GlobalKVCacheBudget {
     }
 
     public func release(requestID: String) {
-        reservations.removeValue(forKey: requestID)
+        guard reservations.removeValue(forKey: requestID) != nil else { return }
+        // A real reservation just drained — in-flight work is terminating
+        // normally, so this is not the reject-everything black hole the
+        // audit exists for. Reset the streak so a long-lived LIVE
+        // reservation (multi-10-minute decode, slow pending load) can never
+        // age into the audit's stale-drop while the table is demonstrably
+        // making progress. Unknown ids don't count: they prove nothing.
+        rejectionStreakStart = nil
+        lastRejectionAt = nil
     }
 
     /// Reserve an arbitrary BYTE amount against the same live cap headroom KV
@@ -239,6 +270,7 @@ public actor GlobalKVCacheBudget {
         }
         reservations[requestID] = Reservation(bytes: bytes, createdAt: .now)
         rejectionStreakStart = nil
+        lastRejectionAt = nil
         return true
     }
 
@@ -256,8 +288,22 @@ public actor GlobalKVCacheBudget {
     /// bookkeeping, and dropping it converts a permanent reject-everything
     /// wedge into a self-healed blip. Rate-limited to one audit per
     /// `auditMinInterval`.
+    ///
+    /// "Straight" is enforced two ways (both required, or sparse traffic
+    /// could satisfy the threshold by wall clock alone and drop LIVE work):
+    ///   * continuity — a gap since the PREVIOUS rejection longer than
+    ///     `rejectionStreakContinuityWindow` restarts the streak here;
+    ///   * progress — a successful commit (in `commit`) or a real release
+    ///     (in `release`) resets the streak entirely.
     private func recordCommitRejection() {
         let now = ContinuousClock.now
+        if let previous = lastRejectionAt, now - previous > rejectionStreakContinuityWindow {
+            // Idle gap: two rejections minutes apart are sparse traffic, not
+            // a black hole — a genuinely wedged box under coordinator
+            // routing rejects many times per continuity window.
+            rejectionStreakStart = nil
+        }
+        lastRejectionAt = now
         if rejectionStreakStart == nil {
             rejectionStreakStart = now
             return

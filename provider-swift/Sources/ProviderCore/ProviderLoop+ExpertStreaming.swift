@@ -12,7 +12,14 @@ import Foundation
 import MLXLLM
 import ProviderCoreFoundation
 
-extension ProviderLoop {
+/// Shared MoE expert-streaming configuration used by BOTH model-load paths:
+/// `ProviderLoop` (coordinator-driven serving) and `StandaloneServer`
+/// (`darkbloom local`). One process-wide side effect (the module-level
+/// `DeepseekV4ExpertStreaming` opt-in) must be set consistently no matter
+/// which path loads the container — a path that admits a streaming-sized
+/// model (the scanner's estimate is config-aware for every caller) but loads
+/// without configuring streaming would attempt a fully-resident 141 GB load.
+public enum ExpertStreamingConfigurator {
 
     /// `config.json`'s `model_type`, or nil if it can't be read/parsed. Cheap,
     /// dependency-free check shared by the streaming opt-in below.
@@ -22,6 +29,56 @@ extension ProviderLoop {
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         return json["model_type"] as? String
+    }
+
+    static var bytesPerGiBDouble: Double { 1024.0 * 1024.0 * 1024.0 }
+
+    /// Core of `ProviderLoop.configureDeepseekV4ExpertStreamingIfNeeded` (see
+    /// that method's doc comment for semantics + the known static-let cache
+    /// budget limitation). Returns the expert cache byte budget (0 when
+    /// streaming is not enabled for this load).
+    @discardableResult
+    public static func configure(
+        streamExperts: Bool,
+        expertCacheGb: Double,
+        modelDirectory: URL,
+        log: (String) -> Void = { _ in }
+    ) -> UInt64 {
+        guard streamExperts, modelType(at: modelDirectory) == "deepseek_v4" else {
+            MLXLLM.DeepseekV4ExpertStreaming.enabled = false
+            return 0
+        }
+
+        // Header-only: sums `data_offsets` deltas from the safetensors shard
+        // headers for `.ffn.switch_mlp.` keys, never reading tensor bytes.
+        let switchMlpBytes = (try? SafetensorsSizing.sumTensorBytes(
+            in: modelDirectory, matching: ExpertStreamingAdmission.isSwitchMlpKey)) ?? 0
+        let (totalBytes, _) = ModelScanner.collectWeightFiles(in: modelDirectory)
+        let physicalMemoryGb = Double(ProcessInfo.processInfo.physicalMemory) / bytesPerGiBDouble
+        let estimate = ExpertStreamingAdmission.estimate(
+            totalBytes: totalBytes, switchMlpBytes: switchMlpBytes,
+            physicalMemoryGb: physicalMemoryGb, configuredExpertCacheGb: expertCacheGb)
+
+        setenv("DSV4_EXPERT_CACHE_GB", String(format: "%.3f", estimate.expertCacheGb), 1)
+        MLXLLM.DeepseekV4ExpertStreaming.modelDirectory = modelDirectory
+        MLXLLM.DeepseekV4ExpertStreaming.enabled = true
+        log(
+            "MoE expert streaming enabled for \(modelDirectory.lastPathComponent): "
+                + "resident≈\(String(format: "%.1f", estimate.residentWeightsGb))GB "
+                + "expert_cache=\(String(format: "%.1f", estimate.expertCacheGb))GB "
+                + "(switch_mlp on-disk≈\(switchMlpBytes / (1024 * 1024 * 1024))GB)")
+        let cacheGb = max(0, estimate.expertCacheGb)
+        let cacheBytesDouble = cacheGb * bytesPerGiBDouble
+        return cacheBytesDouble >= Double(UInt64.max) ? .max : UInt64(cacheBytesDouble)
+    }
+}
+
+extension ProviderLoop {
+
+    /// See `ExpertStreamingConfigurator.modelType`. Kept as a shim because
+    /// other ProviderLoop code refers to `Self.modelType`.
+    static func modelType(at directory: URL) -> String? {
+        ExpertStreamingConfigurator.modelType(at: directory)
     }
 
     /// Configure mlx-swift-lm's module-level MoE expert SSD streaming opt-in
@@ -59,36 +116,11 @@ extension ProviderLoop {
     @discardableResult
     func configureDeepseekV4ExpertStreamingIfNeeded(modelDirectory: URL) -> UInt64 {
         let backend = loopConfig.config.backend
-        guard backend.streamExperts,
-            Self.modelType(at: modelDirectory) == "deepseek_v4"
-        else {
-            MLXLLM.DeepseekV4ExpertStreaming.enabled = false
-            return 0
-        }
-
-        // Header-only: sums `data_offsets` deltas from the safetensors shard
-        // headers for `.ffn.switch_mlp.` keys, never reading tensor bytes.
-        let switchMlpBytes = (try? SafetensorsSizing.sumTensorBytes(
-            in: modelDirectory, matching: ExpertStreamingAdmission.isSwitchMlpKey)) ?? 0
-        let (totalBytes, _) = ModelScanner.collectWeightFiles(in: modelDirectory)
-        let physicalMemoryGb = Double(ProcessInfo.processInfo.physicalMemory) / Self.bytesPerGiBDouble
-        let estimate = ExpertStreamingAdmission.estimate(
-            totalBytes: totalBytes, switchMlpBytes: switchMlpBytes,
-            physicalMemoryGb: physicalMemoryGb, configuredExpertCacheGb: backend.expertCacheGb)
-
-        setenv("DSV4_EXPERT_CACHE_GB", String(format: "%.3f", estimate.expertCacheGb), 1)
-        MLXLLM.DeepseekV4ExpertStreaming.modelDirectory = modelDirectory
-        MLXLLM.DeepseekV4ExpertStreaming.enabled = true
-        logger.info(
-            "MoE expert streaming enabled for \(modelDirectory.lastPathComponent): "
-                + "resident≈\(String(format: "%.1f", estimate.residentWeightsGb))GB "
-                + "expert_cache=\(String(format: "%.1f", estimate.expertCacheGb))GB "
-                + "(switch_mlp on-disk≈\(switchMlpBytes / (1024 * 1024 * 1024))GB)")
-        let cacheGb = max(0, estimate.expertCacheGb)
-        let cacheBytesDouble = cacheGb * Self.bytesPerGiBDouble
-        return cacheBytesDouble >= Double(UInt64.max) ? .max : UInt64(cacheBytesDouble)
+        return ExpertStreamingConfigurator.configure(
+            streamExperts: backend.streamExperts,
+            expertCacheGb: backend.expertCacheGb,
+            modelDirectory: modelDirectory,
+            log: { [logger] in logger.info("\($0)") })
     }
-
-    static var bytesPerGiBDouble: Double { 1024.0 * 1024.0 * 1024.0 }
 
 }

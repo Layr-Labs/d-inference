@@ -60,6 +60,14 @@ public struct StandaloneServerConfig: Sendable {
     /// Detected local hardware, used to seed the adaptive cold-prefill ladder.
     /// nil ⇒ unknown hardware ⇒ generic empirical ladder.
     public let hardware: HardwareInfo?
+    /// MoE expert SSD streaming (DeepSeek-V4): mirrors `backend.stream_experts`
+    /// / `backend.expert_cache_gb`. MUST be threaded here whenever the caller's
+    /// model list came from a scan with `stream_experts` on — the scan then
+    /// reports the (much smaller) streaming-aware memory estimate, and loading
+    /// without configuring streaming would attempt the fully-resident load
+    /// that estimate no longer covers.
+    public let streamExperts: Bool
+    public let expertCacheGb: Double
 
     public init(
         port: UInt16 = 8000,
@@ -68,7 +76,9 @@ public struct StandaloneServerConfig: Sendable {
         authToken: String? = nil,
         kvQuant: Bool = false,
         adaptivePrefill: Bool = false,
-        hardware: HardwareInfo? = nil
+        hardware: HardwareInfo? = nil,
+        streamExperts: Bool = false,
+        expertCacheGb: Double = 0
     ) {
         self.port = port
         self.host = host
@@ -77,6 +87,8 @@ public struct StandaloneServerConfig: Sendable {
         self.kvQuant = kvQuant
         self.adaptivePrefill = adaptivePrefill
         self.hardware = hardware
+        self.streamExperts = streamExperts
+        self.expertCacheGb = expertCacheGb
     }
 }
 
@@ -573,6 +585,15 @@ public actor StandaloneServer {
                     headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
             )
             try Task.checkCancellation()
+            // Same expert-streaming opt-in the ProviderLoop path applies: the
+            // scan that admitted this model used the config-aware estimate, so
+            // the load must configure streaming consistently or a 141 GB
+            // DeepSeek-V4 would be loaded fully resident.
+            ExpertStreamingConfigurator.configure(
+                streamExperts: config.streamExperts,
+                expertCacheGb: config.expertCacheGb,
+                modelDirectory: modelPath,
+                log: { standaloneLogger.info("\($0)") })
             let container = try await LLMModelFactory.shared.loadContainer(
                 from: modelPath,
                 using: LocalTokenizerLoader()

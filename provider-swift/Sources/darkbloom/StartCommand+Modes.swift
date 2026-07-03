@@ -73,7 +73,9 @@ extension Start {
                 authToken: token,
                 kvQuant: config.backend.kvQuant,
                 adaptivePrefill: config.backend.adaptivePrefill,
-                hardware: hardware
+                hardware: hardware,
+                streamExperts: config.backend.streamExperts,
+                expertCacheGb: config.backend.expertCacheGb
             ),
             models: advertised
         )

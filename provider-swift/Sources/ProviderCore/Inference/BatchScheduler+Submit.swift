@@ -185,8 +185,10 @@ extension BatchScheduler {
                 continuation.finish()
                 return stream
             }
-            // Sequential-serving requests carry their real sampling parameters;
-            // the greedy fast path keeps its temperature-0 default (nil).
+            // Sequential-serving requests carry their real sampling parameters
+            // (incl. seed — honored via the exclusive-path global RNG seed in
+            // the runner); the greedy fast path keeps its temperature-0
+            // default (nil params, seed rejected upstream by eligibility).
             var sequentialParams: GenerateParameters? = nil
             if useSequential {
                 var gp = GenerateParameters(maxTokens: maxTokens, temperature: temperature)
@@ -200,6 +202,7 @@ extension BatchScheduler {
                 promptTokens: promptTokens,
                 maxTokens: maxTokens,
                 parameters: sequentialParams,
+                seed: useSequential ? seed : nil,
                 continuation: continuation
             )
             // The task is now tracked in `fastPathTasks`, which the concurrency

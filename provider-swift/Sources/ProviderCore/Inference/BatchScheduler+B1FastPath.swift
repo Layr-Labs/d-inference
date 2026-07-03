@@ -34,6 +34,7 @@
 import Foundation
 import MLX
 import MLXLMCommon
+import MLXRandom
 
 extension BatchScheduler {
 
@@ -215,6 +216,7 @@ extension BatchScheduler {
         promptTokens: [Int],
         maxTokens: Int,
         parameters: GenerateParameters? = nil,
+        seed: UInt64? = nil,
         continuation: AsyncStream<GenerationEvent>.Continuation
     ) {
         let scheduler = self
@@ -227,6 +229,12 @@ extension BatchScheduler {
             // penalties left at their defaults are inert under greedy. The
             // sequential-serving route passes explicit sampling parameters.
             let params = parameters ?? GenerateParameters(maxTokens: maxTokens, temperature: 0)
+            // OpenAI `seed` parity for the sequential route: GenerateParameters
+            // has no per-request seed, so seed MLX's global RNG. Safe ONLY
+            // because this path is single-request-exclusive (the admission gate
+            // rejects any concurrent work) — nothing else samples while this
+            // request runs. The engine path seeds per-request via SamplingParams.
+            if let seed { MLXRandom.seed(seed) }
 
             // Admission ≈ now: prefill is about to begin. Drives the
             // pending-timeout predicate and starts the prefill-EWMA window.

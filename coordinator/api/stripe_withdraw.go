@@ -320,7 +320,10 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		// refund the instant fee: the user isn't getting instant delivery.
 		wd.FailureReason = "instant_payout_create_failed: " + err.Error()
 		if feeMicroUSD > 0 {
-			if rerr := s.billing.Store().CreditWithdrawable(user.AccountID, feeMicroUSD,
+			// Reference-idempotent: shares its ledger ref with the webhook
+			// fee-refund path, so no interleaving pays the fee twice — a
+			// later transfer.reversed re-checks the same reference.
+			if _, rerr := s.billing.Store().CreditWithdrawableOnce(user.AccountID, feeMicroUSD,
 				store.LedgerRefund, "stripe_withdraw_fee:"+withdrawalID); rerr != nil {
 				s.logger.Error("stripe payout: instant fee refund failed",
 					"error", rerr, "withdrawal_id", withdrawalID)
@@ -329,7 +332,7 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 				wd.FailureReason += " (instant fee refunded)"
 			}
 		}
-		if uerr := s.billing.Store().UpdateStripeWithdrawal(wd); uerr != nil {
+		if uerr := s.persistWithdrawalUpdate(wd, "payout failure"); uerr != nil {
 			s.logger.Error("stripe payout: persist payout failure failed",
 				"error", uerr, "withdrawal_id", withdrawalID)
 		}

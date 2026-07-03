@@ -2635,6 +2635,43 @@ func (s *PostgresStore) CreditWithdrawable(accountID string, amountMicroUSD int6
 	return tx.Commit(ctx)
 }
 
+// CreditWithdrawableOnce credits only if no ledger entry with the same
+// (entryType, reference) exists yet. A transaction-scoped advisory lock on
+// the reference serializes concurrent deliveries of the same webhook so the
+// existence check can't race its own insert.
+func (s *PostgresStore) CreditWithdrawableOnce(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("store: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, string(entryType)+":"+reference); err != nil {
+		return false, fmt.Errorf("store: advisory lock: %w", err)
+	}
+	// Scoped by account so the existence check rides the existing
+	// idx_ledger_account index instead of needing a new (large-table,
+	// boot-time) index migration. Refund references embed the withdrawal
+	// UUID, so (account, type, reference) is exactly as unique.
+	var exists bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM ledger_entries
+		  WHERE account_id = $1 AND entry_type = $2 AND reference = $3)`,
+		accountID, string(entryType), reference).Scan(&exists); err != nil {
+		return false, fmt.Errorf("store: check ledger reference: %w", err)
+	}
+	if exists {
+		return false, tx.Commit(ctx)
+	}
+	if err := creditWithdrawableTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
+}
+
 // Debit subtracts micro-USD from an account. Returns error if insufficient funds.
 func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -204,6 +204,14 @@ type LedgerStore interface {
 	// earnings, referral rewards, and admin rewards.
 	CreditWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
 
+	// CreditWithdrawableOnce is CreditWithdrawable made idempotent on
+	// (entryType, reference): if a ledger entry with the same type and
+	// reference already exists, the credit is skipped and applied=false.
+	// Use for refunds driven by Stripe webhooks, where redelivery (or a
+	// crash between the credit and the row persist) must never credit the
+	// same refund twice.
+	CreditWithdrawableOnce(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) (applied bool, err error)
+
 	// DebitWithdrawable subtracts micro-USD from both the total balance and
 	// the withdrawable balance atomically. Returns error if withdrawable
 	// balance is insufficient. Use for Stripe Connect withdrawals so the

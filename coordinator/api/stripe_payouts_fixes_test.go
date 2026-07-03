@@ -199,10 +199,17 @@ func TestConnectWebhookNonAutomaticPayoutDoesNotReconcile(t *testing.T) {
 	}
 }
 
+func transferReversedPayload(transferID string) []byte {
+	return []byte(`{
+		"type":"transfer.reversed","account":"",
+		"data":{"object":{"id":"` + transferID + `","amount":450,"reversed":true}}
+	}`)
+}
+
 // TestConnectWebhookTransferReversedNetsOutRefundedFee: if the instant fee
 // was already credited back (instant payout fell through), a later
 // transfer.reversed must refund gross − fee, not gross — otherwise the user
-// is paid the fee twice.
+// is paid the fee twice. The fee credit is deduped on its ledger reference.
 func TestConnectWebhookTransferReversedNetsOutRefundedFee(t *testing.T) {
 	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer fakeStripe.Close()
@@ -213,15 +220,16 @@ func TestConnectWebhookTransferReversedNetsOutRefundedFee(t *testing.T) {
 		ID: "wd-rev-fee", AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
 		AmountMicroUSD: 5_000_000, FeeMicroUSD: 500_000, NetMicroUSD: 4_500_000,
 		Method: "instant", Status: "transferred", TransferID: "tr_rev",
-		FeeRefunded: true, // fee already credited when the instant payout fell through
+		FeeRefunded: true, // fee credited when the instant payout fell through…
 	})
+	// …which in production wrote this ledger entry — the dedup key.
+	if err := st.CreditWithdrawable(user.AccountID, 500_000, store.LedgerRefund,
+		"stripe_withdraw_fee:wd-rev-fee"); err != nil {
+		t.Fatal(err)
+	}
 	balBefore := st.GetBalance(user.AccountID)
 
-	payload := []byte(`{
-		"type":"transfer.reversed","account":"",
-		"data":{"object":{"id":"tr_rev","amount":450,"reversed":true}}
-	}`)
-	if w := deliverConnectWebhook(t, srv, payload); w.Code != http.StatusOK {
+	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rev")); w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
 	}
 
@@ -235,11 +243,71 @@ func TestConnectWebhookTransferReversedNetsOutRefundedFee(t *testing.T) {
 	}
 }
 
-// flakyPayoutStore wraps MemoryStore and fails payout-ID lookups with a
-// transient (non-ErrNotFound) error.
+// TestConnectWebhookTransferReversedRefundsGrossWhenFeeNotRefunded: with no
+// prior fee refund, a reversal refunds the full gross (net + fee parts).
+func TestConnectWebhookTransferReversedRefundsGrossWhenFeeNotRefunded(t *testing.T) {
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer fakeStripe.Close()
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := readyUser(t, st, "acct-rev-gross", "alice@example.com", true)
+
+	mkWithdrawal(t, st, store.StripeWithdrawal{
+		ID: "wd-rev-gross", AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
+		AmountMicroUSD: 5_000_000, FeeMicroUSD: 500_000, NetMicroUSD: 4_500_000,
+		Method: "instant", Status: "transferred", TransferID: "tr_rev_g",
+	})
+	balBefore := st.GetBalance(user.AccountID)
+
+	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rev_g")); w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body.String())
+	}
+	if bal := st.GetBalance(user.AccountID); bal != balBefore+5_000_000 {
+		t.Errorf("balance = %d, want %d (full gross)", bal, balBefore+5_000_000)
+	}
+
+	// Redelivery is a no-op: row is Refunded, credits are reference-deduped.
+	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rev_g")); w.Code != http.StatusOK {
+		t.Fatalf("redelivery got %d", w.Code)
+	}
+	if bal := st.GetBalance(user.AccountID); bal != balBefore+5_000_000 {
+		t.Errorf("redelivery double-credited: balance = %d", bal)
+	}
+}
+
+// TestConnectWebhookTransferReversedOnPaidRowNeedsHuman: a reversal landing
+// on an already-paid withdrawal (bank payout completed, then clawback) is
+// ambiguous — never auto-refund, leave the row paid for manual review.
+func TestConnectWebhookTransferReversedOnPaidRowNeedsHuman(t *testing.T) {
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer fakeStripe.Close()
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := readyUser(t, st, "acct-rev-paid", "alice@example.com", false)
+
+	mkWithdrawal(t, st, store.StripeWithdrawal{
+		ID: "wd-rev-paid", AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
+		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
+		Method: "standard", Status: "paid", TransferID: "tr_rev_p",
+	})
+	balBefore := st.GetBalance(user.AccountID)
+
+	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rev_p")); w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body.String())
+	}
+	wd, _ := st.GetStripeWithdrawal("wd-rev-paid")
+	if wd.Status != "paid" || wd.Refunded {
+		t.Errorf("row = status %q refunded=%v, want paid/false (manual review)", wd.Status, wd.Refunded)
+	}
+	if bal := st.GetBalance(user.AccountID); bal != balBefore {
+		t.Errorf("balance moved on a paid row: %d -> %d", balBefore, bal)
+	}
+}
+
+// flakyPayoutStore wraps MemoryStore and injects transient (non-ErrNotFound)
+// failures into specific operations.
 type flakyPayoutStore struct {
 	*store.MemoryStore
 	failLookups bool
+	failUpdates bool
 }
 
 func (f *flakyPayoutStore) GetStripeWithdrawalByPayoutID(payoutID string) (*store.StripeWithdrawal, error) {
@@ -249,16 +317,18 @@ func (f *flakyPayoutStore) GetStripeWithdrawalByPayoutID(payoutID string) (*stor
 	return f.MemoryStore.GetStripeWithdrawalByPayoutID(payoutID)
 }
 
-// TestConnectWebhookTransientLookupErrorReturns500: a transient store failure
-// on the payout lookup must NOT fall through to account-wide sweep
-// reconciliation (which could claim unrelated rows) — it responds non-2xx so
-// Stripe redelivers.
-func TestConnectWebhookTransientLookupErrorReturns500(t *testing.T) {
-	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	defer fakeStripe.Close()
+func (f *flakyPayoutStore) UpdateStripeWithdrawal(wd *store.StripeWithdrawal) error {
+	if f.failUpdates {
+		return errors.New("connection reset by peer")
+	}
+	return f.MemoryStore.UpdateStripeWithdrawal(wd)
+}
 
+// newFlakyPayoutServer wires a Server + billing around a flakyPayoutStore.
+func newFlakyPayoutServer(t *testing.T, fakeStripe *httptest.Server) (*Server, *flakyPayoutStore) {
+	t.Helper()
 	mem := store.NewMemory(store.Config{AdminKey: "test-key"})
-	flaky := &flakyPayoutStore{MemoryStore: mem, failLookups: true}
+	flaky := &flakyPayoutStore{MemoryStore: mem}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	reg := registry.New(logger)
 	srv := NewServer(reg, flaky, ServerConfig{}, logger)
@@ -271,6 +341,57 @@ func TestConnectWebhookTransientLookupErrorReturns500(t *testing.T) {
 		StripeConnectRefreshURL:      "https://app.test/billing",
 		StripeConnectPlatformCountry: "US",
 	}))
+	return srv, flaky
+}
+
+// TestConnectWebhookTransferReversedConvergesAcrossPersistFailure: the credit
+// lands but the row persist fails → 500 → Stripe redelivers → the
+// reference-deduped credit no-ops and the persist completes. Exactly one
+// refund, terminal row.
+func TestConnectWebhookTransferReversedConvergesAcrossPersistFailure(t *testing.T) {
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer fakeStripe.Close()
+	srv, flaky := newFlakyPayoutServer(t, fakeStripe)
+	user := readyUser(t, flaky.MemoryStore, "acct-rev-conv", "alice@example.com", false)
+
+	mkWithdrawal(t, flaky.MemoryStore, store.StripeWithdrawal{
+		ID: "wd-rev-conv", AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
+		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
+		Method: "standard", Status: "transferred", TransferID: "tr_conv",
+	})
+	balBefore := flaky.GetBalance(user.AccountID)
+
+	flaky.failUpdates = true
+	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_conv")); w.Code != http.StatusInternalServerError {
+		t.Fatalf("got %d, want 500 (persist failed — Stripe must redeliver)", w.Code)
+	}
+	if bal := flaky.GetBalance(user.AccountID); bal != balBefore+5_000_000 {
+		t.Fatalf("credit should have landed once: balance = %d", bal)
+	}
+
+	flaky.failUpdates = false
+	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_conv")); w.Code != http.StatusOK {
+		t.Fatalf("redelivery got %d", w.Code)
+	}
+	if bal := flaky.GetBalance(user.AccountID); bal != balBefore+5_000_000 {
+		t.Errorf("redelivery double-credited: balance = %d", bal)
+	}
+	wd, _ := flaky.GetStripeWithdrawal("wd-rev-conv")
+	if wd.Status != "failed" || !wd.Refunded {
+		t.Errorf("row = status %q refunded=%v, want failed/true", wd.Status, wd.Refunded)
+	}
+}
+
+// TestConnectWebhookTransientLookupErrorReturns500: a transient store failure
+// on the payout lookup must NOT fall through to account-wide sweep
+// reconciliation (which could claim unrelated rows) — it responds non-2xx so
+// Stripe redelivers.
+func TestConnectWebhookTransientLookupErrorReturns500(t *testing.T) {
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer fakeStripe.Close()
+	srv, flaky := newFlakyPayoutServer(t, fakeStripe)
+	flaky.failLookups = true
+	mem := flaky.MemoryStore
 	user := readyUser(t, mem, "acct-flaky", "alice@example.com", false)
 
 	// An unrelated transferred row that blanket reconciliation would claim.

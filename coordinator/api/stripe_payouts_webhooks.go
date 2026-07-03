@@ -163,11 +163,12 @@ func (s *Server) handlePayoutTerminal(event *billing.WebhookEvent, connectedAcct
 	}
 
 	// The user paid for instant delivery and is getting the standard sweep
-	// instead — refund the fee, once (FeeRefunded is the idempotency key).
+	// instead — refund the fee. The credit is idempotent on its ledger
+	// reference, so any crash/redelivery interleaving converges: a retried
+	// event skips the credit and re-attempts only the row persist.
 	if wd.FeeMicroUSD > 0 && !wd.FeeRefunded {
-		if err := s.billing.Store().CreditWithdrawable(wd.AccountID, wd.FeeMicroUSD,
+		if _, err := s.billing.Store().CreditWithdrawableOnce(wd.AccountID, wd.FeeMicroUSD,
 			store.LedgerRefund, "stripe_withdraw_fee:"+wd.ID); err != nil {
-			// Nothing persisted yet — safe to redeliver the whole event.
 			s.logger.Error("stripe connect webhook: instant fee refund failed",
 				"error", err, "withdrawal_id", wd.ID)
 			return err
@@ -182,11 +183,9 @@ func (s *Server) handlePayoutTerminal(event *billing.WebhookEvent, connectedAcct
 	// no in-flight payout of their own.
 	wd.PayoutID = ""
 	if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
-		// The fee credit above is already applied. Ack the event anyway — a
-		// redelivery would re-read FeeRefunded=false and double-credit.
-		s.logger.Error("stripe connect webhook: persist payout failure failed — fee may be credited without the flag persisted; check ledger refs",
-			"error", err, "withdrawal_id", wd.ID, "ledger_ref", "stripe_withdraw_fee:"+wd.ID)
-		return nil
+		s.logger.Error("stripe connect webhook: persist payout failure failed",
+			"error", err, "withdrawal_id", wd.ID)
+		return err
 	}
 	s.logger.Warn("stripe connect webhook: payout failed — funds returned to connected balance, sweep will retry",
 		"withdrawal_id", wd.ID, "payout_id", pe.ID,
@@ -280,6 +279,11 @@ func (s *Server) reconcileUnmatchedPayout(pe *billing.PayoutEvent, success bool)
 // handleTransferFailed handles the rare case where Stripe rolls back a transfer
 // after we've considered it successful. This is the only event that re-credits
 // the ledger principal: the money is actually back at the platform.
+//
+// The refund is split into two reference-idempotent credits — principal-net
+// (gross − fee) and the fee — so it composes with the instant-fee refund
+// path: whichever path credited the fee first wins, and no interleaving of
+// crashes and redeliveries can pay either part twice.
 func (s *Server) handleTransferFailed(event *billing.WebhookEvent) error {
 	te, err := s.billing.StripeConnect().TransferFromEvent(event)
 	if err != nil {
@@ -295,36 +299,50 @@ func (s *Server) handleTransferFailed(event *billing.WebhookEvent) error {
 			"transfer_id", te.ID, "error", err)
 		return err
 	}
-	// Idempotency keyed on Refunded so a redelivery after a transient credit
-	// failure can still retry the refund.
+	if wd.Status == "paid" {
+		// The user's bank payout completed AND the transfer reversed — an
+		// ambiguous clawback state. Never auto-refund a paid row; surface it
+		// for a human decision.
+		s.logger.Error("stripe connect webhook: transfer reversed on an already-paid withdrawal — manual review required",
+			"withdrawal_id", wd.ID, "transfer_id", te.ID, "stripe_account_id", wd.StripeAccountID)
+		return nil
+	}
 	if wd.Refunded {
+		// Terminal (covers legacy rows refunded under the old semantics).
 		if wd.Status != "failed" {
 			wd.Status = "failed"
 			_ = s.billing.Store().UpdateStripeWithdrawal(wd)
 		}
 		return nil
 	}
-	// If the instant fee was already credited back (instant payout fell
-	// through to the sweep before the transfer reversed), refund only the
-	// remainder — crediting the full gross again would pay the fee twice.
-	refundMicroUSD := wd.AmountMicroUSD
-	if wd.FeeRefunded {
-		refundMicroUSD -= wd.FeeMicroUSD
+	netMicroUSD := wd.AmountMicroUSD - wd.FeeMicroUSD
+	if netMicroUSD > 0 {
+		if _, err := s.billing.Store().CreditWithdrawableOnce(wd.AccountID, netMicroUSD,
+			store.LedgerRefund, "stripe_withdraw:"+wd.ID); err != nil {
+			s.logger.Error("stripe connect webhook: principal refund failed", "error", err, "withdrawal_id", wd.ID)
+			return err // Refunded stays false — redelivery retries idempotently
+		}
 	}
-	wd.FailureReason = "transfer_reversed"
-	if refundMicroUSD > 0 {
-		if err := s.billing.Store().CreditWithdrawable(wd.AccountID, refundMicroUSD, store.LedgerRefund,
-			"stripe_withdraw:"+wd.ID); err != nil {
-			s.logger.Error("stripe connect webhook: refund failed", "error", err, "withdrawal_id", wd.ID)
-			wd.Status = "failed"
-			_ = s.billing.Store().UpdateStripeWithdrawal(wd)
-			return err // Refunded stays false — redelivery retries the credit
+	if wd.FeeMicroUSD > 0 {
+		// No-ops if the instant-fee path already credited this reference.
+		applied, err := s.billing.Store().CreditWithdrawableOnce(wd.AccountID, wd.FeeMicroUSD,
+			store.LedgerRefund, "stripe_withdraw_fee:"+wd.ID)
+		if err != nil {
+			s.logger.Error("stripe connect webhook: fee refund failed", "error", err, "withdrawal_id", wd.ID)
+			return err
+		}
+		if applied {
+			wd.FeeRefunded = true
 		}
 	}
 	wd.Refunded = true
 	wd.Status = "failed"
+	wd.FailureReason = "transfer_reversed"
 	if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
+		// Credits are reference-idempotent — redelivery skips them and
+		// retries this persist.
 		s.logger.Error("stripe connect webhook: mark failed failed", "error", err)
+		return err
 	}
 	return nil
 }

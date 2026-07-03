@@ -602,6 +602,20 @@ func TestPostgresStripeWithdrawalCRUD(t *testing.T) {
 		t.Errorf("missing transfer lookup err = %v, want ErrNotFound", err)
 	}
 
+	// Reference-idempotent refund credit: second call with the same
+	// (account, type, reference) is skipped.
+	applied, err := s.CreditWithdrawableOnce("acct-pg-wd", 500_000, LedgerRefund, "stripe_withdraw_fee:wd-pg-1")
+	if err != nil || !applied {
+		t.Fatalf("first CreditWithdrawableOnce: applied=%v err=%v", applied, err)
+	}
+	applied, err = s.CreditWithdrawableOnce("acct-pg-wd", 500_000, LedgerRefund, "stripe_withdraw_fee:wd-pg-1")
+	if err != nil || applied {
+		t.Fatalf("duplicate CreditWithdrawableOnce: applied=%v err=%v, want skipped", applied, err)
+	}
+	if bal := s.GetBalance("acct-pg-wd"); bal != 500_000 {
+		t.Errorf("balance = %d, want 500_000 (credited exactly once)", bal)
+	}
+
 	// List for account.
 	list, err := s.ListStripeWithdrawals("acct-pg-wd", 0)
 	if err != nil {

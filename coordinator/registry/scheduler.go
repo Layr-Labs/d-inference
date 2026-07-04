@@ -1897,7 +1897,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			if r.capacityCooldownActiveLocked(p.ID, model, now) &&
 				r.providerPassesRoutingGatesLockedEx(p, model, traits, false, now, true, true) &&
 				p.SystemMetrics.ThermalState != "critical" &&
-				(!requiresVision || r.providerServesVisionModelLocked(p, model)) {
+				(!requiresVision || r.providerServesVisionModelLocked(p, model, false)) {
 				// Mirror the absolute hardware-fit gate (skipped for a
 				// resident model, which has demonstrably fit).
 				slotState := "unknown"

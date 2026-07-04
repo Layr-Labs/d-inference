@@ -1,8 +1,18 @@
 # DRAFT upstream issue for ml-explore/mlx — not yet filed
 
 File manually after validating the standalone repro below on an M5 (the repro
-must not depend on our fork). Status: repro steps written, pending validation
-on a box with a source-built mlx.
+must not depend on our fork).
+
+**Status 2026-07-03: DO NOT FILE YET — the pure-Python repro below did NOT
+reproduce.** Upstream `main` (de7b4ed9, v0.32.0.dev) built from source on the
+M5 Max box (`uv pip install ./mlx` with `MACOSX_DEPLOYMENT_TARGET=26.2`;
+metallib contains the `*_nax` kernels) ran the failing shape 63 times with
+zero drift. Also checked: the 19 upstream commits between our fork base
+(b410f6c81) and de7b4ed9 contain no NAX/steel-GEMM changes, so "fixed
+upstream" is unlikely. Before filing, the gap between the drifting Swift
+op-stress and the clean Python loop must be closed — see "Validation next
+steps" at the bottom. Build artifacts live on the box under `~/nax-repro/`
+(clone, venv with the built wheel, `drift.py`).
 
 ---
 
@@ -64,3 +74,33 @@ Notes for whoever files it:
   pattern, donation) before filing — the report must be self-contained.
 - Attach: macOS/Xcode/Metal toolchain versions, `sysctl hw.model`,
   chip gen, and whether MLX_METAL_JIT was on (ours: OFF, AOT metallib).
+
+## Validation next steps (2026-07-03, after the failed Python repro)
+
+The pure-Python loop on upstream main was clean (0/63 drift). Ordered
+hypotheses to test, each on the box (`~/nax-repro/` has the venv + clone):
+
+1. **Prove/disprove NAX engagement in the Python build.** The dispatch gate
+   (`is_nax_available()` = runtime macOS ≥ 26.2 + gen ≥ 17; box qualifies)
+   plus per-shape conditions in `matmul.cpp` should select NAX for
+   `[7,4096]×[4096,1024]` bf16, but verify empirically: build a second wheel
+   from the same source with the NAX kernels compiled out (the tree defines
+   `MLX_METAL_NO_NAX` automatically when `CMAKE_OSX_DEPLOYMENT_TARGET < 26.2`,
+   so `MACOSX_DEPLOYMENT_TARGET=26.0 uv pip install ./mlx`) and compare
+   logit-level outputs for the same seeded inputs. NAX and non-NAX kernels
+   round differently — **identical outputs across the two wheels mean NAX
+   never ran** and the Python "no repro" is void.
+2. **Build the fork SHA as a Python wheel.** `Layr-Labs/mlx` @ d5a24040
+   (branch `darkbloom/mlx-0.32.0-nax`) — same drift.py. If the fork wheel
+   drifts where upstream doesn't, bisect the fork-only commits (prime
+   suspect: aa480bd8 "Bound Metal buffer COUNT, not just bytes, in
+   MetalAllocator" — premature buffer reuse while a NAX kernel still reads
+   the buffer would look exactly like this).
+3. **Stress the loop harder.** 63 iterations may be too few and too gentle:
+   the Swift op-stress drifts within ~16 iters but interleaves other ops and
+   allocations. Run ≥1024 iters, add allocator churn (alloc/free garbage
+   arrays between matmuls), run 2-3 shapes concurrently on the default
+   stream, and try donation (`y = mx.matmul(y_prev_input, w)` patterns).
+4. If only the Swift stack reproduces after all of the above, the report to
+   upstream needs the Swift op-stress as the repro (still self-contained via
+   mlx-swift) or a C++ loop mimicking the allocator pattern.

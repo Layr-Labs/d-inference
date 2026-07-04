@@ -117,9 +117,28 @@ Measured via DSV4Smoke's single-stream generate path, greedy, 3 runs per build:
 `release-swift.yml`) until the upstream kernel is fixed. No runtime toggle
 exists, and a proven silent-corruption risk outweighs an unmeasurable perf win.
 
+## Upstream repro attempt (2026-07-03)
+
+Built upstream `ml-explore/mlx` main (de7b4ed9, v0.32.0.dev) from source on
+the same box (`MACOSX_DEPLOYMENT_TARGET=26.2`, Python 3.12 via uv; the built
+metallib contains the `*_nax` kernel variants) and looped the failing shape
+(`[7,4096] × [4096,1024]` bf16, seeded inputs, 63 comparisons): **no drift**.
+The 19 upstream commits between our fork base (b410f6c81) and de7b4ed9 touch
+no NAX/steel-GEMM code, so this is unlikely to be "fixed upstream" — either
+NAX didn't engage in the Python build (needs an A/B against a
+`MLX_METAL_NO_NAX` wheel: different rounding proves engagement), the trigger
+needs Swift-stack conditions (allocator churn / buffer donation — prime
+suspect: the fork-only aa480bd8 buffer-count trim), or 63 gentle iterations
+are too few. Detailed next steps in
+[nax-upstream-issue-draft.md](nax-upstream-issue-draft.md). The mitigation
+decision (ship `MLX_METAL_NO_NAX`) is unaffected — the Swift op-stress drift
+on our production stack remains fully reproducible.
+
 ## Follow-ups
 
 - [x] A/B fleet-model perf (Gemma-4) with/without NAX on M5 Max — no measurable cost
 - [x] Decide release posture — ship `MLX_METAL_NO_NAX` (see above)
-- [ ] Standalone upstream repro + issue on ml-explore/mlx (include macOS/Xcode/Metal toolchain versions)
+- [ ] Standalone upstream repro + issue on ml-explore/mlx — **blocked**: pure-Python
+  upstream repro came back clean; must close the Swift-vs-Python gap first
+  (NAX-engagement proof, fork-SHA wheel, harder stress loop — see draft doc)
 - [ ] Re-test on each mlx bump; remove the flag when fixed upstream

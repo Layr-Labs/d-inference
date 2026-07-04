@@ -386,16 +386,6 @@ func testStatusSignature(t *testing.T, in attestation.StatusCanonicalInput, encr
 	return base64.StdEncoding.EncodeToString(sigDER)
 }
 
-func rawP256PublicKeyB64ForTest(t *testing.T, pubKey *ecdsa.PublicKey) string {
-	t.Helper()
-	xBytes := pubKey.X.Bytes()
-	yBytes := pubKey.Y.Bytes()
-	raw := make([]byte, 64)
-	copy(raw[32-len(xBytes):32], xBytes)
-	copy(raw[64-len(yBytes):64], yBytes)
-	return base64.StdEncoding.EncodeToString(raw)
-}
-
 func createTestAttestationJSON(t *testing.T, encryptionKey string) json.RawMessage {
 	return createTestAttestationJSONWithBinaryHash(t, encryptionKey, "")
 }

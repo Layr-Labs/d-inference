@@ -1313,7 +1313,13 @@ threats:
           the provider WebSocket (never proxy headers) and fail closed on Apple
           SIP/SecureBoot posture OIDs.
         status: open
-    open_findings: [SEC-005]
+    open_findings: []
+    resolved_findings:
+      - id: SEC-005
+        resolution: >
+          Closed 2026-07-03: the header-parsing surface (acme_verify.go and every
+          ACME trust-grant call site) was deleted; verified no X-Ssl-Client-*
+          consumer remains in the tree.
     severity: medium
     detection_hint: >
       Any reintroduction of client-cert header parsing (X-Ssl-Client-*) or an ACME/mTLS

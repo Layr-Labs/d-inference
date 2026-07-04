@@ -117,28 +117,38 @@ Measured via DSV4Smoke's single-stream generate path, greedy, 3 runs per build:
 `release-swift.yml`) until the upstream kernel is fixed. No runtime toggle
 exists, and a proven silent-corruption risk outweighs an unmeasurable perf win.
 
-## Upstream repro attempt (2026-07-03)
+## Root cause (2026-07-03): JIT-compiled NAX kernels, not the kernels themselves
 
-Built upstream `ml-explore/mlx` main (de7b4ed9, v0.32.0.dev) from source on
-the same box (`MACOSX_DEPLOYMENT_TARGET=26.2`, Python 3.12 via uv; the built
-metallib contains the `*_nax` kernel variants) and looped the failing shape
-(`[7,4096] × [4096,1024]` bf16, seeded inputs, 63 comparisons): **no drift**.
-The 19 upstream commits between our fork base (b410f6c81) and de7b4ed9 touch
-no NAX/steel-GEMM code, so this is unlikely to be "fixed upstream" — either
-NAX didn't engage in the Python build (needs an A/B against a
-`MLX_METAL_NO_NAX` wheel: different rounding proves engagement), the trigger
-needs Swift-stack conditions (allocator churn / buffer donation — prime
-suspect: the fork-only aa480bd8 buffer-count trim), or 63 gentle iterations
-are too few. Detailed next steps in
-[nax-upstream-issue-draft.md](nax-upstream-issue-draft.md). The mitigation
-decision (ship `MLX_METAL_NO_NAX`) is unaffected — the Swift op-stress drift
-on our production stack remains fully reproducible.
+Isolated on the box via a hypothesis ladder (full log in
+[nax-upstream-issue-draft.md](nax-upstream-issue-draft.md)):
+
+- Upstream main AND our fork SHA built as default Python wheels (nojit + AOT
+  metallib, DT 26.2): **zero drift** over 1024 iterations — with `fprintf`
+  probes proving `is_nax_available()=1` and `splitk_nax` dispatch for the
+  failing shape. AOT NAX kernels are correct; the fork's allocator patch is
+  exonerated.
+- Upstream main rebuilt with `-DMLX_METAL_JIT=ON`: **drifts 63/63** with
+  progressively exploding deltas (~1e3 → inf → NaN in ~25 iters) — the exact
+  Swift signature, pure Python, pure upstream.
+- mlx-swift compiles `jit_kernels.cpp` (excludes `nojit_kernels.cpp` in
+  `Package.swift`), so the Swift stack always runtime-compiles NAX steel-GEMM
+  source via `MTL::Device::newLibrary` at `LanguageVersion4_0`. A minimal
+  mlx-swift matmul-loop executable reproduces (56/63); metallib cross-swaps
+  and `-mmacosx-version-min=26.2` rebuilds change nothing.
+
+So: the NAX GEMM kernel source is fine when `xcrun metal` compiles it AOT,
+and corrupts (stale/uninitialized-read pattern) when the runtime Metal
+compiler JITs it. Every mlx-swift user on M5 is exposed; Python pip users are
+not (nojit default). `MLX_METAL_NO_NAX` remains the correct fleet mitigation
+until upstream fixes the JIT path (or mlx-swift grows an AOT path for these
+kernels).
 
 ## Follow-ups
 
 - [x] A/B fleet-model perf (Gemma-4) with/without NAX on M5 Max — no measurable cost
 - [x] Decide release posture — ship `MLX_METAL_NO_NAX` (see above)
-- [ ] Standalone upstream repro + issue on ml-explore/mlx — **blocked**: pure-Python
-  upstream repro came back clean; must close the Swift-vs-Python gap first
-  (NAX-engagement proof, fork-SHA wheel, harder stress loop — see draft doc)
+- [x] Standalone upstream repro — validated: pure-Python `MLX_METAL_JIT=ON`
+  loop drifts on upstream main; AOT control clean (probe-verified NAX
+  engagement in both)
+- [ ] File the issue on ml-explore/mlx (text ready in the draft doc — user files)
 - [ ] Re-test on each mlx bump; remove the flag when fixed upstream

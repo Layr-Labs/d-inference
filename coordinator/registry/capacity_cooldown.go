@@ -31,13 +31,20 @@ import (
 // trip the cooldown. Keyed per (provider, model) with a struct key (no
 // delimiter aliasing), mirroring error_cooldown.go.
 //
-// RE-PROBE + BACKOFF. A trip quarantines the pair for BaseTTL (default 120s).
-// After expiry routing re-probes it: a genuinely-full box that recovered gets
-// traffic back and its first accept clears ALL state (streak, cooldown, trip
-// count). A still-pathological pair re-arms on its FIRST post-expiry reject
-// (half-open, like provider_breaker.go) with an exponentially doubled TTL,
-// capped at MaxTTL (default 10 min) — so a persistent black hole costs one
-// bounced probe per cycle instead of Threshold-many.
+// RE-PROBE + BACKOFF — TRUE HALF-OPEN. A trip quarantines the pair for
+// BaseTTL (default 120s). After expiry EXACTLY ONE request passes as the
+// probe: the routing gate opens only while no probe claim is fresh, and
+// ReserveProviderEx claims the probe (claimCapacityProbeLocked, under the
+// r.mu write lock held for the whole reservation, so concurrent reservations
+// serialize) the moment it reserves the pair — every other request keeps
+// seeing the cooldown until the probe's outcome lands. Accept → all state
+// cleared, the pair is fully re-admitted (a genuinely-full box that recovered
+// gets traffic back). Reject → immediate re-arm with an exponentially doubled
+// TTL, capped at MaxTTL (default 10 min) — a persistent black hole costs ONE
+// bounced probe per cycle, with no thundering-herd leak in the post-expiry
+// window. If the probe's outcome never lands (the request died before any
+// terminal reached the breaker hooks), the claim goes stale after
+// capacityProbeOutcomeWindow and the next reservation may probe again.
 //
 // NOT bypassed by the selectBestCandidateLockedFull fail-open rescan
 // (consistent with the other pair-scoped cooldowns): if every pair for a model
@@ -66,6 +73,32 @@ const (
 	defaultCapacityCooldownTTL       = 120 * time.Second
 	defaultCapacityCooldownMaxTTL    = 10 * time.Minute
 )
+
+// capacityProbeOutcomeWindow is how long a claimed post-expiry probe keeps the
+// gate closed to everyone else while its outcome is pending. A reject outcome
+// lands within seconds (capacity rejects are immediate); an accept usually
+// does too, but on the accept-then-reload path first content can take much
+// longer, so this window is deliberately short — it is a LIVENESS bound, not
+// the accept deadline: if it lapses before the outcome lands, the next
+// reservation may claim a fresh probe (one extra probe per window during a
+// genuinely slow load — the box is accepting, so that is acceptable). Its real
+// job is that a probe request which DIED before any terminal reached the
+// breaker hooks can never wedge the pair closed forever.
+const capacityProbeOutcomeWindow = 30 * time.Second
+
+// capacityCooldownEntry is one pair's active (or expired-awaiting-probe)
+// cooldown. Fields are written ONLY under the r.mu write lock (arm/re-arm in
+// RecordCapacityReject, probe claim in claimCapacityProbeLocked); the routing
+// gate reads them under either lock mode.
+type capacityCooldownEntry struct {
+	// expiry is when the quarantine TTL lapses and the pair becomes eligible
+	// for a single half-open probe.
+	expiry time.Time
+	// probeAt is when a post-expiry probe was claimed (zero = unclaimed).
+	// While the claim is fresh (now < probeAt+capacityProbeOutcomeWindow) the
+	// gate stays closed to everyone but the claimed probe.
+	probeAt time.Time
+}
 
 // capacityCooldownConfig carries the env-tunable cooldown parameters.
 type capacityCooldownConfig struct {
@@ -142,8 +175,15 @@ func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped boo
 	// per-connection UUIDs that never get re-keyed — bound the maps by dropping
 	// expired/idle entries once they grow.
 	if len(r.capacityCooldowns) > 1024 {
-		for key, expiry := range r.capacityCooldowns {
-			if !now.Before(expiry) {
+		for key, e := range r.capacityCooldowns {
+			// Half-open entries live PAST their expiry by design: the fresh
+			// probe claim (probeAt) is the only thing keeping the gate closed
+			// while the single probe's outcome is pending. Sweeping such an
+			// entry would reopen the gate mid-probe and leak a thundering herd
+			// through the post-expiry window — keep entries whose claim is
+			// still fresh; they self-resolve within capacityProbeOutcomeWindow.
+			if !now.Before(e.expiry) &&
+				(e.probeAt.IsZero() || !now.Before(e.probeAt.Add(capacityProbeOutcomeWindow))) {
 				delete(r.capacityCooldowns, key)
 				delete(r.capacityCooldownTrips, key)
 			}
@@ -171,7 +211,7 @@ func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped boo
 	r.capacityRejectStrikes[key] = kept
 
 	// Active cooldown: record only — never extend or re-arm (see doc above).
-	if expiry, ok := r.capacityCooldowns[key]; ok && now.Before(expiry) {
+	if e, ok := r.capacityCooldowns[key]; ok && now.Before(e.expiry) {
 		return false
 	}
 
@@ -183,9 +223,29 @@ func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped boo
 		return false
 	}
 
-	r.capacityCooldowns[key] = now.Add(capacityCooldownBackoff(cfg, trips))
+	// Arm/re-arm: fresh entry with an unclaimed probe slot for the NEXT expiry.
+	r.capacityCooldowns[key] = &capacityCooldownEntry{expiry: now.Add(capacityCooldownBackoff(cfg, trips))}
 	r.capacityCooldownTrips[key] = trips + 1
 	return true
+}
+
+// claimCapacityProbeLocked claims the single half-open probe for an EXPIRED
+// cooldown entry, called by ReserveProviderEx at reservation commit — the
+// moment a request is actually bound to the pair. Caller MUST hold the r.mu
+// WRITE lock (ReserveProviderEx does, for the whole selection+reservation), so
+// concurrent reservations serialize: the first to reserve the pair claims the
+// probe, and the gate (capacityCooldownActiveLocked) closes for everyone else
+// until the probe's outcome lands or the claim goes stale. A no-op for pairs
+// with no cooldown entry (the overwhelmingly common case — one map lookup) or
+// one still inside its TTL (unreachable via routing, but harmless).
+func (r *Registry) claimCapacityProbeLocked(providerID, modelID string, now time.Time) {
+	e, ok := r.capacityCooldowns[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]
+	if !ok || now.Before(e.expiry) {
+		return
+	}
+	if e.probeAt.IsZero() || !now.Before(e.probeAt.Add(capacityProbeOutcomeWindow)) {
+		e.probeAt = now
+	}
 }
 
 // RecordCapacityAccept records that the (provider, model) pair ACCEPTED work —
@@ -228,13 +288,26 @@ func (r *Registry) CapacityCooldownActive(providerID, modelID string) bool {
 }
 
 // capacityCooldownActiveLocked reports whether routing should skip the pair.
-// READ-ONLY (no lazy delete) — some callers hold only r.mu.RLock. Caller holds
-// r.mu in either mode (mirrors inferenceErrorCooldownActiveLocked). Once now
-// reaches the expiry it returns false, letting the next request through as the
-// half-open re-probe.
+// READ-ONLY (no lazy delete, no claim) — some callers hold only r.mu.RLock.
+// Caller holds r.mu in either mode (mirrors inferenceErrorCooldownActiveLocked).
+//
+// Half-open semantics: inside the TTL the gate is closed. Once now reaches the
+// expiry it opens ONLY while no probe claim is fresh — the first reservation
+// through claims the probe (claimCapacityProbeLocked, write lock), which
+// closes the gate again for everyone else until the probe's outcome lands
+// (accept deletes the entry; reject re-arms it) or the claim goes stale after
+// capacityProbeOutcomeWindow (a lost probe must not wedge the pair).
 func (r *Registry) capacityCooldownActiveLocked(providerID, modelID string, now time.Time) bool {
-	expiry, ok := r.capacityCooldowns[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]
-	return ok && now.Before(expiry)
+	e, ok := r.capacityCooldowns[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]
+	if !ok {
+		return false
+	}
+	if now.Before(e.expiry) {
+		return true
+	}
+	// Expired: closed to everyone but the single claimed probe while its
+	// outcome is pending; open when unclaimed or the claim went stale.
+	return !e.probeAt.IsZero() && now.Before(e.probeAt.Add(capacityProbeOutcomeWindow))
 }
 
 // capacityCooldownBackoff returns the cooldown TTL for a pair that has already

@@ -351,6 +351,13 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 
 	pr.ProviderID = p.ID
 	p.addPendingLocked(pr)
+	// If this pair's capacity-reject cooldown just EXPIRED, this reservation is
+	// its single half-open probe: claim it here (r.mu write lock is held for the
+	// whole selection+reservation, so concurrent reservations serialize) so the
+	// routing gate closes for everyone else until the probe's outcome lands —
+	// no thundering herd into a possibly-still-black-holed pair. A no-op (one
+	// map lookup) for the overwhelmingly common no-cooldown case.
+	r.claimCapacityProbeLocked(p.ID, model, time.Now())
 	if p.Status != StatusUntrusted && p.Status != StatusOffline {
 		p.Status = StatusServing
 	}
@@ -548,6 +555,21 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 					if sid != "" && r.healthEjectionOpenLocked(sid, now) {
 						breakerRejected++
 					}
+				}
+			}
+			// A pair dropped ONLY by the capacity-reject cooldown is TRANSIENT
+			// capacity, not structural absence — count it as a capacityRejection
+			// (mirroring quickCapacityCheck) so an all-cooled model classifies as
+			// over_capacity (429/queue material) rather than no_provider. The
+			// ignoreCapacityCooldown re-run of the shared gate keeps a pair that
+			// ALSO fails a structural gate out of the count; both checks are
+			// cheap and only run on the already-rare drop path.
+			if r.capacityCooldownActiveLocked(p.ID, model, now) {
+				p.mu.Lock()
+				otherwiseRoutable := r.providerPassesRoutingGatesLockedEx(p, model, pr.Traits, relaxTrust, now, ignoreProviderBreaker, true)
+				p.mu.Unlock()
+				if otherwiseRoutable {
+					capacityRejections++
 				}
 			}
 			continue
@@ -887,18 +909,22 @@ func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *
 // caller's own (possibly un-enrolled) machine; every privacy-critical gate
 // still applies. Caller holds r.mu and p.mu.
 func (r *Registry) providerPassesRoutingGatesLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time) bool {
-	return r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, false)
+	return r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, false, false)
 }
 
-// providerPassesRoutingGatesLockedEx is providerPassesRoutingGatesLocked with an
-// explicit ignoreProviderBreaker switch. When ignoreProviderBreaker is true it
-// skips ONLY the per-provider node-health breaker; every other gate
-// still applies. It exists solely for the selectBestCandidateLockedFull
-// fail-open fallback pass, so a fleet-wide fault rollout that trips the breaker
-// on every provider can never deroute the entire fleet. Every other caller goes
-// through the default wrapper above (breaker always honored). Caller holds r.mu
-// and p.mu.
-func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker bool) bool {
+// providerPassesRoutingGatesLockedEx is providerPassesRoutingGatesLocked with
+// two explicit switches. ignoreProviderBreaker skips ONLY the per-provider
+// node-health breaker (and health ejection); it exists solely for the
+// selectBestCandidateLockedFull fail-open fallback pass, so a fleet-wide fault
+// rollout that trips the breaker on every provider can never deroute the
+// entire fleet. ignoreCapacityCooldown skips ONLY the capacity-reject cooldown;
+// it exists solely for the "would this pair otherwise pass?" re-check that
+// lets the candidate scan and the QuickCapacityCheck preflight count a
+// capacity-cooled pair as a TRANSIENT capacityRejection (429/queue material)
+// instead of structural absence (a "no providers" 503) — it must never be set
+// on an actual routing/admission decision. Every other caller goes through the
+// default wrapper above (both always honored). Caller holds r.mu and p.mu.
+func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool) bool {
 	// Catalog membership + dedicated-box isolation: a request for a dedicated
 	// model family (e.g. Gemma 4) may ONLY route to a provider whose ENTIRE
 	// advertised catalog is that family. This single gate is shared by the
@@ -931,7 +957,7 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 	// keep winning the cost scheduler. A busy box that is also SERVING never
 	// trips this (any accept resets the streak), and the pair is re-probed once
 	// its TTL expires. See capacity_cooldown.go.
-	if r.capacityCooldownActiveLocked(p.ID, model, now) {
+	if !ignoreCapacityCooldown && r.capacityCooldownActiveLocked(p.ID, model, now) {
 		return false
 	}
 	// Skip a provider quarantined by the per-provider node-health breaker: a
@@ -1001,7 +1027,7 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if !r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker) {
+	if !r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, false) {
 		return routingSnapshot{}, false
 	}
 
@@ -1736,7 +1762,7 @@ func providerModelIDs(p *Provider) []string {
 // Caller holds r.mu and p.mu.
 func (r *Registry) providerCanAdmitLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, ignoreProviderBreaker bool) bool {
 	now := time.Now()
-	if !r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker) {
+	if !r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, false) {
 		return false
 	}
 	// Apply the SAME quality-concurrency cap as the selection snapshot and the
@@ -1852,7 +1878,48 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		// re-introducing the very model-wide outage the valve exists to prevent.
 		// Every other gate (incl. the shape-keyed inference-error cooldown) is
 		// still honored; the breaker still steers SELECTION away from bad nodes.
-		if !r.providerPassesRoutingGatesLockedEx(p, model, traits, false, now, true) {
+		if !r.providerPassesRoutingGatesLockedEx(p, model, traits, false, now, true, false) {
+			// A pair blocked ONLY by the capacity-reject cooldown is TRANSIENT
+			// capacity, not structural absence: the box exists, serves the model,
+			// and will be re-probed when its TTL lapses. Count it as a
+			// capacityRejection so an all-cooled model surfaces to the consumer
+			// as capacity (429 + Retry-After / queue-before-shed) instead of a
+			// "no providers" 503 — the cooldown must read as "busy fleet", never
+			// as "the model vanished". The ignoreCapacityCooldown re-check keeps
+			// a pair that ALSO fails a structural gate (offline, untrusted,
+			// render-broken, …) out of the count. Structural filters applied
+			// AFTER the gates on the main path must apply here too:
+			// thermal-critical and vision-blind pairs are excluded outright
+			// (same as the main path just below), and a pair whose model can
+			// never fit the hardware counts as modelTooLarge — never as
+			// transient capacity, or a fleet of undersized cooled boxes would
+			// read as "busy, retry" for a model that will never fit.
+			if r.capacityCooldownActiveLocked(p.ID, model, now) &&
+				r.providerPassesRoutingGatesLockedEx(p, model, traits, false, now, true, true) &&
+				p.SystemMetrics.ThermalState != "critical" &&
+				(!requiresVision || r.providerServesVisionModelLocked(p, model)) {
+				// Mirror the absolute hardware-fit gate (skipped for a
+				// resident model, which has demonstrably fit).
+				slotState := "unknown"
+				totalMemGB := float64(p.Hardware.MemoryGB)
+				if p.BackendCapacity != nil {
+					if p.BackendCapacity.TotalMemoryGB > 0 {
+						totalMemGB = p.BackendCapacity.TotalMemoryGB
+					}
+					for _, slot := range p.BackendCapacity.Slots {
+						if slot.Model == model {
+							slotState = slot.State
+							break
+						}
+					}
+				}
+				if !slotStateModelLoaded(slotState) &&
+					!modelFitsHardware(r.catalogMinRAMGbLocked(model), r.catalogSizeGBLocked(model), totalMemGB) {
+					modelTooLarge++
+				} else {
+					capacityRejections++
+				}
+			}
 			p.mu.Unlock()
 			continue
 		}

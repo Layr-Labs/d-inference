@@ -153,6 +153,41 @@ describe("KeyForm self_route_only", () => {
     expect(submitted!.self_route_only).toBe(true);
   });
 
+  it("drops other-mode ids from the free-text fallback when the mode list is empty", () => {
+    // Existing PUBLIC key with a saved allow-list; the user toggles "My
+    // Machine only" while no machine models are available (machine offline or
+    // picker fetch failed). The free-text fallback still holds the public id
+    // — submitting it would block every local model request on the key, so it
+    // must be excluded (null = clear the allow-list on edit).
+    let submitted: UpdateKeyBody | null = null;
+    render(
+      <KeyForm
+        initial={{
+          id: "key_1",
+          name: "existing",
+          label: "sk-db-…",
+          disabled: false,
+          limit_reset: "none",
+          usage_usd: 0,
+          self_route_only: false,
+          allowed_models: ["gpt-oss-20b"],
+          created_at: new Date().toISOString(),
+        }}
+        models={["gpt-oss-20b"]}
+        selfRouteModels={[]}
+        mode="edit"
+        submitting={false}
+        onCancel={() => {}}
+        onSubmit={(b) => {
+          submitted = b;
+        }}
+      />
+    );
+    fireEvent.click(screen.getByText("My Machine only — free"));
+    fireEvent.click(screen.getByText("Save changes"));
+    expect(submitted!.allowed_models).toBeNull();
+  });
+
   it("preserves saved allow-list entries that are in neither mode's list", () => {
     // A saved allow-list can reference models currently in NEITHER list — a
     // machine that is temporarily offline, or a since-delisted public model.

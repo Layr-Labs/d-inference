@@ -231,9 +231,10 @@ func (s *Server) listModelEntries(includeBuilds bool) ([]types.ModelEntry, error
 
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	if k := apiKeyFromContext(r.Context()); k != nil && k.SelfRouteOnly {
+		entries := s.selfRouteModelEntries(consumerKeyFromContext(r.Context()), r.URL.Query().Get("include_builds") == "1")
 		writeJSON(w, http.StatusOK, types.ModelListResponse{
 			Object: "list",
-			Data:   s.selfRouteModelEntries(consumerKeyFromContext(r.Context()), r.URL.Query().Get("include_builds") == "1"),
+			Data:   filterEntriesByKeyAllowList(entries, k),
 		})
 		return
 	}
@@ -365,7 +366,7 @@ func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {
 	// that validates a model id via retrieve-model can never use a listed
 	// local model.
 	if k := apiKeyFromContext(r.Context()); k != nil && k.SelfRouteOnly {
-		for _, entry := range s.selfRouteModelEntries(consumerKeyFromContext(r.Context()), true) {
+		for _, entry := range filterEntriesByKeyAllowList(s.selfRouteModelEntries(consumerKeyFromContext(r.Context()), true), k) {
 			if entry.ID == id {
 				writeJSON(w, http.StatusOK, entry)
 				return
@@ -389,4 +390,27 @@ func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 		fmt.Sprintf("model %q not found", id), withParam("model")))
+}
+
+// filterEntriesByKeyAllowList restricts a self-route model view to the key's
+// allow-list when one is set. Owned live models are private inventory (unlike
+// the public catalog): a restricted key handed out for one local model must
+// not enumerate — or retrieve metadata for — the account's other machine
+// models, mirroring what keyModelAllowed would let it actually use. An empty
+// allow-list means the key may use (and therefore see) everything.
+func filterEntriesByKeyAllowList(entries []types.ModelEntry, k *store.APIKey) []types.ModelEntry {
+	if k == nil || len(k.AllowedModels) == 0 {
+		return entries
+	}
+	allowed := make(map[string]struct{}, len(k.AllowedModels))
+	for _, m := range k.AllowedModels {
+		allowed[m] = struct{}{}
+	}
+	filtered := make([]types.ModelEntry, 0, len(entries))
+	for _, e := range entries {
+		if _, ok := allowed[e.ID]; ok {
+			filtered = append(filtered, e)
+		}
+	}
+	return filtered
 }

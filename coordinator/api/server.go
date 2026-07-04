@@ -1742,6 +1742,8 @@ func (s *Server) routes() {
 	// Account-scoped provider dashboard.
 	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.handleMyProviders))
 	s.mux.HandleFunc("GET /v1/me/summary", s.requirePrivyAuth(s.handleMySummary))
+	// Alias-aware owned live-model ids for the console's self-route key picker.
+	s.mux.HandleFunc("GET /v1/me/self-route-models", s.requirePrivyAuth(s.handleMySelfRouteModels))
 	// Ownership-checked hard delete of a retired/offline machine's record(s).
 	s.mux.HandleFunc("DELETE /v1/me/providers/{serial}", s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeleteMyProvider)))
 

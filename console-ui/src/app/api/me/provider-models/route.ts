@@ -1,36 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { coordinatorUrl, privyAuth, missingPrivyToken } from "@/lib/server/coordinator";
 
-type ProvidersResponse = {
-  challenge_max_age_seconds?: number;
-  providers?: Array<{
-    online?: boolean;
-    status?: string;
-    runtime_verified?: boolean;
-    last_challenge_verified?: string;
-    models?: Array<{ id?: string }>;
-  }>;
-};
+type SelfRouteModelsResponse = { models?: unknown };
 
-// Fallback when the coordinator omits challenge_max_age_seconds; matches the
-// providers dashboard default (warnings.ts / routing.ts).
-const DEFAULT_CHALLENGE_MAX_AGE_SECONDS = 360;
-
-// challengeFresh mirrors the coordinator's self-route freshness gate: the last
-// verified attestation challenge must be within challenge_max_age_seconds. A
-// merely-present timestamp is not enough — a stale-challenge machine is
-// excluded from /v1/models and routing, so offering its models here would let
-// the user save an allow-list the key can never use.
-function challengeFresh(lastVerified: string, maxAgeSeconds: number): boolean {
-  const ageSec = (Date.now() - new Date(lastVerified).getTime()) / 1000;
-  return Number.isFinite(ageSec) && ageSec <= maxAgeSeconds;
-}
-
+// Thin proxy over the coordinator's alias-aware self-route model view. The
+// coordinator owns the eligibility filter (online, runtime-verified, fresh
+// challenge, private-text support, owner weight-hash servability) AND the
+// alias translation: catalog builds behind a public alias come back as the
+// alias id — the exact id a self-route key's clients will list and request.
+// Deriving this list client-side from raw /v1/me/providers advertisements
+// produced allow-lists holding hidden build ids that the coordinator's
+// allow-list check (which runs on the requested name, before alias
+// resolution) then rejected.
 export async function GET(req: NextRequest) {
   const authHeader = privyAuth(req);
   if (!authHeader) return missingPrivyToken();
 
-  const res = await fetch(`${coordinatorUrl()}/v1/me/providers`, {
+  const res = await fetch(`${coordinatorUrl()}/v1/me/self-route-models`, {
     headers: { Authorization: authHeader },
     cache: "no-store",
   });
@@ -39,23 +25,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: text || `Upstream ${res.status}` }, { status: res.status });
   }
 
-  const data = (await res.json()) as ProvidersResponse;
-  const maxAgeSeconds = data.challenge_max_age_seconds || DEFAULT_CHALLENGE_MAX_AGE_SECONDS;
-  const ids = new Set<string>();
-  for (const provider of data.providers ?? []) {
-    if (
-      !provider.online ||
-      provider.status === "untrusted" ||
-      !provider.runtime_verified ||
-      !provider.last_challenge_verified ||
-      !challengeFresh(provider.last_challenge_verified, maxAgeSeconds)
-    ) {
-      continue;
-    }
-    for (const model of provider.models ?? []) {
-      if (model.id) ids.add(model.id);
-    }
-  }
-
-  return NextResponse.json({ models: [...ids].sort() });
+  const data = (await res.json()) as SelfRouteModelsResponse;
+  const models = Array.isArray(data.models)
+    ? data.models.filter((m): m is string => typeof m === "string" && m.length > 0)
+    : [];
+  return NextResponse.json({ models });
 }

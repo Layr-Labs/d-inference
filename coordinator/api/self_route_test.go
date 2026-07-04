@@ -557,3 +557,75 @@ func TestSelfRouteOnlyKeyListsAliasForOwnedCatalogBuild(t *testing.T) {
 		t.Fatalf("retrieve hidden build status = %d body = %s", status, body)
 	}
 }
+
+// TestSelfRouteModelViewRespectsKeyAllowListAndPickerEndpoint covers the two
+// consumers of the alias-aware owned-model view beyond the plain list:
+//
+//  1. GET /v1/me/self-route-models (the console picker source) returns the
+//     SAME ids /v1/models shows a self-route key — aliases, not hidden builds
+//     — so a picker-created allow-list can never reject the listed name.
+//  2. A self-route-only key with an allow-list only sees its allowed models:
+//     owned live models are private inventory, and a restricted key handed
+//     out for one model must not enumerate the rest.
+func TestSelfRouteModelViewRespectsKeyAllowListAndPickerEndpoint(t *testing.T) {
+	srv, st, _ := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const owner = "owner-allowlist"
+	const build = "gemma-4-26b-8bit"
+	const alias = "gemma-4-26b"
+	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, build)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, owner)
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: build}})
+	if err := st.UpsertModelAlias(&store.ModelAlias{AliasID: alias, DesiredBuild: build, Active: true}); err != nil {
+		t.Fatalf("UpsertModelAlias: %v", err)
+	}
+
+	// 1. Picker endpoint returns the alias id, not the hidden build.
+	rec := httptest.NewRecorder()
+	srv.handleMySelfRouteModels(rec, reqWithUser(http.MethodGet, "/v1/me/self-route-models", "", owner))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("picker endpoint status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var picker selfRouteModelsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &picker); err != nil {
+		t.Fatalf("decode picker response: %v", err)
+	}
+	if len(picker.Models) != 1 || picker.Models[0] != alias {
+		t.Fatalf("picker models = %v, want [%q] (alias, not hidden build)", picker.Models, alias)
+	}
+
+	// 2. Allow-list restricts the self-route model view.
+	listFor := func(allowed []string) []types.ModelEntry {
+		t.Helper()
+		raw, _, err := st.CreateAPIKey(owner, store.APIKeyCreate{Name: "k", SelfRouteOnly: true, AllowedModels: allowed})
+		if err != nil {
+			t.Fatalf("CreateAPIKey: %v", err)
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer "+raw)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("list models: %v", err)
+		}
+		defer resp.Body.Close()
+		var listed types.ModelListResponse
+		if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+			t.Fatalf("decode list: %v", err)
+		}
+		return listed.Data
+	}
+	if got := listFor([]string{alias}); len(got) != 1 || got[0].ID != alias {
+		t.Fatalf("alias-allowed key sees %+v, want just %q", got, alias)
+	}
+	if got := listFor([]string{"some-unrelated-model"}); len(got) != 0 {
+		t.Fatalf("restricted key enumerates owned inventory: %+v", got)
+	}
+	if got := listFor(nil); len(got) != 1 {
+		t.Fatalf("unrestricted key sees %+v, want the full owned view", got)
+	}
+}

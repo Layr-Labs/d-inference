@@ -66,9 +66,17 @@ export function KeyForm({
   const handleSubmit = () => {
     if (!canSubmit) return;
     const clear = mode === "edit";
+    // The free-text fallback (no picker data for this mode) applies the same
+    // other-mode exclusion as the picker: with "My Machine only" on and no
+    // machine models fetched, the text field still holds the key's saved
+    // PUBLIC ids — submitting those would block every local model request.
     const selectedModels = hasModels
       ? visibleAllowed
-      : modelText.split(",").map((s) => s.trim()).filter(Boolean);
+      : modelText
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .filter((m) => !otherModeModels.includes(m));
 
     const body: UpdateKeyBody = {
       name: nameTrim,

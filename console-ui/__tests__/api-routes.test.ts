@@ -86,35 +86,12 @@ describe("GET /api/me/providers", () => {
 // =========================================================================
 
 describe("GET /api/me/provider-models", () => {
-  it("returns deduped model ids from eligible owned providers", async () => {
-    const fresh = new Date().toISOString();
+  // The proxy is a thin passthrough: eligibility filtering and alias
+  // translation live coordinator-side in /v1/me/self-route-models (tested in
+  // Go), so the picker's ids always match what self-route clients will see.
+  it("proxies the coordinator's alias-aware self-route model view", async () => {
     upstreamFetch.mockResolvedValueOnce(
-      upstreamOk({
-        challenge_max_age_seconds: 360,
-        providers: [
-          {
-            online: true,
-            status: "online",
-            runtime_verified: true,
-            last_challenge_verified: fresh,
-            models: [{ id: "local/b" }, { id: "local/a" }],
-          },
-          {
-            online: true,
-            status: "serving",
-            runtime_verified: true,
-            last_challenge_verified: fresh,
-            models: [{ id: "local/a" }],
-          },
-          {
-            online: false,
-            status: "offline",
-            runtime_verified: true,
-            last_challenge_verified: fresh,
-            models: [{ id: "offline/model" }],
-          },
-        ],
-      })
+      upstreamOk({ models: ["gemma-4-26b", "local/off-catalog"] })
     );
 
     const { GET } = await import("@/app/api/me/provider-models/route");
@@ -124,41 +101,17 @@ describe("GET /api/me/provider-models", () => {
     const res = await GET(req);
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({ models: ["local/a", "local/b"] });
+    await expect(res.json()).resolves.toEqual({
+      models: ["gemma-4-26b", "local/off-catalog"],
+    });
     const [upstreamUrl, upstreamOpts] = upstreamFetch.mock.calls[0];
-    expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/me/providers`);
+    expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/me/self-route-models`);
     expect(upstreamOpts.headers.Authorization).toBe("Bearer privy-token-123");
   });
 
-  it("excludes providers with stale or unparseable challenges", async () => {
-    const staleSec = 400; // over the 360s max age below
+  it("sanitizes a malformed upstream payload to an empty list", async () => {
     upstreamFetch.mockResolvedValueOnce(
-      upstreamOk({
-        challenge_max_age_seconds: 360,
-        providers: [
-          {
-            online: true,
-            status: "online",
-            runtime_verified: true,
-            last_challenge_verified: new Date(Date.now() - staleSec * 1000).toISOString(),
-            models: [{ id: "stale/model" }],
-          },
-          {
-            online: true,
-            status: "online",
-            runtime_verified: true,
-            last_challenge_verified: "not-a-timestamp",
-            models: [{ id: "garbled/model" }],
-          },
-          {
-            online: true,
-            status: "online",
-            runtime_verified: true,
-            last_challenge_verified: new Date(Date.now() - 60 * 1000).toISOString(),
-            models: [{ id: "fresh/model" }],
-          },
-        ],
-      })
+      upstreamOk({ models: [42, null, "", "ok/model"] })
     );
 
     const { GET } = await import("@/app/api/me/provider-models/route");
@@ -169,7 +122,20 @@ describe("GET /api/me/provider-models", () => {
     );
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({ models: ["fresh/model"] });
+    await expect(res.json()).resolves.toEqual({ models: ["ok/model"] });
+  });
+
+  it("propagates upstream errors", async () => {
+    upstreamFetch.mockResolvedValueOnce(upstreamError(503, "unavailable"));
+
+    const { GET } = await import("@/app/api/me/provider-models/route");
+    const res = await GET(
+      makeRequest("/api/me/provider-models", {
+        headers: { authorization: "Bearer privy-token-123" },
+      })
+    );
+
+    expect(res.status).toBe(503);
   });
 
   it("rejects missing auth", async () => {

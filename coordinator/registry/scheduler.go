@@ -813,15 +813,22 @@ func providerVersion(p *Provider) string {
 }
 
 // OwnedProviderSummary reports, for the given account, how many of its
-// currently-connected providers are online and how many can serve `model`.
-// It powers self-route pre-flight error messaging: distinguishing "your
-// machine is offline" from "your machine can't serve this model". The
-// model-serving check applies the same privacy/runtime/challenge gates as
-// routing but deliberately ignores the hardware-trust gate, which self-route
-// relaxes for a caller's own machine. "Linked but offline" providers are not
+// currently-connected providers are online and how many can serve `model` for
+// a request with the given traits/media shape. It powers self-route pre-flight
+// error messaging: distinguishing "your machine is offline" from "your machine
+// can't serve this request". The model-serving check applies the same
+// privacy/runtime/challenge gates as routing but deliberately ignores the
+// hardware-trust gate, which self-route relaxes for a caller's own machine.
+// traits/requiresVision mirror the dispatch-time gates
+// (providerEligibleForTraitsLocked, the vision gate): without them a tool call
+// to an owned box below the tools floor — or a media request to a text-only
+// build — would pass this preflight, queue for up to 120s, and die as
+// machine_busy instead of failing fast with the real cause. Callers asking the
+// base-shape question ("any owned box serves this model at all?") pass zero
+// traits and requiresVision=false. "Linked but offline" providers are not
 // counted here (they are not in the registry); callers detect zero linked
 // machines via store.ListProvidersByAccount.
-func (r *Registry) OwnedProviderSummary(accountID, model string) (online, servesModel int) {
+func (r *Registry) OwnedProviderSummary(accountID, model string, traits RequestTraits, requiresVision bool) (online, servesModel int) {
 	if accountID == "" {
 		return 0, 0
 	}
@@ -844,6 +851,8 @@ func (r *Registry) OwnedProviderSummary(accountID, model string) (online, serves
 		// advertising a stale-hash catalog build reports "model not loaded"
 		// instead of proceeding into a dispatch that can only be rejected.
 		serves := r.providerServesOwnedRoutableModelLocked(p, model) &&
+			r.providerEligibleForTraitsLocked(p, model, traits) &&
+			(!requiresVision || r.providerServesVisionModelLocked(p, model, true)) &&
 			p.RuntimeVerified &&
 			r.providerSupportsPrivateTextLocked(p) &&
 			!p.LastChallengeVerified.IsZero() &&

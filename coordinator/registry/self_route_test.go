@@ -153,7 +153,7 @@ func TestOwnedProviderSummary(t *testing.T) {
 	a2.Status = StatusOffline
 	a2.mu.Unlock()
 
-	online, serves := reg.OwnedProviderSummary("acct-A", model)
+	online, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{}, false)
 	if online != 1 {
 		t.Fatalf("acct-A online=%d, want 1 (a1 online, a2 offline)", online)
 	}
@@ -162,7 +162,7 @@ func TestOwnedProviderSummary(t *testing.T) {
 	}
 
 	// Unknown model: online still counts, servesModel drops to 0.
-	online, serves = reg.OwnedProviderSummary("acct-A", "model-not-served")
+	online, serves = reg.OwnedProviderSummary("acct-A", "model-not-served", RequestTraits{}, false)
 	if online != 1 {
 		t.Fatalf("acct-A online=%d for unknown model, want 1", online)
 	}
@@ -171,12 +171,12 @@ func TestOwnedProviderSummary(t *testing.T) {
 	}
 
 	// An account with no providers gets zeros.
-	if online, serves = reg.OwnedProviderSummary("acct-none", model); online != 0 || serves != 0 {
+	if online, serves = reg.OwnedProviderSummary("acct-none", model, RequestTraits{}, false); online != 0 || serves != 0 {
 		t.Fatalf("acct-none summary=(%d,%d), want (0,0)", online, serves)
 	}
 
 	// Empty account never matches.
-	if online, serves = reg.OwnedProviderSummary("", model); online != 0 || serves != 0 {
+	if online, serves = reg.OwnedProviderSummary("", model, RequestTraits{}, false); online != 0 || serves != 0 {
 		t.Fatalf("empty account summary=(%d,%d), want (0,0)", online, serves)
 	}
 }
@@ -492,5 +492,50 @@ func TestSelfRouteCatalogModelKeepsWeightHashGate(t *testing.T) {
 	mine.mu.Unlock()
 	if selected, decision := reg.ReserveProviderEx(model, owner); selected == nil {
 		t.Fatalf("hash-less catalog model failed to self-route; decision=%+v", decision)
+	}
+}
+
+// TestOwnedProviderSummaryAppliesTraitAndVisionGates verifies the owner
+// preflight matches the dispatch-time gates for the REQUEST's shape: a tool
+// call to an owned box below the tools capability floor, or a media request to
+// a text-only build, must report servesModel=0 (fast 503 with the real cause)
+// instead of passing preflight, queueing 120s, and dying as machine_busy.
+func TestOwnedProviderSummaryAppliesTraitAndVisionGates(t *testing.T) {
+	reg := New(testLogger())
+	model := "traits-summary-model"
+
+	mine := makeSchedulerProvider(t, reg, "mine", model, 100)
+	setProviderAccount(mine, "acct-A")
+
+	// Below the tools version floor (0.6.3): plain requests serve, tool
+	// requests don't.
+	mine.mu.Lock()
+	mine.Version = "0.6.0"
+	mine.mu.Unlock()
+	if _, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{}, false); serves != 1 {
+		t.Fatalf("plain request servesModel=%d, want 1", serves)
+	}
+	if _, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{HasTools: true}, false); serves != 0 {
+		t.Fatalf("tools request to below-floor box servesModel=%d, want 0", serves)
+	}
+
+	// At/above the floor, tool requests serve again.
+	mine.mu.Lock()
+	mine.Version = "0.6.3"
+	mine.mu.Unlock()
+	if _, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{HasTools: true}, false); serves != 1 {
+		t.Fatalf("tools request to at-floor box servesModel=%d, want 0 — floor gate stuck", serves)
+	}
+
+	// Media requires a vision-capable build; a text-only advertisement fails
+	// the vision leg, a VLM build passes it (owner context: off-catalog OK).
+	if _, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{}, true); serves != 0 {
+		t.Fatalf("media request to text-only build servesModel=%d, want 0", serves)
+	}
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", IsVision: true}}
+	mine.mu.Unlock()
+	if _, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{}, true); serves != 1 {
+		t.Fatalf("media request to VLM build servesModel=%d, want 1", serves)
 	}
 }

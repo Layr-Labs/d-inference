@@ -3275,7 +3275,10 @@ func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
 	// OUTSIDE the queue lock — since OwnedProviderSummary takes the registry lock.
 	preferOwnerEligible := make(map[string]bool)
 	for _, owner := range r.queue.PreferWaiterOwners(modelID) {
-		_, servesModel := r.OwnedProviderSummary(owner, modelID)
+		// Base-shape question (like the QuickCapacityCheck above): does the
+		// owner have ANY box serving this model — no per-request trait/vision
+		// constraint at this granularity.
+		_, servesModel := r.OwnedProviderSummary(owner, modelID, RequestTraits{}, false)
 		preferOwnerEligible[owner] = servesModel > 0
 	}
 

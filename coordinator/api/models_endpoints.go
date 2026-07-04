@@ -230,11 +230,18 @@ func (s *Server) listModelEntries(includeBuilds bool) ([]types.ModelEntry, error
 }
 
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
-	if k := apiKeyFromContext(r.Context()); k != nil && k.SelfRouteOnly {
-		entries := s.selfRouteModelEntries(consumerKeyFromContext(r.Context()), r.URL.Query().Get("include_builds") == "1")
+	// The owned-model view follows the request's resolved route mode, exactly
+	// like inference: a SelfRouteOnly key always, or any key sending
+	// X-Darkbloom-Route: self — so a client that lists (or validates) models
+	// with the same header it will infer with discovers the same ids the
+	// inference path accepts. Header-less requests on ordinary keys see the
+	// public catalog, matching their public routing. (prefer falls back to the
+	// paid fleet, so it keeps the public view.)
+	if policy := s.resolveSelfRoutePolicy(r); policy.enabled {
+		entries := s.selfRouteModelEntries(policy.ownerAccountID, r.URL.Query().Get("include_builds") == "1")
 		writeJSON(w, http.StatusOK, types.ModelListResponse{
 			Object: "list",
-			Data:   filterEntriesByKeyAllowList(entries, k),
+			Data:   filterEntriesByKeyAllowList(entries, apiKeyFromContext(r.Context())),
 		})
 		return
 	}
@@ -361,12 +368,13 @@ func ownedModelEntry(m registry.AggregateModel) types.ModelEntry {
 // id, matching the behavior of requesting one for inference.
 func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	// Self-route-only keys retrieve from their owned live models (mirrors
-	// handleListModels): list and retrieve must agree, or an OpenAI client
-	// that validates a model id via retrieve-model can never use a listed
-	// local model.
-	if k := apiKeyFromContext(r.Context()); k != nil && k.SelfRouteOnly {
-		for _, entry := range filterEntriesByKeyAllowList(s.selfRouteModelEntries(consumerKeyFromContext(r.Context()), true), k) {
+	// Self-route requests retrieve from their owned live models (mirrors
+	// handleListModels, including the header-based opt-in): list and retrieve
+	// must agree, or an OpenAI client that validates a model id via
+	// retrieve-model can never use a listed local model.
+	if policy := s.resolveSelfRoutePolicy(r); policy.enabled {
+		entries := filterEntriesByKeyAllowList(s.selfRouteModelEntries(policy.ownerAccountID, true), apiKeyFromContext(r.Context()))
+		for _, entry := range entries {
 			if entry.ID == id {
 				writeJSON(w, http.StatusOK, entry)
 				return

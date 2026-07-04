@@ -629,3 +629,79 @@ func TestSelfRouteModelViewRespectsKeyAllowListAndPickerEndpoint(t *testing.T) {
 		t.Fatalf("unrestricted key sees %+v, want the full owned view", got)
 	}
 }
+
+// TestHeaderSelfRouteSeesOwnedModelView verifies the /v1/models view follows
+// the request's resolved route mode, not just the per-key flag: an ordinary
+// key sending X-Darkbloom-Route: self (which CAN infer against owned
+// off-catalog models) discovers them in list and retrieve, while the same key
+// without the header keeps the public catalog view.
+func TestHeaderSelfRouteSeesOwnedModelView(t *testing.T) {
+	srv, st, _ := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const owner = "owner-header"
+	raw, _, err := st.CreateAPIKey(owner, store.APIKeyCreate{Name: "normal"}) // NOT SelfRouteOnly
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+
+	model := "local/off-catalog-header"
+	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, owner)
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: "catalog-only-model"}})
+
+	list := func(selfHeader bool) types.ModelListResponse {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer "+raw)
+		if selfHeader {
+			req.Header.Set("X-Darkbloom-Route", "self")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("list models: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("list status = %d body = %s", resp.StatusCode, body)
+		}
+		var listed types.ModelListResponse
+		if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+			t.Fatalf("decode list: %v", err)
+		}
+		return listed
+	}
+
+	// With the header: the owned view, exactly what header-based inference
+	// accepts.
+	withHeader := list(true)
+	if len(withHeader.Data) != 1 || withHeader.Data[0].ID != model || withHeader.Data[0].OwnedBy != "self" {
+		t.Fatalf("header list = %+v, want the owned off-catalog model %q", withHeader.Data, model)
+	}
+	// Retrieve agrees with list under the header.
+	getReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/v1/models/"+model, nil)
+	getReq.Header.Set("Authorization", "Bearer "+raw)
+	getReq.Header.Set("X-Darkbloom-Route", "self")
+	getResp, err := http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("header retrieve status = %d, want 200", getResp.StatusCode)
+	}
+
+	// Without the header: the public catalog view (the off-catalog local
+	// model must not appear — this key's headerless inference is public).
+	noHeader := list(false)
+	for _, e := range noHeader.Data {
+		if e.ID == model {
+			t.Fatalf("headerless list leaked the off-catalog model: %+v", noHeader.Data)
+		}
+	}
+}

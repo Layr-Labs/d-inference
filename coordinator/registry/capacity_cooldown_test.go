@@ -580,3 +580,44 @@ func TestCapacityCooldownPreflightVisionExcludesTextOnlyCooledPairs(t *testing.T
 		t.Fatalf("vision preflight capacityRejections = %d, want 0 (text-only cooled pair must not read as vision capacity)", capRejVis)
 	}
 }
+
+// Regression (PR #510 Codex round-2): the cooldown-only preflight recheck must
+// apply the SAME structural exclusions as the main path below it. A cooled
+// pair that is ALSO thermally critical is excluded outright; a cooled pair
+// whose model can never fit the hardware counts as modelTooLarge, never as
+// transient capacity (or undersized cooled boxes read as "busy, retry" for a
+// model that will never fit).
+func TestCapacityCooldownPreflightAppliesThermalAndFitFilters(t *testing.T) {
+	const model = "gemma-4-26b-8bit"
+
+	// Thermal-critical cooled pair: excluded from both counts.
+	r := New(testLogger())
+	p := makeSchedulerProvider(t, r, "hot-box", model, 200)
+	for i := 0; i < r.capacityCooldownCfg.Threshold; i++ {
+		r.RecordCapacityReject(p.ID, model)
+	}
+	p.mu.Lock()
+	p.SystemMetrics.ThermalState = "critical"
+	p.mu.Unlock()
+	cc, capRej, tooLarge := r.QuickCapacityCheck(model, 10, 128, RequestTraits{})
+	if cc != 0 || capRej != 0 || tooLarge != 0 {
+		t.Fatalf("thermal-critical cooled pair = (cand=%d, rej=%d, tooLarge=%d), want 0/0/0", cc, capRej, tooLarge)
+	}
+
+	// Undersized cooled pair (cold model, catalog says it can never fit):
+	// counts as modelTooLarge, not capacityRejections.
+	r2 := New(testLogger())
+	r2.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 128}}) // needs far more than 24GB
+	small := makeSchedulerProvider(t, r2, "small-box", model, 200)
+	small.mu.Lock()
+	small.BackendCapacity.TotalMemoryGB = 24
+	small.BackendCapacity.Slots[0].State = "idle_shutdown" // cold: fit gate applies
+	small.mu.Unlock()
+	for i := 0; i < r2.capacityCooldownCfg.Threshold; i++ {
+		r2.RecordCapacityReject(small.ID, model)
+	}
+	cc2, capRej2, tooLarge2 := r2.QuickCapacityCheck(model, 10, 128, RequestTraits{})
+	if cc2 != 0 || capRej2 != 0 || tooLarge2 != 1 {
+		t.Fatalf("undersized cooled pair = (cand=%d, rej=%d, tooLarge=%d), want 0/0/1", cc2, capRej2, tooLarge2)
+	}
+}

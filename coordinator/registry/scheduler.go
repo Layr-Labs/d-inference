@@ -1884,14 +1884,37 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			// as "the model vanished". The ignoreCapacityCooldown re-check keeps
 			// a pair that ALSO fails a structural gate (offline, untrusted,
 			// render-broken, …) out of the count. Structural filters applied
-			// AFTER the gates on the main path must apply here too — vision in
-			// particular: a capacity-cooled text-only pair could never serve a
-			// vision request, so counting it would surface a false
-			// "at capacity" 429 where vision/model-unavailable is the truth.
+			// AFTER the gates on the main path must apply here too:
+			// thermal-critical and vision-blind pairs are excluded outright
+			// (same as the main path just below), and a pair whose model can
+			// never fit the hardware counts as modelTooLarge — never as
+			// transient capacity, or a fleet of undersized cooled boxes would
+			// read as "busy, retry" for a model that will never fit.
 			if r.capacityCooldownActiveLocked(p.ID, model, now) &&
 				r.providerPassesRoutingGatesLockedEx(p, model, traits, false, now, true, true) &&
+				p.SystemMetrics.ThermalState != "critical" &&
 				(!requiresVision || r.providerServesVisionModelLocked(p, model)) {
-				capacityRejections++
+				// Mirror the absolute hardware-fit gate (skipped for a
+				// resident model, which has demonstrably fit).
+				slotState := "unknown"
+				totalMemGB := float64(p.Hardware.MemoryGB)
+				if p.BackendCapacity != nil {
+					if p.BackendCapacity.TotalMemoryGB > 0 {
+						totalMemGB = p.BackendCapacity.TotalMemoryGB
+					}
+					for _, slot := range p.BackendCapacity.Slots {
+						if slot.Model == model {
+							slotState = slot.State
+							break
+						}
+					}
+				}
+				if !slotStateModelLoaded(slotState) &&
+					!modelFitsHardware(r.catalogMinRAMGbLocked(model), r.catalogSizeGBLocked(model), totalMemGB) {
+					modelTooLarge++
+				} else {
+					capacityRejections++
+				}
 			}
 			p.mu.Unlock()
 			continue

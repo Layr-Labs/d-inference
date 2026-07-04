@@ -281,3 +281,32 @@ git config core.hooksPath .githooks
 | Go (`coordinator/`) | `gofmt -l` | `gofmt -w <file>` |
 | Swift (`provider-swift/`) | no enforced formatter | `cd provider-swift && swift test` |
 | TypeScript (`console-ui/`) | `npx eslint src/` | `cd console-ui && npx eslint src/ --fix` |
+
+## Cursor Cloud specific instructions
+
+The Cloud VM is **Linux x86_64** (no macOS / Apple Silicon). What runs here vs. not:
+
+- **Coordinator (Go)** and **console-ui (Next.js)** build, test, and run fully. Commands are in the root `Makefile` (`make coordinator-test`, `make ui-lint`, `make ui-test`, `make ui-build`).
+- **provider-swift** is `platforms: [.macOS(.v14)]` + MLX-Swift (Metal). It **cannot build/run/test on this VM** — skip `make provider-*`. Consequently `make e2e-integration` (needs the Swift provider binary + a downloaded MLX model) **cannot fully run here**; there are no live providers, so real token generation is impossible on this VM.
+
+Running the stack locally (the update script installs deps; these commands start the services — not for the update script):
+
+- **Coordinator** — refuses to start without a durable store, so for dev set the memory-store flag. It listens on `:8080`:
+  ```bash
+  cd coordinator && go build ./cmd/coordinator && \
+    EIGENINFERENCE_ALLOW_MEMORY_STORE=true EIGENINFERENCE_ADMIN_KEY=sk-dev-test-key \
+    EIGENINFERENCE_MIN_TRUST=none EIGENINFERENCE_PORT=8080 ./coordinator
+  ```
+  `EIGENINFERENCE_ADMIN_KEY` seeds one usable API key; `MNEMONIC`/Stripe/Datadog/MDM are all optional (features self-disable when unset).
+- **console-ui** — `next dev` on `:3000`. It defaults `NEXT_PUBLIC_COORDINATOR_URL` to **prod** (`https://api.darkbloom.dev`), so you MUST point it at the local coordinator:
+  ```bash
+  cd console-ui && NEXT_PUBLIC_COORDINATOR_URL=http://localhost:8080 \
+    COORDINATOR_URL=http://localhost:8080 npm run dev
+  ```
+
+Expected behavior without a provider/auth (not bugs): `POST /v1/chat/completions` returns `401` (no/invalid key) → `402 insufficient_quota` (valid key, zero balance); it only reaches routing (`503`/`429`) once an account is funded. Console-ui pages that need auth (e.g. `/billing`) show `401` toasts until you log in via Privy; public pages (`/`, `/stats`, `/models`) render without login.
+
+Toolchain gotchas:
+
+- The cross-language crypto parity test (`coordinator/internal/e2e`, `TestCrossLanguageEncryption`) shells out to `cargo` and needs **Rust ≥ 1.85** (`edition2024`). The VM's default Rust is upgraded to stable for this; if it ever regresses to < 1.85 that one test fails to build (`feature edition2024 is required`) — fix with `rustup default stable`, don't touch code.
+- Four `console-ui` vitest cases in `__tests__/provider-dashboard-*` fail on clean `master` (warning-severity logic mismatch, `info` vs `degrading`). These are **pre-existing and unrelated to the environment** — the rest of the suite (409 tests) and `npx eslint src/` pass.

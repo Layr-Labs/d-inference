@@ -2060,18 +2060,6 @@ func (r *Registry) providerServesCatalogModelLocked(p *Provider, model string) b
 	return false
 }
 
-// providerAdvertisesModelLocked returns true if the provider advertises the
-// model, regardless of whether it is in the public catalog. Caller must hold
-// p.mu.
-func (r *Registry) providerAdvertisesModelLocked(p *Provider, model string) bool {
-	for _, m := range p.Models {
-		if m.ID == model {
-			return true
-		}
-	}
-	return false
-}
-
 // modelTrackedByCatalogLocked reports whether the catalog has an entry for the
 // model id at all (regardless of weight-hash agreement). A nil catalog tracks
 // nothing — filtering is disabled and modelAllowedByCatalogLocked admits

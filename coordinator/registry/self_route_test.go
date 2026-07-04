@@ -539,3 +539,43 @@ func TestOwnedProviderSummaryAppliesTraitAndVisionGates(t *testing.T) {
 		t.Fatalf("media request to VLM build servesModel=%d, want 1", serves)
 	}
 }
+
+// TestOwnedModelsExcludesRenderBrokenBuilds: list/route agreement for the
+// template-render gate — an advertised build with an explicit
+// template_render_ok=false is fenced at dispatch for every request shape, so
+// OwnedModels (which feeds /v1/models and the key picker) must not list it.
+// A nil tri-state (pre-0.6.5 provider, no opinion) stays listed.
+func TestOwnedModelsExcludesRenderBrokenBuilds(t *testing.T) {
+	reg := New(testLogger())
+	model := "render-broken-model"
+
+	mine := makeSchedulerProvider(t, reg, "mine", model, 100)
+	setProviderAccount(mine, "acct-A")
+
+	broken := false
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", TemplateRenderOK: &broken}}
+	mine.mu.Unlock()
+	if listed := reg.OwnedModels("acct-A"); len(listed) != 0 {
+		t.Fatalf("OwnedModels lists render-broken build: %+v", listed)
+	}
+	// And the preflight agrees (base traits fence render-broken everywhere).
+	if _, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{}, false); serves != 0 {
+		t.Fatalf("preflight admits render-broken build: servesModel=%d", serves)
+	}
+
+	ok := true
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", TemplateRenderOK: &ok}}
+	mine.mu.Unlock()
+	if listed := reg.OwnedModels("acct-A"); len(listed) != 1 || listed[0].ID != model {
+		t.Fatalf("OwnedModels = %+v, want the render-OK build", listed)
+	}
+
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}} // nil tri-state
+	mine.mu.Unlock()
+	if listed := reg.OwnedModels("acct-A"); len(listed) != 1 {
+		t.Fatalf("OwnedModels = %+v, want the no-opinion build listed", listed)
+	}
+}

@@ -3928,6 +3928,14 @@ func (r *Registry) OwnedModels(accountID string) []AggregateModel {
 			if !r.modelServableForOwnerLocked(m) {
 				continue
 			}
+			// Same principle for the template-render gate: an explicit
+			// template_render_ok=false fences EVERY request shape at dispatch
+			// (see providerTemplateRenderBrokenLocked / the trait gate), so a
+			// render-broken build must not be listed either. nil (pre-0.6.5, no
+			// opinion) stays listed, matching dispatch.
+			if m.TemplateRenderOK != nil && !*m.TemplateRenderOK {
+				continue
+			}
 			a, ok := agg[m.ID]
 			if !ok {
 				a = &AggregateModel{

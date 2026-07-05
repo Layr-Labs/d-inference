@@ -257,7 +257,15 @@ let package = Package(
         .testTarget(
             name: "ProviderCoreFoundationTests",
             dependencies: ["ProviderCoreFoundation"],
-            path: "Tests/ProviderCoreFoundationTests"
+            path: "Tests/ProviderCoreFoundationTests",
+            // `Fixtures/dsv4/`: the official DeepSeek-V4 encoding golden
+            // vectors (test_input_N.json / test_output_N.txt), mirrored
+            // verbatim from the reference `encoding_dsv4.py` test suite so
+            // `DeepseekV4EncodingTests` can byte-compare against them
+            // without a lossy manual transcription into Swift string
+            // literals (the fixtures carry CJK text, fullwidth DSML
+            // punctuation, and emoji).
+            resources: [.copy("Fixtures/dsv4")]
         ),
 
         // ----------------------------------------------------------------

@@ -77,6 +77,14 @@ extension StandaloneServer {
             // "" ⇒ unscoped (default). Used to validate cross-tenant isolation
             // on a single box (two servers, two scopes, one cache dir).
             cacheScope: ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_SCOPE"] ?? "",
+            // Non-forcing modelType lookup so `--local`/`--local-endpoint`
+            // requests auto-select a reasoning parser (e.g. DeepSeek-V4's
+            // <think> split) the same way the coordinator WebSocket path
+            // already does — see `MultiModelBatchSchedulerEngine
+            // .defaultReasoningParser(for:)`.
+            modelTypeProvider: { [weak self] modelId in
+                await self?.modelType(forLoadedModel: modelId)
+            },
             onServerRunning: { [weak self] _ in
                 await self?.markBound()
             }

@@ -968,7 +968,7 @@ func (s *Server) SyncModelCatalog() {
 		entries = append(entries, registry.CatalogEntry{
 			ID:         row.ID,
 			WeightHash: row.ActiveVersion.AggregateSHA256,
-			SizeGB:     float64(row.ActiveVersion.TotalSizeBytes) / 1e9,
+			SizeGB:     catalogSizeGBForRow(row),
 			MinRAMGB:   row.MinRAMGB,
 		})
 	}

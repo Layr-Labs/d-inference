@@ -129,7 +129,7 @@ extension Models {
             // governs loadability, not presence.
             let localModels: [ModelInfo]
             if let hardware = snapshot.hardware {
-                localModels = ModelScanner.scanAllModels(hardwareInfo: hardware)
+                localModels = ModelScanner.scanAllModels(hardwareInfo: hardware, backend: snapshot.config.backend)
             } else {
                 localModels = []
             }

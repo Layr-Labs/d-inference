@@ -38,4 +38,16 @@ struct ReasoningParserSelectionTests {
         #expect(ProviderLoop.inferReasoningParser(for: "qwen") == .qwen3)
         #expect(ProviderLoop.inferReasoningParser(for: "deepseek") == .deepseekR1)
     }
+
+    // DeepSeek-V4 maps to the deepseekR1 (plain <think>) parser via the
+    // "deepseek" prefix: its completions start mid-think
+    // (reasoning</think>content — no literal <think> emitted, since the
+    // opening tag is part of the PROMPT), which deepseekR1's implicit-open
+    // -think handling already covers without a dedicated parser.
+    @Test("a DeepSeek-V4 model selects the deepseekR1 reasoning parser")
+    func deepseekV4MapsToDeepseekR1Parser() {
+        #expect(ProviderLoop.inferReasoningParser(for: "deepseek_v4") == .deepseekR1)
+        #expect(ProviderLoop.inferReasoningParser(for: "deepseek_v4_flash") == .deepseekR1)
+        #expect(ProviderLoop.inferReasoningParser(for: "DeepSeek_V4") == .deepseekR1)
+    }
 }

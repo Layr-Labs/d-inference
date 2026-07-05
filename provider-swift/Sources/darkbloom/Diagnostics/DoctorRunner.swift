@@ -103,7 +103,7 @@ enum DoctorRunner {
             // too large for this box, so a too-large CONFIGURED model would be
             // absent and doctor would silently diagnose a different (fitting) one
             // instead of flagging the one that will never load.
-            let allModels = ModelScanner.scanAllModels(hardwareInfo: hw)
+            let allModels = ModelScanner.scanAllModels(hardwareInfo: hw, backend: snapshot.config.backend)
             let alternatives = allModels.map {
                 ModelFitDiagnostic.ModelOption(id: $0.id, weightGb: $0.estimatedMemoryGb)
             }

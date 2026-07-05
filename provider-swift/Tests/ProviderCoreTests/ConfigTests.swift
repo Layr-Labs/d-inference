@@ -115,6 +115,51 @@ import Testing
     #expect(decoded.backend.adaptivePrefill == true)
 }
 
+// MARK: - MoE expert SSD streaming (DeepSeek-V4)
+
+@Test func configParsingDefaultsStreamExpertsToFalse() throws {
+    let config = ConfigManager.parse("""
+    [provider]
+    name = "test-provider"
+
+    [backend]
+    port = 8100
+    """)
+
+    #expect(config.backend.streamExperts == false)
+    #expect(config.backend.expertCacheGb == 0)
+}
+
+@Test func configParsingHonoursStreamExpertsAndCacheGb() throws {
+    let config = ConfigManager.parse("""
+    [provider]
+    name = "test-provider"
+
+    [backend]
+    stream_experts = true
+    expert_cache_gb = 24.5
+    """)
+
+    #expect(config.backend.streamExperts == true)
+    #expect(config.backend.expertCacheGb == 24.5)
+}
+
+@Test func configSerializationRoundTripsStreamExperts() throws {
+    let original = ProviderConfig(
+        provider: ProviderSettings(name: "test-provider"),
+        backend: BackendSettings(streamExperts: true, expertCacheGb: 32),
+        coordinator: CoordinatorSettings()
+    )
+
+    let toml = ConfigManager.serialize(original)
+    let decoded = ConfigManager.parse(toml)
+
+    #expect(toml.contains("stream_experts"))
+    #expect(toml.contains("expert_cache_gb"))
+    #expect(decoded.backend.streamExperts == true)
+    #expect(decoded.backend.expertCacheGb == 32)
+}
+
 // MARK: - Startup preload + rollover jitter keys
 
 @Test func configParsingDefaultsStartupPreloadKeys() throws {

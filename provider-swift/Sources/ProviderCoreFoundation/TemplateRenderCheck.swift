@@ -104,6 +104,17 @@ public enum TemplateRenderCheck {
     /// message shapes for VLM models, so judging a text-only template
     /// against parts it will never see would false-flag healthy models.
     public static func renderOK(at snapshotDir: URL) -> Bool? {
+        // DeepSeek-V4 ships no Jinja chat_template at all — `templateSources`
+        // is always empty for it, which would otherwise report `nil`
+        // ("unknown template state", omitted on the wire) and let tool-
+        // bearing requests through vacuously. This model family instead
+        // encodes via the native `DeepseekV4Encoding` port, so its honesty
+        // check is running that encoder against the same canonical fixture
+        // shapes, not compiling a Jinja template.
+        if let modelType = configModelType(at: snapshotDir), isDeepseekV4ModelType(modelType) {
+            return deepseekV4EncodingOK(at: snapshotDir)
+        }
+
         let sources = templateSources(at: snapshotDir)
         guard !sources.isEmpty else { return nil }
 
@@ -143,6 +154,108 @@ public enum TemplateRenderCheck {
             let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else { return false }
         return json["vision_config"] != nil
+    }
+
+    /// `config.json`'s `model_type`, or `nil` when the file is missing/
+    /// unparseable/lacks the key.
+    static func configModelType(at snapshotDir: URL) -> String? {
+        let configURL = snapshotDir.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: configURL),
+            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            let modelType = json["model_type"] as? String
+        else { return nil }
+        return modelType
+    }
+
+    private static func isDeepseekV4ModelType(_ modelType: String) -> Bool {
+        modelType.lowercased().replacingOccurrences(of: "-", with: "_").hasPrefix("deepseek_v4")
+    }
+
+    // MARK: - DeepSeek-V4 native-encoder self-check
+
+    /// Encode every canonical fixture through `DeepseekV4Encoding` (the same
+    /// encoder `ProviderCore`'s tokenization seam calls at request time —
+    /// see that type's doc comment). `false` on the first fixture that
+    /// throws; `true` only if every fixture encodes cleanly. Never throws:
+    /// `DeepseekV4Encoding.encode` failures are caught, not propagated, so
+    /// the startup scan stays crash-free like the Jinja path above.
+    private static func deepseekV4EncodingOK(at snapshotDir: URL) -> Bool {
+        for fixture in deepseekV4CanonicalFixtures {
+            do {
+                _ = try DeepseekV4Encoding.encode(messages: fixture.messages, tools: fixture.tools)
+            } catch {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// Canonical DeepSeek-V4 fixtures: plain multi-turn chat, and a full
+    /// tool flow (declaration → `tool_calls` → merged `tool_result`) in the
+    /// same post-decode shape `OpenAIChatMessage.templateMessageDict()` /
+    /// `OpenAITool.toolSpec()` hand the encoder at request time (tool-call
+    /// `arguments` already decoded to an object, tool schema already
+    /// unwrapped to a plain `[String: Any]`).
+    static var deepseekV4CanonicalFixtures: [(messages: [DSV4Msg], tools: [DSV4Msg]?)] {
+        let plainChat: [DSV4Msg] = [
+            ["role": "system", "content": "You are a helpful assistant."],
+            ["role": "user", "content": "Write one sentence about the sea."],
+            ["role": "assistant", "content": "The sea stretches endlessly under the sky."],
+        ]
+
+        let toolFlow: [DSV4Msg] = [
+            ["role": "system", "content": "You are a helpful assistant."],
+            ["role": "user", "content": "What's the weather in Paris?"],
+            [
+                "role": "assistant",
+                "reasoning_content": "The user wants the weather in Paris.",
+                "tool_calls": [
+                    [
+                        "id": "call_0001",
+                        "type": "function",
+                        "function": [
+                            "name": "get_weather",
+                            "arguments": ["location": "Paris, France", "unit": "celsius"] as DSV4Msg,
+                        ] as DSV4Msg,
+                    ] as DSV4Msg
+                ] as [DSV4Msg],
+            ],
+            [
+                "role": "tool",
+                "content": "{\"temperature\": 21, \"condition\": \"sunny\"}",
+                "tool_call_id": "call_0001",
+            ],
+            [
+                "role": "assistant",
+                "reasoning_content": "Got the weather; summarizing for the user.",
+                "content": "It's sunny and 21°C in Paris.",
+            ],
+        ]
+        let toolFlowTools: [DSV4Msg] = [
+            [
+                "type": "function",
+                "function": [
+                    "name": "get_weather",
+                    "description": "Get the current weather for a location.",
+                    "parameters": [
+                        "type": "object",
+                        "properties": [
+                            "location": ["type": "string", "description": "City and country"] as DSV4Msg,
+                            "unit": [
+                                "type": "string", "enum": ["celsius", "fahrenheit"],
+                                "description": "Temperature unit",
+                            ] as DSV4Msg,
+                        ] as DSV4Msg,
+                        "required": ["location"],
+                    ] as DSV4Msg,
+                ] as DSV4Msg,
+            ] as DSV4Msg
+        ]
+
+        return [
+            (messages: plainChat, tools: nil),
+            (messages: toolFlow, tools: toolFlowTools),
+        ]
     }
 
     // MARK: - Render context

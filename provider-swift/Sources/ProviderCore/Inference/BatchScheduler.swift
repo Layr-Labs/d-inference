@@ -289,6 +289,44 @@ public actor BatchScheduler {
     /// (often cached) `ProcessInfo` environment mid-run. @testable-only.
     internal var _forceB1FastPathForTest: Bool? = nil
 
+    /// True when the loaded model's cache layout cannot be represented by the
+    /// batched engine (`Scheduler.supportsBatchedServing == false`, e.g.
+    /// DeepSeek-V4's custom layer caches). EVERY request is then served through
+    /// the sequential single-request path (`BatchScheduler+SequentialServing`)
+    /// — routing such a model into the batched engine would not crash, it would
+    /// silently generate garbage (the model's cache downcasts return nil).
+    /// Set from the load snapshot; reset in `stopCurrentEngine`.
+    var requiresSequentialServing: Bool = false
+
+    /// Byte budget of the MoE expert SSD-streaming cache (DeepSeek-V4's
+    /// `DeepseekV4ExpertStreaming.cache`, `libs/mlx-swift-lm`) for the
+    /// currently-loaded model, or 0 when streaming isn't active. The cache is
+    /// MLX-allocated but NOT part of `ctx.model.parameters()` (it lives
+    /// outside the model's registered parameter tree), so the load-time
+    /// snapshot's `bytes` under-counts eventual resident usage by up to this
+    /// much. `applyPostLoadBudgets` folds it into the STATIC
+    /// `UnifiedMemoryCap.kvBudgetBytes` "weights" term so the token-budget
+    /// ceiling set at load time doesn't assume headroom the cache will
+    /// eventually claim as it warms up. The LIVE per-request KV gate needs no
+    /// equivalent adjustment — it reads real MLX active/cache counters, which
+    /// already include the expert cache's bytes as they're allocated. Set
+    /// from `loadModel`'s caller (`ProviderLoop.ensureModelLoaded`, which
+    /// computes the same budget it configures `DeepseekV4ExpertStreaming`
+    /// with); reset in `stopCurrentEngine`.
+    var expertStreamingCacheBytes: UInt64 = 0
+
+    /// Whether THIS load configured MoE expert SSD streaming (i.e.
+    /// `ExpertStreamingConfigurator.configure` returned `enabled == true`
+    /// for the model currently loaded into this scheduler). Deliberately
+    /// NOT derived from `expertStreamingCacheBytes > 0` (a theoretical
+    /// zero-budget streaming load would under-report) or from
+    /// `requiresSequentialServing` (set for every DeepSeek-V4 load
+    /// regardless of streaming — correlated, not equivalent). Read by
+    /// `stopCurrentEngine()` to decide whether to purge the shared,
+    /// process-wide `DeepseekV4ExpertStreaming.cache` when this model
+    /// unloads; set from the load snapshot, reset in `stopCurrentEngine`.
+    var expertStreamingConfigured: Bool = false
+
     // MARK: - Telemetry state (read by `backendCapacity`)
 
     var observedDecodeTpsEwma: Double = 0
@@ -485,6 +523,23 @@ public actor BatchScheduler {
         checkpointBoundaries = []
         checkpointLayerSignatures = []
 
+        // If this model configured MoE expert SSD streaming, its shared,
+        // process-wide `DeepseekV4ExpertStreaming.cache` can hold up to the
+        // configured `expert_cache_gb` (tens of GB) of streamed expert
+        // weights. Nothing else purges it on unload — release it now so an
+        // idle-timeout/explicit-unload/reload actually frees that memory
+        // instead of leaving it resident until process restart. Safe here:
+        // every in-flight forward pass is fenced by this point
+        // (`waitForFastPathTasks()` + `engine.core.stopAndWait()` above
+        // already awaited), so nothing can be mid-fetch against the cache.
+        // Must run BEFORE `MLX.Memory.clearCache()` below so the freed
+        // expert arrays return to the OS in the same sweep as the rest of
+        // this model's resident weights, rather than sitting in MLX's
+        // cache-memory pool until some later, unrelated clearCache.
+        if expertStreamingConfigured {
+            MLXLLM.DeepseekV4ExpertStreaming.purgeCache()
+        }
+
         // Now that everything holding KV is released — the engine chain (batch KV),
         // the capture pipeline (retained snapshots) and the RAM prefix tier — return
         // the freed pool to the OS. Done here, after those releases, so the flush
@@ -553,6 +608,9 @@ public actor BatchScheduler {
         budgetCollapsedSince = nil
         lastSuccessAt = nil
         lastAdmissionRejectAt = nil
+        requiresSequentialServing = false
+        expertStreamingCacheBytes = 0
+        expertStreamingConfigured = false
     }
 
     /// Cumulative active-bridge gate, called from tests.

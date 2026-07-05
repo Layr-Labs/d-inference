@@ -142,6 +142,25 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// false: availability beats perfection — a self-test failure may be
     /// transient and the model can still serve via the lazy-load path.
     public var startupSelftestFailClosed: Bool
+    /// Opt-in MoE expert SSD streaming for DeepSeek-V4 (`DeepseekV4ExpertStreaming`
+    /// in `libs/mlx-swift-lm`). Default false: DeepSeek-V4's ~125 GB of
+    /// routed-expert (`switch_mlp`) tensors load resident like any other
+    /// model. When true AND a model's `config.json` reports
+    /// `model_type == "deepseek_v4"`, the provider skips loading those tensors
+    /// resident and streams them from disk through a byte-budgeted LRU cache
+    /// instead — this is what lets a ~141 GB DeepSeek-V4-Flash checkpoint (only
+    /// ~16 GB resident once experts stream) serve on a 128 GB box. Every other
+    /// model is unaffected. Enable with `stream_experts = true` under
+    /// `[backend]` in provider.toml.
+    public var streamExperts: Bool
+    /// Expert cache budget in GiB for MoE expert streaming (see
+    /// `streamExperts`). `0` (default) auto-sizes from physical RAM and the
+    /// model's non-expert resident footprint — see
+    /// `ExpertStreamingAdmission.autoExpertCacheGb`. A positive value pins the
+    /// budget explicitly (surfaced to the streaming implementation via the
+    /// `DSV4_EXPERT_CACHE_GB` env var, read once per process). Set
+    /// `expert_cache_gb = <N>` under `[backend]` in provider.toml.
+    public var expertCacheGb: Double
 
     public init(
         port: UInt16 = 8100,
@@ -158,7 +177,9 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         preloadModels: [String] = [],
         startupPreloadTimeoutSecs: UInt64 = 120,
         startupSelftest: Bool = true,
-        startupSelftestFailClosed: Bool = false
+        startupSelftestFailClosed: Bool = false,
+        streamExperts: Bool = false,
+        expertCacheGb: Double = 0
     ) {
         self.port = port
         self.model = model
@@ -175,6 +196,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.startupPreloadTimeoutSecs = startupPreloadTimeoutSecs
         self.startupSelftest = startupSelftest
         self.startupSelftestFailClosed = startupSelftestFailClosed
+        self.streamExperts = streamExperts
+        self.expertCacheGb = expertCacheGb
     }
 
     enum CodingKeys: String, CodingKey {
@@ -193,6 +216,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case startupPreloadTimeoutSecs = "startup_preload_timeout_secs"
         case startupSelftest = "startup_selftest"
         case startupSelftestFailClosed = "startup_selftest_fail_closed"
+        case streamExperts = "stream_experts"
+        case expertCacheGb = "expert_cache_gb"
     }
 
     public init(from decoder: Decoder) throws {
@@ -215,6 +240,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.startupSelftest = try container.decodeIfPresent(Bool.self, forKey: .startupSelftest) ?? true
         self.startupSelftestFailClosed =
             try container.decodeIfPresent(Bool.self, forKey: .startupSelftestFailClosed) ?? false
+        self.streamExperts = try container.decodeIfPresent(Bool.self, forKey: .streamExperts) ?? false
+        self.expertCacheGb = try container.decodeIfPresent(Double.self, forKey: .expertCacheGb) ?? 0
     }
 }
 

@@ -204,6 +204,14 @@ extension BatchScheduler {
     /// bookkeeping and terminal `.info` / `.error` mapping) but sources tokens
     /// from the single-sequence generator instead of `engine.core.streamOutputs`.
     ///
+    /// ONLY the B=1 Gemma greedy fast path uses this runner (temperature 0,
+    /// no seed — `b1FastPathEligiblePure` requires both). The sequential-
+    /// serving route (DeepSeek-V4) uses `runSequentialRawTextPath` instead —
+    /// see `BatchScheduler+SequentialRawRunner.swift` for why: this runner's
+    /// `ModelContainer.generate` attaches a tool-call parser that can consume
+    /// generated text into a `.toolCall` event, which is unsafe for that
+    /// route regardless of whether the request carries tools.
+    ///
     /// The spawned task is tracked in `fastPathTasks[id]` so `cancel` /
     /// `cancelAll` / `stopCurrentEngine` can tear it down; it removes its own
     /// handle on completion. The caller (`submitTokenized`) is responsible for
@@ -222,8 +230,9 @@ extension BatchScheduler {
             // Token-only input (no media). `MLXArray(promptTokens)` is a cheap
             // host-side copy; the GPU work happens inside `generate`.
             let lmInput = LMInput(tokens: MLXArray(promptTokens))
-            // temperature 0 ⇒ ArgMaxSampler. topP/topK/penalties left at their
-            // defaults are inert under greedy. maxTokens bounds the decode.
+            // Greedy only: temperature 0 ⇒ ArgMaxSampler; topP/topK/penalties
+            // left at their defaults are inert under greedy. No seed — the
+            // eligibility gate rejects any request that supplies one.
             let params = GenerateParameters(maxTokens: maxTokens, temperature: 0)
 
             // Admission ≈ now: prefill is about to begin. Drives the
@@ -408,4 +417,21 @@ extension BatchScheduler {
 
     /// Test accessor: number of in-flight fast-path tasks currently tracked.
     func _fastPathTaskCountForTest() -> Int { fastPathTasks.count }
+
+    /// Force the sequential-serving flag without loading a model, so tests can
+    /// pin the single-slot heartbeat clamp (`effectiveMaxConcurrentRequests`).
+    func _setRequiresSequentialServingForTest(_ value: Bool) {
+        requiresSequentialServing = value
+    }
+
+    /// Force `expertStreamingConfigured` without a full `loadModel(container:)`
+    /// call (which needs a real, loaded `ModelContainer`), so tests can pin
+    /// the "did this load configure MoE expert streaming" flag and exercise
+    /// `stopCurrentEngine()`'s purge-on-unload decision in isolation.
+    func _setExpertStreamingConfiguredForTest(_ value: Bool) {
+        expertStreamingConfigured = value
+    }
+
+    /// Test accessor for `expertStreamingConfigured`.
+    func _expertStreamingConfiguredForTest() -> Bool { expertStreamingConfigured }
 }

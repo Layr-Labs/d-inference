@@ -214,6 +214,38 @@ final class TemplateRenderCheckTests: XCTestCase {
         XCTAssertNil(TemplateRenderCheck.renderOK(at: missing))
     }
 
+    // MARK: - (iii′) DeepSeek-V4 has no Jinja template — must NOT vacuously
+    // pass via the nil ("unknown") path. The native encoder is exercised
+    // instead, so a template-less deepseek_v4 snapshot reports a real
+    // `true`/`false`, matching every other model family's semantics for
+    // `template_render_ok` ("this provider can encode tool requests").
+
+    func testDeepseekV4WithNoJinjaTemplateReportsTrueNotNil() throws {
+        let dir = try makeSnapshotDir()
+        try write(#"{"model_type": "deepseek_v4"}"#, to: dir, as: "config.json")
+        // No chat_template.jinja/json, no tokenizer_config chat_template key
+        // — exactly what a real DeepSeek-V4-Flash snapshot ships.
+
+        XCTAssertEqual(TemplateRenderCheck.templateSources(at: dir), [])
+        XCTAssertEqual(TemplateRenderCheck.renderOK(at: dir), true)
+    }
+
+    func testDeepseekV4FlashVariantModelTypeIsRecognized() throws {
+        let dir = try makeSnapshotDir()
+        try write(#"{"model_type": "deepseek_v4_flash"}"#, to: dir, as: "config.json")
+
+        XCTAssertEqual(TemplateRenderCheck.renderOK(at: dir), true)
+    }
+
+    func testNonDeepseekV4ModelWithNoTemplateStillReturnsNil() throws {
+        // Regression guard: the deepseek_v4 special-case must not swallow
+        // the ordinary "unknown" signal for every other template-less model.
+        let dir = try makeSnapshotDir()
+        try write(textConfigJSON, to: dir, as: "config.json")
+
+        XCTAssertNil(TemplateRenderCheck.renderOK(at: dir))
+    }
+
     // MARK: - (iv) tokenizer_config list-form templates
 
     func testTokenizerConfigListFormCollectsAllTemplates() throws {

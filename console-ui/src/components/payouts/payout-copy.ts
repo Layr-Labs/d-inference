@@ -65,10 +65,25 @@ const WITHDRAW_ERROR_COPY = new Map<string, Omit<PayoutErrorPresentation, "code"
 export function classifyWithdrawError(err: unknown): PayoutErrorPresentation {
   const code = err instanceof ApiError ? err.code : "";
   const raw = err instanceof Error ? err.message : String(err);
+  const lower = raw.toLowerCase();
+
+  // An UNCONFIRMED outcome (Stripe never answered - the transfer may still
+  // complete) is deliberately NOT refunded: the withdrawal is on hold. This
+  // must be checked before the refund-pending branch below, whose broader
+  // "contact support" match would otherwise promise a refund that the
+  // backend intentionally did not issue.
+  if (code === "stripe_error" && (lower.includes("could not confirm") || lower.includes("couldn't confirm") || lower.includes("unconfirmed"))) {
+    return {
+      code,
+      message: "We couldn't confirm this withdrawal with Stripe. It's on hold - nothing was refunded - and it will complete or be resolved automatically. Contact support if it doesn't update within 24 hours.",
+      refreshStatus: false,
+      closeModal: true,
+    };
+  }
 
   // A stripe_error whose backend message asks the user to contact support
   // means a refund is still pending - don't claim nothing was withdrawn.
-  if (code === "stripe_error" && raw.toLowerCase().includes("contact support")) {
+  if (code === "stripe_error" && lower.includes("contact support")) {
     return {
       code,
       message: "Stripe couldn't process this withdrawal. The refund to your balance is pending - contact support if it doesn't appear shortly.",

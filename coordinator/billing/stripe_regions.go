@@ -1,5 +1,7 @@
 package billing
 
+import "strings"
+
 // Stripe Connect region policy.
 //
 // Stripe only supports transfers on the payments balance between the United
@@ -49,7 +51,15 @@ var fullTransferRegion = map[string]bool{
 //
 // Same-country accounts and accounts within the US/CA/UK/EEA/CH transfer
 // region use `full`; everything else needs `recipient`.
+//
+// Both inputs are case-normalized: Stripe returns uppercase ISO codes, but
+// the platform country arrives from configuration
+// (EIGENINFERENCE_STRIPE_CONNECT_COUNTRY) and could be set lowercase — a
+// missed comparison here would silently create normal US/EEA accounts as
+// `recipient`, changing their capabilities.
 func RequiredServiceAgreement(platformCountry, accountCountry string) string {
+	platformCountry = strings.ToUpper(strings.TrimSpace(platformCountry))
+	accountCountry = strings.ToUpper(strings.TrimSpace(accountCountry))
 	if accountCountry == "" || accountCountry == platformCountry {
 		return ServiceAgreementFull
 	}

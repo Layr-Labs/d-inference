@@ -72,6 +72,20 @@ describe("classifyWithdrawError", () => {
     expect(p.message).not.toContain("nothing was withdrawn");
   });
 
+  it("unconfirmed transfer (on hold, deliberately NOT refunded) never promises a refund", () => {
+    // Backend message for the ambiguous-outcome path: contains BOTH
+    // "couldn't confirm" and "contact support" - the unconfirmed branch
+    // must win over the refund-pending branch.
+    const p = classifyWithdrawError(new ApiError(
+      "we couldn't confirm the transfer with Stripe - your withdrawal is on hold and nothing was refunded; it will complete or be resolved automatically, contact support if it doesn't update within 24 hours",
+      STRIPE_ERROR, 502,
+    ));
+    expect(p.message).toContain("on hold");
+    expect(p.message).toContain("nothing was refunded");
+    expect(p.message).not.toContain("refund to your balance is pending");
+    expect(p.closeModal).toBe(true);
+  });
+
   it("unknown codes keep the raw backend message", () => {
     const p = classifyWithdrawError(new ApiError("minimum withdrawal is $1.00", "invalid_request_error", 400));
     expect(p.message).toBe("minimum withdrawal is $1.00");

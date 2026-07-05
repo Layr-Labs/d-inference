@@ -39,6 +39,14 @@ func TestRequiredServiceAgreement(t *testing.T) {
 		{"US", "MX", ServiceAgreementRecipient},
 		{"US", "BR", ServiceAgreementRecipient},
 		{"US", "IN", ServiceAgreementRecipient},
+		// Case-insensitive: the platform country comes from configuration
+		// (EIGENINFERENCE_STRIPE_CONNECT_COUNTRY) and may be lowercase; a
+		// missed match would create US/EEA accounts as recipient.
+		{"us", "US", ServiceAgreementFull},
+		{"us", "DE", ServiceAgreementFull},
+		{"gb", "fr", ServiceAgreementFull},
+		{" us ", "AU", ServiceAgreementRecipient},
+		{"us", "jp", ServiceAgreementRecipient},
 	}
 	for _, c := range cases {
 		if got := RequiredServiceAgreement(c.platform, c.account); got != c.want {

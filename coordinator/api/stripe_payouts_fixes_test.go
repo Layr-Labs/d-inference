@@ -891,3 +891,150 @@ func TestConnectWebhookPayoutPaidOnRefundedRowStaysFailed(t *testing.T) {
 		t.Errorf("balance moved: %d -> %d", balBefore, bal)
 	}
 }
+
+// TestStripeWithdraw500TransferParksRowWithoutRefund: Stripe documents 5xx
+// on POST mutations as indeterminate and possibly side-effecting — a 500
+// from transfers.create must take the unconfirmed path (idempotent replays,
+// then park without refund), never the definitive refund path.
+func TestStripeWithdraw500TransferParksRowWithoutRefund(t *testing.T) {
+	var transferCalls int32
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/accounts/") && r.Method == http.MethodGet {
+			id := strings.TrimPrefix(r.URL.Path, "/v1/accounts/")
+			_, _ = w.Write([]byte(healthyAccountJSON(id, "US", "full", false)))
+			return
+		}
+		if r.URL.Path == "/v1/transfers" {
+			atomic.AddInt32(&transferCalls, 1)
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"An unknown error occurred","type":"api_error"}}`))
+			return
+		}
+	}))
+	defer fakeStripe.Close()
+
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := readyUser(t, st, "acct-500-tr", "alice@example.com", false)
+	st.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
+
+	body := `{"amount_usd":"5.00","method":"standard"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeWithdraw(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("got %d, want 502: %s", w.Code, w.Body.String())
+	}
+	if n := atomic.LoadInt32(&transferCalls); n != 3 {
+		t.Errorf("transfer attempts = %d, want 3 (idempotent replays before parking)", n)
+	}
+	if bal := st.GetBalance(user.AccountID); bal != 5_000_000 {
+		t.Errorf("balance = %d, want 5_000_000 (500 is indeterminate — no refund)", bal)
+	}
+	wds, _ := st.ListStripeWithdrawals(user.AccountID, 0)
+	if len(wds) != 1 || wds[0].Status != "pending" || wds[0].Refunded {
+		t.Errorf("row = %+v, want pending/unrefunded (parked for reconciliation)", wds[0])
+	}
+}
+
+// TestConnectWebhookSweepBounceReopensClaimedRows: when an automatic sweep's
+// payout.failed arrives after its payout.paid (bank bounce), the rows that
+// sweep claimed must reopen to "transferred" — otherwise money parked back
+// in the connected balance hides behind terminal "paid" rows. Rows claimed
+// by OTHER sweeps stay paid.
+func TestConnectWebhookSweepBounceReopensClaimedRows(t *testing.T) {
+	fakeStripe := accountServingStripe("full")
+	defer fakeStripe.Close()
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := readyUser(t, st, "acct-sweep-bounce", "alice@example.com", false)
+
+	sweepTime := time.Now()
+	mkWithdrawal(t, st, store.StripeWithdrawal{
+		ID: "wd-sb-1", AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
+		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
+		Method: "standard", Status: "transferred", TransferID: "tr_sb1",
+		CreatedAt: sweepTime.Add(-3 * time.Hour),
+	})
+	mkWithdrawal(t, st, store.StripeWithdrawal{
+		ID: "wd-sb-2", AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
+		AmountMicroUSD: 3_000_000, NetMicroUSD: 3_000_000,
+		Method: "standard", Status: "transferred", TransferID: "tr_sb2",
+		CreatedAt: sweepTime.Add(-4 * time.Hour),
+	})
+	// Claimed by an OLDER sweep — must stay paid.
+	mkWithdrawal(t, st, store.StripeWithdrawal{
+		ID: "wd-sb-old", AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
+		AmountMicroUSD: 2_000_000, NetMicroUSD: 2_000_000,
+		Method: "standard", Status: "paid", TransferID: "tr_sb0", SweepPayoutID: "po_sweep_old",
+		CreatedAt: sweepTime.Add(-48 * time.Hour),
+	})
+	balBefore := st.GetBalance(user.AccountID)
+
+	// The sweep pays: both transferred rows are claimed and stamped.
+	if w := deliverConnectWebhook(t, srv,
+		payoutEventPayload("po_sweep_b", user.StripeAccountID, "paid", true, sweepTime.Unix())); w.Code != http.StatusOK {
+		t.Fatalf("sweep paid got %d: %s", w.Code, w.Body.String())
+	}
+	for _, id := range []string{"wd-sb-1", "wd-sb-2"} {
+		wd, _ := st.GetStripeWithdrawal(id)
+		if wd.Status != "paid" || wd.SweepPayoutID != "po_sweep_b" {
+			t.Fatalf("%s = status %q sweep %q, want paid/po_sweep_b", id, wd.Status, wd.SweepPayoutID)
+		}
+	}
+
+	// The same sweep bounces: its rows reopen; the older sweep's row stays.
+	if w := deliverConnectWebhook(t, srv,
+		payoutEventPayload("po_sweep_b", user.StripeAccountID, "failed", true, sweepTime.Unix())); w.Code != http.StatusOK {
+		t.Fatalf("sweep failed got %d: %s", w.Code, w.Body.String())
+	}
+	for _, id := range []string{"wd-sb-1", "wd-sb-2"} {
+		wd, _ := st.GetStripeWithdrawal(id)
+		if wd.Status != "transferred" || wd.SweepPayoutID != "" {
+			t.Errorf("%s = status %q sweep %q, want transferred/empty (reopened)", id, wd.Status, wd.SweepPayoutID)
+		}
+		if !strings.Contains(wd.FailureReason, "sweep_payout_failed") {
+			t.Errorf("%s failure reason = %q", id, wd.FailureReason)
+		}
+	}
+	old, _ := st.GetStripeWithdrawal("wd-sb-old")
+	if old.Status != "paid" || old.SweepPayoutID != "po_sweep_old" {
+		t.Errorf("older sweep's row = status %q sweep %q, want paid/po_sweep_old (untouched)", old.Status, old.SweepPayoutID)
+	}
+	if bal := st.GetBalance(user.AccountID); bal != balBefore {
+		t.Errorf("sweep bounce moved the ledger: %d -> %d", balBefore, bal)
+	}
+}
+
+// TestConnectWebhookRefundedRowFlipRedelivers: the failed-status flip on an
+// already-refunded row is what keeps it out of sweep reconciliation — a
+// transient persist failure must 500 (so Stripe redelivers) instead of
+// acking and leaving the refunded row claimable.
+func TestConnectWebhookRefundedRowFlipRedelivers(t *testing.T) {
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer fakeStripe.Close()
+	srv, flaky := newFlakyPayoutServer(t, fakeStripe)
+	user := readyUser(t, flaky.MemoryStore, "acct-ref-flip", "alice@example.com", false)
+
+	// Legacy shape: ledger refunded but row never flipped to failed.
+	mkWithdrawal(t, flaky.MemoryStore, store.StripeWithdrawal{
+		ID: "wd-ref-flip", AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
+		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
+		Method: "standard", Status: "transferred", TransferID: "tr_rf_flip",
+		Refunded: true,
+	})
+
+	flaky.failUpdates = true
+	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rf_flip")); w.Code != http.StatusInternalServerError {
+		t.Fatalf("got %d, want 500 (persist failed — Stripe must redeliver)", w.Code)
+	}
+
+	flaky.failUpdates = false
+	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rf_flip")); w.Code != http.StatusOK {
+		t.Fatalf("redelivery got %d", w.Code)
+	}
+	wd, _ := flaky.GetStripeWithdrawal("wd-ref-flip")
+	if wd.Status != "failed" {
+		t.Errorf("status = %q, want failed (terminal, out of sweep reconciliation)", wd.Status)
+	}
+}

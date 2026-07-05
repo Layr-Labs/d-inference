@@ -699,15 +699,17 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("stripe %d: %s", e.StatusCode, e.Message)
 }
 
-// IsDefinitiveAPIErr reports whether err chains to a Stripe API response —
-// i.e. the call definitively failed and no money moved. False for transport
-// timeouts, connection drops, and body read/parse failures, where the
-// outcome of an idempotent request is UNKNOWN: callers must not refund on
-// those without confirming (retry with the same idempotency key, or park the
-// row for reconciliation).
+// IsDefinitiveAPIErr reports whether err chains to a Stripe API response
+// that definitively rejected the request — i.e. no money moved. Only 4xx
+// responses qualify: Stripe documents 5xx on POST mutations as indeterminate
+// and potentially side-effecting (https://docs.stripe.com/error-low-level),
+// and explicitly recommends retrying them with the same idempotency key.
+// False for transport timeouts, connection drops, body read/parse failures,
+// and 5xx responses — callers must not refund on those without confirming
+// (retry with the same idempotency key, or park the row for reconciliation).
 func IsDefinitiveAPIErr(err error) bool {
 	var apiErr *APIError
-	return errors.As(err, &apiErr)
+	return errors.As(err, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500
 }
 
 // IsAccountGoneErr reports whether a Stripe error means the connected account

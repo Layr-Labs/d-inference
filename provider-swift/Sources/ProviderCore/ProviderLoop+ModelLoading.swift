@@ -115,8 +115,24 @@ extension ProviderLoop {
         }
 
         if modelsLoading.contains(modelId) {
-            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
-                loadingWaiters[modelId, default: []].append(cont)
+            do {
+                try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
+                    loadingWaiters[modelId, default: []].append(cont)
+                }
+            } catch is CancellationError {
+                // The ACTIVE LOADER was cancelled (its request was aborted
+                // mid-load, and the drain path cancels detached load tasks) —
+                // that is the loader's cancellation, not ours. A healthy
+                // co-waiter (another request or a preload for the same model)
+                // must not be poisoned by it: retry the load, becoming the new
+                // loader. Waiters that ARE meant to abort (their own task
+                // cancelled, or shutdown wants this load gone) exit via the
+                // re-checks here, so the shutdown paths that resume waiters
+                // with CancellationError still terminate.
+                try Task.checkCancellation()
+                if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
+                try await ensureModelLoaded(modelId: modelId, allowEviction: allowEviction)
+                return
             }
             try Task.checkCancellation()
             if shutdownShouldAbortLoad(modelId) { throw CancellationError() }

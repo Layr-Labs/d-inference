@@ -81,7 +81,8 @@ struct LaunchAgentServicePlistTests {
         // APNs) with no human; KeepAlive stays false to avoid racing the self-updater.
         #expect(plist["RunAtLoad"] as? Bool == true)
         #expect(plist["KeepAlive"] as? Bool == false)
-        #expect(plist["ExitTimeOut"] as? Int == 600)
+        // Daemon drain window (600s) + 60s teardown margin — see makeServicePlist.
+        #expect(plist["ExitTimeOut"] as? Int == 660)
         #expect((plist["EnvironmentVariables"] as? [String: String]) == ["DARKBLOOM_PREFIX_CACHE": "0"])
     }
 

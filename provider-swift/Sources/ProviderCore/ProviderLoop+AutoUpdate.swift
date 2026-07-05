@@ -205,6 +205,14 @@ extension ProviderLoop {
     /// drain: admission is closed and in-flight work has finished (or been
     /// force-cancelled), so no request can observe the swap window.
     private func commitStagedUpdateBundle(updater: SelfUpdater) -> AutoUpdateController.StepOutcome {
+        // A graceful stop can begin while the update controller is mid-drain.
+        // Committing would end in `restartAfterUpdate` relaunching a service the
+        // user just asked to stop; abort instead (the staged bundle is discarded
+        // by `resumeServingAfterUpdate`, and the next boot's startup update
+        // check picks the release up again).
+        guard !isShuttingDown else {
+            return .failed("provider is shutting down; aborting staged update commit")
+        }
         guard let staged = stagedUpdateBundle else {
             return .failed("no staged update bundle to install")
         }

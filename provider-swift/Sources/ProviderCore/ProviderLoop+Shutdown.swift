@@ -55,6 +55,10 @@ extension ProviderLoop {
             // them immediately instead of black-holing them for the whole drain,
             // and to route `cancel` frames for in-flight requests straight to
             // `handleCancellation` so an aborted stream stops generating promptly.
+            // (A request yielded into the no-longer-consumed event stream in the
+            // instant before `beginDraining` lands is neither processed nor
+            // rejected here; the coordinator's first-chunk timeout + pre-content
+            // retry recover it on another provider.)
             let drainSelf = self
             await coordinatorClient?.beginDraining(
                 onCancel: { requestId in
@@ -89,9 +93,16 @@ extension ProviderLoop {
         } else {
             // The event stream ended without a controlled drain (e.g. coordinator
             // disconnect): the connection is already gone, so cancel in-flight
-            // work rather than waiting on responses that can't be delivered.
+            // coordinator work rather than waiting on responses that can't be
+            // delivered. Local-endpoint streams don't depend on the coordinator
+            // connection — give them the same drain window the shutdown epilogue
+            // always did before unloading models out from under them.
             await cancelAllInflight()
             await cancelBackgroundWorkAndPreloads(sparingInflightLoads: false)
+            let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
+            if !drained {
+                logger.warning("Timed out waiting for local in-flight work to drain during shutdown")
+            }
         }
 
         // Drain (if any) is complete: now it is safe to close the transport and

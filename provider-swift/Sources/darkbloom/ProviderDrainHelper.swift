@@ -24,6 +24,13 @@ enum DrainAction: Sendable {
 /// daemon state file reports active inference, the user is told to wait. On
 /// timeout the daemon is force-killed and a warning is printed.
 ///
+/// Default drain window: the daemon's own in-flight drain is bounded at 600s
+/// (`ProviderLoop.shutdownDrainTimeout`); the extra 60s covers its post-drain
+/// teardown (outbound flush, preload waits, model unloads) so a drain that uses
+/// most of its window isn't SIGKILLed mid-teardown. `LaunchAgent`'s plist
+/// `ExitTimeOut` uses the same figure for the launchd-initiated path.
+let providerDrainTimeoutSeconds: TimeInterval = 660.0
+
 /// - Parameters:
 ///   - action: Describes the operation that will happen after the drain, for
 ///     user-facing messages.
@@ -33,7 +40,7 @@ enum DrainAction: Sendable {
 ///   its normal launchd path).
 func drainRunningProvider(
     action: DrainAction,
-    timeout: TimeInterval = 600.0
+    timeout: TimeInterval = providerDrainTimeoutSeconds
 ) async -> Bool {
     guard LaunchAgent.isAnySupportedLabelLoaded() else { return false }
 

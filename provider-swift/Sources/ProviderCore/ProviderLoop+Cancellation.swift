@@ -139,10 +139,13 @@ extension ProviderLoop {
         logger.info("Waiting up to \(timeout.components.seconds)s for active inference to finish before shutdown")
         let started = ContinuousClock.now
         while hasInflightWork {
-            // During a controlled shutdown (user stop/restart, schedule window
-            // close, or update hot-swap) we want to finish active inference even
-            // if the outer task was cancelled. Only abort early on cancellation
-            // when we are not in the shutdown path.
+            // During a controlled shutdown (`isShuttingDown`) we want to finish
+            // active inference even if the calling task was cancelled — e.g. the
+            // auto-update monitor's drain wait, torn down mid-poll by the
+            // shutdown sequence. Only abort early on cancellation when we are
+            // not in the shutdown path (the update hot-swap drain, which runs
+            // with `isShuttingDown == false`, keeps its original abort-on-cancel
+            // behavior).
             if !isShuttingDown, Task.isCancelled { return false }
             if ContinuousClock.now - started >= timeout {
                 return false
@@ -151,8 +154,12 @@ extension ProviderLoop {
                 try await Task.sleep(for: .milliseconds(250))
             } catch {
                 if !isShuttingDown { return false }
-                // Controlled shutdown: ignore cancellation from the sleep and
-                // keep polling until the work finishes or the timeout expires.
+                // Controlled shutdown but this task is cancelled, so
+                // `Task.sleep` throws immediately — sleeping directly would
+                // turn this poll into a hot spin on the actor. Sleep on an
+                // unstructured task (which does not inherit the cancellation)
+                // to keep the 250ms cadence.
+                await Task.detached { try? await Task.sleep(for: .milliseconds(250)) }.value
             }
         }
         return true

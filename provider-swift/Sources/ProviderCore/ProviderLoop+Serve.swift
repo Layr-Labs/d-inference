@@ -279,7 +279,7 @@ extension ProviderLoop {
             // inside an unstructured Task (created by `startShutdown`) that does
             // NOT inherit this cancellation, so `waitForInflightDrain` keeps
             // polling instead of bailing on `Task.isCancelled`.
-            Task { await self.startShutdown(drainInflight: true).value }
+            Task { await self.startShutdown(drainInflight: true) }
         }
 
         // The event stream ended. If the run task was cancelled (user stop /

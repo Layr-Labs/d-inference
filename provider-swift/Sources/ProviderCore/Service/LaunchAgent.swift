@@ -405,9 +405,11 @@ public enum LaunchAgent: Sendable {
     /// the separate `WatchdogAgent`, which waits out a grace period before
     /// relaunching (so it never races the updater) and honours `darkbloom stop`.
     ///
-    /// `ExitTimeOut = 600` gives the provider the same 10-minute window used by
-    /// `ProviderLoop.waitForInflightDrain()` to finish active inference before
-    /// launchd escalates `launchctl bootout` / logout shutdown to SIGKILL.
+    /// `ExitTimeOut = 660` gives the provider the 10-minute window used by
+    /// `ProviderLoop.waitForInflightDrain()` to finish active inference, plus a
+    /// 60s margin for post-drain teardown (outbound flush, model unloads),
+    /// before launchd escalates `launchctl bootout` / logout shutdown to
+    /// SIGKILL. Kept in sync with the CLI's `providerDrainTimeoutSeconds`.
     static func makeServicePlist(
         label: String,
         programArguments: [String],
@@ -423,7 +425,7 @@ public enum LaunchAgent: Sendable {
             "StandardErrorPath": logPath,
             "ProcessType": "Interactive",
             "Nice": -5,
-            "ExitTimeOut": 600,
+            "ExitTimeOut": 660,
         ]
 
         // launchd does NOT inherit the installing shell's environment, so any

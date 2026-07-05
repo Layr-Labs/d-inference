@@ -232,6 +232,71 @@ struct CoordinatorIntegrationTests {
         #expect(stateBox.isCanceled())
     }
 
+    // MARK: 2a. Graceful-drain gates at the receive path
+
+    /// While draining (graceful stop/restart), the CoordinatorClient must keep
+    /// the socket OPEN but (a) reject NEW inference requests with a 503
+    /// `inference_error` so the coordinator reroutes immediately, and (b) route
+    /// `cancel` frames to the drain handler instead of the no-longer-consumed
+    /// event stream. Both are exercised over a real loopback WebSocket.
+    @Test("draining rejects new inference requests with 503 and routes cancels to the drain handler")
+    func drainingRejectsNewWorkAndRoutesCancels() async throws {
+        let mock = MockCoordinator()
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let providerKeys = NodeKeyPair.generate()
+        let coordinator = makeClient(
+            url: baseURL.mockProviderWebSocketURL(),
+            publicKey: providerKeys.publicKeyBase64
+        )
+        _ = await coordinator.start()
+        defer { Task { await coordinator.shutdown() } }
+
+        let register = try await mock.awaitFirstRegister(timeout: .seconds(5))
+        try #require(register != nil)
+
+        // Enter drain mode with a recording cancel handler (mirrors the
+        // production wiring in ProviderLoop.runShutdownSequence).
+        let cancelBox = LoopStateBox()
+        await coordinator.beginDraining(
+            onCancel: { requestId in
+                #expect(requestId == "req-drain-cancel")
+                cancelBox.markCanceled()
+            }
+        )
+
+        // A NEW inference request during the drain must be rejected with 503
+        // right at the receive path — the event stream is not being consumed.
+        let chat = ChatCompletionRequest(
+            model: "mlx-community/Qwen3-0.6B-8bit",
+            messages: [.init(role: "user", content: "late")],
+            stream: true
+        )
+        try await mock.pushInferenceRequest(
+            requestId: "req-drain-reject",
+            providerPublicKeyBase64: providerKeys.publicKeyBase64,
+            chatRequestJSON: JSONEncoder().encode(chat)
+        )
+
+        let snap = try await mock.waitForSnapshot(timeout: .seconds(5)) {
+            !$0.inferenceErrors.isEmpty
+        }
+        let err = try #require(try #require(snap).inferenceErrors.first)
+        #expect(err.requestId == "req-drain-reject")
+        #expect(err.statusCode == 503)
+
+        // The socket must still be open mid-drain: a cancel pushed AFTER the
+        // reject must reach the drain handler (not the event stream).
+        try await mock.pushCancel(requestId: "req-drain-cancel")
+        var sawCancel = false
+        for _ in 0..<100 {
+            if cancelBox.isCanceled() { sawCancel = true; break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(sawCancel, "cancel during drain never reached the drain handler")
+    }
+
     // MARK: 2b. Direct-send fast path over a real WebSocket
 
     /// End-to-end validation of Optimizations 1-3 over a REAL loopback

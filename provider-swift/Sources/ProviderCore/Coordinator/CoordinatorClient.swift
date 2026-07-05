@@ -280,6 +280,11 @@ public actor CoordinatorClient {
     /// reconnect loop in `CoordinatorClient+Connection`.
     internal func handleDrainDisconnect() async {
         logger.info("Coordinator socket closed during drain; cancelling in-flight work and stopping reconnects")
+        // Nothing yielded after this point can ever be delivered (the reconnect
+        // loop is stopping), so tear down outbound delivery now. This zeroes the
+        // router's pending-write count — otherwise a terminal sent by a settling
+        // request would strand `flushOutbound` for its full timeout.
+        outboundRouter.finish()
         if let handler = drainDisconnectHandler { await handler() }
     }
 

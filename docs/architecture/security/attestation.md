@@ -109,4 +109,5 @@ Users can independently verify the MDA chain against Apple's public Enterprise A
 
 - [Identity binding](./identity-binding.md) — how SE keys, X25519 `K`, APNs tokens, and MDA certificates are bound together.
 - [Provider enrollment](./enrollment.md) — the combined `.mobileconfig` profile and MDM/SCEP enrollment flow.
+- [Corporate-MDM hardware trust](./corporate-mdm-hardware-trust.md) — how to reach hardware trust on Macs already managed by Kandji/Jamf (no second MDM), and the App Attest path.
 - [Encryption](./encryption.md) — hop-by-hop NaCl Box model and why the provider must be the decryption endpoint.

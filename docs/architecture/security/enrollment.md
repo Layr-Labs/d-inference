@@ -104,6 +104,15 @@ Code:
 - Trust level constants: `coordinator/registry/registry.go:52-57`
 - Code-identity attestation: `coordinator/api/provider.go:487-617`
 
+## Providers already managed by another MDM
+
+Because Apple permits only one MDM enrollment per device, a Mac already enrolled
+in a corporate MDM (Kandji, Jamf, …) cannot install this profile — `darkbloom
+enroll` refuses with `managedByOtherMDM`. The design for granting such machines
+hardware trust *without* a second enrollment (a Bring-Your-Own-MDM connector plus
+the macOS 27 App Attest path) is in
+[Corporate-MDM hardware trust](./corporate-mdm-hardware-trust.md).
+
 ## Privacy and control boundaries
 
 - The coordinator requests only read-only MDM rights.

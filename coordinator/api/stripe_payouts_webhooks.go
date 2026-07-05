@@ -146,6 +146,17 @@ func (s *Server) handlePayoutTerminal(event *billing.WebhookEvent, connectedAcct
 		if wd.Status == "paid" {
 			return nil
 		}
+		if wd.Refunded {
+			// The ledger was already refunded (e.g. transfer.reversed
+			// arrived first) AND the payout delivered — the user may hold
+			// both the refund and the card payout. Never overwrite the
+			// refunded/failed row to "paid" (that hides the double-payment);
+			// escalate for manual review instead.
+			s.logger.Error("stripe connect webhook: payout.paid on a refunded withdrawal — possible double payment, manual review required",
+				"withdrawal_id", wd.ID, "payout_id", pe.ID, "status", wd.Status,
+				"stripe_account_id", wd.StripeAccountID)
+			return nil
+		}
 		wd.Status = "paid"
 		if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
 			s.logger.Error("stripe connect webhook: mark paid failed", "error", err)

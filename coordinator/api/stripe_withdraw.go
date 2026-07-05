@@ -226,12 +226,36 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 2: transfer USD from platform balance to the connected account.
-	transfer, err := s.billing.StripeConnect().CreateTransfer(billing.CreateTransferParams{
-		DestinationAccountID: user.StripeAccountID,
-		AmountCents:          netCents,
-		IdempotencyKey:       "wd-tr-" + withdrawalID,
-		Description:          "Darkbloom credit withdrawal",
+	// Retried through retryAmbiguousStripe: the idempotency key makes a
+	// replay after a transport blip return the original transfer instead of
+	// creating a second one.
+	transfer, err := retryAmbiguousStripe(func() (*billing.Transfer, error) {
+		return s.billing.StripeConnect().CreateTransfer(billing.CreateTransferParams{
+			DestinationAccountID: user.StripeAccountID,
+			AmountCents:          netCents,
+			IdempotencyKey:       "wd-tr-" + withdrawalID,
+			Description:          "Darkbloom credit withdrawal",
+		})
 	})
+	if err != nil && !billing.IsDefinitiveAPIErr(err) {
+		// AMBIGUOUS outcome: Stripe never answered, so the idempotent
+		// request may have been accepted with the response lost. If it was,
+		// the daily sweep will still deliver the money — refunding here
+		// would pay the user twice. Park the row in "pending" (no refund):
+		// if the transfer landed, ops sees the stuck-pending reconciler
+		// alert and completes the row from the Stripe dashboard via the
+		// idempotency key; if it didn't, the same alert drives the refund.
+		wd.FailureReason = "transfer_create_unconfirmed: " + err.Error()
+		if uerr := s.persistWithdrawalUpdate(wd, "ambiguous transfer"); uerr != nil {
+			s.logger.Error("stripe payout: persist ambiguous-transfer state failed",
+				"error", uerr, "withdrawal_id", withdrawalID)
+		}
+		s.logger.Error("stripe payout: transfer outcome UNCONFIRMED — no refund issued, verify against Stripe dashboard",
+			"error", err, "withdrawal_id", withdrawalID, "idempotency_key", "wd-tr-"+withdrawalID)
+		writeJSON(w, http.StatusBadGateway, errorResponse("stripe_error",
+			"we couldn't confirm the transfer with Stripe — your withdrawal is on hold and nothing was refunded; it will complete or be resolved automatically, contact support if it doesn't update within 24 hours"))
+		return
+	}
 	if err != nil {
 		refunded := markFailedRefund("transfer_create_failed: " + err.Error())
 		s.logger.Error("stripe payout: transfer failed", "error", err, "withdrawal_id", withdrawalID)
@@ -306,14 +330,48 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 
 	// Step 3 (instant): create the Stripe Instant Payout from the connected
 	// account to the user's debit card. Instant payouts are USD/debit-card
-	// only, which the InstantEligible gate above guarantees.
-	payout, err := s.billing.StripeConnect().CreatePayout(billing.CreatePayoutParams{
-		OnBehalfOfAccountID: user.StripeAccountID,
-		AmountCents:         netCents,
-		Method:              method,
-		IdempotencyKey:      "wd-po-" + withdrawalID,
-		Description:         "Darkbloom credit withdrawal",
+	// only, which the InstantEligible gate above guarantees. Idempotent —
+	// ambiguous transport failures are retried with the same key.
+	payout, err := retryAmbiguousStripe(func() (*billing.Payout, error) {
+		return s.billing.StripeConnect().CreatePayout(billing.CreatePayoutParams{
+			OnBehalfOfAccountID: user.StripeAccountID,
+			AmountCents:         netCents,
+			Method:              method,
+			IdempotencyKey:      "wd-po-" + withdrawalID,
+			Description:         "Darkbloom credit withdrawal",
+		})
 	})
+	if err != nil && !billing.IsDefinitiveAPIErr(err) {
+		// AMBIGUOUS outcome: the payout may exist with its ID lost in
+		// flight. If it does, the user IS getting instant delivery — so do
+		// NOT refund the instant fee, and don't guess a terminal state. The
+		// row keeps its transfer and no payout ID; if the payout landed,
+		// its paid webhook won't match (unmatched non-automatic payouts are
+		// ignored) and no sweep will fire on the emptied balance, so the
+		// 48h reconciler alert surfaces the row for ops to settle via the
+		// idempotency key. If it didn't land, the daily sweep delivers and
+		// completes the row; ops refunds the fee from the same alert trail.
+		wd.FailureReason = "instant_payout_unconfirmed: " + err.Error()
+		if uerr := s.persistWithdrawalUpdate(wd, "ambiguous payout"); uerr != nil {
+			s.logger.Error("stripe payout: persist ambiguous-payout state failed",
+				"error", uerr, "withdrawal_id", withdrawalID)
+		}
+		s.logger.Error("stripe payout: instant payout outcome UNCONFIRMED — fee NOT refunded, verify against Stripe dashboard",
+			"error", err, "withdrawal_id", withdrawalID, "transfer_id", transfer.ID,
+			"idempotency_key", "wd-po-"+withdrawalID)
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"status":            "transferred",
+			"withdrawal_id":     withdrawalID,
+			"transfer_id":       transfer.ID,
+			"amount_usd":        formatUSD(grossMicroUSD),
+			"fee_usd":           formatUSD(feeMicroUSD),
+			"net_usd":           formatUSD(netMicroUSD),
+			"method":            method,
+			"message":           "we couldn't confirm your instant payout with Stripe — if it went through, funds reach your card in ~30 minutes; otherwise the daily payout delivers them and support will refund the instant fee, contact support if nothing arrives within 24 hours",
+			"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
+		})
+		return
+	}
 	if err != nil {
 		// Transfer succeeded — funds are in the connected account and the
 		// daily auto-payout will deliver them via the standard rail. We do
@@ -386,6 +444,22 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		"arrival_unix":      payout.ArrivalDate,
 		"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
 	})
+}
+
+// retryAmbiguousStripe retries fn while it fails with a non-definitive error
+// (transport timeout, connection drop, lost response) — outcomes where an
+// idempotency-keyed Stripe request may have been accepted. Replaying with the
+// same key returns the original result instead of moving money twice, so the
+// retry either recovers the lost response or surfaces Stripe's definitive
+// rejection. Definitive API errors return immediately. Bounded at 3 attempts
+// (0/200/400ms backoff), same budget as the other in-request retries.
+func retryAmbiguousStripe[T any](fn func() (T, error)) (T, error) {
+	out, err := fn()
+	for attempt := 1; attempt <= 2 && err != nil && !billing.IsDefinitiveAPIErr(err); attempt++ {
+		time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+		out, err = fn()
+	}
+	return out, err
 }
 
 // creditRefundOnceWithRetry credits a reference-idempotent refund, riding out

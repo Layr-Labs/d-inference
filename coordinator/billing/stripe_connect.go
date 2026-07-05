@@ -661,9 +661,12 @@ func (c *StripeConnect) do(method, path string, form url.Values, idempotencyKey 
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Try to surface Stripe's structured error message verbatim. The
-		// error code (when present) is included so callers can classify
-		// failures (see IsAccountGoneErr / IsServiceAgreementErr).
+		// Surface Stripe's structured error verbatim as a typed *APIError.
+		// The error code (when present) is included so callers can classify
+		// failures (see IsAccountGoneErr / IsServiceAgreementErr), and the
+		// type itself marks the failure as DEFINITIVE — Stripe answered, so
+		// the request provably did not move money (unlike transport errors,
+		// where an idempotent request may have been accepted).
 		var errEnvelope struct {
 			Error struct {
 				Message string `json:"message"`
@@ -672,14 +675,39 @@ func (c *StripeConnect) do(method, path string, form url.Values, idempotencyKey 
 			} `json:"error"`
 		}
 		if json.Unmarshal(respBody, &errEnvelope) == nil && errEnvelope.Error.Message != "" {
-			if errEnvelope.Error.Code != "" {
-				return nil, fmt.Errorf("stripe %d [%s]: %s", resp.StatusCode, errEnvelope.Error.Code, errEnvelope.Error.Message)
-			}
-			return nil, fmt.Errorf("stripe %d: %s", resp.StatusCode, errEnvelope.Error.Message)
+			return nil, &APIError{StatusCode: resp.StatusCode, Code: errEnvelope.Error.Code, Message: errEnvelope.Error.Message}
 		}
-		return nil, fmt.Errorf("stripe %d: %s", resp.StatusCode, string(respBody))
+		return nil, &APIError{StatusCode: resp.StatusCode, Message: string(respBody)}
 	}
 	return respBody, nil
+}
+
+// APIError is a non-2xx response from the Stripe API. Its presence in an
+// error chain means Stripe received, processed, and REJECTED the request —
+// as opposed to transport/read/parse failures, where an idempotency-keyed
+// request may have been accepted with the response lost in flight.
+type APIError struct {
+	StatusCode int
+	Code       string // Stripe error code, e.g. "account_invalid" (may be empty)
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	if e.Code != "" {
+		return fmt.Sprintf("stripe %d [%s]: %s", e.StatusCode, e.Code, e.Message)
+	}
+	return fmt.Sprintf("stripe %d: %s", e.StatusCode, e.Message)
+}
+
+// IsDefinitiveAPIErr reports whether err chains to a Stripe API response —
+// i.e. the call definitively failed and no money moved. False for transport
+// timeouts, connection drops, and body read/parse failures, where the
+// outcome of an idempotent request is UNKNOWN: callers must not refund on
+// those without confirming (retry with the same idempotency key, or park the
+// row for reconciliation).
+func IsDefinitiveAPIErr(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr)
 }
 
 // IsAccountGoneErr reports whether a Stripe error means the connected account

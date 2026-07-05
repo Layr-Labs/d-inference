@@ -227,16 +227,24 @@ struct GemmaVLMParityProbeMemoryLiveTests {
         await budget.release(requestID: "incident-probe")
         #expect(await budget.reservationIDsForTesting().isEmpty)
 
-        // 4. CAPACITY CONSISTENCY: with no engine-retained overhead, the v2
-        //    static ceiling derived from the live resident set IS the shared
-        //    gate's headroom on the same simulated 64 GB profile — heartbeat
-        //    max, engine admission, and the gate agree with nothing netted.
+        // 4. CAPACITY CONSISTENCY: the v2 static ceiling is sized from the
+        //    SCHEDULER's weight figure (the exact input production
+        //    makeEngineV2BridgeForSlot passes — ProviderLoop+EngineV2), NOT
+        //    from live MLX usage, so this genuinely catches the
+        //    over-advertising shape: if extraction/probe retained any
+        //    non-weight state, the weights-derived ceiling would exceed the
+        //    gate's live headroom by exactly that retained amount. With the
+        //    fused cache deleted, the divergence must fit inside the same
+        //    2 GiB retained-state bar as step 1 (rope tables, compiled-graph
+        //    constants), and can never be negative beyond rounding (live use
+        //    cannot be below the resident weights).
         MLX.Stream().synchronize()
         MLX.Memory.clearCache()
+        let schedulerWeightBytes = await slot.scheduler.modelWeightBytes
         let mlxUsedNow =
             UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
         let ceiling = EngineV2KVSizing.engineKVBytesCapacity(
-            newModelWeightBytes: Int(min(mlxUsedNow, UInt64(Int.max))),
+            newModelWeightBytes: schedulerWeightBytes,
             coResidentWeightBytes: 0,
             existingEngineKVCapacities: [],
             physicalBytes: totalBytes)
@@ -244,14 +252,24 @@ struct GemmaVLMParityProbeMemoryLiveTests {
             physicalBytes: totalBytes,
             mlxUsedBytes: mlxUsedNow,
             systemAvailableBytes: .max)
+        let retainedOverhead = Int64(ceiling) - Int64(clamping: gateHeadroom)
         print(
             "[parity-mem] 64GB-profile capacity: ceiling=\(Self.gib(ceiling)) "
-                + "gateHeadroom=\(Self.gib(Int(gateHeadroom)))")
+                + "gateHeadroom=\(Self.gib(Int(gateHeadroom))) "
+                + "retainedOverhead=\(Self.gib(Int(retainedOverhead)))")
         #expect(
-            UInt64(ceiling) == gateHeadroom,
+            retainedOverhead <= Int64(tolerance),
             Comment(
-                rawValue: "advertised v2 ceiling \(Self.gib(ceiling)) != shared-gate "
-                    + "headroom \(Self.gib(Int(gateHeadroom))) — heartbeat max and the gate "
-                    + "would disagree (the finding-2 over-routing shape)"))
+                rawValue: "weights-derived v2 ceiling \(Self.gib(ceiling)) exceeds the "
+                    + "shared-gate live headroom \(Self.gib(Int(gateHeadroom))) by more than "
+                    + "the retained-state bar — extraction/probe is holding non-weight "
+                    + "memory the heartbeat would over-advertise (the finding-2 "
+                    + "over-routing shape)"))
+        #expect(
+            retainedOverhead >= -(64 * 1024 * 1024),
+            Comment(
+                rawValue: "shared-gate headroom exceeds the weights-derived ceiling — "
+                    + "live MLX usage measured below the scheduler's resident weights, "
+                    + "which means the weight figure itself is inflated"))
     }
 }

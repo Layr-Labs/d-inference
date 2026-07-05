@@ -137,12 +137,12 @@ describe("classifyOnboardError", () => {
 describe("withdrawSuccessMessage", () => {
   it("standard: daily payout in local currency with ETA", () => {
     expect(withdrawSuccessMessage({ status: TRANSFERRED, method: STANDARD, eta: STANDARD_ETA_TEXT }))
-      .toBe("On its way - Stripe pays out daily to your bank in your local currency (ETA 1-3 business days).");
+      .toBe("On its way - Stripe pays out to your bank in your local currency (ETA 1-3 business days).");
   });
 
   it("standard without an ETA omits the parenthetical", () => {
     expect(withdrawSuccessMessage({ status: TRANSFERRED, method: STANDARD }))
-      .toBe("On its way - Stripe pays out daily to your bank in your local currency.");
+      .toBe("On its way - Stripe pays out to your bank in your local currency.");
   });
 
   it("instant submitted: debit card with ETA", () => {
@@ -225,5 +225,25 @@ describe("Japan weekly payout copy", () => {
     expect(methodExplainer("standard", 150, 0.5, "US")).toContain("daily payout");
     // Instant copy is country-independent.
     expect(methodExplainer("instant", 150, 0.5, "JP")).toContain("debit card");
+  });
+});
+
+describe("schedule-aware standard success toast", () => {
+  it("prefers the coordinator's schedule-aware message (weekly in Japan)", () => {
+    expect(withdrawSuccessMessage({
+      status: "transferred",
+      method: "standard",
+      eta: "up to 7-10 business days",
+      message: "funds are on the way - Stripe pays out to your bank on a weekly schedule in Japan",
+    })).toBe("Funds are on the way - Stripe pays out to your bank on a weekly schedule in Japan (ETA up to 7-10 business days).");
+  });
+
+  it("uses the daily message verbatim when the coordinator sends it", () => {
+    expect(withdrawSuccessMessage({
+      status: "transferred",
+      method: "standard",
+      eta: "1-3 business days",
+      message: "funds are on the way - Stripe pays out to your bank on a daily schedule",
+    })).toBe("Funds are on the way - Stripe pays out to your bank on a daily schedule (ETA 1-3 business days).");
   });
 });

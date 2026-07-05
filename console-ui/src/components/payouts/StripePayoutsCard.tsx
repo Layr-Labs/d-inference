@@ -137,6 +137,16 @@ export function StripePayoutsCard({
               Minimum withdrawal is ${minWithdrawUsd.toFixed(2)} — your balance is ${balanceUsd.toFixed(2)}.
             </p>
           )}
+          {onUnlink && (
+            <button
+              onClick={onUnlink}
+              disabled={unlinkLoading}
+              className="mt-3 block text-xs text-text-tertiary underline underline-offset-2 hover:text-coral disabled:opacity-50 transition-colors"
+              title="Detach this Stripe account (e.g. to change your payout country). Your balance is unaffected; you can set up payouts again afterwards."
+            >
+              {unlinkLoading ? "Unlinking..." : "Unlink Stripe account"}
+            </button>
+          )}
         </>
       ) : (
         <>

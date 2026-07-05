@@ -159,7 +159,13 @@ export function withdrawSuccessMessage(resp: {
     }
     return resp.message || `On its way - funds will arrive via Stripe's standard daily payout${eta}.`;
   }
-  return `On its way - Stripe pays out daily to your bank in your local currency${eta}.`;
+  // Standard: the coordinator's message is schedule-aware (daily in most
+  // countries, weekly in Japan) - prefer it over a hard-coded cadence.
+  if (resp.message) {
+    const msg = resp.message.charAt(0).toUpperCase() + resp.message.slice(1);
+    return `${msg}${eta}.`;
+  }
+  return `On its way - Stripe pays out to your bank in your local currency${eta}.`;
 }
 
 // --- Withdraw modal method copy ---

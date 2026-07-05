@@ -269,9 +269,17 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 			if perr := s.billing.Store().SetUserStripeAccount(user.AccountID, "", "", "", "", "", false); perr != nil {
 				s.logger.Error("stripe connect: unlink gone account failed", "error", perr)
 			} else {
+				// Clear EVERY account-derived field the response was
+				// pre-populated with — the store no longer holds any of
+				// them, and stale country/destination values would leak
+				// into the fresh-onboarding UI for one page load.
 				resp["has_account"] = false
 				resp["stripe_account_id"] = ""
 				resp["status"] = ""
+				resp["stripe_account_country"] = ""
+				resp["destination_type"] = ""
+				resp["destination_last4"] = ""
+				resp["instant_eligible"] = false
 			}
 		case err != nil:
 			s.logger.Warn("stripe connect: status refresh failed", "error", err)

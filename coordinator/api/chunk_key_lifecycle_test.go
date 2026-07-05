@@ -81,7 +81,7 @@ func TestHandleInferenceErrorForgetsAndZeroesChunkKey(t *testing.T) {
 	}
 }
 
-// cancelDispatchAndForget (the dispatch-loop abandon seam: speculative losers,
+// cancelDispatch (the dispatch-loop abandon seam: speculative losers,
 // failover retries) drops the key WITHOUT zeroing — it runs cross-goroutine
 // from the provider read loop.
 func TestCancelDispatchAndForgetDropsKeyWithoutZeroing(t *testing.T) {
@@ -108,19 +108,19 @@ func TestCancelDispatchAndForgetDropsKeyWithoutZeroing(t *testing.T) {
 	shared := seedChunkKey(t, srv, priv)
 	want := *shared
 
-	srv.cancelDispatchAndForget(p, pr)
+	srv.cancelDispatch(p, pr)
 
 	if p.GetPending(pr.RequestID) != nil {
-		t.Fatal("cancelDispatchAndForget should remove the pending request")
+		t.Fatal("cancelDispatch should remove the pending request")
 	}
 	if chunkKeyCached(&srv.chunkKeys, priv) {
-		t.Fatal("cancelDispatchAndForget should forget the chunk key")
+		t.Fatal("cancelDispatch should forget the chunk key")
 	}
 	if *shared != want {
 		t.Error("cross-goroutine forget must NOT zero the shared key")
 	}
 	// nil pr must be a no-op, not a panic.
-	srv.cancelDispatchAndForget(p, nil)
+	srv.cancelDispatch(p, nil)
 }
 
 // The queued-retry reassignment contract (dispatchPrimary ~line 905): the OLD

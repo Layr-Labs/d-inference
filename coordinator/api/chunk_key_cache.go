@@ -1,8 +1,8 @@
 package api
 
 import (
+	"reflect"
 	"sync"
-	"unsafe"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 )
@@ -110,7 +110,7 @@ func (c *chunkKeyCache) sharedKey(priv *[32]byte, peerPub string) (*[32]byte, er
 	shared := e2e.PrecomputeSharedKey(&pub, priv)
 
 	c.mu.Lock()
-	if _, gone := c.dead[uintptr(unsafe.Pointer(priv))]; gone {
+	if _, gone := c.dead[tombstoneKey(priv)]; gone {
 		// The request hit a terminal path while the lock was dropped for the
 		// compute (or this is a late chunk of an already-forgotten request):
 		// hand the key back for this one decrypt but do NOT cache it — no
@@ -139,7 +139,7 @@ func (c *chunkKeyCache) markDeadLocked(priv *[32]byte) {
 	if c.dead == nil || len(c.dead) >= chunkKeyDeadMax {
 		c.dead = make(map[uintptr]struct{})
 	}
-	c.dead[uintptr(unsafe.Pointer(priv))] = struct{}{}
+	c.dead[tombstoneKey(priv)] = struct{}{}
 }
 
 // forget drops the cached shared key for a finished request WITHOUT zeroing
@@ -210,4 +210,12 @@ func (c *chunkKeyCache) forgetPeer(peerPub string) {
 		}
 	}
 	c.mu.Unlock()
+}
+
+// tombstoneKey converts a priv pointer to its non-pinning map identity. Uses
+// reflect rather than unsafe purely to avoid the unsafe import; the semantics
+// (address as identity, no GC pinning, benign ABA on address reuse — see the
+// dead field comment) are identical.
+func tombstoneKey(priv *[32]byte) uintptr {
+	return reflect.ValueOf(priv).Pointer()
 }

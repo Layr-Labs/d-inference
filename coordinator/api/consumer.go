@@ -220,6 +220,12 @@ func (s *Server) cancelDispatch(provider *registry.Provider, pr *registry.Pendin
 		return
 	}
 	removed := provider.RemovePending(pr.RequestID)
+	// Drop the attempt's memoized chunk-decryption key: after RemovePending no
+	// provider terminal can find the request to clean it up. Plain forget, NO
+	// zeroing — this runs on the consumer/dispatch goroutine while the provider
+	// read loop may still be decrypting a late in-flight chunk with this key
+	// (see chunkKeyCache's zeroing policy).
+	s.chunkKeys.forget(pr.SessionPrivKey)
 	s.registry.SetProviderIdle(provider.ID)
 	s.sendProviderCancel(provider, pr.RequestID)
 	if removed != nil {
@@ -241,7 +247,19 @@ func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
 	if extra <= 0 {
 		return
 	}
-	_ = s.store.Credit(pr.ConsumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+pr.RequestID)
+	if err := s.store.Credit(pr.ConsumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+pr.RequestID); err != nil {
+		// Never swallow a failed refund: the consumer stays debited. The
+		// alert hook is the metric; ops resolves via the logged account.
+		s.logger.Error("reservation extra refund failed — consumer remains debited",
+			"account_id", pr.ConsumerKey,
+			"request_id", pr.RequestID,
+			"model", pr.Model,
+			"refund_micro_usd", extra,
+			"error", err,
+		)
+		s.ddIncr("billing.refund_failures", []string{"model:" + pr.Model, "op:reservation_extra_refund"})
+		return
+	}
 	pr.ReservedMicroUSD = pr.BaseReservedMicroUSD
 	s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + pr.Model})
 }
@@ -712,7 +730,9 @@ func (s *Server) dispatchOneProvider(
 	pendingCleanup := true
 	cleanupPending := func() {
 		if pendingCleanup {
-			provider.RemovePending(requestID)
+			if removed := provider.RemovePending(requestID); removed != nil {
+				s.chunkKeys.forget(removed.SessionPrivKey)
+			}
 			s.registry.SetProviderIdle(provider.ID)
 			pendingCleanup = false
 		}
@@ -764,7 +784,20 @@ func (s *Server) dispatchOneProvider(
 		extra := pr.ReservedMicroUSD - reservedMicroUSD
 		if extra > 0 {
 			start := time.Now()
-			_ = s.store.Credit(consumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+requestID)
+			if err := s.store.Credit(consumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+requestID); err != nil {
+				// Never swallow a failed refund: the consumer stays debited.
+				// Keep ReservedMicroUSD unchanged so a later settlement path
+				// can still retry the refund.
+				s.logger.Error("reservation extra refund failed — consumer remains debited",
+					"account_id", consumerKey,
+					"request_id", requestID,
+					"model", model,
+					"refund_micro_usd", extra,
+					"error", err,
+				)
+				s.ddIncr("billing.refund_failures", []string{"model:" + model, "op:reservation_extra_refund"})
+				return
+			}
 			s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + model})
 			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_extra_refund"})
 			pr.ReservedMicroUSD = reservedMicroUSD
@@ -3352,7 +3385,20 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		extra := pr.ReservedMicroUSD - reservedMicroUSD
 		if extra > 0 {
 			start := time.Now()
-			_ = s.store.Credit(consumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+requestID)
+			if err := s.store.Credit(consumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+requestID); err != nil {
+				// Never swallow a failed refund: the consumer stays debited.
+				// Keep ReservedMicroUSD unchanged so a later settlement path
+				// can still retry the refund.
+				s.logger.Error("reservation extra refund failed — consumer remains debited",
+					"account_id", consumerKey,
+					"request_id", requestID,
+					"model", model,
+					"refund_micro_usd", extra,
+					"error", err,
+				)
+				s.ddIncr("billing.refund_failures", []string{"model:" + model, "op:reservation_extra_refund"})
+				return
+			}
 			s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + model})
 			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_extra_refund"})
 			pr.ReservedMicroUSD = reservedMicroUSD
@@ -3388,7 +3434,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		// rate. Skipped for free (owned) requests, which settle at zero cost.
 		if s.billing != nil && !settlesFree {
 			if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {
-				provider.RemovePending(requestID)
+				if removed := provider.RemovePending(requestID); removed != nil {
+					s.chunkKeys.forget(removed.SessionPrivKey)
+				}
 				s.registry.SetProviderIdle(provider.ID)
 				excludeProviders = append(excludeProviders, provider.ID)
 				if !errors.Is(err, store.ErrInsufficientBalance) {
@@ -3546,7 +3594,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	pendingCleanup := true
 	cleanupPending := func() {
 		if pendingCleanup {
-			provider.RemovePending(requestID)
+			if removed := provider.RemovePending(requestID); removed != nil {
+				s.chunkKeys.forget(removed.SessionPrivKey)
+			}
 			s.registry.SetProviderIdle(provider.ID)
 			pendingCleanup = false
 		}
@@ -3752,7 +3802,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		} else {
 			select {
 			case errMsg := <-pr.ErrorCh:
-				provider.RemovePending(requestID)
+				if removed := provider.RemovePending(requestID); removed != nil {
+					s.chunkKeys.forget(removed.SessionPrivKey)
+				}
 				s.registry.SetProviderIdle(provider.ID)
 				s.sendProviderCancel(provider, requestID)
 				refundExtra()
@@ -3771,7 +3823,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 	case errMsg := <-pr.ErrorCh:
 		ttftTimer.Stop()
-		provider.RemovePending(requestID)
+		if removed := provider.RemovePending(requestID); removed != nil {
+			s.chunkKeys.forget(removed.SessionPrivKey)
+		}
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)
 		refundExtra()
@@ -3785,7 +3839,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
 		return
 	case <-ttftTimer.C:
-		provider.RemovePending(requestID)
+		if removed := provider.RemovePending(requestID); removed != nil {
+			s.chunkKeys.forget(removed.SessionPrivKey)
+		}
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)
 		refundExtra()
@@ -3796,7 +3852,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	case <-r.Context().Done():
 		ttftTimer.Stop()
-		provider.RemovePending(requestID)
+		if removed := provider.RemovePending(requestID); removed != nil {
+			s.chunkKeys.forget(removed.SessionPrivKey)
+		}
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)
 		refundExtra()
@@ -3825,7 +3883,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			} else {
 				select {
 				case errMsg := <-pr.ErrorCh:
-					provider.RemovePending(requestID)
+					if removed := provider.RemovePending(requestID); removed != nil {
+						s.chunkKeys.forget(removed.SessionPrivKey)
+					}
 					s.registry.SetProviderIdle(provider.ID)
 					s.sendProviderCancel(provider, requestID)
 					refundExtra()
@@ -3844,7 +3904,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			}
 		case errMsg := <-pr.ErrorCh:
 			chunkTimer.Stop()
-			provider.RemovePending(requestID)
+			if removed := provider.RemovePending(requestID); removed != nil {
+				s.chunkKeys.forget(removed.SessionPrivKey)
+			}
 			s.registry.SetProviderIdle(provider.ID)
 			s.sendProviderCancel(provider, requestID)
 			refundExtra()
@@ -3858,7 +3920,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
 			return
 		case <-chunkTimer.C:
-			provider.RemovePending(requestID)
+			if removed := provider.RemovePending(requestID); removed != nil {
+				s.chunkKeys.forget(removed.SessionPrivKey)
+			}
 			s.registry.SetProviderIdle(provider.ID)
 			s.sendProviderCancel(provider, requestID)
 			refundExtra()
@@ -3874,7 +3938,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			return
 		case <-r.Context().Done():
 			chunkTimer.Stop()
-			provider.RemovePending(requestID)
+			if removed := provider.RemovePending(requestID); removed != nil {
+				s.chunkKeys.forget(removed.SessionPrivKey)
+			}
 			s.registry.SetProviderIdle(provider.ID)
 			s.sendProviderCancel(provider, requestID)
 			refundExtra()
@@ -3886,7 +3952,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if !committed {
-		provider.RemovePending(requestID)
+		if removed := provider.RemovePending(requestID); removed != nil {
+			s.chunkKeys.forget(removed.SessionPrivKey)
+		}
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)
 		refundExtra()
@@ -3909,7 +3977,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				s.refundReservedBalance(refundPr, "post_terminal_sweep:"+requestID)
 			})
 		}
-		provider.RemovePending(requestID)
+		if removed := provider.RemovePending(requestID); removed != nil {
+			s.chunkKeys.forget(removed.SessionPrivKey)
+		}
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)
 	}()

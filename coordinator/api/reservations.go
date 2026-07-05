@@ -108,6 +108,10 @@ func (s *Server) releaseInitialReservation(accountID, model string, amount int64
 			"error", err,
 		)
 		s.ddIncr("billing.refund_failures", tags)
+		// Return WITHOUT the refund/release success counters: a failure
+		// counted as a success would make refund dashboards undercount
+		// exactly the incidents this alert exists to surface.
+		return
 	}
 	s.ddIncr("billing.reservation_refunds", tags)
 	s.ddIncr("billing.reservation_releases", append(tags, "reason:early"))

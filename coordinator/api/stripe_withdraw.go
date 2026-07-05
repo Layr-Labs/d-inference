@@ -118,14 +118,14 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		// it too), so if the heal fails we abort BEFORE the ledger debit
 		// rather than park the user's money behind a schedule that never pays
 		// out — the exact bug this path exists to fix.
-		if herr := s.billing.StripeConnect().UpdateAccountPayoutScheduleDaily(user.StripeAccountID); herr != nil {
+		if herr := s.billing.StripeConnect().UpdateAccountPayoutScheduleAuto(user.StripeAccountID, acct.Country); herr != nil {
 			s.logger.Error("stripe payout: payout schedule self-heal failed — refusing withdrawal",
 				"stripe_account_id", user.StripeAccountID, "error", herr)
 			writeJSON(w, http.StatusBadGateway, errorResponse("stripe_error",
 				"could not enable automatic payouts on your account — try again shortly"))
 			return
 		}
-		s.logger.Info("stripe payout: payout schedule healed to daily",
+		s.logger.Info("stripe payout: payout schedule healed to automatic",
 			"stripe_account_id", user.StripeAccountID)
 	}
 	// Instant requires a debit-card destination. Trust either the fresh

@@ -107,12 +107,12 @@ func (s *Server) sweepStuckStripeWithdrawals() {
 			continue
 		}
 		if acct.PayoutInterval == "manual" {
-			if err := s.billing.StripeConnect().UpdateAccountPayoutScheduleDaily(acctID); err != nil {
+			if err := s.billing.StripeConnect().UpdateAccountPayoutScheduleAuto(acctID, acct.Country); err != nil {
 				s.logger.Error("stripe reconciler: payout schedule heal failed",
 					"stripe_account_id", acctID, "stuck_withdrawals", count, "error", err)
 				continue
 			}
-			s.logger.Info("stripe reconciler: healed manual payout schedule to daily",
+			s.logger.Info("stripe reconciler: healed manual payout schedule to automatic",
 				"stripe_account_id", acctID, "stuck_withdrawals", count)
 			continue
 		}

@@ -2290,7 +2290,8 @@ func (s *MemoryStore) ListStripeWithdrawalsByStatus(status string, olderThan tim
 }
 
 // ListStripeWithdrawalsForStripeAccount returns withdrawals destined for the
-// given connected account in the given status, oldest first.
+// given connected account in the given status, oldest first. Capped at
+// MaxStripeWithdrawalsByStatusLimit (see the postgres impl for rationale).
 func (s *MemoryStore) ListStripeWithdrawalsForStripeAccount(stripeAccountID, status string) ([]StripeWithdrawal, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -2301,6 +2302,9 @@ func (s *MemoryStore) ListStripeWithdrawalsForStripeAccount(stripeAccountID, sta
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	if len(out) > MaxStripeWithdrawalsByStatusLimit {
+		out = out[:MaxStripeWithdrawalsByStatusLimit]
+	}
 	return out, nil
 }
 

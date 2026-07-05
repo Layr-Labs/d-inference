@@ -3558,15 +3558,18 @@ func (s *PostgresStore) ListStripeWithdrawalsByStatus(status string, olderThan t
 }
 
 // ListStripeWithdrawalsForStripeAccount returns withdrawals destined for the
-// given connected account in the given status, oldest first.
+// given connected account in the given status, oldest first. Capped at
+// MaxStripeWithdrawalsByStatusLimit as a webhook-path safety bound (a single
+// account should never approach it; stragglers are picked up on redelivery
+// or the next sweep since completed rows drop out of the status filter).
 func (s *PostgresStore) ListStripeWithdrawalsForStripeAccount(stripeAccountID, status string) ([]StripeWithdrawal, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+stripeWithdrawalSelectColumns+` FROM stripe_withdrawals
-		 WHERE stripe_account_id = $1 AND status = $2 ORDER BY created_at ASC`,
-		stripeAccountID, status)
+		 WHERE stripe_account_id = $1 AND status = $2 ORDER BY created_at ASC LIMIT $3`,
+		stripeAccountID, status, MaxStripeWithdrawalsByStatusLimit)
 	if err != nil {
 		return nil, fmt.Errorf("store: list stripe withdrawals for stripe account: %w", err)
 	}

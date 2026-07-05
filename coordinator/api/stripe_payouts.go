@@ -171,11 +171,11 @@ func (s *Server) handleStripeOnboard(w http.ResponseWriter, r *http.Request) {
 			if !needNewAccount && acct.PayoutInterval == "manual" {
 				// Self-heal accounts created by older code with a manual
 				// payout schedule (they strand transferred funds).
-				if err := s.billing.StripeConnect().UpdateAccountPayoutScheduleDaily(stripeAcctID); err != nil {
+				if err := s.billing.StripeConnect().UpdateAccountPayoutScheduleAuto(stripeAcctID, acct.Country); err != nil {
 					s.logger.Warn("stripe connect: payout schedule self-heal failed",
 						"stripe_account_id", stripeAcctID, "error", err)
 				} else {
-					s.logger.Info("stripe connect: payout schedule healed to daily",
+					s.logger.Info("stripe connect: payout schedule healed to automatic",
 						"stripe_account_id", stripeAcctID)
 				}
 			}
@@ -280,11 +280,11 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 			// schedule — a manual schedule strands transferred funds in the
 			// connected account ("Contact Eigen Labs, Inc. to get paid out").
 			if acct.PayoutInterval == "manual" {
-				if herr := s.billing.StripeConnect().UpdateAccountPayoutScheduleDaily(user.StripeAccountID); herr != nil {
+				if herr := s.billing.StripeConnect().UpdateAccountPayoutScheduleAuto(user.StripeAccountID, acct.Country); herr != nil {
 					s.logger.Warn("stripe connect: payout schedule self-heal failed",
 						"stripe_account_id", user.StripeAccountID, "error", herr)
 				} else {
-					s.logger.Info("stripe connect: payout schedule healed to daily",
+					s.logger.Info("stripe connect: payout schedule healed to automatic",
 						"stripe_account_id", user.StripeAccountID)
 				}
 			}

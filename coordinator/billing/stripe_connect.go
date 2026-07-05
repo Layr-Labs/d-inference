@@ -231,7 +231,7 @@ func (c *StripeConnect) CreateExpressAccount(params CreateExpressAccountParams) 
 		form.Set("individual[last_name]", params.LastName)
 	}
 	// Stripe sweeps the connected balance to the user's bank automatically.
-	form.Set("settings[payouts][schedule][interval]", "daily")
+	setAutoPayoutSchedule(form, country)
 
 	body, err := c.do("POST", "/v1/accounts", form, "")
 	if err != nil {
@@ -240,11 +240,26 @@ func (c *StripeConnect) CreateExpressAccount(params CreateExpressAccountParams) 
 	return parseAccount(body)
 }
 
-// UpdateAccountPayoutScheduleDaily flips a connected account's payout schedule
-// to automatic daily sweeps. Used to self-heal accounts created by older code
-// with a "manual" schedule, which stranded transferred funds in the connected
-// account balance. Idempotent — safe to call on accounts already on daily.
-func (c *StripeConnect) UpdateAccountPayoutScheduleDaily(accountID string) error {
+// setAutoPayoutSchedule writes the automatic payout-schedule form values for
+// a connected account country. Japan doesn't support daily automatic payouts
+// (weekly/monthly are the automatic options), so JP accounts sweep weekly,
+// anchored on Monday; everywhere else uses daily.
+func setAutoPayoutSchedule(form url.Values, country string) {
+	if strings.EqualFold(strings.TrimSpace(country), "JP") {
+		form.Set("settings[payouts][schedule][interval]", "weekly")
+		form.Set("settings[payouts][schedule][weekly_anchor]", "monday")
+		return
+	}
+	form.Set("settings[payouts][schedule][interval]", "daily")
+}
+
+// UpdateAccountPayoutScheduleAuto flips a connected account's payout schedule
+// to automatic sweeps (daily, or weekly for countries where Stripe doesn't
+// offer daily — see setAutoPayoutSchedule). Used to self-heal accounts
+// created by older code with a "manual" schedule, which stranded transferred
+// funds in the connected account balance. Idempotent — safe to call on
+// accounts already on an automatic schedule.
+func (c *StripeConnect) UpdateAccountPayoutScheduleAuto(accountID, country string) error {
 	if c.secretKey == "" && !c.mockMode {
 		return errors.New("stripe connect: not configured")
 	}
@@ -258,7 +273,7 @@ func (c *StripeConnect) UpdateAccountPayoutScheduleDaily(accountID string) error
 		return err
 	}
 	form := url.Values{}
-	form.Set("settings[payouts][schedule][interval]", "daily")
+	setAutoPayoutSchedule(form, country)
 	if _, err := c.do("POST", "/v1/accounts/"+accountID, form, ""); err != nil {
 		return fmt.Errorf("stripe connect: update payout schedule: %w", err)
 	}
@@ -704,12 +719,25 @@ func (e *APIError) Error() string {
 // responses qualify: Stripe documents 5xx on POST mutations as indeterminate
 // and potentially side-effecting (https://docs.stripe.com/error-low-level),
 // and explicitly recommends retrying them with the same idempotency key.
+//
+// One 4xx is also indeterminate: 409 idempotency conflicts
+// (idempotency_key_in_use) mean the ORIGINAL request is still executing and
+// may yet succeed — treating that as a definitive failure would refund a
+// mutation that can still roll forward.
+//
 // False for transport timeouts, connection drops, body read/parse failures,
-// and 5xx responses — callers must not refund on those without confirming
-// (retry with the same idempotency key, or park the row for reconciliation).
+// 5xx responses, and idempotency conflicts — callers must not refund on
+// those without confirming (retry with the same idempotency key, or park
+// the row for reconciliation).
 func IsDefinitiveAPIErr(err error) bool {
 	var apiErr *APIError
-	return errors.As(err, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	if apiErr.Code == "idempotency_key_in_use" || apiErr.StatusCode == 409 {
+		return false
+	}
+	return apiErr.StatusCode >= 400 && apiErr.StatusCode < 500
 }
 
 // IsAccountGoneErr reports whether a Stripe error means the connected account

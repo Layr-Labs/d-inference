@@ -304,7 +304,8 @@ func (s *Server) reconcileUnmatchedPayout(pe *billing.PayoutEvent, success bool)
 		availabilityDelay = stripeRecipientTransferDelay
 	}
 
-	settledBefore := time.Unix(pe.Created, 0).Add(-availabilityDelay)
+	payoutCreated := time.Unix(pe.Created, 0)
+	settledBefore := payoutCreated.Add(-availabilityDelay)
 	marked := 0
 	var firstErr error
 	for i := range rows {
@@ -317,6 +318,17 @@ func (s *Server) reconcileUnmatchedPayout(pe *billing.PayoutEvent, success bool)
 		}
 		if pe.Created > 0 && wd.CreatedAt.After(settledBefore) {
 			continue // funds not yet available when this sweep was cut — the next sweep covers it
+		}
+		// The row must have REACHED its current "transferred" state before
+		// the sweep was cut. This closes two gaps CreatedAt can't see:
+		// (1) the row is inserted before transfers.create, so a sweep cut
+		// in that window predates the money; (2) a row reopened by a sweep
+		// bounce has a fresh UpdatedAt, so a redelivered payout.paid from
+		// the OLD (bounced) sweep can't re-claim it — only a sweep cut
+		// after the reopen (i.e. one that can actually contain the
+		// re-parked funds) completes it.
+		if pe.Created > 0 && wd.UpdatedAt.After(payoutCreated) {
+			continue
 		}
 		wd.Status = "paid"
 		// Remember which sweep claimed the row: if this payout later

@@ -6,6 +6,7 @@ package billing
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -103,13 +104,23 @@ func TestCreateExpressAccountRecipientAgreementForm(t *testing.T) {
 		if got := form.Get("capabilities[transfers][requested]"); got != "true" {
 			t.Errorf("%s: transfers capability = %q, want true", country, got)
 		}
-		if got := form.Get("settings[payouts][schedule][interval]"); got != "daily" {
-			t.Errorf("%s: payout schedule = %q, want daily", country, got)
+		wantInterval := "daily"
+		if country == "JP" {
+			// Stripe doesn't offer daily automatic payouts in Japan.
+			wantInterval = "weekly"
+		}
+		if got := form.Get("settings[payouts][schedule][interval]"); got != wantInterval {
+			t.Errorf("%s: payout schedule = %q, want %q", country, got, wantInterval)
+		}
+		if country == "JP" {
+			if got := form.Get("settings[payouts][schedule][weekly_anchor]"); got != "monday" {
+				t.Errorf("JP: weekly_anchor = %q, want monday", got)
+			}
 		}
 	}
 }
 
-func TestUpdateAccountPayoutScheduleDaily(t *testing.T) {
+func TestUpdateAccountPayoutScheduleAuto(t *testing.T) {
 	var captured *http.Request
 	var capturedBody url.Values
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
@@ -119,7 +130,7 @@ func TestUpdateAccountPayoutScheduleDaily(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"acct_heal"}`))
 	})
 
-	if err := client.UpdateAccountPayoutScheduleDaily("acct_heal"); err != nil {
+	if err := client.UpdateAccountPayoutScheduleAuto("acct_heal", "US"); err != nil {
 		t.Fatalf("update schedule: %v", err)
 	}
 	if captured.Method != http.MethodPost || captured.URL.Path != "/v1/accounts/acct_heal" {
@@ -130,9 +141,27 @@ func TestUpdateAccountPayoutScheduleDaily(t *testing.T) {
 	}
 }
 
-func TestUpdateAccountPayoutScheduleDailyRequiresAccount(t *testing.T) {
+func TestUpdateAccountPayoutScheduleAutoJapanUsesWeekly(t *testing.T) {
+	var capturedBody url.Values
+	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedBody, _ = url.ParseQuery(string(body))
+		_, _ = w.Write([]byte(`{"id":"acct_jp"}`))
+	})
+	if err := client.UpdateAccountPayoutScheduleAuto("acct_jp", "JP"); err != nil {
+		t.Fatalf("update schedule: %v", err)
+	}
+	if got := capturedBody.Get("settings[payouts][schedule][interval]"); got != "weekly" {
+		t.Errorf("JP interval = %q, want weekly (Stripe has no daily payouts in Japan)", got)
+	}
+	if got := capturedBody.Get("settings[payouts][schedule][weekly_anchor]"); got != "monday" {
+		t.Errorf("JP weekly_anchor = %q, want monday", got)
+	}
+}
+
+func TestUpdateAccountPayoutScheduleAutoRequiresAccount(t *testing.T) {
 	client := NewStripeConnect("sk_test_fake", "", "US", false, silentLogger())
-	if err := client.UpdateAccountPayoutScheduleDaily(""); err == nil {
+	if err := client.UpdateAccountPayoutScheduleAuto("", "US"); err == nil {
 		t.Fatal("expected error for empty account id")
 	}
 }
@@ -224,5 +253,34 @@ func TestNormalizeServiceAgreement(t *testing.T) {
 	}
 	if got := NormalizeServiceAgreement("full"); got != ServiceAgreementFull {
 		t.Errorf("full must pass through, got %q", got)
+	}
+}
+
+// TestIsDefinitiveAPIErr pins the definitive-vs-indeterminate classification
+// that gates withdrawal refunds: only non-conflict 4xx responses prove no
+// money moved. 5xx (possibly side-effecting per Stripe's low-level error
+// docs), 409 idempotency conflicts (original request may still be
+// executing), and transport errors are indeterminate.
+func TestIsDefinitiveAPIErr(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"transport", errors.New("api request: context deadline exceeded"), false},
+		{"wrapped transport", fmt.Errorf("stripe connect: create transfer: %w", errors.New("read response: EOF")), false},
+		{"definitive 400", &APIError{StatusCode: 400, Message: "boom"}, true},
+		{"definitive 402", &APIError{StatusCode: 402, Code: "balance_insufficient", Message: "x"}, true},
+		{"wrapped definitive", fmt.Errorf("stripe connect: create transfer: %w", &APIError{StatusCode: 400, Message: "boom"}), true},
+		{"409 conflict", &APIError{StatusCode: 409, Code: "idempotency_key_in_use", Message: "in use"}, false},
+		{"idempotency code on other status", &APIError{StatusCode: 400, Code: "idempotency_key_in_use", Message: "in use"}, false},
+		{"500 indeterminate", &APIError{StatusCode: 500, Message: "unknown error"}, false},
+		{"503 indeterminate", &APIError{StatusCode: 503, Message: "overloaded"}, false},
+	}
+	for _, c := range cases {
+		if got := IsDefinitiveAPIErr(c.err); got != c.want {
+			t.Errorf("%s: IsDefinitiveAPIErr = %v, want %v", c.name, got, c.want)
+		}
 	}
 }

@@ -1004,6 +1004,33 @@ func TestConnectWebhookSweepBounceReopensClaimedRows(t *testing.T) {
 	if bal := st.GetBalance(user.AccountID); bal != balBefore {
 		t.Errorf("sweep bounce moved the ledger: %d -> %d", balBefore, bal)
 	}
+
+	// A redelivered payout.paid from the BOUNCED sweep must not re-claim the
+	// reopened rows: their reopen bumped UpdatedAt past the old sweep's
+	// creation time, so only a sweep cut AFTER the reopen (one that can
+	// actually contain the re-parked funds) may complete them.
+	if w := deliverConnectWebhook(t, srv,
+		payoutEventPayload("po_sweep_b", user.StripeAccountID, "paid", true, sweepTime.Unix())); w.Code != http.StatusOK {
+		t.Fatalf("stale sweep paid redelivery got %d: %s", w.Code, w.Body.String())
+	}
+	for _, id := range []string{"wd-sb-1", "wd-sb-2"} {
+		wd, _ := st.GetStripeWithdrawal(id)
+		if wd.Status != "transferred" {
+			t.Errorf("%s re-claimed by the bounced sweep's stale paid event: status %q", id, wd.Status)
+		}
+	}
+
+	// A NEW sweep cut after the reopen delivers and completes them.
+	if w := deliverConnectWebhook(t, srv,
+		payoutEventPayload("po_sweep_b2", user.StripeAccountID, "paid", true, time.Now().Add(time.Hour).Unix())); w.Code != http.StatusOK {
+		t.Fatalf("retry sweep paid got %d: %s", w.Code, w.Body.String())
+	}
+	for _, id := range []string{"wd-sb-1", "wd-sb-2"} {
+		wd, _ := st.GetStripeWithdrawal(id)
+		if wd.Status != "paid" || wd.SweepPayoutID != "po_sweep_b2" {
+			t.Errorf("%s = status %q sweep %q, want paid/po_sweep_b2 (claimed by the retry sweep)", id, wd.Status, wd.SweepPayoutID)
+		}
+	}
 }
 
 // TestConnectWebhookRefundedRowFlipRedelivers: the failed-status flip on an

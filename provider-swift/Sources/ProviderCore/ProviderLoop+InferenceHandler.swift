@@ -205,12 +205,25 @@ extension ProviderLoop {
         }
 
         // 4. Authoritative drain re-check. `await fastAdmissionReject` above is a
-        // suspension point, so draining could have begun (and the drain snapshot
-        // taken) while this request was parked — letting it slip past the early
-        // gate. There is NO `await` between this check and the `requestToModel`
-        // registration below, so on the actor it is atomic: either we reject now,
-        // or the request is counted in `hasInflightWork` before any drain
-        // snapshot can miss it.
+        // suspension point, so a shutdown or update-drain could have begun (and
+        // its drain snapshot taken) while this request was parked — letting it
+        // slip past the early gates at the top of this method. There is NO
+        // `await` between these checks and the `requestToModel` registration
+        // below, so on the actor they are atomic: either we reject now, or the
+        // request is counted in `hasInflightWork` before any drain snapshot can
+        // miss it. The shutdown re-check must come first — without it, a request
+        // suspended in `fastAdmissionReject` when SIGTERM arrives would send
+        // `inference_accepted` and then be dropped as the socket/models tear
+        // down, instead of cleanly returning 503 so the coordinator reroutes.
+        if isShuttingDown {
+            send.send(.inferenceError(
+                requestId: requestId,
+                error: "provider is shutting down",
+                statusCode: 503,
+                errorReason: nil
+            ))
+            return
+        }
         if rejectIfDrainingForUpdate(requestId: requestId, send: send) { return }
 
         // 5. Send inference_accepted
@@ -228,15 +241,45 @@ extension ProviderLoop {
         // request consuming the last slot or free memory between accept and
         // load). Map the failure to a status code so capacity errors reroute
         // (503) and missing models 404 instead of always counting as a fault.
+        //
+        // Run the load in a DETACHED task. `handleInferenceRequest` is awaited
+        // inline from the run loop, so it inherits the run task — which a stop/
+        // restart cancels. Detaching means a graceful drain lets this
+        // already-accepted request (it has `inference_accepted` + a
+        // `requestToModel` entry) finish its cold load instead of aborting it
+        // via `Task.checkCancellation()`. The detached task is not cancelled, so
+        // those gates (which exist to abort *background preloads*) don't fire for
+        // it; shutdown still aborts it only if no in-flight request needs the
+        // model (`shutdownShouldAbortLoad`). Awaiting `.value` from a cancelled
+        // run task does not throw — it waits for the load to finish.
+        let loadSelf = self
+        let loadTask = Task.detached { try await loadSelf.ensureModelLoaded(modelId: modelId) }
+        inflightModelLoadTasks[requestId] = loadTask
         do {
-            try await ensureModelLoaded(modelId: modelId)
+            try await loadTask.value
+            inflightModelLoadTasks[requestId] = nil
         } catch {
+            inflightModelLoadTasks[requestId] = nil
             if requestToModel.removeValue(forKey: requestId) != nil {
                 powerAssertion.release()
                 syncWarmModelState()
                 await updateAggregateCapacity()
             }
             await cancellationRegistry.finish(requestId: requestId)
+            // A cancelled load (client/coordinator cancel, or a shutdown drain
+            // cancelling the detached load task) is NOT a model fault. Reporting
+            // "model load failed" with a 5xx would make the coordinator cooldown
+            // / deroute a healthy provider+model. Map it to a clean shutdown 503
+            // (reroute) when draining, and stay silent for a plain cancel — the
+            // coordinator already aborted the request that triggered it.
+            if error is CancellationError {
+                if isShuttingDown {
+                    send.send(.inferenceError(requestId: requestId, error: "provider is shutting down", statusCode: 503, errorReason: nil))
+                } else {
+                    logger.info("[\(requestId)] Model load cancelled before completion")
+                }
+                return
+            }
             logger.error("[\(requestId)] Failed to load model '\(modelId)': \(error)")
             let statusCode = Self.loadErrorStatusCode(for: error)
             send.send(.inferenceError(requestId: requestId, error: "model load failed: \(error.localizedDescription)", statusCode: statusCode, errorReason: "model_load"))

@@ -53,7 +53,7 @@ extension ProviderLoop {
             return (fingerprint, WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId), false)
         }.value
         try Task.checkCancellation()
-        if isShuttingDown { throw CancellationError() }
+        if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
 
         // Record the fingerprint ONLY when we have a hash that corresponds to it
         // (fresh or skip-confirmed). Caching it after a FAILED re-hash would make
@@ -101,13 +101,13 @@ extension ProviderLoop {
     /// interleaved local-endpoint load cannot make the no-evict verdict
     /// stale.
     internal func ensureModelLoaded(modelId: String, allowEviction: Bool = true) async throws {
-        if isShuttingDown {
+        if shutdownShouldAbortLoad(modelId) {
             throw CancellationError()
         }
 
         while modelsUnloading.contains(modelId) {
             await waitForModelUnload(modelId)
-            if isShuttingDown { throw CancellationError() }
+            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
         }
 
         if modelSlots[modelId] != nil {
@@ -119,10 +119,10 @@ extension ProviderLoop {
                 loadingWaiters[modelId, default: []].append(cont)
             }
             try Task.checkCancellation()
-            if isShuttingDown { throw CancellationError() }
+            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
             while modelsUnloading.contains(modelId) {
                 await waitForModelUnload(modelId)
-                if isShuttingDown { throw CancellationError() }
+                if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
             }
             if modelSlots[modelId] != nil { return }
             try await ensureModelLoaded(modelId: modelId, allowEviction: allowEviction)
@@ -149,10 +149,10 @@ extension ProviderLoop {
             // Honor cancellation (e.g. shutdown cancelled this preload task
             // while it was suspended at the gate).
             try Task.checkCancellation()
-            if isShuttingDown { throw CancellationError() }
+            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
             while modelsUnloading.contains(modelId) {
                 await waitForModelUnload(modelId)
-                if isShuttingDown { throw CancellationError() }
+                if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
             }
             if modelSlots[modelId] != nil { return }
         }
@@ -187,7 +187,7 @@ extension ProviderLoop {
         modelsLoading.insert(modelId)
         do {
             try Task.checkCancellation()
-            if isShuttingDown { throw CancellationError() }
+            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
 
             // Load gate: require room for the WEIGHTS plus headroom for ONE
             // request, not a full-concurrency multiple. Concurrency beyond one
@@ -212,7 +212,7 @@ extension ProviderLoop {
                 throw InferenceError.modelLoadFailed(message)
             }
             try Task.checkCancellation()
-            if isShuttingDown { throw CancellationError() }
+            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
 
             // Q6: reserve this load's weight footprint in the shared KV budget so
             // a concurrent KV reservation on an already-loaded model can't grant
@@ -236,11 +236,11 @@ extension ProviderLoop {
             if let beforeModelLoad {
                 await beforeModelLoad(modelId)
                 try Task.checkCancellation()
-                if isShuttingDown { throw CancellationError() }
+                if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
             }
             let container = try await loadModelContainer(from: modelPath)
             try Task.checkCancellation()
-            if isShuttingDown { throw CancellationError() }
+            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
 
             // TOCTOU guard: the hash above was computed BEFORE loadModelContainer
             // read the weights. If a re-download landed in that window,
@@ -279,7 +279,7 @@ extension ProviderLoop {
             // concurrent KV reservations see the weights from here on. (Also
             // released in catch for the error paths above.)
             await kvBudget.release(requestID: pendingLoadID)
-            if isShuttingDown || Task.isCancelled {
+            if shutdownShouldAbortLoad(modelId) || Task.isCancelled {
                 await scheduler.unloadModel()
                 MLX.Memory.clearCache()
                 throw CancellationError()

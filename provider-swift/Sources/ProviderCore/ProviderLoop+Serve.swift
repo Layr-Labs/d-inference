@@ -204,8 +204,9 @@ extension ProviderLoop {
         logger.info("Coordinator client started, entering event loop")
 
         // 5. Process events. Cancellation is used by schedule enforcement
-        // and service shutdown; explicitly close the WebSocket so the stream
-        // unblocks instead of waiting for the next coordinator event.
+        // and service shutdown. On cancellation we begin a graceful shutdown
+        // that drains active inference *before* closing the coordinator socket,
+        // so in-flight responses can still reach consumers while we wind down.
         await withTaskCancellationHandler {
             for await event in events {
                 switch event {
@@ -270,65 +271,26 @@ extension ProviderLoop {
                 }
             }
         } onCancel: {
-            Task { await coordinator.shutdown() }
+            // SIGTERM / `darkbloom stop` / schedule-close cancels the run task.
+            // Kick off the shared graceful shutdown, which drains in-flight
+            // inference *before* the transport is torn down. The fall-through
+            // below awaits the same memoized task, so the coordinator socket and
+            // loaded models stay alive until the drain completes. The drain runs
+            // inside an unstructured Task (created by `startShutdown`) that does
+            // NOT inherit this cancellation, so `waitForInflightDrain` keeps
+            // polling instead of bailing on `Task.isCancelled`.
+            Task { await self.startShutdown(drainInflight: true).value }
         }
 
+        // The event stream ended. If the run task was cancelled (user stop /
+        // restart / schedule close) we drain in-flight inference first; otherwise
+        // (coordinator disconnect, stream finished on its own) we cancel promptly
+        // because responses can no longer be delivered. Either way we await the
+        // SINGLE shared shutdown task, so transport teardown and model unloading
+        // happen only after the drain — never racing it.
+        let runTaskCancelled = Task.isCancelled
         logger.info("Event stream ended, shutting down")
-        isShuttingDown = true
-        idleMonitorTask?.cancel()
-        idleMonitorTask = nil
-        capacityRefreshTask?.cancel()
-        capacityRefreshTask = nil
-        autoUpdateTask?.cancel()
-        autoUpdateTask = nil
-        autoReportTask?.cancel()
-        autoReportTask = nil
-        // Cancel any scheduled desired-build prefetch retries before tearing
-        // the prefetch subsystem down.
-        for task in desiredPrefetchRetryTasks.values { task.cancel() }
-        desiredPrefetchRetryTasks.removeAll()
-        desiredPrefetchRetryAttempts.removeAll()
-        // Cancel background prefetch downloads (no GPU slot, but they hold a
-        // network connection and disk staging we want to release promptly).
-        if let prefetchCoordinator {
-            await prefetchCoordinator.shutdown(timeout: Self.preloadShutdownTimeout)
-        }
-        // Cancel BOTH preload flavors: coordinator-driven load_model tasks and
-        // any still-running startup preload driver (it outlives the readiness
-        // gate when the timeout passed).
-        var preloads = Array(preloadTasks.values)
-        if let startupTask = startupPreloadTask {
-            preloads.append(startupTask)
-        }
-        for task in preloads { task.cancel() }
-        cancelLoadWaiters()
-        let preloadsFinished = await waitForPreloads(preloads, timeout: Self.preloadShutdownTimeout)
-        if !preloadsFinished {
-            logger.warning("Timed out waiting for coordinator-driven preloads to cancel during shutdown")
-        }
-        startupPreloadTask = nil
-        preloadTasks.removeAll()
-        preloadTaskIds.removeAll()
-        preloadStatusSubscribers.removeAll()
-
-        let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
-        if !drained {
-            logger.warning("Timed out waiting for active inference to drain; cancelling remaining requests")
-            await cancelAllInflight()
-        }
-        await coordinator.shutdown()
-        // Phase 3: shutdown the global disk accountant.
-        await diskAccountant.shutdown()
-        while !modelSlots.isEmpty {
-            if let unloading = modelsUnloading.first {
-                await waitForModelUnload(unloading)
-                continue
-            }
-            for modelId in Array(modelSlots.keys) {
-                await unloadModel(modelId)
-            }
-        }
-        powerAssertion.releaseAll()
+        await startShutdown(drainInflight: runTaskCancelled).value
     }
 
     // MARK: - Security Hardening

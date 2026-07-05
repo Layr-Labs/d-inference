@@ -40,6 +40,14 @@ extension Start {
             throw ExitCode.failure
         }
 
+        // If the service is already running, drain it before replacing the plist.
+        // This avoids aborting in-flight requests when the user re-runs `start`
+        // with a new model selection. Legacy labels are included so upgraded
+        // providers drain before the new plist takes over.
+        if LaunchAgent.isAnySupportedLabelLoaded() {
+            _ = await drainRunningProvider(action: .startReplace)
+        }
+
         try LaunchAgent.installAndStart(
             coordinatorURL: coordinatorURL,
             models: selectedModelIDs,

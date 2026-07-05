@@ -20,10 +20,12 @@ extension CoordinatorClient {
             do {
                 try await connectAndRun()
                 logger.info("Coordinator connection closed, reconnecting...")
+                if draining { await handleDrainDisconnect(); break }
                 backoff.reset()
                 continue
             } catch {
                 if shutdownRequested { break }
+                if draining { await handleDrainDisconnect(); break }
 
                 eventContinuation?.yield(.disconnected)
                 let delay = backoff.nextDelay()
@@ -234,10 +236,16 @@ extension CoordinatorClient {
             // stall that throttled per-stream TPS under concurrent load.
             group.addTask { [weak self] in
                 guard let self else { return }
+                let router = self.outboundRouter
                 for await msg in outboundStream {
                     if self.shutdownRequested { break }
                     let json = self.encodeOutbound(msg)
-                    self.sendTextFrame(json, on: connection, identifier: "chunk")
+                    // Confirm the write so a graceful shutdown can flush the tail
+                    // (e.g. the final inference_complete) before tearing down —
+                    // see OutboundRouter.markWritten / flushOutbound.
+                    self.sendTextFrame(json, on: connection, identifier: "chunk") {
+                        router.markWritten()
+                    }
                 }
             }
 
@@ -328,7 +336,8 @@ extension CoordinatorClient {
     nonisolated internal func sendTextFrame(
         _ json: String,
         on connection: NWConnection,
-        identifier: String
+        identifier: String,
+        onProcessed: (@Sendable () -> Void)? = nil
     ) {
         let logger = self.logger
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
@@ -346,6 +355,9 @@ extension CoordinatorClient {
                     // vanish, and the coordinator-side request waits for a timeout.
                     connection.cancel()
                 }
+                // Fires on success AND failure: a failed frame is gone either
+                // way, so a graceful-drain flush must not wait on it.
+                onProcessed?()
             }
         )
     }

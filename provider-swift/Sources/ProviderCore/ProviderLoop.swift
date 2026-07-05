@@ -228,6 +228,14 @@ public actor ProviderLoop {
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false
 
+    /// Memoized graceful-shutdown task (`ProviderLoop+Shutdown`). Both the
+    /// run-task cancellation handler and the run-loop fall-through funnel
+    /// through `startShutdown(drainInflight:)` so they share ONE shutdown
+    /// sequence instead of racing each other. Without this, the fall-through
+    /// could close the coordinator socket and unload models while the drain
+    /// task was still waiting for in-flight streams.
+    internal var shutdownTask: Task<Void, Never>?
+
     /// Phase of a graceful auto-update cycle. Drives admission: in `.draining`
     /// we refuse new requests (503 reroute) so in-flight work can finish before
     /// the hot-swap restart. See `AutoUpdateController`.
@@ -262,6 +270,14 @@ public actor ProviderLoop {
 
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     internal var inflightTasks: [String: Task<Void, Never>] = [:]
+
+    /// Tracks the per-request DETACHED model-load tasks (see
+    /// `handleInferenceRequest`) so they can be cancelled when in-flight work is
+    /// torn down. Without a retained handle, a load that stalls past the drain
+    /// timeout would leave `handleInferenceRequest` awaiting `loadTask.value`
+    /// forever, so `run()` could never return and the CLI would escalate to
+    /// SIGKILL instead of exiting cleanly.
+    internal var inflightModelLoadTasks: [String: Task<Void, Error>] = [:]
 
     /// A detached task can finish before the actor stores it in `inflightTasks`.
     /// Track that edge so the post-spawn registration does not leave a stale task.
@@ -439,6 +455,9 @@ public actor ProviderLoop {
 
     internal static let shutdownDrainTimeout: Duration = .seconds(600)
     internal static let preloadShutdownTimeout: Duration = .seconds(10)
+    /// Max time to wait for queued outbound frames to flush to the socket during
+    /// a graceful drain before closing the transport.
+    internal static let outboundFlushTimeout: Duration = .seconds(5)
     private static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
 
     // MARK: - Initialization
@@ -594,6 +613,7 @@ public actor ProviderLoop {
     // `ModelSlot`/static config, and the nested helper types above.
     //
     //   - ProviderLoop+Serve.swift               run() loop + registration setup
+    //   - ProviderLoop+Shutdown.swift            graceful-shutdown sequence (drain + teardown)
     //   - ProviderLoop+InferenceHandler.swift    handleInferenceRequest + draining gates
     //   - ProviderLoop+Preload.swift             load_model preload + preload/shutdown waits
     //   - ProviderLoop+StartupPreload.swift      boot-time preload + registration readiness gate

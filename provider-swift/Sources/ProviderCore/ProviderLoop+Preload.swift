@@ -129,9 +129,22 @@ extension ProviderLoop {
         }
     }
 
-    internal func cancelLoadWaiters() {
-        for waiters in loadingWaiters.values {
-            for waiter in waiters { waiter.resume(throwing: CancellationError()) }
+    /// Resume everyone suspended in the load path. With
+    /// `sparingInflightRequests: true` (graceful drain), waiters whose model
+    /// still backs an accepted request are resumed WITHOUT an error so their
+    /// load keeps going and the request can drain — only background-preload
+    /// waiters are cancelled. Gate waiters are always resumed (no error); each
+    /// resumed task re-checks `Task.isCancelled` / `shutdownShouldAbortLoad`, so
+    /// preloads still abort while spared in-flight loads continue. The final
+    /// teardown / post-drain-timeout path passes `false` to abort everything.
+    internal func cancelLoadWaiters(sparingInflightRequests: Bool = false) {
+        let inflightModels = sparingInflightRequests ? Set(requestToModel.values) : Set<String>()
+        for (modelId, waiters) in loadingWaiters {
+            if inflightModels.contains(modelId) {
+                for waiter in waiters { waiter.resume() }
+            } else {
+                for waiter in waiters { waiter.resume(throwing: CancellationError()) }
+            }
         }
         loadingWaiters.removeAll()
         releaseLoadGateWaiters()

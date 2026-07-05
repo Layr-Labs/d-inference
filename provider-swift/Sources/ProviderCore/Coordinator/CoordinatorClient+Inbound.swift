@@ -34,6 +34,23 @@ extension CoordinatorClient {
             let requestId = request.requestId
             logger.info("Received inference request: \(requestId)")
 
+            // Graceful drain in progress: the provider event loop has stopped
+            // consuming events, but this socket is intentionally kept open so
+            // in-flight responses can finish. Reject NEW requests with 503 right
+            // here so the coordinator reroutes them immediately instead of
+            // waiting for an inference timeout on a request that will never be
+            // processed.
+            if draining {
+                logger.info("Rejecting inference request during drain: \(requestId)")
+                let errorResponse = encodeInferenceError(
+                    requestId: requestId,
+                    error: "provider is shutting down",
+                    statusCode: 503
+                )
+                sendOnCurrentConnection(errorResponse, identifier: "inference_error")
+                return
+            }
+
             guard let encrypted = request.encryptedBody else {
                 logger.error("Rejecting plaintext inference request: \(requestId)")
                 let errorResponse = encodeInferenceError(
@@ -80,7 +97,14 @@ extension CoordinatorClient {
         case .cancel(let cancel):
             let requestId = cancel.requestId
             logger.info("Received cancel for: \(requestId)")
-            eventContinuation?.yield(.cancel(requestId: requestId))
+            // While draining, the provider event stream is no longer consumed, so
+            // route cancels straight to the drain handler — otherwise an aborted
+            // request would keep generating until the drain timeout.
+            if draining, let handler = drainCancelHandler {
+                await handler(requestId)
+            } else {
+                eventContinuation?.yield(.cancel(requestId: requestId))
+            }
 
         case .attestationChallenge(let challenge):
             logger.info("Received attestation challenge")

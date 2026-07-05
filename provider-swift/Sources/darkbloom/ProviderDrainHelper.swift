@@ -19,10 +19,10 @@ enum DrainAction: Sendable {
 /// Ask a running provider daemon to drain in-flight requests and exit gracefully
 /// before the caller manipulates its launchd job.
 ///
-/// Reads the daemon PID from `DaemonStateFile`, sends `SIGTERM`, and waits up to
-/// `timeout` for the process to exit. If the daemon reports active inference,
-/// the user is told to wait. On timeout the daemon is force-killed and a warning
-/// is printed.
+/// Resolves the daemon PID(s) from launchd (`LaunchAgent.loadedServicePIDs`),
+/// sends `SIGTERM`, and waits up to `timeout` for each process to exit. If the
+/// daemon state file reports active inference, the user is told to wait. On
+/// timeout the daemon is force-killed and a warning is printed.
 ///
 /// - Parameters:
 ///   - action: Describes the operation that will happen after the drain, for
@@ -44,7 +44,7 @@ func drainRunningProvider(
     // `stop`/`restart`/replacement `start`. During an upgrade both the canonical
     // and a legacy job can be loaded; the launchd stop/replace paths unload every
     // supported label, so we must drain all of them.
-    let pids = LaunchAgent.loadedServicePIDs().filter { $0 > 0 && ProcessLifecycle.processIsAlive($0) }
+    let pids = LaunchAgent.loadedServicePIDs().filter { ProcessLifecycle.processIsAlive($0) }
     guard !pids.isEmpty else {
         // The job is loaded but launchd has no live PID for it (e.g. installed
         // but not yet kickstarted). Fall back to the launchd-level path.

@@ -26,12 +26,18 @@ import os
 internal final class OutboundRouter: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
     private var continuation: AsyncStream<OutboundMessage>.Continuation?
+    /// Count of messages yielded to the live connection but not yet confirmed
+    /// written to the transport. Lets a graceful shutdown flush the tail (e.g.
+    /// the final `inference_complete`) before the socket is torn down. Reset on
+    /// (re)connect / finish, since a stream's buffered messages are abandoned.
+    private var pendingWrites = 0
 
     /// Install the continuation for a new connection, finishing any prior one.
     func activate(_ cont: AsyncStream<OutboundMessage>.Continuation) {
         let previous: AsyncStream<OutboundMessage>.Continuation? = lock.withLock {
             let prev = continuation
             continuation = cont
+            pendingWrites = 0
             return prev
         }
         previous?.finish()
@@ -41,8 +47,23 @@ internal final class OutboundRouter: @unchecked Sendable {
     /// while disconnected are dropped (the caller cannot reach the coordinator
     /// anyway) rather than buffered into a stream nothing is consuming.
     func yield(_ msg: OutboundMessage) {
-        let cont = lock.withLock { continuation }
+        let cont: AsyncStream<OutboundMessage>.Continuation? = lock.withLock {
+            guard let c = continuation else { return nil }
+            pendingWrites += 1
+            return c
+        }
         cont?.yield(msg)
+    }
+
+    /// Called by the outbound writer once a message has been handed to the
+    /// transport (NWConnection's `.contentProcessed` fired).
+    func markWritten() {
+        lock.withLock { if pendingWrites > 0 { pendingWrites -= 1 } }
+    }
+
+    /// Messages yielded but not yet confirmed written to the transport.
+    func pendingCount() -> Int {
+        lock.withLock { pendingWrites }
     }
 
     /// Tear down outbound delivery permanently (shutdown).
@@ -50,6 +71,7 @@ internal final class OutboundRouter: @unchecked Sendable {
         let cont: AsyncStream<OutboundMessage>.Continuation? = lock.withLock {
             let c = continuation
             continuation = nil
+            pendingWrites = 0
             return c
         }
         cont?.finish()

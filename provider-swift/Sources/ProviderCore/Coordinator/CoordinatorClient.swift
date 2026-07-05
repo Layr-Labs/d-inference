@@ -100,6 +100,27 @@ public actor CoordinatorClient {
         shutdownFlag.isRequested
     }
 
+    /// Set when a graceful shutdown drain has begun. The socket stays open so
+    /// in-flight responses can finish, but the `ProviderLoop` event stream is no
+    /// longer being consumed — so the inbound dispatch rejects NEW inference
+    /// requests with 503 (instead of yielding them into an unconsumed stream) so
+    /// the coordinator reroutes them immediately. See `beginDraining()`.
+    /// `internal` (not `private`): read by the inbound/connection extensions
+    /// (Swift `private` is file-scoped, and this actor is split across files).
+    internal var draining = false
+
+    /// Cancel handler installed by `beginDraining`. While draining (the event
+    /// stream is no longer consumed), inbound dispatch routes coordinator
+    /// `cancel` frames straight here so an aborted in-flight request still stops
+    /// generating instead of running until the drain timeout.
+    internal var drainCancelHandler: (@Sendable (String) async -> Void)?
+
+    /// Disconnect handler installed by `beginDraining`. If the socket drops while
+    /// draining (event stream no longer consumed), the coordinator fails our
+    /// in-flight requests, so this lets the provider cancel them rather than keep
+    /// generating frames that can never reach the consumer.
+    internal var drainDisconnectHandler: (@Sendable () async -> Void)?
+
     /// Mutable advertised-model list. Seeded from `config.models`; background
     /// prefetch (Layer 3) appends newly-verified builds so re-registration and
     /// reconnects pick them up without dropping the currently-served model.
@@ -211,6 +232,55 @@ public actor CoordinatorClient {
         closeCurrentConnection()
         eventContinuation?.finish()
         outboundRouter.finish()
+    }
+
+    /// Enter draining mode: keep the connection open (so in-flight responses can
+    /// still be delivered) but reject NEW inference requests with 503 from the
+    /// inbound dispatch. Used during a graceful stop/restart, when the
+    /// `ProviderLoop` event stream is no longer consuming events but the drain
+    /// has not finished.
+    ///
+    /// - Parameters:
+    ///   - onCancel: invoked for coordinator `cancel` frames received while
+    ///     draining, so an aborted in-flight request stops generating promptly
+    ///     instead of running until the drain timeout.
+    ///   - onDisconnect: invoked if the socket drops while draining, so the
+    ///     provider can cancel in-flight work the coordinator has already failed
+    ///     instead of generating frames that can no longer be delivered.
+    public func beginDraining(
+        onCancel: (@Sendable (String) async -> Void)? = nil,
+        onDisconnect: (@Sendable () async -> Void)? = nil
+    ) {
+        draining = true
+        drainCancelHandler = onCancel
+        drainDisconnectHandler = onDisconnect
+    }
+
+    /// Wait until queued outbound control messages have been handed to the
+    /// transport, or `timeout` elapses. Used during a graceful drain so the tail
+    /// of a finished request (its final `inference_complete`) is delivered
+    /// before the transport is torn down by `shutdown()`. Inference chunks ride
+    /// the direct fast path and are flushed ahead of every terminal by
+    /// `SendHandle.send`'s ordering barrier, so waiting on the control path
+    /// covers the whole response.
+    public func flushOutbound(timeout: Duration) async {
+        let deadline = ContinuousClock.now + timeout
+        while outboundRouter.pendingCount() > 0 {
+            if ContinuousClock.now >= deadline {
+                logger.warning("Outbound flush timed out with \(self.outboundRouter.pendingCount()) message(s) still queued")
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    /// Handle a socket drop that happens while draining: the coordinator fails
+    /// our in-flight requests on disconnect, so cancel them (don't keep
+    /// generating undeliverable frames) and stop reconnecting. Called by the
+    /// reconnect loop in `CoordinatorClient+Connection`.
+    internal func handleDrainDisconnect() async {
+        logger.info("Coordinator socket closed during drain; cancelling in-flight work and stopping reconnects")
+        if let handler = drainDisconnectHandler { await handler() }
     }
 
     /// Send a WebSocket close frame (going-away) on the current connection and

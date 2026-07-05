@@ -160,7 +160,7 @@ public enum ProcessLifecycle {
         }
     }
 
-    /// Outcome of a graceful stop attempt via `stopProcessGracefully(_:timeout:onActiveRequests:)`.
+    /// Outcome of a graceful stop attempt via `stopProcessGracefully(pid:timeout:)`.
     public enum GracefulStopOutcome: Sendable, Equatable {
         /// The target PID was not alive when the stop was requested.
         case notRunning
@@ -182,14 +182,10 @@ public enum ProcessLifecycle {
     /// - Parameters:
     ///   - pid: Target process identifier.
     ///   - timeout: Seconds to wait after sending SIGTERM before escalating to SIGKILL.
-    ///   - onActiveRequests: Called once if the process is still alive immediately
-    ///     after SIGTERM is delivered, signalling that the daemon is draining
-    ///     in-flight requests.
     /// - Returns: The outcome of the stop attempt.
     public static func stopProcessGracefully(
         pid: Int32,
-        timeout: TimeInterval = 600.0,
-        onActiveRequests: (() -> Void)? = nil
+        timeout: TimeInterval = 600.0
     ) async -> GracefulStopOutcome {
         guard pid > 0, processIsAlive(pid) else { return .notRunning }
 
@@ -197,10 +193,6 @@ public enum ProcessLifecycle {
 
         // Fast path: process exited synchronously (nothing to drain).
         if !processIsAlive(pid) { return .stoppedGracefully }
-
-        // The daemon is still running — it is draining. Notify the caller so the
-        // CLI can tell the user to wait.
-        onActiveRequests?()
 
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline, processIsAlive(pid) {
@@ -227,7 +219,7 @@ public enum ProcessLifecycle {
     // MARK: - Internals
 
     /// Read a PID from a file, returning `nil` if the file is missing or not a valid PID.
-    public static func readPID(at url: URL) -> Int32? {
+    private static func readPID(at url: URL) -> Int32? {
         guard let raw = try? String(contentsOf: url, encoding: .utf8) else {
             return nil
         }

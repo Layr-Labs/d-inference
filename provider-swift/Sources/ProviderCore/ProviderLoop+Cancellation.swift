@@ -79,12 +79,26 @@ extension ProviderLoop {
         syncWarmModelState()
         await updateAggregateCapacity()
 
+        // Cancel the detached cold-load task (if this request is still loading),
+        // so `handleInferenceRequest`'s `await loadTask.value` unblocks. Without
+        // this, a cancel during a stalled cold load would leave the serve task
+        // awaiting forever and the CLI would escalate to SIGKILL.
+        if let loadTask = inflightModelLoadTasks.removeValue(forKey: requestId) {
+            loadTask.cancel()
+        }
+
         if let task = inflightTasks.removeValue(forKey: requestId) {
             task.cancel()
         }
     }
 
     internal func cancelAllInflight() async {
+        // Cancel detached model-load tasks first: a request still cold-loading
+        // (awaiting `loadTask.value` in `handleInferenceRequest`) only unblocks
+        // when its load task is cancelled or finishes. Without this, a stalled
+        // load would keep `run()` from returning past the drain timeout.
+        for task in inflightModelLoadTasks.values { task.cancel() }
+        inflightModelLoadTasks.removeAll()
         let requestIds = Array(inflightTasks.keys)
         for requestId in requestIds {
             await handleCancellation(requestId: requestId, receivedFromCoordinator: false)
@@ -125,14 +139,20 @@ extension ProviderLoop {
         logger.info("Waiting up to \(timeout.components.seconds)s for active inference to finish before shutdown")
         let started = ContinuousClock.now
         while hasInflightWork {
-            if Task.isCancelled { return false }
+            // During a controlled shutdown (user stop/restart, schedule window
+            // close, or update hot-swap) we want to finish active inference even
+            // if the outer task was cancelled. Only abort early on cancellation
+            // when we are not in the shutdown path.
+            if !isShuttingDown, Task.isCancelled { return false }
             if ContinuousClock.now - started >= timeout {
                 return false
             }
             do {
                 try await Task.sleep(for: .milliseconds(250))
             } catch {
-                return false
+                if !isShuttingDown { return false }
+                // Controlled shutdown: ignore cancellation from the sleep and
+                // keep polling until the work finishes or the timeout expires.
             }
         }
         return true

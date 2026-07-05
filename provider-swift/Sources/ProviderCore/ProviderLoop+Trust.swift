@@ -35,6 +35,7 @@ extension ProviderLoop {
             currentModel: state.currentModel,
             warmModels: state.warmModels,
             inferenceActive: state.inferenceActive,
+            inflightRequestCount: requestToModel.count + localReservations.totalInFlight,
             stats: DaemonState.Stats(
                 requestsServed: stats.requestsServed,
                 tokensGenerated: stats.tokensGenerated,

@@ -30,86 +30,9 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
-func TestHealthNoAuthRequired(t *testing.T) {
-	srv, _ := testServer(t)
-
-	// No Authorization header.
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("health should not require auth, got status %d", w.Code)
-	}
-}
-
-func TestChatCompletionsNoAuth(t *testing.T) {
-	srv, _ := testServer(t)
-
-	body := `{"model":"test","messages":[{"role":"user","content":"hi"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
-	}
-}
-
-func TestChatCompletionsInvalidKey(t *testing.T) {
-	srv, _ := testServer(t)
-
-	body := `{"model":"test","messages":[{"role":"user","content":"hi"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer wrong-key")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
-	}
-}
-
-func TestChatCompletionsInvalidJSON(t *testing.T) {
-	srv, _ := testServer(t)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{bad"))
-	req.Header.Set("Authorization", "Bearer test-key")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-}
-
-func TestChatCompletionsMissingModel(t *testing.T) {
-	srv, _ := testServer(t)
-
-	body := `{"messages":[{"role":"user","content":"hi"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-key")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-}
-
-func TestChatCompletionsMissingMessages(t *testing.T) {
-	srv, _ := testServer(t)
-
-	body := `{"model":"test"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-key")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-}
+// Auth failures (missing header, invalid key) are covered with error-shape
+// assertions by TestOpenAI_AuthRequired; malformed-request validation
+// (invalid JSON, missing model/messages) by the TestEdge_* suite.
 
 func TestChatCompletionsNoProvider(t *testing.T) {
 	srv, _ := testServer(t)
@@ -129,38 +52,10 @@ func TestChatCompletionsNoProvider(t *testing.T) {
 	}
 }
 
-func TestListModelsWithAuth(t *testing.T) {
-	srv, _ := testServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	req.Header.Set("Authorization", "Bearer test-key")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
-	}
-
-	var body map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if body["object"] != "list" {
-		t.Errorf("object = %v, want list", body["object"])
-	}
-}
-
-func TestListModelsNoAuth(t *testing.T) {
-	srv, _ := testServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
-	}
-}
+// Authenticated /v1/models (empty registry, list envelope) is covered by
+// TestEdge_ModelsEndpointNoProviders; the populated-registry wire format by
+// TestOpenAI_ListModelsFormat; unauthenticated access by
+// TestOpenAI_AuthRequired/list_models_no_auth.
 
 func TestCORSHeaders(t *testing.T) {
 	srv, _ := testServer(t)

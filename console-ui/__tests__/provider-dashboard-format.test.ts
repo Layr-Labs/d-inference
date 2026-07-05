@@ -54,6 +54,10 @@ describe("maskSerial", () => {
     expect(maskSerial("")).toBe("");
     expect(maskSerial("SHORT")).toBe("SHORT");
   });
+
+  it("caps the mask at 6 bullets for long serials", () => {
+    expect(maskSerial("ABCD123456789012XY")).toBe("ABCD••••••XY");
+  });
 });
 
 describe("shortModelName", () => {

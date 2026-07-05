@@ -313,13 +313,18 @@ func TestEdge_ModelsEndpointNoProviders(t *testing.T) {
 	}
 
 	var resp struct {
-		Data []any `json:"data"`
+		Object string `json:"object"`
+		Data   []any  `json:"data"`
 	}
 	json.Unmarshal(w.Body.Bytes(), &resp)
 
 	// With no providers connected, the models list is empty (the endpoint shows
-	// available models from live providers). This verifies the endpoint doesn't
-	// crash with no providers or registry rows.
+	// available models from live providers), but the OpenAI list envelope must
+	// still be well-formed. This also verifies the endpoint doesn't crash with
+	// no providers or registry rows.
+	if resp.Object != "list" {
+		t.Errorf("object = %q, want list", resp.Object)
+	}
 }
 
 func TestEdge_ProviderDisconnectMidStream(t *testing.T) {

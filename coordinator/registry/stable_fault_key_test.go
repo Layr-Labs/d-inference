@@ -427,6 +427,163 @@ func TestHealthEjectionCapacityStreakStaleReset(t *testing.T) {
 	}
 }
 
+// Codex P2 (registry.go:993): AccountID is assigned AFTER
+// verifyProviderAttestation runs, so a provider whose identity resolves to the
+// ACCOUNT fallback (Open Mode — attestation absent/invalid) was never bound:
+// all its fault state keyed by session UUID and was wiped on reconnect. The
+// account-linkage rebind hook (RebindStableFaultKey) must bind acct:, migrate
+// pre-link session-keyed state, and keep the state across a reconnect with a
+// fresh session id + the same account.
+func TestAccountLinkageBindsStableFaultKey(t *testing.T) {
+	reg := New(testLogger())
+	const model, acct = "acct-model", "acct-open-mode"
+
+	// Open Mode: no attestation ever runs for this provider. Pre-link faults
+	// accumulate under the session-id fallback.
+	p := makeSchedulerProvider(t, reg, "sess-acct-1", model, 100)
+	reg.RecordProviderOutcome("sess-acct-1", false, 500, "internal error")
+
+	// The api account-linkage hook: AccountID lands, then the rebind.
+	p.Mu().Lock()
+	p.AccountID = acct
+	p.Mu().Unlock()
+	p.RebindStableFaultKey()
+
+	if got := faultKeyOf(reg, "sess-acct-1"); got != "acct:"+acct {
+		t.Fatalf("account linkage must bind the acct: fallback, got %q", got)
+	}
+	reg.mu.RLock()
+	_, migrated := reg.providerOutcomes["acct:"+acct]
+	_, sessOrphan := reg.providerOutcomes["sess-acct-1"]
+	reg.mu.RUnlock()
+	if !migrated || sessOrphan {
+		t.Fatalf("pre-link session-keyed faults must migrate to the acct: key (migrated=%v orphan=%v)", migrated, sessOrphan)
+	}
+
+	// Accumulate to one below the trip threshold, then churn the session.
+	for i := 0; i < providerBreakerConsecTrip-2; i++ {
+		if opened, _ := reg.RecordProviderOutcome("sess-acct-1", false, 500, "internal error"); opened {
+			t.Fatalf("breaker opened early at fault %d", i+2)
+		}
+	}
+	reg.Disconnect("sess-acct-1")
+
+	p2 := makeSchedulerProvider(t, reg, "sess-acct-2", model, 100)
+	p2.Mu().Lock()
+	p2.AccountID = acct
+	p2.Mu().Unlock()
+	p2.RebindStableFaultKey()
+
+	if got := faultKeyOf(reg, "sess-acct-2"); got != "acct:"+acct {
+		t.Fatalf("reconnected session must rebind to the same acct: key, got %q", got)
+	}
+	opened, _ := reg.RecordProviderOutcome("sess-acct-2", false, 500, "internal error")
+	if !opened {
+		t.Fatal("fault state must survive the reconnect via the acct: key — the trip-threshold fault landed on a clean record")
+	}
+	if !reg.ProviderBreakerOpen("sess-acct-2") {
+		t.Fatal("breaker must report open via the new session id")
+	}
+}
+
+// Re-attestation with an INVALID result after account linkage must keep the
+// acct: binding (stableProviderIdentityLocked falls back to the account on any
+// result), never unbind back to session keying; a later VALID attestation
+// upgrades the binding (serial precedence) and migrates the acct:-keyed state.
+func TestInvalidReattestationKeepsAccountBinding(t *testing.T) {
+	reg := New(testLogger())
+	p := makeSchedulerProvider(t, reg, "sess-acct-reatt", "reatt-model", 100)
+	p.Mu().Lock()
+	p.AccountID = "acct-linked"
+	p.Mu().Unlock()
+	p.RebindStableFaultKey()
+
+	p.SetAttestationResult(&attestation.VerificationResult{Valid: false, SerialNumber: "SER-SPOOF"})
+	if got := faultKeyOf(reg, "sess-acct-reatt"); got != "acct:acct-linked" {
+		t.Fatalf("invalid re-attestation must keep the acct: binding, got %q", got)
+	}
+
+	reg.RecordProviderOutcome("sess-acct-reatt", false, 500, "internal error")
+	p.SetAttestationResult(&attestation.VerificationResult{Valid: true, SerialNumber: "SER-REAL-REATT"})
+	if got := faultKeyOf(reg, "sess-acct-reatt"); got != "serial:SER-REAL-REATT" {
+		t.Fatalf("valid attestation must upgrade the binding, got %q", got)
+	}
+	reg.mu.RLock()
+	_, migrated := reg.providerOutcomes["serial:SER-REAL-REATT"]
+	reg.mu.RUnlock()
+	if !migrated {
+		t.Fatal("acct:-keyed fault state must migrate to the upgraded serial: key")
+	}
+}
+
+// Codex P2 (health_ejection.go:250): when a rebind migrates onto a key that
+// ALREADY has a health window (this session's sekey:-keyed faults landing on a
+// serial: window populated by a previous connection), the old code kept the
+// destination ring and DROPPED the source — losing the in-progress
+// consecutive-fault streak, so a flapping provider whose identity enriched
+// mid-streak evaded the breaker. The windows must merge: consecFail reflects
+// the true contiguous streak, windowStats the bounded union of both rings.
+func TestFaultStreakSurvivesIdentityEnrichmentMidStreak(t *testing.T) {
+	reg := New(testLogger())
+	const model, serial = "merge-model", "SER-MERGE"
+
+	// Previous connection: 3 consecutive faults recorded under serial:.
+	attestSchedulerProvider(t, reg, "sess-merge-old", model, serial, 100)
+	for i := 0; i < 3; i++ {
+		reg.RecordProviderOutcome("sess-merge-old", false, 500, "internal error")
+		reg.RecordProviderServeOutcome("serial:"+serial, false, 500, "internal error")
+	}
+	reg.Disconnect("sess-merge-old")
+
+	// Current session attests with an SE key only: 2 more faults under sekey:.
+	p := makeSchedulerProvider(t, reg, "sess-merge-new", model, 100)
+	p.SetAttestationResult(&attestation.VerificationResult{Valid: true, PublicKey: "PK-MERGE"})
+	for i := 0; i < 2; i++ {
+		reg.RecordProviderOutcome("sess-merge-new", false, 500, "internal error")
+		reg.RecordProviderServeOutcome("sekey:PK-MERGE", false, 500, "internal error")
+	}
+
+	// MDA enrichment rebinds sekey: → serial: mid-streak.
+	p.SetAttestationResult(&attestation.VerificationResult{Valid: true, PublicKey: "PK-MERGE", SerialNumber: serial})
+	if got := faultKeyOf(reg, "sess-merge-new"); got != "serial:"+serial {
+		t.Fatalf("enrichment must rebind to the serial key, got %q", got)
+	}
+
+	reg.mu.RLock()
+	w := reg.providerOutcomes["serial:"+serial]
+	he := reg.healthEjectionWindows["serial:"+serial]
+	_, orphan := reg.providerOutcomes["sekey:PK-MERGE"]
+	_, heOrphan := reg.healthEjectionWindows["sekey:PK-MERGE"]
+	reg.mu.RUnlock()
+	if orphan || heOrphan {
+		t.Fatalf("source windows must be deleted after the merge (breaker=%v ejection=%v)", orphan, heOrphan)
+	}
+	if w == nil {
+		t.Fatal("merged breaker window missing under the serial key")
+	}
+	if w.consecFail != 5 {
+		t.Fatalf("merged breaker consecFail = %d, want 5 (3 from the previous connection + 2 from this one)", w.consecFail)
+	}
+	if total, fails := w.windowStats(time.Now(), providerBreakerWindow); total != 5 || fails != 5 {
+		t.Fatalf("merged breaker windowStats = (%d,%d), want (5,5) — the union of both rings", total, fails)
+	}
+	if he == nil {
+		t.Fatal("merged health-ejection window missing under the serial key")
+	}
+	if he.consecFail != 5 {
+		t.Fatalf("merged health-ejection consecFail = %d, want 5", he.consecFail)
+	}
+	if total, fails := he.windowStats(time.Now(), healthEjectionWindow); total != 5 || fails != 5 {
+		t.Fatalf("merged health-ejection windowStats = (%d,%d), want (5,5)", total, fails)
+	}
+
+	// The 6th consecutive fault crosses providerBreakerConsecTrip → trips.
+	opened, _ := reg.RecordProviderOutcome("sess-merge-new", false, 500, "internal error")
+	if !opened {
+		t.Fatal("merged streak must trip the breaker on the next fault — the in-progress streak was dropped by the rebind")
+	}
+}
+
 // The node-capacity-strike classifier: capacity-shaped 5xx count, request-shape
 // context overflows and client/fault shapes do not.
 func TestIsNodeCapacityRejectStrike(t *testing.T) {

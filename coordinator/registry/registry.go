@@ -985,6 +985,24 @@ func (p *Provider) SetAttestationResult(result *attestation.VerificationResult) 
 	}
 }
 
+// RebindStableFaultKey re-derives this session's stable identity and re-binds
+// its fault key. Account linkage happens AFTER the registration-time
+// attestation bind (api/provider.go resolves the auth token only once
+// Register + verifyProviderAttestation have returned), so a provider whose
+// identity resolves to the ACCOUNT fallback — attestation absent (Open Mode)
+// or invalid — would otherwise never bind: all its fault state would key by
+// session UUID and be wiped on reconnect. Same lock discipline as
+// SetAttestationResult: derive under p.mu, bind OUTSIDE it (bindStableFaultKey
+// takes r.mu; the established order is r.mu → p.mu).
+func (p *Provider) RebindStableFaultKey() {
+	p.mu.Lock()
+	id, stableID, r := p.ID, stableProviderIdentityLocked(p), p.registry
+	p.mu.Unlock()
+	if r != nil {
+		r.bindStableFaultKey(id, stableID)
+	}
+}
+
 // GetAttestationResult returns the current attestation result (thread-safe).
 func (p *Provider) GetAttestationResult() *attestation.VerificationResult {
 	p.mu.Lock()

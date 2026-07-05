@@ -28,6 +28,13 @@ package registry
 //     and the per-slot token budget. The token-budget tier uses the provider's
 //     own reported active_token_budget_max for resident slots and an optimistic
 //     cold estimate (see coldTokenBudgetEstimate) for on-disk slots.
+//   - STRUCTURAL ONLY. The token-budget tier compares against each provider's
+//     budget CEILING, never the live remaining budget (ceiling minus active +
+//     queued tokens). A request that fits some ceiling but not the current live
+//     headroom is merely arriving on a BUSY fleet — that is transient fullness,
+//     owned by the capacity/queue path (queue-before-shed), which holds the
+//     request until a slot frees. This gate may 429 only requests that could
+//     NEVER be served no matter how long they waited.
 //   - The prompt-token input is the routing estimate (len/4), which UNDER-counts
 //     real tokens; that is the safe direction here (under-count → less likely to
 //     reject), with the dispatch-exhausted reclassification catching whatever the
@@ -124,13 +131,18 @@ func snapshotStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
 	return coldTokenBudgetEstimate(snap.totalMemoryGB, snap.modelSizeGB, snap.kvBytesPerToken), true
 }
 
-// liveStructuralBudget is snapshotStructuralBudget minus the provider's CURRENTLY
-// committed tokens (active + queued) for resident slots, so the fleet-budget shed
-// reflects LIVE remaining headroom rather than the idle structural ceiling: a 50k
-// request fits an idle 131k box but NOT one already holding 100k. Cold/on-disk
-// slots keep the optimistic post-load estimate (nothing is committed there yet).
-// Same fail-open contract as snapshotStructuralBudget (known=false ⇒ skip).
-func liveStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
+// liveRemainingBudget is snapshotStructuralBudget minus the provider's CURRENTLY
+// committed tokens (active + queued) for resident slots: a 50k request fits an
+// idle 131k box but NOT one already holding 100k. Cold/on-disk slots keep the
+// optimistic post-load estimate (nothing is committed there yet). Same fail-open
+// contract as snapshotStructuralBudget (known=false ⇒ skip).
+//
+// This live math backs ONLY per-provider admission (providerBudgetFits →
+// freeMemoryAdmits), where a "doesn't fit right now" is a capacity rejection
+// that queues. It must NOT feed the fleet-level servability shed, which is
+// structural-only (see PredictServable) — a live-remaining fleet 429 would shed
+// a merely-busy fleet ahead of the queue.
+func liveRemainingBudget(snap routingSnapshot) (budget int64, known bool) {
 	if snap.activeTokenBudgetMax > 0 {
 		rem := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
 		if rem < 0 {
@@ -138,14 +150,7 @@ func liveStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
 		}
 		return rem, true
 	}
-	if snap.modelLoaded {
-		// Resident but no token budget reported (legacy provider): unknown.
-		return 0, false
-	}
-	if snap.totalMemoryGB <= 0 || snap.modelSizeGB <= 0 {
-		return 0, false
-	}
-	return coldTokenBudgetEstimate(snap.totalMemoryGB, snap.modelSizeGB, snap.kvBytesPerToken), true
+	return snapshotStructuralBudget(snap)
 }
 
 // providerBudgetFits reports whether a request of (prompt + max_tokens) tokens
@@ -157,7 +162,10 @@ func liveStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
 //   - Resident slot: the provider rejects when
 //     activeUsed + (promptTokens + maxTokens) > tokenBudgetMax
 //     (BatchScheduler submitTokenized / EngineV2Bridge submitTokenized), so the
-//     fit is request ≤ max − used − queued (liveStructuralBudget).
+//     fit is request ≤ max − used − queued (liveRemainingBudget). Unlike the
+//     fleet servability tier, this per-provider check keeps LIVE semantics on
+//     purpose: its "no" is a capacity rejection that falls into the queue, not
+//     a terminal 429.
 //   - Cold/on-disk slot: the provider's load gate only guarantees the load
 //     headroom above the weights (UnifiedMemoryCap.loadHeadroomBytes ≈
 //     activation reserve + 1 GiB of serveable KV, ~2.7k tokens), so a load can
@@ -171,7 +179,7 @@ func liveStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
 // open. A reqMaxTokens ≤ 0 is normalized to defaultRequestedMaxTokens, the
 // same defaulting the pending-budget accounting applies.
 func providerBudgetFits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) (fits, known bool) {
-	budget, known := liveStructuralBudget(snap)
+	budget, known := liveRemainingBudget(snap)
 	if !known {
 		return true, false
 	}
@@ -268,11 +276,14 @@ func (r *Registry) PredictServable(model string, estimatedPromptTokens, contextP
 			continue
 		}
 		providerCount++
-		// LIVE remaining budget (structural ceiling minus committed) so the shed
-		// reflects real headroom under load, not the idle fleet-max. Only the
-		// servability gate (default-on, EIGENINFERENCE_SERVABILITY_GATE=false to
-		// disable) sheds on this verdict.
-		budget, known := liveStructuralBudget(snap)
+		// STRUCTURAL ceiling (resident: reported active_token_budget_max; cold:
+		// optimistic post-load estimate) — deliberately NOT the live remaining
+		// budget. Subtracting active+queued tokens here would classify a merely
+		// BUSY fleet as prompt_too_long and 429 it before the queue-before-shed
+		// path could hold the request for the seconds a slot takes to free.
+		// Transient fullness belongs to the capacity/queue ladder; this tier
+		// sheds only requests that exceed every ceiling and could NEVER fit.
+		budget, known := snapshotStructuralBudget(snap)
 		if !known {
 			sawUnknown = true
 			continue

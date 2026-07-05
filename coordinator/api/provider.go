@@ -324,6 +324,11 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					provider.Mu().Lock()
 					provider.AccountID = pt.AccountID
 					provider.Mu().Unlock()
+					// Account linkage can be the provider's ONLY stable identity
+					// (Open Mode / invalid attestation → the acct: fallback), and
+					// it lands after the attestation-time bind — re-bind so fault
+					// state keys by identity instead of the session UUID.
+					provider.RebindStableFaultKey()
 					s.logger.Info("provider linked to account",
 						"provider_id", providerID,
 						"account_id", pt.AccountID,

@@ -202,9 +202,9 @@ func (r *Registry) bindStableFaultKey(sessionID, stableID string) {
 // newKey so accumulated history follows an identity rebind. Merge policy where
 // both keys hold state: expiries and streak recency take the max, trip counts
 // take the max, strike slices are unioned (window pruning re-normalizes them on
-// the next record), and health windows keep the destination ring (dropping the
-// source is the conservative choice for an already-populated destination).
-// Caller holds r.mu.
+// the next record), and health windows are merged in timestamp order bounded by
+// the ring size (providerHealthWindow.merge) so an in-progress consecutive-fault
+// streak survives the rebind. Caller holds r.mu.
 func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 	if oldKey == "" || newKey == "" || oldKey == newKey {
 		return
@@ -244,7 +244,9 @@ func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 
 	// Node-health breaker.
 	if w, ok := r.providerOutcomes[oldKey]; ok {
-		if _, exists := r.providerOutcomes[newKey]; !exists {
+		if dst, exists := r.providerOutcomes[newKey]; exists {
+			dst.merge(w)
+		} else {
 			r.providerOutcomes[newKey] = w
 		}
 		delete(r.providerOutcomes, oldKey)
@@ -294,7 +296,9 @@ func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 
 	// Stable-identity health ejection.
 	if w, ok := r.healthEjectionWindows[oldKey]; ok {
-		if _, exists := r.healthEjectionWindows[newKey]; !exists {
+		if dst, exists := r.healthEjectionWindows[newKey]; exists {
+			dst.merge(w)
+		} else {
 			r.healthEjectionWindows[newKey] = w
 		}
 		delete(r.healthEjectionWindows, oldKey)

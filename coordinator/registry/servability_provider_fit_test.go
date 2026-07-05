@@ -136,29 +136,3 @@ func TestPredictServableColdWeightFitInsufficientBudgetSheds(t *testing.T) {
 		t.Fatalf("10k request vs %d-token cold budget reported unservable: %+v", budget, within)
 	}
 }
-
-// TestPredictServableQueuedTokensReduceLiveBudget: queued (planner-pending)
-// tokens count against the live budget exactly like active ones — the provider
-// admission sums both, so the fleet tier must too.
-func TestPredictServableQueuedTokensReduceLiveBudget(t *testing.T) {
-	reg := New(testLogger())
-	model := "queued-budget-model"
-	p := makeTokenBudgetProvider(t, reg, "queued", model, 100, 0, 131_072, 80)
-	p.mu.Lock()
-	p.BackendCapacity.Slots[0].QueuedTokenBudget = 100_000
-	p.mu.Unlock()
-	// Live remaining = 131072 - 0 - 100000 = 31072.
-
-	over := reg.PredictServable(model, 49_744, 49_744, 256, 0, RequestTraits{}, false)
-	if over.Servable {
-		t.Fatalf("50k request must be unservable against 31072 live budget (queued counted): %+v", over)
-	}
-	if over.Reason != ServabilityPromptTooLong {
-		t.Fatalf("reason = %q, want %q", over.Reason, ServabilityPromptTooLong)
-	}
-
-	within := reg.PredictServable(model, 19_744, 19_744, 256, 0, RequestTraits{}, false)
-	if !within.Servable {
-		t.Fatalf("20k request must be servable against 31072 live budget: %+v", within)
-	}
-}

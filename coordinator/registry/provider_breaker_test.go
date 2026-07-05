@@ -580,3 +580,93 @@ func TestProviderBreakerMapsBounded(t *testing.T) {
 		t.Fatalf("stale-window sweep should leave only the live entry, got %d", winAfter)
 	}
 }
+
+// --- providerHealthWindow.merge (fault-state migration onto a populated key) ---
+
+func TestProviderHealthWindowMerge(t *testing.T) {
+	base := time.Now()
+	at := func(i int) time.Time { return base.Add(time.Duration(i) * time.Second) }
+	fill := func(seq ...providerHealthOutcome) *providerHealthWindow {
+		w := &providerHealthWindow{}
+		for _, o := range seq {
+			w.record(o.ok, o.ts)
+		}
+		return w
+	}
+
+	t.Run("empty source is a no-op", func(t *testing.T) {
+		dst := fill(providerHealthOutcome{at(0), false}, providerHealthOutcome{at(1), false})
+		dst.merge(&providerHealthWindow{})
+		dst.merge(nil)
+		if dst.size != 2 || dst.consecFail != 2 {
+			t.Fatalf("size=%d consecFail=%d, want 2/2", dst.size, dst.consecFail)
+		}
+	})
+
+	t.Run("empty destination adopts the source", func(t *testing.T) {
+		dst := &providerHealthWindow{}
+		dst.merge(fill(providerHealthOutcome{at(0), true}, providerHealthOutcome{at(1), false}))
+		if dst.size != 2 || dst.consecFail != 1 {
+			t.Fatalf("size=%d consecFail=%d, want 2/1", dst.size, dst.consecFail)
+		}
+	})
+
+	t.Run("interleaved timestamps merge chronologically", func(t *testing.T) {
+		dst := fill(providerHealthOutcome{at(0), false}, providerHealthOutcome{at(2), true}, providerHealthOutcome{at(4), false})
+		src := fill(providerHealthOutcome{at(1), false}, providerHealthOutcome{at(3), false}, providerHealthOutcome{at(5), false})
+		dst.merge(src)
+		if dst.size != 6 {
+			t.Fatalf("size=%d, want 6", dst.size)
+		}
+		seq := dst.chronological()
+		for i := 1; i < len(seq); i++ {
+			if seq[i].ts.Before(seq[i-1].ts) {
+				t.Fatalf("merged entries out of order at %d: %v after %v", i, seq[i].ts, seq[i-1].ts)
+			}
+		}
+		// Trailing run after the success at t2: faults at t3, t4, t5.
+		if dst.consecFail != 3 {
+			t.Fatalf("consecFail=%d, want 3 (recomputed from the merged tail)", dst.consecFail)
+		}
+		if total, fails := dst.windowStats(at(5), providerBreakerWindow); total != 6 || fails != 5 {
+			t.Fatalf("windowStats=(%d,%d), want (6,5)", total, fails)
+		}
+	})
+
+	t.Run("trailing success resets the merged streak", func(t *testing.T) {
+		dst := fill(providerHealthOutcome{at(0), false}, providerHealthOutcome{at(1), false})
+		dst.merge(fill(providerHealthOutcome{at(2), true}))
+		if dst.consecFail != 0 {
+			t.Fatalf("consecFail=%d, want 0 — the newest merged outcome is a success", dst.consecFail)
+		}
+	})
+
+	t.Run("overflow keeps the most recent ring-size entries", func(t *testing.T) {
+		dst, src := &providerHealthWindow{}, &providerHealthWindow{}
+		for i := 0; i < 15; i++ {
+			dst.record(false, at(i))
+			src.record(false, at(15+i))
+		}
+		dst.merge(src)
+		if dst.size != providerHealthRingSize {
+			t.Fatalf("size=%d, want %d", dst.size, providerHealthRingSize)
+		}
+		seq := dst.chronological()
+		if !seq[0].ts.Equal(at(30-providerHealthRingSize)) || !seq[len(seq)-1].ts.Equal(at(29)) {
+			t.Fatalf("merged window must keep the newest %d entries, got [%v..%v]",
+				providerHealthRingSize, seq[0].ts, seq[len(seq)-1].ts)
+		}
+		if dst.consecFail != providerHealthRingSize {
+			t.Fatalf("consecFail=%d, want %d", dst.consecFail, providerHealthRingSize)
+		}
+		// A post-merge record must overwrite the OLDEST entry (head correctness).
+		dst.record(true, at(30))
+		seq = dst.chronological()
+		if !seq[0].ts.Equal(at(31-providerHealthRingSize)) || !seq[len(seq)-1].ts.Equal(at(30)) {
+			t.Fatalf("post-merge record must evict the oldest entry, got [%v..%v]", seq[0].ts, seq[len(seq)-1].ts)
+		}
+		if dst.consecFail != 0 {
+			t.Fatalf("consecFail=%d after a success, want 0", dst.consecFail)
+		}
+	})
+}

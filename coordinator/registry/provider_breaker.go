@@ -97,6 +97,62 @@ func (w *providerHealthWindow) record(ok bool, now time.Time) {
 	}
 }
 
+// chronological returns the ring's valid outcomes ordered oldest → newest.
+func (w *providerHealthWindow) chronological() []providerHealthOutcome {
+	out := make([]providerHealthOutcome, 0, w.size)
+	start := (w.head + providerHealthRingSize - w.size) % providerHealthRingSize
+	for i := 0; i < w.size; i++ {
+		out = append(out, w.outcomes[(start+i)%providerHealthRingSize])
+	}
+	return out
+}
+
+// merge folds src's outcomes into w for an identity rebind whose new key
+// ALREADY has history (e.g. this session's sekey:-keyed faults migrating onto
+// a serial: window populated by a previous connection). Both rings are merged
+// in timestamp order (stable two-pointer merge: w's entry wins ties), the most
+// recent providerHealthRingSize entries are kept, and consecFail is recomputed
+// as the merged tail's trailing fault run — keeping only the destination ring
+// (the pre-merge behavior) dropped the in-progress consecutive-fault streak,
+// so a flapping provider whose identity enriched mid-streak evaded the
+// breaker. O(providerHealthRingSize).
+func (w *providerHealthWindow) merge(src *providerHealthWindow) {
+	if src == nil || src.size == 0 {
+		return
+	}
+	if w.size == 0 {
+		*w = *src
+		return
+	}
+	a, b := w.chronological(), src.chronological()
+	merged := make([]providerHealthOutcome, 0, len(a)+len(b))
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		if !a[i].ts.After(b[j].ts) {
+			merged = append(merged, a[i])
+			i++
+		} else {
+			merged = append(merged, b[j])
+			j++
+		}
+	}
+	merged = append(merged, a[i:]...)
+	merged = append(merged, b[j:]...)
+	if len(merged) > providerHealthRingSize {
+		merged = merged[len(merged)-providerHealthRingSize:]
+	}
+	var out providerHealthWindow
+	for _, o := range merged {
+		out.outcomes[out.size] = o
+		out.size++
+	}
+	out.head = out.size % providerHealthRingSize
+	for k := len(merged) - 1; k >= 0 && !merged[k].ok; k-- {
+		out.consecFail++
+	}
+	*w = out
+}
+
 // windowStats returns the number of outcomes recorded within [now-window, now]
 // and how many of those were faults.
 func (w *providerHealthWindow) windowStats(now time.Time, window time.Duration) (total, fails int) {

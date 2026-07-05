@@ -16,6 +16,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
 });
 
 import {
+  ApiError,
   fetchStripeStatus,
   withdrawStripe,
   fetchStripeWithdrawals,
@@ -71,7 +72,11 @@ describe("useStripePayouts", () => {
   it("withdraw() submits, reloads, toasts, and fires analytics", async () => {
     (fetchStripeStatus as ReturnType<typeof vi.fn>).mockResolvedValue(readyStatus);
     (fetchStripeWithdrawals as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-    (withdrawStripe as ReturnType<typeof vi.fn>).mockResolvedValue({ eta: "~30 minutes" });
+    (withdrawStripe as ReturnType<typeof vi.fn>).mockResolvedValue({
+      status: "transferred",
+      method: "standard",
+      eta: "1-3 business days",
+    });
 
     const addToast = vi.fn();
     const onAfterWithdraw = vi.fn().mockResolvedValue(undefined);
@@ -90,7 +95,7 @@ describe("useStripePayouts", () => {
     expect(onWithdrawStart).toHaveBeenCalledWith("standard");
     expect(onWithdrawSuccess).toHaveBeenCalledWith("standard");
     expect(onAfterWithdraw).toHaveBeenCalled();
-    expect(addToast).toHaveBeenCalledWith(expect.stringContaining("Withdrawal submitted"), "success");
+    expect(addToast).toHaveBeenCalledWith(expect.stringContaining("On its way"), "success");
     expect(result.current.withdrawOpen).toBe(false);
   });
 
@@ -108,6 +113,33 @@ describe("useStripePayouts", () => {
 
     expect(onWithdrawError).toHaveBeenCalled();
     expect(addToast).toHaveBeenCalledWith("insufficient balance");
+  });
+
+  it("withdraw() on stripe_account_gone shows friendly copy, closes the modal, and refreshes status", async () => {
+    // The backend auto-unlinked the account, so the status refresh returns
+    // the not-configured card state (has_account: false).
+    (withdrawStripe as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ApiError("your Stripe payout account no longer exists", "stripe_account_gone", 409),
+    );
+    (fetchStripeStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...readyStatus,
+      has_account: false,
+      status: "",
+    });
+    (fetchStripeWithdrawals as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+
+    const addToast = vi.fn();
+    const { result } = renderHook(() => useStripePayouts({ addToast, enabled: false }));
+    act(() => result.current.setWithdrawOpen(true));
+
+    await act(async () => {
+      await result.current.withdraw();
+    });
+
+    expect(addToast).toHaveBeenCalledWith(expect.stringContaining("Your Stripe account was closed"));
+    expect(result.current.withdrawOpen).toBe(false);
+    expect(fetchStripeStatus).toHaveBeenCalled(); // status refreshed -> card returns to setup state
+    expect(result.current.status?.has_account).toBe(false);
   });
 });
 

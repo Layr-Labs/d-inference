@@ -5,6 +5,7 @@
 
 export * from "./types";
 
+export { ApiError, apiErrorFromBody, parseApiErrorBody } from "./errors";
 export { fetchModels } from "./models";
 export { fetchPricing } from "./pricing";
 export { healthCheck } from "./health";

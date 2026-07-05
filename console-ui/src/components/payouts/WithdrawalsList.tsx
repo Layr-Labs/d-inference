@@ -3,6 +3,7 @@
 import { Check, Clock, X } from "lucide-react";
 import { type StripeWithdrawal } from "@/lib/api";
 import { formatUsd, microToUsd } from "@/lib/format";
+import { withdrawalStatusPresentation } from "./payout-copy";
 
 // Recent-withdrawals list shown at the bottom of the payouts card. Identical in
 // billing + earnings before this extraction (proposal F3).
@@ -14,37 +15,40 @@ export function WithdrawalsList({ withdrawals }: { withdrawals: StripeWithdrawal
         Recent withdrawals
       </p>
       <div className="space-y-2">
-        {withdrawals.slice(0, 5).map((w) => (
-          <div key={w.id} className="flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2">
-              {w.status === "paid" ? (
-                <Check size={12} className="text-teal" />
-              ) : w.status === "failed" ? (
-                <X size={12} className="text-coral" />
-              ) : (
-                <Clock size={12} className="text-gold" />
-              )}
-              <span className="font-mono text-text-secondary">
-                {formatUsd(microToUsd(w.net_micro_usd))}
-              </span>
-              <span className="text-[10px] font-mono uppercase text-text-tertiary">
-                {w.method}
+        {withdrawals.slice(0, 5).map((w) => {
+          const presentation = withdrawalStatusPresentation(w.status, w.refunded);
+          return (
+            <div key={w.id} className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2">
+                {w.status === "paid" ? (
+                  <Check size={12} className="text-teal" />
+                ) : w.status === "failed" ? (
+                  <X size={12} className="text-coral" />
+                ) : (
+                  <Clock size={12} className="text-gold" />
+                )}
+                <span className="font-mono text-text-secondary">
+                  {formatUsd(microToUsd(w.net_micro_usd))}
+                </span>
+                <span className="text-[10px] font-mono uppercase text-text-tertiary">
+                  {w.method}
+                </span>
+              </div>
+              <span
+                title={presentation.detail}
+                className={`text-xs font-mono ${
+                  w.status === "paid"
+                    ? "text-teal"
+                    : w.status === "failed"
+                    ? "text-coral"
+                    : "text-text-tertiary"
+                }`}
+              >
+                {presentation.label}
               </span>
             </div>
-            <span
-              className={`text-xs font-mono ${
-                w.status === "paid"
-                  ? "text-teal"
-                  : w.status === "failed"
-                  ? "text-coral"
-                  : "text-text-tertiary"
-              }`}
-            >
-              {w.status}
-              {w.refunded ? " (refunded)" : ""}
-            </span>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

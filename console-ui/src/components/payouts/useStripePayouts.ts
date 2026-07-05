@@ -10,6 +10,7 @@ import {
   type StripeStatus,
   type StripeWithdrawal,
 } from "@/lib/api";
+import { classifyOnboardError, classifyWithdrawError, withdrawSuccessMessage } from "./payout-copy";
 
 type WithdrawMethod = "standard" | "instant";
 
@@ -114,10 +115,12 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
       const resp = await startStripeOnboarding(returnURL, selectedCountry || undefined);
       window.location.href = resp.url;
     } catch (e) {
-      addToast(`Stripe onboarding failed: ${(e as Error).message}`);
+      const p = classifyOnboardError(e);
+      addToast(p.message);
+      if (p.refreshStatus) await reload(false);
       setOnboardLoading(false);
     }
-  }, [selectedCountry, addToast]);
+  }, [selectedCountry, addToast, reload]);
 
   const withdraw = useCallback(async () => {
     setWithdrawLoading(true);
@@ -125,12 +128,18 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
     try {
       const resp = await withdrawStripe(withdrawAmount, withdrawMethod);
       onWithdrawSuccess?.(withdrawMethod);
-      addToast(`Withdrawal submitted — ${resp.eta || "processing"}`, "success");
+      addToast(withdrawSuccessMessage(resp), "success");
       setWithdrawOpen(false);
       await Promise.all([onAfterWithdraw?.(), reload(false)]);
     } catch (e) {
       onWithdrawError?.();
-      addToast(`${(e as Error).message}`);
+      // Map backend error codes to friendly copy; account-state errors close
+      // the modal and refresh status so the card lands on the right branch
+      // (gone -> set up payouts again, recreate_required -> Action needed).
+      const p = classifyWithdrawError(e);
+      addToast(p.message);
+      if (p.closeModal) setWithdrawOpen(false);
+      if (p.refreshStatus) await reload(false);
     }
     setWithdrawLoading(false);
   }, [withdrawAmount, withdrawMethod, addToast, onAfterWithdraw, reload, onWithdrawStart, onWithdrawSuccess, onWithdrawError]);

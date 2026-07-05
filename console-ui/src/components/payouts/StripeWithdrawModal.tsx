@@ -3,6 +3,7 @@
 import { Clock, Zap, Loader2 } from "lucide-react";
 import { computeStripeFeeUsd, type StripeStatus } from "@/lib/api";
 import { MethodOption } from "./MethodOption";
+import { INSTANT_ETA, STANDARD_ETA, methodExplainer } from "./payout-copy";
 
 // The Stripe withdraw modal body (amount input, speed picker, fee preview,
 // confirm). Shared by billing + earnings (previously byte-identical — F3).
@@ -75,13 +76,13 @@ export function StripeWithdrawModal({
       <label className="block text-xs font-mono text-text-tertiary uppercase tracking-wider mb-2">
         Speed
       </label>
-      <div className="grid grid-cols-1 gap-2 mb-4">
+      <div className="grid grid-cols-1 gap-2 mb-2">
         <MethodOption
           selected={method === "standard"}
           onClick={() => onMethodChange("standard")}
           icon={<Clock size={14} />}
           label="Standard"
-          eta="1-2 business days"
+          eta={STANDARD_ETA}
           fee="Free"
         />
         <MethodOption
@@ -90,11 +91,14 @@ export function StripeWithdrawModal({
           disabled={!status?.instant_eligible}
           icon={<Zap size={14} />}
           label="Instant"
-          eta="~30 minutes"
+          eta={INSTANT_ETA}
           fee={`${(instantBps / 100).toFixed(2)}% (min $${instantMinUsd.toFixed(2)})`}
           tooltip={!status?.instant_eligible ? "Link a debit card via Stripe to enable Instant Payouts" : undefined}
         />
       </div>
+      <p className="text-xs text-text-tertiary mb-4 leading-relaxed">
+        {methodExplainer(method, instantBps, instantMinUsd)}
+      </p>
 
       {/* Fee breakdown */}
       <div className="rounded-lg bg-bg-primary border border-border-dim p-3 mb-5 text-xs space-y-1">

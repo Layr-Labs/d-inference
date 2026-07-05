@@ -55,6 +55,7 @@ This directory is the source of truth for how Darkbloom works. The code in `coor
 | Doc | Decision |
 |---|---|
 | [decisions/apns-code-attestation.md](decisions/apns-code-attestation.md) | APNs-based code-identity attestation for genuine-binary proof |
+| [decisions/corporate-mdm-federated-attestation.md](decisions/corporate-mdm-federated-attestation.md) | (Proposed) Admitting corporate Macs on third-party MDMs via Apple-rooted ACME attestation |
 | [decisions/ssd-kv-cache.md](decisions/ssd-kv-cache.md) | SSD-backed prefix cache architecture |
 | [decisions/kv-cache-lookup-shadowing.md](decisions/kv-cache-lookup-shadowing.md) | RAM-first lookup shadowing on hybrid sliding-window models |
 

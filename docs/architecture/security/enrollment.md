@@ -104,6 +104,19 @@ Code:
 - Trust level constants: `coordinator/registry/registry.go:52-57`
 - Code-identity attestation: `coordinator/api/provider.go:487-617`
 
+## Corporate Macs (foreign MDM)
+
+macOS allows one MDM enrollment per device, so a Mac managed by Kandji, Jamf,
+Intune, etc. can never install the Darkbloom enrollment profile — `darkbloom
+enroll` fails with `managedByOtherMDM`
+(`provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`). A design for
+admitting such fleets without a second MDM — Apple-rooted ACME `device-attest-01`
+attestation delivered *through* the corporate MDM — is proposed in
+[Corporate MDM federated attestation (ADR)](../decisions/corporate-mdm-federated-attestation.md).
+Note the ADR's leg is distinct from the removed leg above: it verifies the
+Apple-signed attestation certificate in-band at a coordinator-hosted ACME
+endpoint, fail-closed on the `1.2.840.113635.100.8.13.*` posture OIDs.
+
 ## Privacy and control boundaries
 
 - The coordinator requests only read-only MDM rights.

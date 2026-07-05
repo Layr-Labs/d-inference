@@ -2,18 +2,9 @@ package api
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/asn1"
-	"encoding/base64"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
-	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -21,152 +12,8 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
-
-// createTestAttestationJSONWithSerial creates a signed attestation blob with
-// a specific serial number. Based on createTestAttestationJSON in provider_test.go,
-// but adds serialNumber to the blob for deduplication tests.
-func createTestAttestationJSONWithSerial(t *testing.T, serial, encryptionKey string) json.RawMessage {
-	t.Helper()
-
-	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Marshal public key as uncompressed point (65 bytes: 0x04 || X || Y)
-	xBytes := privKey.X.Bytes()
-	yBytes := privKey.Y.Bytes()
-	raw := make([]byte, 65)
-	raw[0] = 0x04
-	copy(raw[1+32-len(xBytes):33], xBytes)
-	copy(raw[33+32-len(yBytes):65], yBytes)
-	pubKeyB64 := base64.StdEncoding.EncodeToString(raw)
-
-	blobMap := map[string]interface{}{
-		"authenticatedRootEnabled": true,
-		"chipName":                 "Apple M3 Max",
-		"hardwareModel":            "Mac15,8",
-		"osVersion":                "15.3.0",
-		"publicKey":                pubKeyB64,
-		"rdmaDisabled":             true,
-		"secureBootEnabled":        true,
-		"secureEnclaveAvailable":   true,
-		"serialNumber":             serial,
-		"sipEnabled":               true,
-		"timestamp":                time.Now().UTC().Format(time.RFC3339),
-	}
-	if encryptionKey != "" {
-		blobMap["encryptionPublicKey"] = encryptionKey
-		registerTestChallengeSigner(encryptionKey, privKey)
-	}
-
-	blobJSON, err := json.Marshal(blobMap)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	hash := sha256.Sum256(blobJSON)
-	r, s, err := ecdsa.Sign(rand.Reader, privKey, hash[:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	sigDER, err := asn1.Marshal(ecdsaSigHelper{R: r, S: s})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	signed := map[string]interface{}{
-		"attestation": json.RawMessage(blobJSON),
-		"signature":   base64.StdEncoding.EncodeToString(sigDER),
-	}
-
-	signedJSON, err := json.Marshal(signed)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return signedJSON
-}
-
-// connectProviderWithAttestation dials the WebSocket, sends a register message
-// with an attestation blob (including serial number), and returns the connection.
-func connectProviderWithAttestation(t *testing.T, ctx context.Context, tsURL string, models []protocol.ModelInfo, publicKey string, attestation json.RawMessage) *websocket.Conn {
-	t.Helper()
-	wsURL := "ws" + strings.TrimPrefix(tsURL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	regMsg := protocol.RegisterMessage{
-		Type: protocol.TypeRegister,
-		Hardware: protocol.Hardware{
-			MachineModel: "Mac15,8",
-			ChipName:     "Apple M3 Max",
-			MemoryGB:     64,
-		},
-		Models:                  models,
-		Backend:                 "mlx-swift",
-		PublicKey:               publicKey,
-		Attestation:             attestation,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-	}
-	regData, _ := json.Marshal(regMsg)
-	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
-		t.Fatalf("write register: %v", err)
-	}
-	time.Sleep(200 * time.Millisecond)
-	return conn
-}
-
-// waitForChallenge reads from the provider WebSocket until an attestation
-// challenge arrives, responds to it validly, and returns. Non-challenge
-// messages are discarded.
-func waitForChallenge(t *testing.T, ctx context.Context, conn *websocket.Conn, pubKey string) {
-	t.Helper()
-	for {
-		_, data, err := conn.Read(ctx)
-		if err != nil {
-			t.Fatalf("waitForChallenge: read error: %v", err)
-		}
-		var env struct {
-			Type string `json:"type"`
-		}
-		json.Unmarshal(data, &env)
-		if env.Type == protocol.TypeAttestationChallenge {
-			resp := makeValidChallengeResponse(data, pubKey)
-			if err := conn.Write(ctx, websocket.MessageText, resp); err != nil {
-				t.Fatalf("waitForChallenge: write error: %v", err)
-			}
-			return
-		}
-	}
-}
-
-// setupTestServer creates a test server with a short challenge interval and
-// returns the server, registry, store, and httptest server.
-func setupTestServer(t *testing.T) (*Server, *registry.Registry, store.Store, *httptest.Server) {
-	t.Helper()
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = 200 * time.Millisecond
-	ts := httptest.NewServer(srv.Handler())
-	return srv, reg, st, ts
-}
-
-// makeProviderRoutable sets trust level to hardware and records a challenge
-// success for all currently registered providers so they pass routing checks.
-func makeProviderRoutable(reg *registry.Registry) {
-	for _, id := range reg.ProviderIDs() {
-		reg.SetTrustLevel(id, registry.TrustHardware)
-		reg.RecordChallengeSuccess(id)
-	}
-}
 
 // TestIntegration_RequestCancellationOnConsumerDisconnect verifies that when a
 // consumer disconnects mid-stream, the coordinator sends a Cancel message to

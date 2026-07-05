@@ -58,5 +58,42 @@ public enum ProviderCore {
     // `darkbloom benchmark --sweep` decode-bandwidth diagnostic is added (W6).
     // Submodule pin advanced to 5d3bb51b. Additive/omitempty wire fields — fully
     // backward-compatible with the currently-deployed coordinator.
-    public static let version = "0.6.13"
+    // 0.6.16 fixes the fleet-wide admission wedge and adds a backend-liveness
+    // watchdog. The KV reclaimable-pool self-heal flush (a blocking GPU
+    // synchronize) no longer runs on the GlobalKVCacheBudget actor / admission hot
+    // path — it moved to a dedicated off-actor KVPoolReclaimer (coalesced and
+    // rate-limited, with both on-pressure and proactive sweeps), so a near-miss
+    // admission can never serialize every other reservation behind a GPU sync.
+    // An in-process backend-liveness watchdog detects a wedged engine (a request
+    // admitted but 0 tokens past the pending-timeout window) or a pinned/collapsed
+    // KV pool (budget at the floor with 0 successes), reports a truthful heartbeat
+    // slot_state ("crashed"/"reloading" instead of a lying "idle"), and
+    // self-restarts the engine/model slot to recover. Wire-compatible: only
+    // existing slot_state string values are emitted; no protocol changes.
+    // 0.6.17 adds the DAR-341 Harmony channel-tag inbound sanitizer + normalized
+    // inference `error_reason` classification (jinja_channel_tags /
+    // jinja_null_bridge / jinja_template / model_load), so durable telemetry can
+    // tell the two indistinguishable gpt-oss 500 modes apart. Wire-compatible:
+    // `error_reason` is an optional inference-error field, omitted when nil.
+    // 0.7.2 lets engine_v2 (continuous batching) serve TEXT requests on
+    // allowlisted VLM-loaded Gemma 4 slots. Every prod Gemma 4 checkpoint
+    // ships a vision tower, so it loads via VLMModelFactory and the per-slot
+    // isVLM gate previously kept 100% of Gemma traffic on the legacy engine.
+    // The slot factory now extracts the CBv2-adapted MLXLLM text model over
+    // the SAME weight arrays (zero extra weight memory) and serves text
+    // through v2; image/video requests keep the legacy VLM path. No protocol
+    // change — capability is behavioral, gated by the existing engine_v2
+    // allowlist + flag.
+    // 0.7.3 fixes the v0.7.2 black-hole incident: the VLM text extraction's
+    // two module trees each lazily built their own multi-GiB SwitchGLU fused
+    // gate+up expert cache at the load-time parity probe (~15 GiB × 2 on
+    // gemma-4-26b-8bit), pushing 64 GB (8-bit) and 36 GB (qat-4bit) boxes
+    // past the 90% unified-memory cap so the shared KV gate rejected every
+    // request forever. The trees now share ONE fused cache
+    // (SwitchGLU.shareFusedGateUpCache); the load path re-checks serveable
+    // KV headroom AFTER the engine build and unloads instead of advertising
+    // a dead model; and GlobalKVCacheBudget audits + drops stale
+    // reservations under sustained full-rejection (defense in depth). No
+    // protocol changes.
+    public static let version = "0.7.3"
 }

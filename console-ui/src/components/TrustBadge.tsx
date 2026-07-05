@@ -2,7 +2,7 @@
 
 import { Shield, ShieldCheck } from "lucide-react";
 import type { TrustMetadata } from "@/lib/api";
-import { useVerificationMode } from "@/lib/verification-mode";
+import { useVerificationMode } from "@/components/providers/verification-mode";
 
 const config = {
   hardware_mda: {

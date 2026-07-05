@@ -11,6 +11,15 @@ func newTestLedger() *Ledger {
 	return NewLedger(store.NewMemory(store.Config{}))
 }
 
+// creditBalance funds a test account the way production does (Stripe webhook →
+// store.Credit); the Ledger has no deposit method of its own.
+func creditBalance(t *testing.T, l *Ledger, consumerID string, amountMicroUSD int64) {
+	t.Helper()
+	if err := l.store.Credit(consumerID, amountMicroUSD, store.LedgerDeposit, ""); err != nil {
+		t.Fatalf("credit %s: %v", consumerID, err)
+	}
+}
+
 func TestNewLedger(t *testing.T) {
 	l := newTestLedger()
 	if l == nil {
@@ -18,31 +27,27 @@ func TestNewLedger(t *testing.T) {
 	}
 }
 
-func TestDepositAndBalance(t *testing.T) {
+func TestBalance(t *testing.T) {
 	l := newTestLedger()
 
 	if bal := l.Balance("0xConsumer1"); bal != 0 {
 		t.Errorf("initial balance = %d, want 0", bal)
 	}
 
-	if err := l.Deposit("0xConsumer1", 10_000_000); err != nil {
-		t.Fatalf("Deposit: %v", err)
-	}
+	creditBalance(t, l, "0xConsumer1", 10_000_000)
 	if bal := l.Balance("0xConsumer1"); bal != 10_000_000 {
-		t.Errorf("balance after deposit = %d, want 10_000_000", bal)
+		t.Errorf("balance after credit = %d, want 10_000_000", bal)
 	}
 
-	if err := l.Deposit("0xConsumer1", 5_000_000); err != nil {
-		t.Fatalf("Deposit: %v", err)
-	}
+	creditBalance(t, l, "0xConsumer1", 5_000_000)
 	if bal := l.Balance("0xConsumer1"); bal != 15_000_000 {
-		t.Errorf("balance after second deposit = %d, want 15_000_000", bal)
+		t.Errorf("balance after second credit = %d, want 15_000_000", bal)
 	}
 }
 
 func TestCharge(t *testing.T) {
 	l := newTestLedger()
-	l.Deposit("0xConsumer1", 10_000_000)
+	creditBalance(t, l, "0xConsumer1", 10_000_000)
 
 	if err := l.Charge("0xConsumer1", 3_000_000, "job-1"); err != nil {
 		t.Fatalf("Charge: %v", err)
@@ -61,7 +66,7 @@ func TestCharge(t *testing.T) {
 
 func TestChargeInsufficientFunds(t *testing.T) {
 	l := newTestLedger()
-	l.Deposit("0xConsumer1", 1_000_000)
+	creditBalance(t, l, "0xConsumer1", 1_000_000)
 
 	err := l.Charge("0xConsumer1", 2_000_000, "job-1")
 	if err == nil {
@@ -104,9 +109,9 @@ func TestCreditProviderWallet(t *testing.T) {
 		t.Fatalf("CreditProviderWallet(2): %v", err)
 	}
 
-	payouts := l.PendingPayouts()
+	payouts := l.AllPayouts()
 	if len(payouts) != 2 {
-		t.Fatalf("pending payouts = %d, want 2", len(payouts))
+		t.Fatalf("payouts = %d, want 2", len(payouts))
 	}
 	if payouts[0].ProviderAddress != "0xProvider1" {
 		t.Errorf("payout[0] address = %q", payouts[0].ProviderAddress)
@@ -114,81 +119,13 @@ func TestCreditProviderWallet(t *testing.T) {
 	if payouts[0].AmountMicroUSD != 900_000 {
 		t.Errorf("payout[0] amount = %d", payouts[0].AmountMicroUSD)
 	}
+	if payouts[0].Settled {
+		t.Error("payout[0] should be unsettled")
+	}
 
 	// Provider balance should also be tracked in the store
 	if bal := l.Balance("0xProvider1"); bal != 900_000 {
 		t.Errorf("provider balance = %d, want 900_000", bal)
-	}
-}
-
-func TestSettlePayout(t *testing.T) {
-	l := newTestLedger()
-
-	if err := l.store.CreditProviderWallet(&store.ProviderPayout{
-		ProviderAddress: "0xProvider1",
-		AmountMicroUSD:  900_000,
-		Model:           "qwen3.5-9b",
-		JobID:           "job-123",
-		Timestamp:       time.Now(),
-	}); err != nil {
-		t.Fatalf("CreditProviderWallet(1): %v", err)
-	}
-	if err := l.store.CreditProviderWallet(&store.ProviderPayout{
-		ProviderAddress: "0xProvider2",
-		AmountMicroUSD:  450_000,
-		Model:           "llama3-8b",
-		JobID:           "job-456",
-		Timestamp:       time.Now(),
-	}); err != nil {
-		t.Fatalf("CreditProviderWallet(2): %v", err)
-	}
-
-	if err := l.SettlePayout(0); err != nil {
-		t.Fatalf("SettlePayout(0): %v", err)
-	}
-
-	pending := l.PendingPayouts()
-	if len(pending) != 1 {
-		t.Fatalf("pending payouts = %d, want 1", len(pending))
-	}
-	if pending[0].JobID != "job-456" {
-		t.Errorf("remaining payout job_id = %q, want job-456", pending[0].JobID)
-	}
-
-	all := l.AllPayouts()
-	if len(all) != 2 {
-		t.Fatalf("all payouts = %d, want 2", len(all))
-	}
-}
-
-func TestSettlePayoutAlreadySettled(t *testing.T) {
-	l := newTestLedger()
-	if err := l.store.CreditProviderWallet(&store.ProviderPayout{
-		ProviderAddress: "0xProvider1",
-		AmountMicroUSD:  900_000,
-		Model:           "qwen3.5-9b",
-		JobID:           "job-123",
-		Timestamp:       time.Now(),
-	}); err != nil {
-		t.Fatalf("CreditProviderWallet: %v", err)
-	}
-
-	if err := l.SettlePayout(0); err != nil {
-		t.Fatalf("first SettlePayout: %v", err)
-	}
-	if err := l.SettlePayout(0); err == nil {
-		t.Fatal("expected error for already settled payout")
-	}
-}
-
-func TestSettlePayoutOutOfRange(t *testing.T) {
-	l := newTestLedger()
-
-	if err := l.SettlePayout(0); err == nil {
-		t.Fatal("expected error for out-of-range index")
-	}
-	if err := l.SettlePayout(-1); err == nil {
-		t.Fatal("expected error for negative index")
 	}
 }
 
@@ -207,9 +144,9 @@ func TestPayoutsPersistAcrossLedgerInstances(t *testing.T) {
 	}
 
 	l2 := NewLedger(st)
-	payouts := l2.PendingPayouts()
+	payouts := l2.AllPayouts()
 	if len(payouts) != 1 {
-		t.Fatalf("pending payouts = %d, want 1", len(payouts))
+		t.Fatalf("payouts = %d, want 1", len(payouts))
 	}
 	if payouts[0].JobID != "job-123" {
 		t.Fatalf("payout job_id = %q, want job-123", payouts[0].JobID)
@@ -264,22 +201,22 @@ func TestUsageReturnsCopy(t *testing.T) {
 	}
 }
 
-func TestPendingPayoutsEmpty(t *testing.T) {
+func TestAllPayoutsEmpty(t *testing.T) {
 	l := newTestLedger()
-	pending := l.PendingPayouts()
-	if pending == nil {
-		t.Fatal("PendingPayouts should return empty slice, not nil")
+	payouts := l.AllPayouts()
+	if payouts == nil {
+		t.Fatal("AllPayouts should return empty slice, not nil")
 	}
-	if len(pending) != 0 {
-		t.Errorf("pending payouts = %d, want 0", len(pending))
+	if len(payouts) != 0 {
+		t.Errorf("payouts = %d, want 0", len(payouts))
 	}
 }
 
 func TestMultipleConsumers(t *testing.T) {
 	l := newTestLedger()
 
-	l.Deposit("c1", 5_000_000)
-	l.Deposit("c2", 10_000_000)
+	creditBalance(t, l, "c1", 5_000_000)
+	creditBalance(t, l, "c2", 10_000_000)
 
 	if l.Balance("c1") != 5_000_000 {
 		t.Errorf("c1 balance = %d", l.Balance("c1"))
@@ -288,7 +225,9 @@ func TestMultipleConsumers(t *testing.T) {
 		t.Errorf("c2 balance = %d", l.Balance("c2"))
 	}
 
-	l.Charge("c1", 2_000_000, "job-1")
+	if err := l.Charge("c1", 2_000_000, "job-1"); err != nil {
+		t.Fatalf("Charge: %v", err)
+	}
 	if l.Balance("c1") != 3_000_000 {
 		t.Errorf("c1 balance after charge = %d", l.Balance("c1"))
 	}
@@ -300,9 +239,11 @@ func TestMultipleConsumers(t *testing.T) {
 func TestLedgerHistory(t *testing.T) {
 	l := newTestLedger()
 
-	l.Deposit("c1", 10_000_000)
-	l.Charge("c1", 3_000_000, "job-1")
-	l.Deposit("c1", 2_000_000)
+	creditBalance(t, l, "c1", 10_000_000)
+	if err := l.Charge("c1", 3_000_000, "job-1"); err != nil {
+		t.Fatalf("Charge: %v", err)
+	}
+	creditBalance(t, l, "c1", 2_000_000)
 
 	history := l.LedgerHistory("c1")
 	if len(history) != 3 {

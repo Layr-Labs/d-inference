@@ -705,10 +705,11 @@ func TestInferenceCompleteMarshal(t *testing.T) {
 
 func TestInferenceErrorMarshal(t *testing.T) {
 	msg := InferenceErrorMessage{
-		Type:       TypeInferenceError,
-		RequestID:  "req-789",
-		Error:      "model not loaded",
-		StatusCode: 500,
+		Type:        TypeInferenceError,
+		RequestID:   "req-789",
+		Error:       "model not loaded",
+		StatusCode:  500,
+		ErrorReason: "model_load",
 	}
 
 	data, err := json.Marshal(msg)
@@ -726,6 +727,18 @@ func TestInferenceErrorMarshal(t *testing.T) {
 	}
 	if decoded.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status_code = %d, want 500", decoded.StatusCode)
+	}
+	if decoded.ErrorReason != "model_load" {
+		t.Errorf("error_reason = %q, want model_load", decoded.ErrorReason)
+	}
+
+	msg.ErrorReason = ""
+	data, err = json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal without reason: %v", err)
+	}
+	if bytes.Contains(data, []byte("error_reason")) {
+		t.Fatalf("error_reason should be omitted when empty, got %s", data)
 	}
 }
 
@@ -809,6 +822,33 @@ func TestProviderMessageUnmarshalRegister(t *testing.T) {
 	}
 }
 
+// TestProviderMessageUnmarshalRegisterLegacyHypervisorCapability is the
+// legacy-fleet wire guard for the retired hypervisor_active capability.
+// Old providers (< v0.6.31) still send it inside privacy_capabilities;
+// the Go field was removed, so it must decode as a harmless unknown
+// field — no error, all remaining capabilities intact.
+func TestProviderMessageUnmarshalRegisterLegacyHypervisorCapability(t *testing.T) {
+	raw := `{"type":"register","hardware":{"chip_name":"Apple M3 Max","memory_gb":64},"models":[{"id":"m1","model_type":"chat","quantization":"4bit"}],"backend":"mlx_swift","privacy_capabilities":{"text_backend_inprocess":true,"text_proxy_disabled":true,"python_runtime_locked":true,"dangerous_modules_blocked":true,"sip_enabled":true,"anti_debug_enabled":true,"core_dumps_disabled":true,"env_scrubbed":true,"hypervisor_active":false}}`
+
+	var pm ProviderMessage
+	if err := json.Unmarshal([]byte(raw), &pm); err != nil {
+		t.Fatalf("legacy register frame with hypervisor_active must decode: %v", err)
+	}
+
+	reg, ok := pm.Payload.(*RegisterMessage)
+	if !ok {
+		t.Fatalf("payload type = %T, want *RegisterMessage", pm.Payload)
+	}
+	caps := reg.PrivacyCapabilities
+	if caps == nil {
+		t.Fatal("privacy_capabilities missing after decode")
+	}
+	if !caps.TextBackendInprocess || !caps.TextProxyDisabled || !caps.SIPEnabled ||
+		!caps.AntiDebugEnabled || !caps.CoreDumpsDisabled || !caps.EnvScrubbed {
+		t.Fatalf("privacy capabilities lost around the ignored hypervisor_active field: %+v", caps)
+	}
+}
+
 func TestProviderMessageUnmarshalHeartbeat(t *testing.T) {
 	raw := `{"type":"heartbeat","status":"idle","active_model":null,"stats":{"requests_served":0,"tokens_generated":0}}`
 
@@ -863,7 +903,7 @@ func TestProviderMessageUnmarshalComplete(t *testing.T) {
 }
 
 func TestProviderMessageUnmarshalError(t *testing.T) {
-	raw := `{"type":"inference_error","request_id":"err-1","error":"model not loaded","status_code":500}`
+	raw := `{"type":"inference_error","request_id":"err-1","error":"model not loaded","status_code":500,"error_reason":"model_load"}`
 
 	var pm ProviderMessage
 	if err := json.Unmarshal([]byte(raw), &pm); err != nil {
@@ -876,6 +916,9 @@ func TestProviderMessageUnmarshalError(t *testing.T) {
 	}
 	if errMsg.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status_code = %d", errMsg.StatusCode)
+	}
+	if errMsg.ErrorReason != "model_load" {
+		t.Errorf("error_reason = %q, want model_load", errMsg.ErrorReason)
 	}
 }
 
@@ -1350,6 +1393,92 @@ func TestBackendSlotCapacityBackwardCompatDecode(t *testing.T) {
 	}
 	if slot.NumRunning != 2 {
 		t.Errorf("num_running = %d, want 2", slot.NumRunning)
+	}
+}
+
+// TestBackendSlotCapacityWedgeFields verifies the engine-health (first-token
+// wedge) signals round-trip with the exact snake_case keys the Swift WedgeMonitor
+// emits, and that each is omitempty so a legacy/idle slot keeps the prior wire
+// shape (Go omission ↔ Swift's encodeIfNonZero / false-omit).
+func TestBackendSlotCapacityWedgeFields(t *testing.T) {
+	slot := BackendSlotCapacity{
+		Model:                      "gpt-oss-20b",
+		State:                      "running",
+		NumRunning:                 0,
+		StepsExecuted:              4321,
+		Admits:                     7,
+		FirstTokensEmitted:         0,
+		SecondsSinceLastStep:       12.5,
+		SecondsSinceLastFirstToken: 13.0,
+		WedgeSuspected:             true,
+		EvalInFlightMs:             11000,
+		IdleClearInFlightMs:        1500,
+	}
+
+	data, err := json.Marshal(slot)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{
+		`"steps_executed":4321`,
+		`"admits":7`,
+		`"seconds_since_last_step":12.5`,
+		`"seconds_since_last_first_token":13`,
+		`"wedge_suspected":true`,
+		`"eval_in_flight_ms":11000`,
+		`"idle_clear_in_flight_ms":1500`,
+	} {
+		if !bytes.Contains(data, []byte(want)) {
+			t.Fatalf("expected %s in JSON, got %s", want, data)
+		}
+	}
+	// first_tokens_emitted == 0 is omitted (this is the wedge: admits>0, 0 first
+	// tokens), so its ABSENCE — not a zero — is the on-wire signal.
+	if bytes.Contains(data, []byte("first_tokens_emitted")) {
+		t.Fatalf("zero first_tokens_emitted should be omitted, got %s", data)
+	}
+
+	var decoded BackendSlotCapacity
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.StepsExecuted != 4321 || decoded.Admits != 7 || decoded.FirstTokensEmitted != 0 {
+		t.Fatalf("counter round-trip mismatch: %+v", decoded)
+	}
+	if decoded.SecondsSinceLastStep != 12.5 || decoded.SecondsSinceLastFirstToken != 13.0 {
+		t.Fatalf("seconds round-trip mismatch: %+v", decoded)
+	}
+	if !decoded.WedgeSuspected {
+		t.Fatal("wedge_suspected should round-trip true")
+	}
+	if decoded.EvalInFlightMs != 11000 || decoded.IdleClearInFlightMs != 1500 {
+		t.Fatalf("eval/idle-clear in-flight round-trip mismatch: %+v", decoded)
+	}
+
+	// All-zero/false slot: every wedge field is omitted (legacy-compatible wire).
+	zero := BackendSlotCapacity{Model: "m", State: "idle", NumRunning: 0}
+	zeroData, err := json.Marshal(zero)
+	if err != nil {
+		t.Fatalf("marshal zero: %v", err)
+	}
+	for _, key := range []string{
+		"steps_executed", "admits", "first_tokens_emitted",
+		"seconds_since_last_step", "seconds_since_last_first_token", "wedge_suspected",
+		"eval_in_flight_ms", "idle_clear_in_flight_ms",
+	} {
+		if bytes.Contains(zeroData, []byte(key)) {
+			t.Fatalf("zero wedge field %q should be omitted, got %s", key, zeroData)
+		}
+	}
+
+	// Pre-instrumentation provider: a payload without any wedge field decodes to
+	// the zero values (never a panic, never a spurious wedge).
+	var legacy BackendSlotCapacity
+	if err := json.Unmarshal([]byte(`{"model":"m","state":"running","num_running":1}`), &legacy); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if legacy.StepsExecuted != 0 || legacy.Admits != 0 || legacy.WedgeSuspected {
+		t.Fatalf("legacy slot should default wedge fields to zero/false, got %+v", legacy)
 	}
 }
 

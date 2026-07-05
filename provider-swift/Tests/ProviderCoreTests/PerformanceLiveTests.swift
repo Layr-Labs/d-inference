@@ -11,9 +11,10 @@
 //   Qwen3 0.6B-8bit              smoke-tier  (DARKBLOOM_LIVE_MLX_TESTS=1)
 //   Gemma 4 26B-A4B-it-8bit MoE  prod-tier   (+ DARKBLOOM_LIVE_MLX_GEMMA=1)
 //
-// All numbers print to stderr with a `[perf]` prefix. Reproduce mlx_lm
-// reference values with `scripts/mlx_lm_batch_bench.py`. Always compare
-// against release-mode Swift; debug mode is several times slower.
+// All numbers print to stderr with a `[perf]` prefix. The mlx_lm reference
+// values below were measured with a Python mlx_lm batch-bench script (retired;
+// see git history: scripts/mlx_lm_batch_bench.py). Always compare against
+// release-mode Swift; debug mode is several times slower.
 //
 // Reference (mlx_lm 0.31.3 Python on same hardware):
 //   Qwen3 0.6B-8bit              B=1: 265 tok/s   B=2: 694 tok/s   B=4: 1119 tok/s
@@ -499,7 +500,7 @@ struct PerformanceLiveTests {
             case .chunk:
                 if firstChunkAt == nil { firstChunkAt = .now }
                 lastChunkAt = .now
-            case .info(_, let completion, let tps):
+            case .info(_, let completion, let tps, _):
                 completionTokens = completion
                 schedulerTPS = tps
             case .error:
@@ -715,9 +716,9 @@ struct PerformanceLiveTests {
                                 ttft = ContinuousClock.now - start
                                 sawFirst = true
                             }
-                        case .info(_, let completion, _):
+                        case .info(_, let completion, _, _):
                             completionTokens = completion
-                            if case .info(_, _, let tps) = event {
+                            if case .info(_, _, let tps, _) = event {
                                 modelSideTPS = tps
                             }
                         case .error:

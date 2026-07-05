@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const DEFAULT_COORD = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
+import { coordinatorUrl } from "@/lib/server/coordinator";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,9 +8,7 @@ export const dynamic = "force-dynamic";
 // returns 503 when the coordinator hasn't enabled sender encryption (no
 // mnemonic). The browser caches the result with a 1h TTL.
 export async function GET(_req: NextRequest) {
-  const coordUrl = DEFAULT_COORD;
-
-  const res = await fetch(`${coordUrl}/v1/encryption-key`, { cache: "no-store" });
+  const res = await fetch(`${coordinatorUrl()}/v1/encryption-key`, { cache: "no-store" });
   if (res.status === 503) {
     return NextResponse.json(
       { error: "encryption_unavailable" },

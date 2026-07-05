@@ -36,7 +36,6 @@ export function makeProvider(overrides: Partial<MyProvider> = {}): MyProvider {
     trust_level: "hardware",
     attested: true,
     mda_verified: true,
-    acme_verified: true,
     se_key_bound: true,
     secure_enclave: true,
     sip_enabled: true,

@@ -123,6 +123,39 @@ func DecryptWithPrivateKey(payload *EncryptedPayload, privateKey [32]byte) ([]by
 	return Decrypt(payload, session)
 }
 
+// PrecomputeSharedKey derives the NaCl box shared key for (peerPublicKey,
+// privateKey) once, so a stream of messages from the same peer can be
+// decrypted without repeating the X25519 scalar multiplication per message
+// (~40-60µs each). Use with DecryptWithSharedKey on per-chunk hot paths.
+func PrecomputeSharedKey(peerPublicKey, privateKey *[32]byte) *[32]byte {
+	var shared [32]byte
+	box.Precompute(&shared, peerPublicKey, privateKey)
+	return &shared
+}
+
+// DecryptWithSharedKey decrypts an EncryptedPayload using a shared key from
+// PrecomputeSharedKey. The caller MUST have already verified that
+// payload.EphemeralPublicKey is the peer key the shared key was derived from —
+// this function only performs the symmetric open.
+func DecryptWithSharedKey(payload *EncryptedPayload, sharedKey *[32]byte) ([]byte, error) {
+	ciphertext, err := base64.StdEncoding.DecodeString(payload.Ciphertext)
+	if err != nil {
+		return nil, fmt.Errorf("invalid ciphertext: %w", err)
+	}
+	if len(ciphertext) < 24 {
+		return nil, errors.New("ciphertext too short")
+	}
+
+	var nonce [24]byte
+	copy(nonce[:], ciphertext[:24])
+
+	plaintext, ok := box.OpenAfterPrecomputation(nil, ciphertext[24:], &nonce, sharedKey)
+	if !ok {
+		return nil, errors.New("decryption failed — wrong key or tampered data")
+	}
+	return plaintext, nil
+}
+
 // ParsePublicKey decodes a base64-encoded X25519 public key.
 func ParsePublicKey(b64 string) ([32]byte, error) {
 	var key [32]byte

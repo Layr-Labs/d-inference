@@ -173,10 +173,21 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if billingSessionID != "" {
-		_ = s.billing.Store().CompleteBillingSession(billingSessionID)
+		// Best-effort: the deposit is already credited above, but a failure here
+		// leaves the session marked incomplete (and replayable). Surface it.
+		if err := s.billing.Store().CompleteBillingSession(billingSessionID); err != nil {
+			s.logger.Error("stripe: failed to mark billing session complete",
+				"billing_session_id", billingSessionID, "error", err)
+			s.ddIncr("billing.session_complete_failed", nil)
+		}
 	}
 	if referralCode != "" {
-		_ = s.billing.Referral().Apply(consumerKey, referralCode)
+		// Best-effort: a failure here means the referrer is not credited for this
+		// deposit; never silently swallow it.
+		if err := s.billing.Referral().Apply(consumerKey, referralCode); err != nil {
+			s.logger.Error("stripe: failed to apply referral credit", "error", err)
+			s.ddIncr("billing.referral_apply_failed", nil)
+		}
 	}
 
 	s.logger.Info("stripe: deposit credited",

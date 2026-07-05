@@ -838,62 +838,98 @@
     .calc-desc { font-size: 14px; color: var(--grey-03); margin-bottom: 28px; letter-spacing: 0.02em; }
     .clabel { font-family: var(--font-mono); font-size: 11px; font-weight: 400; letter-spacing: 0.02em; color: var(--grey-03); display: block; margin-bottom: 8px; }
     .csec { margin-bottom: 24px; }
-    .pills { display: flex; flex-wrap: wrap; gap: 5px; }
-
     .calc-hint { font-size: 12px; color: var(--grey-03); margin: -4px 0 12px; line-height: 1.45; }
+
+    /* Results-first hero */
+    .calc-hero { text-align: center; padding: 8px 0 28px; margin-bottom: 28px; border-bottom: 1px solid var(--grey-01); }
+    .calc-net-label { font-family: var(--font-mono); font-size: 11px; color: var(--grey-03); text-transform: uppercase; letter-spacing: 0.06em; }
+    .calc-hero-big { font-size: 40px; font-weight: 700; color: var(--eigen-blue); letter-spacing: -0.03em; margin: 10px 0 4px; line-height: 1.1; }
+    .calc-hero-big .unit { font-size: 16px; font-weight: 400; color: var(--grey-03); letter-spacing: 0; }
+    .calc-hero-monthly { font-family: var(--font-mono); font-size: 13px; color: var(--grey-03); }
+    .calc-hero-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 16px; }
+    .calc-chip {
+      display: inline-flex; align-items: center; padding: 6px 12px; border-radius: 6px;
+      font-size: 13px; line-height: 1.4; text-align: left;
+    }
+    .calc-chip .amt { font-family: var(--font-mono); font-weight: 500; }
+    .calc-chip.floor { background: rgba(26, 12, 109, 0.07); color: var(--black); }
+    .calc-chip.usage { background: rgba(22, 101, 52, 0.08); color: var(--black); }
+    .calc-nofit { margin-top: 16px; }
+    .calc-nofit p { font-size: 14px; color: var(--grey-03); margin-bottom: 12px; }
+    .calc-nofit .sub { font-size: 12px; color: var(--grey-02); margin: 10px 0 0; }
+    .calc-disc-box {
+      margin-top: 16px; padding: 10px 14px; border-radius: var(--radius-sm);
+      background: var(--off-white); border: 1px solid var(--grey-01);
+      font-size: 12px; color: var(--grey-03); line-height: 1.55; text-align: left;
+    }
+
+    /* Inputs */
+    .calc-selects { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .calc-select {
+      width: 100%; padding: 10px 12px; border: 1px solid var(--grey-01); border-radius: var(--radius-sm);
+      font-family: var(--font-mono); font-size: 13px; color: var(--black); background: var(--white);
+      cursor: pointer;
+    }
+    .calc-select:focus { outline: 2px solid rgba(26, 12, 109, 0.3); outline-offset: 1px; }
+
+    /* Read-only model support list */
     .calc-model-list { border: 1px solid var(--grey-01); border-radius: var(--radius-sm); overflow: hidden; }
     .calc-model-row {
       display: flex; align-items: center; gap: 12px; width: 100%;
-      padding: 12px 16px; border: none; background: var(--white);
-      font-family: var(--font-sans); cursor: pointer; text-align: left;
-      border-left: 2px solid transparent;
+      padding: 12px 16px; background: var(--white); text-align: left;
     }
     .calc-model-row + .calc-model-row { border-top: 1px solid var(--grey-01); }
-    .calc-model-row.on { background: rgba(26, 12, 109, 0.06); border-left-color: var(--eigen-blue); }
-    .calc-model-row.disabled { opacity: 0.45; cursor: not-allowed; }
-    .calc-model-row .calc-radio {
-      width: 14px; height: 14px; border-radius: 3px; border: 2px solid var(--grey-02);
-      flex-shrink: 0; display: flex; align-items: center; justify-content: center;
-    }
-    .calc-model-row.on .calc-radio { border-color: var(--eigen-blue); }
-    .calc-model-row.on .calc-radio::after {
-      content: ''; width: 6px; height: 6px; border-radius: 1px; background: var(--eigen-blue);
-    }
-    .calc-model-name { flex: 1; font-size: 14px; font-weight: 500; min-width: 0; }
-    .calc-model-net { font-family: var(--font-mono); font-size: 13px; white-space: nowrap; }
-    .calc-model-net.pos { color: var(--eigen-blue); }
-    .calc-model-net.neg { color: #b91c1c; }
-    .calc-model-row.unprofitable .calc-model-name { text-decoration: line-through; color: var(--grey-02); }
+    .calc-model-row.nofit { opacity: 0.55; }
+    .calc-model-mark { font-size: 13px; flex-shrink: 0; width: 16px; text-align: center; }
+    .calc-model-mark.ok { color: #166534; }
+    .calc-model-mark.no { color: var(--grey-02); }
+    .calc-model-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+    .calc-model-name { font-size: 14px; font-weight: 500; }
+    .calc-model-sub { font-size: 12px; color: var(--grey-03); }
+    .calc-model-net { font-family: var(--font-mono); font-size: 13px; white-space: nowrap; color: var(--grey-03); }
     .calc-model-badge {
-      font-family: var(--font-mono); font-size: 10px; padding: 2px 8px;
-      border: 1px solid rgba(26, 12, 109, 0.2); color: var(--eigen-blue); border-radius: 4px;
+      font-family: var(--font-mono); font-size: 10px; padding: 2px 8px; white-space: nowrap;
+      border: 1px solid rgba(22, 101, 52, 0.25); color: #166534; border-radius: 4px;
     }
-    .calc-model-note {
-      padding: 0 16px 12px 42px; font-size: 12px; color: var(--grey-03); line-height: 1.45;
-      border-top: 1px solid var(--grey-01); background: rgba(26, 12, 109, 0.03);
+
+    /* Accordions (base rewards + assumptions) */
+    .calc-acc { border: 1px solid var(--grey-01); border-radius: var(--radius-sm); margin-bottom: 12px; background: var(--white); }
+    .calc-acc summary {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 18px; cursor: pointer; list-style: none;
+      font-size: 14px; font-weight: 500; user-select: none;
     }
-    .calc-sliders { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-    .calc-elec-wrap { display: flex; align-items: baseline; gap: 6px; margin-top: 8px; }
-    .calc-elec-wrap input {
-      width: 80px; padding: 8px 10px; border: 1px solid var(--grey-01);
-      border-radius: 4px; font-family: var(--font-mono); font-size: 14px;
-    }
-    .calc-elec-hint { font-size: 11px; color: var(--grey-02); margin-top: 8px; font-family: var(--font-mono); }
-    .calc-results { margin-top: 28px; border-top: 1px solid var(--grey-01); padding-top: 28px; }
-    .calc-results-hero { text-align: center; padding-bottom: 24px; margin-bottom: 24px; border-bottom: 1px solid var(--grey-01); }
-    .calc-net-label { font-family: var(--font-mono); font-size: 11px; color: var(--grey-03); text-transform: uppercase; letter-spacing: 0.06em; }
-    .calc-net-big { font-size: 44px; font-weight: 700; color: var(--eigen-blue); letter-spacing: -0.03em; margin: 8px 0 4px; line-height: 1; }
-    .calc-net-annual { font-family: var(--font-mono); font-size: 13px; color: var(--grey-03); }
-    .calc-serving { font-size: 13px; color: var(--grey-03); margin-bottom: 20px; text-align: center; }
-    .calc-serving strong { color: var(--black); font-weight: 600; }
-    .calc-detail-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
-    .calc-detail-grid .lbl { font-family: var(--font-mono); font-size: 10px; color: var(--grey-02); letter-spacing: 0.02em; }
-    .calc-detail-grid .val { font-family: var(--font-mono); font-size: 13px; font-weight: 500; margin-top: 4px; }
-    .calc-detail-grid .val.neg { color: #b91c1c; }
-    .calc-empty {
-      margin-top: 24px; padding: 24px; text-align: center; color: var(--grey-03); font-size: 14px;
-      border: 1px solid var(--grey-01); border-radius: var(--radius-sm); line-height: 1.5;
-    }
+    .calc-acc summary::-webkit-details-marker { display: none; }
+    .calc-acc summary .chev { color: var(--grey-02); font-size: 12px; transition: transform .15s; }
+    .calc-acc[open] summary .chev { transform: rotate(180deg); }
+    .calc-acc-body { padding: 0 18px 18px; }
+    .calc-acc-intro { font-size: 13px; color: var(--grey-03); line-height: 1.6; margin-bottom: 16px; }
+    .calc-acc-intro strong { color: var(--black); }
+    .calc-floor-table { width: 100%; border-collapse: collapse; font-size: 13px; border: 1px solid var(--grey-01); border-radius: var(--radius-sm); overflow: hidden; }
+    .calc-floor-table th { font-family: var(--font-mono); font-size: 10px; font-weight: 400; letter-spacing: 0.02em; color: var(--grey-03); background: var(--off-white); padding: 8px 12px; }
+    .calc-floor-table th:first-child, .calc-floor-table td:first-child { text-align: left; }
+    .calc-floor-table th:not(:first-child), .calc-floor-table td:not(:first-child) { text-align: right; font-family: var(--font-mono); }
+    .calc-floor-table td { padding: 7px 12px; border-top: 1px solid var(--grey-01); color: var(--grey-03); }
+    .calc-floor-table td:nth-child(2) { color: var(--black); }
+    .calc-caveats { margin: 16px 0 0; padding-left: 18px; font-size: 12px; color: var(--grey-03); line-height: 1.55; }
+    .calc-caveats li + li { margin-top: 6px; }
+
+    /* Usage/floor/total decomposition tiles */
+    .calc-breakdown { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
+    .calc-breakdown > div { text-align: center; padding: 12px; border-radius: var(--radius-sm); background: var(--off-white); border: 1px solid var(--grey-01); }
+    .calc-breakdown .lbl { font-family: var(--font-mono); font-size: 10px; color: var(--grey-03); letter-spacing: 0.02em; }
+    .calc-breakdown .val { font-family: var(--font-mono); font-size: 18px; font-weight: 600; margin-top: 4px; }
+    .calc-breakdown .sub { font-family: var(--font-mono); font-size: 9px; color: var(--grey-02); margin-top: 2px; }
+    .calc-breakdown .bd-floor .val { color: var(--eigen-blue); }
+
+    /* Step-by-step derivation */
+    .calc-steps { border: 1px solid var(--grey-01); border-radius: var(--radius-sm); overflow: hidden; }
+    .calc-step { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px; }
+    .calc-step + .calc-step { border-top: 1px solid var(--grey-01); }
+    .calc-step .lbl { font-size: 13px; font-weight: 500; color: var(--black); margin: 0; }
+    .calc-step .why { font-size: 11.5px; color: var(--grey-03); line-height: 1.5; margin: 2px 0 0; }
+    .calc-step .val { font-family: var(--font-mono); font-size: 13px; white-space: nowrap; color: var(--grey-03); margin: 0; }
+    .calc-step.total .lbl, .calc-step.total .val { font-weight: 700; color: var(--black); }
 
     input[type=range] {
       -webkit-appearance: none;
@@ -1002,7 +1038,9 @@
     @media (max-width: 768px) {
       .hero { padding: 170px 0 40px; }
       section { padding: 56px 0; }
-      .card-grid, .stat-grid, .calc-sliders, .calc-detail-grid { grid-template-columns: 1fr; }
+      .card-grid, .stat-grid, .calc-selects, .calc-breakdown { grid-template-columns: 1fr; }
+      .calc-hero-big { font-size: 32px; }
+      .calc-step { flex-direction: column; align-items: flex-start; gap: 4px; }
       .feat-grid { grid-template-columns: 1fr; }
       header nav { display: none; }
       .eigen-block { padding: 40px 28px; }
@@ -1422,55 +1460,94 @@ response = client.chat.completions.create(
       </div>
       <script>function swTab(t){document.getElementById('tab-a').classList.toggle('on',t==='a');document.getElementById('tab-c').classList.toggle('on',t==='c');document.getElementById('panel-a').style.display=t==='a'?'block':'none';document.getElementById('panel-c').style.display=t==='c'?'block':'none';if(window.va)window.va('event',{name:'install_tab_click',data:{method:t==='c'?'cli':'mac_app'}});}</script>
 
-      <!-- Earnings Calculator (logic synced with console-ui/src/app/earn/page.tsx) -->
+      <!-- Earnings Calculator (logic synced with console-ui/src/app/earn) -->
       <div class="calc-box rv">
         <h3>Earnings estimate</h3>
-        <p class="calc-desc">Select your hardware, model, active hours, and electricity cost to estimate provider earnings.</p>
-        <div class="csec"><label class="clabel">1. Mac type</label><div class="pills" id="mac-sel"></div></div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
-          <div class="csec"><label class="clabel">2. Chip</label><div class="pills" id="chip-sel"></div></div>
-          <div class="csec"><label class="clabel">3. Memory</label><div class="pills" id="ram-sel"></div></div>
+        <p class="calc-desc">What your Apple Silicon Mac could earn serving inference on the Darkbloom network.</p>
+
+        <!-- Results-first hero: floor→estimate range -->
+        <div class="calc-hero">
+          <p class="calc-net-label">Estimated annual earnings</p>
+          <p class="calc-hero-big"><span id="calc-hero-annual">…</span><span class="unit"> /yr</span></p>
+          <p class="calc-hero-monthly" id="calc-hero-monthly">&nbsp;</p>
+          <div class="calc-hero-chips">
+            <span class="calc-chip floor" id="calc-chip-floor" style="display:none;"><span class="amt" id="calc-chip-floor-amt">$0/mo</span>&nbsp;base reward for staying online</span>
+            <span class="calc-chip usage" id="calc-chip-usage" style="display:none;"><span id="calc-chip-usage-txt"></span></span>
+          </div>
+          <div class="calc-nofit" id="calc-nofit" style="display:none;">
+            <p id="calc-nofit-msg"></p>
+            <a class="btn btn-primary" id="calc-nofit-btn" href="https://console.darkbloom.dev/earn" target="_blank">Notify me when smaller models launch ↗</a>
+            <p class="sub">We&rsquo;re working on supporting smaller models. Register on the console and we&rsquo;ll email you when your Mac can start earning.</p>
+          </div>
+          <p class="calc-disc-box">This is a projection, not a promise. Usage earnings assume healthy, sustained network demand — live demand fluctuates and can run below this. The base reward requires an attested, healthy machine that stays online ≥90% of each settlement period, and is paid from a fixed monthly pool — an earnings floor while eligible, not a guarantee.</p>
         </div>
-        <div class="csec" style="margin-top:8px;">
-          <label class="clabel">Model</label>
-          <p class="calc-hint" id="model-hint">Auto-selected: most profitable for your hardware</p>
+
+        <!-- Inputs: chip + memory only -->
+        <div class="csec">
+          <label class="clabel">Your Mac — find both under &nbsp;&gt; About This Mac</label>
+          <div class="calc-selects">
+            <div>
+              <label class="clabel" for="chip-select">Chip</label>
+              <select id="chip-select" class="calc-select"></select>
+            </div>
+            <div>
+              <label class="clabel" for="ram-select">Unified memory</label>
+              <select id="ram-select" class="calc-select"></select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Read-only model support list -->
+        <div class="csec">
+          <label class="clabel">What your Mac can run</label>
+          <p class="calc-hint">Live network catalog. Your earnings estimate uses the best-earning model automatically.</p>
           <div class="calc-model-list" id="model-list"></div>
         </div>
-        <div class="calc-sliders csec">
-          <div>
-            <label class="clabel">Inference hours per day: <span id="hrs-val" style="color:var(--eigen-blue);">18</span></label>
-            <input type="range" id="hrs-slider" min="1" max="24" value="18">
+
+        <!-- Base rewards accordion (static reference table) -->
+        <details class="calc-acc">
+          <summary>Base rewards (earnings floor)<span class="chev">▾</span></summary>
+          <div class="calc-acc-body">
+            <p class="calc-acc-intro">On top of what you earn from real inference, attested machines accrue a monthly <strong>base reward</strong> for staying online. It is paid in 5-minute prorated increments, while real usage remains the upside on top.</p>
+            <table class="calc-floor-table">
+              <thead><tr><th>Unified memory</th><th>Per month</th><th>Per year</th></tr></thead>
+              <tbody>
+                <tr><td>512GB</td><td>$40</td><td>$480</td></tr>
+                <tr><td>192GB</td><td>$30</td><td>$360</td></tr>
+                <tr><td>128GB</td><td>$26</td><td>$312</td></tr>
+                <tr><td>96GB</td><td>$22</td><td>$264</td></tr>
+                <tr><td>64GB</td><td>$18</td><td>$216</td></tr>
+                <tr><td>48GB</td><td>$16</td><td>$192</td></tr>
+                <tr><td>32GB</td><td>$12</td><td>$144</td></tr>
+                <tr><td>24GB</td><td>$10</td><td>$120</td></tr>
+                <tr><td>Under 24GB</td><td>—</td><td>—</td></tr>
+              </tbody>
+            </table>
+            <ul class="calc-caveats">
+              <li>Rewards settle every 5 minutes and require staying online ≥90% of that period.</li>
+              <li>Usage earnings are paid on top of the base reward — you keep 100% of both.</li>
+              <li>Base rewards go to attested, online, healthy machines up to a fixed monthly budget, prorated per settlement period; not a guarantee.</li>
+            </ul>
           </div>
-          <div>
-            <label class="clabel">Electricity cost</label>
-            <div class="calc-elec-wrap">
-              <span style="font-size:14px;color:var(--grey-03);">$</span>
-              <input type="number" id="elec-cost" step="0.01" min="0" value="0.15">
-              <span style="font-size:14px;color:var(--grey-03);">/kWh</span>
+        </details>
+
+        <!-- How we estimate this -->
+        <details class="calc-acc" id="calc-assumptions">
+          <summary>How we estimate this<span class="chev">▾</span></summary>
+          <div class="calc-acc-body">
+            <p class="calc-acc-intro">The top of the range assumes healthy, sustained demand: your Mac serves requests <strong>60% of the time</strong> it is online, averaging 2.5 concurrent requests while active — not a saturated network (the engine can batch more at peak). Live demand fluctuates and can run below this, which is why we show a range: the base reward is what attested machines accrue for staying online regardless of traffic, and usage earnings grow with demand.</p>
+            <div class="calc-breakdown">
+              <div class="bd-usage"><div class="lbl" id="calc-usage-lbl">Usage (at 60% util.)</div><div class="val" id="calc-usage-val">—</div><div class="sub">revenue − electricity</div></div>
+              <div class="bd-floor"><div class="lbl">Base reward</div><div class="val" id="calc-floor-val">—</div><div class="sub" id="calc-floor-sub">memory tier, online ≥90%</div></div>
+              <div class="bd-total"><div class="lbl">Top of range / mo</div><div class="val" id="calc-total-val">—</div><div class="sub">usage + base reward</div></div>
             </div>
-            <p class="calc-elec-hint">US avg: $0.15 · EU avg: $0.25 · CA avg: $0.22</p>
+            <div class="calc-steps" id="calc-steps"></div>
+            <ul class="calc-caveats">
+              <li>Base rewards are paid to attested machines online ≥90% of each 5-minute settlement period, up to a fixed monthly budget — not a guarantee.</li>
+              <li>Actual usage depends on network demand, model popularity, your reputation, and how many other providers serve the same model.</li>
+            </ul>
           </div>
-        </div>
-        <div id="calc-empty" class="calc-empty" style="display:none;">No models fit in this memory configuration. Catalog models need at least 36 GB unified memory.</div>
-        <div id="calc-results" class="calc-results" style="display:none;">
-          <p class="calc-serving">Serving <strong id="res-model-name">—</strong> at <span id="res-hours">18</span> hrs/day</p>
-          <div class="calc-results-hero">
-            <p class="calc-net-label">Monthly net earnings</p>
-            <p class="calc-net-big" id="res-monthly-net">$0</p>
-            <p class="calc-net-annual" id="res-annual-net">$0 / year</p>
-          </div>
-          <div class="calc-detail-grid">
-            <div><div class="lbl">Batched decode speed</div><div class="val" id="res-decode">—</div></div>
-            <div><div class="lbl">Monthly revenue</div><div class="val" id="res-revenue">—</div></div>
-            <div><div class="lbl">Monthly electricity</div><div class="val neg" id="res-elec">—</div></div>
-            <div><div class="lbl">Electricity % of revenue</div><div class="val" id="res-elec-pct">—</div></div>
-            <div><div class="lbl">Revenue per hour</div><div class="val" id="res-rev-hr">—</div></div>
-            <div><div class="lbl">Electricity per hour</div><div class="val" id="res-elec-hr">—</div></div>
-            <div><div class="lbl">Net per hour</div><div class="val" id="res-net-hr">—</div></div>
-            <div><div class="lbl">Provider share</div><div class="val">100%</div></div>
-          </div>
-        </div>
-        <p id="calc-disc" style="font-family:var(--font-mono);font-size:10px;color:var(--grey-02);margin-top:16px;text-align:center;line-height:1.5;letter-spacing:0.01em;">Estimates only. Actual earnings depend on demand, model popularity, provider reputation, uptime, and local electricity cost.</p>
+        </details>
       </div>
 
       <!-- Paper CTA -->

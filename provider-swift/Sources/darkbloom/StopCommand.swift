@@ -34,12 +34,12 @@ struct Stop: AsyncParsableCommand {
             try LaunchAgent.stop()
             if wasLoaded {
                 if didDrain {
-                    print("Provider service stopped after draining active requests. (Auto-restart disabled until you start again.)")
+                    print("Provider service stopped after draining active requests. (Won't auto-start at login/reboot until you run `darkbloom start` again.)")
                 } else {
-                    print("Provider service stopped. (Auto-restart disabled until you start again.)")
+                    print("Provider service stopped. (Won't auto-start at login/reboot until you run `darkbloom start` again.)")
                 }
             } else {
-                print("Provider service is not running.")
+                print("Provider service is not running. (Auto-start at login/reboot is now disabled.)")
             }
         }
     }

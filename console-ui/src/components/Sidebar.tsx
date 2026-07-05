@@ -1,5 +1,6 @@
 "use client";
 
+/* eslint-disable @next/next/no-html-link-for-pages */
 import { useStore } from "@/lib/store";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/components/providers/ThemeProvider";
@@ -15,24 +16,24 @@ import {
   Code,
   Activity,
   Coins,
+  Trophy,
   LogOut,
   Sun,
   Moon,
 } from "lucide-react";
-import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { CommunityLinks } from "@/components/community/CommunityLinks";
 
 export function Sidebar() {
-  const {
-    chats,
-    activeChatId,
-    setActiveChat,
-    createChat,
-    deleteChat,
-    sidebarOpen,
-    setSidebarOpen,
-  } = useStore();
+  // Per-field selectors so the sidebar only re-renders when chat list / sidebar
+  // state changes, not on unrelated store updates (perf F3).
+  const chats = useStore((s) => s.chats);
+  const activeChatId = useStore((s) => s.activeChatId);
+  const setActiveChat = useStore((s) => s.setActiveChat);
+  const createChat = useStore((s) => s.createChat);
+  const deleteChat = useStore((s) => s.deleteChat);
+  const sidebarOpen = useStore((s) => s.sidebarOpen);
+  const setSidebarOpen = useStore((s) => s.setSidebarOpen);
   const pathname = usePathname();
   const router = useRouter();
   const { displayName, logout } = useAuth();
@@ -41,19 +42,22 @@ export function Sidebar() {
   if (!sidebarOpen) return null;
 
   const isChatActive = pathname === "/";
+  const closeSidebarOnMobile = () => {
+    if (window.innerWidth < 640) setSidebarOpen(false);
+  };
 
   return (
     <aside className="sidebar-animate fixed inset-0 z-50 w-full sm:static sm:w-[260px] h-screen flex flex-col bg-bg-secondary sm:border-r sm:border-border-default shrink-0">
       {/* Brand header */}
       <div className="px-5 pt-5 pb-4 flex items-center justify-between">
-        <Link href="/" className="group">
+        <a href="/" className="group" onClick={closeSidebarOnMobile}>
           <h1 className="text-2xl text-ink tracking-tight" style={{ fontFamily: "'Louize', Georgia, serif" }}>
             Darkbloom
           </h1>
           <p className="text-[10px] font-mono text-text-tertiary tracking-wide uppercase mt-1">
             An Eigen Labs project · Public Alpha
           </p>
-        </Link>
+        </a>
         <button
           onClick={() => setSidebarOpen(false)}
           className="p-1.5 rounded-lg hover:bg-bg-hover text-text-tertiary hover:text-text-primary transition-colors"
@@ -67,6 +71,7 @@ export function Sidebar() {
         {[
           { href: "/", icon: MessageSquare, label: "Chat" },
           { href: "/stats", icon: Activity, label: "Stats" },
+          { href: "/leaderboard", icon: Trophy, label: "Leaderboard" },
           { href: "/providers", icon: Server, label: "Provider Dashboard" },
           { href: "/earn", icon: Coins, label: "Earn" },
           { href: "/api-console", icon: Code, label: "API" },
@@ -76,10 +81,10 @@ export function Sidebar() {
               ? pathname === "/"
               : pathname.startsWith(href);
           return (
-            <Link
+            <a
               key={href}
               href={href}
-              onClick={() => { if (window.innerWidth < 640) setSidebarOpen(false); }}
+              onClick={closeSidebarOnMobile}
               className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-semibold transition-all ${
                 isActive
                   ? "bg-coral/15 text-coral border-2 border-coral"
@@ -88,7 +93,7 @@ export function Sidebar() {
             >
               <Icon size={18} className={isActive ? "text-coral" : "opacity-60"} />
               {label}
-            </Link>
+            </a>
           );
         })}
       </nav>
@@ -151,10 +156,10 @@ export function Sidebar() {
           { href: "/billing", icon: CreditCard, label: "Billing" },
           { href: "/settings", icon: Settings, label: "Settings" },
         ].map(({ href, icon: Icon, label }) => (
-          <Link
+          <a
             key={href}
             href={href}
-            onClick={() => { if (window.innerWidth < 640) setSidebarOpen(false); }}
+            onClick={closeSidebarOnMobile}
             className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all ${
               pathname === href
                 ? "bg-bg-elevated text-text-primary font-semibold"
@@ -163,7 +168,7 @@ export function Sidebar() {
           >
             <Icon size={16} className="opacity-50" />
             {label}
-          </Link>
+          </a>
         ))}
       </nav>
 

@@ -185,7 +185,8 @@ struct CoordinatorIntegrationTests {
                     send.send(.inferenceError(
                         requestId: rid,
                         error: "request cancelled",
-                        statusCode: 499
+                        statusCode: 499,
+                        errorReason: nil
                     ))
                     return
 
@@ -229,6 +230,134 @@ struct CoordinatorIntegrationTests {
         #expect(err.requestId == requestId)
         _ = await testTask.value
         #expect(stateBox.isCanceled())
+    }
+
+    // MARK: 2a. Graceful-drain gates at the receive path
+
+    /// While draining (graceful stop/restart), the CoordinatorClient must keep
+    /// the socket OPEN but (a) reject NEW inference requests with a 503
+    /// `inference_error` so the coordinator reroutes immediately, and (b) route
+    /// `cancel` frames to the drain handler instead of the no-longer-consumed
+    /// event stream. Both are exercised over a real loopback WebSocket.
+    @Test("draining rejects new inference requests with 503 and routes cancels to the drain handler")
+    func drainingRejectsNewWorkAndRoutesCancels() async throws {
+        let mock = MockCoordinator()
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let providerKeys = NodeKeyPair.generate()
+        let coordinator = makeClient(
+            url: baseURL.mockProviderWebSocketURL(),
+            publicKey: providerKeys.publicKeyBase64
+        )
+        _ = await coordinator.start()
+        defer { Task { await coordinator.shutdown() } }
+
+        let register = try await mock.awaitFirstRegister(timeout: .seconds(5))
+        try #require(register != nil)
+
+        // Enter drain mode with a recording cancel handler (mirrors the
+        // production wiring in ProviderLoop.runShutdownSequence).
+        let cancelBox = LoopStateBox()
+        await coordinator.beginDraining(
+            onCancel: { requestId in
+                #expect(requestId == "req-drain-cancel")
+                cancelBox.markCanceled()
+            }
+        )
+
+        // A NEW inference request during the drain must be rejected with 503
+        // right at the receive path — the event stream is not being consumed.
+        let chat = ChatCompletionRequest(
+            model: "mlx-community/Qwen3-0.6B-8bit",
+            messages: [.init(role: "user", content: "late")],
+            stream: true
+        )
+        try await mock.pushInferenceRequest(
+            requestId: "req-drain-reject",
+            providerPublicKeyBase64: providerKeys.publicKeyBase64,
+            chatRequestJSON: JSONEncoder().encode(chat)
+        )
+
+        let snap = try await mock.waitForSnapshot(timeout: .seconds(5)) {
+            !$0.inferenceErrors.isEmpty
+        }
+        let err = try #require(try #require(snap).inferenceErrors.first)
+        #expect(err.requestId == "req-drain-reject")
+        #expect(err.statusCode == 503)
+
+        // The socket must still be open mid-drain: a cancel pushed AFTER the
+        // reject must reach the drain handler (not the event stream).
+        try await mock.pushCancel(requestId: "req-drain-cancel")
+        var sawCancel = false
+        for _ in 0..<100 {
+            if cancelBox.isCanceled() { sawCancel = true; break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(sawCancel, "cancel during drain never reached the drain handler")
+    }
+
+    // MARK: 2b. Direct-send fast path over a real WebSocket
+
+    /// End-to-end validation of Optimizations 1-3 over a REAL loopback
+    /// WebSocket: a chunk sent via `SendHandle.sendChunk` travels the direct
+    /// ChunkSender → ChunkBatcher → ChunkFrameWriter path (NWConnection.batch{}
+    /// + reused send contexts), NOT the OutboundRouter/AsyncStream control path,
+    /// and lands at the coordinator inside a byte-identical
+    /// `inference_response_chunk` envelope — proving the wire is unchanged.
+    @Test("inference chunks sent via the direct fast path arrive over a real WebSocket")
+    func directChunkFastPathDeliversOverRealWebSocket() async throws {
+        let mock = MockCoordinator()
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let keys = NodeKeyPair.generate()
+        let coordinator = makeClient(
+            url: baseURL.mockProviderWebSocketURL(),
+            publicKey: keys.publicKeyBase64,
+            heartbeatInterval: 60
+        )
+        let (events, sendFn) = await coordinator.start()
+        // Wire the DIRECT path exactly as ProviderLoop+Serve does in production.
+        let send = SendHandle(sendFn, chunkSender: coordinator.chunkSender)
+        defer { Task { await coordinator.shutdown() } }
+
+        // Drain events so the stream doesn't back up.
+        let drain = Task { for await _ in events {} }
+        defer { drain.cancel() }
+
+        // The chunk batcher binds to the connection just after registration.
+        let register = try await mock.awaitFirstRegister(timeout: .seconds(5))
+        try #require(register != nil)
+
+        let requestId = "direct-fastpath-1"
+        let payload = EncryptedPayload(
+            ephemeralPublicKey: keys.publicKeyBase64,
+            ciphertext: "Y2lwaGVydGV4dA=="
+        )
+
+        // Send via the DIRECT path, retrying briefly: a send that races ahead of
+        // the per-session bind is dropped (correct reconnect-safety behavior), so
+        // we resend until the frame lands — proving the bound fast path delivers.
+        var captured: ProviderMessage.InferenceResponseChunk?
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while ContinuousClock.now < deadline {
+            send.sendChunk(.inferenceChunk(requestId: requestId, data: "", encryptedData: payload))
+            try await Task.sleep(for: .milliseconds(50))
+            if let hit = mock.snapshot().inferenceChunks.first(where: { $0.requestId == requestId }) {
+                captured = hit
+                break
+            }
+        }
+
+        let chunk = try #require(captured, "direct-path chunk never arrived over the real WebSocket")
+        #expect(chunk.requestId == requestId)
+        // Wire shape is identical to the control path: empty plaintext `data`,
+        // encrypted_data carrying the provider's own ephemeral key + ciphertext.
+        #expect(chunk.data.isEmpty)
+        let enc = try #require(chunk.encryptedData)
+        #expect(enc.ciphertext == "Y2lwaGVydGV4dA==")
+        #expect(enc.ephemeralPublicKey == keys.publicKeyBase64)
     }
 
     // MARK: 3. Reconnect after WS drop
@@ -563,8 +692,7 @@ private func makeClient(
             sipEnabled: true,
             antiDebugEnabled: false,
             coreDumpsDisabled: false,
-            envScrubbed: false,
-            hypervisorActive: false
+            envScrubbed: false
         )
     )
     return CoordinatorClient(

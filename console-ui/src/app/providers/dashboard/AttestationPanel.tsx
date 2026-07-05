@@ -15,10 +15,11 @@ import {
   Shield,
   XCircle,
 } from "lucide-react";
-import {
-  verifyCertificateChain,
-  type CertVerificationResult,
-  type VerificationStep,
+// Type-only import: keeps pkijs/asn1js (~76 KB gz) out of First Load. The
+// verifier itself is dynamically imported inside handleVerify (perf F4).
+import type {
+  CertVerificationResult,
+  VerificationStep,
 } from "@/lib/cert-verify";
 import type { MyProvider } from "../types";
 import { formatRelative, maskSerial } from "./format";
@@ -122,6 +123,7 @@ export function AttestationPanel({
     setVerifying(true);
     setResult(null);
     try {
+      const { verifyCertificateChain } = await import("@/lib/cert-verify");
       const r = await verifyCertificateChain(certs, (s) => setSteps(s));
       setResult(r);
     } catch {
@@ -136,7 +138,6 @@ export function AttestationPanel({
       <ChainNode ok={enclaveOK} title="Secure Enclave">
         <CheckLine ok={p.secure_enclave} label="Hardware-bound P-256 identity" />
         <CheckLine ok={p.se_key_bound} label="SE key bound to MDA nonce" />
-        <CheckLine ok={p.acme_verified} label="ACME device-attest-01" />
       </ChainNode>
 
       <ChainNode ok={osOK} title="OS security">

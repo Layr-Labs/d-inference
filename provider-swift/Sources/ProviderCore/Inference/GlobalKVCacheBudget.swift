@@ -25,14 +25,78 @@ public actor GlobalKVCacheBudget {
     /// grow into memory the operator reserved. 0 = no extra reserve (cap only).
     private let configReserveBytes: UInt64
     private let memorySnapshot: @Sendable () -> MemorySnapshot
-    private let clearCache: @Sendable () -> Void
-    private var reservations: [String: UInt64] = [:]
-    /// Rate-limit the self-heal flush to at most once per this interval. The flush
-    /// blocks on a GPU sync, so this bounds how often a flood of near-miss
-    /// admissions can chain GPU syncs on the actor and stall other reservations.
-    private var lastSelfHealAt: ContinuousClock.Instant?
-    private let selfHealMinInterval: Duration
-    private static let defaultSelfHealMinInterval: Duration = .seconds(1)
+
+    /// One ledger entry: the promised bytes plus when the promise was made.
+    /// The creation instant exists solely for the stale-reservation audit —
+    /// a reservation that outlives any plausible request/load lifetime while
+    /// the budget rejects everything is, by definition, leaked bookkeeping.
+    struct Reservation: Sendable {
+        var bytes: UInt64
+        let createdAt: ContinuousClock.Instant
+    }
+
+    private var reservations: [String: Reservation] = [:]
+
+    // MARK: - Sustained-rejection audit state (v0.7.3 black-hole hardening)
+    //
+    // The 0.7.2 incident class: the budget's headroom terms wedge (leaked
+    // reservation / retained active memory) and EVERY commit fails forever,
+    // while the cache-pool reclaimer — the only self-heal that existed —
+    // can't help because the binding term isn't the reclaimable pool. These
+    // fields turn that permanent black hole into a bounded blip: when every
+    // commit has failed for `sustainedRejectionAuditThreshold` straight —
+    // as one CONTINUOUS streak (gaps between rejections no longer than
+    // `rejectionStreakContinuityWindow`; a wedged box under coordinator
+    // routing rejects far more often than that) — the budget logs the FULL
+    // reservation table at ERROR severity and drops any reservation older
+    // than `staleReservationTTL` with a WARN. Live requests/loads hold
+    // their reservations for seconds-to-minutes, so a multi-minute-old
+    // reservation during a full-rejection streak is leaked bookkeeping,
+    // not live work. The streak resets on any successful commit AND on any
+    // release of a real reservation (either proves the system is making
+    // progress, so live work must never age into the stale-drop).
+    private var rejectionStreakStart: ContinuousClock.Instant?
+    private var lastRejectionAt: ContinuousClock.Instant?
+    private var lastAuditAt: ContinuousClock.Instant?
+    private let sustainedRejectionAuditThreshold: Duration
+    private let rejectionStreakContinuityWindow: Duration
+    private let staleReservationTTL: Duration
+    private let auditMinInterval: Duration
+    private let emitAuditEvent: @Sendable (TelemetrySeverity, String, [String: AnyCodableValue]) -> Void
+
+    /// Every commit must have failed for this long before the audit runs.
+    /// Well above any transient rejection burst (the coordinator reroutes in
+    /// seconds), far below the incident's 40+ minutes of black hole.
+    static let defaultSustainedRejectionAuditThreshold: Duration = .seconds(120)
+    /// Maximum gap between two consecutive rejections for them to count as
+    /// ONE sustained streak; a longer gap RESTARTS the streak at the newer
+    /// rejection. Without this, sparse organic traffic (requests minutes
+    /// apart, each rejected) would satisfy the 120 s threshold by wall
+    /// clock alone and the audit could drop reservations backing LIVE
+    /// long-running work — a 32k-token decode at 10 tps holds its
+    /// reservation ~50 min, a slow pending model load can exceed 10 min.
+    /// 30 s: a genuinely black-holed box under coordinator routing sees
+    /// rejections many times per window (routing retries + heartbeat-driven
+    /// traffic are seconds apart), so the real incident shape always
+    /// sustains the streak, while anything sparser is idle-gapped traffic
+    /// the audit must ignore.
+    static let defaultRejectionStreakContinuityWindow: Duration = .seconds(30)
+    /// A reservation older than this is considered leaked *during a
+    /// sustained full-rejection streak*. Requests hold reservations for the
+    /// request duration (worst realistic long decode: minutes); pending-load
+    /// reservations for the container-allocation window (also minutes).
+    static let defaultStaleReservationTTL: Duration = .seconds(600)
+    /// Rate limit between audits so a wedged box logs one CRITICAL per
+    /// interval, not one per rejected request.
+    static let defaultAuditMinInterval: Duration = .seconds(60)
+
+    /// The reclaimable-pool flush runs in this reclaimer, off the budget actor.
+    /// The admission paths only ever signal it (non-blocking); the blocking GPU
+    /// sync happens on the reclaimer's executor, so the budget actor is never
+    /// blocked on a GPU synchronize — the invariant this design exists to
+    /// guarantee.
+    private let reclaimer: KVPoolReclaimer
+    static let defaultSelfHealMinInterval: Duration = KVPoolReclaimer.defaultMinInterval
 
     public init(
         capFraction: Double? = nil,
@@ -42,14 +106,21 @@ public actor GlobalKVCacheBudget {
         self.capFraction = capFraction
         self.activationReserveBytes = activationReserveBytes
         self.configReserveBytes = configReserveBytes
-        self.selfHealMinInterval = Self.defaultSelfHealMinInterval
+        self.sustainedRejectionAuditThreshold = Self.defaultSustainedRejectionAuditThreshold
+        self.rejectionStreakContinuityWindow = Self.defaultRejectionStreakContinuityWindow
+        self.staleReservationTTL = Self.defaultStaleReservationTTL
+        self.auditMinInterval = Self.defaultAuditMinInterval
+        self.emitAuditEvent = { severity, message, fields in
+            TelemetryClient.shared.emit(
+                kind: .engineHealth, severity: severity, message: message, fields: fields)
+        }
         // Fence async GPU completion before freeing buffers, matching the engine's
         // own reclaim paths (avoids the IOKit completeMemory race seen on M4).
-        self.clearCache = {
+        let clearCache: @Sendable () -> Void = {
             MLX.Stream().synchronize()
             MLX.Memory.clearCache()
         }
-        self.memorySnapshot = {
+        let snapshot: @Sendable () -> MemorySnapshot = {
             MemorySnapshot(
                 total: ProcessInfo.processInfo.physicalMemory,
                 active: UInt64(Memory.activeMemory),
@@ -57,6 +128,10 @@ public actor GlobalKVCacheBudget {
                 // Real OS-free RAM; `.max` falls back to the MLX-only view.
                 systemAvailable: SystemMemory.availableBytes() ?? .max)
         }
+        self.memorySnapshot = snapshot
+        self.reclaimer = KVPoolReclaimer(
+            clearCache: clearCache,
+            reclaimableBytes: { snapshot().cache })
     }
 
     init(
@@ -65,14 +140,30 @@ public actor GlobalKVCacheBudget {
         configReserveBytes: UInt64 = 0,
         memorySnapshot: @escaping @Sendable () -> MemorySnapshot,
         clearCache: @escaping @Sendable () -> Void = {},
-        selfHealMinInterval: Duration = GlobalKVCacheBudget.defaultSelfHealMinInterval
+        selfHealMinInterval: Duration = GlobalKVCacheBudget.defaultSelfHealMinInterval,
+        reclaimer: KVPoolReclaimer? = nil,
+        sustainedRejectionAuditThreshold: Duration = GlobalKVCacheBudget.defaultSustainedRejectionAuditThreshold,
+        rejectionStreakContinuityWindow: Duration = GlobalKVCacheBudget.defaultRejectionStreakContinuityWindow,
+        staleReservationTTL: Duration = GlobalKVCacheBudget.defaultStaleReservationTTL,
+        auditMinInterval: Duration = GlobalKVCacheBudget.defaultAuditMinInterval,
+        emitAuditEvent: @escaping @Sendable (TelemetrySeverity, String, [String: AnyCodableValue]) -> Void = { _, _, _ in }
     ) {
         self.capFraction = capFraction
         self.activationReserveBytes = activationReserveBytes
         self.configReserveBytes = configReserveBytes
-        self.selfHealMinInterval = selfHealMinInterval
         self.memorySnapshot = memorySnapshot
-        self.clearCache = clearCache
+        self.sustainedRejectionAuditThreshold = sustainedRejectionAuditThreshold
+        self.rejectionStreakContinuityWindow = rejectionStreakContinuityWindow
+        self.staleReservationTTL = staleReservationTTL
+        self.auditMinInterval = auditMinInterval
+        self.emitAuditEvent = emitAuditEvent
+        self.reclaimer = reclaimer ?? KVPoolReclaimer(
+            clearCache: clearCache,
+            reclaimableBytes: { memorySnapshot().cache },
+            minInterval: selfHealMinInterval,
+            // Tests that don't pin a threshold should never trip the proactive
+            // sweep on their tiny synthetic pools — keep the production default.
+            proactiveThresholdBytes: KVPoolReclaimer.defaultProactiveThresholdBytes)
     }
 
     public func reserve(requestID: String, kvBytesPerToken: Int, tokenCount: Int) -> Bool {
@@ -84,7 +175,15 @@ public actor GlobalKVCacheBudget {
     }
 
     public func release(requestID: String) {
-        reservations.removeValue(forKey: requestID)
+        guard reservations.removeValue(forKey: requestID) != nil else { return }
+        // A real reservation just drained — in-flight work is terminating
+        // normally, so this is not the reject-everything black hole the
+        // audit exists for. Reset the streak so a long-lived LIVE
+        // reservation (multi-10-minute decode, slow pending load) can never
+        // age into the audit's stale-drop while the table is demonstrably
+        // making progress. Unknown ids don't count: they prove nothing.
+        rejectionStreakStart = nil
+        lastRejectionAt = nil
     }
 
     /// Reserve an arbitrary BYTE amount against the same live cap headroom KV
@@ -118,7 +217,7 @@ public actor GlobalKVCacheBudget {
     /// resident (and thus reflected in `mlxUsed`). Pair with `release`.
     public func reservePendingLoad(requestID: String, bytes: UInt64) {
         guard bytes > 0 else { return }
-        reservations[requestID] = bytes
+        reservations[requestID] = Reservation(bytes: bytes, createdAt: .now)
     }
 
     /// Atomically shrink an existing reservation to a smaller byte count,
@@ -134,7 +233,11 @@ public actor GlobalKVCacheBudget {
         guard let current = reservations[requestID], kvBytesPerToken > 0, tokenCount > 0 else { return }
         let (bytes, overflow) = UInt64(kvBytesPerToken).multipliedReportingOverflow(by: UInt64(tokenCount))
         let newBytes = overflow ? UInt64.max : bytes
-        if newBytes < current { reservations[requestID] = newBytes }   // only ever shrink; frees the difference; never fails
+        if newBytes < current.bytes {
+            // Only ever shrink; frees the difference; never fails. Keeps the
+            // original creation instant — a shrink is not a new promise.
+            reservations[requestID]?.bytes = newBytes
+        }
     }
 
     /// Total KV bytes currently promised to in-flight requests. The model-load
@@ -144,40 +247,132 @@ public actor GlobalKVCacheBudget {
     /// promised memory as free and risk an OOM).
     public func outstandingReservedBytes() -> UInt64 {
         reservations.values.reduce(UInt64(0)) { partial, value in
-            let (sum, overflow) = partial.addingReportingOverflow(value)
+            let (sum, overflow) = partial.addingReportingOverflow(value.bytes)
             return overflow ? UInt64.max : sum
         }
     }
 
-    /// Reserve `bytes` against current live headroom. The headroom math counts the
-    /// reclaimable MLX pool as used, so on a near-miss we flush that pool and
-    /// resample once before denying — otherwise we'd reject a request the box can
-    /// actually serve. Caller has validated `bytes > 0` and no existing reservation.
+    /// Reserve `bytes` against the current live headroom. The headroom math counts
+    /// the reclaimable MLX pool as used; on a near-miss we signal the off-actor
+    /// reclaimer to shrink that pool for future admissions and reject this request
+    /// against the current snapshot. We do not flush-and-resample inline: that
+    /// would run a blocking GPU sync on this actor and serialize every other
+    /// reservation behind it. Rejecting a near-miss is acceptable — the
+    /// coordinator and per-provider breaker reroute, and the background reclaim
+    /// keeps the pool small so most admissions succeed without ever near-missing.
+    /// Caller has validated `bytes > 0` and no existing reservation.
     private func commit(requestID: String, bytes: UInt64) -> Bool {
-        var available = availableReservationBytes()
-        if bytes > available {
-            if reclaimForShortfall(bytes - available) { available = availableReservationBytes() }
-            if bytes > available { return false }
+        let available = availableReservationBytes()
+        guard bytes <= available else {
+            reclaimer.scheduleReclaim(shortfall: bytes - available)   // non-blocking; flush runs off-actor
+            recordCommitRejection()
+            return false
         }
-        reservations[requestID] = bytes
+        reservations[requestID] = Reservation(bytes: bytes, createdAt: .now)
+        rejectionStreakStart = nil
+        lastRejectionAt = nil
         return true
     }
 
-    /// Rate-limited pool reclaim for the admission self-heal, shared by the live KV
-    /// reservation gate (`commit`) and the scheduler's token-budget gate. Returns
-    /// true if it actually flushed the pool (so the caller should resample). Two
-    /// guards: skip when the reclaimable pool can't cover `shortfall` (the bytes the
-    /// request is short by — a flush would still leave it rejected, e.g. when active
-    /// memory rather than the pool is what's full); and skip when a flush ran within
-    /// `selfHealMinInterval` (the flush blocks on a GPU sync, so this bounds how
-    /// often a flood of near-miss admissions can chain syncs and stall the actor).
-    public func reclaimForShortfall(_ shortfall: UInt64) -> Bool {
-        guard shortfall > 0, memorySnapshot().cache >= shortfall else { return false }
+    // MARK: - Sustained-rejection reservation audit (v0.7.3)
+
+    /// Called on every failed commit. When EVERY commit has failed for
+    /// `sustainedRejectionAuditThreshold` straight — the black-hole signature:
+    /// the coordinator keeps routing, the provider keeps rejecting, and the
+    /// cache-pool reclaimer isn't helping — log the full reservation table at
+    /// ERROR severity and drop any reservation older than
+    /// `staleReservationTTL` with a WARN. Live requests hold reservations for
+    /// seconds-to-minutes and release them on every terminal path; pending
+    /// loads release once weights are resident. A reservation that has
+    /// out-lived the TTL *while nothing at all is being admitted* is leaked
+    /// bookkeeping, and dropping it converts a permanent reject-everything
+    /// wedge into a self-healed blip. Rate-limited to one audit per
+    /// `auditMinInterval`.
+    ///
+    /// "Straight" is enforced two ways (both required, or sparse traffic
+    /// could satisfy the threshold by wall clock alone and drop LIVE work):
+    ///   * continuity — a gap since the PREVIOUS rejection longer than
+    ///     `rejectionStreakContinuityWindow` restarts the streak here;
+    ///   * progress — a successful commit (in `commit`) or a real release
+    ///     (in `release`) resets the streak entirely.
+    private func recordCommitRejection() {
         let now = ContinuousClock.now
-        if let last = lastSelfHealAt, now - last < selfHealMinInterval { return false }
-        lastSelfHealAt = now
-        clearCache()
-        return true
+        if let previous = lastRejectionAt, now - previous > rejectionStreakContinuityWindow {
+            // Idle gap: two rejections minutes apart are sparse traffic, not
+            // a black hole — a genuinely wedged box under coordinator
+            // routing rejects many times per continuity window.
+            rejectionStreakStart = nil
+        }
+        lastRejectionAt = now
+        if rejectionStreakStart == nil {
+            rejectionStreakStart = now
+            return
+        }
+        guard let streakStart = rejectionStreakStart,
+            now - streakStart >= sustainedRejectionAuditThreshold
+        else { return }
+        if let last = lastAuditAt, now - last < auditMinInterval { return }
+        lastAuditAt = now
+
+        let snap = memorySnapshot()
+        let table = reservations
+            .map { id, r in
+                "\(id)=\(r.bytes)B age=\(Int((now - r.createdAt).components.seconds))s"
+            }
+            .sorted()
+            .joined(separator: ", ")
+        let streakSeconds = Int((now - streakStart).components.seconds)
+        emitAuditEvent(
+            .error,
+            "kv budget: every reservation rejected for \(streakSeconds)s — auditing reservation table",
+            [
+                "operation": .string("kv_budget_sustained_rejection"),
+                "streak_seconds": .int(streakSeconds),
+                "reservation_count": .int(reservations.count),
+                "reserved_bytes": .string(String(outstandingReservedBytes())),
+                "mlx_active_bytes": .string(String(snap.active)),
+                "mlx_cache_bytes": .string(String(snap.cache)),
+                "system_available_bytes": .string(String(snap.systemAvailable)),
+                "reservations": .string(table),
+            ])
+
+        let staleIDs = reservations.filter { now - $0.value.createdAt >= staleReservationTTL }
+        guard !staleIDs.isEmpty else { return }
+        for (id, r) in staleIDs {
+            reservations.removeValue(forKey: id)
+            emitAuditEvent(
+                .warn,
+                "kv budget: dropped stale reservation during sustained full-rejection",
+                [
+                    "operation": .string("kv_budget_stale_reservation_dropped"),
+                    "request_id": .string(id),
+                    "reserved_bytes": .string(String(r.bytes)),
+                    "age_seconds": .int(Int((now - r.createdAt).components.seconds)),
+                ])
+        }
+        // Freed headroom — let the next commit start a fresh verdict.
+        rejectionStreakStart = nil
+    }
+
+    /// Signal the off-actor reclaimer to flush the reclaimable MLX pool for a
+    /// shortfall observed by the scheduler's token-budget gate. Non-blocking and
+    /// `nonisolated` (it touches no actor state — only the immutable reclaimer),
+    /// so the caller doesn't even hop this actor: the GPU sync runs on the
+    /// reclaimer, never here (it used to run inline as a blocking synchronize,
+    /// which wedged the admission actor). The reclaimer gates on whether the pool
+    /// can cover the shortfall and rate-limits, so this is an unconditional
+    /// fire-and-forget.
+    public nonisolated func reclaimForShortfall(_ shortfall: UInt64) {
+        guard shortfall > 0 else { return }
+        reclaimer.scheduleReclaim(shortfall: shortfall)
+    }
+
+    /// Trigger a proactive, rate-limited, threshold-gated background sweep of the
+    /// reclaimable MLX pool so admission headroom stays healthy under sustained
+    /// load without any inline flush. Non-blocking and `nonisolated`. Called
+    /// periodically by the scheduler watchdog while a model is loaded.
+    public nonisolated func proactiveReclaimSweep() {
+        reclaimer.scheduleSweep()
     }
 
     private func availableReservationBytes() -> UInt64 {
@@ -198,7 +393,7 @@ public actor GlobalKVCacheBudget {
             configReserveBytes: configReserveBytes,
             capFraction: capFraction)
         let reserved = reservations.values.reduce(UInt64(0)) { partial, value in
-            let (sum, overflow) = partial.addingReportingOverflow(value)
+            let (sum, overflow) = partial.addingReportingOverflow(value.bytes)
             return overflow ? UInt64.max : sum
         }
         return reservationCap > reserved ? reservationCap - reserved : 0
@@ -214,4 +409,14 @@ public actor GlobalKVCacheBudget {
         return total
     }
 
+    // MARK: - Test support
+
+    /// The off-actor reclaimer, so tests can drive `reclaimIfNeeded`/`sweep`
+    /// deterministically (they run the injected `clearCache` synchronously on the
+    /// reclaimer actor) instead of racing the fire-and-forget signal tasks.
+    var reclaimerForTesting: KVPoolReclaimer { reclaimer }
+
+    /// Current reservation ids, so tests can assert the ledger is empty (or
+    /// holds exactly the expected live entries) after a load/audit sequence.
+    func reservationIDsForTesting() -> [String] { Array(reservations.keys) }
 }

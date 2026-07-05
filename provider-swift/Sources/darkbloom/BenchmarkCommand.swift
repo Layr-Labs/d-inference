@@ -1,5 +1,6 @@
 import ArgumentParser
 import ProviderCore
+import ProviderBenchmark
 
 struct Benchmark: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -43,6 +44,19 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Sweep: decode prompt length in tokens per sequence (default 64).")
     var decodePromptTokens = ThroughputSweep.defaultDecodePromptTokens
 
+    @Flag(name: .long, help: """
+        Run the scheduler cold-prefill benchmark and print a JSON report. \
+        This times TTFT through the continuous-batching chunked prefill path \
+        with prefix cache disabled.
+        """)
+    var schedulerPrefill = false
+
+    @Option(name: .long, help: "Scheduler prefill: comma-separated strategies, e.g. fixed:512,adaptive.")
+    var prefillStrategies = SchedulerPrefillBenchmark.defaultStrategies
+
+    @Option(name: .long, help: "Scheduler prefill: measured iterations per length/strategy.")
+    var prefillIterations = 2
+
     mutating func run() async throws {
         do {
             _ = try GPUEnforcement.requireMetal()
@@ -78,6 +92,14 @@ struct Benchmark: AsyncParsableCommand {
                 modelID: selectedModel.id,
                 modelDirectory: modelPath,
                 hardware: hardware
+            )
+            return
+        }
+
+        if schedulerPrefill {
+            try await runSchedulerPrefillBenchmark(
+                modelID: selectedModel.id,
+                modelDirectory: modelPath
             )
             return
         }

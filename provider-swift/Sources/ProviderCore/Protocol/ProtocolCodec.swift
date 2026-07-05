@@ -11,7 +11,7 @@ public enum ProviderProtocolCodec {
             return try encodeRegisterPreservingRawAttestation(register)
         }
 
-        return try makeEncoder().encode(message)
+        return try encoder.encode(message)
     }
 
     public static func encodeProviderMessageString(_ message: ProviderMessage) throws -> String {
@@ -43,7 +43,7 @@ public enum ProviderProtocolCodec {
     }
 
     public static func encodeCoordinatorMessage(_ message: CoordinatorMessage) throws -> Data {
-        try makeEncoder().encode(message)
+        try encoder.encode(message)
     }
 
     public static func encodeCoordinatorMessageString(_ message: CoordinatorMessage) throws -> String {
@@ -65,11 +65,24 @@ public enum ProviderProtocolCodec {
         return try decodeCoordinatorMessage(from: data)
     }
 
-    private static func makeEncoder() -> JSONEncoder {
+    /// Shared encoder for every outbound message, cached to avoid a fresh
+    /// JSONEncoder allocation per message on the per-token chunk hot path.
+    ///
+    /// Concurrency: JSONEncoder does have mutable configuration properties
+    /// (`outputFormatting`, key/date strategies, ...), but this instance is
+    /// configured once in the initializer below and never mutated afterward.
+    /// JSONEncoder is Sendable, and `encode(_:)` allocates its own private
+    /// encoding storage per call, so calling it concurrently on a shared,
+    /// unmutated instance is safe.
+    ///
+    /// WARNING: mutating `outputFormatting` (or any other property) at
+    /// runtime would be both a data race with concurrent encodes AND a
+    /// silent wire-format change — the options below define the wire format.
+    private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return encoder
-    }
+    }()
 
     private static func encodeRegisterPreservingRawAttestation(
         _ register: ProviderMessage.Register
@@ -122,7 +135,7 @@ public enum ProviderProtocolCodec {
     }
 
     private static func encodeValue<T: Encodable>(_ value: T) throws -> Data {
-        try makeEncoder().encode(value)
+        try encoder.encode(value)
     }
 
     private static func validateRawJSON(_ data: Data) throws {

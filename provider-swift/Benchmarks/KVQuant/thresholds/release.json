@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "profile": "release",
+  "description": "Release gate thresholds for KV quantization reports. Only metrics present in a report are evaluated by scripts/kvquant/compare.py.",
+  "chip_groups": {
+    "m1_m2": ["M1", "M1 Pro", "M1 Max", "M1 Ultra", "M2", "M2 Pro", "M2 Max", "M2 Ultra"],
+    "m3_m5": ["M3", "M3 Pro", "M3 Max", "M3 Ultra", "M4", "M4 Pro", "M4 Max", "M4 Ultra", "M5", "M5 Pro", "M5 Max", "M5 Ultra"]
+  },
+  "default": {
+    "ppl": {
+      "relative_delta_pct": {"max": 1.0, "unit": "%", "description": "Quantized perplexity increase vs unquantized baseline."},
+      "absolute_delta": {"max": 0.05},
+      "ratio": {"min": 0.99, "max": 1.01, "description": "Candidate PPL must be within 1% of the fp16 baseline in either direction."}
+    },
+    "kl": {
+      "mean": {"max": 0.005},
+      "p95": {"max": 0.025}
+    },
+    "top_token": {
+      "greedy_match_rate": {"min": 0.97},
+      "top5_overlap_rate": {"min": 0.995}
+    },
+    "niah": {
+      "exact_match_agreement_rate": {"min": 0.97, "description": "Quantized exact-match rate must agree with the fp16 baseline."},
+      "contains_agreement_rate": {"min": 0.97, "description": "Quantized contains-rate must agree with the fp16 baseline."}
+    },
+    "output": {
+      "pass_agreement_rate": {"min": 0.97, "description": "Quantized pass/fail must agree with the fp16 baseline."},
+      "json_valid_agreement_rate": {"min": 0.97, "description": "Quantized JSON validity must agree with the fp16 baseline."},
+      "required_substrings_agreement_rate": {"min": 0.97, "description": "Quantized required-substring check must agree with the fp16 baseline."},
+      "unsafe_refusal_rate": {"max": 0.0}
+    },
+    "perf": {
+      "decode_tps_ratio": {"min": 0.9, "description": "Quantized decode tokens/sec divided by baseline tokens/sec."},
+      "prefill_tps_ratio": {"min": 0.9},
+      "ttft_ratio": {"max": 1.1},
+      "wall_time_ratio": {"max": 1.1}
+    },
+    "memory": {
+      "peak_memory_ratio": {"max": 0.75, "description": "Quantized peak memory divided by baseline peak memory."},
+      "kv_cache_memory_ratio": {"max": 0.55},
+      "memory_saved_pct": {"min": 25.0, "unit": "%"}
+    }
+  },
+  "chips": {
+    "m1_m2": {
+      "perf": {
+        "decode_tps_ratio": {"min": 0.85},
+        "prefill_tps_ratio": {"min": 0.85},
+        "ttft_ratio": {"max": 1.2},
+        "wall_time_ratio": {"max": 1.2}
+      },
+      "memory": {
+        "memory_saved_pct": {"min": 20.0}
+      }
+    },
+    "m3_m5": {
+      "perf": {
+        "decode_tps_ratio": {"min": 0.95},
+        "prefill_tps_ratio": {"min": 0.92},
+        "ttft_ratio": {"max": 1.08},
+        "wall_time_ratio": {"max": 1.08}
+      },
+      "memory": {
+        "peak_memory_ratio": {"max": 0.7},
+        "memory_saved_pct": {"min": 30.0}
+      }
+    }
+  }
+}

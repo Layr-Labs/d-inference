@@ -46,6 +46,8 @@ extension ProviderLoop {
                 return 404
             case .invalidRole:
                 return 400
+            case .invalidToolPayload:
+                return 400
             case .queueFull:
                 return 429
             case .tokenBudgetExhausted:

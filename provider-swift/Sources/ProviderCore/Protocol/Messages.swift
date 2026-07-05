@@ -154,11 +154,18 @@ public enum ProviderMessage: Sendable, Equatable {
         public var requestId: String
         public var error: String
         public var statusCode: UInt16
+        /// Normalized, privacy-safe failure reason (DAR-341). One of the shared
+        /// `error_reason` vocabulary values — "jinja_channel_tags",
+        /// "jinja_null_bridge", "jinja_template", "model_load" — or nil when the
+        /// provider cannot confidently classify the failure (the coordinator then
+        /// derives a reason from status/class). Omitted on the wire when nil.
+        public var errorReason: String?
 
-        public init(requestId: String, error: String, statusCode: UInt16) {
+        public init(requestId: String, error: String, statusCode: UInt16, errorReason: String? = nil) {
             self.requestId = requestId
             self.error = error
             self.statusCode = statusCode
+            self.errorReason = errorReason
         }
     }
 
@@ -239,7 +246,6 @@ public enum ProviderMessage: Sendable, Equatable {
         public var signature: String
         public var statusSignature: String?
         public var publicKey: String
-        public var hypervisorActive: Bool?
         public var rdmaDisabled: Bool?
         public var sipEnabled: Bool?
         public var secureBootEnabled: Bool?
@@ -255,7 +261,6 @@ public enum ProviderMessage: Sendable, Equatable {
             signature: String,
             statusSignature: String? = nil,
             publicKey: String,
-            hypervisorActive: Bool? = nil,
             rdmaDisabled: Bool? = nil,
             sipEnabled: Bool? = nil,
             secureBootEnabled: Bool? = nil,
@@ -270,7 +275,6 @@ public enum ProviderMessage: Sendable, Equatable {
             self.signature = signature
             self.statusSignature = statusSignature
             self.publicKey = publicKey
-            self.hypervisorActive = hypervisorActive
             self.rdmaDisabled = rdmaDisabled
             self.sipEnabled = sipEnabled
             self.secureBootEnabled = secureBootEnabled
@@ -353,10 +357,10 @@ extension ProviderMessage: Codable {
         // InferenceError
         case error
         case statusCode = "status_code"
+        case errorReason = "error_reason"
         // AttestationResponse
         case nonce, signature
         case statusSignature = "status_signature"
-        case hypervisorActive = "hypervisor_active"
         case rdmaDisabled = "rdma_disabled"
         case sipEnabled = "sip_enabled"
         case secureBootEnabled = "secure_boot_enabled"
@@ -439,6 +443,7 @@ extension ProviderMessage: Codable {
             try container.encode(e.requestId, forKey: .requestId)
             try container.encode(e.error, forKey: .error)
             try container.encode(e.statusCode, forKey: .statusCode)
+            try container.encodeIfPresent(e.errorReason, forKey: .errorReason)
 
         case .attestationResponse(let a):
             try container.encode(TypeValue.attestationResponse, forKey: .type)
@@ -446,7 +451,6 @@ extension ProviderMessage: Codable {
             try container.encode(a.signature, forKey: .signature)
             try container.encodeIfPresent(a.statusSignature, forKey: .statusSignature)
             try container.encode(a.publicKey, forKey: .publicKey)
-            try container.encodeIfPresent(a.hypervisorActive, forKey: .hypervisorActive)
             try container.encodeIfPresent(a.rdmaDisabled, forKey: .rdmaDisabled)
             try container.encodeIfPresent(a.sipEnabled, forKey: .sipEnabled)
             try container.encodeIfPresent(a.secureBootEnabled, forKey: .secureBootEnabled)
@@ -555,7 +559,8 @@ extension ProviderMessage: Codable {
             self = .inferenceError(InferenceError(
                 requestId: try container.decode(String.self, forKey: .requestId),
                 error: try container.decode(String.self, forKey: .error),
-                statusCode: try container.decode(UInt16.self, forKey: .statusCode)
+                statusCode: try container.decode(UInt16.self, forKey: .statusCode),
+                errorReason: try container.decodeIfPresent(String.self, forKey: .errorReason)
             ))
 
         case .attestationResponse:
@@ -564,7 +569,6 @@ extension ProviderMessage: Codable {
                 signature: try container.decode(String.self, forKey: .signature),
                 statusSignature: try container.decodeIfPresent(String.self, forKey: .statusSignature),
                 publicKey: try container.decode(String.self, forKey: .publicKey),
-                hypervisorActive: try container.decodeIfPresent(Bool.self, forKey: .hypervisorActive),
                 rdmaDisabled: try container.decodeIfPresent(Bool.self, forKey: .rdmaDisabled),
                 sipEnabled: try container.decodeIfPresent(Bool.self, forKey: .sipEnabled),
                 secureBootEnabled: try container.decodeIfPresent(Bool.self, forKey: .secureBootEnabled),

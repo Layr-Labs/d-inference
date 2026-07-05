@@ -1,3 +1,12 @@
+// Package config aggregates per-package configuration structs into a single
+// AppConfig and reads them from the environment.
+//
+// Each package in the coordinator owns its own Config struct and ReadConfig()
+// function. AppConfig composes them so main.go receives a single validated
+// configuration object instead of reading dozens of environment variables
+// inline. Environment-variable helpers live in the env package.
+//
+// Pattern adapted from: https://github.com/Layr-Labs/eigenda-proxy
 package config
 
 import (
@@ -83,8 +92,8 @@ func ReadAppConfig() AppConfig {
 		RegistryCfg:     registry.ReadConfig(),
 		MDMConfig:       mdm.ReadConfig(),
 		DatadogConfig:   datadog.ConfigFromEnv(),
-		AdminKey:        EnvOr(EnvPrefix+"_ADMIN_KEY", ""),
-		AdminEmails:     api.ParseCommaList(EnvOr(EnvPrefix+"_ADMIN_EMAILS", "")),
-		ReleaseKey:      EnvOr(EnvPrefix+"_RELEASE_KEY", ""),
+		AdminKey:        env.EnvOr(EnvPrefix+"_ADMIN_KEY", ""),
+		AdminEmails:     api.ParseCommaList(env.EnvOr(EnvPrefix+"_ADMIN_EMAILS", "")),
+		ReleaseKey:      env.EnvOr(EnvPrefix+"_RELEASE_KEY", ""),
 	}
 }

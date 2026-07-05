@@ -7,7 +7,7 @@
 // attestation that cannot be spoofed by a compromised OS.
 //
 // Two attestation paths exist:
-//  1. ACME device-attest-01: OIDs in 1.2.840.113635.100.8.13.* (SIP, SecureBoot, Kext)
+//  1. Device-attest OID set: 1.2.840.113635.100.8.13.* (SIP, SecureBoot, Kext)
 //  2. DeviceInformation DevicePropertiesAttestation: OIDs in 100.8.9.*, 100.8.10.*, 100.8.11.*
 //     (Serial, UDID, SepOS version, OS version, freshness code)
 //
@@ -20,9 +20,10 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"sync"
 )
 
-// Apple MDA OID constants — ACME device-attest-01 path (existing).
+// Apple MDA OID constants — device-attest OID set (100.8.13.*).
 var (
 	OIDSIPStatus        = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 13, 1}
 	OIDSecureBootStatus = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 13, 2}
@@ -59,6 +60,16 @@ ZwFEh9bhKjJ+5VQ9/Do1os0u3LEkgN/r
 
 var appleEnterpriseAttestationRootCA *x509.Certificate
 
+// verifyRoot is the trust anchor MDA certificate chains are verified against. In
+// production it is the embedded Apple Enterprise Attestation Root CA (set in
+// init). Tests swap it via OverrideRootCAForTest to exercise the verification and
+// reuse paths with a chain signed by a CA they control — Apple's private key is,
+// of course, unavailable to tests. Guarded by verifyRootMu.
+var (
+	verifyRootMu sync.RWMutex
+	verifyRoot   *x509.Certificate
+)
+
 func init() {
 	block, _ := pem.Decode([]byte(appleEnterpriseAttestationRootCAPEM))
 	if block == nil {
@@ -68,6 +79,30 @@ func init() {
 	appleEnterpriseAttestationRootCA, err = x509.ParseCertificate(block.Bytes)
 	if err != nil {
 		panic(fmt.Sprintf("attestation: failed to parse embedded Apple Root CA: %v", err))
+	}
+	verifyRoot = appleEnterpriseAttestationRootCA
+}
+
+// currentVerifyRoot returns the active MDA trust anchor (Apple's embedded root in
+// production).
+func currentVerifyRoot() *x509.Certificate {
+	verifyRootMu.RLock()
+	defer verifyRootMu.RUnlock()
+	return verifyRoot
+}
+
+// OverrideRootCAForTest swaps the MDA trust anchor and returns a restore func.
+// TEST-ONLY: production always verifies against the embedded Apple Enterprise
+// Attestation Root CA. Never call this from non-test code.
+func OverrideRootCAForTest(root *x509.Certificate) func() {
+	verifyRootMu.Lock()
+	prev := verifyRoot
+	verifyRoot = root
+	verifyRootMu.Unlock()
+	return func() {
+		verifyRootMu.Lock()
+		verifyRoot = prev
+		verifyRootMu.Unlock()
 	}
 }
 
@@ -79,7 +114,7 @@ type MDAResult struct {
 	DeviceSerial string
 	DeviceUDID   string
 
-	// Security properties from ACME path OIDs (100.8.13.*).
+	// Security properties from the device-attest OID set (100.8.13.*).
 	SIPEnabled        bool
 	SecureBootEnabled bool
 	ThirdPartyKexts   bool
@@ -119,7 +154,7 @@ func VerifyMDADeviceAttestation(certChainDER [][]byte) (*MDAResult, error) {
 
 	// Build verification chain.
 	roots := x509.NewCertPool()
-	roots.AddCert(appleEnterpriseAttestationRootCA)
+	roots.AddCert(currentVerifyRoot())
 
 	intermediates := x509.NewCertPool()
 	for _, ic := range certs[1:] {
@@ -172,7 +207,7 @@ func VerifyMDADeviceAttestation(certChainDER [][]byte) (*MDAResult, error) {
 				result.FreshnessCode = ext.Value
 			}
 
-		// ACME path OIDs (100.8.13.*) — may also be present
+		// Device-attest OIDs (100.8.13.*) — may also be present
 		case ext.Id.Equal(OIDSIPStatus):
 			result.SIPEnabled = parseBoolOID(ext.Value)
 		case ext.Id.Equal(OIDSecureBootStatus):
@@ -186,7 +221,7 @@ func VerifyMDADeviceAttestation(certChainDER [][]byte) (*MDAResult, error) {
 }
 
 // VerifyMDACertChain verifies a PEM-encoded MDA certificate chain.
-// Kept for backward compatibility with the ACME path.
+// Kept for backward compatibility with the 100.8.13.* OID set.
 func VerifyMDACertChain(certChainPEM []byte, appleRootCA *x509.Certificate) (*MDAResult, error) {
 	certs, err := parsePEMCertificates(certChainPEM)
 	if err != nil {

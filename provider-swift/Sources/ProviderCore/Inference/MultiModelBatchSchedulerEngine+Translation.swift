@@ -19,30 +19,37 @@ extension MultiModelBatchSchedulerEngine {
     /// expects.
     ///
     /// Multimodal content parts are collapsed to text (image URLs are
-    /// dropped) because the BatchScheduler is text-only. This matches
-    /// the existing behavior of `ChatPromptFormatter`.
+    /// dropped) because the BatchScheduler is text-only.
     ///
-    /// KNOWN DEVIATION (P1 #3): `seed` is dropped on this path because
-    /// the upstream `OpenAIChatCompletionRequest` does not expose a
-    /// `seed` field today (see
-    /// `libs/mlx-swift-lm/Libraries/MLXLMServer/Protocol/OpenAIProtocol.swift`).
-    /// The internal `ChatCompletionRequest` shape does carry a `seed`
-    /// field, but inbound requests are decoded straight into the upstream
-    /// `OpenAIChatCompletionRequest` (which omits it), so the value never
-    /// reaches this translation step.
-    /// The wire-level result is that seeded reproducibility is not
-    /// available in OpenAI-compatible mode and the engine's default
-    /// sampler RNG is used. Tracking upstream:
-    /// https://github.com/Layr-Labs/mlx-swift-lm/issues — add `seed`
-    /// to `OpenAIChatCompletionRequest` and then plumb it through here.
+    /// KNOWN DEVIATION (P1 #3, narrowed): the upstream
+    /// `OpenAIChatCompletionRequest` does not expose `seed` or `logit_bias`
+    /// fields today (see
+    /// `libs/mlx-swift-lm/Libraries/MLXLMServer/Protocol/OpenAIProtocol.swift`),
+    /// so a translation from the upstream shape ALONE always yields
+    /// `seed == nil` / `logit_bias == nil`. On the coordinator serving path
+    /// they are recovered the same way `logprobs`/`top_logprobs` are: decoded
+    /// straight from the sealed body
+    /// (`ProviderLoop.extractSamplingOverrides`) and overlaid here via the
+    /// `logitBias`/`seed` parameters (v2 engine path only; the legacy engine
+    /// honors neither knob and its submit call is unchanged). The standalone
+    /// `--local` path still drops both — it decodes inside the upstream
+    /// Hummingbird router with no provider seam — pending the upstream shape
+    /// gaining the fields.
     /// We intentionally do NOT smuggle `seed` through the OpenAI `user`
     /// field (the other free-form caller field) because we may need to
     /// repurpose `user` for cancellation / request-id correlation in
     /// the future and double-booking that field would be a layering
     /// trap.
+    /// `logprobs`/`topLogprobs` overlay the OpenAI knobs of the same names
+    /// onto the internal shape; on the coordinator path they arrive via
+    /// `EngineV2LogprobsPlumbing`.
     static func translate(
         openAIRequest request: OpenAIChatCompletionRequest,
-        defaultMaxTokens: Int
+        defaultMaxTokens: Int,
+        logprobs: Bool? = nil,
+        topLogprobs: Int? = nil,
+        logitBias: [String: Float]? = nil,
+        seed: UInt64? = nil
     ) -> ChatCompletionRequest {
         let stop: StopSequences? = {
             guard let stops = request.stop, !stops.isEmpty else { return nil }
@@ -62,11 +69,16 @@ extension MultiModelBatchSchedulerEngine {
             frequency_penalty: request.frequencyPenalty,
             stream: request.stream,
             stop: stop,
-            seed: nil, // P1 #3: see KNOWN DEVIATION on `translate(...)`.
+            // Sealed-body overlay (nil unless the coordinator handler decoded
+            // one) — see KNOWN DEVIATION on `translate(...)`.
+            seed: seed,
             tools: nil,
             tool_choice: nil,
             response_format: nil,
-            user: nil
+            user: nil,
+            logit_bias: logitBias,
+            logprobs: logprobs,
+            top_logprobs: topLogprobs
         )
     }
 }

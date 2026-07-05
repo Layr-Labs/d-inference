@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import Testing
 @testable import ProviderCore
@@ -145,79 +144,5 @@ extension Data {
             data.append(b)
         }
         self = data
-    }
-}
-
-// MARK: - X25519ChaChaPoly Tests
-
-@Test func x25519ChaChaPolyRoundTripsWithDeterministicInputs() throws {
-    let recipient = try X25519KeyAgreementKeyPair(rawPrivateKey: Data(repeating: 7, count: 32))
-    let sender = try X25519KeyAgreementKeyPair(rawPrivateKey: Data(repeating: 9, count: 32))
-    let cipher = X25519ChaChaPoly(
-        salt: Data("test-salt".utf8),
-        sharedInfo: Data("test-info".utf8)
-    )
-    let plaintext = Data("single request foundation".utf8)
-    let aad = Data("req-123".utf8)
-    let nonce = Data(0..<12)
-
-    let sealed = try cipher.seal(
-        plaintext: plaintext,
-        recipientPublicKey: recipient.publicKey,
-        senderKeyPair: sender,
-        nonce: nonce,
-        authenticatedData: aad
-    )
-    let opened = try cipher.open(sealed, recipientKeyPair: recipient, authenticatedData: aad)
-
-    #expect(sealed.senderPublicKey == sender.publicKey)
-    #expect(sealed.nonce == nonce)
-    #expect(sealed.combinedCiphertext.count == nonce.count + sealed.ciphertext.count + sealed.tag.count)
-    #expect(opened == plaintext)
-}
-
-@Test func x25519ChaChaPolyRejectsTamperedAuthenticatedData() throws {
-    let recipient = try X25519KeyAgreementKeyPair(rawPrivateKey: Data(repeating: 1, count: 32))
-    let sender = try X25519KeyAgreementKeyPair(rawPrivateKey: Data(repeating: 2, count: 32))
-    let cipher = X25519ChaChaPoly()
-    let sealed = try cipher.seal(
-        plaintext: Data("hello".utf8),
-        recipientPublicKey: recipient.publicKey,
-        senderKeyPair: sender,
-        nonce: Data(repeating: 3, count: 12),
-        authenticatedData: Data("req-good".utf8)
-    )
-
-    #expect(throws: CryptoKitError.self) {
-        _ = try cipher.open(
-            sealed,
-            recipientKeyPair: recipient,
-            authenticatedData: Data("req-bad".utf8)
-        )
-    }
-}
-
-@Test func x25519ChaChaPolyValidatesKeyAndNonceLengths() throws {
-    #expect(throws: X25519ChaChaPolyError.invalidPrivateKeyLength(31)) {
-        _ = try X25519KeyAgreementKeyPair(rawPrivateKey: Data(repeating: 0, count: 31))
-    }
-
-    let recipient = try X25519KeyAgreementKeyPair(rawPrivateKey: Data(repeating: 5, count: 32))
-    let cipher = X25519ChaChaPoly()
-
-    #expect(throws: X25519ChaChaPolyError.invalidPublicKeyLength(31)) {
-        _ = try cipher.seal(
-            plaintext: Data(),
-            recipientPublicKey: Data(repeating: 1, count: 31),
-            nonce: Data(repeating: 0, count: 12)
-        )
-    }
-
-    #expect(throws: X25519ChaChaPolyError.invalidNonceLength(11)) {
-        _ = try cipher.seal(
-            plaintext: Data(),
-            recipientPublicKey: recipient.publicKey,
-            nonce: Data(repeating: 0, count: 11)
-        )
     }
 }

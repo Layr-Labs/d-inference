@@ -113,8 +113,7 @@ private func phase6PrivacyCapabilities() -> PrivacyCapabilities {
         sipEnabled: true,
         antiDebugEnabled: true,
         coreDumpsDisabled: true,
-        envScrubbed: true,
-        hypervisorActive: false
+        envScrubbed: true
     )
 }
 

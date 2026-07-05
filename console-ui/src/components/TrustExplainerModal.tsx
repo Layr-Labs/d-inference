@@ -10,7 +10,7 @@ import {
   RefreshCw,
   ChevronDown,
 } from "lucide-react";
-import { useVerificationMode } from "@/lib/verification-mode";
+import { useVerificationMode } from "@/components/providers/verification-mode";
 
 interface TrustExplainerModalProps {
   open: boolean;
@@ -91,8 +91,8 @@ const STEPS: StepData[] = [
       "The coordinator sends attestation challenges (32-byte random nonce + timestamp) " +
       "every 5 minutes. The provider must sign the challenge with its SE key and report " +
       "fresh security posture: SIP status, Secure Boot, binary hash (self-hash of provider binary), " +
-      "RDMA status, hypervisor isolation status, and runtime integrity hashes " +
-      "(Python, vllm-mlx, Jinja templates). Any mismatch triggers demotion.",
+      "RDMA status, and runtime integrity hashes (MLX-Swift runtime, chat templates, " +
+      "and active model weights). Any mismatch triggers demotion.",
   },
 ];
 

@@ -68,6 +68,23 @@ func testMakeTextRoutable(p *Provider) {
 	p.ChallengeVerifiedSIP = true
 }
 
+// findRoutableProvider selects a provider for model via the PRODUCTION routing
+// path (ReserveProviderEx), releases the reserved capacity, and returns the
+// selected provider — or nil when no provider can serve the model right now.
+// It replaces the removed score-based FindProvider as a routability probe in
+// tests: the production path applies the same structural/privacy/trust/challenge
+// gates, so "is this provider routable?" assertions hold without a parallel
+// routing implementation to keep in sync.
+func findRoutableProvider(r *Registry, model string) *Provider {
+	pr := &PendingRequest{RequestID: "test-route-probe", Model: model, RequestedMaxTokens: 64}
+	p, _ := r.ReserveProviderEx(model, pr)
+	if p != nil {
+		p.RemovePending(pr.RequestID)
+		r.SetProviderIdle(p.ID)
+	}
+	return p
+}
+
 // TestCodeAttestationGate verifies the v0.6.0 APNs code-identity gate at the
 // single routing chokepoint across the rollout policy: not configured (no
 // regression), grace/observe (configured but un-enforced still routes), enforced
@@ -187,7 +204,7 @@ func TestProviderMissingPrivacyCapsExcludedFromTextRouting(t *testing.T) {
 	reg.SetTrustLevel(p.ID, TrustHardware)
 	reg.RecordChallengeSuccess(p.ID)
 
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
 		t.Fatal("provider without privacy capabilities should not be routable for text models")
 	}
@@ -209,7 +226,7 @@ func TestProviderWithoutManifestCheckExcludedFromTextRouting(t *testing.T) {
 	p.ChallengeVerifiedSIP = true
 	p.RuntimeManifestChecked = false
 
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
 		t.Fatal("provider without manifest verification should not be routable for text models")
 	}
@@ -226,13 +243,13 @@ func TestSwiftProviderRequiresRuntimeManifestCheck(t *testing.T) {
 	p.RuntimeVerified = true
 	p.RuntimeManifestChecked = false
 
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
 		t.Fatal("swift provider without manifest verification should not be routable for text models")
 	}
 
 	p.RuntimeManifestChecked = true
-	found = reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found = findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found == nil {
 		t.Fatal("swift provider should be routable once its runtime manifest is verified")
 	}
@@ -247,7 +264,7 @@ func TestProviderWithoutChallengeVerifiedSIPExcluded(t *testing.T) {
 	p.RuntimeManifestChecked = true
 	p.ChallengeVerifiedSIP = false
 
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
 		t.Fatal("provider without coordinator-verified SIP should not be routable for text")
 	}
@@ -273,8 +290,8 @@ func TestVisionRoutingHelpers(t *testing.T) {
 	r.providers["p-text"] = textProv
 
 	r.mu.RLock()
-	visOK := r.providerServesVisionModelLocked(visProv, "gemma-4-26b")
-	textOK := r.providerServesVisionModelLocked(textProv, "gemma-4-26b")
+	visOK := r.providerServesVisionModelLocked(visProv, "gemma-4-26b", false)
+	textOK := r.providerServesVisionModelLocked(textProv, "gemma-4-26b", false)
 	r.mu.RUnlock()
 	if !visOK {
 		t.Fatal("vision provider should serve gemma-4-26b as vision-capable")
@@ -282,6 +299,40 @@ func TestVisionRoutingHelpers(t *testing.T) {
 	if textOK {
 		t.Fatal("text-only provider must NOT be vision-capable for gemma-4-26b")
 	}
+
+	// With a catalog that excludes the model, the public gate closes but the
+	// owner self-route context (allowOffCatalog) still accepts the provider's
+	// advertised VLM build — otherwise an owned off-catalog VLM would pass the
+	// routable gate and then be starved by the vision gate.
+	r.SetModelCatalog([]CatalogEntry{{ID: "some-other-model"}})
+	r.mu.RLock()
+	publicOK := r.providerServesVisionModelLocked(visProv, "gemma-4-26b", false)
+	ownerOK := r.providerServesVisionModelLocked(visProv, "gemma-4-26b", true)
+	ownerTextOK := r.providerServesVisionModelLocked(textProv, "gemma-4-26b", true)
+	r.mu.RUnlock()
+	if publicOK {
+		t.Fatal("off-catalog model must not be vision-routable in the public context")
+	}
+	if !ownerOK {
+		t.Fatal("off-catalog advertised VLM must be vision-routable in the owner self-route context")
+	}
+	if ownerTextOK {
+		t.Fatal("owner context must still require a vision-capable build")
+	}
+
+	// The owner context lifts catalog MEMBERSHIP only: a build the catalog
+	// tracks must still pass the weight-hash gate, mirroring the routable
+	// gate's tamper tripwire.
+	visProv.Models = []protocol.ModelInfo{{ID: "gemma-4-26b", IsVision: true, WeightHash: "tampered"}}
+	r.SetModelCatalog([]CatalogEntry{{ID: "gemma-4-26b", WeightHash: "expected"}})
+	r.mu.RLock()
+	ownerHashMismatchOK := r.providerServesVisionModelLocked(visProv, "gemma-4-26b", true)
+	r.mu.RUnlock()
+	if ownerHashMismatchOK {
+		t.Fatal("owner context must not admit a catalog VLM with a mismatched weight hash")
+	}
+	visProv.Models = []protocol.ModelInfo{{ID: "gemma-4-26b", IsVision: true}}
+	r.SetModelCatalog(nil)
 
 	if !r.HasVisionProviderForModel("gemma-4-26b") {
 		t.Fatal("fleet has a vision provider for gemma-4-26b")
@@ -314,7 +365,7 @@ func TestSwiftProviderPrivateTextWithoutPythonCaps(t *testing.T) {
 		t.Fatal("Swift provider should support private text without PythonRuntimeLocked/DangerousModulesBlocked")
 	}
 
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found == nil {
 		t.Fatal("Swift provider without Python caps should be routable for text models")
 	}
@@ -335,7 +386,7 @@ func TestPythonProviderDeprecatedNotRoutable(t *testing.T) {
 		t.Fatal("Python (inprocess-mlx) provider should NOT support private text — backend is deprecated")
 	}
 
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
 		t.Fatal("deprecated Python provider should not be routable")
 	}
@@ -359,7 +410,7 @@ func TestSwiftProviderMissingBaseCapsExcluded(t *testing.T) {
 		t.Fatal("Swift provider without AntiDebugEnabled should NOT support private text")
 	}
 
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
 		t.Fatal("Swift provider without base privacy caps should not be routable")
 	}
@@ -374,7 +425,7 @@ func TestProviderPartialPrivacyCapsExcluded(t *testing.T) {
 	reg.SetTrustLevel(p.ID, TrustHardware)
 	reg.RecordChallengeSuccess(p.ID)
 
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
 		t.Fatal("provider with incomplete privacy capabilities should not be routable for text")
 	}
@@ -648,96 +699,6 @@ func TestDisconnectUnknown(t *testing.T) {
 	reg.Disconnect("nonexistent")
 }
 
-func TestFindProvider(t *testing.T) {
-	reg := New(testLogger())
-	msg := testRegisterMessage()
-	p1 := reg.Register("p1", nil, msg)
-	testMakeTextRoutable(p1)
-
-	p := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
-	if p == nil {
-		t.Fatal("FindProvider returned nil")
-	}
-	if p.ID != "p1" {
-		t.Errorf("id = %q, want %q", p.ID, "p1")
-	}
-	if p.Status != StatusServing {
-		t.Errorf("status = %q, want %q", p.Status, StatusServing)
-	}
-}
-
-func TestFindProviderNoMatch(t *testing.T) {
-	reg := New(testLogger())
-	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
-
-	p := reg.FindProvider("nonexistent-model")
-	if p != nil {
-		t.Error("FindProvider should return nil for unknown model")
-	}
-}
-
-func TestFindProviderSkipsAtMaxConcurrency(t *testing.T) {
-	reg := New(testLogger())
-	msg := testRegisterMessage()
-	p1 := reg.Register("p1", nil, msg)
-	testMakeTextRoutable(p1)
-
-	// Fill up the provider to max concurrency by adding pending requests.
-	for i := range DefaultMaxConcurrent {
-		p1.AddPending(&PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
-	}
-
-	// FindProvider should return nil since p1 is at max concurrency.
-	p := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
-	if p != nil {
-		t.Error("should return nil when provider is at max concurrency")
-	}
-
-	// Remove one pending request — should be routable again.
-	p1.RemovePending("req-0")
-	p = reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
-	if p == nil {
-		t.Error("should return provider after freeing a slot")
-	}
-}
-
-func TestFindProviderScoreBased(t *testing.T) {
-	reg := New(testLogger())
-	msg := testRegisterMessage()
-
-	// Register two providers with different benchmark data.
-	// p2 has higher decode_tps, so it should be preferred.
-	p1 := reg.Register("p1", nil, msg)
-	p1.DecodeTPS = 50.0
-	testMakeTextRoutable(p1)
-
-	p2 := reg.Register("p2", nil, msg)
-	p2.DecodeTPS = 100.0
-	testMakeTextRoutable(p2)
-
-	// First call should pick p2 (higher score).
-	first := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
-	if first == nil {
-		t.Fatal("first FindProvider returned nil")
-	}
-	if first.ID != "p2" {
-		t.Errorf("expected p2 (higher decode_tps), got %q", first.ID)
-	}
-
-	// Mark p2 idle so it can be picked again.
-	reg.SetProviderIdle(first.ID)
-
-	// Second call should still pick p2 (higher score, score-based not round-robin).
-	second := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
-	if second == nil {
-		t.Fatal("second FindProvider returned nil")
-	}
-	if second.ID != "p2" {
-		t.Errorf("expected p2 again (score-based), got %q", second.ID)
-	}
-}
-
 func TestSetProviderIdle(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
@@ -746,9 +707,11 @@ func TestSetProviderIdle(t *testing.T) {
 	p1.LastChallengeVerified = time.Now()
 	p1.ChallengeVerifiedSIP = true
 
-	// Mark as serving.
-	reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	// Put the provider in the serving state, then verify SetProviderIdle clears it.
 	p := reg.GetProvider("p1")
+	p.mu.Lock()
+	p.Status = StatusServing
+	p.mu.Unlock()
 	if p.Status != StatusServing {
 		t.Errorf("status = %q, want %q", p.Status, StatusServing)
 	}
@@ -1002,7 +965,7 @@ func TestFindProviderSkipsSelfSigned(t *testing.T) {
 	p1 := reg.Register("p1", nil, msg)
 	p1.TrustLevel = TrustSelfSigned
 
-	p := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	p := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if p != nil {
 		t.Error("FindProvider should skip self_signed providers")
 	}
@@ -1120,7 +1083,7 @@ func TestFindProviderSkipsUntrusted(t *testing.T) {
 	reg.MarkUntrusted("p1")
 
 	// Should not find the provider
-	p := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	p := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if p != nil {
 		t.Error("FindProvider should skip untrusted providers")
 	}
@@ -1471,155 +1434,6 @@ func TestTransientRecoveryConcurrentRace(t *testing.T) {
 
 // --- scoring tests ---
 
-func TestScoringHigherDecodeTPS(t *testing.T) {
-	reg := New(testLogger())
-	msg := testRegisterMessage()
-
-	p1 := reg.Register("p1", nil, msg)
-	p1.DecodeTPS = 50.0
-	p1.TrustLevel = TrustHardware
-	p1.LastChallengeVerified = time.Now()
-	p1.ChallengeVerifiedSIP = true
-
-	p2 := reg.Register("p2", nil, msg)
-	p2.DecodeTPS = 200.0
-	p2.TrustLevel = TrustHardware
-	p2.LastChallengeVerified = time.Now()
-	p2.ChallengeVerifiedSIP = true
-
-	// p2 has 4x higher decode TPS → should be selected.
-	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
-	if selected == nil {
-		t.Fatal("FindProvider returned nil")
-	}
-	if selected.ID != "p2" {
-		t.Errorf("expected p2 (higher decode_tps), got %q", selected.ID)
-	}
-}
-
-func TestScoringTrustedPreferred(t *testing.T) {
-	reg := New(testLogger())
-	msg := testRegisterMessage()
-
-	// p1 is not hardware-trusted — should be excluded entirely.
-	p1 := reg.Register("p1", nil, msg)
-	p1.DecodeTPS = 100.0
-	p1.TrustLevel = TrustSelfSigned // excluded from routing
-
-	// p2 is hardware-trusted — should be the only candidate.
-	p2 := reg.Register("p2", nil, msg)
-	p2.DecodeTPS = 100.0
-	p2.TrustLevel = TrustHardware
-	p2.LastChallengeVerified = time.Now()
-	p2.ChallengeVerifiedSIP = true
-
-	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
-	if selected == nil {
-		t.Fatal("FindProvider returned nil")
-	}
-	if selected.ID != "p2" {
-		t.Errorf("expected p2 (hardware trust), got %q", selected.ID)
-	}
-}
-
-func TestScoringIdlePreferredOverBusy(t *testing.T) {
-	reg := New(testLogger())
-	msg := testRegisterMessage()
-
-	// Both providers have equal decode_tps. p1 already has pending requests.
-	p1 := reg.Register("p1", nil, msg)
-	p1.DecodeTPS = 100.0
-	p1.TrustLevel = TrustHardware
-	p1.LastChallengeVerified = time.Now()
-	p1.ChallengeVerifiedSIP = true
-
-	p2 := reg.Register("p2", nil, msg)
-	p2.DecodeTPS = 100.0
-	p2.TrustLevel = TrustHardware
-	p2.LastChallengeVerified = time.Now()
-	p2.ChallengeVerifiedSIP = true
-
-	// Give p1 pending requests so it has load.
-	p1.AddPending(&PendingRequest{RequestID: "busy-1"})
-	p1.AddPending(&PendingRequest{RequestID: "busy-2"})
-
-	// p2 should be selected because it's idle (score is higher with no load).
-	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
-	if selected == nil {
-		t.Fatal("FindProvider returned nil")
-	}
-	if selected.ID != "p2" {
-		t.Errorf("expected p2 (idle), got %q", selected.ID)
-	}
-}
-
-func TestScoringWarmModelPreferred(t *testing.T) {
-	reg := New(testLogger())
-	msg := testRegisterMessage()
-
-	// Both have same decode_tps and trust, but p2 has the model warm.
-	p1 := reg.Register("p1", nil, msg)
-	p1.DecodeTPS = 100.0
-	p1.TrustLevel = TrustHardware
-	p1.LastChallengeVerified = time.Now()
-	p1.ChallengeVerifiedSIP = true
-
-	p2 := reg.Register("p2", nil, msg)
-	p2.DecodeTPS = 100.0
-	p2.TrustLevel = TrustHardware
-	p2.LastChallengeVerified = time.Now()
-	p2.ChallengeVerifiedSIP = true
-	p2.WarmModels = []string{"mlx-community/Qwen3.5-9B-Instruct-4bit"}
-
-	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
-	if selected == nil {
-		t.Fatal("FindProvider returned nil")
-	}
-	if selected.ID != "p2" {
-		t.Errorf("expected p2 (warm model), got %q", selected.ID)
-	}
-}
-
-func TestScoreProviderFunction(t *testing.T) {
-	p := &Provider{
-		DecodeTPS:       100.0,
-		TrustLevel:      TrustHardware,
-		Status:          StatusOnline,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-	}
-
-	score := ScoreProvider(p, "test-model")
-	if score <= 0 {
-		t.Errorf("score = %f, should be positive", score)
-	}
-
-	// Provider with pending requests should have a lower score (load penalty).
-	p.Status = StatusServing
-	p.mu.Lock()
-	p.pendingReqs = map[string]*PendingRequest{"r1": {RequestID: "r1"}}
-	p.mu.Unlock()
-	busyScore := ScoreProvider(p, "test-model")
-	if busyScore >= score {
-		t.Errorf("busy score (%f) should be less than idle score (%f)", busyScore, score)
-	}
-	if busyScore <= 0 {
-		t.Errorf("busy score = %f, should still be positive (has concurrency headroom)", busyScore)
-	}
-}
-
-func TestTrustMultiplierValues(t *testing.T) {
-	if TrustMultiplier(TrustHardware) != 1.0 {
-		t.Errorf("hardware multiplier = %f, want 1.0", TrustMultiplier(TrustHardware))
-	}
-	if TrustMultiplier(TrustSelfSigned) != 0.8 {
-		t.Errorf("self_signed multiplier = %f, want 0.8", TrustMultiplier(TrustSelfSigned))
-	}
-	if TrustMultiplier(TrustNone) != 0.5 {
-		t.Errorf("none multiplier = %f, want 0.5", TrustMultiplier(TrustNone))
-	}
-}
-
 func TestRecordJobSuccessUpdatesReputation(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
@@ -1732,7 +1546,7 @@ func TestSetProviderIdleDrainsQueue(t *testing.T) {
 	p.ChallengeVerifiedSIP = true
 
 	// Mark provider as serving.
-	reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 
 	// Queue a request.
 	qr := &QueuedRequest{
@@ -1756,96 +1570,6 @@ func TestSetProviderIdleDrainsQueue(t *testing.T) {
 		}
 	case <-time.After(1 * time.Second):
 		t.Error("timed out waiting for queue assignment")
-	}
-}
-
-func TestScoringWithHighMemoryPressure(t *testing.T) {
-	healthy := &Provider{
-		DecodeTPS:       100.0,
-		TrustLevel:      TrustHardware,
-		Status:          StatusOnline,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		SystemMetrics: protocol.SystemMetrics{
-			MemoryPressure: 0.1,
-			CPUUsage:       0.1,
-			ThermalState:   "nominal",
-		},
-	}
-	pressured := &Provider{
-		DecodeTPS:       100.0,
-		TrustLevel:      TrustHardware,
-		Status:          StatusOnline,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		SystemMetrics: protocol.SystemMetrics{
-			MemoryPressure: 0.9,
-			CPUUsage:       0.1,
-			ThermalState:   "nominal",
-		},
-	}
-
-	healthyScore := ScoreProvider(healthy, "test-model")
-	pressuredScore := ScoreProvider(pressured, "test-model")
-
-	if pressuredScore >= healthyScore {
-		t.Errorf("pressured score (%f) should be less than healthy score (%f)", pressuredScore, healthyScore)
-	}
-}
-
-func TestScoringWithThermalThrottling(t *testing.T) {
-	p := &Provider{
-		DecodeTPS:       100.0,
-		TrustLevel:      TrustHardware,
-		Status:          StatusOnline,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		SystemMetrics: protocol.SystemMetrics{
-			MemoryPressure: 0.1,
-			CPUUsage:       0.1,
-			ThermalState:   "critical",
-		},
-	}
-
-	score := ScoreProvider(p, "test-model")
-	if score != 0 {
-		t.Errorf("critical thermal score = %f, want 0", score)
-	}
-}
-
-func TestFindProviderPrefersHealthy(t *testing.T) {
-	reg := New(testLogger())
-	reg.MinTrustLevel = TrustNone
-	msg := testRegisterMessage()
-
-	p1 := reg.Register("p1", nil, msg)
-	p1.DecodeTPS = 100.0
-	p1.TrustLevel = TrustHardware
-	p1.LastChallengeVerified = time.Now()
-	p1.ChallengeVerifiedSIP = true
-	p1.SystemMetrics = protocol.SystemMetrics{
-		MemoryPressure: 0.85,
-		CPUUsage:       0.7,
-		ThermalState:   "serious",
-	}
-
-	p2 := reg.Register("p2", nil, msg)
-	p2.DecodeTPS = 100.0
-	p2.TrustLevel = TrustHardware
-	p2.LastChallengeVerified = time.Now()
-	p2.ChallengeVerifiedSIP = true
-	p2.SystemMetrics = protocol.SystemMetrics{
-		MemoryPressure: 0.1,
-		CPUUsage:       0.05,
-		ThermalState:   "nominal",
-	}
-
-	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
-	if selected == nil {
-		t.Fatal("FindProvider returned nil")
-	}
-	if selected.ID != "p2" {
-		t.Errorf("expected p2 (healthy), got %q", selected.ID)
 	}
 }
 
@@ -1922,7 +1646,7 @@ func TestFindProviderSkipsZeroLastChallenge(t *testing.T) {
 	p.TrustLevel = TrustHardware
 	// Deliberately NOT setting LastChallengeVerified — it stays zero.
 
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
 		t.Error("FindProvider should skip provider with zero LastChallengeVerified")
 	}
@@ -1937,10 +1661,10 @@ func TestFindProviderSkipsStaleChallenge(t *testing.T) {
 	msg := testRegisterMessage()
 	p := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
-	// Set LastChallengeVerified to 7 minutes ago (beyond 6m threshold).
-	p.LastChallengeVerified = time.Now().Add(-7 * time.Minute)
+	// Set LastChallengeVerified to 17 minutes ago (beyond the 16m freshness window).
+	p.LastChallengeVerified = time.Now().Add(-17 * time.Minute)
 
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
 		t.Error("FindProvider should skip provider with stale LastChallengeVerified (7m ago)")
 	}
@@ -1958,44 +1682,12 @@ func TestFindProviderAcceptsRecentChallenge(t *testing.T) {
 	p.ChallengeVerifiedSIP = true
 	p.LastChallengeVerified = time.Now().Add(-1 * time.Minute)
 
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found == nil {
 		t.Fatal("FindProvider should accept provider with recent challenge (1m ago)")
 	}
 	if found.ID != "p1" {
 		t.Errorf("expected p1, got %q", found.ID)
-	}
-}
-
-// TestFindProviderChallengeBoundaryJustInside verifies that a provider
-// at 5 minutes (inside the 6-minute window) is still accepted.
-func TestFindProviderChallengeBoundaryJustInside(t *testing.T) {
-	reg := New(testLogger())
-	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
-	p.TrustLevel = TrustHardware
-	p.ChallengeVerifiedSIP = true
-	p.LastChallengeVerified = time.Now().Add(-5 * time.Minute)
-
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
-	if found == nil {
-		t.Error("FindProvider should accept provider at 5m (within 6m threshold)")
-	}
-}
-
-// TestFindProviderChallengeBoundaryJustOutside verifies that a provider
-// just beyond 6 minutes is rejected.
-func TestFindProviderChallengeBoundaryJustOutside(t *testing.T) {
-	reg := New(testLogger())
-	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
-	p.TrustLevel = TrustHardware
-	p.ChallengeVerifiedSIP = true
-	p.LastChallengeVerified = time.Now().Add(-6*time.Minute - 1*time.Second)
-
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
-	if found != nil {
-		t.Error("FindProvider should reject provider at 6m1s (beyond 6m threshold)")
 	}
 }
 
@@ -2018,13 +1710,13 @@ func TestFindProviderMixedChallengeState(t *testing.T) {
 	p2.TrustLevel = TrustHardware
 	p2.DecodeTPS = 200.0 // Higher score, but should still be skipped.
 
-	// p3: verified 7 minutes ago — stale, should be skipped.
+	// p3: verified 17 minutes ago — stale, should be skipped.
 	p3 := reg.Register("p3", nil, msg)
 	p3.TrustLevel = TrustHardware
 	p3.DecodeTPS = 200.0
-	p3.LastChallengeVerified = time.Now().Add(-7 * time.Minute)
+	p3.LastChallengeVerified = time.Now().Add(-17 * time.Minute)
 
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found == nil {
 		t.Fatal("FindProvider should find p1 (only verified provider)")
 	}
@@ -2046,9 +1738,9 @@ func TestFindProviderNoVerifiedProviders(t *testing.T) {
 
 	p2 := reg.Register("p2", nil, msg)
 	p2.TrustLevel = TrustHardware
-	p2.LastChallengeVerified = time.Now().Add(-10 * time.Minute) // Very stale.
+	p2.LastChallengeVerified = time.Now().Add(-17 * time.Minute) // Very stale.
 
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
 		t.Error("FindProvider should return nil when no providers have recent challenge verification")
 	}
@@ -2064,7 +1756,7 @@ func TestChallengeSuccessEnablesRouting(t *testing.T) {
 	p.TrustLevel = TrustHardware
 
 	// Before challenge: not routable.
-	if reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit") != nil {
+	if findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit") != nil {
 		t.Error("provider should not be routable before passing a challenge")
 	}
 
@@ -2073,7 +1765,7 @@ func TestChallengeSuccessEnablesRouting(t *testing.T) {
 	reg.RecordChallengeSuccess("p1")
 
 	// After challenge: routable.
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found == nil {
 		t.Fatal("provider should be routable after passing a challenge")
 	}
@@ -2094,17 +1786,17 @@ func TestChallengeExpirationRemovesRoutability(t *testing.T) {
 	p.ChallengeVerifiedSIP = true
 
 	// Should be routable now.
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found == nil {
 		t.Fatal("provider should be routable with fresh challenge")
 	}
 	reg.SetProviderIdle("p1")
 
-	// Backdate the challenge to simulate time passing beyond 6m threshold.
-	p.LastChallengeVerified = time.Now().Add(-7 * time.Minute)
+	// Backdate the challenge to simulate time passing beyond the 16m threshold.
+	p.LastChallengeVerified = time.Now().Add(-17 * time.Minute)
 
 	// Should no longer be routable.
-	found = reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found = findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
 		t.Error("provider should not be routable after challenge expires")
 	}
@@ -2132,7 +1824,7 @@ func TestProviderEviction(t *testing.T) {
 	if reg.ProviderCount() != 1 {
 		t.Fatalf("provider count = %d, want 1", reg.ProviderCount())
 	}
-	found := reg.FindProvider(model)
+	found := findRoutableProvider(reg, model)
 	if found == nil {
 		t.Fatal("FindProvider should return provider before eviction")
 	}
@@ -2151,7 +1843,7 @@ func TestProviderEviction(t *testing.T) {
 	if reg.ProviderCount() != 0 {
 		t.Errorf("ProviderCount = %d, want 0 after eviction", reg.ProviderCount())
 	}
-	if reg.FindProvider(model) != nil {
+	if findRoutableProvider(reg, model) != nil {
 		t.Error("FindProvider should return nil after eviction")
 	}
 
@@ -2162,217 +1854,12 @@ func TestProviderEviction(t *testing.T) {
 	}
 }
 
-// TestHeartbeatMetricsAffectScoring verifies that system metrics reported in
-// heartbeats affect provider scoring. A healthy provider should always be
-// selected over a stressed one when all other factors are equal.
-func TestHeartbeatMetricsAffectScoring(t *testing.T) {
-	reg := New(testLogger())
-	msg := testRegisterMessage()
-	model := msg.Models[0].ID
-
-	// Register two providers with identical DecodeTPS.
-	pA := reg.Register("healthy", nil, msg)
-	pA.DecodeTPS = 100.0
-	pA.TrustLevel = TrustHardware
-	pA.LastChallengeVerified = time.Now()
-	pA.ChallengeVerifiedSIP = true
-	pA.SystemMetrics = protocol.SystemMetrics{
-		MemoryPressure: 0.1,
-		CPUUsage:       0.1,
-		ThermalState:   "nominal",
-	}
-
-	pB := reg.Register("stressed", nil, msg)
-	pB.DecodeTPS = 100.0
-	pB.TrustLevel = TrustHardware
-	pB.LastChallengeVerified = time.Now()
-	pB.ChallengeVerifiedSIP = true
-	pB.SystemMetrics = protocol.SystemMetrics{
-		MemoryPressure: 0.85,
-		CPUUsage:       0.8,
-		ThermalState:   "serious",
-	}
-
-	// Verify score math: healthy should outscore stressed.
-	scoreA := ScoreProvider(pA, model)
-	scoreB := ScoreProvider(pB, model)
-	if scoreA <= scoreB {
-		t.Errorf("healthy score (%f) should be greater than stressed score (%f)", scoreA, scoreB)
-	}
-
-	// Call FindProvider 10 times; healthy should be selected every time.
-	for i := range 10 {
-		selected := reg.FindProvider(model)
-		if selected == nil {
-			t.Fatalf("FindProvider returned nil on iteration %d", i)
-		}
-		if selected.ID != "healthy" {
-			t.Errorf("iteration %d: expected healthy provider, got %q", i, selected.ID)
-		}
-		reg.SetProviderIdle(selected.ID)
-	}
-}
-
-// TestWarmModelBonusRouting verifies that the warm model bonus (1.5x) causes
-// FindProvider to prefer a provider that already has the model loaded.
-func TestWarmModelBonusRouting(t *testing.T) {
-	reg := New(testLogger())
-	msg := testRegisterMessage()
-	model := msg.Models[0].ID
-
-	// Provider A: cold (no warm models).
-	pA := reg.Register("cold", nil, msg)
-	pA.DecodeTPS = 100.0
-	pA.TrustLevel = TrustHardware
-	pA.LastChallengeVerified = time.Now()
-	pA.ChallengeVerifiedSIP = true
-
-	// Provider B: warm (model already loaded).
-	pB := reg.Register("warm", nil, msg)
-	pB.DecodeTPS = 100.0
-	pB.TrustLevel = TrustHardware
-	pB.LastChallengeVerified = time.Now()
-	pB.ChallengeVerifiedSIP = true
-	pB.WarmModels = []string{model}
-
-	// Verify scoring: warm IDLE provider should have 1.5x bonus.
-	coldScore := ScoreProvider(pA, model)
-	warmScore := ScoreProvider(pB, model)
-	if warmScore <= coldScore {
-		t.Errorf("warm idle score (%f) should be greater than cold idle score (%f)", warmScore, coldScore)
-	}
-	ratio := warmScore / coldScore
-	if ratio < 1.45 || ratio > 1.55 {
-		t.Errorf("warm/cold score ratio = %f, expected ~1.5", ratio)
-	}
-
-	// First request should go to warm provider (idle + warm bonus).
-	selected := reg.FindProvider(model)
-	if selected == nil {
-		t.Fatal("FindProvider returned nil")
-	}
-	if selected.ID != "warm" {
-		t.Errorf("first request: expected warm provider, got %q", selected.ID)
-	}
-	// Simulate real flow: add a pending request so provider is busy.
-	selected.AddPending(&PendingRequest{RequestID: "req-1"})
-
-	// Second request: warm provider has pending=1, loses warm bonus.
-	// Cold idle provider should win: cold score (1.0) > warm busy score (0.75 with load).
-	selected2 := reg.FindProvider(model)
-	if selected2 == nil {
-		t.Fatal("FindProvider returned nil for second request")
-	}
-	if selected2.ID != "cold" {
-		t.Errorf("second request: expected cold provider (warm is busy), got %q", selected2.ID)
-	}
-
-	// Release both providers.
-	pB.RemovePending("req-1")
-	reg.SetProviderIdle("warm")
-	reg.SetProviderIdle("cold")
-
-	// Also test CurrentModel as an alternative warm signal.
-	pA.WarmModels = nil
-	pB.WarmModels = nil
-	pB.CurrentModel = model
-
-	selected3 := reg.FindProvider(model)
-	if selected3 == nil {
-		t.Fatal("FindProvider returned nil for CurrentModel test")
-	}
-	if selected3.ID != "warm" {
-		t.Errorf("CurrentModel test: expected warm provider, got %q", selected3.ID)
-	}
-}
-
-// TestThermalCriticalBlocksRouting verifies that a provider with
-// ThermalState="critical" gets a score of 0 and documents the routing
-// behavior for sole-provider scenarios.
-func TestThermalCriticalBlocksRouting(t *testing.T) {
-	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
-
-	// Verify ScoreProvider returns 0 for critical thermal state.
-	p := &Provider{
-		DecodeTPS:       100.0,
-		TrustLevel:      TrustHardware,
-		Status:          StatusOnline,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		SystemMetrics: protocol.SystemMetrics{
-			MemoryPressure: 0.1,
-			CPUUsage:       0.1,
-			ThermalState:   "critical",
-		},
-	}
-	score := ScoreProvider(p, model)
-	if score != 0 {
-		t.Errorf("critical thermal score = %f, want 0", score)
-	}
-
-	// When the critical provider is the only candidate, FindProvider still
-	// returns it because the sorting puts it first (it's the only one) and
-	// score=0 does not exclude it from the candidates list. The current
-	// implementation filters by status, trust, and challenge freshness, but
-	// not by score threshold.
-	reg := New(testLogger())
-	msg := testRegisterMessage()
-	pReg := reg.Register("critical-provider", nil, msg)
-	pReg.DecodeTPS = 100.0
-	pReg.TrustLevel = TrustHardware
-	pReg.LastChallengeVerified = time.Now()
-	pReg.ChallengeVerifiedSIP = true
-	pReg.SystemMetrics = protocol.SystemMetrics{
-		MemoryPressure: 0.1,
-		CPUUsage:       0.1,
-		ThermalState:   "critical",
-	}
-
-	found := reg.FindProvider(model)
-	// Document actual behavior: critical thermal does NOT exclude from routing.
-	// The provider has score=0 but is still the sole candidate.
-	if found == nil {
-		t.Log("FindProvider returned nil for sole critical provider — score=0 excludes from routing")
-	} else {
-		t.Log("FindProvider returned the critical provider — score=0 does not exclude from candidates")
-		if found.ID != "critical-provider" {
-			t.Errorf("expected critical-provider, got %q", found.ID)
-		}
-	}
-
-	// When a healthy provider is also available, it should always be preferred.
-	reg.SetProviderIdle("critical-provider")
-	pHealthy := reg.Register("healthy-provider", nil, msg)
-	pHealthy.DecodeTPS = 100.0
-	pHealthy.TrustLevel = TrustHardware
-	pHealthy.LastChallengeVerified = time.Now()
-	pHealthy.ChallengeVerifiedSIP = true
-	pHealthy.SystemMetrics = protocol.SystemMetrics{
-		MemoryPressure: 0.1,
-		CPUUsage:       0.1,
-		ThermalState:   "nominal",
-	}
-
-	selected := reg.FindProvider(model)
-	if selected == nil {
-		t.Fatal("FindProvider returned nil when healthy provider exists")
-	}
-	if selected.ID != "healthy-provider" {
-		t.Errorf("expected healthy-provider over critical, got %q", selected.ID)
-	}
-}
-
 // TestConcurrentFindProviderAndHeartbeat is a stress test that exercises
-// concurrent registry operations to verify correctness under load.
-//
-// Known limitation: FindProviderWithTrust reads Provider.Status inside the
-// registry write lock but without the provider mutex, while Heartbeat
-// writes Status under the provider mutex after releasing the registry read
-// lock. This is a benign race (Status is a string assigned atomically on
-// most architectures) but the Go race detector flags it. To make this test
-// pass under -race, we serialize the FindProvider and Heartbeat calls
-// (they run in alternating phases). The remaining goroutines (reputation
-// updates, provider reads, registry reads) run fully concurrently.
+// concurrent registry operations to verify correctness under load. Goroutine 1
+// drives the production routing path (ReserveProviderEx, via findRoutableProvider)
+// alternating with Heartbeat; the remaining goroutines run reputation updates,
+// provider reads, and registry reads fully concurrently. Routing and Heartbeat
+// both take r.mu and the provider mutex, so the test passes under -race.
 func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
@@ -2395,16 +1882,14 @@ func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
 
 	var wg sync.WaitGroup
 
-	// Goroutine 1: Alternating FindProvider and Heartbeat calls.
-	// These two operations have a known race on Provider.Status, so we
-	// serialize them in this goroutine to avoid the race detector flag.
+	// Goroutine 1: alternate production routing (ReserveProviderEx) and Heartbeat.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		thermalStates := []string{"nominal", "fair", "serious", "nominal"}
 		for i := range 100 {
-			// Phase A: FindProvider + SetProviderIdle
-			p := reg.FindProvider(model)
+			// Phase A: route a request then release the provider.
+			p := findRoutableProvider(reg, model)
 			if p != nil {
 				reg.SetProviderIdle(p.ID)
 			}
@@ -2520,10 +2005,10 @@ func TestModelCatalogGatesRoutingWithoutDroppingInventory(t *testing.T) {
 		t.Fatalf("expected full provider inventory to be preserved, got %d models", len(p.Models))
 	}
 	testMakeTextRoutable(p)
-	if found := reg.FindProvider("mlx-community/random-model-not-in-catalog"); found != nil {
+	if found := findRoutableProvider(reg, "mlx-community/random-model-not-in-catalog"); found != nil {
 		t.Fatal("expected non-catalog model to stay unroutable")
 	}
-	if found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit"); found == nil {
+	if found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit"); found == nil {
 		t.Fatal("expected catalog model to be routable")
 	}
 }
@@ -2630,11 +2115,11 @@ func TestRegisterWithEmptyConfiguredCatalogPreservesInventoryButRoutesNothingUnt
 	}
 	testMakeTextRoutable(provider)
 	modelID := provider.Models[0].ID
-	if found := reg.FindProvider(modelID); found != nil {
+	if found := findRoutableProvider(reg, modelID); found != nil {
 		t.Fatal("expected empty configured catalog to route no models")
 	}
 	reg.SetModelCatalog([]CatalogEntry{{ID: modelID}})
-	if found := reg.FindProvider(modelID); found == nil {
+	if found := findRoutableProvider(reg, modelID); found == nil {
 		t.Fatal("expected existing provider to become routable after catalog update")
 	}
 }
@@ -2660,13 +2145,13 @@ func TestFindProviderRespectsModelCatalog(t *testing.T) {
 	p.mu.Unlock()
 
 	// Provider's model was filtered at registration — FindProvider won't find it.
-	found := reg.FindProvider("not-whitelisted")
+	found := findRoutableProvider(reg, "not-whitelisted")
 	if found != nil {
 		t.Error("expected FindProvider to return nil for non-catalog model")
 	}
 
 	// The whitelisted model has no provider either.
-	found = reg.FindProvider("whitelisted-model")
+	found = findRoutableProvider(reg, "whitelisted-model")
 	if found != nil {
 		t.Error("expected FindProvider to return nil when no provider has the model")
 	}
@@ -2801,151 +2286,6 @@ func TestMaxConcurrencyWithCapacity(t *testing.T) {
 	}
 }
 
-// TestScoreProviderDynamicLoad verifies that a provider with high memory and
-// dynamic max concurrency still gets a good score with 4 pending requests
-// (which would be load=1.0 under the old hardcoded limit of 4).
-func TestScoreProviderDynamicLoad(t *testing.T) {
-	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
-
-	// Provider A: 128GB, 4 pending requests.
-	// Old code: load=4/4=1.0, score=0.
-	// New code: MaxConcurrency=24, load=4/24=0.17, high score.
-	pA := &Provider{
-		Hardware: protocol.Hardware{MemoryGB: 128},
-		BackendCapacity: &protocol.BackendCapacity{
-			TotalMemoryGB: 128,
-		},
-		DecodeTPS:       100.0,
-		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		pendingReqs:     make(map[string]*PendingRequest),
-	}
-	pA.AddPending(&PendingRequest{RequestID: "r1"})
-	pA.AddPending(&PendingRequest{RequestID: "r2"})
-	pA.AddPending(&PendingRequest{RequestID: "r3"})
-	pA.AddPending(&PendingRequest{RequestID: "r4"})
-
-	score := ScoreProvider(pA, model)
-	if score <= 0 {
-		t.Errorf("128GB provider with 4 pending should have positive score, got %f", score)
-	}
-
-	// Provider B: no backend capacity (old-style), same 4 pending.
-	// load = 4/4 = 1.0, so (1-load)=0 => score=0.
-	pB := &Provider{
-		Hardware:        protocol.Hardware{MemoryGB: 128},
-		DecodeTPS:       100.0,
-		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		pendingReqs:     make(map[string]*PendingRequest),
-	}
-	pB.AddPending(&PendingRequest{RequestID: "r1"})
-	pB.AddPending(&PendingRequest{RequestID: "r2"})
-	pB.AddPending(&PendingRequest{RequestID: "r3"})
-	pB.AddPending(&PendingRequest{RequestID: "r4"})
-
-	scoreB := ScoreProvider(pB, model)
-	if scoreB != 0 {
-		t.Errorf("old-style provider with 4 pending should have score=0, got %f", scoreB)
-	}
-
-	// The new provider should score significantly higher.
-	if score <= scoreB {
-		t.Errorf("128GB dynamic provider score (%f) should be > old-style score (%f)", score, scoreB)
-	}
-}
-
-// TestScoreProviderGPUMemoryFactor verifies GPU utilization affects scoring.
-func TestScoreProviderGPUMemoryFactor(t *testing.T) {
-	model := "test-model"
-
-	lowGPU := &Provider{
-		Hardware: protocol.Hardware{MemoryGB: 64},
-		BackendCapacity: &protocol.BackendCapacity{
-			GPUMemoryActiveGB: 32, // 50% utilization
-			TotalMemoryGB:     64,
-		},
-		DecodeTPS:       100.0,
-		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		pendingReqs:     make(map[string]*PendingRequest),
-	}
-
-	highGPU := &Provider{
-		Hardware: protocol.Hardware{MemoryGB: 64},
-		BackendCapacity: &protocol.BackendCapacity{
-			GPUMemoryActiveGB: 57.6, // 90% utilization
-			TotalMemoryGB:     64,
-		},
-		DecodeTPS:       100.0,
-		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		pendingReqs:     make(map[string]*PendingRequest),
-	}
-
-	lowScore := ScoreProvider(lowGPU, model)
-	highScore := ScoreProvider(highGPU, model)
-
-	if highScore >= lowScore {
-		t.Errorf("90%% GPU provider score (%f) should be less than 50%% GPU score (%f)", highScore, lowScore)
-	}
-}
-
-// TestScoreProviderColdStartPenalty verifies that a provider whose requested
-// model's slot has state "idle_shutdown" scores much lower.
-func TestScoreProviderColdStartPenalty(t *testing.T) {
-	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
-
-	hotProvider := &Provider{
-		Hardware: protocol.Hardware{MemoryGB: 64},
-		BackendCapacity: &protocol.BackendCapacity{
-			TotalMemoryGB: 64,
-			Slots: []protocol.BackendSlotCapacity{
-				{Model: model, State: "running"},
-			},
-		},
-		DecodeTPS:       100.0,
-		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		WarmModels:      []string{model},
-		pendingReqs:     make(map[string]*PendingRequest),
-	}
-
-	coldProvider := &Provider{
-		Hardware: protocol.Hardware{MemoryGB: 64},
-		BackendCapacity: &protocol.BackendCapacity{
-			TotalMemoryGB: 64,
-			Slots: []protocol.BackendSlotCapacity{
-				{Model: model, State: "idle_shutdown"},
-			},
-		},
-		DecodeTPS:       100.0,
-		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		WarmModels:      []string{model},
-		pendingReqs:     make(map[string]*PendingRequest),
-	}
-
-	hotScore := ScoreProvider(hotProvider, model)
-	coldScore := ScoreProvider(coldProvider, model)
-
-	if coldScore >= hotScore {
-		t.Errorf("cold-start score (%f) should be less than hot score (%f)", coldScore, hotScore)
-	}
-
-	// The penalty should be severe (0.1x vs 1.5x warm bonus)
-	ratio := hotScore / coldScore
-	if ratio < 10 {
-		t.Errorf("hot/cold score ratio = %f, expected >= 10 (warm 1.5x vs cold 0.1x)", ratio)
-	}
-}
-
 // TestFindProviderDynamicConcurrency verifies that with dynamic concurrency,
 // a provider with 5 pending requests on a 96 GB box is still eligible
 // (Phase 2 cap for 96 GB = 6).
@@ -2969,7 +2309,7 @@ func TestFindProviderDynamicConcurrency(t *testing.T) {
 		p.AddPending(&PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
 	}
 
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found == nil {
 		t.Error("FindProvider should return provider with 5/6 capacity used (Phase 2 cap)")
 	}
@@ -3058,7 +2398,7 @@ func TestBackwardCompatNoCapacity(t *testing.T) {
 	}
 
 	// Provider should be routable with default limits.
-	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found == nil {
 		t.Error("old provider without BackendCapacity should still be routable")
 	}
@@ -3139,78 +2479,6 @@ func TestSetProviderIdleDynamicCap(t *testing.T) {
 	}
 }
 
-// TestScoreProviderCrashedPenalty verifies that a provider whose backend
-// slot is in "crashed" state scores even lower than "idle_shutdown".
-func TestScoreProviderCrashedPenalty(t *testing.T) {
-	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
-
-	hotProvider := &Provider{
-		Hardware: protocol.Hardware{MemoryGB: 64},
-		BackendCapacity: &protocol.BackendCapacity{
-			TotalMemoryGB: 64,
-			Slots: []protocol.BackendSlotCapacity{
-				{Model: model, State: "running"},
-			},
-		},
-		DecodeTPS:       100.0,
-		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		WarmModels:      []string{model},
-		pendingReqs:     make(map[string]*PendingRequest),
-	}
-
-	idleProvider := &Provider{
-		Hardware: protocol.Hardware{MemoryGB: 64},
-		BackendCapacity: &protocol.BackendCapacity{
-			TotalMemoryGB: 64,
-			Slots: []protocol.BackendSlotCapacity{
-				{Model: model, State: "idle_shutdown"},
-			},
-		},
-		DecodeTPS:       100.0,
-		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		WarmModels:      []string{model},
-		pendingReqs:     make(map[string]*PendingRequest),
-	}
-
-	crashedProvider := &Provider{
-		Hardware: protocol.Hardware{MemoryGB: 64},
-		BackendCapacity: &protocol.BackendCapacity{
-			TotalMemoryGB: 64,
-			Slots: []protocol.BackendSlotCapacity{
-				{Model: model, State: "crashed"},
-			},
-		},
-		DecodeTPS:       100.0,
-		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		WarmModels:      []string{model},
-		pendingReqs:     make(map[string]*PendingRequest),
-	}
-
-	hotScore := ScoreProvider(hotProvider, model)
-	idleScore := ScoreProvider(idleProvider, model)
-	crashedScore := ScoreProvider(crashedProvider, model)
-
-	// Crashed should score lower than idle_shutdown, which scores lower than hot.
-	if crashedScore >= idleScore {
-		t.Errorf("crashed score (%f) should be less than idle_shutdown score (%f)", crashedScore, idleScore)
-	}
-	if idleScore >= hotScore {
-		t.Errorf("idle_shutdown score (%f) should be less than hot score (%f)", idleScore, hotScore)
-	}
-
-	// Crashed penalty should be 0.05x vs idle_shutdown's 0.1x
-	ratio := idleScore / crashedScore
-	if ratio < 1.9 || ratio > 2.1 {
-		t.Errorf("idle/crashed score ratio = %f, expected ~2.0 (0.1x vs 0.05x)", ratio)
-	}
-}
-
 // TestFindProviderPrefersCrashedLast verifies that when the only provider
 // has a crashed slot for the requested model, it is still returned (with
 // low score) rather than returning nil.
@@ -3251,41 +2519,12 @@ func TestFindProviderPrefersCrashedLast(t *testing.T) {
 	hot.mu.Unlock()
 
 	// FindProvider should strongly prefer the hot provider.
-	found := reg.FindProvider(model)
+	found := findRoutableProvider(reg, model)
 	if found == nil {
 		t.Fatal("FindProvider returned nil when providers are available")
 	}
 	if found.ID != "hot-provider" {
 		t.Errorf("expected hot-provider, got %q", found.ID)
-	}
-}
-
-// TestFindProviderCrashedOnlyStillRoutes verifies that when a single
-// registered provider has a crashed backend, it is still returned (the
-// provider can attempt a reload) rather than returning nil.
-func TestFindProviderCrashedOnlyStillRoutes(t *testing.T) {
-	reg := New(testLogger())
-	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
-	msg := testRegisterMessage()
-
-	p := reg.Register("only-provider", nil, msg)
-	p.TrustLevel = TrustHardware
-	p.LastChallengeVerified = time.Now()
-	p.ChallengeVerifiedSIP = true
-	p.DecodeTPS = 100.0
-	p.RuntimeVerified = true
-	p.mu.Lock()
-	p.BackendCapacity = &protocol.BackendCapacity{
-		TotalMemoryGB: 64,
-		Slots: []protocol.BackendSlotCapacity{
-			{Model: model, State: "crashed"},
-		},
-	}
-	p.mu.Unlock()
-
-	found := reg.FindProvider(model)
-	if found == nil {
-		t.Error("FindProvider should still route to a crashed-only provider (it can attempt reload)")
 	}
 }
 

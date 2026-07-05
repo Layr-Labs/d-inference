@@ -1,0 +1,285 @@
+package api
+
+// Follow-up coverage for the capacity-reject cooldown (PR #507 P2s):
+//   1. the generic (/v1/completions, /v1/messages) path records the ACCEPT at
+//      first content, so a long generic stream on a busy box keeps vouching
+//      for the pair while it sheds concurrent dispatches;
+//   2. cold 404 "model not loaded" misses strike (a box that 404s forever is
+//      a black hole) while the normal 404-then-load-then-serve lifecycle
+//      never trips (the accept resets the streak);
+//   3. an ALL-COOLED model surfaces as TRANSIENT capacity — a preflight 429
+//      with Retry-After and zero provider dispatches — not a structural
+//      "no providers" 503.
+// The half-open single-probe semantics are covered in
+// registry/capacity_cooldown_test.go (claim lifecycle + concurrency).
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
+// A box that cold-404s ("model not loaded") FOREVER with zero accepts is a
+// black hole and must trip; a box that 404s while lazily loading and then
+// SERVES (the normal lifecycle) must never trip — the accept is the safety.
+func TestCapacityCooldown404NotLoadedStrikes(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const model = "gemma-4-26b-8bit"
+	const notLoaded = "model 'gemma-4-26b-8bit' is not loaded on this provider"
+
+	// Normal lazy-load lifecycle: a few cold 404s, then the load completes and
+	// the box serves. The accept resets the streak every round — never trips.
+	lazy := makeRoutableProvider(t, reg, "p-lazy-load", model)
+	for round := 0; round < 4; round++ {
+		for i := 0; i < 3; i++ {
+			srv.noteInferenceError(lazy.ID, capacityTestPending(model, lazy.ID, round*10+i), http.StatusNotFound, notLoaded)
+		}
+		srv.noteInferenceSuccess(capacityTestPending(model, lazy.ID, round))
+	}
+	if reg.CapacityCooldownActive(lazy.ID, model) {
+		t.Fatal("404-then-load-then-serve lifecycle tripped the capacity cooldown")
+	}
+
+	// Black hole flavor: 404s forever, zero accepts — trips at the threshold.
+	stuck := makeRoutableProvider(t, reg, "p-never-loads", model)
+	for i := 0; i < 5; i++ {
+		srv.noteInferenceError(stuck.ID, capacityTestPending(model, stuck.ID, i), http.StatusNotFound, notLoaded)
+	}
+	if !reg.CapacityCooldownActive(stuck.ID, model) {
+		t.Fatal("a box that 404s 'not loaded' forever with zero accepts did not trip")
+	}
+
+	// A 404 whose message is NOT the capacity vocabulary (unknown model id — a
+	// request-shape error) never strikes, no matter how many arrive.
+	notFound := makeRoutableProvider(t, reg, "p-model-not-found", model)
+	for i := 0; i < 10; i++ {
+		srv.noteInferenceError(notFound.ID, capacityTestPending(model, notFound.ID, i), http.StatusNotFound, "model not found")
+	}
+	if reg.CapacityCooldownActive(notFound.ID, model) {
+		t.Fatal("request-shape 404 'model not found' tripped the capacity cooldown")
+	}
+}
+
+// The generic-path accept regression (P2 #1): a busy box serving a LONG
+// /v1/completions stream sheds 5 capacity rejects inside the window. The
+// stream's first content is an ACCEPT interleaved with the rejects, so the
+// pair must NEVER trip — before the fix the generic path recorded accepts
+// only at clean completion, so the in-flight stream could not vouch for the
+// box and the shed storm read as the zero-accepts black-hole signature.
+func TestCapacityCooldownGenericStreamAcceptPreventsFalseTrip(t *testing.T) {
+	// Crisp failure mode if the pair DOES trip: fast-shed 429 instead of a
+	// 120s queue hang. Both flags are read live per request.
+	t.Setenv("EIGENINFERENCE_QUEUE_BEFORE_SHED", "false")
+	t.Setenv("EIGENINFERENCE_COLD_DISPATCH", "false")
+
+	reg, _, ts := setupFailoverServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	model := "generic-accept-model"
+	const holdMarker = "GENERIC-HOLD"
+	const endMarker = "GENERIC-END"
+	release := make(chan struct{})
+	var chatServe atomic.Bool
+
+	script := func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, body []byte) {
+		if bytes.Contains(body, []byte(`"prompt"`)) {
+			// The long generic stream: first content immediately (the ACCEPT),
+			// then hold the stream open while the shed storm runs. In a
+			// goroutine — the script runs on the provider read loop, which must
+			// stay free to reject the concurrent chat dispatches.
+			go func() {
+				fp.sendContentChunk(ctx, req, model, holdMarker+" ")
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return
+				}
+				fp.sendContentChunk(ctx, req, model, endMarker)
+				fp.sendComplete(ctx, req, protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 2})
+			}()
+			return
+		}
+		if chatServe.Load() {
+			fp.serveFull(ctx, req, model, markerFor(fp.name))
+			return
+		}
+		fp.sendInferenceError(ctx, req, "token_budget_exhausted: request exceeds active token budget", http.StatusServiceUnavailable)
+	}
+	fp := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
+		Name: "provider-busy", Version: "0.7.2", DecodeTPS: 100,
+		Models: []failoverModelSpec{{ID: model}}, Script: script,
+	})
+
+	rejectOnce := func(n int) {
+		t.Helper()
+		status, body, err := postChat(ctx, ts.URL, "test-key", buildChatBody(t, model, false, nil))
+		if err != nil {
+			t.Fatalf("shed request %d: %v", n, err)
+		}
+		if status == http.StatusOK {
+			t.Fatalf("shed request %d unexpectedly served; body=%s", n, body)
+		}
+	}
+
+	// Rejects 1-2: the box is saturated and sheds.
+	rejectOnce(1)
+	rejectOnce(2)
+
+	// Start the LONG generic stream and read up to its first content — the
+	// coordinator records the ACCEPT at the commit, before relaying the chunk,
+	// so seeing the marker guarantees the accept has landed.
+	genBody := fmt.Sprintf(`{"model":%q,"prompt":"long generic stream","stream":true,"max_tokens":64}`, model)
+	genReq, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/completions", strings.NewReader(genBody))
+	if err != nil {
+		t.Fatalf("generic request: %v", err)
+	}
+	genReq.Header.Set("Authorization", "Bearer test-key")
+	genReq.Header.Set("Content-Type", "application/json")
+	genResp, err := http.DefaultClient.Do(genReq)
+	if err != nil {
+		t.Fatalf("generic request: %v", err)
+	}
+	defer genResp.Body.Close()
+	if genResp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(genResp.Body)
+		t.Fatalf("generic stream status = %d, want 200; body=%s", genResp.StatusCode, b)
+	}
+	genReader := bufio.NewReader(genResp.Body)
+	for {
+		line, err := genReader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("generic stream ended before first content: %v", err)
+		}
+		if strings.Contains(line, holdMarker) {
+			break
+		}
+	}
+
+	// Rejects 3-5 while the stream is STILL in flight: 5 total rejects inside
+	// the window — but the stream's first-content accept interleaved, so the
+	// post-accept streak is only 3 and the pair must not be cooled.
+	rejectOnce(3)
+	rejectOnce(4)
+	rejectOnce(5)
+
+	// The box frees up: the next chat request must route to it and serve. A
+	// falsely-tripped cooldown would fast-shed this with a 429 instead.
+	chatServe.Store(true)
+	status, body, err := postChat(ctx, ts.URL, "test-key", buildChatBody(t, model, true, nil))
+	if err != nil {
+		t.Fatalf("post-storm request: %v", err)
+	}
+	if status != http.StatusOK || !strings.Contains(body, markerFor("provider-busy")) {
+		t.Fatalf("busy-but-serving box was cooled by sheds during its long generic stream: status=%d body=%s", status, body)
+	}
+
+	// Sanity: every request above actually reached the provider (strikes and
+	// the accept were real, not admission-filtered away).
+	if got := fp.dispatchCount(); got != 7 {
+		t.Errorf("provider dispatches = %d, want 7 (2 rejects + generic + 3 rejects + serve)", got)
+	}
+
+	// Let the held stream finish cleanly.
+	close(release)
+	rest, _ := io.ReadAll(genResp.Body)
+	if !strings.Contains(string(rest), endMarker) {
+		t.Errorf("generic stream missing tail content after release; got: %s", string(rest))
+	}
+}
+
+// The all-cooled surfacing regression (P2 #4): when EVERY provider for a model
+// is capacity-cooled, the preflight must classify them as TRANSIENT capacity
+// rejections — a 429 with Retry-After and ZERO provider dispatches — not as
+// structural absence (a "no providers" 503). Replays the incident shape end to
+// end: black-hole boxes trip, then the next request is shed cleanly upstream.
+func TestCapacityCooldownAllCooledSurfaces429NotNoProvider(t *testing.T) {
+	// Threshold 2 so both pairs trip within two requests (read at registry
+	// construction inside setupFailoverServer); fast-shed + no cold-dispatch so
+	// the all-cooled preflight verdict surfaces as an immediate 429 rather
+	// than a queue spill (both read live per request).
+	t.Setenv("EIGENINFERENCE_CAPACITY_COOLDOWN_THRESHOLD", "2")
+	t.Setenv("EIGENINFERENCE_QUEUE_BEFORE_SHED", "false")
+	t.Setenv("EIGENINFERENCE_COLD_DISPATCH", "false")
+
+	reg, _, ts := setupFailoverServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	model := "all-cooled-model"
+	script := rejectScript("token_budget_exhausted: request exceeds active token budget", http.StatusServiceUnavailable)
+	pA := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
+		Name: "provider-a", Version: "0.7.2", DecodeTPS: 200,
+		Models: []failoverModelSpec{{ID: model}}, Script: script,
+	})
+	pB := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
+		Name: "provider-b", Version: "0.7.2", DecodeTPS: 100,
+		Models: []failoverModelSpec{{ID: model}}, Script: script,
+	})
+
+	// Drive the incident loop until the preflight sheds WITHOUT touching a
+	// provider: that is the all-cooled verdict. Each earlier warmup request
+	// burns dispatches on the rejecting pairs and accumulates their strikes.
+	var shedResp *http.Response
+	var shedBody string
+	for i := 0; i < 8; i++ {
+		before := pA.dispatchCount() + pB.dispatchCount()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions",
+			strings.NewReader(buildChatBody(t, model, false, nil)))
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			t.Fatalf("request %d unexpectedly served; body=%s", i, b)
+		}
+		if after := pA.dispatchCount() + pB.dispatchCount(); after == before {
+			// No provider was dispatched: the preflight itself shed this one.
+			shedResp, shedBody = resp, string(b)
+			break
+		}
+	}
+	if shedResp == nil {
+		t.Fatal("preflight never shed without dispatching — cooled pairs are not being counted as capacity rejections")
+	}
+
+	// The all-cooled verdict must read as TRANSIENT capacity: 429 +
+	// Retry-After + the rate-limit error shape — never a structural
+	// no-provider / model-unavailable 503.
+	if shedResp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("all-cooled preflight status = %d, want 429; body=%s", shedResp.StatusCode, shedBody)
+	}
+	if shedResp.Header.Get("Retry-After") == "" {
+		t.Errorf("all-cooled 429 missing Retry-After header")
+	}
+	if !strings.Contains(shedBody, "rate_limit_exceeded") || !strings.Contains(shedBody, "at capacity") {
+		t.Errorf("all-cooled shed body is not the capacity shape; body=%s", shedBody)
+	}
+	if strings.Contains(shedBody, "no_provider") || strings.Contains(shedBody, "model_unavailable") {
+		t.Errorf("all-cooled shed misclassified as structural absence; body=%s", shedBody)
+	}
+}

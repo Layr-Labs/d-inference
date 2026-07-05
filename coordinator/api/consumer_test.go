@@ -386,7 +386,7 @@ func TestStreamingE2E(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Upgrade provider to hardware trust and mark challenge as verified
-	// so it's eligible for routing (FindProviderWithTrust requires a
+	// so it's eligible for routing (routing requires a
 	// recent LastChallengeVerified).
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
@@ -532,7 +532,7 @@ func TestNonStreamingE2E(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Upgrade provider to hardware trust and mark challenge as verified
-	// so it's eligible for routing (FindProviderWithTrust requires a
+	// so it's eligible for routing (routing requires a
 	// recent LastChallengeVerified).
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
@@ -1802,7 +1802,7 @@ func TestStreamingChatReasoningTokensInUsage(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil)
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil, false)
 
 	body := rec.Body.String()
 	if !strings.Contains(body, `"reasoning_tokens":8`) {
@@ -1843,7 +1843,7 @@ func TestStreamingChatUsageOnlyFirstChunk(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, []string{firstChunk})
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, []string{firstChunk}, false)
 
 	body := rec.Body.String()
 	if !strings.Contains(body, `"reasoning_tokens":8`) {
@@ -1886,7 +1886,7 @@ func TestStreamingChatSingleDoneSignatureBeforeIt(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil)
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil, false)
 
 	body := rec.Body.String()
 	if got := strings.Count(body, "data: [DONE]"); got != 1 {
@@ -1946,7 +1946,7 @@ func TestStreamingChatSignatureRidesUsageChunk(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil)
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil, false)
 
 	body := rec.Body.String()
 	if got := strings.Count(body, "data: [DONE]"); got != 1 {
@@ -2211,8 +2211,9 @@ func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 	previousProvider.Mu().Unlock()
 
 	parsed := map[string]any{"model": desired}
-	fallbackModel, candidates, rejections, tooLarge, bestTTFT, hasTTFT, switched := srv.maybeFallbackAliasTTFT(
+	fallbackModel, candidates, rejections, tooLarge, bestTTFT, hasTTFT, switched := srv.maybeFallbackAlias(
 		parsed,
+		aliasFallbackTTFT,
 		publicModel,
 		desired,
 		100,
@@ -2253,8 +2254,8 @@ func TestMaybeFallbackAliasTTFTSkipsRejectedPrevious(t *testing.T) {
 	registerBuildsProvider(srv, "previous-fast-shed", previous)
 	parsed := map[string]any{"model": desired}
 
-	fallbackModel, _, _, _, _, _, switched := srv.maybeFallbackAliasTTFT(
-		parsed, publicModel, desired, 100, 128, ttftDeadline(100), registry.RequestTraits{}, false, nil)
+	fallbackModel, _, _, _, _, _, switched := srv.maybeFallbackAlias(
+		parsed, aliasFallbackTTFT, publicModel, desired, 100, 128, ttftDeadline(100), registry.RequestTraits{}, false, nil)
 
 	if switched || fallbackModel != desired || parsed["model"] != desired {
 		t.Fatalf("fallback switched to rejected previous: switched=%v fallback=%q parsed=%v", switched, fallbackModel, parsed)
@@ -2277,8 +2278,8 @@ func TestMaybeFallbackAliasCapacitySkipsRejectedPrevious(t *testing.T) {
 	registerBuildsProvider(srv, "previous-capacity-shed", previous)
 	parsed := map[string]any{"model": desired}
 
-	fallbackModel, _, _, _, _, _, switched := srv.maybeFallbackAliasCapacity(
-		parsed, publicModel, desired, 100, 128, registry.RequestTraits{}, false, nil)
+	fallbackModel, _, _, _, _, _, switched := srv.maybeFallbackAlias(
+		parsed, aliasFallbackCapacity, publicModel, desired, 100, 128, 0, registry.RequestTraits{}, false, nil)
 
 	if switched || fallbackModel != desired || parsed["model"] != desired {
 		t.Fatalf("capacity fallback switched to rejected previous: switched=%v fallback=%q parsed=%v", switched, fallbackModel, parsed)

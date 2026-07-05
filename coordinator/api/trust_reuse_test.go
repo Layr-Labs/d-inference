@@ -623,7 +623,7 @@ func TestAwaitTrustReuseGrantReturnsOnSettledSignal(t *testing.T) {
 }
 
 // TestAwaitTrustReuseGrantReturnsTrueOnHardware proves the success path: once the
-// fast-skip (or ACME) grants hardware, awaitTrustReuseGrant returns true so the
+// fast-skip grants hardware, awaitTrustReuseGrant returns true so the
 // mdmVerificationLoop skips the live MDM round-trip.
 func TestAwaitTrustReuseGrantReturnsTrueOnHardware(t *testing.T) {
 	srv, p, _ := trustReuseFastSkipProvider(t)
@@ -874,57 +874,7 @@ func mustList(t *testing.T, st store.Store) []store.ProviderTrustReuse {
 	return rows
 }
 
-// --- Round 2 FIX 4a: reconcile ACME after a fast-skip grant ---
-
-// TestReconcileACMEAfterFastSkipClearsUnboundFlag proves FIX 4a: when an MDM-reuse
-// fast-skip grants hardware while a connect-time ACME cert is stashed but never
-// bound (its SE-key binding can't complete), the unbound, unvalidated ACMEVerified
-// flag is cleared and the stale pending result discarded — so the attestation
-// report does not falsely claim acme_verified.
-func TestReconcileACMEAfterFastSkipClearsUnboundFlag(t *testing.T) {
-	srv, _ := trustReuseServer(t)
-	p := newTrustReuseProvider(t, srv, "prov-acme", "se-acme", "SER-AC")
-	// AttestationResult has no EncryptionPublicKey, so the ACME SE-key binding can
-	// never complete on retry (providerHasBoundEncryptionAttestation is false).
-	p.Mu().Lock()
-	p.ACMEVerified = true // optimistically set by applyACMETrust before binding
-	p.Mu().Unlock()
-	s := srv
-	s.stashPendingACME("prov-acme", &ACMEVerificationResult{Valid: true, SerialNumber: "SER-AC"})
-
-	s.reconcileACMEAfterFastSkip("prov-acme", p)
-
-	p.Mu().Lock()
-	acme := p.ACMEVerified
-	p.Mu().Unlock()
-	if acme {
-		t.Fatal("an unbound ACME result must not leave ACMEVerified=true after a fast-skip grant")
-	}
-	if s.hasPendingACME("prov-acme") {
-		t.Fatal("the stale unbound pending ACME result must be discarded")
-	}
-}
-
-// TestReconcileACMEAfterFastSkipNoPendingIsNoop proves reconcile is a no-op when no
-// ACME was stashed (so a genuinely-bound-and-granted ACME flag is left intact).
-func TestReconcileACMEAfterFastSkipNoPendingIsNoop(t *testing.T) {
-	srv, _ := trustReuseServer(t)
-	p := newTrustReuseProvider(t, srv, "prov-acme2", "se-acme2", "SER-AC2")
-	p.Mu().Lock()
-	p.ACMEVerified = true // simulate an already-bound+granted ACME
-	p.Mu().Unlock()
-
-	srv.reconcileACMEAfterFastSkip("prov-acme2", p)
-
-	p.Mu().Lock()
-	acme := p.ACMEVerified
-	p.Mu().Unlock()
-	if !acme {
-		t.Fatal("reconcile must not clear ACMEVerified when nothing is stashed (already bound)")
-	}
-}
-
-// --- Round 2 FIX 3 / FIX 4b: verifyChallengeResponse wiring (drain + ACME/signal) ---
+// --- Round 2 FIX 3: verifyChallengeResponse wiring (drain + settle signal) ---
 
 // fastSkipChallengeResp builds a fully-signed challenge response (challenge sig +
 // status sig so statusFieldsTrusted=true) that satisfies the fast-skip posture +
@@ -1025,10 +975,10 @@ func TestVerifyChallengeFastSkipGrantDrainsQueue(t *testing.T) {
 	}
 }
 
-// TestVerifyChallengeFastSkipMissSignalsSettled proves FIX 4b: when the fast-skip
-// MISSES (no reuse record) and ACME does not promote, verifyChallengeResponse fires
-// the challenge-settled signal so the mdmVerificationLoop stops deferring and runs
-// the full live MDM verify. The provider stays self_signed.
+// TestVerifyChallengeFastSkipMissSignalsSettled: when the fast-skip MISSES (no
+// reuse record), verifyChallengeResponse fires the challenge-settled signal so
+// the mdmVerificationLoop stops deferring and runs the full live MDM verify.
+// The provider stays self_signed.
 func TestVerifyChallengeFastSkipMissSignalsSettled(t *testing.T) {
 	logger := quietLogger()
 	st := store.NewMemory(store.Config{})
@@ -1054,18 +1004,18 @@ func TestVerifyChallengeFastSkipMissSignalsSettled(t *testing.T) {
 	p.AttestationResult.SerialNumber = "SER-MISS"
 	p.Mu().Unlock()
 
-	// No trust-reuse record seeded → fast-skip misses. No pending ACME → no promotion.
+	// No trust-reuse record seeded → fast-skip misses → no promotion.
 	nonce, ts := "nonce-miss", "2026-04-24T12:00:00Z"
 	srv.verifyChallengeResponse("prov-miss", p, &pendingChallenge{nonce: nonce, timestamp: ts},
 		fastSkipChallengeResp(t, nonce, ts, pubKey, binHash))
 
 	if lvl := p.GetTrustLevel(); lvl != registry.TrustSelfSigned {
-		t.Fatalf("no record + no ACME → provider must stay self_signed, got %q", lvl)
+		t.Fatalf("no reuse record → provider must stay self_signed, got %q", lvl)
 	}
 	select {
 	case <-p.ChallengeSettledChan():
 		// good — settled signal fired so the MDM loop proceeds to live verify.
 	default:
-		t.Fatal("a fast-skip miss with no ACME promotion must fire the challenge-settled signal (FIX 4b)")
+		t.Fatal("a fast-skip miss must fire the challenge-settled signal")
 	}
 }

@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const DEFAULT_COORD = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
+import { coordinatorUrl } from "@/lib/server/coordinator";
 
 export async function GET(req: NextRequest) {
-  const coordUrl = DEFAULT_COORD;
   const apiKey = req.headers.get("x-api-key") || "";
 
-  const res = await fetch(`${coordUrl}/v1/payments/usage`, {
+  const res = await fetch(`${coordinatorUrl()}/v1/payments/usage`, {
     headers: { ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
   });
   if (!res.ok) {

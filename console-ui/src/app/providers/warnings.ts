@@ -177,10 +177,10 @@ export function computeWarnings(
   ) {
     out.push({
       id: "mda_missing",
-      severity: "degrading",
-      title: "Apple Device Attestation incomplete",
+      severity: "info",
+      title: "Apple Device Attestation pending",
       detail:
-        "MDA proves to consumers that this is a real Apple device. Without it, some consumers will skip this machine.",
+        "This machine is hardware-trusted and earning at full priority — Apple Device Attestation does not affect routing. It's an extra Apple-signed identity proof that consumers can verify; it's earned automatically and reused across restarts. If it stays pending for a long time, keep the Mac awake and reachable so the coordinator can complete it.",
     });
   }
 

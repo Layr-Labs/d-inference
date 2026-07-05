@@ -1,3 +1,12 @@
+import {
+  asRecord,
+  asString,
+  asNumber,
+  asBoolean,
+  asStringArray,
+  compactObject,
+} from "@/lib/json";
+
 export interface ServedModel {
   id: string;
   providers: number;
@@ -63,12 +72,6 @@ export interface ServedModelFilterResult<T extends ServedModel> {
   deprecatedCount: number;
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 function catalogStatus(model: Record<string, unknown>): string {
   if (typeof model.status === "string" && model.status.trim()) {
     return model.status.trim();
@@ -77,30 +80,6 @@ function catalogStatus(model: Record<string, unknown>): string {
   return typeof metadata.status === "string" && metadata.status.trim()
     ? metadata.status.trim()
     : "active";
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function asNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function asBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
-}
-
-function asStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const strings = value.filter((item): item is string => typeof item === "string" && item.length > 0);
-  return strings.length > 0 ? strings : undefined;
-}
-
-function compactObject<T extends Record<string, unknown>>(value: T): T {
-  return Object.fromEntries(
-    Object.entries(value).filter(([, entry]) => entry !== undefined),
-  ) as T;
 }
 
 export function catalogDataFromResponse(payload: unknown): CatalogDataSummary {

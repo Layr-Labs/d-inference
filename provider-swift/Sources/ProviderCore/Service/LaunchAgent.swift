@@ -3,7 +3,9 @@
 /// The provider runs only after the user explicitly starts it (`darkbloom start`
 /// or the app's "Go Online"). It auto-starts at login (RunAtLoad) so a rebooted
 /// box re-attests without a manual start; crash recovery is delegated to the
-/// separate `WatchdogAgent`. `darkbloom stop` unloads it and keeps it stopped.
+/// separate `WatchdogAgent`. `darkbloom stop` unloads it AND persistently
+/// disables it (`launchctl disable`), so a reboot/re-login does not resurrect a
+/// provider the user explicitly stopped; `start` re-enables it.
 
 import Foundation
 
@@ -187,15 +189,32 @@ public enum LaunchAgent: Sendable {
 
     // MARK: - Stop
 
-    /// Stop the provider by unloading the launchd agent.
+    /// Stop the provider: unload the launchd agent AND persistently disable it.
     ///
-    /// If the service is not loaded this is a no-op.
+    /// `bootout` alone only deregisters the job from the current login session.
+    /// The plist stays in ~/Library/LaunchAgents (it holds the model selection
+    /// for `restart`), and launchd re-bootstraps everything in that directory at
+    /// the next login/reboot — so with RunAtLoad=true the provider would come
+    /// back even though the user explicitly stopped it. `launchctl disable`
+    /// writes a per-user override that survives reboots; `loadService()`
+    /// re-enables on the next `start`/`restart`.
+    ///
+    /// If the service is not loaded, the unload is a no-op but the disable
+    /// still applies (covers a stop issued after a crash or partial install).
     public static func stop() throws {
         if isLoaded() {
             try unloadService()
         }
         for legacyLabel in legacyLabels where isLoaded(label: legacyLabel) {
             try unloadService(label: legacyLabel)
+        }
+        // Disable every supported label: a not-yet-migrated legacy plist on
+        // disk would otherwise RunAtLoad under its old label at next login.
+        for serviceLabel in supportedLabels {
+            let result = LaunchctlControl.setEnabled(false, label: serviceLabel)
+            if !result.succeeded {
+                throw LaunchAgentError.disableFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
         }
     }
 
@@ -386,9 +405,11 @@ public enum LaunchAgent: Sendable {
     /// the separate `WatchdogAgent`, which waits out a grace period before
     /// relaunching (so it never races the updater) and honours `darkbloom stop`.
     ///
-    /// `ExitTimeOut = 600` gives the provider the same 10-minute window used by
-    /// `ProviderLoop.waitForInflightDrain()` to finish active inference before
-    /// launchd escalates `launchctl bootout` / logout shutdown to SIGKILL.
+    /// `ExitTimeOut = 660` gives the provider the 10-minute window used by
+    /// `ProviderLoop.waitForInflightDrain()` to finish active inference, plus a
+    /// 60s margin for post-drain teardown (outbound flush, model unloads),
+    /// before launchd escalates `launchctl bootout` / logout shutdown to
+    /// SIGKILL. Kept in sync with the CLI's `providerDrainTimeoutSeconds`.
     static func makeServicePlist(
         label: String,
         programArguments: [String],
@@ -404,7 +425,7 @@ public enum LaunchAgent: Sendable {
             "StandardErrorPath": logPath,
             "ProcessType": "Interactive",
             "Nice": -5,
-            "ExitTimeOut": 600,
+            "ExitTimeOut": 660,
         ]
 
         // launchd does NOT inherit the installing shell's environment, so any
@@ -423,6 +444,12 @@ public enum LaunchAgent: Sendable {
     private static func loadService() throws {
         let path = plistPath()
         let domain = "gui/\(getuid())"
+
+        // Clear any persistent disable left by `stop()` (launchctl disable
+        // survives reboots). Without this, bootstrap fails and RunAtLoad stays
+        // suppressed. Best-effort: if it fails while the service is actually
+        // disabled, the bootstrap below surfaces the error.
+        LaunchctlControl.setEnabled(true, label: label)
 
         // Bootstrap registers the service with launchd.
         let bootstrap = Process()
@@ -515,6 +542,7 @@ public enum LaunchAgentError: Error, CustomStringConvertible, Sendable {
     case bootstrapFailed(String)
     case bootoutFailed(String)
     case kickstartFailed(String)
+    case disableFailed(String)
     case notInstalled
 
     public var description: String {
@@ -525,6 +553,8 @@ public enum LaunchAgentError: Error, CustomStringConvertible, Sendable {
             return "launchctl bootout failed: \(detail)"
         case .kickstartFailed(let detail):
             return "launchctl kickstart failed: \(detail)"
+        case .disableFailed(let detail):
+            return "launchctl disable failed (the provider may auto-start again at next login): \(detail)"
         case .notInstalled:
             return "provider service is not installed; run `darkbloom start` first"
         }

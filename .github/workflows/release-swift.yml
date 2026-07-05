@@ -60,11 +60,15 @@ env:
   CLI_NAME: 'darkbloom'
   ENCLAVE_NAME: 'darkbloom-enclave'
   MIN_MACOS: '14.0'
-  # mlx-swift currently pins MLX 0.31.x. The .metallib must come from a wheel
-  # matching that ABI EXACTLY (patch-level skew can break Metal kernel
-  # loading at runtime). Source of truth: libs/mlx-swift/Source/Cmlx/mlx/mlx/version.h
-  # — bump both together.
-  MLX_PYTHON_PIN: 'mlx==0.31.1'
+  # The mlx.metallib (compiled Metal GPU kernels) is BUILT FROM SOURCE from the
+  # MLX fork pinned at libs/mlx-swift/Source/Cmlx/mlx — NOT fetched from a PyPI
+  # wheel. Building from source guarantees the GPU kernels match the exact fork
+  # commit the host C++ links against (incl. the resource-count trim and the M5
+  # _nax kernels) and removes the dependency on a published wheel (there is no
+  # mlx==0.32.0 on PyPI). The _nax kernels are only compiled when SDK >= 26.2
+  # AND deployment target >= 26.2 AND Metal >= 4.0 (see
+  # mlx/backend/metal/kernels/CMakeLists.txt), so we pin the deployment target.
+  MLX_METALLIB_DEPLOYMENT_TARGET: '26.2'
 
 jobs:
   resolve-env:
@@ -97,7 +101,7 @@ jobs:
   build-and-release:
     name: Build, sign, notarize, upload, register
     needs: [resolve-env]
-    runs-on: blacksmith-12vcpu-macos-26
+    runs-on: blacksmith-12vcpu-macos-latest
 
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
@@ -207,32 +211,88 @@ jobs:
             spm-v1-${{ runner.os }}-
 
       # ----------------------------------------------------------------------
-      # Fetch the mlx.metallib for the matching MLX version.
+      # Build mlx.metallib (compiled Metal GPU kernels) FROM SOURCE.
       #
-      # mlx-swift's Cmlx target does not auto-build .metal kernels via SwiftPM
-      # (see swift-migration-plan.md Phase 0). We ship the .metallib from the
-      # MLX Python wheel that matches the MLX C++ version pinned in the fork.
+      # mlx-swift's Cmlx target does not compile .metal kernels via SwiftPM, so
+      # we build them here with cmake from the exact fork commit at
+      # libs/mlx-swift/Source/Cmlx/mlx (the same source the host C++ links
+      # against). This guarantees the kernels match — including the _nax kernels
+      # — and needs no published mlx wheel. The result is cached on the mlx
+      # commit + toolchain, so it only rebuilds when the submodule or Xcode
+      # changes (~1 min on a cold build, instant on a cache hit).
       # ----------------------------------------------------------------------
 
-      - name: Fetch matching mlx.metallib
+      - name: Resolve metallib cache key
+        id: mlxkey
+        run: |
+          set -euo pipefail
+          MLX_SRC="libs/mlx-swift/Source/Cmlx/mlx"
+          test -f "$MLX_SRC/mlx/version.h" || { echo "::error::mlx submodule not checked out at $MLX_SRC"; exit 1; }
+          MLX_SHA=$(git -C "$MLX_SRC" rev-parse HEAD)
+          SDK=$(xcrun --sdk macosx --show-sdk-version)
+          XCODE=$(xcodebuild -version | head -1 | tr -d ' ')
+          KEY="metallib-v1-${MLX_SHA}-${XCODE}-sdk${SDK}-dt${MLX_METALLIB_DEPLOYMENT_TARGET}-jitoff"
+          echo "mlx_src=$MLX_SRC" >> "$GITHUB_OUTPUT"
+          echo "mlx_sha=$MLX_SHA" >> "$GITHUB_OUTPUT"
+          echo "mlx_sha_short=${MLX_SHA:0:12}" >> "$GITHUB_OUTPUT"
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          echo "Metallib cache key: $KEY"
+
+      - name: Restore metallib cache
+        id: metallib-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/metallib/mlx.metallib
+          key: ${{ steps.mlxkey.outputs.key }}
+
+      - name: Build mlx.metallib from source
+        if: steps.metallib-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          command -v cmake >/dev/null 2>&1 || brew install cmake
+          SRC="${{ steps.mlxkey.outputs.mlx_src }}"
+          BUILD="$RUNNER_TEMP/metallib-build"
+          OUT="$RUNNER_TEMP/metallib"
+          rm -rf "$BUILD"; mkdir -p "$OUT"
+          # JIT=OFF compiles the full kernel set into the metallib. Deployment
+          # target >= 26.2 + SDK >= 26.2 + Metal >= 4.0 is what gates the _nax
+          # kernels (mlx/backend/metal/kernels/CMakeLists.txt).
+          cmake -S "$SRC" -B "$BUILD" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$MLX_METALLIB_DEPLOYMENT_TARGET" \
+            -DMLX_METAL_JIT=OFF \
+            -DMLX_BUILD_TESTS=OFF -DMLX_BUILD_EXAMPLES=OFF \
+            -DMLX_BUILD_BENCHMARKS=OFF -DMLX_BUILD_PYTHON_BINDINGS=OFF
+          cmake --build "$BUILD" --target mlx-metallib -j"$(sysctl -n hw.ncpu)"
+          cp "$BUILD/mlx/backend/metal/kernels/mlx.metallib" "$OUT/mlx.metallib"
+          ls -lh "$OUT/mlx.metallib"
+
+      - name: Save metallib cache
+        if: steps.metallib-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/metallib/mlx.metallib
+          key: ${{ steps.mlxkey.outputs.key }}
+
+      - name: Verify metallib completeness (nax + gemv)
         id: metallib
         run: |
           set -euo pipefail
-          python3 -m venv /tmp/mlxvenv
-          /tmp/mlxvenv/bin/pip install --quiet --no-cache-dir "$MLX_PYTHON_PIN"
-          # mlx 0.31+ became a namespace package, so `mlx.__file__` is None;
-          # find the metallib by walking site-packages instead.
-          METALLIB=$(/tmp/mlxvenv/bin/python - <<'PY'
-          import os, sys, glob
-          for sp in sys.path:
-              for cand in glob.glob(os.path.join(sp, "mlx", "lib", "mlx.metallib")):
-                  print(cand); raise SystemExit(0)
-          raise SystemExit("mlx.metallib not found in venv site-packages")
-          PY
-          )
-          test -s "$METALLIB" || { echo "metallib not found at $METALLIB"; exit 1; }
-          echo "metallib=$METALLIB" >> "$GITHUB_OUTPUT"
-          ls -lh "$METALLIB"
+          MLIB="$RUNNER_TEMP/metallib/mlx.metallib"
+          test -s "$MLIB" || { echo "::error::metallib missing at $MLIB"; exit 1; }
+          # Count with `grep -c` (not `grep -q`): grep -q closes the pipe on the
+          # first match, which makes `strings` on this 150 MB+ file exit via
+          # SIGPIPE and trip `set -o pipefail` — a false negative.
+          NAX=$(strings "$MLIB" | grep -c "_nax" || true)
+          GEMV=$(strings "$MLIB" | grep -c "gemv" || true)
+          # _nax kernels are required for the M5 Neural Accelerator path. Their
+          # absence means the build used the wrong SDK/deployment target (see the
+          # gate in kernels/CMakeLists.txt). gemv guards against an incomplete
+          # (JIT) build. Fail loudly rather than ship a broken bundle.
+          [ "$NAX" -gt 0 ] || { echo "::error::metallib has no _nax kernels (SDK/deployment target < 26.2?)"; exit 1; }
+          [ "$GEMV" -gt 0 ] || { echo "::error::metallib missing gemv kernels (incomplete build?)"; exit 1; }
+          echo "metallib=$MLIB" >> "$GITHUB_OUTPUT"
+          echo "Metallib OK: size=$(ls -lh "$MLIB" | awk '{print $5}') nax_refs=$NAX gemv_refs=$GEMV"
 
       # ----------------------------------------------------------------------
       # Build (tests run by CI, not the release workflow).
@@ -241,11 +301,15 @@ jobs:
       - name: Inject release version into ProviderCore
         run: |
           set -euo pipefail
-          CURRENT=$(grep -o '"[^"]*"' provider-swift/Sources/ProviderCore/ProviderCore.swift | tr -d '"')
-          echo "Replacing ProviderCore.version: $CURRENT → $VERSION"
-          sed -i '' "s|public static let version = \"$CURRENT\"|public static let version = \"$VERSION\"|" \
-            provider-swift/Sources/ProviderCore/ProviderCore.swift
-          grep 'public static let version' provider-swift/Sources/ProviderCore/ProviderCore.swift
+          FILE=provider-swift/Sources/ProviderCore/ProviderCore.swift
+          echo "Setting ProviderCore.version → $VERSION"
+          # Target ONLY the version line. Do not grep every string literal: nearby
+          # comments contain quoted words ("crashed"/"reloading"/"idle") which made
+          # the old `grep -o '"..."'` capture multiple lines and break sed.
+          sed -i '' -E "s|(public static let version = )\"[^\"]*\"|\1\"${VERSION}\"|" "$FILE"
+          grep -n 'public static let version' "$FILE"
+          grep -q "public static let version = \"${VERSION}\"" "$FILE" \
+            || { echo "::error::version injection failed for $VERSION"; exit 1; }
 
       - name: Build provider-swift (release)
         working-directory: provider-swift
@@ -629,7 +693,7 @@ jobs:
 
           **Binary hash:**   \`${BINARY_HASH}\`
           **Bundle hash:**   \`${BUNDLE_HASH}\`
-          **Metallib hash:** \`${METALLIB_HASH}\` (\`${MLX_PYTHON_PIN}\`)
+          **Metallib hash:** \`${METALLIB_HASH}\` (built from mlx \`${{ steps.mlxkey.outputs.mlx_sha_short }}\`)
           **Signed by:**     \`${DEVELOPER_ID}\`
           **Notarized:**     yes
           **Min macOS:**     ${MIN_MACOS}

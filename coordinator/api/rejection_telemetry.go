@@ -104,6 +104,18 @@ func (s *Server) recordRejection(info rejectionInfo) {
 		}
 	}
 
+	// OR-uptime outcome for PRE-dispatch rejections. The dispatch-stage
+	// exhausted rejection is skipped here because dispatch.go run()'s tail already
+	// counts that request exactly once; every other (pre-dispatch) stage has no
+	// route-outcome terminal, so it contributes its single outcome here.
+	if info.stage != "dispatch" {
+		model := info.resolvedModel
+		if model == "" {
+			model = info.requestedModel
+		}
+		s.recordRequestOutcome(model, orUptimeClassForRejection(info.httpStatus))
+	}
+
 	// Seed the counterfactual from whatever the caller already computed.
 	rec.CandidateCount = info.candidateCount
 	rec.CapacityRejections = info.capacityRejections

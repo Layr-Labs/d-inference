@@ -49,13 +49,13 @@ public func hashFile(atPath path: String) -> String? {
     }
 
     let digest = hasher.finalize()
-    return digest.map { String(format: "%02x", $0) }.joined()
+    return digest.hexString
 }
 
 /// Compute SHA-256 of a byte buffer, returning the hex digest.
 public func sha256Hex(_ data: Data) -> String {
     let digest = SHA256.hash(data: data)
-    return digest.map { String(format: "%02x", $0) }.joined()
+    return digest.hexString
 }
 
 /// Compute a deterministic SHA-256 fingerprint over multiple files.
@@ -86,7 +86,7 @@ public func hashFilesSorted(_ paths: [String]) -> String? {
     }
 
     let digest = finalHasher.finalize()
-    return digest.map { String(format: "%02x", $0) }.joined()
+    return digest.hexString
 }
 
 // MARK: - Metallib hashing

@@ -17,10 +17,20 @@ func mergeInferenceRouteOutcome(dst *InferenceRouteOutcome, src *InferenceRouteO
 	if src.ErrorClass != "" {
 		dst.ErrorClass = src.ErrorClass
 	}
+	if src.ErrorReason != "" {
+		dst.ErrorReason = src.ErrorReason
+	}
 	if src.PromptTokens != 0 {
 		dst.PromptTokens = src.PromptTokens
 	}
-	if src.CompletionTokens != 0 {
+	// CompletionTokensSet force-writes the count even when 0 (terminal cancel/
+	// error/timeout rows deliver 0 tokens and must persist 0, not be skipped as a
+	// zero-value). The flag is sticky so a later commit/latency update with the
+	// default (unset) flag cannot un-set an explicitly recorded 0.
+	if src.CompletionTokensSet {
+		dst.CompletionTokens = src.CompletionTokens
+		dst.CompletionTokensSet = true
+	} else if src.CompletionTokens != 0 {
 		dst.CompletionTokens = src.CompletionTokens
 	}
 	if src.ReasoningTokens != 0 {
@@ -77,6 +87,7 @@ func applyInferenceRouteOutcomeToRecord(rec *InferenceRouteRecord, outcome Infer
 	rec.FinalStatus = outcome.FinalStatus
 	rec.ErrorCode = outcome.ErrorCode
 	rec.ErrorClass = outcome.ErrorClass
+	rec.ErrorReason = outcome.ErrorReason
 	rec.PromptTokens = outcome.PromptTokens
 	rec.CompletionTokens = outcome.CompletionTokens
 	rec.ReasoningTokens = outcome.ReasoningTokens

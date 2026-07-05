@@ -4,3 +4,7 @@
 [submodule "libs/mlx-swift-lm"]
 	path = libs/mlx-swift-lm
 	url = https://github.com/Layr-Labs/mlx-swift-lm.git
+[submodule "libs/mlx"]
+	path = libs/mlx
+	url = https://github.com/Layr-Labs/mlx.git
+	branch = darkbloom-base

@@ -418,11 +418,7 @@ public final class TelemetryClient: @unchecked Sendable {
         while base.hasSuffix("/") {
             base = String(base.dropLast())
         }
-        if base.hasPrefix("wss://") {
-            base = "https://" + base.dropFirst("wss://".count)
-        } else if base.hasPrefix("ws://") {
-            base = "http://" + base.dropFirst("ws://".count)
-        }
+        base = WebSocketURLScheme.toHTTP(base)
         if base.hasSuffix("/ws/provider") {
             base = String(base.dropLast("/ws/provider".count))
         }

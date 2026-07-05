@@ -2,9 +2,54 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 )
+
+// TestMemoryGetMDAChainBySerial_NotShadowedByNewerEmptyRow is the durability fix
+// for the MDA-reuse race: a reconnect creates a new row (fresh provider id) that
+// can be persisted with an empty chain before the chain is reattached. A plain
+// by-serial lookup returns that newer empty row and shadows a still-valid chain
+// from the prior connection. GetMDAChainBySerial must look past empty rows.
+func TestMemoryGetMDAChainBySerial_NotShadowedByNewerEmptyRow(t *testing.T) {
+	st := NewMemory(Config{})
+	ctx := context.Background()
+	now := time.Now()
+	chain, _ := json.Marshal([][]byte{[]byte("leaf-der")})
+
+	// Prior connection earned + persisted the chain.
+	if err := st.UpsertProvider(ctx, ProviderRecord{
+		ID: "sess-old", SerialNumber: "SER-1", LastSeen: now.Add(-time.Minute),
+		MDAVerified: true, MDACertChain: chain,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Reconnect: newer row, same serial, empty chain (not reattached yet).
+	if err := st.UpsertProvider(ctx, ProviderRecord{
+		ID: "sess-new", SerialNumber: "SER-1", LastSeen: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The plain serial index now points at the newer empty row...
+	if rec, _ := st.GetProviderBySerial(ctx, "SER-1"); rec == nil || len(rec.MDACertChain) != 0 {
+		t.Fatalf("precondition: expected serial index to point at the empty newer row")
+	}
+	// ...but the chain-aware lookup recovers the prior chain.
+	got, err := st.GetMDAChainBySerial(ctx, "SER-1")
+	if err != nil {
+		t.Fatalf("GetMDAChainBySerial: %v", err)
+	}
+	if string(got) != string(chain) {
+		t.Fatalf("GetMDAChainBySerial = %q, want the prior non-empty chain %q", got, chain)
+	}
+
+	// No chain for an unknown serial.
+	if got, err := st.GetMDAChainBySerial(ctx, "SER-NONE"); err != nil || got != nil {
+		t.Fatalf("expected (nil,nil) for a serial with no chain, got (%q,%v)", got, err)
+	}
+}
 
 func TestMemoryListProvidersByAccount(t *testing.T) {
 	st := NewMemory(Config{})

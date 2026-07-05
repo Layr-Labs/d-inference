@@ -7,24 +7,29 @@ Darkbloom is a decentralized private inference network for Apple Silicon Macs. C
 ```
 coordinator/          Go control plane (packages live at top level, not internal/)
 ├── cmd/coordinator/  main service entrypoint
-├── api/              HTTP + WebSocket handlers (consumer.go, provider.go, billing_handlers.go, device_auth.go, invite_handlers.go, release_handlers.go, enroll.go, stats.go, server.go)
+├── api/              HTTP + WebSocket handlers (consumer.go, provider.go, billing_handlers.go, device_auth.go, invite_handlers.go, release_handlers.go, enroll.go, stats.go, server.go, chunk_key_cache.go, types/)
+├── apns/             APNs-push code-identity attestation
 ├── attestation/      Secure Enclave + MDA attestation verification
 ├── auth/             Privy JWT verification + user provisioning
-├── billing/          Stripe, Solana USDC deposits, referral system
-├── e2e/              End-to-end encryption (X25519 key exchange)
+├── billing/          Stripe (deposits + Connect payouts), referral system
+├── config/           AppConfig aggregation of per-package configs
+├── env/              Shared env-var helpers/constants
 ├── mdm/              MicroMDM integration for device attestation
-├── payments/         Internal ledger, pricing tables, payout tracking
-├── protocol/         WebSocket message types shared with provider
+├── payments/         Internal ledger, pricing tables, base rewards
+├── profilesign/      CMS-signing of .mobileconfig enrollment profiles
+├── protocol/         WebSocket message types shared with provider (type_scan.go: single-parse frame decode)
 ├── ratelimit/        Rate limiting
-├── registry/         Provider registry, queueing, routing, reputation, token-budget admission
+├── registry/         Provider registry, queueing, routing, reputation, token-budget admission,
+│                     warm-pool controller, two-lane provider WS writer (provider_writer.go), routingsim/
 ├── saferun/          Panic-safe goroutine runners
+├── stateexport/      Consistent encrypted archive of MicroMDM (+ legacy step-ca) state (migration)
 ├── store/            Persistence (in-memory or Postgres)
-├── telemetry/        Datadog DogStatsD metrics
-├── datadog/          Dev dashboard JSON definitions
-└── internal/e2e/     Coordinator-scoped integration tests
+├── telemetry/        Telemetry event emitter (process logs + Datadog forwarding)
+├── datadog/          Datadog APM / DogStatsD / Logs API client
+└── internal/e2e/     End-to-end encryption (X25519 key exchange) helpers + tests
 
 e2e/                  System-level E2E testing framework
-├── integration_test.go  12 E2E tests (streaming, billing, encryption, attestation, etc.)
+├── integration_test.go  14 E2E tests (streaming, billing, encryption, attestation, etc.)
 ├── profile_test.go      latency profiling tests
 ├── benchmark_test.go    load benchmarks (posts markdown to PR comments)
 └── testbed/             shared test harness (coordinator/provider lifecycle, load generator, assertions)
@@ -32,30 +37,38 @@ e2e/                  System-level E2E testing framework
 provider-swift/       Swift provider CLI for Apple Silicon Macs
 ├── Sources/
 │   ├── ProviderCore/                  shared library (protocol, hardware, crypto, security, inference, coordinator client, scheduling, server, telemetry, model downloads, attestation)
-│   ├── ProviderCoreFoundation/        Linux-buildable model manifests, scanner, hashing, publish-safe code
-│   ├── darkbloom/                     CLI executable (serve, start, stop, status, doctor, models, login, logout, benchmark, update, verify)
+│   ├── ProviderCoreFoundation/        Linux-buildable model manifests, scanner, hashing, template render check, publish-safe code
+│   ├── darkbloom/                     CLI executable (start, stop, restart, status, doctor, models, local, login, logout, benchmark, update, verify, enroll, logs, ...)
 │   ├── darkbloom-publish/             registry manifest builder for the publish workflow
-│   └── darkbloom-enclave-cli/         Secure Enclave attestation/sign helper
+│   ├── darkbloom-enclave-cli/         Secure Enclave attestation/sign helper
+│   └── ProviderBenchmark*, kv-*/      benchmark + KV-cache self-test executables
 └── Tests/
 
 console-ui/           Next.js 16 / React 19 frontend (chat, billing, models)
-├── src/app/          Pages: chat (/), billing, models, stats, providers, settings, link, api-console, earn
-├── src/app/api/      Proxy routes: chat, images, transcribe, auth/keys, payments/*, invite, models, health, pricing
+├── src/app/          Pages: chat (/), billing, models, stats, providers, settings, link, api-console, earn, login
+├── src/app/api/      Proxy routes: chat, auth/keys, keys, payments/*, invite, models, health, pricing, stats, telemetry, attestation, device, me, ...
 ├── src/components/   Chat UI, sidebar, top bar, trust badges, invite banner, verification panel
-├── src/lib/          API client (api.ts), Zustand store (store.ts)
-├── src/hooks/        Auth (useAuth.ts), toast notifications (useToast.ts)
-└── proxy.ts          Next.js 16 proxy (replaces middleware.ts)
+├── src/lib/          API client (src/lib/api/), Zustand store (store.ts)
+├── src/hooks/        Auth (useAuth.ts), toast notifications (useToast.ts), chat streaming (useChatStream.ts)
+└── src/proxy.ts      Next.js 16 proxy (replaces middleware.ts)
+
+admin-ui/             Next.js 16 internal read-only ops dashboard (SELECT-only queries against the
+                      prod read replica; Basic Auth via src/proxy.ts; has vitest tests, not in CI)
+
+landing/              Static landing page (index.html, earn calculator, network stats)
+
+deploy/               Infra config: gcp/ (Cloud Build + VM bootstrap), environments/ (dev/prod env),
+                      datadog/ (dashboard JSON), provider-fleet/ (fleet update helper)
 
 scripts/
 ├── install.sh        curl one-liner installer (fetches release, verifies SHA-256 + code signature)
 ├── admin.sh          Admin CLI (Privy auth, release mgmt, API calls)
 ├── publish-model.sh  Model registry publish workflow
-├── deploy-acme.sh    nginx/step-ca helper
-├── fetch-metallib.sh MLX metallib fetcher
+├── fetch-metallib.sh MLX metallib builder (cmake from libs/mlx-swift source)
 ├── smoke-dev.sh      Dev-coordinator smoke test
-└── entitlements.plist Hardened Runtime entitlements (hypervisor, network)
+└── entitlements.plist Hardened Runtime entitlements (network, keychain)
 
-docs/                 Architecture docs, deploy runbook, MDM/ACME notes, threat model
+docs/                 Architecture docs, deploy runbook, MDM notes, threat model
 .github/workflows/    CI (ci.yml), integration tests (integration.yml), Swift release (release-swift.yml),
                       model registration (register-model.yml), threat model review (threat-model-review.yml)
 ```
@@ -83,7 +96,11 @@ swift build -c release
 ```
 
 The Swift package depends on `../libs/mlx-swift` and `../libs/mlx-swift-lm`
-(both submodules).
+(git submodules). `scripts/fetch-metallib.sh` (and the release workflow)
+build `mlx.metallib` from the MLX source **nested inside mlx-swift** —
+`libs/mlx-swift/Source/Cmlx/mlx`, the tree the Cmlx target actually compiles
+against — NOT from the top-level `libs/mlx` submodule; updating `libs/mlx`
+alone does not change the generated kernels.
 
 ### Console UI (Next.js 16)
 ```bash
@@ -116,11 +133,11 @@ go test ./e2e/... -run TestBenchmark -v    # load benchmarks
    - ..."
    ```
 4. **Push** the commit and tag: `git push origin master --tags`
-5. The Swift release workflow (`.github/workflows/release-swift.yml`) is triggered by tags shaped `vX.Y.Z-swift[.N]`.
+5. The Swift release workflow (`.github/workflows/release-swift.yml`) is triggered by tags shaped `vX.Y.Z` (plus legacy `vX.Y.Z-swift[.N]`); dev/prod routing is by tag shape (e.g. `vX.Y.Z-dev.N` targets dev).
 
 ## Deploying
 
-Full deploy runbook: **[docs/coordinator-deploy-runbook.md](docs/coordinator-deploy-runbook.md)**
+Full deploy runbook: **[docs/operations/coordinator-deploy.md](docs/operations/coordinator-deploy.md)**
 
 Covers coordinator deploy, provider CLI bundling, and install.sh updates.
 
@@ -144,13 +161,13 @@ curl https://api.darkbloom.dev/health
 ecloud compute app logs d-inference
 ```
 
-Deploy time: ~5-7 minutes. Env vars/secrets are managed via EigenCloud KMS — see `docs/coordinator-deploy-runbook.md` for the full list.
+Deploy time: ~5-7 minutes. Env vars/secrets are managed via EigenCloud KMS — see `docs/operations/coordinator-deploy.md` for the full list.
 
 ### Coordinator (dev, Google Cloud)
 
-The dev coordinator runs on GCP (project `sepolia-ai`) — separate domain (`api.dev.darkbloom.xyz`), separate R2 bucket (`d-inf-app-dev`), **same** trust level as prod (`MIN_TRUST=hardware`, full MDM + step-ca stack). Mainnet Solana with a dev-only BIP39 mnemonic. **Never** used for prod traffic. Full wiring in [docs/dev-environment.md](docs/dev-environment.md).
+The dev coordinator runs on GCP (project `sepolia-ai`) — separate domain (`api.dev.darkbloom.xyz`), separate R2 bucket (`d-inf-app-dev`), **same** trust level as prod (`MIN_TRUST=hardware`, full MDM stack), and a dev-only BIP39 mnemonic (never prod's). **Never** used for prod traffic. Full wiring in [docs/operations/dev-environment.md](docs/operations/dev-environment.md).
 
-Shape: GCE Ubuntu VM + Docker + systemd (coordinator + step-ca + MicroMDM need persistent disk state), Cloud SQL Postgres via cloud-sql-proxy, **Vercel**-hosted console UI, Cloud Build auto-deploys on master push. ~2–4 min coordinator upgrades.
+Shape: GCE Ubuntu VM + Docker + systemd (coordinator + MicroMDM need persistent disk state), Cloud SQL Postgres via cloud-sql-proxy, **Vercel**-hosted console UI, Cloud Build auto-deploys on master push. ~2–4 min coordinator upgrades.
 
 ### Provider bundle
 
@@ -163,18 +180,18 @@ CI (`.github/workflows/release-swift.yml`) builds, signs, notarizes, and uploads
 | Coordinator host | EigenCloud app `d-inference` | GCE VM `d-inference-dev` (us-central1-a, Ubuntu + Docker + systemd) |
 | Console UI | EigenCloud app | Vercel (separate dev project, `NEXT_PUBLIC_COORDINATOR_URL=https://api.dev.darkbloom.xyz`) |
 | Domain | `api.darkbloom.dev` | `api.dev.darkbloom.xyz` |
-| TLS | Caddy + EigenCloud-injected certs | Caddy in-container (step-ca or Let's Encrypt ACME, VM :443) |
+| TLS | Caddy + EigenCloud-injected certs | Caddy in-container (Let's Encrypt ACME, VM :443) |
 | Database | AWS RDS PostgreSQL (managed) | Cloud SQL Postgres 16 `d-inference-dev-db` via cloud-sql-proxy sidecar |
 | Persistent storage | `/mnt/disks/userdata` (EigenCloud blue-green) | GCE persistent disk `d-inference-dev-data`, 30 GB, mounted at `/mnt/disks/userdata` |
 | Logs | `ecloud compute app logs d-inference` | `gcloud logging read ...` (VM + Cloud SQL in Cloud Logging) |
 | Release bucket | R2 `d-inf-app` | R2 `d-inf-app-dev` |
-| Trust level | `hardware` (MDM enrollment required) | `hardware` (same — full MDM + step-ca stack) |
+| Trust level | `hardware` (MDM enrollment required) | `hardware` (same — full MDM stack) |
 | Provider install | `curl -fsSL https://api.darkbloom.dev/install.sh \| bash` | `curl -fsSL https://api.dev.darkbloom.xyz/install.sh \| bash` |
 
 ## Key Design Decisions
 
 - **Token-budget routing**: Providers report real token budget usage (active tokens, max potential, EWMA decode TPS) in heartbeats. Coordinator uses engine-reported capacity for admission, with fleet median TPS as fallback. Speculative TTFT dispatch sends to a backup provider at 50% of the deadline; first token wins, loser is cancelled. Early 429 with Retry-After for OpenRouter compatibility.
-- **Provider scoring**: decode TPS × trust multiplier × reputation × warm model bonus × health factor. Health factor uses live system metrics (memory pressure, CPU usage, thermal state) reported in heartbeats.
+- **Provider selection**: cost-based, not multiplicative scoring — candidates are ranked by estimated completion cost in ms (effective decode TPS degraded by current batch load) plus penalties for queue depth, pending requests, slot state, and live system metrics from heartbeats (memory pressure, CPU, GPU utilization, thermal state); near-tie candidates are spread randomly (`registry/scheduler.go`).
 - **Continuous batching**: All concurrent requests merged into one batched forward pass per step via MLX-Swift BatchedEngine. Near-linear throughput scaling (B=4/B=1 = 3.8x on Qwen, 2.9x on Gemma MoE). Temperature=0 uses vectorized greedy fast path.
 - **Request cancellation**: In-flight inference requests are tracked by request_id with cancellation state. On coordinator disconnect, in-flight requests are cancelled so generation stops promptly.
 - **Idle GPU timeout**: Loaded model state is released after 1 hour of no requests to free GPU memory. Lazy-reloaded when the next request arrives. Coordinator can also push `load_model` messages to pre-warm providers.
@@ -182,13 +199,12 @@ CI (`.github/workflows/release-swift.yml`) builds, signs, notarizes, and uploads
 - **Attestation chain**: Secure Enclave P-256 key (persistent, keychain access group bound) → signs attestation blob → coordinator verifies signature (self_signed) → MDM SecurityInfo cross-check (hardware trust) → Apple Enterprise Attestation Root CA signs device cert chain via MDA (mda_verified). Full chain exposed at `GET /v1/providers/attestation` for user-side verification.
 - **Protocol symmetry**: `provider-swift/Sources/ProviderCore/Protocol/` and `coordinator/protocol/messages.go` define the same WebSocket message types. Changes to one must be mirrored in the other.
 - **Model registry**: Coordinator registry data is DB-backed and points to R2 manifests. The Swift provider downloads the files listed in the manifest from `https://models.darkbloom.ai` and verifies per-file plus aggregate SHA-256. Do not reintroduce hardcoded model catalog lists.
-- **Billing**: Solana USDC deposits verified on-chain. Coordinator wallet derived from BIP39 mnemonic via SLIP-0010 (m/44'/501'/0'/0'). Stripe wired for payouts. Referral system gives referrers a share of platform fees.
+- **Billing**: Stripe Checkout deposits credit an internal micro-USD ledger (`coordinator/payments`); Stripe Connect handles provider payouts/withdrawals. Referral system gives referrers a share of platform fees; base rewards live in `payments/baserewards`. (Solana deposits/payouts were removed; the BIP39 mnemonic env var now only derives the coordinator's X25519 encryption key.)
 - **Request queue**: When all providers are busy, requests queue with 120s timeout. Frontend shows "providers are busy" on 503. 429 with Retry-After returned when fleet is at capacity.
 - **Pre-content failover**: The dispatch loop does NOT commit to a provider on boilerplate chunks (role-only delta, `response.created`) — only on the first content-bearing chunk. A provider that errors or disconnects before producing content is retried invisibly on another provider (`status:retry_precontent`); in-band SSE errors are only possible after real content has flowed (`inference.in_band_error` metric). Repeated 5xx from a (provider, model) pair triggers a 5-min routing cooldown (2 in 60s, `registry/error_cooldown.go`); retries soft-prefer a different provider binary version. The coordinator also normalizes tool JSON-Schemas (`api/toolschema.go`, mirror of the Swift `ToolSchemaNormalization`) before encryption so lagging providers never see template-crashing shapes, and routes tool-bearing requests only to providers ≥ the `tools` capability floor (0.6.3) whose models don't report `template_render_ok=false` (set by the provider's scan-time chat-template render self-check, `TemplateRenderCheck`).
 - **Challenge timing**: Initial attestation challenge sent immediately on provider registration, then every 5 minutes via ticker.
-- **Model scan performance**: `scan_models()` does fast discovery without hashing. Weight hash computed on-demand only for the model being served via `compute_weight_hash()`.
-- **Chat template injection**: Provider auto-injects ChatML template for models missing `chat_template` field (e.g., Qwen3.5 base models).
-- **Hypervisor memory isolation**: Apple Hypervisor.framework creates Stage 2 page tables to protect inference memory from RDMA/DMA attacks. Requires `com.apple.security.hypervisor` entitlement.
+- **Model scan performance**: `ModelScanner` does fast discovery without hashing. Weight hash computed on-demand via `WeightHasher.computeHash(for:)` only for models that need attestation/verification.
+- **Streaming hot path**: provider frames are decoded in a single parse (`coordinator/protocol/type_scan.go`, envelope-decode fallback); per-request X25519 shared keys are memoized for chunk decrypt and forgotten on request terminal (`api/chunk_key_cache.go`); provider WebSocket writes go through a two-lane writer (`registry/provider_writer.go`) — control frames (challenges, cancels) take strict non-preemptive priority over data frames, FIFO within a lane only, `WriteText` blocks to wire completion. A full consumer chunk buffer gets one 250ms grace window, then the request fails with 499 — chunks are never silently dropped.
 - **Device auth**: RFC 8628 device code flow for linking provider machines to user accounts. Provider runs `login`, gets a code, user enters it on the web.
 - **CI code signing**: GitHub Actions release workflow signs provider binary with Developer ID Application cert, notarizes with Apple, computes SHA-256 hashes after signing. Provisioning profile embedded in .app bundle for persistent SE key.
 - **Observability**: Datadog DogStatsD metrics for attestation, routing, billing, fleet version, provider capacity. X-Timing JSON header decomposes per-request latency (parse, reserve, route, queue, encrypt, dispatch, provider).
@@ -212,9 +228,10 @@ Always think from first principles. When fixing a bug or designing a feature:
 ## Common Pitfalls
 
 - Protocol changes require updating both `provider-swift/Sources/ProviderCore/Protocol/` (Swift) AND `coordinator/protocol/messages.go` (Go). They must stay in sync.
-- Telemetry wire types are mirrored in three places: `coordinator/protocol/telemetry.go`, `provider-swift/Sources/ProviderCore/Telemetry/`, and `console-ui/src/lib/telemetry-types.ts`. The field allowlist (`coordinator/api/telemetry_handlers.go`) is the privacy backstop — never add prompt/completion fields. See `docs/telemetry.md`.
-- Attestation tests need `AuthenticatedRootEnabled: true` in test blobs or the ARV check fails and overwrites earlier error messages (the checks run sequentially, last failure wins).
-- The coordinator uses in-memory store by default. Provider state is lost on restart. Postgres store exists but is not used in production yet.
+- Telemetry wire types are mirrored in three places: `coordinator/protocol/telemetry.go`, `provider-swift/Sources/ProviderCore/Telemetry/`, and `console-ui/src/lib/telemetry-types.ts`. The field allowlist (`coordinator/api/telemetry_handlers.go`) is the privacy backstop — never add prompt/completion fields. See `docs/architecture/operations/telemetry.md`.
+- Attestation minimum-requirement checks (Secure Enclave, SIP, Secure Boot) run sequentially and each overwrites `result.Error` — last failure wins. `AuthenticatedRootEnabled` (ARV) is informational only: logged, not enforced.
+- Store selection (`cmd/coordinator/main.go`): the coordinator uses the **Postgres** store whenever `EIGENINFERENCE_DATABASE_URL` is set (prod does), and refuses to start without it unless `EIGENINFERENCE_ALLOW_MEMORY_STORE=true`. The in-memory store is the dev/test fallback only (state lost on restart). The live provider *registry* (WebSocket connections/attestation) is always in-process and rebuilt on reconnect regardless of store.
+- `hypervisor_active` is retired: current providers no longer send it, but `AttestationResponseMessage.HypervisorActive` and the canonical-status support must keep decoding so signed payloads from older (< v0.6.31) providers still verify.
 - Binary files like `coordinator/coordinator` should NOT be committed to git. Do not model changes from this built artifact.
 - CI release workflow must compute binary SHA-256 hashes AFTER code signing, not before. Providers verify hashes of the signed binary.
 - Provider bundle semantics span multiple files: `.github/workflows/release-swift.yml`, `scripts/install.sh`, and `LatestProviderVersion` in `coordinator/api/server.go`. Keep them in sync.
@@ -262,7 +279,24 @@ Only proceed to the next objective after both reviewers pass. If either flags is
 
 ## Pull Requests
 
-Every new PR must include a **before/after Mermaid diagram** in its description. The diagram should show the behavior before the change and the behavior after the change at the architectural or user-flow level. Focus on the components actually affected by the PR.
+**Every PR MUST include a before-and-after diagram (Mermaid) in its description** that details what changed — covering BOTH:
+
+- **Behavior**: the request/response flow, states, and outcomes a user or caller observes (e.g. dispatch → retry → 429/503/200).
+- **Code**: which functions/components changed and how control flows through them.
+
+Use two clearly labeled diagrams — a **Before** and an **After** — (or one side-by-side comparison) so a reviewer sees the delta at a glance. Scope it to what the PR changes; it is not a full-system map. A PR without a before/after diagram is not ready for review.
+
+````markdown
+```mermaid
+flowchart LR
+  subgraph Before
+    A1[request] --> B1[old behavior / code path]
+  end
+  subgraph After
+    A2[request] --> B2[new behavior / code path]
+  end
+```
+````
 
 ## Git Hooks
 

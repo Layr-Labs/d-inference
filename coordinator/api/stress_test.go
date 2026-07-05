@@ -493,13 +493,13 @@ func TestStress_ProviderReRegistersWithDifferentModels(t *testing.T) {
 		reg.RecordChallengeSuccess(id)
 	}
 
-	pA := reg.FindProvider("model-A")
+	pA := findRoutableProvider(reg, "model-A")
 	if pA == nil {
 		t.Fatal("should find provider for model-A")
 	}
 	reg.SetProviderIdle(pA.ID)
 
-	pB := reg.FindProvider("model-B")
+	pB := findRoutableProvider(reg, "model-B")
 	if pB != nil {
 		t.Fatal("should NOT find provider for model-B (not registered)")
 	}
@@ -524,212 +524,18 @@ func TestStress_ProviderReRegistersWithDifferentModels(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// model-A should no longer be available
-	pA2 := reg.FindProvider("model-A")
+	pA2 := findRoutableProvider(reg, "model-A")
 	if pA2 != nil {
 		t.Error("model-A should not be available after re-registration with model-B")
 	}
 
 	// model-B should now be available
-	pB2 := reg.FindProvider("model-B")
+	pB2 := findRoutableProvider(reg, "model-B")
 	if pB2 == nil {
 		t.Error("model-B should be available after re-registration")
 	}
 
 	t.Log("model re-registration: PASS")
-}
-
-// =========================================================================
-// Heterogeneous provider scoring
-// =========================================================================
-
-func TestStress_HeterogeneousProviderScoring(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	reg := registry.New(logger)
-	reg.SetQueue(registry.NewRequestQueue(50, 10*time.Second))
-	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = 1 * time.Second
-
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	model := "scoring-model"
-
-	// Connect 3 providers with different hardware specs
-	specs := []struct {
-		chipName  string
-		memoryGB  int
-		decodeTPS float64
-		pubKey    string
-	}{
-		{"Apple M3 Max", 64, 50.0, testPublicKeyB64()},   // slow
-		{"Apple M4 Max", 128, 120.0, testPublicKeyB64()}, // fast
-		{"Apple M3 Pro", 36, 30.0, testPublicKeyB64()},   // slowest
-	}
-
-	conns := make([]*websocket.Conn, len(specs))
-	for i, spec := range specs {
-		wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-		conn, _, err := websocket.Dial(ctx, wsURL, nil)
-		if err != nil {
-			t.Fatalf("provider %d dial: %v", i, err)
-		}
-		conns[i] = conn
-		defer conn.Close(websocket.StatusNormalClosure, "")
-
-		regMsg := protocol.RegisterMessage{
-			Type: protocol.TypeRegister,
-			Hardware: protocol.Hardware{
-				MachineModel: "Mac15,8",
-				ChipName:     spec.chipName,
-				MemoryGB:     spec.memoryGB,
-			},
-			Models:                  []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
-			Backend:                 "mlx-swift",
-			PublicKey:               spec.pubKey,
-			DecodeTPS:               spec.decodeTPS,
-			EncryptedResponseChunks: true,
-			PrivacyCapabilities:     testPrivacyCaps(),
-		}
-		data, _ := json.Marshal(regMsg)
-		conn.Write(ctx, websocket.MessageText, data)
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	// Trust all and verify challenges
-	for _, id := range reg.ProviderIDs() {
-		reg.SetTrustLevel(id, registry.TrustHardware)
-		reg.RecordChallengeSuccess(id)
-	}
-
-	// Find provider 10 times — the fastest (120 TPS M4 Max) should be selected most
-	selections := make(map[string]int)
-	for range 10 {
-		p := reg.FindProvider(model)
-		if p == nil {
-			t.Fatal("FindProvider returned nil")
-		}
-		selections[p.Hardware.ChipName]++
-		reg.SetProviderIdle(p.ID)
-	}
-
-	t.Logf("scoring selections (10 rounds): %v", selections)
-
-	// The M4 Max (120 TPS) should be selected most often
-	if selections["Apple M4 Max"] < selections["Apple M3 Pro"] {
-		t.Error("M4 Max (120 TPS) should be preferred over M3 Pro (30 TPS)")
-	}
-}
-
-func TestStress_ThermalThrottlingAffectsScoring(t *testing.T) {
-	model := "thermal-model"
-
-	// Create two providers directly in the registry
-	p1 := &registry.Provider{
-		ID: "cool-provider",
-		Hardware: protocol.Hardware{
-			ChipName: "Apple M4 Max",
-			MemoryGB: 128,
-		},
-		Models:          []protocol.ModelInfo{{ID: model, ModelType: "chat"}},
-		DecodeTPS:       100.0,
-		RuntimeVerified: true,
-		SystemMetrics: protocol.SystemMetrics{
-			MemoryPressure: 0.3,
-			CPUUsage:       0.2,
-			ThermalState:   "nominal",
-		},
-	}
-	p1.Reputation = registry.NewReputation()
-
-	p2 := &registry.Provider{
-		ID: "hot-provider",
-		Hardware: protocol.Hardware{
-			ChipName: "Apple M4 Max",
-			MemoryGB: 128,
-		},
-		Models:          []protocol.ModelInfo{{ID: model, ModelType: "chat"}},
-		DecodeTPS:       100.0,
-		RuntimeVerified: true,
-		SystemMetrics: protocol.SystemMetrics{
-			MemoryPressure: 0.3,
-			CPUUsage:       0.2,
-			ThermalState:   "serious", // thermal throttling!
-		},
-	}
-	p2.Reputation = registry.NewReputation()
-
-	// Score them
-	scoreCool := registry.ScoreProvider(p1, model)
-	scoreHot := registry.ScoreProvider(p2, model)
-
-	t.Logf("cool provider score: %.2f", scoreCool)
-	t.Logf("hot provider score:  %.2f (thermal=serious)", scoreHot)
-
-	if scoreHot >= scoreCool {
-		t.Errorf("thermally throttled provider (%.2f) should score lower than cool one (%.2f)",
-			scoreHot, scoreCool)
-	}
-
-	// Critical thermal should score near zero
-	p3 := &registry.Provider{
-		ID:              "critical-provider",
-		Hardware:        p1.Hardware,
-		Models:          p1.Models,
-		DecodeTPS:       100.0,
-		RuntimeVerified: true,
-		SystemMetrics: protocol.SystemMetrics{
-			ThermalState: "critical",
-		},
-	}
-	p3.Reputation = registry.NewReputation()
-	scoreCritical := registry.ScoreProvider(p3, model)
-	t.Logf("critical score: %.2f", scoreCritical)
-
-	if scoreCritical > 0.01 {
-		t.Errorf("critical thermal provider should score near zero, got %.2f", scoreCritical)
-	}
-}
-
-func TestStress_MemoryPressureAffectsScoring(t *testing.T) {
-	model := "memory-model"
-
-	low := &registry.Provider{
-		ID:              "low-mem",
-		Models:          []protocol.ModelInfo{{ID: model}},
-		DecodeTPS:       100.0,
-		RuntimeVerified: true,
-		SystemMetrics: protocol.SystemMetrics{
-			MemoryPressure: 0.1,
-			ThermalState:   "nominal",
-		},
-	}
-	low.Reputation = registry.NewReputation()
-
-	high := &registry.Provider{
-		ID:              "high-mem",
-		Models:          []protocol.ModelInfo{{ID: model}},
-		DecodeTPS:       100.0,
-		RuntimeVerified: true,
-		SystemMetrics: protocol.SystemMetrics{
-			MemoryPressure: 0.9,
-			ThermalState:   "nominal",
-		},
-	}
-	high.Reputation = registry.NewReputation()
-
-	scoreLow := registry.ScoreProvider(low, model)
-	scoreHigh := registry.ScoreProvider(high, model)
-
-	t.Logf("low memory pressure score:  %.2f", scoreLow)
-	t.Logf("high memory pressure score: %.2f", scoreHigh)
-
-	if scoreHigh >= scoreLow {
-		t.Errorf("high memory pressure (%.2f) should score lower than low (%.2f)", scoreHigh, scoreLow)
-	}
 }
 
 // =========================================================================
@@ -763,18 +569,11 @@ func TestStress_ProviderBecomesIdleAfterRequest(t *testing.T) {
 
 	go runProviderLoop(ctx, t, conn, pubKey, "idle-response")
 
-	// Provider starts idle → busy serving → should become idle after completion
-	p := reg.FindProvider(model)
+	// Resolve the provider so we can observe its status transition after the
+	// real inference request below drives it serving → idle.
+	p := findRoutableProvider(reg, model)
 	if p == nil {
-		t.Fatal("provider should be findable")
-	}
-
-	// Provider is now serving (status = serving after FindProvider)
-	p.Mu().Lock()
-	status := p.Status
-	p.Mu().Unlock()
-	if status != registry.StatusServing {
-		t.Errorf("expected status serving, got %v", status)
+		t.Fatal("provider should be routable")
 	}
 
 	// Send a request and wait for completion

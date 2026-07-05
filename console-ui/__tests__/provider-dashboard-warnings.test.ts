@@ -27,7 +27,6 @@ function baseProvider(overrides: Partial<MyProvider> = {}): MyProvider {
     trust_level: "hardware",
     attested: true,
     mda_verified: true,
-    acme_verified: true,
     se_key_bound: true,
     secure_enclave: true,
     sip_enabled: true,
@@ -113,9 +112,10 @@ describe("computeWarnings", () => {
     expect(warnings.find((w) => w.id === "trust_none")?.severity).toBe("blocking");
   });
 
-  it("flags hardware trust without MDA as degrading", () => {
+  it("treats hardware trust without MDA as info only (does not affect routing)", () => {
+    // Post-#436 semantics: MDA is an informational proof, not an earning gate.
     const warnings = computeWarnings(baseProvider({ mda_verified: false }), ctx);
-    expect(warnings.find((w) => w.id === "mda_missing")?.severity).toBe("degrading");
+    expect(warnings.find((w) => w.id === "mda_missing")?.severity).toBe("info");
   });
 
   it("flags critical thermal as blocking", () => {

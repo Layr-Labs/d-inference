@@ -1,34 +1,38 @@
 "use client";
 
-import { useAuth } from "@/hooks/useAuth";
+import { useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { Sidebar } from "./Sidebar";
 import { Toasts } from "./Toasts";
 import { ProviderSlackPopup } from "./community/ProviderSlackPopup";
+import { useStore, STORE_NAME } from "@/lib/store";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { ready } = useAuth();
   const pathname = usePathname();
+
+  // The store uses `skipHydration` so the first client render matches the server
+  // (no React #418 hydration mismatch). Now that we're mounted, restore the
+  // persisted state, then apply the responsive sidebar default for first-time
+  // visitors on small screens (where the sidebar is a full-screen overlay).
+  useEffect(() => {
+    const firstVisit =
+      typeof window !== "undefined" &&
+      window.localStorage.getItem(STORE_NAME) === null;
+    useStore.persist.rehydrate();
+    if (firstVisit && typeof window !== "undefined" && window.innerWidth < 640) {
+      useStore.getState().setSidebarOpen(false);
+    }
+  }, []);
 
   // Device-linking page — no shell
   if (pathname === "/link") {
     return <>{children}</>;
   }
 
-  // Loading state
-  if (!ready) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-bg-primary">
-        <div className="text-center">
-          <h1 className="text-3xl text-ink tracking-tight" style={{ fontFamily: "'Louize', Georgia, serif" }}>
-            Darkbloom
-          </h1>
-          <p className="mt-2 text-sm text-text-tertiary">Loading...</p>
-        </div>
-      </div>
-    );
-  }
-
+  // Render the shell + page immediately. Auth readiness is progressive
+  // enhancement: the Privy SDK loads as a lazy chunk after first paint and
+  // auth-dependent affordances (sidebar account state, login CTA) reconcile
+  // when it resolves — so Privy is off the LCP critical path (perf F1/F2).
   return (
     <div className="flex h-screen overflow-hidden bg-bg-primary">
       <Sidebar />

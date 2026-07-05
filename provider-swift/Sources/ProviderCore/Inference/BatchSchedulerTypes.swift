@@ -18,7 +18,15 @@ import MLXLMCommon
 /// Events emitted by the scheduler for a single inference request.
 public enum GenerationEvent: Sendable {
     case chunk(String)
-    case info(promptTokens: Int, completionTokens: Int, tokensPerSecond: Double)
+    /// Terminal usage. `finishReason` is the OpenAI wire value ("stop",
+    /// "length") when the engine reported one; nil maps to "stop"
+    /// downstream. Threaded end-to-end (legacy `RequestOutput.finishReason`,
+    /// v2 `CBv2FinishReason.length`) so a max_tokens truncation reaches
+    /// clients as `finish_reason: "length"` instead of being flattened
+    /// to "stop".
+    case info(
+        promptTokens: Int, completionTokens: Int, tokensPerSecond: Double,
+        finishReason: String?)
     case error(String)
 }
 
@@ -87,6 +95,7 @@ struct LoadSnapshot: @unchecked Sendable {
     let bytes: Int
     let tokenizer: TokenizerHandle
     let eosTokenIds: Set<Int>
+    let modelType: String?
     let architecture: ModelArchitecture
 }
 
@@ -133,9 +142,10 @@ enum CheckpointLayerSignature: Sendable, Equatable {
 }
 
 /// Model-architecture fields read from `config.json`, used by
-/// `KVEstimation.computeKVBytesPerToken` to size the token budget.
+/// `KVEstimation.computeKVBytesPerToken` to size the token budget and by
+/// `AdaptivePrefillSeed` to seed the cold-prefill chunk ladder from physics.
 /// All values are post-clamp; see `KVEstimation.parseModelArchitecture`.
-struct ModelArchitecture: Sendable {
+public struct ModelArchitecture: Sendable {
     let numLayers: Int?
     let kvHeads: Int?
     let headDim: Int?
@@ -145,6 +155,44 @@ struct ModelArchitecture: Sendable {
     let slidingWindowPattern: Int?
     let layerTypes: [String]?
     let maxContextLength: Int?
+    /// MoE: total routed experts (`num_local_experts`). nil ⇒ dense model.
+    let numLocalExperts: Int?
+    /// MoE: experts activated per token (`num_experts_per_tok`). nil ⇒ dense.
+    let numExpertsPerTok: Int?
+    /// Transformer residual width (`hidden_size`).
+    let hiddenSize: Int?
+    /// MLP / per-expert inner width (`intermediate_size`).
+    let intermediateSize: Int?
+
+    init(
+        numLayers: Int?,
+        kvHeads: Int?,
+        headDim: Int?,
+        numKvSharedLayers: Int,
+        globalHeadDim: Int?,
+        numGlobalKvHeads: Int?,
+        slidingWindowPattern: Int?,
+        layerTypes: [String]?,
+        maxContextLength: Int?,
+        numLocalExperts: Int? = nil,
+        numExpertsPerTok: Int? = nil,
+        hiddenSize: Int? = nil,
+        intermediateSize: Int? = nil
+    ) {
+        self.numLayers = numLayers
+        self.kvHeads = kvHeads
+        self.headDim = headDim
+        self.numKvSharedLayers = numKvSharedLayers
+        self.globalHeadDim = globalHeadDim
+        self.numGlobalKvHeads = numGlobalKvHeads
+        self.slidingWindowPattern = slidingWindowPattern
+        self.layerTypes = layerTypes
+        self.maxContextLength = maxContextLength
+        self.numLocalExperts = numLocalExperts
+        self.numExpertsPerTok = numExpertsPerTok
+        self.hiddenSize = hiddenSize
+        self.intermediateSize = intermediateSize
+    }
 
     static let empty = ModelArchitecture(
         numLayers: nil,

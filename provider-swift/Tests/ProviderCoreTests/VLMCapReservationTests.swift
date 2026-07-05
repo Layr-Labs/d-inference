@@ -151,6 +151,30 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(tokens > 100)
 }
 
+@Test func projectedKVTokensReservesEverySampledVideoFrame() {
+    // A video is NOT a flat per-video allotment: the Gemma4 processor samples up
+    // to `maxVideoFramesSampled` frames and expands EACH into its own image-like
+    // soft-token block, so the KV reservation must cover every sampled frame
+    // (32 × per-frame), not a single frame. The old flat 4096 covered only ~4
+    // frames and badly under-reserved a full clip — the bug this guards.
+    let videoURI = "data:video/mp4;base64,AAAAAA"
+    let req = OpenAIChatCompletionRequest(
+        model: "m",
+        messages: [.init(role: .user, content: .parts([.text("describe"), .videoURL(videoURI)]))],
+        maxTokens: 25)
+    // contextLength 0 = "unknown" → no clamp, so the full per-frame span shows.
+    let tokens = VLMRequestInference.projectedKVTokens(
+        req, defaultMaxTokens: 1024, contextLength: 0)
+    // The per-video charge scales with every sampled frame (32 × per-frame).
+    #expect(
+        VLMRequestInference.visionTokensPerVideo
+            == VLMRequestInference.maxVideoFramesSampled * VLMRequestInference.visionTokensPerImage)
+    // KV span covers every sampled frame's soft tokens + the 25 output tokens…
+    #expect(tokens >= VLMRequestInference.visionTokensPerVideo + 25)
+    // …and strictly out-reserves a single-frame charge (the under-reservation bug).
+    #expect(tokens > VLMRequestInference.visionTokensPerImage + 25)
+}
+
 @Test func projectedKVTokensClampsPromptPlusVisionToContext() {
     // Many images would project a huge prompt+vision span; it must clamp to the
     // model's context window (the cache can't hold more input tokens than that),

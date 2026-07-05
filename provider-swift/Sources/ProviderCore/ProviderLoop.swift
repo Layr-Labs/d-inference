@@ -24,12 +24,50 @@ import os
 /// signature from `CoordinatorClient.start()` does not carry `@Sendable`.
 public final class SendHandle: @unchecked Sendable {
     private let fn: (OutboundMessage) -> Void
+    /// Direct inference-chunk fast path (bypasses the AsyncStream control path).
+    /// `nil` for SendHandles built without a wired coordinator (unit/integration
+    /// tests), in which case chunks fall back to the control path.
+    private let chunkSender: ChunkSender?
 
     public init(_ fn: @escaping (OutboundMessage) -> Void) {
         self.fn = fn
+        self.chunkSender = nil
     }
 
+    /// Wire the direct chunk path alongside the control path. Internal: the
+    /// production wiring lives in `ProviderLoop+Serve` (same module); the public
+    /// init keeps the existing test/call surface unchanged.
+    init(_ fn: @escaping (OutboundMessage) -> Void, chunkSender: ChunkSender?) {
+        self.fn = fn
+        self.chunkSender = chunkSender
+    }
+
+    /// Control-path send (heartbeats, attestation, accepted, complete, errors,
+    /// model/prefetch status) through the OutboundRouter → AsyncStream.
+    ///
+    /// Doubles as the ORDERING BARRIER for the direct path: before a TERMINAL
+    /// inference message (`inference_complete` / `inference_error`) goes out the
+    /// slower control path, any chunks queued on the direct path are flushed to
+    /// the wire first. The coordinator `RemovePending`s on complete, so a
+    /// terminal that overtook a chunk would make it drop the chunk's tail.
     public func send(_ message: OutboundMessage) {
+        switch message {
+        case .inferenceComplete, .inferenceError:
+            chunkSender?.flush()
+        default:
+            break
+        }
+        fn(message)
+    }
+
+    /// Inference-chunk hot path. Encodes + writes the frame directly to the live
+    /// NWConnection via the ChunkSender (no actor hop, no AsyncStream, no
+    /// cooperative-pool scheduling gap). Falls back to the control path when no
+    /// direct sender is wired (tests) or encoding fails.
+    public func sendChunk(_ message: OutboundMessage) {
+        if let chunkSender, chunkSender.sendChunk(message) {
+            return
+        }
         fn(message)
     }
 }
@@ -78,7 +116,7 @@ struct RetryNotifyingPrefetchSink: PrefetchStatusSink {
     }
 }
 
-private final class OneShotBoolContinuation: @unchecked Sendable {
+internal final class OneShotBoolContinuation: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Bool, Never>?
 
@@ -95,7 +133,7 @@ private final class OneShotBoolContinuation: @unchecked Sendable {
     }
 }
 
-private enum ProviderLoopError: Error, CustomStringConvertible {
+internal enum ProviderLoopError: Error, CustomStringConvertible {
     case binaryHashUnavailable
 
     var description: String {
@@ -106,69 +144,44 @@ private enum ProviderLoopError: Error, CustomStringConvertible {
     }
 }
 
-// MARK: - Configuration
-
-public struct ProviderLoopConfig: Sendable {
-    public let coordinatorURL: String
-    public let hardware: HardwareInfo
-    public let models: [ModelInfo]
-    public let config: ProviderConfig
-    public let authToken: String?
-    public let runtimeHashes: RuntimeHashes?
-    public let modelHashes: [String: String]
-    /// Snapshot fingerprints captured at the same time as `modelHashes` (see
-    /// `WeightHasher.snapshotFingerprint`). Seeding these lets the first
-    /// `ensureModelLoaded` skip a full re-read of weights that were already
-    /// hashed at startup; without them the first load re-hashes every byte.
-    public let modelHashFingerprints: [String: String]
-    /// When set, the provider also serves a local OpenAI-compatible HTTP
-    /// endpoint off the SAME loaded models it serves to the coordinator
-    /// (unified mode). nil = coordinator-only (the default).
-    public let localEndpoint: LocalInferenceHTTPConfig?
-
-    public init(
-        coordinatorURL: String,
-        hardware: HardwareInfo,
-        models: [ModelInfo],
-        config: ProviderConfig,
-        authToken: String? = nil,
-        runtimeHashes: RuntimeHashes? = nil,
-        modelHashes: [String: String] = [:],
-        modelHashFingerprints: [String: String] = [:],
-        localEndpoint: LocalInferenceHTTPConfig? = nil
-    ) {
-        self.coordinatorURL = coordinatorURL
-        self.hardware = hardware
-        self.models = models
-        self.config = config
-        self.authToken = authToken
-        self.runtimeHashes = runtimeHashes
-        self.modelHashes = modelHashes
-        self.modelHashFingerprints = modelHashFingerprints
-        self.localEndpoint = localEndpoint
-    }
-}
-
 // MARK: - ProviderLoop
 
+// Access note: the actor's stored state and many of its methods are declared
+// `internal` rather than `private` so this actor can be split by concern across
+// the companion `ProviderLoop+*.swift` files in this module (Swift `private` is
+// file-scoped). Only members actually reached across that split are widened;
+// purely-local members (e.g. `configuredMaxModelSlots`, `bytesPerGiB`,
+// `createAttestationSigner`) stay `private`. Behavior is unchanged.
 public actor ProviderLoop {
-    private let loopConfig: ProviderLoopConfig
-    private let keyPair: NodeKeyPair
-    private let signer: (any AttestationSigner)?
-    private let attestationBuilder: AttestationBuilder?
-    private let stats: AtomicProviderStats
-    private let state: ProviderState
-    private let cancellationRegistry: InferenceCancellationRegistry
-    private let kvBudget: GlobalKVCacheBudget
+    internal let loopConfig: ProviderLoopConfig
+    internal let keyPair: NodeKeyPair
+    internal let signer: (any AttestationSigner)?
+    internal let attestationBuilder: AttestationBuilder?
+    internal let stats: AtomicProviderStats
+    internal let state: ProviderState
+    internal let cancellationRegistry: InferenceCancellationRegistry
+    internal let kvBudget: GlobalKVCacheBudget
     /// Phase 3: global disk accountant (process-wide, shared across models).
-    private let diskAccountant: GlobalDiskAccountant
-    private let powerAssertion: InferencePowerAssertion
-    private let preloadTaskStarted: (@Sendable (String) -> Void)?
-    private let beforeModelLoad: (@Sendable (String) async -> Void)?
+    internal let diskAccountant: GlobalDiskAccountant
+    internal let powerAssertion: InferencePowerAssertion
+    internal let preloadTaskStarted: (@Sendable (String) -> Void)?
+    internal let beforeModelLoad: (@Sendable (String) async -> Void)?
 
     /// Per-model inference slots. Each loaded model gets its own
     /// BatchScheduler and worker task. Keyed by model ID.
-    private var modelSlots: [String: ModelSlot] = [:]
+    internal var modelSlots: [String: ModelSlot] = [:]
+
+    /// ContinuousBatchingV2 bridge registry consulted by the capacity and
+    /// cancellation hooks — but ONLY when at least one v2 slot exists (see
+    /// the `hasEngineV2Slots` guards in `ProviderLoop+Capacity` /
+    /// `+Cancellation`), so flag-off providers never pay the actor hop.
+    /// Defaults to the process-global instance; tests inject an isolated one.
+    internal var engineV2Runtime: EngineV2Runtime = .shared
+
+    /// Test seam (`ProviderLoop+Testing`): overrides the environment, the
+    /// container EOS snapshot, and the production CBv2 engine builder used
+    /// by `makeEngineV2BridgeForSlot`. nil in production.
+    internal var engineV2SlotHooks: EngineV2SlotHooks?
 
     /// Operator-configured hard cap on concurrent model slots
     /// (`backend.maxModelSlots`). This is the memory-safety ceiling: the
@@ -188,39 +201,40 @@ public actor ProviderLoop {
     /// resident concurrently during a zero-downtime migration. Always clamped
     /// to `[1, configuredMaxModelSlots]` and floored at `startupModelCount`.
     /// Read by the slot-cap guards as the current cap.
-    private var maxModelSlots: Int {
+    internal var maxModelSlots: Int {
         let live = max(startupModelCount, advertisedModels.count)
         return max(1, min(configuredMaxModelSlots, live))
     }
 
     /// Maps request IDs to the model they're running on, so the idle
     /// monitor knows which model has in-flight work.
-    private var requestToModel: [String: String] = [:]
+    internal var requestToModel: [String: String] = [:]
 
     /// Per-model count of in-flight requests from the LOCAL HTTP endpoint
     /// (unified mode), used to keep eviction and the idle monitor from pulling a
     /// model out from under a local stream. See `LocalReservationCounter`.
-    private var localReservations = LocalReservationCounter()
+    internal var localReservations = LocalReservationCounter()
 
     /// The running local OpenAI HTTP server task (unified mode), if any.
-    private var localServerTask: Task<Void, Never>?
+    internal var localServerTask: Task<Void, Never>?
 
     /// Guards against concurrent loads. `modelsLoading` tracks which models
     /// are mid-load; waiters suspend until the first loader finishes.
     /// `isLoadingAny` serializes loads so two large models don't interleave
     /// eviction decisions and overcommit memory.
-    private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
-    private var modelsLoading: Set<String> = []
-    private var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
-    private var isLoadingAny: Bool = false
-    private var isShuttingDown: Bool = false
+    internal var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
+    internal var modelsLoading: Set<String> = []
+    internal var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
+    internal var isLoadingAny: Bool = false
+    internal var isShuttingDown: Bool = false
 
-    /// Memoized graceful-shutdown task. Both the run-task cancellation handler
-    /// and the run-loop fall-through funnel through `startShutdown(drainInflight:)`
-    /// so they share ONE shutdown sequence instead of racing each other. Without
-    /// this, the fall-through could close the coordinator socket and unload
-    /// models while the drain task was still waiting for in-flight streams.
-    private var shutdownTask: Task<Void, Never>?
+    /// Memoized graceful-shutdown task (`ProviderLoop+Shutdown`). Both the
+    /// run-task cancellation handler and the run-loop fall-through funnel
+    /// through `startShutdown(drainInflight:)` so they share ONE shutdown
+    /// sequence instead of racing each other. Without this, the fall-through
+    /// could close the coordinator socket and unload models while the drain
+    /// task was still waiting for in-flight streams.
+    internal var shutdownTask: Task<Void, Never>?
 
     /// Phase of a graceful auto-update cycle. Drives admission: in `.draining`
     /// we refuse new requests (503 reroute) so in-flight work can finish before
@@ -229,44 +243,45 @@ public actor ProviderLoop {
     ///   - `.installing`: a newer release is downloading/staging; STILL serving
     ///   - `.draining`:   bundle staged; refusing new requests while in-flight
     ///                    work finishes, then commit + restart
-    private enum UpdatePhase: Sendable, Equatable {
+    internal enum UpdatePhase: Sendable, Equatable {
         case idle
         case installing
         case draining
     }
-    private var updatePhase: UpdatePhase = .idle
+    internal var updatePhase: UpdatePhase = .idle
 
     /// Verified update bundle staged on disk during `.installing`, awaiting the
     /// post-drain commit. The live layout is untouched until the commit, so a
     /// request can never observe a half-replaced bundle. Consumed by
     /// `commitStagedUpdateBundle`; discarded by `resumeServingAfterUpdate`.
-    private var stagedUpdateBundle: SelfUpdater.StagedBundle?
+    internal var stagedUpdateBundle: SelfUpdater.StagedBundle?
 
     /// Latest `desired_models` push received while update-draining. Normally
     /// the restart makes it moot (registration gets fresh desired state), but
     /// if the restart is aborted (commit/restart failure) the deferred state
     /// is replayed by `resumeServingAfterUpdate` so the provider does not keep
     /// serving from a desired set the coordinator has since changed.
-    private var deferredDesiredModels: [CoordinatorMessage.DesiredModelEntry]?
+    internal var deferredDesiredModels: [CoordinatorMessage.DesiredModelEntry]?
 
     /// Models remain tracked while their scheduler is tearing down so
     /// reentrant loads cannot start against memory that has not been freed yet.
-    private var modelsUnloading: Set<String> = []
-    private var unloadingWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+    internal var modelsUnloading: Set<String> = []
+    internal var unloadingWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
 
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
-    private var inflightTasks: [String: Task<Void, Never>] = [:]
+    internal var inflightTasks: [String: Task<Void, Never>] = [:]
 
-    /// Tracks the per-request DETACHED model-load tasks (see `handleInferenceRequest`)
-    /// so they can be cancelled when in-flight work is torn down. Without a retained
-    /// handle, a load that stalls past the drain timeout would leave
-    /// `handleInferenceRequest` awaiting `loadTask.value` forever, so `run()` could
-    /// never return and the CLI would escalate to SIGKILL instead of exiting cleanly.
-    private var inflightModelLoadTasks: [String: Task<Void, Error>] = [:]
+    /// Tracks the per-request DETACHED model-load tasks (see
+    /// `handleInferenceRequest`) so they can be cancelled when in-flight work is
+    /// torn down. Without a retained handle, a load that stalls past the drain
+    /// timeout would leave `handleInferenceRequest` awaiting `loadTask.value`
+    /// forever, so `run()` could never return and the CLI would escalate to
+    /// SIGKILL instead of exiting cleanly.
+    internal var inflightModelLoadTasks: [String: Task<Void, Error>] = [:]
 
     /// A detached task can finish before the actor stores it in `inflightTasks`.
     /// Track that edge so the post-spawn registration does not leave a stale task.
-    private var completedBeforeTaskRegistration = Set<String>()
+    internal var completedBeforeTaskRegistration = Set<String>()
 
     /// Mutable advertised-model set, seeded from `loopConfig.models`. Background
     /// prefetch appends newly-verified builds at runtime so they become
@@ -274,7 +289,7 @@ public actor ProviderLoop {
     /// restart. Keyed by model id; never drops the currently-served model. The
     /// `CoordinatorClient` keeps its own mirror (`AdvertisedModelStore`) for the
     /// registration wire path; these are kept in sync via `advertiseModel`.
-    private var advertisedModels: [String: ModelInfo]
+    internal var advertisedModels: [String: ModelInfo]
 
     /// Mutable model weight-hash map, seeded from `loopConfig.modelHashes`.
     /// Background prefetch records the verified build's weight hash here so the
@@ -283,18 +298,18 @@ public actor ProviderLoop {
     /// per-model hash verification would be silently bypassed for them. Keyed by
     /// model id; weight hashes are immutable per build (a model id maps to one
     /// verified snapshot).
-    private var modelHashes: [String: String]
+    internal var modelHashes: [String: String]
 
     /// Pending hard swaps: desired build id → the previous build to retire locally
     /// once the desired one verifies. Populated by the declarative `desired_models`
     /// reconcile, consumed (once) in `applyVerifiedPrefetch`.
-    private var desiredSwapDrop: [String: String] = [:]
+    internal var desiredSwapDrop: [String: String] = [:]
 
     /// Desired builds from the latest declarative reconcile. If a build was once
     /// desired but disappears from a later desired set while its prefetch is still
     /// in flight, a late verified callback for that old build is ignored.
-    private var desiredPrefetchTargets = Set<String>()
-    private var staleDesiredPrefetches = Set<String>()
+    internal var desiredPrefetchTargets = Set<String>()
+    internal var staleDesiredPrefetches = Set<String>()
 
     /// Priority used for desired-build convergence prefetches (reconcile +
     /// retry), between an explicit coordinator `prefetch_model` default and
@@ -307,23 +322,23 @@ public actor ProviderLoop {
     /// build schedules one retry per delay below, then gives up until the next
     /// desired_models push (which resets the budget). Delays are injectable for
     /// tests via `setDesiredPrefetchRetryDelaysForTesting`.
-    private var desiredPrefetchRetryDelays: [Duration] = [
+    internal var desiredPrefetchRetryDelays: [Duration] = [
         .seconds(30), .seconds(60), .seconds(120), .seconds(300), .seconds(600),
     ]
-    private var desiredPrefetchRetryAttempts: [String: Int] = [:]
-    private var desiredPrefetchRetryTasks: [String: Task<Void, Never>] = [:]
+    internal var desiredPrefetchRetryAttempts: [String: Int] = [:]
+    internal var desiredPrefetchRetryTasks: [String: Task<Void, Never>] = [:]
 
     /// Background model-build prefetcher. Owns coalescing, throttled progress,
     /// cancellation, and the verified→advertise hook (which also performs the
     /// hard-swap drop of the superseded build). Built lazily in `run()` so it can
     /// capture `self` and the live coordinator client.
-    private var prefetchCoordinator: ModelPrefetchCoordinator?
+    internal var prefetchCoordinator: ModelPrefetchCoordinator?
 
     /// The live coordinator client, retained so the verified-prefetch hook can
     /// re-register the updated advertised set, and so weight-hash refreshes can be
     /// pushed into reconnect registrations (models[].weight_hash drives the
     /// coordinator's per-model catalog routing filter). Set in `run()`.
-    private var coordinatorClient: CoordinatorClient?
+    internal var coordinatorClient: CoordinatorClient?
 
     /// The live outbound send handle (same one prefetch status flows through).
     /// Retained so `applyVerifiedPrefetch` can push an out-of-band
@@ -331,23 +346,52 @@ public actor ProviderLoop {
     /// (including its computed weight hash) for the coordinator to cross-check
     /// before routing. Set in `run()`; injectable in tests via
     /// `installPrefetchCoordinatorForTesting`.
-    private var outboundSend: SendHandle?
+    internal var outboundSend: SendHandle?
 
     /// Tracks coordinator-driven preload tasks so they can be cancelled on shutdown.
-    private var preloadTasks: [String: Task<Void, Never>] = [:]
+    internal var preloadTasks: [String: Task<Void, Never>] = [:]
+
+    /// Startup preload driver (`ProviderLoop+StartupPreload`). Non-nil while
+    /// the boot-time preload of the configured/previously-served model set is
+    /// still running — it may outlive the registration gate when the
+    /// `startup_preload_timeout_secs` deadline passes (loads continue in the
+    /// background). Cancelled and awaited on shutdown alongside the
+    /// coordinator-driven preloads.
+    internal var startupPreloadTask: Task<Void, Never>?
+
+    /// Test seam: overrides the loaded-models persistence file
+    /// (default: `LoadedModelsStore.path()`).
+    internal var loadedModelsFileOverride: URL?
+
+    /// Gate on the loaded-models persistence writes. `run()` flips it on at
+    /// startup; it stays FALSE for `ProviderLoop` instances that never serve
+    /// (unit tests exercising load/unload paths), so an unrelated test can
+    /// never clobber the operator's real `~/.darkbloom/loaded-models.json`
+    /// — that file is the next boot's preload plan. The test seam
+    /// `setLoadedModelsFileForTesting` enables it together with a temp path.
+    internal var loadedModelsPersistenceEnabled = false
+
+    /// Test seams for the startup preload driver: replace the real
+    /// `ensureModelLoaded` / self-test decode / free-memory probe with
+    /// scripted stubs so the plan, gate timing, admission, and
+    /// fail-open/closed paths run without model weights or a live memory
+    /// reading. nil in production.
+    internal var startupPreloadLoadOverride: (@Sendable (String) async throws -> Void)?
+    internal var startupSelfTestOverride: (@Sendable (String) async throws -> Duration)?
+    internal var startupPreloadFreeMemoryOverride: (@Sendable () async -> Double)?
 
     /// Senders waiting for the terminal status of an in-flight preload.
-    private var preloadStatusSubscribers: [String: [SendHandle]] = [:]
+    internal var preloadStatusSubscribers: [String: [SendHandle]] = [:]
 
     /// Ownership tokens for preload tasks — ensures deferred cleanup only
     /// removes an entry if it still belongs to the completing task.
-    private var preloadTaskIds: [String: UUID] = [:]
+    internal var preloadTaskIds: [String: UUID] = [:]
 
     /// Cached security posture from startup verification.
-    private var securityPosture: SecurityPosture?
+    internal var securityPosture: SecurityPosture?
 
     /// Cached binary hash for attestation responses.
-    private var binaryHash: String?
+    internal var binaryHash: String?
 
     /// Live per-model weight hashes. Seeded from the startup scan and REFRESHED
     /// whenever a model is (re)loaded from disk, so attestation challenge
@@ -356,7 +400,7 @@ public actor ProviderLoop {
     /// for the process lifetime: a model re-published while the daemon ran kept
     /// the stale hash and tripped the coordinator's model-swap hard-untrust
     /// even though the disk (and the loaded model) were correct.
-    private var liveModelHashes: [String: String]
+    internal var liveModelHashes: [String: String]
 
     /// Per-model snapshot fingerprints (paths + sizes + mtimes) recorded when a
     /// weight hash was last computed. A model whose fingerprint is unchanged at
@@ -364,56 +408,56 @@ public actor ProviderLoop {
     /// cycles happen hourly, and re-reading ~30 GB of unchanged weights each
     /// time would tax cold-start TTFT for nothing. Seeded from the config so
     /// the FIRST load doesn't re-read weights already hashed at startup.
-    private var modelHashFingerprints: [String: String]
+    internal var modelHashFingerprints: [String: String]
 
     /// Whether we've already submitted an auto-report for this session.
     /// Set to true after the first trust-triggered report to avoid spamming.
-    private var didAutoReport = false
+    internal var didAutoReport = false
 
     /// Task for the delayed auto-report (10 minutes after learning trust status).
-    private var autoReportTask: Task<Void, Never>?
+    internal var autoReportTask: Task<Void, Never>?
 
     /// Diagnostics: the most recent trust_status from the coordinator and the
     /// most recent model-load failure, plus the daemon start time. Persisted to
     /// the daemon state file so `darkbloom status`/`doctor` can show the
     /// operator WHY they are / aren't earning. Start time uses wall-clock epoch
     /// (not ContinuousClock) so it survives across the CLI process boundary.
-    private var lastTrustStatus: DaemonState.Trust?
-    private var lastModelLoadError: DaemonState.ModelLoadError?
-    private let startedAtEpoch: Double = Date().timeIntervalSince1970
+    internal var lastTrustStatus: DaemonState.Trust?
+    internal var lastModelLoadError: DaemonState.ModelLoadError?
+    internal let startedAtEpoch: Double = Date().timeIntervalSince1970
 
     /// Keeps the network stack alive during sleep for APN push notifications.
     /// Held for the entire provider session so MDM SecurityInfo commands
     /// can be delivered even when the Mac is sleeping.
-    private let networkAssertion = NetworkPowerAssertion()
+    internal let networkAssertion = NetworkPowerAssertion()
 
     /// Background task that periodically checks idle state and unloads
     /// the model when the timeout has elapsed. nil when disabled
     /// (`idleTimeoutMins == 0`) or before `run()` starts it.
-    private var idleMonitorTask: Task<Void, Never>?
+    internal var idleMonitorTask: Task<Void, Never>?
 
     /// Periodically refreshes provider-reported backend capacity so heartbeats
     /// reflect active/queued requests and adaptive batch-cap changes while
     /// long-running generations are still in flight.
-    private var capacityRefreshTask: Task<Void, Never>?
+    internal var capacityRefreshTask: Task<Void, Never>?
 
     /// Background task that periodically checks for provider updates and
     /// applies them automatically. nil when auto-update is disabled or
     /// before `run()` starts it.
-    private var autoUpdateTask: Task<Void, Never>?
+    internal var autoUpdateTask: Task<Void, Never>?
 
     /// Reacts to kernel memory pressure (reclaim MLX cache, mark an imminent
     /// OOM). Held for the loop's lifetime so the DispatchSource isn't
     /// deallocated. See `MemoryPressureMonitor` / `OOMDetector`.
-    private var memoryPressureMonitor: MemoryPressureMonitor?
+    internal var memoryPressureMonitor: MemoryPressureMonitor?
 
-    private let logger = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
+    internal let logger = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
 
-    private static let shutdownDrainTimeout: Duration = .seconds(600)
-    private static let preloadShutdownTimeout: Duration = .seconds(10)
+    internal static let shutdownDrainTimeout: Duration = .seconds(600)
+    internal static let preloadShutdownTimeout: Duration = .seconds(10)
     /// Max time to wait for queued outbound frames to flush to the socket during
     /// a graceful drain before closing the transport.
-    private static let outboundFlushTimeout: Duration = .seconds(5)
+    internal static let outboundFlushTimeout: Duration = .seconds(5)
     private static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
 
     // MARK: - Initialization
@@ -486,9 +530,9 @@ public actor ProviderLoop {
 
     // MARK: - Model Slot
 
-    private static let schedulerMaxConcurrent = 24
-    private static let schedulerPendingTimeout: Duration = .seconds(120)
-    private static let schedulerDefaultMaxTokens = 4096
+    internal static let schedulerMaxConcurrent = 24
+    internal static let schedulerPendingTimeout: Duration = .seconds(120)
+    internal static let schedulerDefaultMaxTokens = 4096
 
     /// Infer the reasoning parser format from the model's `model_type`
     /// (read from config.json at scan time). Used to auto-select the
@@ -503,8 +547,15 @@ public actor ProviderLoop {
         return .qwen3
     }
 
-    private struct ModelSlot {
+    internal struct ModelSlot {
         let scheduler: BatchScheduler
+        /// ContinuousBatchingV2 bridge for this slot — non-nil ONLY when
+        /// `EngineV2Config` selected the v2 engine at load time AND its
+        /// construction succeeded. Stored ALONGSIDE (never replacing) the
+        /// legacy scheduler: requests route through the bridge when present,
+        /// and every fallback path (flag off, non-allowlisted model, v2 init
+        /// failure) leaves this nil and serves via `scheduler` unchanged.
+        let engineV2: EngineV2Bridge?
         let container: MLXLMCommon.ModelContainer
         let tokenizer: TokenizerHandle
         /// Vision-language model (config has `vision_config`). Multimodal
@@ -516,6 +567,16 @@ public actor ProviderLoop {
         /// drop window while the slot is still resident (a Gemma build would
         /// otherwise fall back to the qwen3 parser and leak <think> tokens).
         let modelType: String?
+        /// MEASURED engine-retained residency overhead beyond the weights —
+        /// the shared MoE fused gate+up cache the VLM text extraction
+        /// eagerly builds (~8–15 GiB on Gemma 4; PR#508 finding 2). Plain
+        /// module properties, so it appears in neither
+        /// `scheduler.modelWeightBytes` (a parameters() sum) nor any
+        /// pending-load estimate; the sizing paths that treat weights as
+        /// resident memory (later v2 engine ceilings, the heartbeat fleet
+        /// budget clamp) must add this alongside them. 0 for non-VLM slots
+        /// and dense checkpoints.
+        var engineResidentOverheadBytes: UInt64 = 0
         var lastInferenceAt: ContinuousClock.Instant
     }
 
@@ -545,3080 +606,32 @@ public actor ProviderLoop {
         }
     }
 
-    // MARK: - Main Run Loop
-
-    public func run() async throws {
-        logger.info("darkbloom \(ProviderCore.version) starting")
-        logger.info("Hardware: \(loopConfig.hardware.chipName), \(loopConfig.hardware.memoryGb) GB RAM, \(loopConfig.hardware.gpuCores) GPU cores")
-        logger.info("Models: \(loopConfig.models.count) advertised")
-        logger.info("Coordinator: \(loopConfig.coordinatorURL)")
-
-        // Keep the network stack alive during sleep for APN/MDM push delivery.
-        networkAssertion.acquire()
-        defer { networkAssertion.release() }
-
-        // Suppress App Nap for the lifetime of the serve loop. macOS throttles
-        // "napping" background processes — Task.sleep-driven timers (heartbeat,
-        // ping/pong) stop firing on schedule, the coordinator stops receiving
-        // heartbeats and evicts us within 90s, and our own throttled ping takes
-        // minutes to notice the dead socket: the connect→evict→reconnect churn.
-        // .userInitiated suppresses App Nap; .idleSystemSleepDisabled keeps an
-        // idle box awake while serving, on battery too (caffeinate -s is AC-only).
-        let napAssertion = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiated, .idleSystemSleepDisabled,
-                      .suddenTerminationDisabled, .automaticTerminationDisabled],
-            reason: "Darkbloom provider serving inference / keeping the coordinator link alive")
-        defer { ProcessInfo.processInfo.endActivity(napAssertion) }
-
-        // Crash recovery is owned by the WatchdogAgent (separate launchd job,
-        // #315) — installed from the serve path, so it reaches auto-updated
-        // installs too. KeepAlive stays false to avoid racing the updater.
-
-        // Surface any prior-run OOM and react to live memory pressure. Best-effort.
-        startMemoryProtection()
-        // On any controlled exit (return/throw — i.e. NOT a jetsam SIGKILL),
-        // drop a memory-pressure marker so a survived pressure spike isn't
-        // misreported as an OOM next launch. A real kill bypasses this.
-        defer {
-            memoryPressureMonitor?.cancel()
-            OOMDetector.clearMarker()
-        }
-
-        // Unified mode: also expose a local OpenAI endpoint off the same loaded
-        // models. Started before the coordinator connection so local clients can
-        // serve immediately; torn down on shutdown.
-        if let localEndpoint = loopConfig.localEndpoint {
-            startLocalEndpoint(localEndpoint)
-        }
-        defer { stopLocalEndpoint() }
-
-        // 1. Apply security hardening
-        try await applySecurityHardening()
-
-        // 2. Build attestation blob for registration
-        let attestation = buildRegistrationAttestation()
-
-        // 3. Hash the colocated mlx.metallib so the coordinator (and any
-        // user inspecting attestation) can correlate the GPU kernel set
-        // with the binary. Reported under template_hashes["mlx_metallib"]
-        // so legacy providers and Swift providers can keep one protocol
-        // shape while the coordinator applies backend-specific enforcement.
-        let runtimeWithMetallib = augmentRuntimeHashesWithMetallib(loopConfig.runtimeHashes)
-        if let metallib = runtimeWithMetallib?.templateHashes["mlx_metallib"] {
-            logger.info("mlx.metallib hash: \(metallib.prefix(16))...")
-        } else {
-            logger.warning("mlx.metallib not found near binary -- inference will fail at first GPU call")
-        }
-
-        // APNs code-identity (v0.6.0): wait briefly for the device token the app
-        // delegate captures after registerForRemoteNotifications. Present only on
-        // a logged-in macOS GUI session running under the AppKit host; a headless
-        // / no-GUI box gets nil and registers un-attested (fail-closed at routing).
-        var apnsDeviceToken: String?
-        #if os(macOS)
-        apnsDeviceToken = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 10)
-        if apnsDeviceToken == nil {
-            logger.warning("no APNs device token (no GUI session / not push-provisioned) — registering un-attested")
-        }
-        #endif
-
-        // 4. Create coordinator client config
-        let coordinatorConfig = CoordinatorClientConfig(
-            url: loopConfig.coordinatorURL,
-            hardware: loopConfig.hardware,
-            models: loopConfig.models,
-            backendName: "mlx-swift",
-            heartbeatInterval: TimeInterval(loopConfig.config.coordinator.heartbeatIntervalSecs),
-            publicKey: keyPair.publicKeyBase64,
-            walletAddress: nil,
-            attestation: attestation,
-            authToken: loopConfig.authToken,
-            runtimeHashes: runtimeWithMetallib,
-            modelHashes: loopConfig.modelHashes,
-            privacyCapabilities: privacyCapabilitiesForRegistration(),
-            privateOnly: loopConfig.config.coordinator.privateOnly,
-            apnsDeviceToken: apnsDeviceToken,
-            apnsEnvironment: apnsDeviceToken != nil ? "production" : nil
-        )
-
-        // 4. Create coordinator client and start connection
-        let coordinator = CoordinatorClient(
-            config: coordinatorConfig,
-            stats: stats,
-            state: state
-        )
-        coordinatorClient = coordinator
-        // Seed the client with the current map: a model loaded before the
-        // client existed (e.g. a local-endpoint request during startup) may
-        // already have refreshed a hash, and registration must carry it.
-        await coordinator.updateModelWeightHashes(liveModelHashes)
-
-        let (events, sendFn) = await coordinator.start()
-        let send = SendHandle(sendFn)
-
-        // APNs code-identity (v0.6.0): answer pushed code-identity challenges by
-        // decrypting E_K(nonce) with K and signing the nonce with the SE key, then
-        // replying over THIS WebSocket. The app delegate delivers pushes via the
-        // bridge; we hop into the actor to use K + the signer + this send handle.
-        #if os(macOS)
-        APNsBridge.shared.setPushHandler { [weak self] userInfo in
-            // Extract the Sendable EncryptedPayload synchronously here so the
-            // non-Sendable [String: Any] never crosses into the actor Task.
-            guard let self, let challenge = ProviderLoop.extractCodeChallenge(userInfo) else { return }
-            Task { await self.handleCodeChallenge(challenge, send: send) }
-        }
-
-        // If the device token wasn't ready at registration (APNs slow / GUI
-        // session still coming up), keep watching: when it arrives, reconnect so
-        // registration re-runs WITH the token. Otherwise the provider would stay
-        // un-attested (and unroutable under enforcement) until the process restarts.
-        if apnsDeviceToken == nil {
-            let log = logger
-            Task {
-                if let late = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 60) {
-                    log.info("APNs device token arrived after registration — reconnecting to re-register with token")
-                    await coordinator.refreshAPNsToken(late)
-                }
-            }
-        }
-        #endif
-
-        // Retain the send handle and build the background prefetch coordinator
-        // (Layer 3) so applyVerifiedPrefetch can emit a `models_update` over the
-        // live connection without threading a handle through the prefetch
-        // callbacks. (coordinatorClient was already retained above, at creation.)
-        self.outboundSend = send
-        self.prefetchCoordinator = makePrefetchCoordinator()
-
-        // Start the idle-timeout monitor before processing events so that
-        // a rogue model-load (e.g. during `attestation_challenge` priming)
-        // followed by a long disconnect is still subject to the unload
-        // timer.
-        startIdleMonitor()
-        startCapacityRefreshMonitor()
-        startAutoUpdateMonitor()
-
-        logger.info("Coordinator client started, entering event loop")
-
-        // 5. Process events. Cancellation is used by schedule enforcement
-        // and service shutdown. On cancellation we begin a graceful shutdown
-        // that drains active inference *before* closing the coordinator socket,
-        // so in-flight responses can still reach consumers while we wind down.
-        await withTaskCancellationHandler {
-            for await event in events {
-                switch event {
-                case .connected:
-                    logger.info("Connected to coordinator")
-
-                case .disconnected:
-                    logger.warning("Disconnected from coordinator")
-                    // Cancel all in-flight requests on disconnect -- the coordinator
-                    // will not route responses for a dead connection.
-                    await cancelAllInflight()
-
-                case .inferenceRequest(let requestId, let ciphertext, let senderPublicKey):
-                    await handleInferenceRequest(
-                        requestId: requestId,
-                        ciphertext: ciphertext,
-                        senderPublicKey: senderPublicKey,
-                        send: send
-                    )
-
-                case .cancel(let requestId):
-                    await handleCancellation(requestId: requestId)
-
-                case .attestationChallenge(let nonce, let timestamp):
-                    await handleAttestationChallenge(
-                        nonce: nonce,
-                        timestamp: timestamp,
-                        send: send
-                    )
-
-                case .runtimeOutdated(let mismatches):
-                    logger.warning("Runtime outdated: \(mismatches.count) mismatch(es)")
-                    for m in mismatches {
-                        logger.warning("  \(m.component): expected=\(m.expected), got=\(m.got)")
-                    }
-
-                case .loadModel(let modelId):
-                    handleLoadModelRequest(modelId: modelId, send: send)
-
-                case .prefetchModel(let modelId, let priority):
-                    if isDrainingForUpdate {
-                        sendDrainingPrefetchFailure(modelId: modelId, send: send)
-                    } else {
-                        staleDesiredPrefetches.remove(modelId)
-                        await handlePrefetchModelRequest(modelId: modelId, priority: priority, send: send)
-                    }
-
-                case .desiredModels(let entries):
-                    if isDrainingForUpdate {
-                        // Keep only the latest push (desired state is
-                        // declarative). A successful restart makes it moot —
-                        // registration receives fresh desired state — but an
-                        // aborted restart replays it via resumeServingAfterUpdate.
-                        deferredDesiredModels = entries
-                        logger.info("Deferring desired_models during update drain (\(entries.count) entr(ies)); replayed if the restart is aborted")
-                    } else {
-                        await reconcileDesiredModels(entries, send: send)
-                    }
-
-                case .trustStatus(let trustLevel, let status, let reason):
-                    handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason)
-                }
-            }
-        } onCancel: {
-            // SIGTERM / `darkbloom stop` / schedule-close cancels the run task.
-            // Kick off the shared graceful shutdown, which drains in-flight
-            // inference *before* the transport is torn down. The fall-through
-            // below awaits the same memoized task, so the coordinator socket and
-            // loaded models stay alive until the drain completes. The drain runs
-            // inside an unstructured Task (created by `startShutdown`) that does
-            // NOT inherit this cancellation, so `waitForInflightDrain` keeps
-            // polling instead of bailing on `Task.isCancelled`.
-            Task { await self.startShutdown(drainInflight: true).value }
-        }
-
-        // The event stream ended. If the run task was cancelled (user stop /
-        // restart / schedule close) we drain in-flight inference first; otherwise
-        // (coordinator disconnect, stream finished on its own) we cancel promptly
-        // because responses can no longer be delivered. Either way we await the
-        // SINGLE shared shutdown task, so transport teardown and model unloading
-        // happen only after the drain — never racing it.
-        let runTaskCancelled = Task.isCancelled
-        logger.info("Event stream ended, shutting down")
-        await startShutdown(drainInflight: runTaskCancelled).value
-    }
-
-    /// Start (once) the graceful-shutdown sequence and return the shared task so
-    /// every caller awaits the same drain + teardown. The first caller fixes
-    /// `drainInflight`; later callers receive the in-progress task. This memo is
-    /// what prevents the cancellation handler and the run-loop fall-through from
-    /// running two competing shutdowns.
-    @discardableResult
-    private func startShutdown(drainInflight: Bool) -> Task<Void, Never> {
-        if let shutdownTask { return shutdownTask }
-        let task = Task { await self.runShutdownSequence(drainInflight: drainInflight) }
-        shutdownTask = task
-        return task
-    }
-
-    /// The single graceful-shutdown sequence (runs exactly once via the
-    /// `startShutdown` memo):
-    ///   1. Mark `isShuttingDown` so new work is refused (503 reroute).
-    ///   2. Either drain in-flight inference while keeping the coordinator socket
-    ///      OPEN (so chunks + final completions still reach consumers), or — when
-    ///      the connection is already gone — cancel in-flight work outright.
-    ///   3. Only AFTER the drain completes, tear down the transport, the disk
-    ///      accountant, and unload models, then release power assertions.
-    private func runShutdownSequence(drainInflight: Bool) async {
-        isShuttingDown = true
-        if drainInflight {
-            logger.info("Graceful shutdown requested; draining active inference before closing coordinator connection")
-            // The run loop has stopped consuming coordinator events, but we keep
-            // the socket open to finish in-flight responses. Tell the client to
-            // reject NEW inference requests with 503 so the coordinator reroutes
-            // them immediately instead of black-holing them for the whole drain,
-            // and to route `cancel` frames for in-flight requests straight to
-            // `handleCancellation` so an aborted stream stops generating promptly.
-            let drainSelf = self
-            await coordinatorClient?.beginDraining(
-                onCancel: { requestId in
-                    await drainSelf.handleCancellation(requestId: requestId, receivedFromCoordinator: true)
-                },
-                onDisconnect: {
-                    // The socket dropped mid-drain: the coordinator has failed our
-                    // in-flight requests, so cancel them instead of generating
-                    // frames that can no longer reach the consumer.
-                    await drainSelf.cancelAllInflight()
-                }
-            )
-            // Cancel background work + preloads first, but keep the coordinator
-            // socket open so in-flight responses can still be delivered while we
-            // drain. `sparingInflightLoads: true` lets a request that was still
-            // cold-loading when shutdown began finish its load (only background
-            // preloads are cancelled), so it can drain instead of erroring.
-            await cancelBackgroundWorkAndPreloads(sparingInflightLoads: true)
-            let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
-            if !drained {
-                logger.warning("Timed out waiting for active inference to drain; cancelling remaining requests")
-                await cancelAllInflight()
-                // The drain window is over: abort any loads that were spared above
-                // but never finished, so suspended load tasks unwind.
-                cancelLoadWaiters()
-            }
-            // Flush queued outbound frames (the tail of a finished request — its
-            // last chunks and `inference_complete`) before tearing down the
-            // transport, so a slow socket doesn't drop responses for a request
-            // that just drained successfully.
-            await coordinatorClient?.flushOutbound(timeout: Self.outboundFlushTimeout)
-        } else {
-            // The event stream ended without a controlled drain (e.g. coordinator
-            // disconnect): the connection is already gone, so cancel in-flight
-            // work rather than waiting on responses that can't be delivered.
-            await cancelAllInflight()
-            await cancelBackgroundWorkAndPreloads(sparingInflightLoads: false)
-        }
-
-        // Drain (if any) is complete: now it is safe to close the transport and
-        // release GPU/model resources.
-        await coordinatorClient?.shutdown()
-        // Phase 3: shutdown the global disk accountant.
-        await diskAccountant.shutdown()
-        while !modelSlots.isEmpty {
-            if let unloading = modelsUnloading.first {
-                await waitForModelUnload(unloading)
-                continue
-            }
-            for modelId in Array(modelSlots.keys) {
-                await unloadModel(modelId)
-            }
-        }
-        powerAssertion.releaseAll()
-    }
-
-    /// Cancel optional background tasks and prefetch/preload work. Idempotent so
-    /// it can be called from both the drain and non-drain branches of
-    /// `runShutdownSequence`. `sparingInflightLoads` is forwarded to
-    /// `cancelLoadWaiters`: during a graceful drain we spare loads backing an
-    /// accepted request so they can finish.
-    private func cancelBackgroundWorkAndPreloads(sparingInflightLoads: Bool) async {
-        idleMonitorTask?.cancel()
-        idleMonitorTask = nil
-        capacityRefreshTask?.cancel()
-        capacityRefreshTask = nil
-        autoUpdateTask?.cancel()
-        autoUpdateTask = nil
-        autoReportTask?.cancel()
-        autoReportTask = nil
-        // Cancel any scheduled desired-build prefetch retries before tearing
-        // the prefetch subsystem down.
-        for task in desiredPrefetchRetryTasks.values { task.cancel() }
-        desiredPrefetchRetryTasks.removeAll()
-        desiredPrefetchRetryAttempts.removeAll()
-        // Cancel background prefetch downloads (no GPU slot, but they hold a
-        // network connection and disk staging we want to release promptly).
-        if let prefetchCoordinator {
-            await prefetchCoordinator.shutdown(timeout: Self.preloadShutdownTimeout)
-        }
-        // During a graceful drain, a preload may be the actual loader for a model
-        // that an already-accepted request is waiting on (the request sits in
-        // `loadingWaiters` while the preload owns `ensureModelLoaded`). Cancelling
-        // that preload would fail the accepted request instead of letting it
-        // drain, so spare preloads whose model still backs an in-flight request
-        // and only cancel/await the background-only ones. Spared preloads finish
-        // the load (waiters resume) and clean themselves up via `removePreloadTask`.
-        let inflightModels = sparingInflightLoads ? Set(requestToModel.values) : Set<String>()
-        let preloadsToCancel = preloadTasks.filter { !inflightModels.contains($0.key) }
-        for (_, task) in preloadsToCancel { task.cancel() }
-        cancelLoadWaiters(sparingInflightRequests: sparingInflightLoads)
-        let cancelledPreloads = Array(preloadsToCancel.values)
-        let preloadsFinished = await waitForPreloads(cancelledPreloads, timeout: Self.preloadShutdownTimeout)
-        if !preloadsFinished {
-            logger.warning("Timed out waiting for coordinator-driven preloads to cancel during shutdown")
-        }
-        for key in preloadsToCancel.keys {
-            preloadTasks.removeValue(forKey: key)
-            preloadTaskIds.removeValue(forKey: key)
-            preloadStatusSubscribers.removeValue(forKey: key)
-        }
-    }
-
-    // MARK: - Security Hardening
-
-    private func applySecurityHardening() async throws {
-        #if !DEBUG
-        let posture = try verifySecurityPosture()
-        guard let binaryHash = posture.binaryHash, !binaryHash.isEmpty else {
-            logger.error("Security hardening failed: provider binary hash unavailable")
-            throw ProviderLoopError.binaryHashUnavailable
-        }
-        self.securityPosture = posture
-        self.binaryHash = binaryHash
-        logger.info("Security posture verified: SIP=\(posture.sipEnabled), RDMA_disabled=\(posture.rdmaDisabled), SE=\(SecureEnclave.isAvailable)")
-        #else
-        logger.info("Security hardening skipped in DEBUG mode")
-        self.binaryHash = selfBinaryHash()
-        #endif
-    }
-
-    private func privacyCapabilitiesForRegistration() -> PrivacyCapabilities {
-        // textBackendInprocess + textProxyDisabled: always true on the Swift
-        //   provider -- inference runs in-process via mlx-swift-lm, no HTTP
-        //   proxy is involved.
-        // pythonRuntimeLocked + dangerousModulesBlocked: report false. There
-        //   is no Python runtime to lock anymore. Coordinator's Swift-runtime
-        //   trust path (registry.BackendUsesSwiftRuntime) doesn't read these.
-        // hypervisorActive: false -- Hypervisor.framework Stage 2 page tables
-        //   were dropped at the migration; trust is RDMA discipline + SE
-        //   attestation.
-        if let posture = securityPosture {
-            return PrivacyCapabilities(
-                textBackendInprocess: true,
-                textProxyDisabled: true,
-                pythonRuntimeLocked: false,
-                dangerousModulesBlocked: false,
-                sipEnabled: posture.sipEnabled,
-                antiDebugEnabled: posture.antiDebugEnabled,
-                coreDumpsDisabled: posture.coreDumpsDisabled,
-                envScrubbed: posture.envScrubbed,
-                hypervisorActive: false
-            )
-        }
-
-        // Pre-hardening fallback (DEBUG builds, or hardening failed).
-        return PrivacyCapabilities(
-            textBackendInprocess: true,
-            textProxyDisabled: true,
-            pythonRuntimeLocked: false,
-            dangerousModulesBlocked: false,
-            sipEnabled: SecurityChecks.isSIPEnabled(),
-            antiDebugEnabled: false,
-            coreDumpsDisabled: false,
-            envScrubbed: false,
-            hypervisorActive: false
-        )
-    }
-
-    // MARK: - Runtime hashes
-
-    /// Add the live mlx.metallib hash under template_hashes["mlx_metallib"]
-    /// while preserving any caller-supplied template entries. Returns nil if
-    /// the input was nil and no metallib could be located (so we don't
-    /// fabricate an empty RuntimeHashes that would suppress legitimate
-    /// nil-handling downstream).
-    private func augmentRuntimeHashesWithMetallib(
-        _ existing: RuntimeHashes?
-    ) -> RuntimeHashes? {
-        let metallib = metallibHash()
-
-        // No metallib and no caller-supplied data -- return whatever the
-        // caller passed (might be nil; that's fine).
-        if metallib == nil, existing == nil {
-            return nil
-        }
-
-        var templates = existing?.templateHashes ?? [:]
-        if let metallib {
-            templates["mlx_metallib"] = metallib
-        }
-
-        return RuntimeHashes(
-            pythonHash: existing?.pythonHash,
-            runtimeHash: existing?.runtimeHash,
-            templateHashes: templates
-        )
-    }
-
-    // MARK: - Attestation
-
-    private func buildRegistrationAttestation() -> RawJSON? {
-        guard let builder = attestationBuilder else {
-            logger.info("No Secure Enclave identity -- registration without attestation")
-            return nil
-        }
-        do {
-            let jsonData = try builder.buildAttestationJSON(
-                encryptionPublicKey: keyPair.publicKeyBase64,
-                binaryHash: binaryHash
-            )
-            return RawJSON(rawBytes: jsonData)
-        } catch {
-            logger.error("Failed to build attestation: \(error)")
-            return nil
-        }
-    }
-
-    // MARK: - Inference Request Handling
-
-    /// Whether the provider is draining for a hot-swap update and must refuse
-    /// new work. 503 is the documented no-fault reroute signal (the coordinator
-    /// routes elsewhere); local requests get a 503-equivalent queue-full. We
-    /// only drain AFTER the new bundle is staged and verified (`.installing`
-    /// still serves, and staging never touches the live layout), so this never
-    /// costs capacity for a failed update.
-    ///
-    /// Both admission paths call this twice: a fast-path reject up front, and an
-    /// authoritative re-check right before the request is registered/reserved —
-    /// the early gate is stale across the `await` between them. Each helper is
-    /// synchronous + actor-isolated, so the authoritative call is atomic with the
-    /// registration that follows (no suspension in between).
-    private var isDrainingForUpdate: Bool { updatePhase == .draining }
-
-    /// Coordinator admission: sends the 503 reroute and returns true if the
-    /// request must be dropped because we're draining.
-    private func rejectIfDrainingForUpdate(requestId: String, send: SendHandle) -> Bool {
-        guard isDrainingForUpdate else { return false }
-        send.send(.inferenceError(
-            requestId: requestId,
-            error: providerDrainingForUpdateReason,
-            statusCode: 503
-        ))
-        return true
-    }
-
-    /// Local-endpoint admission: throws a 503-equivalent when new local work
-    /// must be refused — during the update drain (hot-swap restart imminent)
-    /// or once the provider is shutting down. The shutdown drain waits on
-    /// `localReservations`; without the shutdown gate a steady local client
-    /// could keep reservations non-empty and hold `run()` open for the full
-    /// shutdown drain timeout, then have its models unloaded mid-stream.
-    private func throwIfRefusingNewLocalWork() throws {
-        if isShuttingDown {
-            throw MultiModelBatchSchedulerEngineError.queueFull("provider shutting down")
-        }
-        if isDrainingForUpdate {
-            throw MultiModelBatchSchedulerEngineError.queueFull(providerDrainingForUpdateReason)
-        }
-    }
-
-    /// Coordinator prefetch/load control messages are not user requests, but
-    /// starting new model work during the final update drain is pointless and
-    /// can briefly make the coordinator believe a soon-to-restart provider has
-    /// warmed a model. Reject them explicitly with the well-known draining
-    /// reason — the coordinator treats that load failure as transient (short
-    /// backoff) instead of a real load-failure cooldown. The post-restart
-    /// registration receives fresh `desired_models` and demand-driven
-    /// `load_model` can retry.
-    private func sendDrainingLoadModelFailure(modelId: String, send: SendHandle) {
-        send.send(.loadModelStatus(
-            modelId: modelId,
-            status: .failed,
-            error: providerDrainingForUpdateReason
-        ))
-    }
-
-    private func sendDrainingPrefetchFailure(modelId: String, send: SendHandle) {
-        send.send(.prefetchModelStatus(
-            modelId: modelId,
-            status: .failed,
-            bytesDone: 0,
-            bytesTotal: 0,
-            error: providerDrainingForUpdateReason
-        ))
-    }
-
-    private func handleInferenceRequest(
-        requestId: String,
-        ciphertext: Data,
-        senderPublicKey: Data?,
-        send: SendHandle
-    ) async {
-        logger.info("Processing inference request: \(requestId)")
-
-        if isShuttingDown {
-            send.send(.inferenceError(
-                requestId: requestId,
-                error: "provider is shutting down",
-                statusCode: 503
-            ))
-            return
-        }
-
-        // Fast-path drain reject (skips decrypt/parse work). Re-checked
-        // authoritatively at step 4. See `rejectIfDrainingForUpdate`.
-        if rejectIfDrainingForUpdate(requestId: requestId, send: send) { return }
-
-        // 1. Decrypt the request body. Both `ciphertext` and
-        // `senderPublicKey` are already base64-decoded by CoordinatorClient,
-        // so we hand the raw bytes straight to NodeKeyPair.decrypt.
-        guard let senderKey = senderPublicKey, senderKey.count == 32 else {
-            logger.error("[\(requestId)] missing or malformed sender public key")
-            send.send(.inferenceError(
-                requestId: requestId,
-                error: "missing or malformed ephemeral_public_key",
-                statusCode: 400
-            ))
-            return
-        }
-
-        let decryptedData: Data
-        do {
-            decryptedData = try keyPair.decrypt(
-                senderPublicKey: senderKey,
-                ciphertext: ciphertext
-            )
-        } catch {
-            logger.error("[\(requestId)] decryption failed: \(error)")
-            send.send(.inferenceError(
-                requestId: requestId,
-                error: "decryption failed",
-                statusCode: 400
-            ))
-            return
-        }
-
-        // 2. Parse the chat completion request into the upstream
-        // `OpenAIChatCompletionRequest` shape. `decodeOpenAIRequest`
-        // strict-decodes on the fast path and, on failure, normalises a
-        // few valid-but-strictly-rejected OpenAI shapes (hosted/custom
-        // tools, content-less messages, the `developer` role) before
-        // retrying — surfacing the real decoder error on failure rather
-        // than a masked one (#252). See ProviderLoop+InboundDecode.swift.
-        let chatRequest: OpenAIChatCompletionRequest
-        do {
-            chatRequest = try Self.decodeOpenAIRequest(decryptedData)
-        } catch {
-            // Privacy: the provider logger renders the whole message `.public`, and
-            // reports collect this subsystem — so never interpolate the raw decode
-            // error, which on a malformed body can carry a fragment of the (now
-            // decrypted) request, i.e. user prompt content. Log only the error TYPE.
-            // The requester-facing string below is likewise kept generic: it transits
-            // the coordinator in plaintext and is logged server-side, so interpolating
-            // the raw error could resurface a prompt fragment in coordinator logs
-            // (defense-in-depth for the "coordinator never sees plaintext" invariant).
-            logger.error("[\(requestId)] Failed to parse chat request (\(type(of: error)))")
-            send.send(.inferenceError(requestId: requestId, error: "invalid request body", statusCode: 400))
-            return
-        }
-
-        // `reasoning_effort` is not part of the upstream
-        // `OpenAIChatCompletionRequest` shape, so decode it directly from
-        // the request body and thread it into the chat template's render
-        // context below (see `MultiModelBatchSchedulerEngine`). gpt-oss /
-        // Harmony reads it to set the reasoning budget; other models
-        // ignore the extra template variable.
-        let reasoningEffort = Self.extractReasoningEffort(from: decryptedData)
-        // Per-tenant prefix-cache scope (prompt_cache_key / user). Decoded from
-        // the sealed body like reasoning_effort; threaded into the engine so the
-        // checkpoint cache is partitioned per consumer. "" ⇒ unscoped.
-        let cacheScope = Self.extractCacheScope(from: decryptedData)
-
-        // 3. Fast pre-accept admission check. The coordinator accepts fast and
-        // then waits for the first chunk with the full inference timeout, so we
-        // must REJECT (status 503) any request we are *certain* we cannot serve
-        // — letting the coordinator reroute — rather than accept-then-fail,
-        // which it counts as a provider fault (reputation penalty). This mirrors
-        // the real load-failure conditions WITHOUT loading anything and is
-        // deliberately conservative: when in doubt it admits and lets the
-        // post-accept load path below make the final call.
-        let modelId = chatRequest.model
-        if await fastAdmissionReject(modelId: modelId) {
-            logger.warning("[\(requestId)] Pre-accept reject for '\(modelId)': insufficient capacity to load")
-            send.send(.inferenceError(
-                requestId: requestId,
-                error: "insufficient memory to load model '\(modelId)'",
-                statusCode: 503
-            ))
-            return
-        }
-
-        // 4. Authoritative drain re-check. `await fastAdmissionReject` above is a
-        // suspension point, so a shutdown or update-drain could have begun (and
-        // its drain snapshot taken) while this request was parked — letting it
-        // slip past the early gates at the top of this method. There is NO
-        // `await` between these checks and the `requestToModel` registration
-        // below, so on the actor they are atomic: either we reject now, or the
-        // request is counted in `hasInflightWork` before any drain snapshot can
-        // miss it. The shutdown re-check must come first — without it, a request
-        // suspended in `fastAdmissionReject` when SIGTERM arrives would send
-        // `inference_accepted` and then be dropped as the socket/models tear
-        // down, instead of cleanly returning 503 so the coordinator reroutes.
-        if isShuttingDown {
-            send.send(.inferenceError(
-                requestId: requestId,
-                error: "provider is shutting down",
-                statusCode: 503
-            ))
-            return
-        }
-        if rejectIfDrainingForUpdate(requestId: requestId, send: send) { return }
-
-        // 5. Send inference_accepted
-        send.send(.inferenceAccepted(requestId: requestId))
-
-        // 6. Mark the request before loading so concurrent preloads cannot
-        // evict the model this accepted request is waiting for.
-        requestToModel[requestId] = modelId
-        powerAssertion.acquire()
-        syncWarmModelState()
-        let token = await cancellationRegistry.register(requestId: requestId)
-
-        // 6. Ensure model is loaded. The fast check above only rules out
-        // certain failures; this stays authoritative for races (e.g. another
-        // request consuming the last slot or free memory between accept and
-        // load). Map the failure to a status code so capacity errors reroute
-        // (503) and missing models 404 instead of always counting as a fault.
-        //
-        // Run the load in a DETACHED task. `handleInferenceRequest` is awaited
-        // inline from the run loop, so it inherits the run task — which a stop/
-        // restart cancels. Detaching means a graceful drain lets this
-        // already-accepted request (it has `inference_accepted` + a
-        // `requestToModel` entry) finish its cold load instead of aborting it
-        // via `Task.checkCancellation()`. The detached task is not cancelled, so
-        // those gates (which exist to abort *background preloads*) don't fire for
-        // it; shutdown still aborts it only if no in-flight request needs the
-        // model (`shutdownShouldAbortLoad`). Awaiting `.value` from a cancelled
-        // run task does not throw — it waits for the load to finish.
-        let loadSelf = self
-        let loadTask = Task.detached { try await loadSelf.ensureModelLoaded(modelId: modelId) }
-        inflightModelLoadTasks[requestId] = loadTask
-        do {
-            try await loadTask.value
-            inflightModelLoadTasks[requestId] = nil
-        } catch {
-            inflightModelLoadTasks[requestId] = nil
-            if requestToModel.removeValue(forKey: requestId) != nil {
-                powerAssertion.release()
-                syncWarmModelState()
-                await updateAggregateCapacity()
-            }
-            await cancellationRegistry.finish(requestId: requestId)
-            // A cancelled load (client/coordinator cancel, or a shutdown drain
-            // cancelling the detached load task) is NOT a model fault. Reporting
-            // "model load failed" with a 5xx would make the coordinator cooldown
-            // / deroute a healthy provider+model. Map it to a clean shutdown 503
-            // (reroute) when draining, and stay silent for a plain cancel — the
-            // coordinator already aborted the request that triggered it.
-            if error is CancellationError {
-                if isShuttingDown {
-                    send.send(.inferenceError(requestId: requestId, error: "provider is shutting down", statusCode: 503))
-                } else {
-                    logger.info("[\(requestId)] Model load cancelled before completion")
-                }
-                return
-            }
-            logger.error("[\(requestId)] Failed to load model '\(modelId)': \(error)")
-            let statusCode = Self.loadErrorStatusCode(for: error)
-            send.send(.inferenceError(requestId: requestId, error: "model load failed: \(error.localizedDescription)", statusCode: statusCode))
-            return
-        }
-
-        guard requestToModel[requestId] == modelId else {
-            await cancellationRegistry.finish(requestId: requestId)
-            logger.info("[\(requestId)] Request cancelled during model load")
-            return
-        }
-
-        guard let slot = modelSlots[modelId] else {
-            if requestToModel.removeValue(forKey: requestId) != nil {
-                powerAssertion.release()
-                syncWarmModelState()
-                await updateAggregateCapacity()
-            }
-            await cancellationRegistry.finish(requestId: requestId)
-            logger.error("[\(requestId)] Model '\(modelId)' disappeared after load")
-            send.send(.inferenceError(requestId: requestId, error: "model unavailable", statusCode: 500))
-            return
-        }
-
-        modelSlots[modelId]?.lastInferenceAt = .now
-        syncWarmModelState()
-
-        // 7. Capture values for the spawned task
-        let responsePublicKeyData: Data = senderKey
-        let kp = self.keyPair
-        let sched = slot.scheduler
-        let providerStats = self.stats
-        let registry = self.cancellationRegistry
-        let signingIdentity = self.signer
-        let log = self.logger
-        let tokenizer = slot.tokenizer
-        // Read modelType from the loaded SLOT, not advertisedModels: the latter
-        // goes nil in the hard-swap drop window while the slot is still resident,
-        // which would silently fall the reasoning parser back to qwen3 and leak
-        // <think> tokens for a Gemma build. The slot carries the type captured at
-        // load, so it is correct for startup, prefetched, AND dropped-resident.
-        let modelType = slot.modelType
-        let slotContainer = slot.container
-        let slotIsVLM = slot.isVLM
-
-        // 8. Spawn inference task. The streaming pipeline now flows through
-        // the upstream `MLXLMServer` library:
-        //   - `MultiModelBatchSchedulerEngine` adapts our `BatchScheduler` to
-        //     the `MLXServerEngine` contract.
-        //   - `MLXOpenAIService.streamChatCompletionFrames` formats SSE
-        //     frames (matching the wire shape the coordinator already parses).
-        // We encrypt each frame and forward it via `inferenceChunk` exactly
-        // as before. The response hash for SE attestation is computed over
-        // the assembled assistant text, extracted by parsing each emitted
-        // chunk back from its JSON delta.
-        let me = self
-        let task = Task.detached {
-            defer {
-                Task {
-                    await registry.finish(requestId: requestId)
-                    await me.finishInflightRequest(requestId: requestId)
-                }
-            }
-
-            /// Encrypts and emits an SSE frame string. Returns `false` if
-            /// encryption failed — callers must abort the inference task
-            /// immediately.
-            let emitSSE: @Sendable (String) -> Bool = { sseData in
-                let encryptedPayload: EncryptedPayload
-                do {
-                    encryptedPayload = try kp.encryptPayload(
-                        recipientPublicKey: responsePublicKeyData,
-                        plaintext: Data(sseData.utf8)
-                    )
-                } catch {
-                    log.error("[\(requestId)] Chunk encryption failed: \(error)")
-                    providerStats.incrementChunkEncryptionErrors()
-                    send.send(.inferenceError(
-                        requestId: requestId,
-                        error: "response encryption failed",
-                        statusCode: 500
-                    ))
-                    return false
-                }
-
-                send.send(.inferenceChunk(
-                    requestId: requestId,
-                    data: "",
-                    encryptedData: encryptedPayload
-                ))
-                return true
-            }
-
-            // Build a single-model engine view bound to the scheduler we
-            // already resolved. This keeps the engine constructor's
-            // "model not loaded" path unreachable on this code path while
-            // still going through the upstream library for SSE encoding.
-            let providerEngine = MultiModelBatchSchedulerEngine(
-                registryProvider: { @Sendable in
-                    [chatRequest.model: .init(
-                        scheduler: sched, tokenizer: tokenizer, modelType: modelType,
-                        container: slotContainer, isVLM: slotIsVLM)]
-                },
-                ensureLoaded: { _ in },
-                reserveModel: { _ in },
-                releaseModel: { _ in },
-                defaultMaxTokens: Self.schedulerDefaultMaxTokens,
-                reasoningEffort: reasoningEffort,
-                cacheScope: cacheScope
-            )
-
-            // Force-stream so we get SSE frames even if the original request
-            // had `stream: false`. The coordinator always uses streaming
-            // chunks on the wire today; non-streaming consumers reassemble
-            // on their end.
-            //
-            // Also force `streamOptions.includeUsage = true`. Without it,
-            // upstream's `MLXOpenAIService.streamChatCompletionFrames` will
-            // not emit the trailing usage chunk (see
-            // `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift`
-            // line 88: `let includeUsage = request.streamOptions?.includeUsage == true`).
-            // Missing usage means `parseStreamChunk` never extracts
-            // `promptTokens`/`completionTokens`, and the coordinator bills
-            // $0 for the request. This is the C1 fix.
-            var streamingRequest = chatRequest
-            streamingRequest.stream = true
-            var forcedStreamOptions = streamingRequest.streamOptions
-                ?? OpenAIStreamOptions()
-            forcedStreamOptions.includeUsage = true
-            streamingRequest.streamOptions = forcedStreamOptions
-
-            // Auto-select reasoning parser based on model type if the
-            // consumer didn't specify one. This ensures model-specific
-            // reasoning tokens (Harmony channels, Gemma4 channels,
-            // Qwen3/DeepSeek <think> tags) are parsed into
-            // reasoning_content rather than leaking as raw content.
-            if streamingRequest.reasoningParser == nil {
-                streamingRequest.reasoningParser = Self.inferReasoningParser(for: modelType)
-            }
-
-            let service = MLXOpenAIService(engine: providerEngine)
-            let frames: AsyncThrowingStream<String, Error>
-            do {
-                frames = try await service.streamChatCompletionFrames(
-                    request: streamingRequest
-                )
-            } catch {
-                log.error("[\(requestId)] Failed to start stream: \(error)")
-                let statusCode = Self.mapInferenceErrorToStatus(error)
-                send.send(.inferenceError(
-                    requestId: requestId,
-                    error: error.localizedDescription,
-                    statusCode: statusCode
-                ))
-                return
-            }
-
-            await me.updateAggregateCapacity()
-
-            var fullResponseText = ""
-            var promptTokens = 0
-            var completionTokens = 0
-            // Defense-in-depth for the billing-zero leak: count SSE frames that
-            // carried visible output. If the usage chunk is lost entirely
-            // (parser drift / upstream regression), this is a conservative
-            // lower-bound floor for completion tokens so a request that clearly
-            // produced output never settles at 0 (which the coordinator would
-            // fully refund). MLX streams ~1 token per frame, so this slightly
-            // under-counts vs. true tokenization but never bills $0 for work.
-            var contentFrameCount = 0
-            // Accumulated `reasoning_content` deltas (gpt-oss analysis
-            // channel, Qwen3/DeepSeek <think>, Gemma4 channels). Re-tokenized
-            // at completion to report an accurate `reasoning_tokens` count —
-            // upstream's usage block only carries the total completion count.
-            var reasoningText = ""
-            var reasoningTokens = 0
-
-            // A cancelled request that already streamed output settles through
-            // the completion path below with real usage, not a bare 499 ($0).
-            var cancelledMidStream = false
-            do {
-                for try await frame in frames {
-                    if token.isCancelled {
-                        log.info("[\(requestId)] Cancelled during generation")
-                        cancelledMidStream = true
-                        break  // exiting propagates the abort via onTermination
-                    }
-                    // Aggregate the assistant text + usage by parsing each
-                    // chunk back from its JSON delta. This is the cost of
-                    // routing through `streamChatCompletionFrames` instead
-                    // of the raw engine event stream — but the alternative
-                    // is duplicating SSE encoding logic.
-                    //
-                    // TB-007: hash domain = content + reasoning_content + tool_calls (canonicalized).
-                    // - `content` and `reasoning_content` are concatenated
-                    //   verbatim so the hash matches the engine's emitted
-                    //   bytes (and what the consumer reassembles after SSE
-                    //   parsing). When `reasoning_parser` is set, upstream
-                    //   splits `<think>...</think>` blocks into the
-                    //   `reasoning_content` delta field, so hashing only
-                    //   the visible `content` would commit to a different
-                    //   set of bytes than what the engine produced.
-                    // - `tool_calls` are folded in via
-                    //   `encodeToolCallsForHash(_:)` (P2 #2). Tool-calling
-                    //   responses often carry empty `content` with the
-                    //   real assistant output on `delta.tool_calls`; a
-                    //   hash that ignored them would commit to (near-)
-                    //   empty bytes instead of the actual output.
-                    var frameToEmit = frame
-                    if let parsed = Self.parseStreamChunk(frame) {
-                        var frameHadContent = false
-                        if let content = parsed.contentDelta {
-                            fullResponseText += content
-                            // Count only NON-empty content toward the billing
-                            // floor: parseStreamChunk returns a non-nil but empty
-                            // contentDelta for SSE frames carrying "content":""
-                            // (role/terminal deltas), which produce no visible
-                            // output and must not be billed.
-                            if !content.isEmpty {
-                                frameHadContent = true
-                            }
-                        }
-                        if let reasoning = parsed.reasoningDelta, !reasoning.isEmpty {
-                            fullResponseText += reasoning
-                            frameHadContent = true
-                            reasoningText += reasoning
-                        }
-                        if let toolCalls = parsed.toolCallsDelta, !toolCalls.isEmpty {
-                            fullResponseText += Self.encodeToolCallsForHash(toolCalls)
-                            frameHadContent = true
-                        }
-                        if frameHadContent {
-                            contentFrameCount += 1
-                        }
-                        if let usage = parsed.usage {
-                            promptTokens = usage.promptTokens
-                            completionTokens = usage.completionTokens
-                            // The usage block rides the final chunk, after all
-                            // reasoning deltas, so `reasoningText` is complete
-                            // here. Re-tokenize it for an accurate count and
-                            // surface it to chat-completions consumers via
-                            // `usage.completion_tokens_details.reasoning_tokens`
-                            // (OpenAI shape). The coordinator forwards this
-                            // chunk verbatim, so no coordinator change is
-                            // needed for the streaming path.
-                            if !reasoningText.isEmpty {
-                                // Re-tokenizing detokenized text isn't a perfect
-                                // identity (whitespace/special-token merges), so
-                                // clamp to the engine's completion count — a
-                                // reasoning subset can never exceed the total.
-                                reasoningTokens = min(
-                                    tokenizer.inner.encode(
-                                        text: reasoningText, addSpecialTokens: false
-                                    ).count,
-                                    max(0, completionTokens)
-                                )
-                                frameToEmit = Self.injectReasoningTokens(
-                                    into: frame, reasoningTokens: reasoningTokens
-                                )
-                            }
-                        }
-                    }
-                    if !emitSSE(frameToEmit) { return }
-                }
-            } catch {
-                // Cancellation can throw here or end the stream as a clean
-                // nil-end (caught after the loop); both settle as a cancel.
-                if error is CancellationError || token.isCancelled {
-                    log.info("[\(requestId)] Cancelled while waiting on next frame")
-                    cancelledMidStream = true
-                } else {
-                    log.error("[\(requestId)] Generation error: \(error)")
-                    if Self.hasVisibleStreamOutput(
-                        contentFrameCount: contentFrameCount,
-                        fullResponseText: fullResponseText
-                    ) {
-                        providerStats.incrementGenerationErrorsAfterOutput()
-                    }
-                    if Self.isStreamClosedWithoutTerminal(error) {
-                        providerStats.incrementStreamClosedWithoutTerminal()
-                    }
-                    let statusCode = Self.mapInferenceErrorToStatus(error)
-                    send.send(.inferenceError(
-                        requestId: requestId,
-                        error: error.localizedDescription,
-                        statusCode: statusCode
-                    ))
-                    return
-                }
-            }
-            if token.isCancelled { cancelledMidStream = true }
-
-            // Cancelled with nothing delivered: 499 so the coordinator refunds.
-            if cancelledMidStream && contentFrameCount == 0 && fullResponseText.isEmpty {
-                providerStats.incrementCancellationsBeforeOutput()
-                send.send(.inferenceError(
-                    requestId: requestId,
-                    error: "request cancelled",
-                    statusCode: 499
-                ))
-                return
-            }
-
-            // No usage chunk (the normal case for a cancelled stream, since the
-            // engine's usage rides the final chunk an abort never sends; also an
-            // upstream regression on clean finish). Recover a billing floor:
-            // completion = content-frame count (~1 token/frame); prompt =
-            // re-template via the engine's exact applyChatTemplate path. VLM
-            // prompts under-count (no image tokens) — a floor, never an overcharge.
-            if promptTokens == 0 || completionTokens == 0 {
-                if completionTokens == 0 && contentFrameCount > 0 {
-                    completionTokens = contentFrameCount
-                    log.warning(
-                        "[\(requestId)] usage chunk missing/zero completion tokens"
-                        + "\(cancelledMidStream ? " (cancelled mid-stream)" : ""); "
-                        + "billing \(contentFrameCount) observed content frames as a floor."
-                    )
-                }
-                if promptTokens == 0 {
-                    promptTokens = Self.promptTokenFloor(
-                        request: streamingRequest,
-                        tokenizer: tokenizer,
-                        reasoningEffort: reasoningEffort
-                    )
-                    if promptTokens > 0 {
-                        log.warning(
-                            "[\(requestId)] usage chunk missing/zero prompt tokens"
-                            + "\(cancelledMidStream ? " (cancelled mid-stream)" : ""); "
-                            + "billing \(promptTokens) re-templated prompt tokens as a floor."
-                        )
-                    }
-                }
-                // Re-tokenize reasoning here too — a cancel ends before the
-                // usage parse that normally does it.
-                if reasoningTokens == 0 && !reasoningText.isEmpty && completionTokens > 0 {
-                    reasoningTokens = min(
-                        tokenizer.inner.encode(
-                            text: reasoningText, addSpecialTokens: false
-                        ).count,
-                        completionTokens
-                    )
-                }
-                if promptTokens == 0 || completionTokens == 0 {
-                    log.warning(
-                        "[\(requestId)] CRITICAL: usage missing after recovery "
-                        + "(promptTokens=\(promptTokens), "
-                        + "completionTokens=\(completionTokens), "
-                        + "contentFrames=\(contentFrameCount)). "
-                        + "Billing will be undercounted. Check upstream "
-                        + "MLXOpenAIService.streamChatCompletionFrames behavior."
-                    )
-                }
-                // Surface to `doctor` — but not for a cancel, where a missing
-                // final chunk is expected, not an upstream anomaly.
-                if !cancelledMidStream {
-                    providerStats.incrementUsageGaps()
-                }
-            }
-
-            if cancelledMidStream {
-                providerStats.incrementCancellationsPartialComplete()
-            }
-
-            // Update stats
-            providerStats.incrementRequestsServed()
-            providerStats.addTokensGenerated(UInt64(max(completionTokens, 0)))
-
-            // Update state
-            await me.updateAggregateCapacity()
-
-            // Send completion
-            let attestation = computeResponseAttestation(
-                identity: signingIdentity,
-                requestId: requestId,
-                completionTokens: UInt64(max(completionTokens, 0)),
-                responseBody: fullResponseText
-            )
-            let usageInfo = UsageInfo(
-                promptTokens: UInt64(max(0, promptTokens)),
-                completionTokens: UInt64(max(0, completionTokens)),
-                reasoningTokens: UInt64(max(0, reasoningTokens))
-            )
-            send.send(.inferenceComplete(
-                requestId: requestId,
-                usage: usageInfo,
-                seSignature: attestation.signature,
-                responseHash: attestation.hash
-            ))
-
-            log.info(
-                "[\(requestId)] Complete\(cancelledMidStream ? " (cancelled mid-stream, partial settle)" : ""): "
-                + "\(promptTokens) prompt + \(completionTokens) completion tokens")
-        }
-
-        inflightTasks[requestId] = task
-        if completedBeforeTaskRegistration.remove(requestId) != nil {
-            inflightTasks.removeValue(forKey: requestId)
-        }
-        modelSlots[modelId]?.lastInferenceAt = .now
-    }
-
-    // MARK: - Coordinator-driven preload
-
-    /// Handle a `load_model` request from the coordinator. The provider
-    /// kicks off the load asynchronously (so the WebSocket reader stays
-    /// responsive) and emits `load_model_status` outbound messages
-    /// reporting `started` immediately and `succeeded`/`failed` when the
-    /// load completes.
-    ///
-    /// If the model is already loaded, we short-circuit with
-    /// `succeeded` -- the coordinator can use this as an idempotent
-    /// "ensure warm" call.
-    private func handleLoadModelRequest(modelId: String, send: SendHandle) {
-        if isShuttingDown {
-            send.send(.loadModelStatus(
-                modelId: modelId,
-                status: .failed,
-                error: "provider is shutting down"
-            ))
-            return
-        }
-        if isDrainingForUpdate {
-            sendDrainingLoadModelFailure(modelId: modelId, send: send)
-            return
-        }
-
-        if modelSlots[modelId] != nil, !modelsUnloading.contains(modelId) {
-            logger.info("Preload for \(modelId): already loaded, replying succeeded")
-            send.send(.loadModelStatus(
-                modelId: modelId,
-                status: .succeeded,
-                error: nil
-            ))
-            return
-        }
-
-        if preloadTasks[modelId] != nil {
-            logger.info("Preload for \(modelId): already in progress, coalescing duplicate request")
-            preloadStatusSubscribers[modelId, default: []].append(send)
-            send.send(.loadModelStatus(
-                modelId: modelId,
-                status: .started,
-                error: nil
-            ))
-            return
-        }
-
-        preloadStatusSubscribers[modelId] = [send]
-        send.send(.loadModelStatus(
-            modelId: modelId,
-            status: .started,
-            error: nil
-        ))
-
-        let me = self
-        let taskId = UUID()
-        preloadTaskIds[modelId] = taskId
-        preloadTaskStarted?(modelId)
-        preloadTasks[modelId] = Task {
-            defer { Task { await me.removePreloadTask(modelId: modelId, taskId: taskId) } }
-            do {
-                try await me.ensureModelLoaded(modelId: modelId)
-                try Task.checkCancellation()
-                let shuttingDown = await me.isProviderShuttingDown()
-                guard !shuttingDown else { return }
-                await me.finishPreloadTask(modelId: modelId, taskId: taskId, status: .succeeded, error: nil)
-            } catch is CancellationError {
-                return
-            } catch {
-                let message = error.localizedDescription
-                await me.logPreloadFailure(modelId: modelId, error: message)
-                await me.finishPreloadTask(modelId: modelId, taskId: taskId, status: .failed, error: message)
-            }
-        }
-    }
-
-    private func finishPreloadTask(
-        modelId: String,
-        taskId: UUID,
-        status: ProviderMessage.LoadModelStatus.Status,
-        error: String?
-    ) {
-        guard preloadTaskIds[modelId] == taskId else { return }
-        preloadTasks.removeValue(forKey: modelId)
-        preloadTaskIds.removeValue(forKey: modelId)
-        let subscribers = preloadStatusSubscribers.removeValue(forKey: modelId) ?? []
-        for subscriber in subscribers {
-            subscriber.send(.loadModelStatus(
-                modelId: modelId,
-                status: status,
-                error: error
-            ))
-        }
-    }
-
-    // MARK: - Coordinator-driven background prefetch (Layer 3)
-
-    /// Build the prefetch coordinator, wiring the pre-check (already
-    /// loaded/on-disk?) and verified hook (add to advertised set + re-advertise)
-    /// back into this actor. The live path uses the catalog/CDN-backed
-    /// prefetcher; tests inject a fake coordinator via
-    /// `installPrefetchCoordinatorForTesting`.
-    private func makePrefetchCoordinator() -> ModelPrefetchCoordinator {
-        let me = self
-        let prefetcher: any ModelPrefetcher =
-            CatalogModelPrefetcher(coordinatorURL: loopConfig.coordinatorURL)
-        return ModelPrefetchCoordinator(
-            prefetcher: prefetcher,
-            preCheck: { modelId in await me.prefetchPreCheck(modelId: modelId) },
-            onVerified: { modelId in await me.applyVerifiedPrefetch(modelId: modelId) }
-        )
-    }
-
-    /// Handle a coordinator `prefetch_model` request by delegating to the
-    /// background prefetch coordinator. Non-blocking: returns as soon as the
-    /// `.started` status is queued; the download runs on a low-priority task and
-    /// never consumes a GPU slot or blocks inference.
-    func handlePrefetchModelRequest(modelId: String, priority: Int, send: SendHandle) async {
-        guard let prefetchCoordinator else {
-            // Defensive: prefetchCoordinator is built in run() before the event
-            // loop starts, so this should be unreachable on the live path.
-            send.send(.prefetchModelStatus(
-                modelId: modelId, status: .failed, bytesDone: 0, bytesTotal: 0,
-                error: "prefetch subsystem not initialized"))
-            return
-        }
-        if isShuttingDown {
-            send.send(.prefetchModelStatus(
-                modelId: modelId, status: .failed, bytesDone: 0, bytesTotal: 0,
-                error: "provider is shutting down"))
-            return
-        }
-        if isDrainingForUpdate {
-            sendDrainingPrefetchFailure(modelId: modelId, send: send)
-            return
-        }
-        logger.info("Prefetch request for \(modelId) (priority=\(priority))")
-        // Failed terminal statuses feed the desired-build retry policy; for a
-        // build that is not (or no longer) a desired target the notification is
-        // a no-op (handleDesiredPrefetchFailure guards on the desired set).
-        let sink = RetryNotifyingPrefetchSink(
-            base: SendHandlePrefetchSink(send: send),
-            onFailed: { [weak self] failedModelId in
-                guard let self else { return }
-                Task { await self.handleDesiredPrefetchFailure(modelId: failedModelId, send: send) }
-            }
-        )
-        await prefetchCoordinator.handlePrefetch(
-            modelId: modelId,
-            priority: priority,
-            sink: sink
-        )
-    }
-
-    /// React to a terminal `.failed` prefetch status for a build. If the build
-    /// is still a desired target (and not stale), schedule a single
-    /// bounded-backoff retry — the resume-aware downloader continues from the
-    /// bytes already on disk, so retries are cheap. After the delay budget is
-    /// exhausted the provider stays on its current build until the next
-    /// desired_models push (operator re-POST or reconnect), which resets the
-    /// budget and retries immediately via reconcile.
-    private func handleDesiredPrefetchFailure(modelId: String, send: SendHandle) async {
-        guard !isShuttingDown,
-              desiredPrefetchTargets.contains(modelId),
-              !staleDesiredPrefetches.contains(modelId),
-              desiredPrefetchRetryTasks[modelId] == nil
-        else { return }
-        let attempt = (desiredPrefetchRetryAttempts[modelId] ?? 0) + 1
-        guard attempt <= desiredPrefetchRetryDelays.count else {
-            logger.warning("Prefetch for desired build \(modelId) failed after \(attempt - 1) retries; giving up until the next desired_models push")
-            return
-        }
-        desiredPrefetchRetryAttempts[modelId] = attempt
-        let delay = desiredPrefetchRetryDelays[attempt - 1]
-        logger.info("Scheduling desired-build prefetch retry \(attempt)/\(desiredPrefetchRetryDelays.count) for \(modelId) in \(delay)")
-        desiredPrefetchRetryTasks[modelId] = Task { [weak self] in
-            try? await Task.sleep(for: delay)
-            guard let self, !Task.isCancelled else { return }
-            await self.retryDesiredPrefetch(modelId: modelId, send: send)
-        }
-    }
-
-    /// Fire a scheduled desired-build prefetch retry, re-checking that the
-    /// build is still wanted (the desired set may have changed during the
-    /// backoff sleep).
-    private func retryDesiredPrefetch(modelId: String, send: SendHandle) async {
-        desiredPrefetchRetryTasks.removeValue(forKey: modelId)
-        guard !isShuttingDown,
-              desiredPrefetchTargets.contains(modelId),
-              !staleDesiredPrefetches.contains(modelId)
-        else { return }
-        logger.info("Retrying prefetch for desired build \(modelId)")
-        await handlePrefetchModelRequest(modelId: modelId, priority: Self.desiredModelsPrefetchPriority, send: send)
-    }
-
-    /// Cancel and clear any scheduled prefetch retry for a build (used when the
-    /// build leaves the desired set or a fresh desired_models push resets the
-    /// retry budget).
-    private func clearDesiredPrefetchRetryState(for modelId: String) {
-        desiredPrefetchRetryTasks.removeValue(forKey: modelId)?.cancel()
-        desiredPrefetchRetryAttempts.removeValue(forKey: modelId)
-    }
-
-    /// Pre-check used by the prefetch coordinator to short-circuit when a build
-    /// is already available AND its integrity is already established. We only
-    /// short-circuit when:
-    ///   - the model is resident in a GPU slot (it loaded successfully, which
-    ///     proves the on-disk build was usable), OR
-    ///   - it is advertised with a known weight hash (verified at startup or by
-    ///     a prior prefetch).
-    ///
-    /// A bare on-disk presence WITHOUT a recorded hash is deliberately treated
-    /// as `.needsFetch`: the disk snapshot could be stale or corrupt, and
-    /// `.verified` must mean "hash-checked". The prefetcher's resume path makes
-    /// re-verifying an already-complete build cheap (skips valid files, only
-    /// re-hashes), so we do not pay a full re-download for a good build — but we
-    /// never report `.verified` for an unverified snapshot.
-    private func prefetchPreCheck(modelId: String) -> PrefetchPreCheck {
-        if modelSlots[modelId] != nil { return .alreadyAvailable }
-        if advertisedModels[modelId] != nil, modelHashes[modelId] != nil {
-            return .alreadyAvailable
-        }
-        return .needsFetch
-    }
-
-    /// Re-advertise hook fired on `.verified`. Adds the newly-available build to
-    /// the in-memory advertised set (so it is loadable/servable and appears in
-    /// the local `/v1/models` catalog), records its weight hash (so attestation
-    /// covers the hotswapped model), and registers it with the coordinator's
-    /// advertised inventory. The currently-served model is never removed, so
-    /// both old and new are advertised during the transition.
-    ///
-    /// The scan + weight-hash computation run OFF the actor (`Task.detached`,
-    /// utility priority) so hashing a multi-GB build never blocks inference or
-    /// the event loop; only the small dictionary writes happen on the actor.
-    func applyVerifiedPrefetch(modelId: String) async {
-        if staleDesiredPrefetches.remove(modelId) != nil {
-            desiredSwapDrop.removeValue(forKey: modelId)
-            logger.info("Ignoring verified prefetch for stale desired build \(modelId); alias target changed before verification completed")
-            return
-        }
-
-        // Compute ModelInfo + weight hash off-actor (CPU/IO heavy for big
-        // builds). The prefetcher already aggregate-verified the snapshot, so
-        // this hash is over a known-good build. Returns nil if the on-disk
-        // snapshot cannot be resolved/scanned.
-        let computed = await Task.detached(priority: .utility) { () -> (ModelInfo, String?)? in
-            guard let info = Self.scanVerifiedModelInfo(modelId: modelId) else { return nil }
-            let hash = WeightHasher.computeHash(for: modelId)
-            var withHash = info
-            withHash.weightHash = hash
-            return (withHash, hash)
-        }.value
-
-        // A verified prefetch whose snapshot we can't scan must NOT be
-        // advertised: a synthetic zero-size ModelInfo would be routed with
-        // estimatedMemoryGb == 0, bypassing memory sizing/admission until the
-        // real load overcommits. Drop it instead — without a models_update the
-        // coordinator simply never routes this build here, which is the safe outcome.
-        guard let (info, maybeHash) = computed else {
-            desiredSwapDrop.removeValue(forKey: modelId)
-            logger.error("Prefetch verified \(modelId) but its on-disk snapshot could not be scanned; not advertising (would bypass memory sizing)")
-            return
-        }
-        // A nil weight hash is treated exactly like an unscannable snapshot: do
-        // NOT advertise, emit, or hard-swap. The coordinator's models_update
-        // gate REQUIRES a non-empty matching hash when the catalog pins one, so a
-        // hashless advertise would be rejected there anyway — but worse, dropping
-        // the previous build here while the coordinator rejects the desired one
-        // would strand the provider on neither build. Keep the previous build
-        // serving; the prefetch can be retried.
-        guard let hash = maybeHash, !hash.isEmpty else {
-            desiredSwapDrop.removeValue(forKey: modelId)
-            logger.error("Prefetch verified \(modelId) but the weight hash could not be computed; not advertising (keeping the previous build to avoid an unverifiable swap)")
-            return
-        }
-        // Adding to `advertisedModels` also raises the effective slot cap
-        // (`maxModelSlots` is computed from this set), so the newly-verified
-        // build can be held resident alongside the model currently being served
-        // during a zero-downtime migration -- bounded by the configured hard
-        // cap (`configuredMaxModelSlots`).
-        advertisedModels[modelId] = info
-        modelHashes[modelId] = hash
-        syncWarmModelState()
-        logger.info("Prefetch verified \(modelId) (weight_hash=\(hash.prefix(16))); advertising (\(advertisedModels.count) model(s) total)")
-        if let coordinatorClient {
-            await coordinatorClient.advertiseModel(info)
-        }
-        // Push the authoritative ModelInfo (incl. the just-computed weight hash)
-        // to the coordinator out-of-band so it can cross-check the build against
-        // the catalog before routing -- without waiting for a reconnect's
-        // `register`, and without the disruption of re-registering. The local
-        // `advertiseModel` above still carries the union on the next reconnect.
-        outboundSend?.send(.modelsUpdate(models: [info]))
-
-        // Hard swap: the desired build is now advertised + announced, so drop the
-        // build it supersedes from our LOCAL advertised set — we stop serving it and
-        // it idle-unloads. The models_update above already makes the coordinator stop
-        // routing the previous build here (it derives the drop from the alias's
-        // desired/previous pair). We do NOT force-unload a resident slot; the idle
-        // monitor reclaims it.
-        if let previous = desiredSwapDrop.removeValue(forKey: modelId), previous != modelId {
-            await dropAdvertisedBuild(previous)
-        }
-    }
-
-    /// Locally retire a superseded build: stop advertising it (so no new requests
-    /// route to it and the next register won't re-announce it) and forget its hash.
-    /// The GPU slot, if resident, is left to the idle monitor — a lazy drop.
-    private func dropAdvertisedBuild(_ buildID: String) async {
-        guard advertisedModels[buildID] != nil else { return }
-        advertisedModels.removeValue(forKey: buildID)
-        modelHashes.removeValue(forKey: buildID)
-        await coordinatorClient?.unadvertiseModel(buildID)
-        syncWarmModelState()
-        logger.info("Hard swap: dropped superseded build \(buildID) from advertised set (\(advertisedModels.count) remaining)")
-    }
-
-    /// Reconcile the coordinator's declarative desired-state: for each public model
-    /// name, converge to its desired build. Already-serving → ensure the previous
-    /// build is dropped; missing → background-prefetch it (applyVerifiedPrefetch
-    /// advertises it + drops the previous build once verified).
-    private func reconcileDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
-        let currentDesired = Set(entries.map(\.desiredBuild).filter { !$0.isEmpty })
-        for stale in desiredPrefetchTargets.subtracting(currentDesired) {
-            desiredSwapDrop.removeValue(forKey: stale)
-            staleDesiredPrefetches.insert(stale)
-            clearDesiredPrefetchRetryState(for: stale)
-        }
-        desiredPrefetchTargets = currentDesired
-
-        for entry in entries {
-            let desired = entry.desiredBuild
-            guard !desired.isEmpty else { continue }
-            staleDesiredPrefetches.remove(desired)
-            // A fresh declarative push resets the retry budget (and supersedes
-            // any pending backoff timer — the loop below re-prefetches a missing
-            // desired build immediately).
-            clearDesiredPrefetchRetryState(for: desired)
-            let previous = (entry.previousBuild?.isEmpty == false) ? entry.previousBuild : nil
-            if let previous, previous != desired {
-                desiredSwapDrop[desired] = previous
-            } else {
-                desiredSwapDrop.removeValue(forKey: desired)
-            }
-            // Already converged (advertised + verified) → ensure the old build is
-            // no longer advertised locally AND re-emit the authoritative
-            // models_update for the desired build. The coordinator derives the
-            // previous-build drop from this update (against the alias's
-            // desired/previous pair), so without it the coordinator would keep
-            // routing the previous build to a provider that has locally stopped
-            // advertising it — a state divergence. This matters when the desired
-            // build was verified BEFORE a previous build was set on the alias (the
-            // original verify carried no drop), and the swap is learned later.
-            if let desiredInfo = advertisedModels[desired], modelHashes[desired] != nil {
-                if let previous, advertisedModels[previous] != nil {
-                    await dropAdvertisedBuild(previous)
-                    // Authoritative re-announce so the coordinator drops previous too.
-                    outboundSend?.send(.modelsUpdate(models: [desiredInfo]))
-                }
-                desiredSwapDrop.removeValue(forKey: desired)
-                continue
-            }
-            logger.info("desired_models: \(entry.modelName) → converging to \(desired)")
-            await handlePrefetchModelRequest(modelId: desired, priority: Self.desiredModelsPrefetchPriority, send: send)
-        }
-    }
-
-    /// Test seam: number of advertised models (startup ∪ prefetched).
-    func advertisedModelCount() -> Int { advertisedModels.count }
-
-    /// Test seam: whether a model id is currently advertised.
-    func isModelAdvertised(_ id: String) -> Bool { advertisedModels[id] != nil }
-
-    /// Test seam: recorded weight hash for a model (nil when unknown).
-    func modelHashForTesting(_ id: String) -> String? { modelHashes[id] }
-
-    /// Test seam: exposes the prefetch pre-check decision.
-    func prefetchPreCheckForTesting(_ id: String) -> PrefetchPreCheck { prefetchPreCheck(modelId: id) }
-
-    /// Test seam: drive the declarative `desired_models` reconcile directly (the
-    /// real entry point, `reconcileDesiredModels`, is private and otherwise only
-    /// reached via the coordinator event loop). Lets a unit test prove that a
-    /// desired build the provider lacks triggers a prefetch, and that the
-    /// previous build is recorded for the hard-swap drop.
-    func reconcileDesiredModelsForTesting(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
-        await reconcileDesiredModels(entries, send: send)
-    }
-
-    /// Test seam: the current effective concurrent-slot cap (tracks the live
-    /// advertised set, clamped to `[1, backend.maxModelSlots]`).
-    func maxModelSlotsForTesting() -> Int { maxModelSlots }
-
-    /// Test seam: override the desired-build prefetch retry backoff schedule
-    /// (the production default waits tens of seconds between attempts).
-    func setDesiredPrefetchRetryDelaysForTesting(_ delays: [Duration]) {
-        desiredPrefetchRetryDelays = delays
-    }
-
-    /// Test seam: number of scheduled (not yet fired) desired-prefetch retries.
-    func pendingDesiredPrefetchRetriesForTesting() -> Int { desiredPrefetchRetryTasks.count }
-
-    /// Test seam: install a fake prefetcher and (re)build the prefetch
-    /// coordinator against a given coordinator client. Used by unit tests to
-    /// exercise the handler without the real download path.
-    func installPrefetchCoordinatorForTesting(
-        _ coordinator: ModelPrefetchCoordinator,
-        client: CoordinatorClient,
-        send: SendHandle? = nil
-    ) {
-        self.coordinatorClient = client
-        self.prefetchCoordinator = coordinator
-        if let send { self.outboundSend = send }
-    }
-
-    /// Scan the on-disk snapshot for a freshly-prefetched model to produce an
-    /// advertised `ModelInfo` (type, quantization, size, memory estimate).
-    /// Static + nonisolated so it can run inside the off-actor hashing task.
-    private static func scanVerifiedModelInfo(modelId: String) -> ModelInfo? {
-        guard let snapshot = ModelScanner.resolveLocalPath(modelID: modelId) else { return nil }
-        return ModelScanner.parseModelInfo(snapshotDir: snapshot, modelName: modelId)
-    }
-
-    // MARK: - Trust Status & Auto-Report
-
-    /// Handle a trust_status message from the coordinator. If the provider
-    /// learns it is self_signed or untrusted, schedule a one-time auto-report
-    /// of unified logs after 10 minutes.
-    /// Assembles the current daemon state and writes it to the state file so the
-    /// CLI (`status`/`doctor`) can read live state + the latest trust reason.
-    /// Best-effort and cheap; safe to call from the trust handler and the
-    /// periodic capacity loop.
-    private func writeDaemonState() {
-        let cap = state.backendCapacity
-        let snapshot = DaemonState(
-            pid: getpid(),
-            version: ProviderCore.version,
-            writtenAt: Date().timeIntervalSince1970,
-            startedAt: startedAtEpoch,
-            trust: lastTrustStatus,
-            currentModel: state.currentModel,
-            warmModels: state.warmModels,
-            inferenceActive: state.inferenceActive,
-            inflightRequestCount: requestToModel.count + localReservations.totalInFlight,
-            stats: DaemonState.Stats(
-                requestsServed: stats.requestsServed,
-                tokensGenerated: stats.tokensGenerated,
-                usageGaps: stats.usageGaps
-            ),
-            capacity: cap.map {
-                DaemonState.Capacity(
-                    totalMemoryGb: $0.totalMemoryGb,
-                    gpuMemoryActiveGb: $0.gpuMemoryActiveGb,
-                    gpuMemoryCacheGb: $0.gpuMemoryCacheGb)
-            },
-            lastModelLoadError: lastModelLoadError
-        )
-        DaemonStateFile.write(snapshot)
-    }
-
-    /// Records a model-load failure for the diagnostics state file so the
-    /// operator sees the exact "Insufficient memory …" text in `doctor`.
-    private func recordModelLoadError(model: String, message: String) {
-        lastModelLoadError = DaemonState.ModelLoadError(
-            model: model, message: message, at: Date().timeIntervalSince1970)
-        writeDaemonState()
-    }
-
-    private func handleTrustStatus(trustLevel: String, status: String, reason: String) {
-        logger.info("Trust status update: level=\(trustLevel) status=\(status) reason=\(reason)")
-
-        // Cache + persist so `darkbloom status`/`doctor` can show the operator
-        // the coordinator's reason (otherwise it is only in the logs).
-        lastTrustStatus = DaemonState.Trust(
-            trustLevel: trustLevel, status: status, reason: reason,
-            receivedAt: Date().timeIntervalSince1970)
-        writeDaemonState()
-
-        let needsReport = trustLevel == "self_signed" || status == "untrusted"
-        guard needsReport, !didAutoReport else {
-            // Already reported or trust is fine — cancel any pending report.
-            autoReportTask?.cancel()
-            autoReportTask = nil
-            return
-        }
-
-        // Schedule auto-report after 10 minutes. If the provider gets
-        // upgraded to hardware trust before that, the task is cancelled.
-        logger.warning("Provider is \(trustLevel)/\(status) — will auto-report logs in 10 minutes")
-        autoReportTask?.cancel()
-        autoReportTask = Task {
-            do {
-                try await Task.sleep(for: .seconds(600))
-            } catch {
-                return // cancelled (shutdown or trust upgraded)
-            }
-            guard !self.didAutoReport else { return }
-            self.didAutoReport = true
-            await self.submitAutoReport(trustLevel: trustLevel, status: status, reason: reason)
-        }
-    }
-
-    /// Collect and upload unified logs to the coordinator.
-    private func submitAutoReport(trustLevel: String, status: String, reason: String) async {
-        logger.info("Auto-reporting unified logs (trust=\(trustLevel), status=\(status))")
-
-        guard let serial = macHardwareSerialNumber(), !serial.isEmpty else {
-            logger.warning("Auto-report skipped: serial number unavailable")
-            return
-        }
-
-        // Collect last 24 hours of unified logs for our subsystem.
-        let logData: Data
-        do {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/log")
-            process.arguments = [
-                "show",
-                "--predicate", "subsystem == \"dev.darkbloom.provider\"",
-                "--style", "ndjson",
-                "--info",
-                "--last", "24h",
-            ]
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = FileHandle.nullDevice
-            try process.run()
-            logData = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-        } catch {
-            logger.error("Auto-report: failed to collect logs: \(error)")
-            return
-        }
-
-        guard !logData.isEmpty else {
-            logger.warning("Auto-report: no logs found")
-            return
-        }
-
-        // Cap at 10 MB.
-        let cappedData = logData.count > 10 * 1024 * 1024
-            ? logData.prefix(10 * 1024 * 1024)
-            : logData
-
-        // Upload to coordinator.
-        let httpBase = coordinatorHTTPBase(loopConfig.coordinatorURL)
-        let urlString = "\(httpBase)/v1/provider/log-report?serial=\(serial)"
-        guard let url = URL(string: urlString) else {
-            logger.error("Auto-report: invalid URL: \(urlString)")
-            return
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Data(cappedData)
-        request.timeoutInterval = 60
-
-        if let token = AuthTokenStore.load() {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-
-        do {
-            let (_, response) = try await URLSession.shared.data(for: request)
-            if let httpResp = response as? HTTPURLResponse {
-                if httpResp.statusCode == 201 {
-                    let sizeMB = Double(cappedData.count) / 1_048_576.0
-                    logger.info("Auto-report uploaded successfully (\(String(format: "%.1f", sizeMB)) MB)")
-                } else {
-                    logger.warning("Auto-report upload returned HTTP \(httpResp.statusCode)")
-                }
-            }
-        } catch {
-            logger.warning("Auto-report upload failed: \(error)")
-        }
-    }
-
-    private func waitForPreloads(_ preloads: [Task<Void, Never>], timeout: Duration) async -> Bool {
-        guard !preloads.isEmpty else { return true }
-        return await withCheckedContinuation { continuation in
-            let oneShot = OneShotBoolContinuation(continuation)
-
-            Task {
-                for task in preloads { await task.value }
-                oneShot.resume(returning: true)
-            }
-
-            DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(Int(timeout.components.seconds))) {
-                oneShot.resume(returning: false)
-            }
-        }
-    }
-
-    /// Resume everyone suspended in the load path. With
-    /// `sparingInflightRequests: true` (graceful drain), waiters whose model
-    /// still backs an accepted request are resumed WITHOUT an error so their
-    /// load keeps going and the request can drain — only background-preload
-    /// waiters are cancelled. Gate waiters are always resumed (no error); each
-    /// resumed task re-checks `Task.isCancelled` / `shutdownShouldAbortLoad`, so
-    /// preloads still abort while spared in-flight loads continue. The final
-    /// teardown / post-drain-timeout path passes `false` to abort everything.
-    private func cancelLoadWaiters(sparingInflightRequests: Bool = false) {
-        let inflightModels = sparingInflightRequests ? Set(requestToModel.values) : Set<String>()
-        for (modelId, waiters) in loadingWaiters {
-            if inflightModels.contains(modelId) {
-                for waiter in waiters { waiter.resume() }
-            } else {
-                for waiter in waiters { waiter.resume(throwing: CancellationError()) }
-            }
-        }
-        loadingWaiters.removeAll()
-        releaseLoadGateWaiters()
-        for waiters in unloadingWaiters.values {
-            for waiter in waiters { waiter.resume() }
-        }
-        unloadingWaiters.removeAll()
-    }
-
-    private func logPreloadFailure(modelId: String, error: String) {
-        logger.error("Preload for \(modelId) failed: \(error)")
-    }
-
-    private func isProviderShuttingDown() -> Bool {
-        isShuttingDown
-    }
-
-    /// Only remove the preload entry if it still belongs to this task,
-    /// preventing a newer preload's entry from being removed by an older
-    /// task's deferred cleanup.
-    private func removePreloadTask(modelId: String, taskId: UUID) {
-        if preloadTaskIds[modelId] == taskId {
-            preloadTasks.removeValue(forKey: modelId)
-            preloadTaskIds.removeValue(forKey: modelId)
-            preloadStatusSubscribers.removeValue(forKey: modelId)
-        }
-    }
-
-    // MARK: - Memory protection
-
-    /// Surface any prior-run OOM (consume marker + scrape crash logs → oom
-    /// telemetry) and watch live memory pressure (reclaim cache + drop a marker
-    /// on critical so a kill before we can report it is attributed next launch).
-    private func startMemoryProtection() {
-        // Pin the MLX memory ceiling BEFORE any model weights are loaded (the
-        // first big allocation happens in ensureModelLoaded → loadModelContainer,
-        // which runs after this). Idempotent; the BatchScheduler.loadModel call
-        // is a backstop for the standalone path. See MLXMemoryGuard.
-        MLXMemoryGuard.configureOnce(log: { [logger] limits in
-            logger.info(
-                "MLX memory ceiling: limit=\(limits.memoryLimitBytes / (1024 * 1024 * 1024))GB cache=\(limits.cacheLimitBytes / (1024 * 1024 * 1024))GB")
-        })
-
-        let now = Date()
-        let since = OOMDetector.loadLastScan() ?? now.addingTimeInterval(-24 * 3600)
-        let findings = OOMDetector.detectOnLaunch(since: since)
-        for finding in findings {
-            var fields: [String: AnyCodableValue] = ["detect_source": .string(finding.source.rawValue)]
-            if let reason = finding.reason { fields["reason"] = .string(reason) }
-            if let peak = finding.peakMemoryBytes { fields["peak_memory_bytes"] = .int64(Int64(clamping: peak)) }
-            if let report = finding.reportName { fields["report"] = .string(report) }
-            TelemetryClient.shared.emit(
-                kind: .oom, severity: .error, message: finding.message, fields: fields)
-            logger.error("OOM detected on launch: \(finding.message)")
-        }
-        // Advance the scan watermark only AFTER findings are handed to telemetry,
-        // so a crash before this point re-scans the same reports next launch.
-        OOMDetector.saveLastScan(now)
-
-        let monitor = MemoryPressureMonitor(
-            clearCache: { MLX.Memory.clearCache() },
-            writeMarker: { _ in
-                let marker = OOMDetector.Marker(
-                    pid: ProcessInfo.processInfo.processIdentifier,
-                    epochSeconds: Date().timeIntervalSince1970,
-                    peakMemoryBytes: UInt64(max(0, MLX.Memory.peakMemory)),
-                    availableBytesAtEvent: SystemMemory.availableBytes() ?? 0)
-                OOMDetector.writeMarker(marker)
-            },
-            emit: { level, severity in
-                TelemetryClient.shared.emit(
-                    kind: .oom, severity: severity,
-                    message: "memory pressure \(level.rawValue) — possible imminent OOM",
-                    fields: [
-                        "pressure": .string(level.rawValue),
-                        "available_bytes": .int64(Int64(clamping: SystemMemory.availableBytes() ?? 0)),
-                        "mlx_active_bytes": .int64(Int64(clamping: UInt64(max(0, MLX.Memory.activeMemory)))),
-                    ])
-            })
-        monitor.start()
-        self.memoryPressureMonitor = monitor
-        logger.info("Memory protection active (OOM detection + pressure monitor)")
-    }
-
-    // MARK: - Idle timeout
-
-    /// Start the background idle-monitor task. Polls every minute; if
-    /// `idleTimeoutMins` minutes have elapsed since the last inference
-    /// activity AND no requests are in flight, the loaded model is
-    /// unloaded to free GPU memory. The next inference request lazy-
-    /// reloads it.
-    ///
-    /// `idleTimeoutMins == 0` disables the monitor entirely (model stays
-    /// resident forever).
-    private func startIdleMonitor() {
-        idleMonitorTask?.cancel()
-        let timeoutMinutes = loopConfig.config.backend.idleTimeoutMins
-        guard timeoutMinutes > 0 else {
-            logger.info("Idle-timeout disabled (idle_timeout_mins=0)")
-            return
-        }
-
-        let timeout = Duration.seconds(Int64(timeoutMinutes) * 60)
-        let pollInterval = Duration.seconds(60)
-        let me = self
-        idleMonitorTask = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: pollInterval)
-                if Task.isCancelled { break }
-                await me.tickIdleMonitor(timeout: timeout)
-            }
-        }
-        logger.info("Idle monitor started (timeout: \(timeoutMinutes) min)")
-    }
-
-    /// Single tick: check each loaded model for idle timeout. Unloads any
-    /// model that has no in-flight requests and has exceeded the timeout.
-    /// Re-validates each candidate before unloading since `await unloadModel`
-    /// is a suspension point that could allow new requests to arrive.
-    private func tickIdleMonitor(timeout: Duration) async {
-        guard !modelSlots.isEmpty else { return }
-
-        let now = ContinuousClock.now
-
-        var candidates: [String] = []
-        let modelsWithInflight = Set(requestToModel.values)
-        for (modelId, slot) in modelSlots {
-            if modelsUnloading.contains(modelId) { continue }
-            let elapsed = now - slot.lastInferenceAt
-            let hasInflight = modelsWithInflight.contains(modelId) || hasLocalReservation(modelId)
-            if IdleTimeoutPolicy.shouldUnload(
-                elapsed: elapsed,
-                timeout: timeout,
-                hasInflight: hasInflight,
-                hasLoadedModel: true
-            ) {
-                candidates.append(modelId)
-            }
-        }
-
-        for modelId in candidates {
-            let currentInflight = Set(requestToModel.values)
-            guard !currentInflight.contains(modelId),
-                  !hasLocalReservation(modelId),
-                  !modelsUnloading.contains(modelId),
-                  let slot = modelSlots[modelId] else { continue }
-
-            let elapsed = ContinuousClock.now - slot.lastInferenceAt
-            guard IdleTimeoutPolicy.shouldUnload(
-                elapsed: elapsed,
-                timeout: timeout,
-                hasInflight: false,
-                hasLoadedModel: true
-            ) else { continue }
-
-            logger.info("Idle timeout exceeded (\(formatDuration(elapsed)) since last activity); unloading \(modelId)")
-            await unloadModel(modelId)
-        }
-    }
-
-    private func formatDuration(_ duration: Duration) -> String {
-        let seconds = duration.components.seconds
-        if seconds < 60 { return "\(seconds)s" }
-        let minutes = seconds / 60
-        if minutes < 60 { return "\(minutes)m" }
-        let hours = minutes / 60
-        let remMinutes = minutes % 60
-        return remMinutes == 0 ? "\(hours)h" : "\(hours)h\(remMinutes)m"
-    }
-
-    // MARK: - Capacity Refresh
-
-    private func startCapacityRefreshMonitor() {
-        capacityRefreshTask?.cancel()
-        let heartbeatInterval = max(1, loopConfig.config.coordinator.heartbeatIntervalSecs)
-        let pollInterval = Duration.seconds(Int64(max(1, heartbeatInterval / 2)))
-        let me = self
-        capacityRefreshTask = Task {
-            // Write once immediately so `status`/`doctor` have a fresh file soon
-            // after the daemon starts, before the first poll interval elapses.
-            await me.writeDaemonState()
-            while !Task.isCancelled {
-                try? await Task.sleep(for: pollInterval)
-                if Task.isCancelled { break }
-                await me.updateAggregateCapacity()
-                // Refresh the diagnostics state file on the same cadence so
-                // `status`/`doctor` see current model, stats, and capacity.
-                await me.writeDaemonState()
-            }
-        }
-    }
-
-    // MARK: - Background Auto-Update
-
-    /// Initial delay before the first background update check (5 minutes).
-    /// Avoids slowing down startup; lets the provider stabilize first.
-    private static let autoUpdateInitialDelay: Duration = .seconds(300)
-
-    /// Interval between subsequent update checks (30 minutes).
-    private static let autoUpdateInterval: Duration = .seconds(1800)
-
-    /// How long to wait for in-flight requests to drain after installing a new
-    /// binary before force-cancelling them and restarting. Generous enough for
-    /// normal generations to finish; bounded so one stuck request can't block
-    /// updates forever.
-    private static let updateDrainTimeout: Duration = .seconds(120)
-
-    /// Start the background auto-update monitor. Checks the coordinator for a
-    /// newer release every 30 minutes (after an initial 5-minute delay). On a
-    /// new release it downloads + verifies + installs the binary *while still
-    /// serving*, then stops accepting new requests, drains in-flight work to
-    /// zero, and finally hot-swaps (restart). See `AutoUpdateController`.
-    ///
-    /// The monitor is disabled when:
-    ///   - `config.provider.autoUpdate` is false
-    ///   - `DARKBLOOM_NO_UPDATE_CHECK` env var is set
-    ///
-    /// Unlike the old behaviour, a busy provider is NOT skipped: the check and
-    /// download run concurrently with serving, and requests are only refused
-    /// once the new binary is safely installed.
-    ///
-    /// Failures are logged at warning level and never crash the provider.
-    private func startAutoUpdateMonitor() {
-        autoUpdateTask?.cancel()
-
-        guard loopConfig.config.provider.autoUpdate else {
-            logger.info("Background auto-update disabled (auto_update=false)")
-            return
-        }
-        guard ProcessInfo.processInfo.environment["DARKBLOOM_NO_UPDATE_CHECK"] == nil else {
-            logger.info("Background auto-update disabled (DARKBLOOM_NO_UPDATE_CHECK set)")
-            return
-        }
-
-        let coordinatorURL = loopConfig.coordinatorURL
-        let me = self
-        autoUpdateTask = Task.detached {
-            // Wait 5 minutes before first check.
-            try? await Task.sleep(for: Self.autoUpdateInitialDelay)
-
-            while !Task.isCancelled {
-                await me.performAutoUpdateCheck(coordinatorURL: coordinatorURL)
-                // Sleep 30 minutes before next check.
-                try? await Task.sleep(for: Self.autoUpdateInterval)
-            }
-        }
-        logger.info("Background auto-update monitor started (initial delay: 5m, interval: 30m)")
-    }
-
-    /// Perform a single background update cycle via `AutoUpdateController`.
-    /// The controller sequences: check → download/stage (while serving) →
-    /// drain → commit → restart. All side effects below are actor-isolated so
-    /// the phase transitions, staged-bundle handoff, and drain bookkeeping
-    /// stay race-free.
-    private func performAutoUpdateCheck(coordinatorURL: String) async {
-        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
-        let me = self
-        let logger = self.logger
-
-        let deps = AutoUpdateController.Dependencies(
-            claimStart: { await me.claimUpdateStart() },
-            resumeServing: { await me.resumeServingAfterUpdate() },
-            check: { await updater.checkForUpdate() },
-            downloadVerifyStage: { release in
-                await me.stageUpdateBundle(release: release, updater: updater)
-            },
-            beginDraining: { await me.beginUpdateDraining() },
-            waitForDrain: { timeout in await me.waitForInflightDrain(timeout: timeout) },
-            // Drain-timeout fallback. Cancels coordinator-routed work; any
-            // residual LOCAL stream is intentionally left for the immediately
-            // following restart to tear down (local reservations are released by
-            // the engine, which we no longer wait on past the timeout).
-            forceCancelInflight: { await me.cancelAllInflight() },
-            commitInstall: { await me.commitStagedUpdateBundle(updater: updater) },
-            restart: { try ProcessLifecycle.restartAfterUpdate() },
-            log: { logger.info("\($0)") }
-        )
-
-        let controller = AutoUpdateController(deps: deps, drainTimeout: Self.updateDrainTimeout)
-        let outcome = await controller.run()
-        switch outcome {
-        case .alreadyRunning:
-            logger.info("Auto-update: cycle already in progress; skipping this tick")
-        case .upToDate:
-            logger.info("Auto-update: already running latest version")
-        case .checkFailed(let reason):
-            logger.warning("Auto-update: check failed: \(reason)")
-        case .stageFailed(let reason):
-            logger.warning("Auto-update: download/stage failed: \(reason)")
-        case .commitFailed(let reason):
-            logger.warning("Auto-update: staged install failed: \(reason)")
-        case .restarted(let from, let to, let drained):
-            logger.info("Auto-update: restarting v\(from) -> v\(to) (drained=\(drained))")
-        case .restartFailed(let reason):
-            logger.warning("Auto-update: restart failed: \(reason)")
-        }
-    }
-
-    // MARK: - Auto-Update Phase Transitions
-
-    /// Atomically claim the update cycle. Returns `false` if a cycle is already
-    /// underway (re-entrancy guard for overlapping monitor ticks). On `true`,
-    /// enter the `.installing` phase — still serving while the new bundle
-    /// downloads and stages.
-    private func claimUpdateStart() -> Bool {
-        guard updatePhase == .idle, !isShuttingDown else { return false }
-        updatePhase = .installing
-        return true
-    }
-
-    /// Return to normal serving after an update cycle that did not restart
-    /// (up-to-date, check/stage/commit failure, or restart failure): reopen
-    /// admission, drop any staged-but-uncommitted bundle, and replay the
-    /// desired-models state that was deferred during the drain so the
-    /// provider converges back onto the coordinator's current desired set.
-    private func resumeServingAfterUpdate() async {
-        updatePhase = .idle
-
-        if let staged = stagedUpdateBundle {
-            stagedUpdateBundle = nil
-            staged.discard()
-        }
-
-        if let entries = deferredDesiredModels {
-            deferredDesiredModels = nil
-            if let send = outboundSend {
-                logger.info("Replaying desired_models deferred during update drain (\(entries.count) entr(ies))")
-                await reconcileDesiredModels(entries, send: send)
-            }
-        }
-    }
-
-    /// Enter the `.draining` phase: new requests are refused (503 reroute /
-    /// local queue-full) while in-flight work finishes ahead of the commit +
-    /// hot-swap.
-    private func beginUpdateDraining() {
-        updatePhase = .draining
-    }
-
-    /// Download, verify, and stage the release bundle while still serving.
-    /// Nothing under the live layout is touched; the staged bundle waits for
-    /// the post-drain commit.
-    private func stageUpdateBundle(
-        release: ReleaseInfo,
-        updater: SelfUpdater
-    ) async -> AutoUpdateController.StepOutcome {
-        switch await updater.downloadAndVerify(release: release) {
-        case .failure(let error):
-            return .failed("\(error)")
-        case .success(let tempFile):
-            defer { try? FileManager.default.removeItem(at: tempFile) }
-            switch updater.stageBundle(from: tempFile, release: release) {
-            case .success(let staged):
-                stagedUpdateBundle = staged
-                return .completed
-            case .failure(let error):
-                return .failed("\(error)")
-            }
-        }
-    }
-
-    /// Swap the staged bundle into the live layout. Runs strictly after the
-    /// drain: admission is closed and in-flight work has finished (or been
-    /// force-cancelled), so no request can observe the swap window.
-    private func commitStagedUpdateBundle(updater: SelfUpdater) -> AutoUpdateController.StepOutcome {
-        guard let staged = stagedUpdateBundle else {
-            return .failed("no staged update bundle to install")
-        }
-        stagedUpdateBundle = nil
-        switch updater.commitStagedBundle(staged) {
-        case .success:
-            return .completed
-        case .failure(let error):
-            return .failed("\(error)")
-        }
-    }
-
-    // MARK: - Model Loading
-
-    /// Outcome of one weight-hash refresh: the snapshot fingerprint the recorded
-    /// hash corresponds to (nil if the dir couldn't be stat'd), and whether the
-    /// `liveModelHashes` entry now reflects bytes on disk. `effectiveFingerprint`
-    /// is what the after-load TOCTOU check compares against to decide whether the
-    /// bytes drifted between hashing and loading.
-    private struct WeightHashRefreshResult {
-        /// Fingerprint that `liveModelHashes[modelId]` now corresponds to, or nil
-        /// if we have no trustworthy fingerprint (stat failed / recompute failed).
-        let effectiveFingerprint: String?
-    }
-
-    /// Re-hash the weights for `modelId` and update `liveModelHashes` /
-    /// `modelHashFingerprints` to match the bytes on disk, pushing any change into
-    /// the coordinator client. The expensive SHA-256 read runs off-actor (hashing
-    /// a large model takes seconds and must not block heartbeats or challenge
-    /// handling). A snapshot fingerprint (paths + sizes + mtimes) skips the full
-    /// re-read when nothing changed since the last hash, so routine idle-reload
-    /// cycles stay cheap.
-    ///
-    /// The model may have been re-published and re-downloaded since the last hash;
-    /// a stale hash would make the coordinator hard-untrust this provider for a
-    /// "model swap" even though the disk is correct. Returns the fingerprint the
-    /// recorded hash now corresponds to so the caller can detect a post-load drift.
-    private func refreshWeightHash(modelId: String, modelPath: URL) async throws -> WeightHashRefreshResult {
-        let priorFingerprint = modelHashFingerprints[modelId]
-        let hasPriorHash = liveModelHashes[modelId] != nil
-        let refresh = await Task.detached(priority: .utility) {
-            () -> (fingerprint: String?, hash: String?, skipped: Bool) in
-            let fingerprint = WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
-            if let fingerprint, fingerprint == priorFingerprint, hasPriorHash {
-                return (fingerprint, nil, true)  // unchanged — keep cached hash
-            }
-            return (fingerprint, WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId), false)
-        }.value
-        try Task.checkCancellation()
-        if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
-
-        // Record the fingerprint ONLY when we have a hash that corresponds to it
-        // (fresh or skip-confirmed). Caching it after a FAILED re-hash would make
-        // the next reload fingerprint-match against the stale hash and silently
-        // skip the retry — turning a transient read failure into a persistently
-        // stale report.
-        let haveTrustworthyHash = refresh.hash != nil || refresh.skipped
-        if let fingerprint = refresh.fingerprint, haveTrustworthyHash {
-            modelHashFingerprints[modelId] = fingerprint
-        }
-        if let freshHash = refresh.hash {
-            if liveModelHashes[modelId] != freshHash {
-                let previous = liveModelHashes[modelId]?.prefix(16) ?? "unset"
-                logger.info("Weight hash refreshed for \(modelId): \(freshHash.prefix(16))... (was \(previous))")
-                liveModelHashes[modelId] = freshHash
-                // Push into the client so a later reconnect re-registers with
-                // current models[].weight_hash (the coordinator's per-model
-                // catalog filter uses the register-time value).
-                if let client = coordinatorClient {
-                    await client.updateModelWeightHashes(liveModelHashes)
-                }
-            }
-        } else if !refresh.skipped {
-            // Recompute failed: keep the previous value but say so — a stale hash
-            // here is operator-visible as a model-swap untrust.
-            logger.warning("Weight hash recompute failed for \(modelId) — keeping previous value")
-        }
-
-        // The effective fingerprint is the one the recorded hash corresponds to.
-        // nil when we couldn't establish a trustworthy hash/fingerprint pair, in
-        // which case the after-load check should re-hash (safe direction).
-        return WeightHashRefreshResult(
-            effectiveFingerprint: haveTrustworthyHash ? refresh.fingerprint : nil
-        )
-    }
-
-    /// During a graceful drain we still finish model loads that an
-    /// already-accepted coordinator request is waiting on — its `modelId` is
-    /// present in `requestToModel` (set, with `inference_accepted` already sent,
-    /// in the same actor-atomic step before the load begins). Only pure
-    /// background preloads (no in-flight request for the model) abort early. This
-    /// lets `darkbloom stop`/`restart` drain a request that was still
-    /// cold-loading when shutdown began instead of aborting it with an error.
-    ///
-    /// Local-endpoint requests are intentionally NOT spared: new local work is
-    /// already refused on shutdown (`throwIfRefusingNewLocalWork`) both before
-    /// and after the load, so sparing the load would only load a model the
-    /// request is about to be rejected for.
-    private func shutdownShouldAbortLoad(_ modelId: String) -> Bool {
-        isShuttingDown && !requestToModel.values.contains(modelId)
-    }
-
-    private func ensureModelLoaded(modelId: String) async throws {
-        if shutdownShouldAbortLoad(modelId) {
-            throw CancellationError()
-        }
-
-        while modelsUnloading.contains(modelId) {
-            await waitForModelUnload(modelId)
-            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
-        }
-
-        if modelSlots[modelId] != nil {
-            return
-        }
-
-        if modelsLoading.contains(modelId) {
-            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
-                loadingWaiters[modelId, default: []].append(cont)
-            }
-            try Task.checkCancellation()
-            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
-            while modelsUnloading.contains(modelId) {
-                await waitForModelUnload(modelId)
-                if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
-            }
-            if modelSlots[modelId] != nil { return }
-            try await ensureModelLoaded(modelId: modelId)
-            return
-        }
-
-        guard let modelPath = ModelScanner.resolveLocalPath(modelID: modelId) else {
-            throw InferenceError.invalidModelDirectory(
-                "Model '\(modelId)' not found in local HuggingFace cache"
-            )
-        }
-
-        guard let modelInfo = advertisedModels[modelId] else {
-            throw InferenceError.invalidModelDirectory(
-                "Model '\(modelId)' not in advertised model list"
-            )
-        }
-
-        // Serialize loads so concurrent eviction decisions don't interleave
-        while isLoadingAny {
-            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                loadGateWaiters.append(cont)
-            }
-            // Honor cancellation (e.g. shutdown cancelled this preload task
-            // while it was suspended at the gate).
-            try Task.checkCancellation()
-            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
-            while modelsUnloading.contains(modelId) {
-                await waitForModelUnload(modelId)
-                if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
-            }
-            if modelSlots[modelId] != nil { return }
-        }
-        isLoadingAny = true
-
-        // Re-check slot cap after gate (another load may have consumed a slot)
-        if modelSlots.count >= maxModelSlots {
-            let modelsWithInflight = Set(requestToModel.values)
-            let evictable = modelSlots.filter {
-                !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key)
-            }
-            if evictable.isEmpty {
-                isLoadingAny = false
-                releaseLoadGateWaiters()
-                throw InferenceError.invalidModelDirectory(
-                    "All \(maxModelSlots) model slot(s) are active; cannot load '\(modelId)'"
-                )
-            }
-            if let lru = evictable.min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt }) {
-                await unloadModel(lru.key)
-            }
-        }
-
-        // Q6 (serve-while-load): id for the pending-load reservation placed in
-        // kvBudget once the gate passes and released once the weights are
-        // resident. Declared out here so the catch can release it on any path.
-        let pendingLoadID = "pending-load:\(modelId)"
-        modelsLoading.insert(modelId)
-        do {
-            try Task.checkCancellation()
-            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
-
-            // Load gate: require room for the WEIGHTS plus headroom for ONE
-            // request, not a full-concurrency multiple. Concurrency beyond one
-            // request is sized dynamically at runtime by the live token budget +
-            // GlobalKVCacheBudget (which strictly rejects any request whose KV
-            // won't fit real free memory, so this looser gate cannot OOM — worst
-            // case a box serves one request at a time). The old gate demanded
-            // free ≥ weights × 2.86 (a `× 2.0` here on top of a `× 0.7` discount
-            // in availableMemoryGb) and left every small/mid machine unable to
-            // load a model it could actually serve. `availableMemoryGb` now
-            // clamps to real OS-available memory and subtracts in-flight KV
-            // reservations, so dropping the multiplier here is still OOM-safe.
-            let requiredGb = ModelLoadAdmission.requiredToLoadGb(
-                weightsGb: modelInfo.estimatedMemoryGb,
-                headroomGb: Self.loadHeadroomGb)
-            do {
-                try await evictUntilAvailable(requiredGb: requiredGb)
-            } catch let InferenceError.modelLoadFailed(message) {
-                // Record for diagnostics so `doctor` shows the operator the exact
-                // "Insufficient memory …" reason, then rethrow unchanged.
-                recordModelLoadError(model: modelId, message: message)
-                throw InferenceError.modelLoadFailed(message)
-            }
-            try Task.checkCancellation()
-            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
-
-            // Q6: reserve this load's weight footprint in the shared KV budget so
-            // a concurrent KV reservation on an already-loaded model can't grant
-            // headroom that, plus these incoming (not-yet-in-mlxUsed) weights,
-            // blows the unified-memory cap. Released once the weights are resident.
-            let pendingLoadGiB = modelInfo.estimatedMemoryGb * 1_073_741_824
-            let pendingLoadBytes: UInt64 =
-                pendingLoadGiB.isFinite && pendingLoadGiB > 0
-                ? (pendingLoadGiB >= Double(UInt64.max) ? .max : UInt64(pendingLoadGiB))
-                : 0
-            await kvBudget.reservePendingLoad(requestID: pendingLoadID, bytes: pendingLoadBytes)
-
-            logger.info("Loading model: \(modelId) from \(modelPath.path)")
-
-            // Re-hash the weights about to be loaded. Refreshing BEFORE the slot
-            // goes active guarantees a challenge arriving mid-serve reports the
-            // hash of the bytes actually loaded — not the disk state at daemon
-            // start. (See `refreshWeightHash` for the full rationale.)
-            let preLoadRefresh = try await refreshWeightHash(modelId: modelId, modelPath: modelPath)
-
-            if let beforeModelLoad {
-                await beforeModelLoad(modelId)
-                try Task.checkCancellation()
-                if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
-            }
-            let container = try await loadModelContainer(from: modelPath)
-            try Task.checkCancellation()
-            if shutdownShouldAbortLoad(modelId) { throw CancellationError() }
-
-            // TOCTOU guard: the hash above was computed BEFORE loadModelContainer
-            // read the weights. If a re-download landed in that window,
-            // liveModelHashes would describe different bytes than what was
-            // actually loaded. Re-stat the snapshot fingerprint (cheap) and, only
-            // if it drifted from what the recorded hash corresponds to, recompute
-            // so liveModelHashes/modelHashFingerprints reflect the loaded bytes.
-            // The common case (fingerprint unchanged) costs one stat-based
-            // fingerprint and no re-read. A nil pre-load fingerprint also forces a
-            // re-hash here — we never recorded a trustworthy hash, so re-deriving
-            // it post-load is the safe direction.
-            let postLoadFingerprint = WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
-            if preLoadRefresh.effectiveFingerprint == nil
-                || postLoadFingerprint != preLoadRefresh.effectiveFingerprint {
-                logger.warning(
-                    "Snapshot fingerprint drifted between hash and load for \(modelId) — recomputing weight hash for the bytes actually loaded")
-                _ = try await refreshWeightHash(modelId: modelId, modelPath: modelPath)
-            }
-            let scheduler = BatchScheduler(
-                maxConcurrentRequests: Self.schedulerMaxConcurrent,
-                pendingTimeout: Self.schedulerPendingTimeout,
-                defaultMaxTokens: Self.schedulerDefaultMaxTokens,
-                kvBudget: kvBudget,
-                diskAccountant: diskAccountant
-            )
-            await scheduler.loadModel(
-                container: container,
-                modelId: modelId,
-                weightHash: liveModelHashes[modelId] ?? modelInfo.weightHash
-            )
-            // Weights are resident now (reflected in MLX active/cache), so hand
-            // off from the pending-load reservation to the live mlxUsed view —
-            // concurrent KV reservations see the weights from here on. (Also
-            // released in catch for the error paths above.)
-            await kvBudget.release(requestID: pendingLoadID)
-            if shutdownShouldAbortLoad(modelId) || Task.isCancelled {
-                await scheduler.unloadModel()
-                MLX.Memory.clearCache()
-                throw CancellationError()
-            }
-
-            // Post-load measured-headroom guard: the load gate admitted on an
-            // ESTIMATE (estimatedMemoryGb = on-disk × 1.2). Now that the weights
-            // are actually resident, check the MEASURED live KV headroom under the
-            // cap — if the real footprint exceeded the estimate there may be no
-            // room to serve, and keeping the model would just reject every request
-            // at the KV gate. Unload + reclaim + reject so the coordinator
-            // reroutes, instead of advertising a dead model. Safe to measure here:
-            // we're inside the `isLoadingAny` critical section, so MLX usage
-            // reflects this load and no concurrent load/unload can race it.
-            //
-            // Trim the cold-load buffer pool FIRST: a fresh load leaves transient
-            // buffers in MLX cacheMemory (no forward pass has trimmed them yet),
-            // which the measurement counts as "used" and would false-reject a
-            // serveable model. Mirrors evictUntilAvailable / fastAdmissionReject's
-            // clearCache-then-measure self-heal.
-            MLX.Memory.clearCache()
-            if !(await scheduler.hasServeableKVHeadroom()) {
-                let headroomGb = String(
-                    format: "%.1f",
-                    Double(await scheduler.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
-                let minGb = String(
-                    format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
-                await scheduler.unloadModel()
-                MLX.Memory.clearCache()
-                let message = "Model '\(modelId)' loaded but has insufficient KV headroom "
-                    + "under the memory cap (\(headroomGb) GB free, need \(minGb) GB to serve) — unloaded"
-                recordModelLoadError(model: modelId, message: message)
-                throw InferenceError.modelLoadFailed(message)
-            }
-
-            let tokenizer: TokenizerHandle = await container.perform { ctx in
-                TokenizerHandle(ctx.tokenizer)
-            }
-            modelSlots[modelId] = ModelSlot(
-                scheduler: scheduler,
-                container: container,
-                tokenizer: tokenizer,
-                isVLM: Self.modelIsVLM(at: modelPath),
-                modelType: modelInfo.modelType,
-                lastInferenceAt: .now
-            )
-
-            syncWarmModelState()
-            await updateAggregateCapacity()
-            logger.info("Model loaded: \(modelId) (\(modelSlots.count) model(s) in memory)")
-
-            modelsLoading.remove(modelId)
-            isLoadingAny = false
-            for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
-                waiter.resume()
-            }
-            releaseLoadGateWaiters()
-        } catch {
-            modelsLoading.remove(modelId)
-            isLoadingAny = false
-            // Release the pending-load reservation on every failure path (no-op
-            // if it was never placed, or already released on the success path).
-            await kvBudget.release(requestID: pendingLoadID)
-            // Release pool buffers a failed load left behind (same wedge as unload).
-            MLX.Memory.clearCache()
-            for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
-                waiter.resume(throwing: error)
-            }
-            releaseLoadGateWaiters()
-            throw error
-        }
-    }
-
-    private func releaseLoadGateWaiters() {
-        let waiters = loadGateWaiters
-        loadGateWaiters.removeAll()
-        for waiter in waiters {
-            waiter.resume()
-        }
-    }
-
-    private func waitForModelUnload(_ modelId: String) async {
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            unloadingWaiters[modelId, default: []].append(cont)
-        }
-    }
-
-    private func unloadModel(_ modelId: String) async {
-        guard let slot = modelSlots[modelId], !modelsUnloading.contains(modelId) else { return }
-        modelsUnloading.insert(modelId)
-        await slot.scheduler.unloadModel()
-        modelSlots.removeValue(forKey: modelId)
-        modelsUnloading.remove(modelId)
-        // Mandatory: freed weights linger in MLX's pool (GPU.cacheMemory), which
-        // load-admission counts as used — without this the box 503s every load
-        // until restart.
-        MLX.Memory.clearCache()
-        let waiters = unloadingWaiters.removeValue(forKey: modelId) ?? []
-        for waiter in waiters { waiter.resume() }
-        syncWarmModelState()
-        await updateAggregateCapacity()
-        logger.info("Unloaded model: \(modelId) (\(modelSlots.count) model(s) remaining)")
-    }
-
-    /// Weight hashes for ONLY the models currently loaded in memory this session.
-    /// A model is "currently loaded" iff it has a live slot (and isn't tearing
-    /// down) AND we have a known live hash for it. Used by the attestation
-    /// challenge response so the coordinator's model-swap hard-untrust check only
-    /// ever sees hashes for weights we are actually serving — idle/unloaded
-    /// advertised models drop out because they have no slot.
-    private func loadedModelHashesSnapshot() -> [String: String] {
-        var result: [String: String] = [:]
-        for modelId in modelSlots.keys where !modelsUnloading.contains(modelId) {
-            if let hash = liveModelHashes[modelId] {
-                result[modelId] = hash
-            }
-        }
-        return result
-    }
-
-    private func syncWarmModelState() {
-        let loaded = modelSlots.keys.filter { !modelsUnloading.contains($0) }.sorted()
-        state.warmModels = loaded
-        let activeSlots = modelSlots.filter { !modelsUnloading.contains($0.key) }
-        let inflightModels = Set(requestToModel.values)
-        let currentCandidates = activeSlots.filter { inflightModels.contains($0.key) }
-        let candidates = currentCandidates.isEmpty ? activeSlots : currentCandidates
-        if let mostRecent = candidates.max(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt }) {
-            state.currentModel = mostRecent.key
-            state.currentModelHash = liveModelHashes[mostRecent.key]
-        } else {
-            state.currentModel = nil
-            state.currentModelHash = nil
-        }
-    }
-
-    /// Physical memory (GB) available to LOAD a model. No 0.7 KV-safety discount
-    /// here — weights are a known one-time allocation, and the 0.7 runtime
-    /// safety is already enforced per request by GlobalKVCacheBudget. Applying it
-    /// twice was the double-count that kept capable machines from ever loading a
-    /// model they could serve.
-    ///
-    /// Two OOM-safety clamps make the looser gate sound:
-    ///   1. The free figure is clamped to what the OS actually reports available
-    ///      (`SystemMemory.availableBytes`), not just `total − MLX.active −
-    ///      MLX.cache`, which over-reports whenever the OS/other processes hold
-    ///      RAM.
-    ///   2. KV already promised to in-flight requests
-    ///      (`kvBudget.outstandingReservedBytes`) is subtracted, so a concurrent
-    ///      load can't consume memory a mid-decode request is counting on.
-    ///
-    /// `doctor`'s model-fit check shares the SAME arithmetic via
-    /// `ModelLoadAdmission`, so the operator-facing verdict can never drift from
-    /// what this method enforces at load time.
-    private func availableMemoryGb() async -> Double {
-        let outstanding = await kvBudget.outstandingReservedBytes()
-        // Hold back enough to honor the 90% unified cap: max(configured reserve,
-        // physical − cap). Without this the free-memory gate would load models
-        // until only `configReserve` (4 GiB) remained — past the cap on big boxes.
-        let reserve = UnifiedMemoryCap.loadReserveBytes(
-            configReserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
-        return ModelLoadAdmission.freeForLoadGb(
-            totalBytes: ProcessInfo.processInfo.physicalMemory,
-            systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
-            gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
-            gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
-            reserveBytes: reserve,
-            outstandingReservationBytes: outstanding)
-    }
-
-    /// Headroom (GB) reserved above the weights at load time. Must be at least
-    /// the runtime activation reserve + a minimum serveable KV, or the gate would
-    /// admit a near-cap model that GlobalKVCacheBudget then rejects every request
-    /// for (the old flat 2 GiB was LESS than the 3 GiB activation reserve). Sized
-    /// from UnifiedMemoryCap so the load gate and the runtime KV path agree.
-    static let loadHeadroomGb =
-        Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0)
-
-    private static func saturatingAdd(_ values: UInt64...) -> UInt64 {
-        var total: UInt64 = 0
-        for value in values {
-            let (sum, overflow) = total.addingReportingOverflow(value)
-            if overflow { return UInt64.max }
-            total = sum
-        }
-        return total
-    }
-
-    /// Evict idle models (LRU order) until `requiredGb` is available or
-    /// no more idle models remain. Re-checks in-flight state before each
-    /// eviction since `await unloadModel` is a suspension point.
-    /// Throws if the memory target cannot be met after exhausting evictable models.
-    private func evictUntilAvailable(requiredGb: Double) async throws {
-        while await availableMemoryGb() < requiredGb {
-            let modelsWithInflight = Set(requestToModel.values)
-            let candidate = modelSlots
-                .filter { !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) }
-                .min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt })
-
-            guard let (modelId, _) = candidate else {
-                // Nothing idle to evict — drop the reclaimable pool and resample
-                // before failing, so a pool-inflated box isn't refused a load
-                // that fits. Same self-heal as fastAdmissionReject.
-                MLX.Memory.clearCache()
-                let retried = await availableMemoryGb()
-                if retried >= requiredGb { return }
-                let available = String(format: "%.1f", retried)
-                let required = String(format: "%.1f", requiredGb)
-                throw InferenceError.modelLoadFailed(
-                    "Insufficient memory (\(available) GB free, need \(required) GB) and all loaded models are actively serving"
-                )
-            }
-
-            logger.info("Evicting idle model \(modelId) to free memory")
-            await unloadModel(modelId)
-        }
-    }
-
-    /// Fast, non-mutating pre-accept admission check used by
-    /// ``handleInferenceRequest``. Returns `true` only when loading `modelId`
-    /// right now is *certain* to fail, so the coordinator can reroute instead
-    /// of us accepting-then-failing (which it counts as a provider fault).
-    ///
-    /// It mirrors the terminal failure points in ``ensureModelLoaded`` /
-    /// ``evictUntilAvailable`` WITHOUT loading anything and is deliberately
-    /// conservative: anything that *could* succeed (including via eviction of
-    /// an idle model) is admitted and left for the post-accept load path.
-    private func fastAdmissionReject(modelId: String) async -> Bool {
-        // Already resident — definitely serviceable.
-        if modelSlots[modelId] != nil {
-            return false
-        }
-
-        // Without advertised model info we cannot size the load here; let the
-        // post-accept path surface the proper 404 rather than guessing.
-        guard let modelInfo = advertisedModels[modelId] else {
-            return false
-        }
-        let requiredGb = ModelLoadAdmission.requiredToLoadGb(
-            weightsGb: modelInfo.estimatedMemoryGb,
-            headroomGb: Self.loadHeadroomGb)
-
-        // Sample live memory FIRST — this is the only suspension point in the
-        // method (it awaits the KV-budget actor). Reading all the actor-local
-        // slot/in-flight state AFTER the await means the decision below is made
-        // atomically with respect to this actor: nothing can mutate slots
-        // between the reads and the verdict, so there is no TOCTOU window.
-        let available = await availableMemoryGb()
-
-        // Re-check residency after the suspension: the model may have been
-        // loaded by a concurrent request while we were awaiting memory.
-        if modelSlots[modelId] != nil {
-            return false
-        }
-
-        // An idle slot (loaded, no in-flight work, not already unloading) can be
-        // evicted to make room, so its presence means we must NOT pre-reject.
-        let modelsWithInflight = Set(requestToModel.values)
-        let hasEvictable = modelSlots.contains {
-            !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key)
-        }
-
-        // Not enough free memory and nothing idle to evict. Drop the reclaimable
-        // pool and resample once before rejecting (the wedge self-heal).
-        if available < requiredGb && !hasEvictable {
-            MLX.Memory.clearCache()
-            let retried = await availableMemoryGb()
-            if modelSlots[modelId] != nil {  // a concurrent load won the race
-                return false
-            }
-            if retried < requiredGb {
-                return true
-            }
-        }
-
-        // Mirrors the slot-cap guard in ensureModelLoaded: all slots full and
-        // none idle to evict.
-        if modelSlots.count >= maxModelSlots && !hasEvictable {
-            return true
-        }
-
-        return false
-    }
-
-    /// Map a model-load failure to an HTTP status code so the coordinator can
-    /// react appropriately: transient capacity/memory pressure should reroute
-    /// (503) and genuinely missing/unadvertised models are 404; anything else
-    /// is treated as a real provider fault (500).
-    static func loadErrorStatusCode(for error: any Error) -> UInt16 {
-        guard let inferenceError = error as? InferenceError else {
-            return 500
-        }
-        switch inferenceError {
-        case .modelLoadFailed:
-            // Out-of-memory / eviction failure from evictUntilAvailable —
-            // transient capacity pressure, so let the coordinator reroute.
-            return 503
-        case .invalidModelDirectory(let message):
-            let lowered = message.lowercased()
-            if lowered.contains("slot") {
-                // "All N model slot(s) are active; cannot load ..." — transient
-                // capacity, not a fault.
-                return 503
-            }
-            if lowered.contains("not found") || lowered.contains("advertised") {
-                // Missing on disk or not in the advertised model list.
-                return 404
-            }
-            return 500
-        case .noModelLoaded, .generationFailed, .unsupportedRole:
-            return 500
-        }
-    }
-
-    private func loadModelContainer(from directory: URL) async throws -> MLXLMCommon.ModelContainer {
-        // Vision-language models (config declares `vision_config`) load via
-        // VLMModelFactory so image/video requests can run the container's
-        // prepare/generate vision path. Their text path still works through the
-        // batched engine since VLMModel refines LanguageModel.
-        if Self.modelIsVLM(at: directory) {
-            return try await VLMModelFactory.shared.loadContainer(
-                from: directory,
-                using: LocalTokenizerLoader()
-            )
-        }
-        return try await LLMModelFactory.shared.loadContainer(
-            from: directory,
-            using: LocalTokenizerLoader()
-        )
-    }
-
-    /// A model is a vision-language model when its `config.json` declares a
-    /// `vision_config`. Cheap, dependency-free check used to pick the model
-    /// factory and to route multimodal requests.
-    static func modelIsVLM(at directory: URL) -> Bool {
-        let configURL = directory.appendingPathComponent("config.json")
-        guard let data = try? Data(contentsOf: configURL),
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return false }
-        return json["vision_config"] != nil
-    }
-
-    // MARK: - Cancellation
-
-    private func handleCancellation(requestId: String, receivedFromCoordinator: Bool = true) async {
-        logger.info("Cancelling request: \(requestId)")
-        let hadInflightTask = inflightTasks[requestId] != nil
-        let hadModelReservation = requestToModel[requestId] != nil
-        if receivedFromCoordinator && (hadInflightTask || hadModelReservation) {
-            stats.incrementCancellationsReceived()
-        }
-
-        // P1 #1 (CRITICAL): do NOT call `scheduler.cancel(requestId:)`
-        // directly here. After the MLXLMServer adoption,
-        // `MultiModelBatchSchedulerEngine.streamChatCompletion` mints
-        // a fresh internal request id when it calls
-        // `BatchScheduler.submit(requestId:)`, so the coordinator-side
-        // `requestId` we hold here does NOT match the id the scheduler
-        // is tracking. A direct `scheduler.cancel(<coordinator id>)`
-        // would be a no-op against an unknown id and let generation run
-        // until on-termination tearing happens organically.
-        //
-        // Instead, rely on Task cancellation propagation:
-        //
-        //   ProviderLoop.task.cancel()
-        //     -> `for try await frame in frames` raises CancellationError
-        //     -> the detached task exits, the `frames` AsyncThrowingStream
-        //        is deallocated, its `onTermination` fires
-        //     -> MLXOpenAIService.streamChatCompletionFrames's inner
-        //        task is cancelled, its iteration on the engine stream
-        //        exits, the engine stream is deallocated, its
-        //        `onTermination` fires
-        //     -> MultiModelBatchSchedulerEngine.streamChatCompletion's
-        //        `onTermination` calls
-        //        `scheduler.cancel(<internal id>)` with the correct id.
-        //
-        // The cancellation-registry token below remains so the explicit
-        // `if token.isCancelled` check inside the streaming loop also
-        // fires on the next iteration (defense in depth — both paths
-        // reach the same teardown).
-        await cancellationRegistry.cancel(requestId: requestId)
-
-        if requestToModel.removeValue(forKey: requestId) != nil {
-            if !hadInflightTask {
-                stats.incrementCancelDuringModelLoad()
-            }
-            powerAssertion.release()
-        }
-
-        syncWarmModelState()
-        await updateAggregateCapacity()
-
-        // Cancel the detached cold-load task (if this request is still loading),
-        // so `handleInferenceRequest`'s `await loadTask.value` unblocks. Without
-        // this, a cancel during a stalled cold load would leave the serve task
-        // awaiting forever and the CLI would escalate to SIGKILL.
-        if let loadTask = inflightModelLoadTasks.removeValue(forKey: requestId) {
-            loadTask.cancel()
-        }
-
-        if let task = inflightTasks.removeValue(forKey: requestId) {
-            task.cancel()
-        }
-    }
-
-    private func cancelAllInflight() async {
-        // Cancel detached model-load tasks first: a request still cold-loading
-        // (awaiting `loadTask.value` in `handleInferenceRequest`) only unblocks
-        // when its load task is cancelled or finishes. Without this, a stalled
-        // load would keep `run()` from returning past the drain timeout.
-        for task in inflightModelLoadTasks.values { task.cancel() }
-        inflightModelLoadTasks.removeAll()
-        let requestIds = Array(inflightTasks.keys)
-        for requestId in requestIds {
-            await handleCancellation(requestId: requestId, receivedFromCoordinator: false)
-        }
-        inflightTasks.removeAll()
-        completedBeforeTaskRegistration.removeAll()
-        if !requestToModel.isEmpty {
-            powerAssertion.releaseAll()
-        }
-        requestToModel.removeAll()
-        syncWarmModelState()
-    }
-
-    private func finishInflightRequest(requestId: String) async {
-        let hadRegisteredTask = inflightTasks.removeValue(forKey: requestId) != nil
-        let modelId = requestToModel.removeValue(forKey: requestId)
-        if !hadRegisteredTask, modelId != nil {
-            completedBeforeTaskRegistration.insert(requestId)
-        }
-        if let modelId {
-            powerAssertion.release()
-            modelSlots[modelId]?.lastInferenceAt = .now
-            syncWarmModelState()
-        }
-        await updateAggregateCapacity()
-    }
-
-    /// Whether any inference work is still in flight — coordinator-routed
-    /// (`inflightTasks`/`requestToModel`) OR local-endpoint streams
-    /// (`localReservations`). Drain logic (shutdown + update hot-swap) waits on
-    /// all three so a local stream is never cut off mid-generation.
-    private var hasInflightWork: Bool {
-        !inflightTasks.isEmpty || !requestToModel.isEmpty || localReservations.hasAny
-    }
-
-    private func waitForInflightDrain(timeout: Duration) async -> Bool {
-        guard hasInflightWork else { return true }
-        logger.info("Waiting up to \(timeout.components.seconds)s for active inference to finish before shutdown")
-        let started = ContinuousClock.now
-        while hasInflightWork {
-            // During a controlled shutdown (user stop/restart, schedule window
-            // close, or update hot-swap) we want to finish active inference even
-            // if the outer task was cancelled. Only abort early on cancellation
-            // when we are not in the shutdown path.
-            if !isShuttingDown, Task.isCancelled { return false }
-            if ContinuousClock.now - started >= timeout {
-                return false
-            }
-            do {
-                try await Task.sleep(for: .milliseconds(250))
-            } catch {
-                if !isShuttingDown { return false }
-                // Controlled shutdown: ignore cancellation from the sleep and
-                // keep polling until the work finishes or the timeout expires.
-            }
-        }
-        return true
-    }
-
-    private func updateAggregateCapacity() async {
-        var allSlots: [BackendSlotCapacity] = []
-        var totalActive = 0
-        let slots = modelSlots.filter { !modelsUnloading.contains($0.key) }
-        for (_, slot) in slots {
-            let cap = await slot.scheduler.backendCapacity()
-            allSlots.append(contentsOf: cap.slots)
-            let schedCap = await slot.scheduler.capacity()
-            totalActive += schedCap.activeRequests
-        }
-
-        let gbDivisor = 1024.0 * 1024.0 * 1024.0
-        let totalMem = ProcessInfo.processInfo.physicalMemory
-
-        // Max model weight we could load right now (single source of truth for
-        // the coordinator's cold-load routing). Holds back the same load reserve
-        // the load gate uses, so it enforces the 90% cap.
-        //
-        // Eviction handling: current MLX usage may be reclaimed by evicting idle
-        // models on a cold load — BUT ONLY when nothing is being served. MLX
-        // memory is global (it also covers the local inference endpoint, whose
-        // streams are tracked by localReservations, not modelSlots), so a model
-        // serving a local request is NOT evictable. `hasInflightWork` is the
-        // comprehensive signal (coordinator inflight + local streams): when work
-        // is in flight we treat NOTHING as reclaimable (conservative, never
-        // advertises an actively-served model's weights as free); only when fully
-        // idle do we assume idle models can be evicted.
-        let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
-        let reclaimableMlx: UInt64 = hasInflightWork ? 0 : mlxUsed
-        let loadReserve = UnifiedMemoryCap.loadReserveBytes(
-            configReserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
-        // Subtract KV already promised to in-flight requests (coordinator + local
-        // streams), exactly as the real load gate (availableMemoryGb) does, so the
-        // heartbeat can't advertise reserved-but-not-yet-allocated bytes as loadable.
-        let outstandingKV = await kvBudget.outstandingReservedBytes()
-        let freeForLoadGb = ModelLoadAdmission.maxLoadableWeightGb(
-            totalBytes: totalMem,
-            systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
-            mlxUsedBytes: reclaimableMlx,
-            reserveBytes: loadReserve,
-            outstandingReservationBytes: outstandingKV)
-
-        state.backendCapacity = BackendCapacity(
-            slots: allSlots,
-            gpuMemoryActiveGb: Double(MLX.GPU.activeMemory) / gbDivisor,
-            gpuMemoryPeakGb: Double(MLX.GPU.peakMemory) / gbDivisor,
-            gpuMemoryCacheGb: Double(MLX.GPU.cacheMemory) / gbDivisor,
-            totalMemoryGb: Double(totalMem) / gbDivisor,
-            freeForLoadGb: freeForLoadGb
-        )
-        state.inferenceActive = totalActive > 0
-    }
-
-    // MARK: - Attestation Challenge
-
-    private func handleAttestationChallenge(
-        nonce: String,
-        timestamp: String,
-        send: SendHandle
-    ) async {
-        logger.info("Handling attestation challenge (timestamp: \(timestamp))")
-
-        guard let builder = attestationBuilder else {
-            logger.warning("No Secure Enclave identity -- cannot respond to attestation challenge")
-            return
-        }
-
-        do {
-            let activeModelHash: String?
-            if let modelId = state.currentModel {
-                activeModelHash = liveModelHashes[modelId]
-            } else {
-                activeModelHash = nil
-            }
-
-            // Report hashes ONLY for models we are CURRENTLY SERVING (a live
-            // slot this session), never for every advertised model. Registration
-            // still advertises all models' startup hashes (the coordinator's
-            // catalog routing filter needs them, and a stale IDLE model there
-            // degrades to a gentle silent deroute). But the challenge response
-            // feeds the coordinator's model-swap *hard-untrust* check: reporting
-            // a hash for an idle, unloaded model would hard-untrust this provider
-            // the moment that model's catalog hash changes (e.g. a re-publish)
-            // before we re-download it — even though we never served stale
-            // weights. A model that has been idle-unloaded drops out
-            // automatically here because it no longer has a slot.
-            let loadedModelHashes = loadedModelHashesSnapshot()
-
-            let response = try builder.buildChallengeResponse(
-                nonce: nonce,
-                timestamp: timestamp,
-                providerPublicKey: keyPair.publicKeyBase64,
-                binaryHash: binaryHash,
-                activeModelHash: activeModelHash,
-                runtimeHashes: augmentRuntimeHashesWithMetallib(loopConfig.runtimeHashes),
-                modelHashes: loadedModelHashes
-            )
-
-            send.send(.attestationResponse(AttestationResponsePayload(
-                nonce: response.nonce,
-                signature: response.signature,
-                statusSignature: response.statusSignature,
-                publicKey: response.publicKey,
-                hypervisorActive: response.hypervisorActive,
-                rdmaDisabled: response.rdmaDisabled,
-                sipEnabled: response.sipEnabled,
-                secureBootEnabled: response.secureBootEnabled,
-                binaryHash: response.binaryHash,
-                activeModelHash: response.activeModelHash,
-                pythonHash: response.pythonHash,
-                runtimeHash: response.runtimeHash,
-                templateHashes: response.templateHashes,
-                modelHashes: response.modelHashes
-            )))
-
-            logger.info("Attestation challenge response sent")
-        } catch {
-            logger.error("Failed to sign attestation challenge: \(error)")
-        }
-    }
-
-    // MARK: - Code-identity (APNs) challenge
-
-    /// Decrypts an E_K(nonce) code-identity challenge and produces the WebSocket
-    /// reply: the recovered nonce (proof of K-possession) + Sign_SE(nonce). Pure
-    /// and testable. K (NodeKeyPair, X25519) is decrypt-only — the signature is
-    /// the separate Secure-Enclave P-256 key. The coordinator verifies both
-    /// (nonce equality + the SE signature against the registration-bound SE key).
-    static func answerCodeChallenge(
-        challenge: EncryptedPayload,
-        keyPair: NodeKeyPair,
-        signer: any AttestationSigner
-    ) throws -> (nonce: String, signature: String) {
-        let nonceData = try keyPair.decryptPayload(challenge)
-        guard let nonceB64 = String(data: nonceData, encoding: .utf8) else {
-            throw NSError(domain: "ProviderCore.codeAttest", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "decrypted code-challenge nonce is not UTF-8"])
-        }
-        let sig = try signer.sign(Data(nonceB64.utf8))
-        return (nonceB64, sig.base64EncodedString())
-    }
-
-    /// Extracts the code_challenge EncryptedPayload from an APNs push userInfo.
-    static func extractCodeChallenge(_ userInfo: [String: Any]) -> EncryptedPayload? {
-        guard let cc = userInfo["code_challenge"],
-              let data = try? JSONSerialization.data(withJSONObject: cc)
-        else {
-            return nil
-        }
-        return try? JSONDecoder().decode(EncryptedPayload.self, from: data)
-    }
-
-    /// Handles an inbound APNs code-identity challenge (delivered by the app
-    /// delegate): decrypt E_K(nonce) with K, sign the nonce with the SE key, and
-    /// reply over the WebSocket. Only the genuine hardened process can do both,
-    /// which is what binds the Apple-gated push proof onto this connection.
-    func handleCodeChallenge(_ challenge: EncryptedPayload, send: SendHandle) {
-        guard let signer = self.signer else {
-            logger.warning("code-identity challenge received but no Secure Enclave signer is available")
-            return
-        }
-        do {
-            let answer = try Self.answerCodeChallenge(challenge: challenge, keyPair: keyPair, signer: signer)
-            send.send(.codeAttestationResponse(nonce: answer.nonce, signature: answer.signature))
-            logger.info("code-identity challenge answered over WebSocket")
-        } catch {
-            logger.error("failed to answer code-identity challenge: \(error)")
-        }
-    }
-
-    // MARK: - Helpers
+    // MARK: - Companion files
     //
-    // SSE parsing, error-status mapping, and inbound request decoding
-    // live in companion extension files for navigability:
-    //   - ProviderLoop+SSEParser.swift     (StreamChunkExtract, parseStreamChunk, encodeToolCallsForHash)
-    //   - ProviderLoop+ErrorMapping.swift  (mapInferenceErrorToStatus)
-    //   - ProviderLoop+InboundDecode.swift (decodeOpenAIRequest; see InboundChatNormalization)
-}
-
-// MARK: - Logger wrapper
-
-/// Unified logger that uses os.Logger on macOS. Internal access so
-/// the `+SSEParser.swift` extension file can re-use it for its
-/// file-scope logger (parseStreamChunk is a `static` method and
-/// can't reach the per-instance logger on the actor).
-struct ProviderLogger: Sendable {
-    #if canImport(os)
-    private let osLogger: os.Logger
-    #endif
-    private let category: String
-
-    init(subsystem: String, category: String) {
-        self.category = category
-        #if canImport(os)
-        self.osLogger = os.Logger(subsystem: subsystem, category: category)
-        #endif
-    }
-
-    func info(_ message: String) {
-        #if canImport(os)
-        osLogger.info("\(message, privacy: .public)")
-        #else
-        print("[\(category)] INFO: \(message)")
-        #endif
-    }
-
-    func warning(_ message: String) {
-        #if canImport(os)
-        osLogger.warning("\(message, privacy: .public)")
-        #else
-        print("[\(category)] WARN: \(message)")
-        #endif
-    }
-
-    func error(_ message: String) {
-        #if canImport(os)
-        osLogger.error("\(message, privacy: .public)")
-        #else
-        print("[\(category)] ERROR: \(message)")
-        #endif
-    }
+    // This actor is split by concern across same-module extension files. This
+    // core file holds only the type declaration, stored state, init, the
+    // `ModelSlot`/static config, and the nested helper types above.
+    //
+    //   - ProviderLoop+Serve.swift               run() loop + registration setup
+    //   - ProviderLoop+Shutdown.swift            graceful-shutdown sequence (drain + teardown)
+    //   - ProviderLoop+InferenceHandler.swift    handleInferenceRequest + draining gates
+    //   - ProviderLoop+Preload.swift             load_model preload + preload/shutdown waits
+    //   - ProviderLoop+StartupPreload.swift      boot-time preload + registration readiness gate
+    //   - ProviderLoop+Prefetch.swift            background prefetch + desired-models reconcile
+    //   - ProviderLoop+Testing.swift             test-only seams (ProviderCoreTests)
+    //   - ProviderLoop+Trust.swift               trust status + one-time auto-report
+    //   - ProviderLoop+MemoryProtection.swift    OOM surfacing + memory-pressure
+    //   - ProviderLoop+IdleTimeout.swift         idle-timeout model unload
+    //   - ProviderLoop+Capacity.swift            capacity refresh + updateAggregateCapacity
+    //   - ProviderLoop+AutoUpdate.swift          background self-update + phase transitions
+    //   - ProviderLoop+ModelLoading.swift        ensureModelLoaded/unload + memory admission
+    //   - ProviderLoop+EngineV2.swift            ContinuousBatchingV2 slot wiring (flag-gated)
+    //   - ProviderLoop+Cancellation.swift        cancellation + in-flight drain
+    //   - ProviderLoop+AttestationChallenge.swift attestation + APNs code challenge
+    //   - ProviderLoop+LocalEndpoint.swift       unified local HTTP endpoint
+    //   - ProviderLoop+SSEParser.swift           StreamChunkExtract, parseStreamChunk, encodeToolCallsForHash
+    //   - ProviderLoop+ErrorMapping.swift        mapInferenceErrorToStatus
+    //   - ProviderLoop+InboundDecode.swift       decodeOpenAIRequest (see InboundChatNormalization)
 }
 
 // MARK: - Import bridge
@@ -3628,165 +641,3 @@ import MLXLLM
 import MLXLMCommon
 import MLXVLM
 
-// MARK: - Unified local endpoint
-
-/// Serves a local OpenAI-compatible HTTP endpoint alongside coordinator serving,
-/// backed by the SAME loaded models (`modelSlots`) so weights load once and
-/// local + coordinator requests feed the same continuous-batching engine and the
-/// same `GlobalKVCacheBudget` (so reported capacity reflects local load too).
-///
-/// Kept as a same-file extension so it can reach `ProviderLoop`'s private model
-/// registry / load path without loosening their access for the whole module.
-extension ProviderLoop {
-    /// Start the local endpoint (idempotent). Runs the shared HTTP app in a
-    /// child task; its registry closures reach back into this actor.
-    func startLocalEndpoint(_ cfg: LocalInferenceHTTPConfig) {
-        guard localServerTask == nil else { return }
-        let app = makeLocalInferenceApplication(
-            config: cfg,
-            defaultMaxTokens: Self.schedulerDefaultMaxTokens,
-            acquire: { [weak self] modelId in
-                guard let self else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId) }
-                return try await self.acquireModelForLocal(modelId)
-            },
-            tokenizerProvider: { [weak self] modelId in
-                guard let self else { throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization }
-                return try await self.resolveTokenizerForLocal(modelId)
-            },
-            availableModels: { [weak self] in
-                guard let self else { return [] }
-                return await self.advertisedLocalModelIds()
-            },
-            // Same per-server scope semantics as the standalone --local path
-            // (PR #290 review): the local HTTP endpoint can't carry a
-            // per-request prompt_cache_key, so honor the fixed
-            // DARKBLOOM_PREFIX_CACHE_SCOPE here too. "" => unscoped. The
-            // coordinator WS path is unaffected (it carries per-request scope).
-            cacheScope: ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE_SCOPE"] ?? "",
-            // Fires only once OUR server has actually bound the socket — the
-            // authoritative bind signal. We publish discovery here (never from a
-            // best-effort HTTP probe that a foreign process on the same port
-            // could answer). If the bind fails, runService throws below and this
-            // never runs, so no stale/foreign discovery record is written.
-            onServerRunning: { [weak self] _ in
-                await self?.onLocalEndpointBound(cfg)
-            }
-        )
-        let log = logger
-        localServerTask = Task {
-            do {
-                try await app.runService(gracefulShutdownSignals: [])
-            } catch is CancellationError {
-                // expected on shutdown
-            } catch {
-                // A bind failure (e.g. port already in use) lands here. We do NOT
-                // kill the provider — coordinator serving must stay up — but make
-                // the local-endpoint failure loud and operator-actionable.
-                log.error("Local OpenAI endpoint did NOT bind on \(cfg.host):\(cfg.port) (port already in use?): \(error.localizedDescription). Coordinator serving is unaffected; restart with a free --port to enable the local endpoint.")
-            }
-        }
-    }
-
-    /// Invoked by Hummingbird once the local endpoint socket is bound and
-    /// listening. Publishes the discovery record so `darkbloom local` /
-    /// local-first clients find the unified endpoint — only now that the bind is
-    /// CONFIRMED to be ours.
-    private func onLocalEndpointBound(_ cfg: LocalInferenceHTTPConfig) {
-        logger.info("Local OpenAI endpoint listening on \(cfg.host):\(cfg.port) (unified mode)")
-        try? LocalEndpoint.writeInfo(LocalEndpoint.Info(
-            host: cfg.host,
-            port: cfg.port,
-            apiKey: cfg.authToken ?? "",
-            version: ProviderCore.version,
-            pid: ProcessInfo.processInfo.processIdentifier,
-            updatedAt: ISO8601DateFormatter().string(from: Date())
-        ))
-    }
-
-    /// Stop the local endpoint server, if running, and remove its discovery record.
-    func stopLocalEndpoint() {
-        guard localServerTask != nil else { return }
-        localServerTask?.cancel()
-        localServerTask = nil
-        LocalEndpoint.removeInfo()
-    }
-
-    /// Acquire a resident model for a LOCAL request: ensure it's loaded, then
-    /// hold a local reservation (released by the engine when the stream ends) so
-    /// the idle monitor and load-gate eviction can't pull it mid-stream. Loading
-    /// goes through the same `ensureModelLoaded` gate as coordinator requests, so
-    /// the shared `GlobalKVCacheBudget` and memory admission apply uniformly.
-    func acquireModelForLocal(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
-        // Fast-path drain/shutdown reject; an authoritative re-check follows the
-        // `await` below, right before the reservation is taken (see comment there).
-        try throwIfRefusingNewLocalWork()
-        do {
-            try await ensureModelLoaded(modelId: modelId)
-        } catch let err as InferenceError {
-            // Map load failures to the engine's typed errors (404 / 503).
-            switch err {
-            case .invalidModelDirectory, .noModelLoaded:
-                throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
-            default:
-                throw MultiModelBatchSchedulerEngineError.queueFull("local capacity unavailable for \(modelId)")
-            }
-        }
-        guard let slot = modelSlots[modelId] else {
-            throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
-        }
-        // Authoritative re-check: `ensureModelLoaded` above is a suspension
-        // point, so draining or shutdown may have begun while we were parked.
-        // No `await` sits between this check and `reserve`, so on the actor it
-        // is atomic — the reservation is either refused or counted in
-        // `hasInflightWork` before any drain snapshot can miss it.
-        try throwIfRefusingNewLocalWork()
-        localReservations.reserve(modelId)
-        modelSlots[modelId]?.lastInferenceAt = .now
-        let release: @Sendable (String) async -> Void = { [weak self] mid in
-            await self?.releaseLocalReservation(mid)
-        }
-        return MultiModelBatchSchedulerEngine.AcquiredModel(
-            scheduler: slot.scheduler,
-            tokenizer: slot.tokenizer,
-            releaseToken: OneShotRelease(release: release, modelId: modelId),
-            // From the loaded slot, not advertisedModels — correct during the
-            // hard-swap drop window (see ModelSlot.modelType).
-            modelType: slot.modelType,
-            container: slot.container,
-            isVLM: slot.isVLM
-        )
-    }
-
-    /// Drop one local in-flight reservation for a model.
-    func releaseLocalReservation(_ modelId: String) {
-        localReservations.release(modelId)
-        modelSlots[modelId]?.lastInferenceAt = .now
-    }
-
-    /// Whether a model currently has a local request in flight. Used by the idle
-    /// monitor and eviction so they never unload a model a local stream is using.
-    func hasLocalReservation(_ modelId: String) -> Bool {
-        localReservations.isReserved(modelId)
-    }
-
-    /// Resolve a tokenizer for the local token-utility endpoints. Read-only, so
-    /// (unlike `acquireModelForLocal`) it takes no reservation.
-    func resolveTokenizerForLocal(_ modelId: String?) async throws -> TokenizerHandle {
-        if let modelId {
-            guard let slot = modelSlots[modelId] else {
-                throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
-            }
-            return slot.tokenizer
-        }
-        if let firstKey = modelSlots.keys.sorted().first, let slot = modelSlots[firstKey] {
-            return slot.tokenizer
-        }
-        throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization
-    }
-
-    /// The advertised `/v1/models` catalog for the local endpoint — everything
-    /// this provider is configured to serve, not just the resident subset.
-    func advertisedLocalModelIds() -> [String] {
-        advertisedModels.keys.sorted()
-    }
-}

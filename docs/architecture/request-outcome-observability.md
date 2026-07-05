@@ -190,6 +190,57 @@ plus the exactly-once boundary (a late terminal after grace-expiry refund is a n
 The `before_first_token` client-cancellation emit and the per-provider aggregate
 counters in the table above remain unbuilt.
 
+#### Implemented (DAR-333): OpenRouter-formula uptime + smart admission
+
+This slice adds a single per-request outcome counter that reproduces OpenRouter's
+public provider-uptime definition, plus a smart-admission backstop that keeps
+provider-capacity 5xx out of the uptime denominator. As with the DAR-332 counters,
+everything goes through the existing `ddIncr` wrapper (no-op when Datadog is
+unconfigured) and is emitted in addition to — never instead of — the unchanged
+`inference.completions` and `routing.decisions` counters, so existing dashboards
+keep working.
+
+| Metric | Tags | Emitted from | Meaning |
+|---|---|---|---|
+| `d_inference.inference.request_outcome` | `model`, `class` | `api/dispatch.go` `run()` tail (committed → `success`, exhausted → failure-by-status) and `recordRejection` for pre-dispatch stages | Exactly one emit per client request. `class` ∈ {`success`, `provider_5xx`, `mid_stream`, `timeout`, `rate_limited`, `client_error`}. Drives the live OpenRouter-formula uptime panel. |
+| `d_inference.routing.unservable_reclassified` | `model` | `api/dispatch.go` dispatch-exhausted backstop | A provider token-budget / KV / context 5xx that the dispatch path reclassified into an uptime-neutral 429. Always on (not gated). |
+
+The OpenRouter-formula uptime is `success / (success + provider_5xx + mid_stream + timeout)`.
+`rate_limited` and `client_error` are tracked on the same counter but **excluded**
+from that formula, mirroring OpenRouter excluding 429s and 4xx client errors from
+its provider uptime number. Client cancellations (before first token) are not
+emitted on this counter — they are tracked on `routing.client_gone`.
+
+The emit is taken at the `run()` tail, so it is a commit-time approximation: a stream
+that fails *after* the response was already committed is counted as `success`. For the
+exact post-commit breakdown (committed-then-failed streams classified as
+`partial_success`), query the persisted route-outcome rows via `GET /v1/admin/routes`
+(filter `final_status`) and the rejection ledger via `GET /v1/admin/rejections`.
+
+Smart admission also adds reason codes to the rejection ledger (surfaced via
+`routing.decisions{outcome:...}` and `/v1/admin/rejections`):
+
+| `reason_code` | Stage / gate | Meaning |
+|---|---|---|
+| `context_exceeded` | preflight servability gate (`EIGENINFERENCE_SERVABILITY_GATE`) | Request context length exceeds what any candidate provider can serve; rejected with a 429 before dispatch. |
+| `prompt_too_long` | preflight servability gate (`EIGENINFERENCE_SERVABILITY_GATE`) | Prompt alone exceeds the servable token budget; rejected with a 429 before dispatch. |
+| `unservable_token_budget` | dispatch backstop (always on) | Dispatch reclassified a provider token-budget/KV/context 5xx into a 429; pairs with `routing.unservable_reclassified`. |
+
+These preflight/backstop 429s also introduce the `routing.decisions` outcome tag
+value `unservable_429`.
+
+Two env flags tune the behavior:
+
+| Env flag | Type | Default | Effect |
+|---|---|---|---|
+| `EIGENINFERENCE_SERVABILITY_GATE` | bool | off | Enables the proactive preflight servability 429 gate (`context_exceeded` / `prompt_too_long`). When off, nothing is preflight-rejected; the always-on dispatch backstop still reclassifies unservable 5xx. |
+| `EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL` | Go duration | `10s` (on) | SSE prefill keepalives during long prefill. ON by default; the first keepalive fires one interval in, so only long prefills commit HTTP 200 early. Set `0` to disable; tune below OpenRouter's fetch timeout. |
+
+Both new counters keep the metadata-only, low-cardinality invariant: `request_outcome`
+carries only `model` + `class`, and `unservable_reclassified` only `model`. No
+per-request identifiers, prompt/response content, client IDs, or provider IDs are
+attached to these metrics.
+
 ### 5. Rejection Ledger and Dashboards
 
 `request_rejections` answers "what did we say no to before dispatch?" Route outcomes answer "what happened after a route attempt existed?" Both are required.

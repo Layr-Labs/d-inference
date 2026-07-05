@@ -13,6 +13,7 @@
 // SDK / curl examples continue to work unchanged.
 
 import nacl from "tweetnacl";
+import { clientCoordinatorUrl } from "./coordinator-url";
 
 export const SEALED_CONTENT_TYPE = "application/eigeninference-sealed+json";
 export const ENCRYPTION_FLAG_KEY = "darkbloom_encrypt_to_coordinator";
@@ -35,15 +36,9 @@ type CachedCoordinatorKey = {
 };
 type CoordinatorKeyCache = Record<string, CachedCoordinatorKey>;
 
-const DEFAULT_COORDINATOR =
-  process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
-
 /** Returns the coordinator URL the user has currently selected. */
 function getCoordinatorUrl(): string {
-  if (typeof window === "undefined") return DEFAULT_COORDINATOR;
-  return (
-    window.localStorage.getItem("darkbloom_coordinator_url") || DEFAULT_COORDINATOR
-  );
+  return clientCoordinatorUrl();
 }
 
 function readCache(): CoordinatorKeyCache {

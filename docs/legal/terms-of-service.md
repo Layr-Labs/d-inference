@@ -78,6 +78,8 @@ If you install or operate Darkbloom provider software (a "provider"), you also a
 
 Provider participation does not create an employment, agency, partnership, franchise, fiduciary, or joint venture relationship between you and Eigen Labs.
 
+**Third-Party Software Licenses.** Your device and operating system may be subject to third-party software license agreements, including but not limited to ones from Apple and other applicable software licensors, that may restrict certain uses. You are solely responsible for ensuring your participation as a provider complies with all applicable third-party licenses. Eigen Labs makes no representation that provider participation is permitted under any such third-party licenses and is not responsible for third-party enforcement actions against you.
+
 ## 6. Fees, Credits, Deposits, and Payouts
 
 Some Services require payment. You authorize us and our payment service providers to charge the payment method, wallet, or blockchain account you choose for applicable fees, taxes, network fees, and other disclosed charges.

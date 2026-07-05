@@ -19,6 +19,21 @@ import (
 
 const (
 	envTrustGeoHeaders = "EIGENINFERENCE_TRUST_GEO_HEADERS"
+	// envIPAPIKey holds the ip-api.com PRO API key. It is a SECRET — injected via
+	// the deployment env (EigenCloud KMS / GCP Secret Manager), never committed.
+	// When set, geo lookups use the unmetered https://pro.ip-api.com endpoint;
+	// when empty the resolver falls back to the free http://ip-api.com tier.
+	envIPAPIKey = "EIGENINFERENCE_IPAPI_KEY"
+
+	// ipAPIFreeBaseURL is the free, HTTP-only ip-api.com endpoint (45 req/min by
+	// source IP, no key). ipAPIProBaseURL is the keyed, HTTPS, unmetered PRO
+	// endpoint. Both share the same /json/<ip> path and field set.
+	ipAPIFreeBaseURL = "http://ip-api.com"
+	ipAPIProBaseURL  = "https://pro.ip-api.com"
+
+	// ipAPIFields is the comma-separated ip-api.com field selector. Kept minimal:
+	// only the geo fields ProviderLocation needs, plus status for success checks.
+	ipAPIFields = "status,country,countryCode,regionName,region,city,lat,lon,timezone"
 )
 
 type providerGeoResolver interface {
@@ -27,13 +42,32 @@ type providerGeoResolver interface {
 
 type ipAPIGeoResolver struct {
 	trustHeaders bool
-	logger       *slog.Logger
+	// apiKey is the ip-api.com PRO key (empty => free tier). When non-empty the
+	// resolver targets baseURL=ipAPIProBaseURL and appends &key=<apiKey>.
+	apiKey string
+	// baseURL is the ip-api.com origin (scheme+host, no trailing slash). Defaults
+	// to the free or PRO endpoint based on apiKey; overridable in tests so URL
+	// construction and response parsing can be exercised against httptest without
+	// hitting the live service.
+	baseURL string
+	// httpClient performs the lookup. Defaults to http.DefaultClient; overridable
+	// in tests. A nil client falls back to http.DefaultClient at call time.
+	httpClient *http.Client
+	logger     *slog.Logger
 }
 
 func newProviderGeoResolverFromEnv(logger *slog.Logger) providerGeoResolver {
 	trustHeaders := os.Getenv(envTrustGeoHeaders) == "1"
+	apiKey := strings.TrimSpace(os.Getenv(envIPAPIKey))
+	baseURL := ipAPIFreeBaseURL
+	if apiKey != "" {
+		baseURL = ipAPIProBaseURL
+	}
 	return &ipAPIGeoResolver{
 		trustHeaders: trustHeaders,
+		apiKey:       apiKey,
+		baseURL:      baseURL,
+		httpClient:   http.DefaultClient,
 		logger:       logger,
 	}
 }
@@ -61,22 +95,30 @@ func (g *ipAPIGeoResolver) Lookup(r *http.Request) *store.ProviderLocation {
 	return g.lookupIPAPI(ip)
 }
 
-// lookupIPAPI resolves geolocation via the free ip-api.com service.
-// No API key required. Rate limit: 45 req/min — called once per provider
-// WebSocket connection, so even 250 concurrent providers is fine.
+// lookupIPAPI resolves geolocation via ip-api.com.
+//
+// With a PRO key (EIGENINFERENCE_IPAPI_KEY) it uses the unmetered
+// https://pro.ip-api.com endpoint; without one it falls back to the free
+// http://ip-api.com endpoint (45 req/min by source IP — called once per provider
+// WebSocket connection, so even 250 concurrent providers is fine on the free
+// tier). The Source field records which tier answered ("ip-api-pro" vs "ip-api").
 func (g *ipAPIGeoResolver) lookupIPAPI(ip net.IP) *store.ProviderLocation {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	apiURL := fmt.Sprintf("http://ip-api.com/json/%s?fields=status,country,countryCode,regionName,region,city,lat,lon,timezone", ip.String())
+	apiURL := g.buildLookupURL(ip)
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		return nil
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := g.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		if g.logger != nil {
-			g.logger.Debug("ip-api lookup failed", "ip", ip.String(), "error", err)
+			g.logger.Debug("ip-api lookup failed", "ip", ip.String(), "pro", g.apiKey != "", "error", err)
 		}
 		return nil
 	}
@@ -95,7 +137,7 @@ func (g *ipAPIGeoResolver) lookupIPAPI(ip net.IP) *store.ProviderLocation {
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || result.Status != "success" {
 		if g.logger != nil {
-			g.logger.Debug("ip-api lookup unsuccessful", "ip", ip.String(), "status", result.Status)
+			g.logger.Debug("ip-api lookup unsuccessful", "ip", ip.String(), "pro", g.apiKey != "", "status", result.Status)
 		}
 		return nil
 	}
@@ -109,9 +151,35 @@ func (g *ipAPIGeoResolver) lookupIPAPI(ip net.IP) *store.ProviderLocation {
 		Latitude:    result.Lat,
 		Longitude:   result.Lon,
 		Timezone:    result.Timezone,
-		Source:      "ip-api",
+		Source:      g.sourceLabel(),
 		UpdatedAt:   time.Now().UTC(),
 	}
+}
+
+// buildLookupURL constructs the ip-api.com request URL for ip. When a PRO key is
+// configured it targets baseURL (https://pro.ip-api.com by default) and appends
+// &key=<key>; otherwise it uses the free endpoint with no key. The /json/<ip>
+// path and field set are identical across tiers, so the only wire difference is
+// the origin and the trailing key parameter.
+func (g *ipAPIGeoResolver) buildLookupURL(ip net.IP) string {
+	base := strings.TrimRight(g.baseURL, "/")
+	if base == "" {
+		base = ipAPIFreeBaseURL
+	}
+	apiURL := fmt.Sprintf("%s/json/%s?fields=%s", base, ip.String(), ipAPIFields)
+	if g.apiKey != "" {
+		apiURL += "&key=" + url.QueryEscape(g.apiKey)
+	}
+	return apiURL
+}
+
+// sourceLabel reports the ProviderLocation.Source tag for the active tier so
+// telemetry can distinguish PRO from free lookups.
+func (g *ipAPIGeoResolver) sourceLabel() string {
+	if g.apiKey != "" {
+		return "ip-api-pro"
+	}
+	return "ip-api"
 }
 
 func (s *Server) requestLocation(r *http.Request) *store.ProviderLocation {

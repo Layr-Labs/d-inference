@@ -116,7 +116,7 @@ Providers are classified into three attestation levels
 |---|---|---|
 | `none` | `"none"` | No attestation provided (Open Mode). Not admitted for private text traffic. |
 | `self_signed` | `"self_signed"` | Secure Enclave P-256 ECDSA signature over a hardware/identity blob. |
-| `hardware` | `"hardware"` | SE key bound to an Apple MDM Managed Device Attestation (MDA) certificate chain, optionally verified via ACME device-attest-01 client certificates. |
+| `hardware` | `"hardware"` | MDM SecurityInfo posture check passed; SE key additionally bound to an Apple Managed Device Attestation (MDA) certificate chain as the genuineness proof. |
 
 Attestation is verified at registration (`coordinator/api/provider.go:2074-2196`;
 `coordinator/attestation/attestation.go:119-231`) and re-verified through

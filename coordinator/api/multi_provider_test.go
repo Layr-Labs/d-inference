@@ -65,13 +65,13 @@ func TestMultiProvider_TwoProvidersSameModel(t *testing.T) {
 	}
 
 	// Both should be findable for the same model
-	p1 := reg.FindProvider(model)
+	p1 := findRoutableProvider(reg, model)
 	if p1 == nil {
 		t.Fatal("should find a provider for shared-model")
 	}
 
-	// Second FindProvider also returns a provider (both are available)
-	p2 := reg.FindProvider(model)
+	// Second probe also returns a provider (both are available)
+	p2 := findRoutableProvider(reg, model)
 	if p2 == nil {
 		t.Fatal("should find provider on second call")
 	}
@@ -155,12 +155,12 @@ func TestMultiProvider_DifferentModels(t *testing.T) {
 	}
 
 	// Find provider for each model
-	pAlpha := reg.FindProvider("model-alpha")
+	pAlpha := findRoutableProvider(reg, "model-alpha")
 	if pAlpha == nil {
 		t.Error("no provider found for model-alpha")
 	}
 
-	pBeta := reg.FindProvider("model-beta")
+	pBeta := findRoutableProvider(reg, "model-beta")
 	if pBeta == nil {
 		t.Error("no provider found for model-beta")
 	}
@@ -171,7 +171,7 @@ func TestMultiProvider_DifferentModels(t *testing.T) {
 	}
 
 	// Non-existent model should return nil
-	pNone := reg.FindProvider("model-gamma")
+	pNone := findRoutableProvider(reg, "model-gamma")
 	if pNone != nil {
 		t.Error("should not find provider for non-existent model")
 	}
@@ -220,7 +220,7 @@ func TestMultiProvider_ProviderLeavesOtherContinues(t *testing.T) {
 	}
 
 	// Provider 2 should still be findable
-	p := reg.FindProvider(model)
+	p := findRoutableProvider(reg, model)
 	if p == nil {
 		t.Error("remaining provider should still be findable")
 	}
@@ -320,7 +320,7 @@ func TestMultiProvider_CatalogFiltersDuringRegistration(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Should find a provider for the whitelisted model
-	p := reg.FindProvider("whitelisted-model")
+	p := findRoutableProvider(reg, "whitelisted-model")
 	if p == nil {
 		t.Error("should find provider for whitelisted-model")
 	}
@@ -369,9 +369,9 @@ func TestMultiProvider_ManyProviders(t *testing.T) {
 
 	// Should be able to find providers for the model
 	for i := range numProviders {
-		p := reg.FindProvider(model)
+		p := findRoutableProvider(reg, model)
 		if p == nil {
-			t.Errorf("FindProvider returned nil on attempt %d", i)
+			t.Errorf("no routable provider on attempt %d", i)
 			break
 		}
 	}
@@ -491,7 +491,7 @@ func TestMultiProvider_SingleProviderMultipleModels(t *testing.T) {
 
 	// Should find provider for each model
 	for _, m := range models {
-		p := reg.FindProvider(m.ID)
+		p := findRoutableProvider(reg, m.ID)
 		if p == nil {
 			t.Errorf("no provider found for model %q", m.ID)
 		} else {
@@ -504,55 +504,3 @@ func TestMultiProvider_SingleProviderMultipleModels(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Trust level enforcement across multiple providers
 // ---------------------------------------------------------------------------
-
-func TestMultiProvider_TrustLevelFiltering(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
-
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	model := "trust-model"
-	pubKeyTrusted := testPublicKeyB64()
-	pubKeyUntrusted := testPublicKeyB64()
-	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
-
-	connTrusted := connectProvider(t, ctx, ts.URL, models, pubKeyTrusted)
-	defer connTrusted.Close(websocket.StatusNormalClosure, "")
-	connUntrusted := connectProvider(t, ctx, ts.URL, models, pubKeyUntrusted)
-	defer connUntrusted.Close(websocket.StatusNormalClosure, "")
-
-	ids := reg.ProviderIDs()
-	if len(ids) != 2 {
-		t.Fatalf("expected 2 providers, got %d", len(ids))
-	}
-
-	// Give different trust levels
-	reg.SetTrustLevel(ids[0], registry.TrustHardware)
-	reg.RecordChallengeSuccess(ids[0])
-	reg.SetTrustLevel(ids[1], registry.TrustSelfSigned)
-	reg.RecordChallengeSuccess(ids[1])
-
-	// FindProviderWithTrust for hardware should only return the hardware-trusted one
-	p := reg.FindProviderWithTrust(model, registry.TrustHardware)
-	if p == nil {
-		t.Fatal("should find hardware-trusted provider")
-	}
-	if p.ID != ids[0] {
-		t.Error("should return the hardware-trusted provider")
-	}
-
-	// Reset the first provider to idle
-	reg.SetProviderIdle(ids[0])
-
-	// FindProviderWithTrust for self_signed should return either (both meet minimum)
-	p2 := reg.FindProviderWithTrust(model, registry.TrustSelfSigned)
-	if p2 == nil {
-		t.Fatal("should find provider with self_signed trust minimum")
-	}
-}

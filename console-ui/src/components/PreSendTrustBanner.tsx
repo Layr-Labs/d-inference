@@ -2,9 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { ShieldCheck, Info } from "lucide-react";
+import { formatRelative } from "@/lib/format";
 import { TrustExplainerModal } from "./TrustExplainerModal";
-
-const ATTESTATION_API = "https://api.darkbloom.dev";
 
 interface ProviderSummary {
   count: number;
@@ -22,31 +21,17 @@ export function PreSendTrustBanner({ visible }: { visible: boolean }) {
 
     async function fetchProviders() {
       try {
-        const res = await fetch(`${ATTESTATION_API}/v1/providers/attestation`);
+        // Slim same-origin summary instead of downloading the full attestation
+        // blob (cert chains) just for a count + timestamp (perf F9b).
+        const res = await fetch(`/api/attestation?summary=1`);
         if (!res.ok) return;
-        const data = await res.json();
+        const data = (await res.json()) as { count?: number; last_verified?: string | null };
         if (cancelled) return;
 
-        const providers = data.providers || [];
-        const attested = providers.filter(
-          (p: { trust_level: string }) => p.trust_level === "hardware"
-        );
-        const count = attested.length;
-
-        // Find most recent challenge timestamp
-        let lastTime = 0;
-        for (const p of attested) {
-          if (p.last_challenge_time) {
-            const t = new Date(p.last_challenge_time).getTime();
-            if (t > lastTime) lastTime = t;
-          }
-        }
-
-        const ago = lastTime
-          ? formatTimeAgo(Date.now() - lastTime)
-          : "recently";
-
-        setSummary({ count, lastVerified: ago });
+        setSummary({
+          count: data.count ?? 0,
+          lastVerified: data.last_verified ? formatRelative(data.last_verified) : "recently",
+        });
       } catch {
         // Silently fail — banner will just not show details
       }
@@ -94,13 +79,4 @@ export function PreSendTrustBanner({ visible }: { visible: boolean }) {
       />
     </>
   );
-}
-
-function formatTimeAgo(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h ago`;
 }

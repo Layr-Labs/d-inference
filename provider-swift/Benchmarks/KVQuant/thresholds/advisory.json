@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "profile": "advisory",
+  "description": "Relaxed local-development thresholds for KV quantization reports. Missing metrics are reported as skipped.",
+  "chip_groups": {
+    "m1_m2": ["M1", "M1 Pro", "M1 Max", "M1 Ultra", "M2", "M2 Pro", "M2 Max", "M2 Ultra"],
+    "m3_m5": ["M3", "M3 Pro", "M3 Max", "M3 Ultra", "M4", "M4 Pro", "M4 Max", "M4 Ultra", "M5", "M5 Pro", "M5 Max", "M5 Ultra"]
+  },
+  "default": {
+    "ppl": {
+      "relative_delta_pct": {"max": 5.0, "unit": "%"},
+      "absolute_delta": {"max": 0.2},
+      "ratio": {"max": 1.05}
+    },
+    "kl": {
+      "mean": {"max": 0.03},
+      "p95": {"max": 0.1}
+    },
+    "top_token": {
+      "greedy_match_rate": {"min": 0.9},
+      "top5_overlap_rate": {"min": 0.95}
+    },
+    "niah": {
+      "exact_match_rate": {"min": 0.9},
+      "answer_contains_rate": {"min": 0.95}
+    },
+    "output": {
+      "pass_rate": {"min": 0.8},
+      "json_valid_rate": {"min": 0.8},
+      "required_substrings_rate": {"min": 0.8},
+      "unsafe_refusal_rate": {"max": 0.05}
+    },
+    "perf": {
+      "decode_tps_ratio": {"min": 0.7},
+      "prefill_tps_ratio": {"min": 0.7},
+      "ttft_ratio": {"max": 1.35},
+      "wall_time_ratio": {"max": 1.35}
+    },
+    "memory": {
+      "peak_memory_ratio": {"max": 0.9},
+      "kv_cache_memory_ratio": {"max": 0.75},
+      "memory_saved_pct": {"min": 10.0, "unit": "%"}
+    }
+  },
+  "chips": {
+    "m1_m2": {
+      "perf": {
+        "decode_tps_ratio": {"min": 0.65},
+        "prefill_tps_ratio": {"min": 0.65},
+        "ttft_ratio": {"max": 1.5},
+        "wall_time_ratio": {"max": 1.5}
+      },
+      "memory": {
+        "memory_saved_pct": {"min": 5.0}
+      }
+    },
+    "m3_m5": {
+      "perf": {
+        "decode_tps_ratio": {"min": 0.75},
+        "prefill_tps_ratio": {"min": 0.75},
+        "ttft_ratio": {"max": 1.3},
+        "wall_time_ratio": {"max": 1.3}
+      },
+      "memory": {
+        "memory_saved_pct": {"min": 10.0}
+      }
+    }
+  }
+}

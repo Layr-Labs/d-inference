@@ -54,9 +54,9 @@ Code:
 
 ### Layer 4: Challenge-response — fresh security posture every ~5 minutes
 
-The coordinator sends an `attestation_challenge` over the WebSocket immediately on registration and then every ~5 minutes. The provider signs a canonical status payload and returns fresh runtime state (SIP, Secure Boot, RDMA, hypervisor, runtime hashes, model hashes). The coordinator verifies the nonce, the SE signature over the canonical payload, and that SIP and Secure Boot are still enabled. SIP/SecureBoot failure is immediate untrust; three consecutive failures also mark the provider untrusted.
+The coordinator sends an `attestation_challenge` over the WebSocket immediately on registration and then every ~5 minutes. The provider signs a canonical status payload and returns fresh runtime state (SIP, Secure Boot, RDMA, runtime hashes, model hashes). The coordinator verifies the nonce, the SE signature over the canonical payload, and that SIP and Secure Boot are still enabled. SIP/SecureBoot failure is immediate untrust; three consecutive failures also mark the provider untrusted.
 
-The status canonical omits absent bool/string/map fields entirely so a downgrade attacker cannot make a stripped claim look like a missing field. Code:
+The status canonical omits absent bool/string/map fields entirely so a downgrade attacker cannot make a stripped claim look like a missing field. `hypervisor_active` is a legacy field in this canonical: it was only ever a hardcoded-`false` stub (no hypervisor isolation was ever implemented), current providers no longer report it, and the canonical builder retains it solely so signatures from older providers that still include it keep verifying. Code:
 
 - Challenge sender: `coordinator/api/provider.go:830-899`
 - Response verification: `coordinator/api/provider.go:942-1040`
@@ -108,5 +108,5 @@ Users can independently verify the MDA chain against Apple's public Enterprise A
 ## See also
 
 - [Identity binding](./identity-binding.md) — how SE keys, X25519 `K`, APNs tokens, and MDA certificates are bound together.
-- [Provider enrollment](./enrollment.md) — the combined `.mobileconfig` profile and MDM/ACME enrollment flow.
+- [Provider enrollment](./enrollment.md) — the combined `.mobileconfig` profile and MDM/SCEP enrollment flow.
 - [Encryption](./encryption.md) — hop-by-hop NaCl Box model and why the provider must be the decryption endpoint.

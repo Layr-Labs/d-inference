@@ -151,7 +151,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 	// Self-route pre-flight: confirm the caller owns an online machine that can
 	// serve this model, with precise errors and no fallback to the paid fleet.
 	if p.policy.enabled {
-		if s.selfRouteUnavailable(w, r, p.policy.ownerAccountID, model) {
+		if s.selfRouteUnavailable(w, r, p.policy.ownerAccountID, model, registry.RequestTraits{HasTools: p.hasTools}, p.requiresVision) {
 			refundReservation()
 			return model, true
 		}

@@ -65,8 +65,8 @@ describe("Apple Root CA", () => {
     // The PEM should contain the expected subject CN
     // We verify this by checking the module loads without error
     // (the PEM is parsed at verification time, not import time)
-    const module = await import("@/lib/cert-verify");
-    expect(module.verifyCertificateChain).toBeDefined();
-    expect(typeof module.verifyCertificateChain).toBe("function");
+    const certVerify = await import("@/lib/cert-verify");
+    expect(certVerify.verifyCertificateChain).toBeDefined();
+    expect(typeof certVerify.verifyCertificateChain).toBe("function");
   });
 });

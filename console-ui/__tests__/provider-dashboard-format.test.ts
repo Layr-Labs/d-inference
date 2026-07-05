@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   formatUSD,
-  formatNumber,
   abbreviateNumber,
   maskSerial,
   shortModelName,

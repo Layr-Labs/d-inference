@@ -1,6 +1,13 @@
 package registry
 
-import "math"
+import (
+	"math"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/env"
+)
 
 // Quality-concurrency admission cap.
 //
@@ -22,25 +29,114 @@ import "math"
 // EWMA: the observed rate collapses under the very overload this cap exists to
 // prevent, which would force the cap to 1 — a feedback loop.
 
+// defaultQualityCapOvercommit is the effective overcommit when the operator has
+// not set EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT. The legacy 2.0 diluted
+// per-request decode to roughly HALF the quality floor at full admission
+// (rate(cap) → floor/overcommit under rate(B) = solo/(1+k·B)): production
+// measured gemma-4-26b at p50 8 tok/s against the 15 tok/s floor, with 81% of
+// successful requests below it. 1.2 bounds the dilution at ~floor/1.2 — the
+// floor holds within the overcommit allowance instead of collapsing to half.
+const defaultQualityCapOvercommit = 1.2
+
+// qualityCapOvercommitByModelEnv is the per-model overcommit override map,
+// e.g. EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT_BY_MODEL=
+// "gemma-4-26b-qat-4bit=1.0,gpt-oss-20b=1.5" (same model=value CSV shape as
+// EIGENINFERENCE_WARM_POOL_MIN_WARM). Keys are concrete resolved build ids,
+// matched case-insensitively; values must be > 0. Models without an entry use
+// the global overcommit.
+const qualityCapOvercommitByModelEnv = env.EnvPrefix + "_QUALITY_CONCURRENCY_OVERCOMMIT_BY_MODEL"
+
+// qualityCapOvercommitByModel holds the parsed per-model overrides. Like the
+// package's other startup-configured routing knobs (prefillToDecodeRatio,
+// ttftOccupancyAlpha), it is written once by SetQualityConcurrencyCap before
+// the coordinator serves and only read on routing paths thereafter.
+var qualityCapOvercommitByModel map[string]float64
+
 // SetQualityConcurrencyCap configures the per-provider quality-concurrency
-// admission cap. enabled=false leaves the legacy flat cap unchanged. overcommit
-// multiplies the strict (floor-preserving) quality batch; <=0 falls back to 1.0.
-// floorTPS and fallback mirror the warm-pool DecodeFloorTPS and
+// admission cap. enabled=false leaves the legacy flat cap unchanged. floorTPS
+// and fallback mirror the warm-pool DecodeFloorTPS and
 // FallbackQualityConcurrency so admission uses the same quality math as the
 // warm-pool target. Called once at startup before the coordinator serves.
+//
+// The global overcommit multiplies the strict (floor-preserving) quality batch.
+// The passed value is honored only when the operator explicitly set
+// EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT: config.ReadConfig still parses
+// that variable with the legacy 2.0 fallback, so when it is UNSET the caller is
+// handing us that stale fallback and the real default —
+// defaultQualityCapOvercommit — must apply instead. Per-model overrides
+// (qualityCapOvercommitByModelEnv) are re-read from the environment here so the
+// whole overcommit policy is resolved in one place.
 func (r *Registry) SetQualityConcurrencyCap(enabled bool, overcommit, floorTPS float64, fallback int) {
+	if v, explicit := os.LookupEnv(env.EnvPrefix + "_QUALITY_CONCURRENCY_OVERCOMMIT"); !explicit || strings.TrimSpace(v) == "" {
+		overcommit = defaultQualityCapOvercommit
+	}
 	if overcommit <= 0 {
 		overcommit = 1.0
 	}
 	if fallback < 1 {
 		fallback = 1
 	}
+	qualityCapOvercommitByModel = parseQualityCapOvercommitByModel(os.Getenv(qualityCapOvercommitByModelEnv))
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.qualityCapEnabled = enabled
 	r.qualityCapOvercommit = overcommit
 	r.qualityCapFloorTPS = floorTPS
 	r.qualityCapFallback = fallback
+}
+
+// QualityCapOvercommit returns the resolved global overcommit multiplier —
+// the value admission actually uses, which can differ from the config struct's
+// legacy fallback (see SetQualityConcurrencyCap).
+func (r *Registry) QualityCapOvercommit() float64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.qualityCapOvercommit
+}
+
+// parseQualityCapOvercommitByModel parses the "model=overcommit,..." CSV form
+// (mirroring envModelIntMap for EIGENINFERENCE_WARM_POOL_MIN_WARM, with float
+// values). Malformed entries and non-positive values are skipped; an empty or
+// all-invalid input yields nil (no overrides).
+func parseQualityCapOvercommitByModel(raw string) map[string]float64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	out := make(map[string]float64)
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		model, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		model = strings.ToLower(strings.TrimSpace(model))
+		if model == "" {
+			continue
+		}
+		v, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil || v <= 0 {
+			continue
+		}
+		out[model] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// qualityCapOvercommitForModelLocked resolves the overcommit for a model: the
+// per-model override when one exists for the resolved build id, else the global
+// value. Caller holds r.mu.
+func (r *Registry) qualityCapOvercommitForModelLocked(model string) float64 {
+	if v, ok := qualityCapOvercommitByModel[strings.ToLower(model)]; ok {
+		return v
+	}
+	return r.qualityCapOvercommit
 }
 
 // effectiveMaxConcurrencyForModelLocked returns the per-provider admission
@@ -72,7 +168,7 @@ func (r *Registry) effectiveMaxConcurrencyForModelLocked(p *Provider, model stri
 		}
 	}
 	qc := qualityConcurrency(staticDecodeTPS, r.qualityCapFloorTPS, effectiveTPSLoadFactor, base, r.qualityCapFallback)
-	capped := int(math.Ceil(float64(qc) * r.qualityCapOvercommit))
+	capped := int(math.Ceil(float64(qc) * r.qualityCapOvercommitForModelLocked(model)))
 	if capped < 1 {
 		capped = 1
 	}

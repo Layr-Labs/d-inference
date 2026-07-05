@@ -80,18 +80,23 @@ func TestReserveProviderExSkipsCoolingPair(t *testing.T) {
 	}
 }
 
-func TestDispatchLoadCooldownClearedOnRegister(t *testing.T) {
+// Regression for the reconnect exploit: re-registration used to clear a
+// provider's dispatch-load cool-downs, so a churning box re-entered routing
+// instantly after every bounce. The cool-down must now survive registration
+// and expire only via its TTL or a served request.
+func TestDispatchLoadCooldownSurvivesRegister(t *testing.T) {
 	r := New(testLogger())
 	r.RecordDispatchLoadFailure("p1", "m1")
 	r.RecordDispatchLoadFailure("p1", "m2")
 
-	r.mu.Lock()
-	r.clearDispatchLoadCooldownsLocked("p1")
-	r.mu.Unlock()
+	r.Register("p1", nil, testRegisterMessage())
 
 	now := time.Now()
-	if cooldownActive(r, "p1", "m1", now) || cooldownActive(r, "p1", "m2", now) {
-		t.Fatal("re-registration must clear the provider's cool-downs (fresh process, fresh memory)")
+	if !cooldownActive(r, "p1", "m1", now) || !cooldownActive(r, "p1", "m2", now) {
+		t.Fatal("re-registration must NOT clear the provider's cool-downs (reconnect churn exploit)")
+	}
+	if cooldownActive(r, "p1", "m1", now.Add(dispatchLoadCooldownTTL+time.Second)) {
+		t.Fatal("cool-down must still expire via its TTL")
 	}
 }
 

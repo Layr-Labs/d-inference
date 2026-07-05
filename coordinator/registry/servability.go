@@ -148,6 +148,44 @@ func liveStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
 	return coldTokenBudgetEstimate(snap.totalMemoryGB, snap.modelSizeGB, snap.kvBytesPerToken), true
 }
 
+// providerBudgetFits reports whether a request of (prompt + max_tokens) tokens
+// fits this provider's LIVE token budget, computed with the same math the
+// provider's own admission enforces — the per-provider mirror of the fleet
+// tier, exposed for the scheduler's free-memory admission gate
+// (freeMemoryAdmits):
+//
+//   - Resident slot: the provider rejects when
+//     activeUsed + (promptTokens + maxTokens) > tokenBudgetMax
+//     (BatchScheduler submitTokenized / EngineV2Bridge submitTokenized), so the
+//     fit is request ≤ max − used − queued (liveStructuralBudget).
+//   - Cold/on-disk slot: the provider's load gate only guarantees the load
+//     headroom above the weights (UnifiedMemoryCap.loadHeadroomBytes ≈
+//     activation reserve + 1 GiB of serveable KV, ~2.7k tokens), so a load can
+//     succeed and the FIRST submit still reject with token_budget_exhausted
+//     when the request exceeds the post-load budget. The fit uses the same
+//     post-load estimate as the fleet tier (coldTokenBudgetEstimate) — a
+//     weight-only cold check is exactly the admit→503 gap.
+//
+// known=false means the budget cannot be computed (legacy resident slot with
+// no reported budget, or missing memory/size data) and the caller must fail
+// open. A reqMaxTokens ≤ 0 is normalized to defaultRequestedMaxTokens, the
+// same defaulting the pending-budget accounting applies.
+func providerBudgetFits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) (fits, known bool) {
+	budget, known := liveStructuralBudget(snap)
+	if !known {
+		return true, false
+	}
+	prompt := reqPromptTokens
+	if prompt < 0 {
+		prompt = 0
+	}
+	maxTok := reqMaxTokens
+	if maxTok <= 0 {
+		maxTok = defaultRequestedMaxTokens
+	}
+	return int64(prompt)+int64(maxTok) <= budget, true
+}
+
 // PredictServable reports whether the fleet can structurally serve a request of
 // the given size for the model. contextLimit is the model's max context window
 // (from the model registry record; 0 = unknown → context tier skipped). It is
@@ -231,8 +269,9 @@ func (r *Registry) PredictServable(model string, estimatedPromptTokens, contextP
 		}
 		providerCount++
 		// LIVE remaining budget (structural ceiling minus committed) so the shed
-		// reflects real headroom under load, not the idle fleet-max. Gated/ship-dark
-		// (only the default-off servability gate sheds on this verdict).
+		// reflects real headroom under load, not the idle fleet-max. Only the
+		// servability gate (default-on, EIGENINFERENCE_SERVABILITY_GATE=false to
+		// disable) sheds on this verdict.
 		budget, known := liveStructuralBudget(snap)
 		if !known {
 			sawUnknown = true

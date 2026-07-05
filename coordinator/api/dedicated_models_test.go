@@ -2,13 +2,16 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 	"nhooyr.io/websocket"
 )
 
@@ -118,25 +121,25 @@ func TestDedicatedModelShed429NotServiceUnavailable(t *testing.T) {
 	}
 }
 
-// TestDedicatedSaturatedBoxFast429 verifies that when the dedicated box for a
-// Gemma 4 request EXISTS but is at capacity, the request is fast-429'd
-// immediately instead of sitting in the 120s queue-before-shed window (which is
-// left at its default ON) — so OpenRouter fails over within its TTFT SLA.
-func TestDedicatedSaturatedBoxFast429(t *testing.T) {
-	ts, reg := setupAdaptiveCapacityIntegration(t)
-	defer ts.Close()
+// setupSaturatedDedicatedGemma boots a coordinator with a single DEDICATED
+// gemma-4 box whose token budget is nearly exhausted, so a chat request hits
+// the preflight capacity-rejection branch. The servability gate is disabled
+// (it would shed the known-insufficient budget before the capacity ladder) and
+// cold-dispatch is off to keep the tests pinned on the queue path.
+func setupSaturatedDedicatedGemma(t *testing.T, ctx context.Context) (ts *httptest.Server, reg *registry.Registry, conn *websocket.Conn, pubKey, gemma string) {
+	t.Helper()
+	ts, reg = setupAdaptiveCapacityIntegration(t)
+	t.Cleanup(ts.Close)
 	reg.SetDedicatedModels([]string{"gemma-4"})
-	// queue-before-shed left at default (ON): dedicated models must still fast-429.
+	t.Setenv(envQueueBeforeShed, "true")
+	t.Setenv(envColdDispatch, "false")
+	t.Setenv("EIGENINFERENCE_SERVABILITY_GATE", "false")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	gemma := "gemma-4-26b-test"
-	// A single DEDICATED gemma-4 box with its token budget nearly exhausted.
-	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{
+	gemma = "gemma-4-26b-test"
+	pubKey = testPublicKeyB64()
+	conn = connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{
 		{ID: gemma, ModelType: "chat", Quantization: "4bit"},
-	}, testPublicKeyB64())
-	defer conn.Close(websocket.StatusNormalClosure, "done")
+	}, pubKey)
 	p := markOnlyProviderRoutable(t, reg)
 
 	writeAdaptiveHeartbeat(t, ctx, conn, gemma, &protocol.BackendCapacity{
@@ -152,17 +155,170 @@ func TestDedicatedSaturatedBoxFast429(t *testing.T) {
 	waitForAdaptiveCondition(t, time.Second, func() bool {
 		p.Mu().Lock()
 		defer p.Mu().Unlock()
-		return p.BackendCapacity != nil && p.BackendCapacity.Slots[0].ActiveTokenBudgetMax == 1_000
+		return p.BackendCapacity != nil && p.BackendCapacity.Slots[0].ActiveTokenBudgetUsed == 950
+	})
+	return ts, reg, conn, pubKey, gemma
+}
+
+// TestDedicatedSaturatedBoxQueuesAndDrains verifies the new dedicated-pool
+// queueing behavior: when the dedicated box for a Gemma 4 request EXISTS but is
+// at capacity, the request QUEUES (no fast 429), drains when the box frees
+// capacity, and completes end-to-end. Replaces the retired fast-429 bypass
+// (f28e89a9) that shed 283k/week uptime-visible machine_busy 429s to OpenRouter
+// while the queue sat idle.
+func TestDedicatedSaturatedBoxQueuesAndDrains(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	ts, reg, conn, pubKey, gemma := setupSaturatedDedicatedGemma(t, ctx)
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+
+	// Serve inference requests but IGNORE attestation challenges: routability is
+	// pinned via markOnlyProviderRoutable, and answering the buffered initial
+	// challenge with the fallback test signature would deroute the provider.
+	go func() {
+		for {
+			_, data, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			var envlp struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(data, &envlp) != nil || envlp.Type != protocol.TypeInferenceRequest {
+				continue
+			}
+			var inferReq protocol.InferenceRequestMessage
+			json.Unmarshal(data, &inferReq)
+			sseData := `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"dedicated-drained"}}]}` + "\n\n"
+			writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey, sseData)
+			complete := protocol.InferenceCompleteMessage{
+				Type:      protocol.TypeInferenceComplete,
+				RequestID: inferReq.RequestID,
+				Usage:     protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 5},
+			}
+			completeData, _ := json.Marshal(complete)
+			if conn.Write(ctx, websocket.MessageText, completeData) != nil {
+				return
+			}
+		}
+	}()
+
+	type result struct {
+		status int
+		body   string
+	}
+	done := make(chan result, 1)
+	go func() {
+		status, body, _, err := chatRequestWithHeaders(ctx, ts.URL, gemma)
+		if err != nil {
+			done <- result{0, err.Error()}
+			return
+		}
+		done <- result{status, body}
+	}()
+
+	// The capacity-rejected dedicated request must land in the queue.
+	waitForAdaptiveCondition(t, 3*time.Second, func() bool {
+		depth, _ := reg.Queue().QueueStats(gemma)
+		return depth >= 1
+	})
+	select {
+	case res := <-done:
+		t.Fatalf("dedicated request returned %d early while it should be queued; body = %s", res.status, res.body)
+	default:
+	}
+
+	// Free the box: the heartbeat drain must assign the queued request and the
+	// provider loop serves it to completion.
+	writeAdaptiveHeartbeat(t, ctx, conn, gemma, &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{{
+			Model:                gemma,
+			State:                "running",
+			MaxConcurrency:       8,
+			ActiveTokenBudgetMax: 32_768,
+		}},
+	})
+
+	select {
+	case res := <-done:
+		if res.status != http.StatusOK {
+			t.Fatalf("drained dedicated request status = %d, want 200; body = %s", res.status, res.body)
+		}
+		if !strings.Contains(res.body, "dedicated-drained") {
+			t.Fatalf("drained response body = %s, want streamed provider content", res.body)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("queued dedicated request did not drain after the provider freed capacity")
+	}
+}
+
+// TestDedicatedQueueFull429Preserved verifies the queue_full backstop survives
+// the dedicated queueing change: with a single-slot queue already holding a
+// dedicated request, the next request still gets an immediate 429 +
+// Retry-After.
+func TestDedicatedQueueFull429Preserved(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	ts, reg, conn, _, gemma := setupSaturatedDedicatedGemma(t, ctx)
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+	reg.SetQueue(registry.NewRequestQueue(1, 30*time.Second))
+
+	firstCtx, firstCancel := context.WithCancel(ctx)
+	defer firstCancel()
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		chatRequestWithHeaders(firstCtx, ts.URL, gemma)
+	}()
+	waitForAdaptiveCondition(t, 3*time.Second, func() bool {
+		depth, _ := reg.Queue().QueueStats(gemma)
+		return depth >= 1
 	})
 
 	status, body, retryAfter, err := chatRequestWithHeaders(ctx, ts.URL, gemma)
 	if err != nil {
-		t.Fatalf("request: %v (a hang here means the dedicated request was queued instead of fast-429'd)", err)
+		t.Fatalf("second request: %v", err)
 	}
 	if status != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want 429 (dedicated boxes bypass queue-before-shed when saturated); body = %s", status, body)
+		t.Fatalf("queue-full status = %d, want 429; body = %s", status, body)
+	}
+	if !strings.Contains(body, "queue is full") {
+		t.Fatalf("queue-full body = %s, want queue-is-full error", body)
 	}
 	if retryAfter == "" {
-		t.Fatalf("saturated dedicated 429 missing Retry-After header")
+		t.Fatal("queue-full 429 missing Retry-After header")
+	}
+
+	firstCancel()
+	select {
+	case <-firstDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued request did not unwind after cancellation")
+	}
+}
+
+// TestDedicatedQueueTimeout429Preserved verifies the queue_timeout backstop:
+// a queued dedicated request whose wait exceeds maxWait still resolves to a
+// 429 + Retry-After instead of hanging.
+func TestDedicatedQueueTimeout429Preserved(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	ts, reg, conn, _, gemma := setupSaturatedDedicatedGemma(t, ctx)
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+	reg.SetQueue(registry.NewRequestQueue(5, 400*time.Millisecond))
+
+	status, body, retryAfter, err := chatRequestWithHeaders(ctx, ts.URL, gemma)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("queue-timeout status = %d, want 429; body = %s", status, body)
+	}
+	if !strings.Contains(body, "queue timeout") {
+		t.Fatalf("queue-timeout body = %s, want queue-timeout error", body)
+	}
+	if retryAfter == "" {
+		t.Fatal("queue-timeout 429 missing Retry-After header")
 	}
 }

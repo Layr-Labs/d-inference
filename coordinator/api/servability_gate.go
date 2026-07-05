@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -18,10 +19,32 @@ import (
 // 429 + Retry-After so OpenRouter fails over, instead of admitting it and letting
 // the provider 5xx (the uptime-damaging "admitted_but_failed" path).
 //
-// It is gated behind s.servabilityGate (default off) and is fail-open by
+// The gate is ON by default (see servabilityGateEnabled) and is fail-open by
 // construction (PredictServable only rejects clearly-unservable requests). The
 // always-on reclassification of an actual provider token-budget 5xx → 429 lives
 // on the dispatch-exhausted path (see classifyInferenceFailure / dispatch.go).
+
+// servabilityGateEnabled resolves the effective gate state. The explicit server
+// toggle (SetServabilityGate, wired from main when the env var parses true)
+// forces ON; otherwise EIGENINFERENCE_SERVABILITY_GATE decides, defaulting to
+// ON when unset or unparseable — prod has run =true since DAR-347, and the
+// per-provider admission gap (coordinator admit → provider token-budget 503) is
+// exactly what this gate sheds, so an off-by-default no longer matches reality.
+// Only an explicit parseable false disables it.
+func (s *Server) servabilityGateEnabled() bool {
+	if s.servabilityGate {
+		return true
+	}
+	v := os.Getenv("EIGENINFERENCE_SERVABILITY_GATE")
+	if v == "" {
+		return true
+	}
+	on, err := strconv.ParseBool(v)
+	if err != nil {
+		return true
+	}
+	return on
+}
 
 // shedIfUnservable returns true when it has fully handled the request by writing
 // an early 429 (the caller must then return). It is a no-op (returns false) when
@@ -39,7 +62,7 @@ func (s *Server) shedIfUnservable(
 	allowedProviderSerials []string,
 	refundReservation func(),
 ) bool {
-	if s == nil || !s.servabilityGate || s.registry == nil {
+	if s == nil || s.registry == nil || !s.servabilityGateEnabled() {
 		return false
 	}
 

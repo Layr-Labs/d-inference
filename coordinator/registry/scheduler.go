@@ -68,6 +68,7 @@ const (
 type routingSnapshot struct {
 	provider           *Provider
 	model              string
+	chipFamily         string // hardware chip family (e.g. "M3"); keys the TTFT calibrator
 	slotState          string
 	hasHeadroom        bool
 	totalPending       int
@@ -191,7 +192,11 @@ type costBreakdown struct {
 	BacklogMs float64
 	ThisReqMs float64
 	HealthMs  float64
-	TTFTMs    float64 // estimated time-to-first-token for this candidate
+	TTFTMs    float64 // calibrated TTFT estimate for this candidate (gate/ceiling input)
+	// RawTTFTMs is the pre-calibration ttftMsFromSnapshot value. The calibrator
+	// learns against it (see ttft_calibration.go) so the feedback loop converges
+	// on the absolute actual/predicted ratio instead of compounding.
+	RawTTFTMs float64
 	Total     float64
 }
 
@@ -366,6 +371,14 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	}
 
 	bd := selected.breakdown
+	// Register the RAW estimate with the calibrator so the first-content
+	// observation (API layer, RecordTTFTObservation) can be joined to it.
+	// Warm-slot winners only (StateMs == 0): a cold dispatch's actual includes
+	// model-load time the flow estimate does not model, which would poison the
+	// ratio sample.
+	if bd.RawTTFTMs > 0 && bd.StateMs == 0 {
+		ttftCalibration.notePrediction(pr.RequestID, pr.Attempt, model, selected.snapshot.chipFamily, bd.RawTTFTMs)
+	}
 	decision := RoutingDecision{
 		ProviderID:              p.ID,
 		Model:                   model,
@@ -1043,6 +1056,7 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 	snap := routingSnapshot{
 		provider:      p,
 		model:         model,
+		chipFamily:    p.Hardware.ChipFamily,
 		slotState:     "unknown",
 		totalPending:  p.pendingCount(),
 		systemMetrics: p.SystemMetrics,
@@ -1158,6 +1172,12 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 			coordinatorExtra = 0
 		}
 		return snap.activeTokenBudgetUsed+snap.queuedTokenBudget+coordinatorExtra+requestTokens <= snap.activeTokenBudgetMax
+	}
+
+	if !snap.modelLoaded {
+		if fits, known := providerBudgetFits(snap, reqPromptTokens, reqMaxTokens); known && !fits {
+			return false
+		}
 	}
 
 	if snap.modelSizeGB <= 0 || snap.totalMemoryGB <= 0 {
@@ -1336,11 +1356,15 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	// OpenRouter TTFT ceiling: public routes only select providers whose
 	// estimated TTFT is within the per-request threshold. Providers without
 	// BackendCapacity get 0 (unreliable estimate) and are not rejected by the
-	// ceiling, matching the preflight behavior.
-	ttftMs := ttftMsFromSnapshot(snap, reqPrompt)
-	if ttftMs <= 0 || math.IsNaN(ttftMs) || math.IsInf(ttftMs, 0) {
-		ttftMs = 0
+	// ceiling, matching the preflight behavior. The gate/ceiling input is the
+	// CALIBRATED estimate (raw × learned actual/predicted ratio, see
+	// ttft_calibration.go); the raw value is kept alongside so the calibrator
+	// learns against what the formula actually predicted.
+	rawTTFTMs := ttftMsFromSnapshot(snap, reqPrompt)
+	if rawTTFTMs <= 0 || math.IsNaN(rawTTFTMs) || math.IsInf(rawTTFTMs, 0) {
+		rawTTFTMs = 0
 	}
+	ttftMs := calibratedTTFTMs(snap, rawTTFTMs)
 
 	return &routingCandidate{
 		provider:       snap.provider,
@@ -1356,6 +1380,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 			ThisReqMs: thisReqMs,
 			HealthMs:  healthMs,
 			TTFTMs:    ttftMs,
+			RawTTFTMs: rawTTFTMs,
 			Total:     cost,
 		},
 	}, rejectNone, true
@@ -1955,6 +1980,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		snap := routingSnapshot{
 			provider:           p,
 			model:              model,
+			chipFamily:         p.Hardware.ChipFamily,
 			slotState:          "unknown",
 			totalPending:       p.pendingCount(),
 			systemMetrics:      p.SystemMetrics,
@@ -2052,6 +2078,9 @@ func estimatedTTFTFromSnapshot(snap routingSnapshot, reqPromptTokens int) time.D
 	if ttftMs <= 0 || math.IsNaN(ttftMs) || math.IsInf(ttftMs, 0) {
 		return 0
 	}
+	// Same calibration as the scheduler's gate input (buildCandidateWithReason)
+	// so the preflight bestTTFT and the hard-reject ceiling cannot drift.
+	ttftMs = calibratedTTFTMs(snap, ttftMs)
 	return time.Duration(ttftMs * float64(time.Millisecond))
 }
 
@@ -2196,19 +2225,20 @@ func (r *Registry) DrainQueuedRequestsForProvider(p *Provider) {
 }
 
 func (r *Registry) drainQueuedRequestsForModels(models []string) {
-	if r.queue == nil || len(models) == 0 {
+	queue := r.Queue()
+	if queue == nil || len(models) == 0 {
 		return
 	}
 	for _, model := range models {
 		var skipped []*QueuedRequest
 		requeueSkipped := func() {
 			for i := len(skipped) - 1; i >= 0; i-- {
-				r.queue.RequeueFront(skipped[i])
+				queue.RequeueFront(skipped[i])
 			}
 			skipped = nil
 		}
 		for {
-			req := r.queue.PopNextFresh(model)
+			req := queue.PopNextFresh(model)
 			if req == nil {
 				requeueSkipped()
 				break
@@ -2222,6 +2252,17 @@ func (r *Registry) drainQueuedRequestsForModels(models []string) {
 			}
 			provider, decision := r.ReserveProviderEx(model, req.Pending)
 			if provider == nil {
+				// A pure-TTFT rejection (hard-reject mode, no capacity-rejected
+				// provider that could free up) is deterministic for this pass:
+				// requeueing would only make the waiter hang until maxWait for
+				// the same answer. Fail it now; the API waiter turns
+				// ErrQueueTTFTTooSlow into the standard ttft_too_slow 429 using
+				// the decision's BestTTFTMs for Retry-After.
+				if drainRejectionTTFTTerminal(req.Pending, decision) {
+					req.Decision = decision
+					req.failWithReason(ErrQueueTTFTTooSlow)
+					continue
+				}
 				skipped = append(skipped, req)
 				continue
 			}

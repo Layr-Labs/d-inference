@@ -15,14 +15,15 @@ import (
 //
 // The gate (s.shedIfUnservable, wired into handleChatCompletions' public
 // preflight) asks registry.PredictServable whether the fleet could STRUCTURALLY
-// serve a request of this size before admitting it. When the gate is ON and the
+// serve a request of this size before admitting it. When the gate is ON (the
+// default — EIGENINFERENCE_SERVABILITY_GATE unset behaves as true) and the
 // request is unservable it returns an uptime-neutral 429 + Retry-After (so
-// OpenRouter fails over) instead of admitting it and letting a provider 5xx. When
-// the gate is OFF (the default) it is a no-op and the request flows into the
-// normal capacity ladder.
+// OpenRouter fails over) instead of admitting it and letting a provider 5xx.
+// When explicitly disabled (EIGENINFERENCE_SERVABILITY_GATE=false) it is a
+// no-op and the request flows into the normal capacity ladder.
 //
-// The two tests below are a single A/B: identical server + provider + oversized
-// request, the ONLY difference being SetServabilityGate(true) vs the default-off.
+// The A/B tests below use an identical server + provider + oversized request,
+// the ONLY difference being the gate state (on / env-default-on / env-off).
 
 // servabilityHarness builds the shared fixture: a server with one routable,
 // model-resident provider whose single slot advertises a deliberately small
@@ -117,12 +118,36 @@ func TestServabilityGateShedsUnservable429(t *testing.T) {
 	}
 }
 
-// TestServabilityGateDisabledAdmits pins the gate-OFF (default) behaviour: the
-// servability preflight is a no-op, so the SAME oversized request + provider
-// instead flows into the normal capacity ladder, which rejects it for a DIFFERENT
-// reason (machine busy / "at capacity") — never the servability message.
+// TestServabilityGateDefaultOnShedsUnservable pins the code default: with
+// EIGENINFERENCE_SERVABILITY_GATE unset and SetServabilityGate never called,
+// the gate behaves as ON and sheds the unservable request at preflight with the
+// servability 429 — matching prod, which has run the gate explicitly enabled.
+func TestServabilityGateDefaultOnShedsUnservable(t *testing.T) {
+	srv, req := servabilityHarness(t)
+	t.Setenv("EIGENINFERENCE_SERVABILITY_GATE", "") // pin "unset" regardless of ambient env
+
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d; body = %s", w.Code, http.StatusTooManyRequests, w.Body.String())
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Fatal("Retry-After header missing on default-on servability 429")
+	}
+	if !strings.Contains(w.Body.String(), "largest provider token budget") {
+		t.Fatalf("body = %q, want the servability token-budget detail (gate must default ON)", w.Body.String())
+	}
+}
+
+// TestServabilityGateDisabledAdmits pins the explicit-off behaviour
+// (EIGENINFERENCE_SERVABILITY_GATE=false): the servability preflight is a no-op,
+// so the SAME oversized request + provider instead flows into the normal
+// capacity ladder, which rejects it for a DIFFERENT reason (machine busy / "at
+// capacity") — never the servability message.
 func TestServabilityGateDisabledAdmits(t *testing.T) {
-	srv, req := servabilityHarness(t) // gate OFF: SetServabilityGate intentionally NOT called
+	srv, req := servabilityHarness(t)
+	t.Setenv("EIGENINFERENCE_SERVABILITY_GATE", "false") // explicit off; SetServabilityGate intentionally NOT called
 
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)

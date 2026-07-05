@@ -52,10 +52,12 @@ import (
 // truthful outcome is the queue/429 path, not a guaranteed-reject dispatch.
 // TTLs stagger, so re-probes trickle back on their own.
 //
-// State is keyed by the per-session provider UUID: a reconnect starts clean
-// (same limitation as error_cooldown.go), and the maps are bounded by the
-// same opportunistic >1024 sweep. r.mu discipline and the transition-bool
-// return also mirror error_cooldown.go.
+// State is keyed by the provider's STABLE fault identity (faultKeyLocked:
+// serial → SE-key → account → session fallback), so a reconnect cannot reset
+// a black hole's streak, cooldown, or backoff trip count — the same
+// reconnect-proofing as error_cooldown.go and provider_breaker.go. Maps are
+// bounded by the same opportunistic >1024 sweep. r.mu discipline and the
+// transition-bool return also mirror error_cooldown.go.
 
 // Env tunables — read ONCE at Registry construction (coordinator restart
 // applies changes). All values have safe defaults; setting the threshold to 0
@@ -197,7 +199,7 @@ func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped boo
 		}
 	}
 
-	key := capacityRejectKey{ProviderID: providerID, ModelID: modelID}
+	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 
 	// Slide the window: keep only strikes still inside it, then add this one.
 	strikes := r.capacityRejectStrikes[key]
@@ -239,7 +241,7 @@ func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped boo
 // with no cooldown entry (the overwhelmingly common case — one map lookup) or
 // one still inside its TTL (unreachable via routing, but harmless).
 func (r *Registry) claimCapacityProbeLocked(providerID, modelID string, now time.Time) {
-	e, ok := r.capacityCooldowns[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]
+	e, ok := r.capacityCooldowns[capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}]
 	if !ok || now.Before(e.expiry) {
 		return
 	}
@@ -253,27 +255,55 @@ func (r *Registry) claimCapacityProbeLocked(providerID, modelID string, now time
 // clean completion. It clears the pair's reject streak, any active cooldown,
 // and the exponential-backoff trip count: an accept proves the pair admits
 // work, which is exactly the discriminator that separates a busy-but-serving
-// box (must NEVER trip) from a black hole (zero accepts).
+// box (must NEVER trip) from a black hole (zero accepts). The NODE-level
+// capacity streak (health_ejection.go) is cleared for the same reason: a box
+// mid-way through a long generation that legitimately sheds concurrent
+// dispatches must keep vouching for itself at first content — waiting for the
+// completion-time success (RecordProviderServeOutcome) would let transient
+// fullness during a long stream masquerade as the zero-accepts black-hole
+// signature.
+//
+// A CAPACITY-shaped ejection's half-open state (trips + last-trip marker) is
+// disarmed by the same logic: the half-open instant re-arm exists so a
+// black-hole probe that bounces re-ejects in one strike, but a node producing
+// content has just disproven the black-hole signature, so a single concurrent
+// capacity shed racing the probe must need a full fresh zero-success streak,
+// not one strike. A FAULT-shaped ejection's trips are deliberately preserved —
+// first content says nothing about fault behavior, and wiping the exponential
+// backoff on any served chunk would let a flapping node reset it forever;
+// RecordProviderServeOutcome(ok=true) at clean completion is the fault-recovery
+// signal. An ACTIVE ejection window (healthEjectionUntil still in the future)
+// is also left untouched: ejection doesn't cancel in-flight work, so content
+// can flow from an ejected node, and lifting the quarantine early on it would
+// defeat the cooldown — recovery goes through the half-open success probe.
 func (r *Registry) RecordCapacityAccept(providerID, modelID string) {
 	if providerID == "" || modelID == "" {
 		return
 	}
-	key := capacityRejectKey{ProviderID: providerID, ModelID: modelID}
 	// Fast path: this runs once per served request, and for a healthy pair all
-	// three maps are empty — check under the read lock so the serving hot path
+	// the maps are empty — check under the read lock so the serving hot path
 	// does not serialize on r.mu write acquisition.
 	r.mu.RLock()
+	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 	_, hasStrikes := r.capacityRejectStrikes[key]
 	_, hasCooldown := r.capacityCooldowns[key]
 	_, hasTrips := r.capacityCooldownTrips[key]
+	_, hasNodeStreak := r.healthEjectionCapacityStreaks[key.ProviderID]
+	capacityTripped := r.healthEjectionLastTripCapacity[key.ProviderID]
 	r.mu.RUnlock()
-	if !hasStrikes && !hasCooldown && !hasTrips {
+	if !hasStrikes && !hasCooldown && !hasTrips && !hasNodeStreak && !capacityTripped {
 		return
 	}
 	r.mu.Lock()
+	key = capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 	delete(r.capacityRejectStrikes, key)
 	delete(r.capacityCooldowns, key)
 	delete(r.capacityCooldownTrips, key)
+	delete(r.healthEjectionCapacityStreaks, key.ProviderID)
+	if r.healthEjectionLastTripCapacity[key.ProviderID] {
+		delete(r.healthEjectionTrips, key.ProviderID)
+		delete(r.healthEjectionLastTripCapacity, key.ProviderID)
+	}
 	r.mu.Unlock()
 }
 
@@ -298,7 +328,7 @@ func (r *Registry) CapacityCooldownActive(providerID, modelID string) bool {
 // (accept deletes the entry; reject re-arms it) or the claim goes stale after
 // capacityProbeOutcomeWindow (a lost probe must not wedge the pair).
 func (r *Registry) capacityCooldownActiveLocked(providerID, modelID string, now time.Time) bool {
-	e, ok := r.capacityCooldowns[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]
+	e, ok := r.capacityCooldowns[capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}]
 	if !ok {
 		return false
 	}

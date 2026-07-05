@@ -20,7 +20,9 @@ import (
 // = idle + a warm model, so the scheduler treats it as an ideal instant-TTFT
 // target and keeps feeding it (one box failed 99/99 for 15+ minutes in prod).
 //
-// This breaker is keyed by PROVIDER only (across every model and shape): a
+// This breaker is keyed by NODE only (across every model and shape), via the
+// stable fault key (faultKeyLocked: serial/SE-key when attestation has bound
+// one, the session id otherwise) so its state survives reconnect churn: a
 // node returning faults for ~all requests is sick regardless of cause, so it is
 // quarantined fleet-wide, re-probed after an exponential cooldown, and
 // auto-re-admitted on the first success.
@@ -135,10 +137,14 @@ func (r *Registry) RecordProviderOutcome(providerID string, ok bool, statusCode 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now()
+	// Key by the stable fault key (serial/SE-key when bound, session id
+	// otherwise) so breaker state survives reconnect churn — a zombie that
+	// bounces its connection between faults must keep accumulating.
+	providerID = r.faultKeyLocked(providerID)
 
-	// Opportunistic sweep (mirrors error_cooldown.go): provider ids are
-	// per-session UUIDs, so dead entries never get re-keyed — bound the maps by
-	// dropping expired/idle entries once they grow.
+	// Opportunistic sweep (mirrors error_cooldown.go): churned identities are
+	// never re-keyed — bound the maps by dropping expired/idle entries once
+	// they grow.
 	if len(r.providerBreakerOpenUntil) > 1024 {
 		for id, until := range r.providerBreakerOpenUntil {
 			if !now.Before(until) {
@@ -235,7 +241,7 @@ func providerBreakerBackoff(trips int) time.Duration {
 // r.mu held in either mode — mirrors inferenceErrorCooldownActiveLocked. Caller
 // holds r.mu.
 func (r *Registry) providerBreakerOpenLocked(providerID string, now time.Time) bool {
-	until, ok := r.providerBreakerOpenUntil[providerID]
+	until, ok := r.providerBreakerOpenUntil[r.faultKeyLocked(providerID)]
 	return ok && now.Before(until)
 }
 
@@ -312,6 +318,36 @@ var capacityShedMarkers = []string{
 	"queue full",
 	"server busy",
 	"service temporarily unavailable",
+}
+
+// isNodeCapacityRejectStrike reports whether a failed terminal is a
+// NODE-SCOPED capacity-shaped 5xx — the class that feeds the stable-identity
+// capacity-black-hole streak (health_ejection.go). It is the capacity-shed
+// vocabulary MINUS request-shape context overflows: an oversized prompt is
+// rejected identically by every provider serving the model, so counting it
+// would eject healthy nodes on a burst of oversized requests (mirrors the api
+// layer's isCapacityRejectStrike carve-out). Client-shape 4xx never count.
+func isNodeCapacityRejectStrike(statusCode int, errStr string) bool {
+	switch statusCode {
+	case 500, 502, 503, 504:
+	default:
+		return false
+	}
+	return isCapacityShedError(errStr) && !isRequestShapeContextReject(errStr)
+}
+
+// isRequestShapeContextReject reports whether a capacity-shed message names a
+// context-window/length overflow — a property of the REQUEST, not the node.
+// Matches both tenses ("exceeds"/"exceeded") plus the bare context markers,
+// mirroring the api layer's classifyRejection/isCapacityRejectStrike.
+func isRequestShapeContextReject(errStr string) bool {
+	s := strings.ToLower(errStr)
+	s = strings.ReplaceAll(s, "\u2019", "'")
+	if strings.Contains(s, "context") &&
+		(strings.Contains(s, "exceeds") || strings.Contains(s, "exceeded")) {
+		return true
+	}
+	return strings.Contains(s, "context length") || strings.Contains(s, "context window")
 }
 
 // isCapacityShedError reports whether a failed 5xx terminal's message describes a

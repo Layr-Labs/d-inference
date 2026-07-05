@@ -3483,6 +3483,21 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				refundReservation()
 				return
 			}
+			if errors.Is(err, registry.ErrQueueTTFTTooSlow) {
+				// Deterministic drain-time TTFT rejection: every eligible
+				// provider fails only the TTFT ceiling, so answer with the
+				// standard ttft_too_slow 429 instead of waiting out the queue.
+				s.recordWarmPoolQueueState(model)
+				s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "error", "ttft_too_slow", http.StatusTooManyRequests))
+				s.registry.RecordWarmPoolTTFTMiss(model, genericDeadline)
+				s.triggerWarmPool()
+				bestTTFT := time.Duration(queuedReq.Decision.BestTTFTMs * float64(time.Millisecond))
+				retryAfter := s.estimateTTFTRetryAfter(model, bestTTFT, genericDeadline)
+				refundReservation()
+				s.recordRejection(rejectionForGenericWithDecision("queue", "ttft_too_slow", http.StatusTooManyRequests, retryAfter*1000, queuedReq.Decision))
+				s.writeTTFTTooSlow(w, model, publicModel, bestTTFT, genericDeadline)
+				return
+			}
 			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "queue_timeout", http.StatusTooManyRequests))
 			retryAfter := s.estimateRetryAfter(model)
 			s.registry.RecordWarmPoolQueueTimeout(model, time.Since(queuedReq.EnqueuedAt))

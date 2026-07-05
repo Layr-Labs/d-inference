@@ -236,16 +236,19 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		// it. The dispatch/queue path still returns a 429 when the queue is
 		// full or the wait times out (true saturation). The reservation is
 		// kept for dispatch.
-		// Dedicated-family models (e.g. Gemma 4) bypass queue-before-shed when
-		// their dedicated boxes are saturated: holding an OpenRouter request in
-		// the 120s queue would blow its TTFT SLA, so shed immediately with a
-		// 429 + Retry-After for a clean failover rather than waiting on a
-		// dedicated slot that may not free in time.
-		if s.queueBeforeShedEnabled() && !s.registry.IsDedicatedModel(model) {
+		// Dedicated-family models (e.g. Gemma 4) queue like every other model.
+		// They used to fast-429 here (f28e89a9: a TTFT-SLA caution against
+		// waiting on a dedicated slot), but the wait is bounded by the queue's
+		// maxWait and drains fire fleet-wide on every request completion and
+		// heartbeat — across a large dedicated pool a slot frees within
+		// seconds, while each fast 429 was an uptime-visible shed to
+		// OpenRouter. The drain path (ReserveProviderEx) still applies the
+		// dedicated-box routing gate, so a queued request only ever lands on a
+		// dedicated provider.
+		if s.queueBeforeShedEnabled() {
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
 		} else {
-			// Fast-shed: immediate 429 (always for dedicated models; for every
-			// model when queue-before-shed is disabled).
+			// Fast-shed: immediate 429 when queue-before-shed is disabled.
 			retryAfter := s.estimateRetryAfter(model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()

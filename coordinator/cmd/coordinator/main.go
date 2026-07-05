@@ -197,7 +197,7 @@ func main() {
 	)
 	logger.Info("quality-concurrency cap",
 		"enabled", cfg.RegistryCfg.QualityCap.Enabled,
-		"overcommit", cfg.RegistryCfg.QualityCap.Overcommit,
+		"overcommit", reg.QualityCapOvercommit(),
 		"decode_floor_tps", cfg.RegistryCfg.WarmPool.DecodeFloorTPS,
 	)
 
@@ -501,19 +501,24 @@ func main() {
 	srv.SetMinDecodeTPS(minDecodeTPS)
 	logger.Info("per-request decode floor (quality bar)", "min_decode_tps", minDecodeTPS)
 
-	// Smart early-429 admission gate. OFF by default (behavior-neutral).
-	// When enabled, a request whose (prompt+max_tokens) cannot fit the model
-	// context window or any provider's structural token budget is rejected with an
-	// uptime-neutral 429 at preflight instead of being admitted and 5xx'ing on the
-	// provider. The always-on dispatch-exhausted reclassification of a provider
-	// token-budget 5xx → 429 is independent of this flag.
+	// Smart early-429 admission gate. ON by default: a request whose
+	// (prompt+max_tokens) cannot fit the model context window or any provider's
+	// structural token budget is rejected with an uptime-neutral 429 at preflight
+	// instead of being admitted and 5xx'ing on the provider. Only an explicit
+	// parseable EIGENINFERENCE_SERVABILITY_GATE=false disables it (resolved live
+	// in servabilityGateEnabled). The always-on dispatch-exhausted
+	// reclassification of a provider token-budget 5xx → 429 is independent.
 	if v := os.Getenv("EIGENINFERENCE_SERVABILITY_GATE"); v != "" {
 		if on, err := strconv.ParseBool(v); err == nil && on {
 			srv.SetServabilityGate(true)
 			logger.Info("smart servability gate ENABLED via EIGENINFERENCE_SERVABILITY_GATE (unservable long prompts → early 429)")
+		} else if err == nil && !on {
+			logger.Info("smart servability gate DISABLED via EIGENINFERENCE_SERVABILITY_GATE=false")
 		} else if err != nil {
-			logger.Warn("invalid EIGENINFERENCE_SERVABILITY_GATE; gate stays off", "value", v)
+			logger.Warn("invalid EIGENINFERENCE_SERVABILITY_GATE; gate defaults ON", "value", v)
 		}
+	} else {
+		logger.Info("smart servability gate ENABLED (default; set EIGENINFERENCE_SERVABILITY_GATE=false to disable)")
 	}
 
 	// C1 kill switch: deterministic provider client-4xx (400/413/422/415) returns

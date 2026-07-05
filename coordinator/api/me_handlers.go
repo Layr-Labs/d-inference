@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -58,9 +59,11 @@ type myProvider struct {
 	SerialNumber string               `json:"serial_number,omitempty"`
 
 	// Trust & attestation
-	TrustLevel   string `json:"trust_level"`
-	Attested     bool   `json:"attested"`
-	MDAVerified  bool   `json:"mda_verified"`
+	TrustLevel  string `json:"trust_level"`
+	Attested    bool   `json:"attested"`
+	MDAVerified bool   `json:"mda_verified"`
+	// Deprecated: the ACME device-attest-01 leg was removed. Key kept (always
+	// false) because shipped provider builds decode it as a required field.
 	ACMEVerified bool   `json:"acme_verified"`
 	SEKeyBound   bool   `json:"se_key_bound"`
 	SEPublicKey  string `json:"se_public_key,omitempty"`
@@ -468,7 +471,6 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.TrustLevel = rec.TrustLevel
 		mp.Attested = rec.Attested
 		mp.MDAVerified = rec.MDAVerified
-		mp.ACMEVerified = rec.ACMEVerified
 		mp.SEPublicKey = rec.SEPublicKey
 		// X25519 E2E key from the persisted record so OFFLINE machines still
 		// resolve per-node earnings. The live branch below overrides
@@ -548,7 +550,6 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.TrustLevel = string(live.TrustLevel)
 		mp.Attested = live.Attested
 		mp.MDAVerified = live.MDAVerified
-		mp.ACMEVerified = live.ACMEVerified
 		mp.SEKeyBound = live.SEKeyBound
 		mp.RuntimeVerified = live.RuntimeVerified
 		mp.PythonHash = live.PythonHash
@@ -687,4 +688,34 @@ func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) 
 		"serial":       serial,
 		"rows_removed": n,
 	})
+}
+
+// handleMySelfRouteModels returns the model ids a self-route(-only) key for
+// this account can list and use — the same alias-aware owned live-model view
+// GET /v1/models serves to self-route-only keys. The console's API-key picker
+// consumes this so the ids it saves into a key's allow-list are exactly the
+// ids clients will later see and request: aliases for catalog builds, raw ids
+// for off-catalog local models. Deriving the list client-side from raw
+// provider advertisements produced allow-lists holding hidden build ids that
+// then rejected the listed alias (keyModelAllowed checks the requested name
+// before alias resolution). Centralizing here also keeps the eligibility
+// filter (freshness, runtime verification, private-text support, owner
+// weight-hash servability) in one place instead of three.
+func (s *Server) handleMySelfRouteModels(w http.ResponseWriter, r *http.Request) {
+	user := s.requirePrivyUser(w, r)
+	if user == nil {
+		return
+	}
+	entries := s.selfRouteModelEntries(user.AccountID, false)
+	models := make([]string, 0, len(entries))
+	for _, e := range entries {
+		models = append(models, e.ID)
+	}
+	sort.Strings(models)
+	writeJSON(w, http.StatusOK, selfRouteModelsResponse{Models: models})
+}
+
+// selfRouteModelsResponse is the GET /v1/me/self-route-models payload.
+type selfRouteModelsResponse struct {
+	Models []string `json:"models"`
 }

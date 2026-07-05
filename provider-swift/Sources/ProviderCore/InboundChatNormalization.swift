@@ -46,6 +46,61 @@ enum InboundChatNormalization {
         "function": "tool",
     ]
 
+    /// Convert legacy assistant `function_call` payloads into modern
+    /// `tool_calls` before strict decoding. The upstream decoder ignores
+    /// unknown `function_call`, so this must run on the fast path; otherwise a
+    /// following legacy `role: function` result becomes a `tool` message with
+    /// no previous assistant tool call and trips Harmony's Jinja assertion.
+    static func normalizeLegacyFunctionCalls(in data: Data) throws -> Data {
+        guard data.count <= ToolSchemaNormalization.maxNormalizationBytes else { return data }
+        guard data.range(of: Data("\"function_call\"".utf8)) != nil else { return data }
+        guard var root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let messages = root["messages"] as? [Any]
+        else { return data }
+
+        var changed = false
+        root["messages"] = try messages.enumerated().map { index, value in
+            guard var message = value as? [String: Any] else { return value }
+            guard (message["role"] as? String) == "assistant" else { return value }
+            guard message["tool_calls"] == nil else { return value }
+            guard let rawFunctionCall = message["function_call"] else { return value }
+            if rawFunctionCall is NSNull {
+                message.removeValue(forKey: "function_call")
+                changed = true
+                return message
+            }
+            guard let functionCall = rawFunctionCall as? [String: Any] else {
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                    "assistant function_call must be an object")
+            }
+            guard let name = functionCall["name"] as? String,
+                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                    "assistant function_call is missing a function name")
+            }
+
+            let arguments = try normalizeLegacyFunctionArguments(functionCall["arguments"])
+            message["tool_calls"] = [[
+                "id": "call_legacy_\(index)",
+                "type": "function",
+                "function": [
+                    "name": name,
+                    "arguments": arguments,
+                ],
+            ]]
+            if message.index(forKey: "content") == nil {
+                message["content"] = NSNull()
+            }
+            message.removeValue(forKey: "function_call")
+            changed = true
+            return message
+        }
+
+        guard changed else { return data }
+        return try JSONSerialization.data(withJSONObject: root)
+    }
+
     /// Normalise `data` (a chat-completion request body) into a shape the
     /// strict `OpenAIChatCompletionRequest` decoder accepts.
     ///
@@ -108,6 +163,17 @@ enum InboundChatNormalization {
         }
 
         return message
+    }
+
+    private static func normalizeLegacyFunctionArguments(_ value: Any?) throws -> String {
+        guard let value, !(value is NSNull) else { return "{}" }
+        if let string = value as? String { return string }
+        if value is [String: Any] || value is [Any] {
+            let data = try JSONSerialization.data(withJSONObject: value)
+            return String(data: data, encoding: .utf8) ?? "{}"
+        }
+        throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+            "assistant function_call.arguments must be a string or JSON object")
     }
 
     /// True when a tool entry can be decoded by the upstream `OpenAITool`

@@ -16,11 +16,9 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"math"
 	"net/http"
@@ -29,7 +27,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -76,6 +73,16 @@ const (
 	// immediately-available healthy providers rather than waiting on busy ones.
 	maxDispatchAttempts = 64
 
+	// maxCapacityClassRetries bounds failover specifically for TRANSIENT-capacity
+	// rejections (this provider's live KV budget, a full queue, an update drain).
+	// Such a shortage MAY clear on another provider, so we fail over — but only a
+	// few times, so a fleet-wide transient (or an oversized request the determinism
+	// check didn't tag) cannot walk all maxDispatchAttempts providers and 503 each
+	// (the prod storm: median 22, max 63 attempts, ~8.7 min, 0% eventual success).
+	// A DETERMINISTIC-context rejection (prompt > model context, identical on every
+	// provider) stops on the FIRST attempt regardless — see classifyRejection.
+	maxCapacityClassRetries = 3
+
 	// speculativeTimerRatio is the fraction of the TTFT deadline at which
 	// the coordinator launches a speculative backup dispatch. The primary
 	// provider gets this fraction of the deadline before the backup is
@@ -98,11 +105,32 @@ const (
 
 var thinkBlockPattern = regexp.MustCompile(`(?is)<think>(.*?)</think>\s*`)
 
-// ttftDeadline returns the TTFT budget for a request based on prompt size.
-// Base: 5 seconds + 1ms per estimated input token. This meets the OpenRouter
-// SLA of TTFT < 5s + 1ms/input_token.
+// ttftLiveDeadlineBaseMs is the base term (ms) of the LIVE TTFT admission
+// deadline: ttftDeadline = base + 1ms*estimatedPromptTokens. It governs the live
+// HARD_REJECT cutoff — the preflight bestTTFT shed, the scheduler MaxTTFTMs
+// candidate ceiling, and the queued-request ceiling all derive from
+// ttftDeadline. Default 5000 preserves the historical 5s behavior; override via
+// EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS (wired in cmd/coordinator) so the
+// base can be retuned without a rebuild — e.g. to ~9s/10s, since prod telemetry
+// shows client_gone cancels fit 10000 + 1ms*prompt_tokens and the 5s base
+// over-sheds ~2x. Set once at startup, read-only on routing paths thereafter —
+// mirrors registry.ttftDeadlineBaseMs (the shadow base) and prefillToDecodeRatio.
+var ttftLiveDeadlineBaseMs float64 = 5000
+
+// SetTTFTLiveDeadlineBaseMs overrides the live TTFT deadline base (ms). Values
+// <= 0 are ignored (keep the 5s default). Must be called before serving starts.
+func SetTTFTLiveDeadlineBaseMs(ms float64) {
+	if ms > 0 {
+		ttftLiveDeadlineBaseMs = ms
+	}
+}
+
+// ttftDeadline returns the TTFT budget for a request based on prompt size:
+// ttftLiveDeadlineBaseMs + 1ms per estimated input token. The base is
+// configurable (see ttftLiveDeadlineBaseMs); the per-token slope is fixed at 1ms
+// to match the verified OpenRouter cancel slope.
 func ttftDeadline(estimatedPromptTokens int) time.Duration {
-	base := 5 * time.Second
+	base := time.Duration(ttftLiveDeadlineBaseMs) * time.Millisecond
 	perToken := time.Duration(estimatedPromptTokens) * time.Millisecond
 	return base + perToken
 }
@@ -218,12 +246,15 @@ func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
 	s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + pr.Model})
 }
 
-// noteInferenceError feeds BOTH circuit breakers for a provider-side error
+// noteInferenceError feeds the circuit breakers for a provider-side error
 // received on a pending request's ErrorCh (any phase, pre- or post-commit):
 //   - the shape-keyed inference-error breaker (counts only sickness-shaped
-//     500/502/504 for the (provider, model, shape) triple), and
+//     500/502/504 for the (provider, model, shape) triple),
 //   - the per-provider node-health breaker, which also counts fault-shaped
-//     503s (errStr classifies capacity-503 vs fault-503).
+//     503s (errStr classifies capacity-503 vs fault-503),
+//   - the stable-identity ejection breaker (survives reconnect churn), and
+//   - the capacity-reject cooldown (the ONLY consumer of capacity-class
+//     rejections, which every breaker above deliberately ignores).
 //
 // It emits the cool-down metric on the inference-error transition and the
 // provider_breaker_open metric on the node-health transition into quarantine.
@@ -243,7 +274,56 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 	if opened, _ := s.registry.RecordProviderOutcome(providerID, false, statusCode, errStr); opened {
 		s.ddIncr("routing.provider_breaker_open", []string{"model:" + pr.Model})
 	}
+	// Feed the STABLE-IDENTITY ejection breaker too (survives reconnect churn, so a
+	// zombie that fault-loops while constantly disconnecting still accumulates).
+	if sid := s.registry.GetProviderStableIdentity(providerID); sid != "" {
+		if ejected, _ := s.registry.RecordProviderServeOutcome(sid, false, statusCode, errStr); ejected {
+			s.ddIncr("routing.provider_ejected", []string{"model:" + pr.Model})
+		}
+	}
+	// Feed the capacity-reject cooldown. Capacity-class rejections are
+	// DELIBERATELY invisible to reputation and to ALL the breakers above (a
+	// busy box must never be punished for shedding) — which turns a box that
+	// capacity-rejects EVERYTHING into a routing black hole: its idle-looking
+	// heartbeats keep winning the cost scheduler while every dispatch bounces
+	// (2026-07 incident: 7 boxes, ~9k "token_budget_exhausted" rejections in
+	// 30 min, zero successes). Strikes accumulate per (provider, model); any
+	// accept (first content chunk or clean completion) resets the streak, so
+	// transient fullness on a serving box can never trip. Gated to 429/404/5xx
+	// so a client-shape 4xx that happens to carry a capacity-looking string
+	// never strikes; explicit context-overflow rejections are excluded by
+	// isCapacityRejectStrike (they indict the request, not the provider).
+	//
+	// 404 is included WITH CARE for the cold "model not loaded" miss: a lazy
+	// load on first touch makes a 404-then-load-then-serve sequence NORMAL
+	// lifecycle, so the zero-interleaved-accepts discriminator remains the
+	// safety — the first accept after the load clears the streak, and only a
+	// box that 404s FOREVER (never loads, zero accepts) trips. A 404 whose
+	// message is not capacity-class (e.g. "model not found" for an unknown
+	// model id — a request-shape error) never strikes, because
+	// isCapacityRejectStrike only matches the capacity vocabulary
+	// ("not loaded" / "no model loaded").
+	if (statusCode == http.StatusTooManyRequests || statusCode == http.StatusNotFound ||
+		statusCode >= http.StatusInternalServerError) &&
+		isCapacityRejectStrike(errStr) {
+		if s.registry.RecordCapacityReject(providerID, pr.Model) {
+			s.ddIncr(metricCapacityCooldownTripped, []string{"provider_id:" + providerID, "model:" + pr.Model})
+			s.logger.Warn("capacity-reject cooldown tripped: provider+model capacity-rejecting with zero interleaved accepts — routing will skip the pair until the cooldown expires",
+				"provider_id", providerID,
+				"model", pr.Model,
+				"status_code", statusCode,
+				"error", errStr,
+			)
+		}
+	}
 }
+
+// metricCapacityCooldownTripped counts transitions of a (provider, model) pair
+// into the capacity-reject routing cooldown (registry/capacity_cooldown.go),
+// tagged provider_id + model. Distinct from routing.cooldown_entered (the 5xx
+// inference-error breaker) and routing.provider_breaker_open (node health) so
+// black-hole trips are independently alertable.
+const metricCapacityCooldownTripped = "routing.capacity_cooldown_tripped"
 
 // noteInferenceSuccess clears the inference-error strike state for the serving
 // provider-model pair on a clean completion (streaming relay ended without a
@@ -253,10 +333,22 @@ func (s *Server) noteInferenceSuccess(pr *registry.PendingRequest) {
 		return
 	}
 	s.registry.RecordInferenceSuccess(pr.ProviderID, pr.Model, pr.Traits.CooldownShape())
+	// A clean completion is an ACCEPT for the capacity-reject cooldown: clear
+	// the pair's reject streak, any active capacity cooldown, and the re-trip
+	// backoff. Belt-and-braces with the commit-time accept (commitFirstContent)
+	// and the only accept signal on paths that never stream content.
+	s.registry.RecordCapacityAccept(pr.ProviderID, pr.Model)
 	// A clean completion proves the node is healthy — close its node-health
 	// breaker (and reset the exponential backoff) if it had tripped.
 	if _, closed := s.registry.RecordProviderOutcome(pr.ProviderID, true, 200, ""); closed {
 		s.ddIncr("routing.provider_breaker_closed", []string{"model:" + pr.Model})
+	}
+	// A clean completion is a success for the stable-identity ejection breaker too
+	// — closes it (half-open recovery) if this identity had been ejected.
+	if sid := s.registry.GetProviderStableIdentity(pr.ProviderID); sid != "" {
+		if _, recovered := s.registry.RecordProviderServeOutcome(sid, true, 200, ""); recovered {
+			s.ddIncr("routing.provider_ejection_recovered", []string{"model:" + pr.Model})
+		}
 	}
 }
 
@@ -367,36 +459,27 @@ func (s *Server) resolveRequestedModel(parsed map[string]any, rawBody []byte, re
 	return buildID, requested, rb, true
 }
 
-// maybeFallbackAliasCapacity keeps public aliases available during a desired-build
-// saturation event. Alias resolution intentionally prefers Desired when it is
-// routable, but if every desired provider is transiently full and Previous has
-// immediate capacity, route this request to Previous instead of returning a fast
-// 429. Hard constraints and permanent model-too-large failures are handled by the
-// caller and do not use this fallback. The TTFT estimate for Previous is also
-// returned so the caller does not need to recompute it.
-func (s *Server) maybeFallbackAliasCapacity(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, int, int, int, time.Duration, bool, bool) {
-	if publicModel == "" || publicModel == currentModel {
-		return currentModel, 0, 0, 0, 0, false, false
-	}
-	target, ok := s.registry.AliasTarget(publicModel)
-	if !ok || target.Desired != currentModel || target.Previous == "" {
-		return currentModel, 0, 0, 0, 0, false, false
-	}
-	if s.modelShed(target.Previous, publicModel) {
-		return currentModel, 0, 0, 0, 0, false, false
-	}
-	if !s.registry.IsModelInCatalog(target.Previous) {
-		return currentModel, 0, 0, 0, 0, false, false
-	}
-	candidates, rejections, tooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
-	if candidates <= 0 {
-		return currentModel, candidates, rejections, tooLarge, bestTTFT, hasTTFT, false
-	}
-	parsed["model"] = target.Previous
-	return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, true
-}
+// aliasFallbackMode selects the failure policy for maybeFallbackAlias.
+type aliasFallbackMode int
 
-func (s *Server) maybeFallbackAliasTTFT(parsed map[string]any, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, ttftThreshold time.Duration, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, int, int, int, time.Duration, bool, bool) {
+const (
+	// aliasFallbackCapacity routes to Previous whenever it has any free capacity.
+	aliasFallbackCapacity aliasFallbackMode = iota
+	// aliasFallbackTTFT additionally rejects Previous when its best TTFT estimate
+	// would miss the per-request ceiling (ttftThreshold).
+	aliasFallbackTTFT
+)
+
+// maybeFallbackAlias keeps public aliases available during a desired-build
+// saturation event. Alias resolution intentionally prefers Desired when it is
+// routable, but if every desired provider is transiently full (aliasFallbackCapacity)
+// or too slow to hit the TTFT ceiling (aliasFallbackTTFT) and Previous can serve,
+// route this request to Previous instead of returning a fast 429 / slow stream.
+// Hard constraints and permanent model-too-large failures are handled by the
+// caller and do not use this fallback. The TTFT estimate for Previous is also
+// returned so the caller does not need to recompute it. ttftThreshold is only
+// consulted in aliasFallbackTTFT mode.
+func (s *Server) maybeFallbackAlias(parsed map[string]any, mode aliasFallbackMode, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, ttftThreshold time.Duration, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, int, int, int, time.Duration, bool, bool) {
 	if publicModel == "" || publicModel == currentModel {
 		return currentModel, 0, 0, 0, 0, false, false
 	}
@@ -404,15 +487,23 @@ func (s *Server) maybeFallbackAliasTTFT(parsed map[string]any, publicModel, curr
 	if !ok || target.Desired != currentModel || target.Previous == "" {
 		return currentModel, 0, 0, 0, 0, false, false
 	}
-	if s.modelShed(target.Previous, publicModel) {
+	// Previous must be a real, non-shed catalog build before we probe it.
+	if s.modelShed(target.Previous, publicModel) || !s.registry.IsModelInCatalog(target.Previous) {
 		return currentModel, 0, 0, 0, 0, false, false
 	}
-	if !s.registry.IsModelInCatalog(target.Previous) {
-		return currentModel, 0, 0, 0, 0, false, false
-	}
+	// A SINGLE Previous-build probe drives both modes; the mode only decides
+	// whether the probe's TTFT estimate also gates the fallback.
 	candidates, rejections, tooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
-	if candidates <= 0 || ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
-		return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, false
+	enforceTTFT := mode == aliasFallbackTTFT
+	if candidates <= 0 || (enforceTTFT && ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold)) {
+		// No fallback. TTFT mode reports the probed Previous build (the caller
+		// uses it as the alternate TTFT estimate); capacity mode discards the
+		// model, so keep the unchanged current build.
+		failModel := currentModel
+		if enforceTTFT {
+			failModel = target.Previous
+		}
+		return failModel, candidates, rejections, tooLarge, bestTTFT, hasTTFT, false
 	}
 	parsed["model"] = target.Previous
 	return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, true
@@ -749,394 +840,6 @@ func (s *Server) dispatchOneProvider(
 	return provider, pr, decision, "", 0
 }
 
-func intFromRequestValue(v any) (int, bool) {
-	switch x := v.(type) {
-	case int:
-		return x, true
-	case int32:
-		return int(x), true
-	case int64:
-		return int(x), true
-	case float64:
-		return int(x), true
-	case json.Number:
-		n, err := x.Int64()
-		if err != nil {
-			return 0, false
-		}
-		return int(n), true
-	default:
-		return 0, false
-	}
-}
-
-// approximateTokenCount returns a rough token estimate for routing and queue
-// admission. The len/4 heuristic is a reasonable average for English text
-// with GPT-style BPE tokenizers. This value feeds into the scheduler's
-// capacity checks (pendingTokenBudget, freeMemoryAdmits) where a tighter
-// estimate produces better routing decisions.
-//
-// For billing reservation (where underestimation causes provider shortfall),
-// use approximateTokenCountUpperBound instead.
-func approximateTokenCount(v any) int {
-	if v == nil {
-		return 0
-	}
-	switch x := v.(type) {
-	case string:
-		if x == "" {
-			return 0
-		}
-		tokens := len(x) / 4
-		if tokens < 1 {
-			tokens = 1
-		}
-		return tokens
-	default:
-		b, err := json.Marshal(v)
-		if err != nil {
-			return 0
-		}
-		tokens := len(b) / 4
-		if tokens < 1 {
-			tokens = 1
-		}
-		return tokens
-	}
-}
-
-// approximateTokenCountUpperBound returns a guaranteed upper bound on the
-// number of tokens a BPE tokenizer would produce for v. Every BPE vocabulary
-// starts with one token per byte and can only merge, so len(text) >= tokens
-// for any model family, any language, forever. This is used only for billing
-// reservation to ensure the pre-flight debit always covers the actual cost.
-//
-// Using len(text) over-reserves by ~3-4x on average for English prose, but
-// the difference is refunded immediately after inference completes, so
-// consumers are never overcharged — they only need sufficient balance to
-// cover the reservation hold.
-func approximateTokenCountUpperBound(v any) int {
-	if v == nil {
-		return 0
-	}
-	switch x := v.(type) {
-	case string:
-		return len(x)
-	default:
-		b, err := json.Marshal(v)
-		if err != nil {
-			return 0
-		}
-		return len(b)
-	}
-}
-
-func estimatePromptTokens(parsed map[string]any) int {
-	total := 0
-	if v, ok := parsed["messages"]; ok {
-		total += messagesPromptTokens(v)
-	}
-	if v, ok := parsed["input"]; ok {
-		total += inputPromptTokens(v)
-	}
-	if v, ok := parsed["prompt"]; ok {
-		total += approximateTokenCount(v)
-	}
-	if total == 0 {
-		total = approximateTokenCount(parsed)
-	}
-	return total
-}
-
-// estimateBillingPromptTokens returns a guaranteed upper bound on prompt
-// tokens for billing reservation. Uses byte-length (not len/4) so the
-// pre-flight reservation always covers actual cost. This value must NOT
-// be used for routing — see estimatePromptTokens for that.
-func estimateBillingPromptTokens(parsed map[string]any) int {
-	total := 0
-	if v, ok := parsed["messages"]; ok {
-		// Billing MUST stay a guaranteed upper bound (len(bytes) >= tokens for any
-		// BPE tokenizer), so it keeps counting full message bytes — including a
-		// base64 image's bytes and every non-content field (role, tool_calls,
-		// name). Switching to the media-aware flat count here would DROP those
-		// fields and under-reserve for tool-calling requests. Over-reservation on a
-		// large image is safe (it is refunded after inference); the routing/ITPM
-		// estimate (estimatePromptTokens) is the media-aware one.
-		total += approximateTokenCountUpperBound(v)
-	}
-	if v, ok := parsed["input"]; ok {
-		total += approximateTokenCountUpperBound(v)
-	}
-	if v, ok := parsed["prompt"]; ok {
-		total += approximateTokenCountUpperBound(v)
-	}
-	if total == 0 {
-		total = approximateTokenCountUpperBound(parsed)
-	}
-	return total
-}
-
-// Media prompt-token costs. A vision encoder turns each image/video into a
-// bounded number of soft tokens (Gemma 4 caps around a few hundred per image)
-// regardless of the base64 byte length, so counting a `data:` URI as text
-// inflates the estimate by orders of magnitude — distorting routing admission and
-// over-reserving balance. These flat per-media costs keep both sane.
-const (
-	imagePromptTokenCost = 300
-	videoPromptTokenCost = 1500
-)
-
-// isMediaPartType reports whether an OpenAI/OpenRouter content-part type denotes
-// image or video input.
-func isMediaPartType(t string) bool {
-	switch t {
-	// OpenAI chat (image_url/video_url), OpenAI Responses (input_image/input_video),
-	// and Anthropic /v1/messages content blocks ({"type":"image"|"video","source":…}).
-	case "image_url", "input_image", "image", "video_url", "input_video", "video":
-		return true
-	}
-	return false
-}
-
-// messageContentTokens estimates ROUTING prompt tokens for one message's
-// `content`, counting text parts as text (len/4) and each image/video part as a
-// flat media cost (never the base64 length). Used only for the routing/ITPM
-// estimate; billing uses approximateTokenCountUpperBound (a guaranteed upper
-// bound that intentionally still counts the base64 bytes).
-func messageContentTokens(content any) int {
-	textTokens := func(s string) int {
-		if s == "" {
-			return 0
-		}
-		if t := len(s) / 4; t > 0 {
-			return t
-		}
-		return 1
-	}
-	switch c := content.(type) {
-	case string:
-		return textTokens(c)
-	case []any:
-		total := 0
-		for _, part := range c {
-			pm, ok := part.(map[string]any)
-			if !ok {
-				continue
-			}
-			typ, _ := pm["type"].(string)
-			switch {
-			case typ == "text" || typ == "input_text":
-				if s, ok := pm["text"].(string); ok {
-					total += textTokens(s)
-				}
-			case typ == "image_url" || typ == "input_image" || typ == "image":
-				total += imagePromptTokenCost
-			case typ == "video_url" || typ == "input_video" || typ == "video":
-				total += videoPromptTokenCost
-			default:
-				if b, err := json.Marshal(pm); err == nil {
-					total += len(b) / 4
-				}
-			}
-		}
-		return total
-	default:
-		return approximateTokenCount(content)
-	}
-}
-
-// messagesPromptTokens sums media-aware routing content tokens across a messages
-// array. Falls back to the len/4 heuristic when messages isn't the standard
-// array shape.
-func messagesPromptTokens(messages any) int {
-	arr, ok := messages.([]any)
-	if !ok {
-		return approximateTokenCount(messages)
-	}
-	total := 0
-	for _, m := range arr {
-		mm, ok := m.(map[string]any)
-		if !ok {
-			total += approximateTokenCount(m)
-			continue
-		}
-		total += 4 // small per-message framing (role + delimiters)
-		total += messageContentTokens(mm["content"])
-	}
-	return total
-}
-
-// inputPromptTokens estimates the Responses API `input` field. A string input
-// is plain text (len/4). Structured input is an array of message-like items with
-// `content` parts, so reuse the same media-aware content estimator as chat
-// messages instead of counting JSON wrapper bytes.
-func inputPromptTokens(input any) int {
-	switch x := input.(type) {
-	case string:
-		return approximateTokenCount(x)
-	case []any:
-		total := 0
-		for _, item := range x {
-			switch m := item.(type) {
-			case string:
-				total += approximateTokenCount(m)
-			case map[string]any:
-				content, ok := m["content"]
-				if !ok {
-					total += approximateTokenCount(m)
-					continue
-				}
-				total += 4 // role/type framing, matching messagesPromptTokens.
-				total += messageContentTokens(content)
-			default:
-				total += approximateTokenCount(item)
-			}
-		}
-		return total
-	default:
-		return approximateTokenCount(input)
-	}
-}
-
-// contentPartsHaveMedia reports whether a `content` value (a content-part array)
-// carries any image/video part.
-func contentPartsHaveMedia(content any) bool {
-	parts, ok := content.([]any)
-	if !ok {
-		return false
-	}
-	for _, part := range parts {
-		pm, ok := part.(map[string]any)
-		if !ok {
-			continue
-		}
-		if typ, _ := pm["type"].(string); isMediaPartType(typ) {
-			return true
-		}
-	}
-	return false
-}
-
-// detectMediaRequirement reports whether the request carries image/video input.
-// The coordinator sees plaintext at this point (sealedTransport decrypts before
-// the handler), so this drives the vision routing gate and the fail-fast "no
-// vision-capable provider" response. It scans both the Chat Completions
-// `messages[].content` parts and the Responses API `input[].content` parts so a
-// media request on either surface is gated (never silently routed text-blind).
-func detectMediaRequirement(parsed map[string]any) bool {
-	if messages, ok := parsed["messages"].([]any); ok {
-		for _, m := range messages {
-			if mm, ok := m.(map[string]any); ok && contentPartsHaveMedia(mm["content"]) {
-				return true
-			}
-		}
-	}
-	// Responses API: `input` may be a string (no media) or an array of items,
-	// each carrying `content` parts in the same image_url/input_image shape.
-	if input, ok := parsed["input"].([]any); ok {
-		for _, item := range input {
-			if im, ok := item.(map[string]any); ok && contentPartsHaveMedia(im["content"]) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// requestHasTools reports whether the request carries a non-empty top-level
-// "tools" array (Chat Completions and Responses API share the field name).
-// Drives Traits.HasTools so tool-bearing requests only route to providers whose
-// binaries survive tool-schema template rendering (version floor + per-model
-// template_render_ok gate in the scheduler).
-func requestHasTools(parsed map[string]any) bool {
-	tools, ok := parsed["tools"].([]any)
-	return ok && len(tools) > 0
-}
-
-func requestCacheAffinityKey(parsed map[string]any) string {
-	raw, ok := parsed["prompt_cache_key"].(string)
-	if !ok || raw == "" {
-		return ""
-	}
-	const maxPromptCacheKeyBytes = 512
-	if len(raw) > maxPromptCacheKeyBytes {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(raw))
-	return fmt.Sprintf("%x", sum[:])
-}
-
-func estimateRequestedMaxTokens(parsed map[string]any) int {
-	for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
-		if n, ok := intFromRequestValue(parsed[key]); ok && n > 0 {
-			if copies, ok := intFromRequestValue(parsed["n"]); ok && copies > 1 {
-				return n * copies
-			}
-			return n
-		}
-	}
-	if copies, ok := intFromRequestValue(parsed["n"]); ok && copies > 1 {
-		return 256 * copies
-	}
-	return 256
-}
-
-func parseProviderSerialAllowlist(parsed map[string]any) ([]string, bool, error) {
-	var rawValues []any
-	provided := false
-	for _, key := range []string{"provider_serial", "provider_serials"} {
-		v, ok := parsed[key]
-		if !ok {
-			continue
-		}
-		provided = true
-		switch x := v.(type) {
-		case string:
-			rawValues = append(rawValues, x)
-		case []any:
-			rawValues = append(rawValues, x...)
-		default:
-			return nil, true, fmt.Errorf("%s must be a string or array of strings", key)
-		}
-	}
-	if !provided {
-		return nil, false, nil
-	}
-
-	seen := make(map[string]struct{}, len(rawValues))
-	ids := make([]string, 0, len(rawValues))
-	for _, raw := range rawValues {
-		id, ok := raw.(string)
-		if !ok {
-			return nil, true, fmt.Errorf("provider_serials must contain only strings")
-		}
-		id = strings.TrimSpace(id)
-		if id == "" {
-			continue
-		}
-		if _, exists := seen[id]; exists {
-			continue
-		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
-	}
-	if len(ids) == 0 {
-		return nil, true, fmt.Errorf("provider_serials must include at least one provider serial")
-	}
-	return ids, true, nil
-}
-
-func stripProviderRoutingFields(parsed map[string]any) bool {
-	changed := false
-	for _, key := range []string{"provider_serial", "provider_serials"} {
-		if _, ok := parsed[key]; ok {
-			delete(parsed, key)
-			changed = true
-		}
-	}
-	return changed
-}
-
 // penaltySafeProviderVersion is the first provider release whose VLM penalty
 // path handles repetition/presence/frequency penalties without crashing (the
 // TokenRing 2D-prompt fix). Providers below it crash on a vision request that
@@ -1391,235 +1094,6 @@ func copyJSONMap(in map[string]any) map[string]any {
 	return out
 }
 
-func responsesContentText(content any) string {
-	switch c := content.(type) {
-	case nil:
-		return ""
-	case string:
-		return c
-	case []any:
-		parts := make([]string, 0, len(c))
-		for _, part := range c {
-			switch p := part.(type) {
-			case string:
-				if p != "" {
-					parts = append(parts, p)
-				}
-			case map[string]any:
-				if text, _ := p["text"].(string); text != "" {
-					parts = append(parts, text)
-					continue
-				}
-				if p["type"] == "input_image" || p["type"] == "input_file" {
-					// Text models cannot consume binary Responses parts yet.
-					// Preserve the turn shape without leaking URLs or blobs.
-					parts = append(parts, fmt.Sprintf("[%s omitted]", p["type"]))
-				}
-			}
-		}
-		return strings.Join(parts, "\n")
-	default:
-		b, err := json.Marshal(c)
-		if err != nil {
-			return fmt.Sprint(c)
-		}
-		return string(b)
-	}
-}
-
-func responsesInputToChatMessages(input any) ([]map[string]any, error) {
-	switch v := input.(type) {
-	case string:
-		return []map[string]any{{"role": "user", "content": v}}, nil
-	case []any:
-		messages := make([]map[string]any, 0, len(v))
-		for _, raw := range v {
-			item, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			if typ, _ := item["type"].(string); typ != "" {
-				switch typ {
-				case "message":
-					role, _ := item["role"].(string)
-					if role == "" {
-						role = "user"
-					}
-					if role == "developer" {
-						role = "system"
-					}
-					messages = append(messages, map[string]any{
-						"role":    role,
-						"content": responsesContentText(item["content"]),
-					})
-				case "function_call":
-					callID, _ := item["call_id"].(string)
-					if callID == "" {
-						callID, _ = item["id"].(string)
-					}
-					name, _ := item["name"].(string)
-					args, _ := item["arguments"].(string)
-					messages = append(messages, map[string]any{
-						"role":    "assistant",
-						"content": "",
-						"tool_calls": []map[string]any{{
-							"id":   callID,
-							"type": "function",
-							"function": map[string]any{
-								"name":      name,
-								"arguments": args,
-							},
-						}},
-					})
-				case "function_call_output":
-					callID, _ := item["call_id"].(string)
-					messages = append(messages, map[string]any{
-						"role":         "tool",
-						"tool_call_id": callID,
-						"content":      responsesContentText(item["output"]),
-					})
-				case "reasoning":
-					// Reasoning items are model-side metadata, not prompt text.
-					continue
-				default:
-					return nil, fmt.Errorf("unsupported Responses input item type %q", typ)
-				}
-				continue
-			}
-
-			role, _ := item["role"].(string)
-			if role == "" {
-				continue
-			}
-			if role == "developer" {
-				role = "system"
-			}
-			messages = append(messages, map[string]any{
-				"role":    role,
-				"content": responsesContentText(item["content"]),
-			})
-		}
-		if len(messages) == 0 {
-			return nil, fmt.Errorf("Responses input did not contain any chat-compatible messages")
-		}
-		return messages, nil
-	default:
-		return nil, fmt.Errorf("Responses input must be a string or array")
-	}
-}
-
-func responsesToolsToChatTools(raw any) ([]any, error) {
-	tools, ok := raw.([]any)
-	if !ok || len(tools) == 0 {
-		return nil, nil
-	}
-	out := make([]any, 0, len(tools))
-	for _, rawTool := range tools {
-		tool, ok := rawTool.(map[string]any)
-		if !ok {
-			continue
-		}
-		typ, _ := tool["type"].(string)
-		if typ == "" || typ == "function" {
-			name, _ := tool["name"].(string)
-			if name == "" {
-				if fn, _ := tool["function"].(map[string]any); fn != nil {
-					out = append(out, tool)
-					continue
-				}
-				return nil, fmt.Errorf("function tool is missing name")
-			}
-			fn := map[string]any{"name": name}
-			if description, ok := tool["description"].(string); ok {
-				fn["description"] = description
-			}
-			if parameters, ok := tool["parameters"]; ok {
-				fn["parameters"] = parameters
-			}
-			out = append(out, map[string]any{
-				"type":     "function",
-				"function": fn,
-			})
-			continue
-		}
-		return nil, fmt.Errorf("unsupported Responses tool type %q", typ)
-	}
-	return out, nil
-}
-
-func responsesToolChoiceToChat(raw any) (any, error) {
-	choice, ok := raw.(map[string]any)
-	if !ok {
-		return raw, nil
-	}
-	typ, _ := choice["type"].(string)
-	if typ == "function" {
-		name, _ := choice["name"].(string)
-		if name == "" {
-			return nil, fmt.Errorf("function tool_choice is missing name")
-		}
-		return map[string]any{
-			"type": "function",
-			"function": map[string]any{
-				"name": name,
-			},
-		}, nil
-	}
-	return raw, nil
-}
-
-func responsesTextFormatToChatResponseFormat(raw any) any {
-	text, ok := raw.(map[string]any)
-	if !ok {
-		return nil
-	}
-	format, ok := text["format"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	switch format["type"] {
-	case "json_object":
-		return map[string]any{"type": "json_object"}
-	case "json_schema":
-		return map[string]any{
-			"type":        "json_schema",
-			"json_schema": format,
-		}
-	}
-	return nil
-}
-
-func responsesRequestToChatCompletions(parsed map[string]any) (map[string]any, error) {
-	messages, err := responsesInputToChatMessages(parsed["input"])
-	if err != nil {
-		return nil, err
-	}
-
-	out := copyJSONMap(parsed)
-	delete(out, "input")
-	delete(out, "endpoint")
-	delete(out, "max_output_tokens")
-	delete(out, "text")
-	out["messages"] = messages
-	if maxTokens := explicitMaxTokens(parsed); maxTokens > 0 {
-		out["max_tokens"] = maxTokens
-	}
-	if tools, err := responsesToolsToChatTools(parsed["tools"]); err != nil {
-		return nil, err
-	} else if len(tools) > 0 {
-		out["tools"] = tools
-	}
-	if choice, err := responsesToolChoiceToChat(parsed["tool_choice"]); err != nil {
-		return nil, err
-	} else if choice != nil {
-		out["tool_choice"] = choice
-	}
-	if responseFormat := responsesTextFormatToChatResponseFormat(parsed["text"]); responseFormat != nil {
-		out["response_format"] = responseFormat
-	}
-	return out, nil
-}
-
 // handleChatCompletions handles POST /v1/chat/completions.
 //
 // This is the main inference endpoint. It validates the request, finds an
@@ -1748,6 +1222,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		input != nil && len(messages) == 0, policy, allowedProviderSerials) {
 		return
 	}
+	// Reject remote/non-data: media URLs pre-dispatch (the provider VLM path is
+	// data:-only): one clean 400 instead of dispatching and 400ing across the fleet.
+	if s.rejectRemoteMediaURLs(w, r, parsed, model, publicModel, requiresVision, hasTools) {
+		return
+	}
 
 	isResponsesAPI := input != nil && len(messages) == 0
 
@@ -1830,70 +1309,21 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Pre-flight balance reservation — atomically debit the worst-case cost
-	// using the byte-length upper bound for prompt tokens (guaranteed >=
-	// actual tokens for any BPE tokenizer) plus max_tokens we just bounded
-	// the generation to. The post-inference charge refunds any unused
-	// portion. The routing estimate (estimatedPromptTokens, len/4) is kept
-	// separate so scheduler capacity checks aren't over-inflated.
-	var reservedMicroUSD int64
-	serviceReservation := false
-	// Self-route is free: skip the pre-flight balance reservation and the
-	// per-key spend cap entirely. A zero-balance owner must never be blocked
-	// from running on their own machine, and a self_route_only key never spends.
-	if s.billing != nil && !policy.enabled {
-		consumerKey := consumerKeyFromContext(r.Context())
-		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
-		// Per-key spend cap (phase 1) — checked before the reservation so a
-		// capped key never debits the account ledger.
-		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
-			s.recordRejection(rejectionInfo{
-				r:                     r,
-				stage:                 "balance",
-				reasonCode:            "insufficient_quota",
-				httpStatus:            http.StatusPaymentRequired,
-				keyID:                 keyIDFromContext(r.Context()),
-				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:        publicModel,
-				resolvedModel:         model,
-				stream:                stream,
-				estimatedPromptTokens: estimatedPromptTokens,
-				requestedMaxTokens:    requestedMaxTokens,
-				requiresVision:        requiresVision,
-				hasTools:              hasTools,
-				params:                rejectionSamplingParams(parsed),
-			})
-			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
-			return
-		}
-		var err error
-		serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
-		if err != nil {
-			if errors.Is(err, store.ErrInsufficientBalance) {
-				s.recordRejection(rejectionInfo{
-					r:                     r,
-					stage:                 "balance",
-					reasonCode:            "insufficient_funds",
-					httpStatus:            http.StatusPaymentRequired,
-					keyID:                 keyIDFromContext(r.Context()),
-					consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-					requestedModel:        publicModel,
-					resolvedModel:         model,
-					stream:                stream,
-					estimatedPromptTokens: estimatedPromptTokens,
-					requestedMaxTokens:    requestedMaxTokens,
-					requiresVision:        requiresVision,
-					hasTools:              hasTools,
-					params:                rejectionSamplingParams(parsed),
-				})
-				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
-			} else {
-				s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
-				s.writeServiceUnavailable(w, model)
-			}
-			return
-		}
+	// Pre-flight balance reservation + per-key spend cap (see
+	// reserveInferenceBalance). Self-route and a nil billing backend are free.
+	reservedMicroUSD, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
+		model:                 model,
+		publicModel:           publicModel,
+		billingPromptTokens:   billingPromptTokens,
+		estimatedPromptTokens: estimatedPromptTokens,
+		requestedMaxTokens:    requestedMaxTokens,
+		stream:                stream,
+		requiresVision:        requiresVision,
+		hasTools:              hasTools,
+		policy:                policy,
+	})
+	if reserveHandled {
+		return
 	}
 	timing.ReservedAt = time.Now()
 
@@ -1905,7 +1335,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reject requests for models not in the catalog.
-	if !s.registry.IsModelInCatalog(model) {
+	if !policy.enabled && !s.registry.IsModelInCatalog(model) {
 		refundReservation()
 		s.recordRejection(rejectionInfo{
 			r:                     r,
@@ -1928,286 +1358,60 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Self-route pre-flight: confirm the caller owns an online machine that can
-	// serve this model, with precise errors and no fallback to the paid fleet.
-	if policy.enabled {
-		if s.selfRouteUnavailable(w, r, policy.ownerAccountID, model) {
+	// Shared routing/capacity admission preflight (self-route / prefer / public
+	// capacity+TTFT gate — see runInferenceAdmission). On the chat path an alias
+	// fallback must refresh the threaded rawBody: re-lowering Responses input→chat
+	// when applicable, which can itself fail with a 400. Thread that as the
+	// onModelFallback callback; resolvedModel uses the new build to match the
+	// pre-extraction behavior.
+	onModelFallback := func(newModel string) bool {
+		if !isResponsesAPI {
+			rawBody, _ = marshalForwardBody(parsed)
+			return true
+		}
+		providerParsed, err := responsesRequestToChatCompletions(parsed)
+		if err != nil {
 			refundReservation()
-			return
-		}
-	} else if policy.prefer {
-		// Prefer mode: SKIP the public fleet pre-flight. QuickCapacityCheck has
-		// no owner-trust relaxation, so it would spuriously 429/503 a request
-		// whose own (idle, possibly un-enrolled / private-only) machine could
-		// serve it while the public fleet is busy. Dispatch does owned-first
-		// routing with a paid public fallback and the normal queue, which is the
-		// correct gate for prefer.
-	} else {
-		ttftThreshold := deadline
-		// Pre-flight capacity check: can ANY provider serve this model right
-		// now? If not, return 429 immediately rather than queueing for up to
-		// 120s. OpenRouter treats 429 as "rate limited" (no uptime penalty) vs
-		// 503 which counts as downtime. Fast 429s also preserve our TTFT
-		// metrics. Self-route skips this fleet-wide gate — it queues on the
-		// owner's machine instead (handled below).
-		candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
-		if candidateCount == 0 && capacityRejections > 0 {
-			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
-				model = fallbackModel
-				candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
-				bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
-				if isResponsesAPI {
-					providerParsed, err := responsesRequestToChatCompletions(parsed)
-					if err != nil {
-						refundReservation()
-						s.recordRejection(rejectionInfo{
-							r:                     r,
-							stage:                 "validation",
-							reasonCode:            "bad_param",
-							httpStatus:            http.StatusBadRequest,
-							keyID:                 keyIDFromContext(r.Context()),
-							consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-							requestedModel:        publicModel,
-							resolvedModel:         model,
-							stream:                stream,
-							estimatedPromptTokens: estimatedPromptTokens,
-							requestedMaxTokens:    requestedMaxTokens,
-							requiresVision:        requiresVision,
-							hasTools:              hasTools,
-							params:                rejectionSamplingParams(parsed),
-						})
-						writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
-						return
-					}
-					rawBody, _ = marshalForwardBody(providerParsed)
-				} else {
-					rawBody, _ = marshalForwardBody(parsed)
-				}
-			}
-		}
-		// Smart early-429 for structurally-unservable long prompts
-		// (prompt+max_tokens beyond the model context window or any provider's
-		// token budget). Gated (default off) and fail-open. Runs AFTER the alias
-		// capacity fallback so an alias whose Previous build still has capacity
-		// fails over first; an unservable request is then rejected with an
-		// uptime-neutral 429 (OpenRouter fails over) instead of admit→5xx.
-		if s.shedIfUnservable(w, r, parsed, publicModel, model, modelMaxContext, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools, allowedProviderSerials, refundReservation) {
-			return
-		}
-		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
-			// Providers serve this model but none can ever fit it — non-retryable.
-			// Surface a clear 503 instead of a 429 the client would retry forever.
-			refundReservation()
-			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
 			s.recordRejection(rejectionInfo{
-				r:                       r,
-				stage:                   "preflight_capacity",
-				reasonCode:              "model_too_large",
-				httpStatus:              http.StatusServiceUnavailable,
-				keyID:                   keyIDFromContext(r.Context()),
-				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:          publicModel,
-				resolvedModel:           model,
-				stream:                  stream,
-				estimatedPromptTokens:   estimatedPromptTokens,
-				requestedMaxTokens:      requestedMaxTokens,
-				requiresVision:          requiresVision,
-				hasTools:                hasTools,
-				params:                  rejectionSamplingParams(parsed),
-				servabilityComputed:     true,
-				candidateCount:          candidateCount,
-				capacityRejections:      capacityRejections,
-				modelTooLargeRejections: modelTooLarge,
-				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				r:                     r,
+				stage:                 "validation",
+				reasonCode:            "bad_param",
+				httpStatus:            http.StatusBadRequest,
+				keyID:                 keyIDFromContext(r.Context()),
+				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:        publicModel,
+				resolvedModel:         newModel,
+				stream:                stream,
+				estimatedPromptTokens: estimatedPromptTokens,
+				requestedMaxTokens:    requestedMaxTokens,
+				requiresVision:        requiresVision,
+				hasTools:              hasTools,
+				params:                rejectionSamplingParams(parsed),
 			})
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-				fmt.Sprintf("model %q is too large for any currently available provider", publicModel),
-				withCode("model_unavailable")))
-			return
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+			return false
 		}
-		if candidateCount == 0 && capacityRejections > 0 {
-			// Routing v2 W3: feed the autoscaler the demand the preflight sees.
-			s.registry.RecordWarmPoolCapacityReject(model)
-			s.triggerWarmPool()
-			// Queue-before-shed (default on): providers exist for this model but
-			// all are at capacity right now. Rather than an immediate 429, let the
-			// request fall through to the normal dispatch+queue path so a slot
-			// freeing — or a cold load completing — within the queue window serves
-			// it. The dispatch/queue path still returns a 429 when the queue is
-			// full or the wait times out (true saturation). The reservation is
-			// kept for dispatch.
-			if s.queueBeforeShedEnabled() {
-				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
-			} else {
-				// Legacy fast-shed: immediate 429.
-				retryAfter := s.estimateRetryAfter(model)
-				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-				refundReservation()
-				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
-				s.recordRejection(rejectionInfo{
-					r:                       r,
-					stage:                   "preflight_capacity",
-					reasonCode:              "machine_busy",
-					httpStatus:              http.StatusTooManyRequests,
-					keyID:                   keyIDFromContext(r.Context()),
-					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-					requestedModel:          publicModel,
-					resolvedModel:           model,
-					stream:                  stream,
-					estimatedPromptTokens:   estimatedPromptTokens,
-					requestedMaxTokens:      requestedMaxTokens,
-					requiresVision:          requiresVision,
-					hasTools:                hasTools,
-					retryAfterMs:            retryAfter * 1000,
-					params:                  rejectionSamplingParams(parsed),
-					servabilityComputed:     true,
-					candidateCount:          candidateCount,
-					capacityRejections:      capacityRejections,
-					modelTooLargeRejections: modelTooLarge,
-					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
-				})
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-					fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
-					withCode("rate_limit_exceeded")))
-				return
-			}
-		}
-		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge == 0 {
-			// No provider is even structurally eligible right now: the model's
-			// whole pool is offline/untrusted, trait-gated (below the tools floor
-			// / render-broken), or — the case the shape-keyed breaker introduces —
-			// every serving provider is in inference-error cooldown for THIS
-			// request shape.
-			//
-			// Routing v2 W3 cold-dispatch (default on): before shedding, check
-			// whether an idle on-disk provider could be WARMED to serve this model
-			// (and would then pass admission for these traits). If so, spill the
-			// request into the queue instead of 503'ing — the enqueue path kicks
-			// the model-swap machinery, and the queued request drains onto the
-			// provider once the cold load completes. Note that an idle, fitting
-			// cold provider is already a scheduler candidate (slot "unknown" is
-			// eligible), so this branch usually only fires for genuinely
-			// unservable demand; it is the safety valve for the narrow window
-			// where a loadable cold provider is not yet a candidate.
-			//
-			// Feed the autoscaler the demand regardless of outcome.
-			s.registry.RecordWarmPoolCapacityReject(model)
-			s.triggerWarmPool()
-			if s.coldDispatchEnabled() && s.coldSpillAvailable(model, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials) {
-				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:cold_dispatch_spill"})
-				// Fall through to dispatch+queue; reservation kept.
-			} else {
-				// None of these clear by a slot freeing up, so queueing for up to
-				// 120s only adds misleading latency before the same error. Fail
-				// fast with a retryable 503 + Retry-After (OpenRouter treats 503
-				// as unavailable, not a uptime-penalised error here because the
-				// body is explicit). This mirrors the trait fast-fails above for
-				// the transient-cooldown case they cannot see.
-				retryAfter := s.estimateRetryAfter(model)
-				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-				refundReservation()
-				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
-				s.recordRejection(rejectionInfo{
-					r:                       r,
-					stage:                   "preflight_capacity",
-					reasonCode:              "no_provider",
-					httpStatus:              http.StatusServiceUnavailable,
-					keyID:                   keyIDFromContext(r.Context()),
-					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-					requestedModel:          publicModel,
-					resolvedModel:           model,
-					stream:                  stream,
-					estimatedPromptTokens:   estimatedPromptTokens,
-					requestedMaxTokens:      requestedMaxTokens,
-					requiresVision:          requiresVision,
-					hasTools:                hasTools,
-					retryAfterMs:            retryAfter * 1000,
-					params:                  rejectionSamplingParams(parsed),
-					servabilityComputed:     true,
-					candidateCount:          candidateCount,
-					capacityRejections:      capacityRejections,
-					modelTooLargeRejections: modelTooLarge,
-					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
-				})
-				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-					fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
-					withCode("model_unavailable")))
-				return
-			}
-		}
-		if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
-			if !s.ttftHardReject {
-				// Soft TTFT gate (default): a provider passed every routing and
-				// capacity gate, and pr.MaxTTFTMs is left 0 in soft mode, so the
-				// dispatch path serves the best-available provider instead of
-				// re-rejecting (P1 fix). Do NOT divert to an older alias build here
-				// (P2 fix) — the desired build is routable. A soft-serve over the
-				// deadline is still a TTFT near-miss, so feed the autoscaler so it
-				// grows warm capacity for this model.
-				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
-				s.triggerWarmPool()
-				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
-			} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
-				model = fallbackModel
-				if isResponsesAPI {
-					providerParsed, err := responsesRequestToChatCompletions(parsed)
-					if err != nil {
-						refundReservation()
-						s.recordRejection(rejectionInfo{
-							r:                     r,
-							stage:                 "validation",
-							reasonCode:            "bad_param",
-							httpStatus:            http.StatusBadRequest,
-							keyID:                 keyIDFromContext(r.Context()),
-							consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-							requestedModel:        publicModel,
-							resolvedModel:         model,
-							stream:                stream,
-							estimatedPromptTokens: estimatedPromptTokens,
-							requestedMaxTokens:    requestedMaxTokens,
-							requiresVision:        requiresVision,
-							hasTools:              hasTools,
-							params:                rejectionSamplingParams(parsed),
-						})
-						writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
-						return
-					}
-					rawBody, _ = marshalForwardBody(providerParsed)
-				} else {
-					rawBody, _ = marshalForwardBody(parsed)
-				}
-			} else {
-				// Hard TTFT gate, no faster alias: shed with a 429 + Retry-After,
-				// and feed the autoscaler a TTFT-miss so warm capacity grows.
-				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
-				s.triggerWarmPool()
-				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
-				refundReservation()
-				s.recordRejection(rejectionInfo{
-					r:                       r,
-					stage:                   "routing_ttft",
-					reasonCode:              "ttft_too_slow",
-					httpStatus:              http.StatusTooManyRequests,
-					keyID:                   keyIDFromContext(r.Context()),
-					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-					requestedModel:          publicModel,
-					resolvedModel:           model,
-					stream:                  stream,
-					estimatedPromptTokens:   estimatedPromptTokens,
-					requestedMaxTokens:      requestedMaxTokens,
-					requiresVision:          requiresVision,
-					hasTools:                hasTools,
-					params:                  rejectionSamplingParams(parsed),
-					servabilityComputed:     true,
-					candidateCount:          candidateCount,
-					capacityRejections:      capacityRejections,
-					modelTooLargeRejections: modelTooLarge,
-					bestTTFTMs:              float64(retryTTFT.Milliseconds()),
-				})
-				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
-				return
-			}
-		}
+		rawBody, _ = marshalForwardBody(providerParsed)
+		return true
+	}
+	var preflightHandled bool
+	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
+		model:                  model,
+		publicModel:            publicModel,
+		stream:                 stream,
+		estimatedPromptTokens:  estimatedPromptTokens,
+		requestedMaxTokens:     requestedMaxTokens,
+		requiresVision:         requiresVision,
+		hasTools:               hasTools,
+		modelMaxContext:        modelMaxContext,
+		allowedProviderSerials: allowedProviderSerials,
+		deadline:               deadline,
+		policy:                 policy,
+		refundReservation:      refundReservation,
+		onModelFallback:        onModelFallback,
+	})
+	if preflightHandled {
+		return
 	}
 
 	// Dispatch to a provider with speculative TTFT-aware dispatch. On the
@@ -2262,6 +1466,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// model may have been rewritten by a capacity- or TTFT-fallback above
+	// (maybeFallbackAlias), so refresh the context
+	// window for the FINAL build before handing it to the dispatch loop — otherwise
+	// shouldStopFailover/classifyRejection would compare a provider's budget against
+	// the originally-resolved model's context. Overwrite only on a successful lookup
+	// (fallback builds of the same alias normally share a context window; a build
+	// absent from the store keeps the prior value, matching the initial read).
+	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
+		modelMaxContext = rec.MaxContextLength
+	}
+
 	d := &dispatchState{
 		s:                      s,
 		w:                      w,
@@ -2286,6 +1501,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		timing:                 timing,
 		deadline:               deadline,
 		speculativeAt:          time.Duration(float64(deadline) * speculativeTimerRatio),
+		modelMaxContext:        modelMaxContext,
 		refundReservation:      refundReservation,
 		// Track providers that failed during retry so we don't dispatch to them again.
 		excludeProviders: make(map[string]struct{}),
@@ -2922,7 +2138,7 @@ func stripThinkBlocks(text string) (string, string) {
 }
 
 // normalizeSSEChunk fixes fields in SSE chunks to match the OpenAI spec.
-// Some backends (e.g. vllm-mlx) emit "content":null instead of "content":"",
+// Some backends emit "content":null instead of "content":"",
 // and include "usage":null which strict parsers (ForgeCode, Codex) reject
 // because they expect usage to be either absent or a full object.
 func normalizeSSEChunk(chunk string) string {
@@ -3651,313 +2867,6 @@ func buildNonStreamingResponse(requestID, model string, msg extractedMessage, us
 // from the catalog can't appear in the listing anyway, and adding it would
 // pollute the hidden set (e.g. an alias pointing at a not-yet-registered build).
 // Empty ids are ignored.
-func hideAliasBuild(hidden map[string]struct{}, catalogByID map[string]store.SupportedModel, buildID string) {
-	if buildID == "" {
-		return
-	}
-	if _, inCatalog := catalogByID[buildID]; inCatalog {
-		hidden[buildID] = struct{}{}
-	}
-}
-
-// aliasModelEntries builds the consumer-facing /v1/models entries for active
-// public aliases and returns the set of underlying build ids those aliases
-// cover (so the caller can hide them from the default listing). The hidden set
-// covers EVERY build an alias references — desired, previous, and the retired
-// lineage — so a concrete quant build never appears as its own entry once it is
-// behind an alias. Each alias entry derives its metadata from its primary build
-// — the desired build, or the previous build if the desired one isn't in the
-// catalog yet — and aggregates live capacity across the desired and previous
-// builds so the alias's routable/warm counts reflect every quant currently
-// serving it (retired builds are hide-only and never contribute capacity).
-func (s *Server) aliasModelEntries(
-	capByModel map[string]*registry.ModelCapacity,
-	catalogByID map[string]store.SupportedModel,
-	registryByID map[string]store.ModelRegistryEntry,
-) ([]types.ModelEntry, map[string]struct{}) {
-	hidden := make(map[string]struct{})
-	aliases, err := s.store.ListModelAliases()
-	if err != nil {
-		s.logger.Error("model registry: failed to list aliases", "error", err)
-		return nil, hidden
-	}
-
-	entries := make([]types.ModelEntry, 0, len(aliases))
-	for _, a := range aliases {
-		if !a.Active || a.DesiredBuild == "" {
-			continue
-		}
-		// A consumer must only ever see the alias, never a concrete build behind
-		// it. Hide EVERY build this alias references — desired, previous, AND the
-		// retired lineage — from the standalone listing, even if the alias itself
-		// isn't advertisable right now. (Capacity below aggregates only the
-		// routable desired/previous members; retired builds are hide-only.)
-		hideAliasBuild(hidden, catalogByID, a.DesiredBuild)
-		hideAliasBuild(hidden, catalogByID, a.PreviousBuild)
-		for _, b := range a.RetiredBuilds {
-			hideAliasBuild(hidden, catalogByID, b)
-		}
-		// Primary build = the desired build when it's in the catalog, else the
-		// previous build (so the alias keeps a real entry while the desired build
-		// is mid-registration). An alias whose builds are all out of catalog
-		// resolves to nothing and must not be advertised (it would 503).
-		members := make([]string, 0, 2)
-		desiredInCatalog := false
-		if _, ok := catalogByID[a.DesiredBuild]; ok {
-			members = append(members, a.DesiredBuild)
-			desiredInCatalog = true
-		}
-		previousInCatalog := false
-		if a.PreviousBuild != "" {
-			if _, ok := catalogByID[a.PreviousBuild]; ok {
-				members = append(members, a.PreviousBuild)
-				previousInCatalog = true
-			}
-		}
-		var primary string
-		switch {
-		case desiredInCatalog:
-			primary = a.DesiredBuild
-		case previousInCatalog:
-			primary = a.PreviousBuild
-		default:
-			// No in-catalog build backs this alias — don't advertise it.
-			continue
-		}
-
-		routable, warm := 0, 0
-		canAccept := false
-		for _, b := range members {
-			if cap, ok := capByModel[b]; ok {
-				routable += cap.RoutableProviders
-				warm += cap.WarmProviders
-				canAccept = canAccept || cap.CanAccept
-			}
-		}
-
-		cm := catalogByID[primary]
-		reg, hasReg := registryByID[primary]
-		displayName := a.DisplayName
-		if displayName == "" {
-			displayName = cm.DisplayName
-		}
-		metadata := types.ModelMetadata{
-			ModelType:         cm.ModelType,
-			Quantization:      "", // an alias spans quants; omit the per-build quant
-			DisplayName:       displayName,
-			RoutableProviders: routable,
-			WarmProviders:     warm,
-			CanAccept:         canAccept,
-		}
-		entry := types.ModelEntry{
-			ID:       a.AliasID,
-			Object:   "model",
-			OwnedBy:  "eigeninference",
-			Name:     displayName,
-			Metadata: metadata,
-		}
-		// Pricing / context / features come from the primary build's registry
-		// entry. Quantization is intentionally left blank on the alias.
-		primaryQuant := ""
-		if hasReg {
-			primaryQuant = reg.Quantization
-		}
-		s.openRouterModelFieldsFor(primary, primaryQuant, reg, hasReg).applyToModelEntry(&entry)
-		entry.Quantization = ""
-		var caps []string
-		if hasReg {
-			caps = reg.Capabilities
-		}
-		entry.InputModalities, entry.OutputModalities = deriveModalities(cm.ModelType, caps)
-		entries = append(entries, entry)
-	}
-	return entries, hidden
-}
-
-// listModelEntries assembles the consumer-facing model entries shared by
-// GET /v1/models and GET /v1/models/{id}. includeBuilds also lists the raw
-// quant builds hidden behind public aliases (ops/debug).
-func (s *Server) listModelEntries(includeBuilds bool) ([]types.ModelEntry, error) {
-	models := s.registry.ListModels()
-
-	// Build a lookup of capacity data keyed by model ID.
-	capacities := s.registry.ModelCapacitySnapshot()
-	capByModel := make(map[string]*registry.ModelCapacity, len(capacities))
-	for i := range capacities {
-		capByModel[capacities[i].ModelID] = &capacities[i]
-	}
-
-	// Filter to only show models from the active catalog, and capture the richer
-	// registry entries used to populate the OpenRouter provider fields. These
-	// lookups are shared with the dedicated /v1/models/openrouter feed.
-	catalogByID, registryByID, err := s.activeCatalogLookups()
-	if err != nil {
-		return nil, err
-	}
-
-	// Public aliases are the consumer-facing model names; their underlying
-	// quant builds are hidden by default so consumers never see the quant.
-	aliasEntries, hiddenBuilds := s.aliasModelEntries(capByModel, catalogByID, registryByID)
-
-	data := make([]types.ModelEntry, 0, len(models)+len(aliasEntries))
-	data = append(data, aliasEntries...)
-	for _, m := range models {
-		cm, inCatalog := catalogByID[m.ID]
-		if len(catalogByID) > 0 && !inCatalog {
-			continue
-		}
-		if _, hidden := hiddenBuilds[m.ID]; hidden && !includeBuilds {
-			continue
-		}
-		metadata := types.ModelMetadata{
-			ModelType:         m.ModelType,
-			Quantization:      m.Quantization,
-			ProviderCount:     m.Providers,
-			AttestedProviders: m.AttestedProviders,
-			TrustLevel:        string(m.TrustLevel),
-		}
-		// Add capacity fields from live snapshot.
-		if cap, ok := capByModel[m.ID]; ok {
-			metadata.RoutableProviders = cap.RoutableProviders
-			metadata.WarmProviders = cap.WarmProviders
-			metadata.CanAccept = cap.CanAccept
-		} else {
-			metadata.RoutableProviders = 0
-			metadata.WarmProviders = 0
-			metadata.CanAccept = false
-		}
-		if m.Attestation != nil {
-			metadata.Attestation = &types.ModelAttestation{
-				SecureEnclave: m.Attestation.SecureEnclave,
-				SIPEnabled:    m.Attestation.SIPEnabled,
-				SecureBoot:    m.Attestation.SecureBoot,
-			}
-		}
-		if inCatalog && cm.DisplayName != "" {
-			metadata.DisplayName = cm.DisplayName
-		}
-
-		entry := types.ModelEntry{
-			ID:            m.ID,
-			Object:        "model",
-			Created:       0,
-			OwnedBy:       "eigeninference",
-			Name:          metadata.DisplayName,
-			HuggingFaceID: m.ID, // model IDs are HuggingFace paths
-			Metadata:      metadata,
-		}
-
-		// OpenRouter provider fields (quantization, per-token pricing, sampling
-		// params, and registry-sourced metadata), shared with the dedicated
-		// /v1/models/openrouter feed.
-		reg, hasReg := registryByID[m.ID]
-		s.openRouterModelFieldsFor(m.ID, m.Quantization, reg, hasReg).applyToModelEntry(&entry)
-
-		// Modalities are derived from the model's capabilities (text by default).
-		var caps []string
-		if hasReg {
-			caps = reg.Capabilities
-		}
-		entry.InputModalities, entry.OutputModalities = deriveModalities(m.ModelType, caps)
-
-		data = append(data, entry)
-	}
-
-	return data, nil
-}
-
-func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
-	// Pass ?include_builds=1 (ops/debug) to also list the raw quant builds.
-	data, err := s.listModelEntries(r.URL.Query().Get("include_builds") == "1")
-	if err != nil {
-		s.logger.Error("model registry: failed to list active models", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to list models"))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, types.ModelListResponse{
-		Object: "list",
-		Data:   data,
-	})
-}
-
-// handleGetModel handles GET /v1/models/{id...} — the OpenAI "retrieve model"
-// endpoint. Model IDs may contain slashes (HuggingFace paths), hence the
-// wildcard path segment. Hidden quant builds are retrievable by their exact
-// id, matching the behavior of requesting one for inference.
-func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	data, err := s.listModelEntries(true)
-	if err != nil {
-		s.logger.Error("model registry: failed to list active models", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to list models"))
-		return
-	}
-	for _, entry := range data {
-		if entry.ID == id {
-			writeJSON(w, http.StatusOK, entry)
-			return
-		}
-	}
-	writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
-		fmt.Sprintf("model %q not found", id), withParam("model")))
-}
-
-// handleCreateKey handles POST /v1/auth/keys — creates a new consumer API key.
-// Requires Privy authentication. The key is linked to the user's account so
-// requests made with the key are billed to the same account.
-func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error",
-			"API key creation requires a Privy account — authenticate with a Privy access token"))
-		return
-	}
-
-	key, err := s.store.CreateKeyForAccount(user.AccountID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to create key"))
-		return
-	}
-	writeJSON(w, http.StatusOK, types.CreateKeyResponse{
-		APIKey:    key,
-		AccountID: user.AccountID,
-	})
-}
-
-// handleRevokeKey handles DELETE /v1/auth/keys — revokes an API key.
-// The caller must own the key (same account). Requires Privy auth so a
-// compromised API key cannot revoke legitimate keys.
-func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
-		return
-	}
-
-	var body struct {
-		Key string `json:"key"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", "provide {\"key\": \"sk-db-...\"}"))
-		return
-	}
-
-	owner := s.store.GetKeyAccount(body.Key)
-	if owner != user.AccountID {
-		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "you can only revoke your own keys"))
-		return
-	}
-
-	if !s.store.RevokeKey(body.Key) {
-		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "key not found or already revoked"))
-		return
-	}
-	s.invalidateAPIKeyCache(body.Key)
-
-	writeJSON(w, http.StatusOK, types.RevokeKeyResponse{Status: "revoked"})
-}
-
 // ── Multi-key management handlers (GET/POST/PATCH/DELETE /v1/keys) ────
 
 // createAPIKeyRequest is the POST /v1/keys (and rotate inherit) body. Money is
@@ -3980,382 +2889,23 @@ func usdToMicro(usd float64) int64 { return int64(math.Round(usd * 1_000_000)) }
 // microToUSD converts micro-USD to a USD float.
 func microToUSD(micro int64) float64 { return float64(micro) / 1_000_000 }
 
-// apiKeyToResponse projects a stored key into its masked API representation,
-// computing the current-window spend and remaining budget.
-func (s *Server) apiKeyToResponse(k *store.APIKey) types.APIKeyResponse {
-	resp := types.APIKeyResponse{
-		ID:            k.ID,
-		Name:          k.Name,
-		Label:         k.Label,
-		Disabled:      k.Disabled,
-		LimitReset:    store.NormalizeResetWindow(k.LimitReset),
-		RPMLimit:      k.RPMLimit,
-		ITPMLimit:     k.ITPMLimit,
-		OTPMLimit:     k.OTPMLimit,
-		AllowedModels: k.AllowedModels,
-		SelfRouteOnly: k.SelfRouteOnly,
-		ExpiresAt:     k.ExpiresAt,
-		CreatedAt:     k.CreatedAt,
-		LastUsedAt:    k.LastUsedAt,
-	}
-	since := store.KeySpendWindowStart(resp.LimitReset, time.Now())
-	spent := s.store.KeySpendSince(k.ID, since)
-	resp.UsageUSD = microToUSD(spent)
-	if k.LimitMicroUSD != nil {
-		limitUSD := microToUSD(*k.LimitMicroUSD)
-		resp.LimitUSD = &limitUSD
-		remaining := *k.LimitMicroUSD - spent
-		if remaining < 0 {
-			remaining = 0
-		}
-		remUSD := microToUSD(remaining)
-		resp.RemainingUSD = &remUSD
-	}
-	return resp
-}
-
-// validateKeyLimitInputs sanity-checks user-supplied limit values. Returns a
-// human-readable error string (empty when valid).
-func validateKeyLimitInputs(reset string, limitUSD *float64, rpm, itpm, otpm *int64, expiresAt *time.Time) string {
-	switch reset {
-	case "", store.KeyResetNone, store.KeyResetDaily, store.KeyResetWeekly, store.KeyResetMonthly:
-	default:
-		return "limit_reset must be one of: none, daily, weekly, monthly"
-	}
-	if limitUSD != nil && *limitUSD < 0 {
-		return "limit_usd must be >= 0"
-	}
-	if rpm != nil && *rpm < 0 {
-		return "rpm_limit must be >= 0"
-	}
-	if itpm != nil && *itpm < 0 {
-		return "itpm_limit must be >= 0"
-	}
-	if otpm != nil && *otpm < 0 {
-		return "otpm_limit must be >= 0"
-	}
-	if expiresAt != nil && !expiresAt.IsZero() && expiresAt.Before(time.Now()) {
-		return "expires_at must be in the future"
-	}
-	return ""
-}
-
-// keyModelAllowed returns false when the calling key restricts models via an
-// allow-list that does not include the requested model. Account-scoped/legacy
-// keys (no key in context) and keys without an allow-list always pass.
-func (s *Server) keyModelAllowed(ctx context.Context, model string) bool {
-	k := apiKeyFromContext(ctx)
-	if k == nil || len(k.AllowedModels) == 0 {
-		return true
-	}
-	for _, m := range k.AllowedModels {
-		if m == model {
-			return true
-		}
-	}
-	return false
-}
-
-// checkKeySpendCap reports whether charging additionalMicroUSD to the calling
-// key would exceed its per-key spend cap in the current window. It returns
-// (message, ok); ok=false means the request must be rejected with 402. The
-// per-account balance ledger is still the hard atomic ceiling — this is the
-// soft, per-key sub-cap, enforced against settled usage (so concurrent
-// in-flight requests are eventually-consistent, never over the account balance).
-func (s *Server) checkKeySpendCap(ctx context.Context, additionalMicroUSD int64) (string, bool) {
-	k := apiKeyFromContext(ctx)
-	if k == nil || k.ID == "" || k.LimitMicroUSD == nil {
-		return "", true
-	}
-	since := store.KeySpendWindowStart(k.LimitReset, time.Now())
-	spent := s.store.KeySpendSince(k.ID, since)
-	if spent+additionalMicroUSD > *k.LimitMicroUSD {
-		window := store.NormalizeResetWindow(k.LimitReset)
-		if window == store.KeyResetNone {
-			window = "total"
-		}
-		return fmt.Sprintf("API key spend limit reached (%s cap $%.2f, used $%.2f) — raise this key's limit or use another key",
-			window, microToUSD(*k.LimitMicroUSD), microToUSD(spent)), false
-	}
-	return "", true
-}
-
-// handleListAPIKeys handles GET /v1/keys — lists the caller's keys (masked).
-func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
-		return
-	}
-	keys, err := s.store.ListAPIKeys(user.AccountID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to list keys"))
-		return
-	}
-	out := make([]types.APIKeyResponse, 0, len(keys))
-	for i := range keys {
-		out = append(out, s.apiKeyToResponse(&keys[i]))
-	}
-	writeJSON(w, http.StatusOK, types.APIKeyListResponse{Object: "list", Data: out})
-}
-
-// handleCreateAPIKey handles POST /v1/keys — mints a new named, optionally
-// limited key. The raw secret is returned exactly once.
-func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error",
-			"API key creation requires a Privy account — authenticate with a Privy access token"))
-		return
-	}
-
-	var req createAPIKeyRequest
-	if r.Body != nil {
-		// A missing/empty body is allowed (creates a default unnamed key).
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", "invalid JSON body"))
-			return
-		}
-	}
-	if msg := validateKeyLimitInputs(req.LimitReset, req.LimitUSD, req.RPMLimit, req.ITPMLimit, req.OTPMLimit, req.ExpiresAt); msg != "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", msg))
-		return
-	}
-
-	opts := store.APIKeyCreate{
-		Name:          strings.TrimSpace(req.Name),
-		LimitReset:    store.NormalizeResetWindow(req.LimitReset),
-		RPMLimit:      req.RPMLimit,
-		ITPMLimit:     req.ITPMLimit,
-		OTPMLimit:     req.OTPMLimit,
-		AllowedModels: req.AllowedModels,
-		SelfRouteOnly: req.SelfRouteOnly,
-		ExpiresAt:     req.ExpiresAt,
-	}
-	if req.LimitUSD != nil {
-		m := usdToMicro(*req.LimitUSD)
-		opts.LimitMicroUSD = &m
-	}
-
-	raw, rec, err := s.store.CreateAPIKey(user.AccountID, opts)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to create key"))
-		return
-	}
-	writeJSON(w, http.StatusOK, types.CreateAPIKeyResponse{
-		Key:  raw,
-		Data: s.apiKeyToResponse(rec),
-	})
-}
-
-// handleGetAPIKey handles GET /v1/keys/{id}.
-func (s *Server) handleGetAPIKey(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
-		return
-	}
-	id := r.PathValue("id")
-	k, err := s.store.GetAPIKeyByID(user.AccountID, id)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "key not found"))
-		return
-	}
-	writeJSON(w, http.StatusOK, s.apiKeyToResponse(k))
-}
-
-// handleGetCallingKey handles GET /v1/key — returns the metadata for the API
-// key used to authenticate the request (OpenRouter parity).
-func (s *Server) handleGetCallingKey(w http.ResponseWriter, r *http.Request) {
-	k := apiKeyFromContext(r.Context())
-	if k == nil || k.ID == "" {
-		writeJSON(w, http.StatusNotFound, errorResponse("not_found",
-			"no key metadata — this endpoint requires API key authentication"))
-		return
-	}
-	writeJSON(w, http.StatusOK, s.apiKeyToResponse(k))
-}
-
-// handleUpdateAPIKey handles PATCH /v1/keys/{id} — sparse update of a key's
-// name, disabled flag, limits, reset window, expiry, and model allow-list.
-func (s *Server) handleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
-		return
-	}
-	id := r.PathValue("id")
-	existing, err := s.store.GetAPIKeyByID(user.AccountID, id)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "key not found"))
-		return
-	}
-
-	// Decode into a presence map so we can distinguish "field omitted" (leave
-	// unchanged) from "field set to null" (clear the limit).
-	var patch map[string]json.RawMessage
-	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", "invalid JSON body"))
-		return
-	}
-	if msg := applyKeyPatch(existing, patch); msg != "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", msg))
-		return
-	}
-	if msg := validateKeyLimitInputs(existing.LimitReset, nil, existing.RPMLimit, existing.ITPMLimit, existing.OTPMLimit, existing.ExpiresAt); msg != "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", msg))
-		return
-	}
-
-	// Bump the auth-cache generation before AND after the mutation so a
-	// concurrent request cannot keep authenticating with a stale (e.g.
-	// just-disabled) cached record.
-	s.invalidateAllAPIKeyCache()
-	updated, err := s.store.UpdateAPIKey(user.AccountID, id, *existing)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to update key"))
-		return
-	}
-	s.invalidateAllAPIKeyCache()
-	writeJSON(w, http.StatusOK, s.apiKeyToResponse(updated))
-}
-
-// applyKeyPatch merges a presence-aware PATCH body into an existing key record.
-// Returns a human-readable error string on invalid input (empty when ok).
-func applyKeyPatch(k *store.APIKey, patch map[string]json.RawMessage) string {
-	if raw, ok := patch["name"]; ok {
-		var name string
-		if err := json.Unmarshal(raw, &name); err != nil {
-			return "invalid value for name"
-		}
-		k.Name = strings.TrimSpace(name)
-	}
-	if raw, ok := patch["disabled"]; ok {
-		var disabled bool
-		if err := json.Unmarshal(raw, &disabled); err != nil {
-			return "invalid value for disabled"
-		}
-		k.Disabled = disabled
-	}
-	if raw, ok := patch["limit_reset"]; ok {
-		var reset string
-		if err := json.Unmarshal(raw, &reset); err != nil {
-			return "invalid value for limit_reset"
-		}
-		k.LimitReset = store.NormalizeResetWindow(reset)
-	}
-	if raw, ok := patch["limit_usd"]; ok {
-		if string(raw) == "null" {
-			k.LimitMicroUSD = nil
-		} else {
-			var usd float64
-			if err := json.Unmarshal(raw, &usd); err != nil {
-				return "invalid value for limit_usd"
-			}
-			if usd < 0 {
-				return "limit_usd must be >= 0"
-			}
-			m := usdToMicro(usd)
-			k.LimitMicroUSD = &m
-		}
-	}
-	if raw, ok := patch["allowed_models"]; ok {
-		if string(raw) == "null" {
-			k.AllowedModels = nil
-		} else {
-			var models []string
-			if err := json.Unmarshal(raw, &models); err != nil {
-				return "invalid value for allowed_models"
-			}
-			k.AllowedModels = models
-		}
-	}
-	if raw, ok := patch["self_route_only"]; ok {
-		var v bool
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return "invalid value for self_route_only"
-		}
-		k.SelfRouteOnly = v
-	}
-	for field, dst := range map[string]**int64{
-		"rpm_limit":  &k.RPMLimit,
-		"itpm_limit": &k.ITPMLimit,
-		"otpm_limit": &k.OTPMLimit,
-	} {
-		if raw, ok := patch[field]; ok {
-			if string(raw) == "null" {
-				*dst = nil
-			} else {
-				var v int64
-				if err := json.Unmarshal(raw, &v); err != nil {
-					return "invalid value for " + field
-				}
-				*dst = &v
-			}
-		}
-	}
-	if raw, ok := patch["expires_at"]; ok {
-		if string(raw) == "null" {
-			k.ExpiresAt = nil
-		} else {
-			var t time.Time
-			if err := json.Unmarshal(raw, &t); err != nil {
-				return "invalid value for expires_at (use RFC 3339)"
-			}
-			k.ExpiresAt = &t
-		}
-	}
-	return ""
-}
-
-// handleDeleteAPIKey handles DELETE /v1/keys/{id} — permanently deletes a key.
-func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
-		return
-	}
-	id := r.PathValue("id")
-	s.invalidateAllAPIKeyCache()
-	if err := s.store.RevokeAPIKeyByID(user.AccountID, id); err != nil {
-		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "key not found"))
-		return
-	}
-	s.invalidateAllAPIKeyCache()
-	writeJSON(w, http.StatusOK, types.RevokeKeyResponse{Status: "revoked"})
-}
-
-// handleRotateAPIKey handles POST /v1/keys/{id}/rotate — mints a fresh secret
-// carrying the same limits and metadata, then deletes the old key. The new
-// secret is returned exactly once.
-func (s *Server) handleRotateAPIKey(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
-		return
-	}
-	id := r.PathValue("id")
-	// Bump the auth-cache generation before AND after the mutation so the old
-	// secret stops authenticating the instant rotation commits.
-	s.invalidateAllAPIKeyCache()
-	raw, rec, err := s.store.RotateAPIKey(user.AccountID, id)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "key not found"))
-		return
-	}
-	s.invalidateAllAPIKeyCache()
-	writeJSON(w, http.StatusOK, types.CreateAPIKeyResponse{
-		Key:  raw,
-		Data: s.apiKeyToResponse(rec),
-	})
-}
-
 // handleHealth handles GET /health.
 // Returns the coordinator's status and the number of connected providers.
 // This endpoint does not require authentication.
+//
+// /health is a LIVENESS probe: it returns 200 whenever the process is up, INCLUDING
+// while draining. This is deliberate. EigenCloud's Caddy health-checks its single
+// coordinator upstream on /health with health_status 200, so returning 503 here
+// would mark the only backend down and make the admin/rollback endpoints
+// (POST /v1/admin/drain {"draining":false}) and /readyz unreachable through the
+// public URL — you could not undo a drain remotely. Drain/readiness lives on
+// /readyz (handleReadyz, 503 while draining), which the deploy script and
+// multi-backend load balancers consult to shift traffic. The body still reports
+// draining=true for observability, but the status code stays 200.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, types.HealthResponse{
 		Status:      "ok",
+		Draining:    s.IsDraining(),
 		Providers:   s.registry.ProviderCount(),
 		Version:     BuildVersion,
 		BuildCommit: BuildCommit,
@@ -4530,22 +3080,16 @@ func (s *Server) handleProviderEarnings(w http.ResponseWriter, r *http.Request) 
 
 // --- helpers ---
 
-// writeJSON serializes v as JSON and writes it to the response with the
-// given HTTP status code. Sets Content-Type to application/json.
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
 // handleCompletions handles POST /v1/completions.
-// Proxies OpenAI-compatible text completions to the provider's vllm-mlx server.
+// Proxies OpenAI-compatible text completions to the selected provider over the
+// E2E-encrypted WebSocket relay (MLX-Swift in-process backend).
 func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	s.handleGenericInference(w, r, "/v1/completions")
 }
 
 // handleAnthropicMessages handles POST /v1/messages.
-// Proxies Anthropic-compatible messages API to the provider's vllm-mlx server.
+// Proxies the Anthropic-compatible messages API to the selected provider over
+// the E2E-encrypted WebSocket relay (MLX-Swift in-process backend).
 func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	s.handleGenericInference(w, r, "/v1/messages")
 }
@@ -4613,7 +3157,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	model = buildModel
 	cacheAffinityKey := requestCacheAffinityKey(parsed)
 
-	if !s.registry.IsModelInCatalog(model) {
+	if !policy.enabled && !s.registry.IsModelInCatalog(model) {
 		s.recordRejection(rejectionInfo{
 			r:               r,
 			stage:           "model_resolution",
@@ -4637,6 +3181,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	hasTools := requestHasTools(parsed)
 	if s.visionToolsFailFast(w, model, publicModel, requiresVision, hasTools,
 		false, policy, allowedProviderSerials) {
+		return
+	}
+	if s.rejectRemoteMediaURLs(w, r, parsed, model, publicModel, requiresVision, hasTools) {
 		return
 	}
 
@@ -4672,65 +3219,23 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	// Pre-flight balance reservation — same worst-case-cost reservation as
-	// handleChatCompletions, using the byte-length upper bound for prompt
-	// tokens so the reservation always covers actual cost.
+	// Pre-flight balance reservation + per-key spend cap (see
+	// reserveInferenceBalance). Self-route and a nil billing backend are free.
 	consumerKey := consumerKeyFromContext(r.Context())
 	consumerLocation := s.requestLocation(r)
-	var reservedMicroUSD int64
-	serviceReservation := false
-	// Self-route is free: skip the reservation and per-key spend cap.
-	if s.billing != nil && !policy.enabled {
-		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
-		// Per-key spend cap (phase 1) — checked before the reservation.
-		if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
-			s.recordRejection(rejectionInfo{
-				r:                     r,
-				stage:                 "balance",
-				reasonCode:            "insufficient_quota",
-				httpStatus:            http.StatusPaymentRequired,
-				keyID:                 keyIDFromContext(r.Context()),
-				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:        publicModel,
-				resolvedModel:         model,
-				stream:                stream,
-				estimatedPromptTokens: estimatedPromptTokens,
-				requestedMaxTokens:    requestedMaxTokens,
-				requiresVision:        requiresVision,
-				hasTools:              hasTools,
-				params:                rejectionSamplingParams(parsed),
-			})
-			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
-			return
-		}
-		var err error
-		serviceReservation, err = s.reserveInitialBalance(consumerKey, model, reservedMicroUSD)
-		if err != nil {
-			if errors.Is(err, store.ErrInsufficientBalance) {
-				s.recordRejection(rejectionInfo{
-					r:                     r,
-					stage:                 "balance",
-					reasonCode:            "insufficient_funds",
-					httpStatus:            http.StatusPaymentRequired,
-					keyID:                 keyIDFromContext(r.Context()),
-					consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-					requestedModel:        publicModel,
-					resolvedModel:         model,
-					stream:                stream,
-					estimatedPromptTokens: estimatedPromptTokens,
-					requestedMaxTokens:    requestedMaxTokens,
-					requiresVision:        requiresVision,
-					hasTools:              hasTools,
-					params:                rejectionSamplingParams(parsed),
-				})
-				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-					"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
-			} else {
-				s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
-				s.writeServiceUnavailable(w, model)
-			}
-			return
-		}
+	reservedMicroUSD, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
+		model:                 model,
+		publicModel:           publicModel,
+		billingPromptTokens:   billingPromptTokens,
+		estimatedPromptTokens: estimatedPromptTokens,
+		requestedMaxTokens:    requestedMaxTokens,
+		stream:                stream,
+		requiresVision:        requiresVision,
+		hasTools:              hasTools,
+		policy:                policy,
+	})
+	if reserveHandled {
+		return
 	}
 	refundReservation := func() {
 		if reservedMicroUSD > 0 {
@@ -4770,197 +3275,28 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return info
 	}
 
-	// Self-route pre-flight (precise errors, no paid fallback); otherwise the
-	// fleet-wide capacity 429 (same logic as handleChatCompletions).
-	if policy.enabled {
-		if s.selfRouteUnavailable(w, r, policy.ownerAccountID, model) {
-			refundReservation()
-			return
-		}
-	} else if policy.prefer {
-		// Prefer mode skips the public fleet pre-flight (no owner-trust
-		// relaxation there); owned-first dispatch + paid fallback + queue gate it.
-	} else {
-		candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials...)
-		if candidateCount == 0 && capacityRejections > 0 {
-			if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasCapacity(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
-				model = fallbackModel
-				candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
-				bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
-			}
-		}
-		// Smart early-429 for structurally-unservable long prompts (mirrors
-		// handleChatCompletions): runs AFTER the alias capacity fallback. Gated
-		// (default off), fail-open.
-		if s.shedIfUnservable(w, r, parsed, publicModel, model, modelMaxContext, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools, allowedProviderSerials, refundReservation) {
-			return
-		}
-		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
-			refundReservation()
-			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
-			s.recordRejection(rejectionInfo{
-				r:                       r,
-				stage:                   "preflight_capacity",
-				reasonCode:              "model_too_large",
-				httpStatus:              http.StatusServiceUnavailable,
-				keyID:                   keyIDFromContext(r.Context()),
-				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:          publicModel,
-				resolvedModel:           model,
-				stream:                  stream,
-				estimatedPromptTokens:   estimatedPromptTokens,
-				requestedMaxTokens:      requestedMaxTokens,
-				requiresVision:          requiresVision,
-				hasTools:                hasTools,
-				params:                  rejectionSamplingParams(parsed),
-				servabilityComputed:     true,
-				candidateCount:          candidateCount,
-				capacityRejections:      capacityRejections,
-				modelTooLargeRejections: modelTooLarge,
-				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
-			})
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-				fmt.Sprintf("model %q is too large for any currently available provider", publicModel),
-				withCode("model_unavailable")))
-			return
-		}
-		if candidateCount == 0 && capacityRejections > 0 {
-			// Routing v2 W3: feed the autoscaler the demand the preflight sees.
-			s.registry.RecordWarmPoolCapacityReject(model)
-			s.triggerWarmPool()
-			// Queue-before-shed (default on): all providers for this model are at
-			// capacity right now. Fall through to the dispatch+queue path so a slot
-			// freeing — or a cold load completing — within the queue window serves
-			// it; the queue path still 429s on a full queue or wait timeout.
-			if s.queueBeforeShedEnabled() {
-				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
-			} else {
-				retryAfter := s.estimateRetryAfter(model)
-				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-				refundReservation()
-				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
-				s.recordRejection(rejectionInfo{
-					r:                       r,
-					stage:                   "preflight_capacity",
-					reasonCode:              "machine_busy",
-					httpStatus:              http.StatusTooManyRequests,
-					keyID:                   keyIDFromContext(r.Context()),
-					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-					requestedModel:          publicModel,
-					resolvedModel:           model,
-					stream:                  stream,
-					estimatedPromptTokens:   estimatedPromptTokens,
-					requestedMaxTokens:      requestedMaxTokens,
-					requiresVision:          requiresVision,
-					hasTools:                hasTools,
-					retryAfterMs:            retryAfter * 1000,
-					params:                  rejectionSamplingParams(parsed),
-					servabilityComputed:     true,
-					candidateCount:          candidateCount,
-					capacityRejections:      capacityRejections,
-					modelTooLargeRejections: modelTooLarge,
-					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
-				})
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-					fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
-					withCode("rate_limit_exceeded")))
-				return
-			}
-		}
-		if candidateCount == 0 && capacityRejections == 0 && modelTooLarge == 0 {
-			// No structurally-eligible provider right now (offline, trait-gated,
-			// or shape-cooled by the inference-error breaker).
-			//
-			// Routing v2 W3 cold-dispatch (default on): if an idle on-disk provider
-			// could be warmed to serve this model (and would pass admission for
-			// these traits), spill into the queue instead of 503'ing — the enqueue
-			// path kicks the model-swap machinery and the queued request drains
-			// onto the provider once the cold load completes. Feed the autoscaler
-			// the demand regardless of outcome.
-			s.registry.RecordWarmPoolCapacityReject(model)
-			s.triggerWarmPool()
-			if s.coldDispatchEnabled() && s.coldSpillAvailable(model, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials) {
-				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:cold_dispatch_spill"})
-				// Fall through to dispatch+queue; reservation kept.
-			} else {
-				// Queueing cannot help — fail fast with a retryable 503 instead of
-				// a 120s queue. Mirrors the chat-completions preflight.
-				retryAfter := s.estimateRetryAfter(model)
-				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-				refundReservation()
-				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
-				s.recordRejection(rejectionInfo{
-					r:                       r,
-					stage:                   "preflight_capacity",
-					reasonCode:              "no_provider",
-					httpStatus:              http.StatusServiceUnavailable,
-					keyID:                   keyIDFromContext(r.Context()),
-					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-					requestedModel:          publicModel,
-					resolvedModel:           model,
-					stream:                  stream,
-					estimatedPromptTokens:   estimatedPromptTokens,
-					requestedMaxTokens:      requestedMaxTokens,
-					requiresVision:          requiresVision,
-					hasTools:                hasTools,
-					retryAfterMs:            retryAfter * 1000,
-					params:                  rejectionSamplingParams(parsed),
-					servabilityComputed:     true,
-					candidateCount:          candidateCount,
-					capacityRejections:      capacityRejections,
-					modelTooLargeRejections: modelTooLarge,
-					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
-				})
-				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-					fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
-					withCode("model_unavailable")))
-				return
-			}
-		}
-		ttftThreshold := genericDeadline
-		if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
-			if !s.ttftHardReject {
-				// Soft TTFT gate (default): serve the best-available provider
-				// (MaxTTFTMs is 0 in soft mode — P1 fix); do not divert to an older
-				// alias build (P2 fix). Feed the autoscaler a near-miss to grow
-				// warm capacity for this model.
-				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
-				s.triggerWarmPool()
-				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
-			} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAliasTTFT(parsed, publicModel, model, estimatedPromptTokens, requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: hasTools}, requiresVision, allowedProviderSerials); switched {
-				model = fallbackModel
-			} else {
-				// Hard TTFT gate, no faster alias: 429 + Retry-After, and feed the
-				// autoscaler a TTFT-miss so warm capacity grows.
-				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
-				s.triggerWarmPool()
-				retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
-				refundReservation()
-				s.recordRejection(rejectionInfo{
-					r:                       r,
-					stage:                   "routing_ttft",
-					reasonCode:              "ttft_too_slow",
-					httpStatus:              http.StatusTooManyRequests,
-					keyID:                   keyIDFromContext(r.Context()),
-					consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-					requestedModel:          publicModel,
-					resolvedModel:           model,
-					stream:                  stream,
-					estimatedPromptTokens:   estimatedPromptTokens,
-					requestedMaxTokens:      requestedMaxTokens,
-					requiresVision:          requiresVision,
-					hasTools:                hasTools,
-					params:                  rejectionSamplingParams(parsed),
-					servabilityComputed:     true,
-					candidateCount:          candidateCount,
-					capacityRejections:      capacityRejections,
-					modelTooLargeRejections: modelTooLarge,
-					bestTTFTMs:              float64(retryTTFT.Milliseconds()),
-				})
-				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
-				return
-			}
-		}
+	// Shared routing/capacity admission preflight (self-route / prefer / public
+	// capacity+TTFT gate — see runInferenceAdmission). This handler rebuilds the
+	// provider body from parsed at dispatch (maybeFallbackAlias already rewrote
+	// parsed["model"]), so no body-refresh callback is needed.
+	var preflightHandled bool
+	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
+		model:                  model,
+		publicModel:            publicModel,
+		stream:                 stream,
+		estimatedPromptTokens:  estimatedPromptTokens,
+		requestedMaxTokens:     requestedMaxTokens,
+		requiresVision:         requiresVision,
+		hasTools:               hasTools,
+		modelMaxContext:        modelMaxContext,
+		allowedProviderSerials: allowedProviderSerials,
+		deadline:               genericDeadline,
+		policy:                 policy,
+		refundReservation:      refundReservation,
+		onModelFallback:        nil,
+	})
+	if preflightHandled {
+		return
 	}
 
 	requestID := uuid.New().String()
@@ -5377,6 +3713,26 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		if ok {
 			firstChunk = chunk
 			pr.MarkFirstChunkArrived()
+			// Stamp the actual_ttft_ms anchor at first CONTENT, before the
+			// committedRouteOutcome write below — the generic (/v1/completions,
+			// /v1/messages) path has no dispatch preamble filter, so without this
+			// stamp applyPendingRouteTelemetry would persist actual_ttft_ms as
+			// 0/NULL for successful generic requests. MarkContentCommitted marks
+			// this attempt committed so handleComplete's fallback is scoped to it.
+			pr.MarkFirstContentArrived()
+			pr.MarkContentCommitted()
+			// First chunk == the provider ACCEPTED and is serving: clear the
+			// pair's capacity-reject streak NOW, not at completion — a long
+			// generic (/v1/completions, /v1/messages) stream on a busy box must
+			// keep vouching for the pair while the box legitimately sheds
+			// concurrent dispatches, exactly like the chat path's
+			// commitFirstContent. Without this, generic-only traffic recorded
+			// accepts only at clean completion, so sheds during a long stream
+			// could masquerade as the zero-accepts black-hole signature. (The
+			// generic path has no preamble filter, so this is the first chunk of
+			// ANY kind rather than strictly first content — fine as an accept
+			// signal: a black hole capacity-rejects, it never emits a chunk.)
+			s.registry.RecordCapacityAccept(provider.ID, pr.Model)
 			committed = true
 		} else {
 			select {
@@ -5444,6 +3800,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			if ok {
 				firstChunk = chunk
 				pr.MarkFirstChunkArrived()
+				// Stamp the actual_ttft_ms anchor + mark this attempt committed at
+				// first CONTENT (see the pre-accept branch above), and record the
+				// capacity-cooldown ACCEPT at first content for the same reason.
+				pr.MarkFirstContentArrived()
+				pr.MarkContentCommitted()
+				s.registry.RecordCapacityAccept(provider.ID, pr.Model)
 				committed = true
 			} else {
 				select {
@@ -5549,37 +3911,3 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunks)
 	}
 }
-
-// errorDetailOpt carries optional fields for OpenAI-compatible error responses.
-type errorDetailOpt struct {
-	param string // e.g. "model", "max_tokens"
-	code  string // e.g. "model_not_found", "insufficient_quota"
-}
-
-// errorResponse builds a standard OpenAI-compatible error response body.
-// By default, code is inferred from errType. Callers can override code or
-// set param via withParam / withCode helpers.
-func errorResponse(errType, message string, opts ...errorDetailOpt) map[string]any {
-	detail := map[string]any{
-		"type":    errType,
-		"message": message,
-		"code":    errType, // default: code mirrors type
-	}
-	for _, o := range opts {
-		if o.param != "" {
-			detail["param"] = o.param
-		}
-		if o.code != "" {
-			detail["code"] = o.code
-		}
-	}
-	return map[string]any{
-		"error": detail,
-	}
-}
-
-// withParam returns an option that sets the "param" field on an error response.
-func withParam(p string) errorDetailOpt { return errorDetailOpt{param: p} }
-
-// withCode returns an option that overrides the "code" field on an error response.
-func withCode(c string) errorDetailOpt { return errorDetailOpt{code: c} }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { TrustBadge } from "@/components/TrustBadge";
-import { VerificationModeProvider } from "@/lib/verification-mode";
+import { VerificationModeProvider } from "@/components/providers/verification-mode";
 import type { TrustMetadata } from "@/lib/api";
 
 // ---------------------------------------------------------------------------

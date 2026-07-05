@@ -6,7 +6,7 @@ import Foundation
 /// The coordinator already tells a provider WHY its trust changed (via the
 /// `trust_status` message's `reason` field), but that string is terse and
 /// engineer-facing ("binary hash mismatch", "SE attestation verified, awaiting
-/// MDM/ACME upgrade"). This catalog is the single source of truth that turns
+/// MDM verification"). This catalog is the single source of truth that turns
 /// each reason into something an operator can act on.
 ///
 /// The reason strings here are copied verbatim from the coordinator
@@ -38,11 +38,15 @@ public enum TrustReasonCatalog {
 
         switch reason {
         // ---- success / status (sendTrustStatus) ----
-        case "SE attestation verified, awaiting MDM/ACME upgrade":
+        // The first string is what current coordinators send; the "MDM/ACME"
+        // variant is what pre-ACME-removal coordinators sent — keep matching it
+        // so this build gives friendly advice against an older coordinator.
+        case "SE attestation verified, awaiting MDM verification",
+             "SE attestation verified, awaiting MDM/ACME upgrade":
             return DiagnosticAdvice(
-                message: "verified by Secure Enclave, but NOT yet hardware-trusted. You're ONLINE but receive NO traffic until MDM/ACME completes (this network requires hardware trust).",
+                message: "verified by Secure Enclave, but NOT yet hardware-trusted. You're ONLINE but receive NO traffic until the coordinator's MDM verification completes (this network requires hardware trust).",
                 fix: "run `darkbloom enroll`, then wait ~5 min for MDM verification.")
-        case "MDM verification passed", "ACME device attestation verified":
+        case "MDM verification passed":
             return DiagnosticAdvice(
                 message: "hardware-trusted and eligible for traffic.",
                 fix: nil)

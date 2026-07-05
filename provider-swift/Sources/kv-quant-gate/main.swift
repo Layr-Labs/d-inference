@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import ProviderCore
+import ProviderBenchmarkKVQuant
 
 @main
 struct KVQuantGate: AsyncParsableCommand {

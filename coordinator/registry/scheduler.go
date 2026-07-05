@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -103,6 +104,20 @@ type routingSnapshot struct {
 	kvBytesPerToken    int64
 	fleetMedianTPS     float64
 	hasBackendCapacity bool // provider reports BackendCapacity; TTFT estimates are reliable
+
+	// Engine-health (first-token wedge) signals, decoded from the slot's
+	// BackendSlotCapacity (see docs/reports/2026-06-22-cancel-root-cause-and-fix.md
+	// §C). MEASUREMENT ONLY: surfaced here so routing/observability code can read
+	// a wedge ("admits climbing, first-tokens flat, steps frozen") — this PR does
+	// NOT gate any routing decision on them. 0/false for legacy providers.
+	stepsExecuted              int64
+	admits                     int64
+	firstTokensEmitted         int64
+	secondsSinceLastStep       float64
+	secondsSinceLastFirstToken float64
+	wedgeSuspected             bool
+	evalInFlightMs             int64
+	idleClearInFlightMs        int64
 }
 
 type routingCandidate struct {
@@ -218,6 +233,20 @@ type RoutingDecision struct {
 	BestTTFTMs float64
 	// TTFTMs is the estimated time-to-first-token of the selected provider.
 	TTFTMs float64
+
+	// Phase-0 shadow TTFT admission/spread evaluation (see ttft_shadow.go).
+	// Populated ONLY when EIGENINFERENCE_TTFT_ADMISSION_MODE != off and a
+	// provider was selected. Purely observational — it never changes the
+	// selection; the API layer emits routing.ttft_admission / routing.ttft_spread
+	// from these fields so the spread-to-idle opportunity and the would-shed rate
+	// can be measured before any enforce flips them on.
+	ShadowEvaluated             bool
+	ShadowMode                  string
+	ShadowWouldShed             bool
+	ShadowIdleAlternativeExists bool
+	ShadowEstimateMs            float64
+	ShadowDeadlineMs            float64
+	ShadowOccupancy             int
 }
 
 // ReserveProvider selects a hardware-routable provider for the request and
@@ -261,6 +290,17 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		}
 	}
 
+	// Phase-0 shadow TTFT evaluation: computed here (r.mu held, no provider lock
+	// taken yet, so it can snapshot peer providers one-at-a-time without holding
+	// two p.mu) against the winner's PRE-reserve snapshot, so its occupancy
+	// excludes the request we are about to admit. No-op (zero value) when the
+	// admission mode is off — keeping default behavior byte-for-byte. Attached to
+	// the success decision below; discarded if the admit re-check rejects.
+	// excludeIDs is threaded through so the idle-spread scan honors the SAME
+	// retry/speculative-backup exclusions the selector applied (an excluded
+	// provider is not a routable spread alternative).
+	shadowEval := r.evaluateTTFTShadowLocked(model, pr, selected, excludeIDs...)
+
 	p := selected.provider
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -286,8 +326,18 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	// the very candidate the safety valve selected. All under r.mu (held), so the
 	// breaker state cannot change between selection and this check.
 	ignoreBreaker := r.providerBreakerOpenLocked(p.ID, time.Now())
+	if !ignoreBreaker && healthEjectionEnabled() {
+		// Mirror the breaker carry-through for stable-identity health ejection: a
+		// health-ejected winner can ONLY have come from the bypass (fail-open) pass,
+		// so the admit re-check must also bypass ejection — otherwise it re-rejects
+		// the very candidate the safety valve selected and the model is zeroed out.
+		// p.mu is held (above), so read the identity directly (no re-lock).
+		if sid := stableProviderIdentityLocked(p); sid != "" && r.healthEjectionOpenLocked(sid, time.Now()) {
+			ignoreBreaker = true
+		}
+	}
 	if !r.providerCanAdmitLockedEx(p, model, pr.Traits, relaxTrust, ignoreBreaker) ||
-		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model)) {
+		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model, relaxTrust)) {
 		return nil, RoutingDecision{
 			Model:                   model,
 			CandidateCount:          candidateCount,
@@ -301,6 +351,13 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 
 	pr.ProviderID = p.ID
 	p.addPendingLocked(pr)
+	// If this pair's capacity-reject cooldown just EXPIRED, this reservation is
+	// its single half-open probe: claim it here (r.mu write lock is held for the
+	// whole selection+reservation, so concurrent reservations serialize) so the
+	// routing gate closes for everyone else until the probe's outcome lands —
+	// no thundering herd into a possibly-still-black-holed pair. A no-op (one
+	// map lookup) for the overwhelmingly common no-cooldown case.
+	r.claimCapacityProbeLocked(p.ID, model, time.Now())
 	if p.Status != StatusUntrusted && p.Status != StatusOffline {
 		p.Status = StatusServing
 	}
@@ -330,6 +387,7 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		EffectiveTPS:            selected.effectiveTPS,
 		StaticTPS:               selected.snapshot.decodeTPS,
 	}
+	shadowEval.applyTo(&decision)
 	return p, decision
 }
 
@@ -387,15 +445,34 @@ func shouldBypassBreakerFailOpen(winner *routingCandidate, breakerRejected, capa
 	return winner == nil && breakerRejected > 0 && capacityRejections == 0 && ttftRejections == 0
 }
 
-// selectBestCandidateScanLocked is one pass of candidate selection. When
-// ignoreProviderBreaker is true the node-health breaker gate is skipped
-// (every other structural/privacy/capacity/trait gate still applies). It
-// additionally returns breakerRejected: how many providers were dropped while
-// their node-health breaker was OPEN on this pass — the signal
-// selectBestCandidateLockedFull uses to decide whether a breaker-bypassed
-// fail-open re-scan could help. breakerRejected is always 0 when
-// ignoreProviderBreaker is true (the breaker is not consulted).
-func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) (*routingCandidate, int, int, int, int, int, float64, int) {
+// candidateScan is the result of building the eligible candidate pool for a
+// request: the cost-rankable pool (after every per-provider gate AND the
+// post-candidate pool narrowing) plus the rejection tallies and the affinity
+// hint selection needs. It is the SINGLE SOURCE of routing eligibility, shared by
+// the cost-ranking selector (selectBestCandidateScanLocked) and the Phase-0
+// idle-spread shadow scan (loadedIdleAlternativeExistsLocked) so the two can
+// never drift on which providers are routable.
+type candidateScan struct {
+	pool               []*routingCandidate
+	affinityProviderID string
+	candidateCount     int
+	capacityRejections int
+	tooLargeRejections int
+	visionRejections   int
+	ttftRejections     int
+	bestTTFTMs         float64
+	breakerRejected    int
+}
+
+// scanCandidatesLocked builds the eligible candidate pool for a request — every
+// per-provider gate (self-route, allowlist, exclude, structural/trait/trust via
+// snapshotProviderLockedEx, vision, capacity via buildCandidateWithReason, plus
+// the per-request TTFT ceiling) followed by the post-candidate pool narrowing
+// (prefer-owner / AvoidVersion / MinDecodeTPS) — i.e. exactly the set the
+// selector ranks by cost. When ignoreProviderBreaker is true the node-health
+// breaker gate is skipped (every other gate still applies); breakerRejected is
+// always 0 in that mode. Caller holds r.mu and no provider lock.
+func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) candidateScan {
 	excludeSet := make(map[string]struct{}, len(excludeIDs))
 	for _, id := range excludeIDs {
 		excludeSet[id] = struct{}{}
@@ -424,7 +501,15 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 	affinityProviderID := ""
 	affinityLookup := pr.CacheAffinityKey != "" && pr.ConsumerKey != ""
 	if affinityLookup && r.cacheAffinityBonusMs > 0 {
-		affinityProviderID = r.cacheAffinity.lookup(pr.ConsumerKey, model, pr.CacheAffinityKey, now)
+		// Cache affinity is disabled for dedicated-pool models (e.g. Gemma): pinning
+		// a consumer's repeat traffic to one box (via the bonus AND the hard
+		// near-tie override below) reintroduces exactly the concentration the
+		// per-box quality cap + cost-based spreading exist to prevent. The dedicated
+		// pool is concurrency-bound, not prompt-cache-bound, so the pin is not worth
+		// it. Leaving affinityProviderID empty skips both the bonus and the override.
+		if _, dedicated := r.dedicatedPatternForLocked(model); !dedicated {
+			affinityProviderID = r.cacheAffinity.lookup(pr.ConsumerKey, model, pr.CacheAffinityKey, now)
+		}
 	}
 	for _, p := range r.providers {
 		owned := providerOwnedBy(p, pr.OwnerAccountID)
@@ -452,11 +537,40 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 		// provider is simply dropped here.
 		snap, ok := r.snapshotProviderLockedEx(p, model, pr.Traits, relaxTrust, ignoreProviderBreaker)
 		if !ok {
-			// Count providers the node-health breaker is actively derouting so
-			// selectBestCandidateLockedFull can decide whether a breaker-bypassed
-			// fail-open re-scan would help. Only meaningful on the normal pass.
-			if !ignoreProviderBreaker && r.providerBreakerOpenLocked(p.ID, now) {
-				breakerRejected++
+			// Count providers a breaker-bypassed fail-open re-scan COULD rescue: those
+			// dropped by the node-health breaker OR the stable-identity health-ejection
+			// gate (both are bypassed when ignoreProviderBreaker is set). Without
+			// counting ejection here, ejecting EVERY provider for a model would leave
+			// winner==nil with breakerRejected==0, so shouldBypassBreakerFailOpen would
+			// NOT fire and the model would be zeroed out. Only meaningful on the normal pass.
+			if !ignoreProviderBreaker {
+				if r.providerBreakerOpenLocked(p.ID, now) {
+					breakerRejected++
+				} else if healthEjectionEnabled() {
+					// p.mu is not held here (snapshot released it); take it for the
+					// identity read (r.mu→p.mu is the established order).
+					p.mu.Lock()
+					sid := stableProviderIdentityLocked(p)
+					p.mu.Unlock()
+					if sid != "" && r.healthEjectionOpenLocked(sid, now) {
+						breakerRejected++
+					}
+				}
+			}
+			// A pair dropped ONLY by the capacity-reject cooldown is TRANSIENT
+			// capacity, not structural absence — count it as a capacityRejection
+			// (mirroring quickCapacityCheck) so an all-cooled model classifies as
+			// over_capacity (429/queue material) rather than no_provider. The
+			// ignoreCapacityCooldown re-run of the shared gate keeps a pair that
+			// ALSO fails a structural gate out of the count; both checks are
+			// cheap and only run on the already-rare drop path.
+			if r.capacityCooldownActiveLocked(p.ID, model, now) {
+				p.mu.Lock()
+				otherwiseRoutable := r.providerPassesRoutingGatesLockedEx(p, model, pr.Traits, relaxTrust, now, ignoreProviderBreaker, true)
+				p.mu.Unlock()
+				if otherwiseRoutable {
+					capacityRejections++
+				}
 			}
 			continue
 		}
@@ -468,7 +582,7 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 		// released p.mu, so re-take it for the p.Models read.
 		if pr.RequiresVision {
 			p.mu.Lock()
-			servesVision := r.providerServesVisionModelLocked(p, model)
+			servesVision := r.providerServesVisionModelLocked(p, model, relaxTrust)
 			p.mu.Unlock()
 			if !servesVision {
 				visionRejections++
@@ -518,10 +632,6 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 		}
 		candidates = append(candidates, candidate)
 		candidateCount++
-	}
-
-	if len(candidates) == 0 {
-		return nil, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs, breakerRejected
 	}
 
 	// Prefer-with-fallback: if the caller asked to prefer their own machine and
@@ -578,6 +688,35 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 		}
 	}
 
+	return candidateScan{
+		pool:               pool,
+		affinityProviderID: affinityProviderID,
+		candidateCount:     candidateCount,
+		capacityRejections: capacityRejections,
+		tooLargeRejections: tooLargeRejections,
+		visionRejections:   visionRejections,
+		ttftRejections:     ttftRejections,
+		bestTTFTMs:         bestTTFTMs,
+		breakerRejected:    breakerRejected,
+	}
+}
+
+// selectBestCandidateScanLocked is one pass of candidate selection: it builds the
+// eligible pool (scanCandidatesLocked — the single source of eligibility) and
+// ranks it by cost, returning the winner plus the rejection tallies. When
+// ignoreProviderBreaker is true the node-health breaker gate is skipped;
+// breakerRejected (providers dropped while their breaker was OPEN) is the signal
+// selectBestCandidateLockedFull uses to decide whether a breaker-bypassed
+// fail-open re-scan could help, and is always 0 in that mode.
+func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) (*routingCandidate, int, int, int, int, int, float64, int) {
+	scan := r.scanCandidatesLocked(model, pr, ignoreProviderBreaker, excludeIDs...)
+	if len(scan.pool) == 0 {
+		return nil, scan.candidateCount, scan.capacityRejections, scan.tooLargeRejections, scan.visionRejections, scan.ttftRejections, scan.bestTTFTMs, scan.breakerRejected
+	}
+	pool := scan.pool
+	affinityProviderID := scan.affinityProviderID
+	candidateCount := scan.candidateCount
+
 	var best *routingCandidate
 	for _, c := range pool {
 		if best == nil || c.costMs < best.costMs {
@@ -626,7 +765,7 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 		}
 	}
 	r.logRoutingDecision(model, pr, winner, candidateCount)
-	return winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs, breakerRejected
+	return winner, candidateCount, scan.capacityRejections, scan.tooLargeRejections, scan.visionRejections, scan.ttftRejections, scan.bestTTFTMs, scan.breakerRejected
 }
 
 func providerMatchesAllowedSerial(p *Provider, allowed map[string]struct{}) bool {
@@ -674,15 +813,22 @@ func providerVersion(p *Provider) string {
 }
 
 // OwnedProviderSummary reports, for the given account, how many of its
-// currently-connected providers are online and how many can serve `model`.
-// It powers self-route pre-flight error messaging: distinguishing "your
-// machine is offline" from "your machine can't serve this model". The
-// model-serving check applies the same privacy/runtime/challenge gates as
-// routing but deliberately ignores the hardware-trust gate, which self-route
-// relaxes for a caller's own machine. "Linked but offline" providers are not
+// currently-connected providers are online and how many can serve `model` for
+// a request with the given traits/media shape. It powers self-route pre-flight
+// error messaging: distinguishing "your machine is offline" from "your machine
+// can't serve this request". The model-serving check applies the same
+// privacy/runtime/challenge gates as routing but deliberately ignores the
+// hardware-trust gate, which self-route relaxes for a caller's own machine.
+// traits/requiresVision mirror the dispatch-time gates
+// (providerEligibleForTraitsLocked, the vision gate): without them a tool call
+// to an owned box below the tools floor — or a media request to a text-only
+// build — would pass this preflight, queue for up to 120s, and die as
+// machine_busy instead of failing fast with the real cause. Callers asking the
+// base-shape question ("any owned box serves this model at all?") pass zero
+// traits and requiresVision=false. "Linked but offline" providers are not
 // counted here (they are not in the registry); callers detect zero linked
 // machines via store.ListProvidersByAccount.
-func (r *Registry) OwnedProviderSummary(accountID, model string) (online, servesModel int) {
+func (r *Registry) OwnedProviderSummary(accountID, model string, traits RequestTraits, requiresVision bool) (online, servesModel int) {
 	if accountID == "" {
 		return 0, 0
 	}
@@ -700,7 +846,13 @@ func (r *Registry) OwnedProviderSummary(accountID, model string) (online, serves
 			continue
 		}
 		online++
-		serves := r.providerServesCatalogModelLocked(p, model) &&
+		// Owner-servability (not bare advertisement) so the self-route error
+		// messaging matches what routing would actually admit: an owned box
+		// advertising a stale-hash catalog build reports "model not loaded"
+		// instead of proceeding into a dispatch that can only be rejected.
+		serves := r.providerServesOwnedRoutableModelLocked(p, model) &&
+			r.providerEligibleForTraitsLocked(p, model, traits) &&
+			(!requiresVision || r.providerServesVisionModelLocked(p, model, true)) &&
 			p.RuntimeVerified &&
 			r.providerSupportsPrivateTextLocked(p) &&
 			!p.LastChallengeVerified.IsZero() &&
@@ -751,6 +903,8 @@ func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *
 //   - dispatch-load cooldown (pair instant-503'd on "insufficient memory")
 //   - inference-error cooldown, SHAPE-KEYED to traits.CooldownShape() (pair
 //     returning repeated provider-side 5xx for THIS request shape)
+//   - capacity-reject cooldown (pair capacity-rejecting everything with ZERO
+//     interleaved accepts — the black-hole signature)
 //   - status not offline/untrusted
 //   - private-only admission (only the owner's self-route may use it)
 //   - hardware-trust floor (relaxed to TrustNone for the owner's own machine)
@@ -764,19 +918,30 @@ func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *
 // caller's own (possibly un-enrolled) machine; every privacy-critical gate
 // still applies. Caller holds r.mu and p.mu.
 func (r *Registry) providerPassesRoutingGatesLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time) bool {
-	return r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, false)
+	return r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, false, false)
 }
 
-// providerPassesRoutingGatesLockedEx is providerPassesRoutingGatesLocked with an
-// explicit ignoreProviderBreaker switch. When ignoreProviderBreaker is true it
-// skips ONLY the per-provider node-health breaker; every other gate
-// still applies. It exists solely for the selectBestCandidateLockedFull
-// fail-open fallback pass, so a fleet-wide fault rollout that trips the breaker
-// on every provider can never deroute the entire fleet. Every other caller goes
-// through the default wrapper above (breaker always honored). Caller holds r.mu
-// and p.mu.
-func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker bool) bool {
-	if !r.providerServesCatalogModelLocked(p, model) {
+// providerPassesRoutingGatesLockedEx is providerPassesRoutingGatesLocked with
+// two explicit switches. ignoreProviderBreaker skips ONLY the per-provider
+// node-health breaker (and health ejection); it exists solely for the
+// selectBestCandidateLockedFull fail-open fallback pass, so a fleet-wide fault
+// rollout that trips the breaker on every provider can never deroute the
+// entire fleet. ignoreCapacityCooldown skips ONLY the capacity-reject cooldown;
+// it exists solely for the "would this pair otherwise pass?" re-check that
+// lets the candidate scan and the QuickCapacityCheck preflight count a
+// capacity-cooled pair as a TRANSIENT capacityRejection (429/queue material)
+// instead of structural absence (a "no providers" 503) — it must never be set
+// on an actual routing/admission decision. Every other caller goes through the
+// default wrapper above (both always honored). Caller holds r.mu and p.mu.
+func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool) bool {
+	// Catalog membership + dedicated-box isolation: a request for a dedicated
+	// model family (e.g. Gemma 4) may ONLY route to a provider whose ENTIRE
+	// advertised catalog is that family. This single gate is shared by the
+	// dispatch hot path and the OpenRouter capacity preflight, so the filter
+	// restricts the routing candidate set AND the shed (429) decision together
+	// with no drift. A caller self-routing to its OWN machine is exempt — owners
+	// may run mixed boxes.
+	if !r.providerServesRoutableModelLocked(p, model, selfRouteOwner) {
 		return false
 	}
 	// Skip a provider-model pair cooling down after a dispatch-time load
@@ -794,6 +959,16 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 	if r.inferenceErrorCooldownActiveLocked(p.ID, model, traits.CooldownShape(), now) {
 		return false
 	}
+	// Skip a (provider, model) pair quarantined by the capacity-reject cooldown:
+	// it kept capacity-rejecting with ZERO interleaved accepts (the black-hole
+	// signature — e.g. a box whose engine misreports its token budget), so a
+	// dispatch here is a guaranteed bounce while its idle-looking heartbeats
+	// keep winning the cost scheduler. A busy box that is also SERVING never
+	// trips this (any accept resets the streak), and the pair is re-probed once
+	// its TTL expires. See capacity_cooldown.go.
+	if !ignoreCapacityCooldown && r.capacityCooldownActiveLocked(p.ID, model, now) {
+		return false
+	}
 	// Skip a provider quarantined by the per-provider node-health breaker: a
 	// node returning GENUINE-FAULT errors (500/502/504 or a
 	// fault-shaped 503) for ~all of its requests is sick regardless of model or
@@ -805,28 +980,25 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 	if !ignoreProviderBreaker && r.providerBreakerOpenLocked(p.ID, now) {
 		return false
 	}
-	if p.Status == StatusOffline || p.Status == StatusUntrusted {
-		return false
+	// Skip a provider EJECTED by the stable-identity health breaker (health_ejection.go):
+	// a node whose serial/SE-key/account has collapsed to a near-total served-fault
+	// rate is derouted even across reconnects (the session breaker above is wiped on
+	// every disconnect, which the constantly-disconnecting zombies exploit). Same
+	// fail-open contract: skipped on the ignoreProviderBreaker rescan, and an
+	// un-attestable provider (empty stable id) is never ejected.
+	if !ignoreProviderBreaker && healthEjectionEnabled() {
+		if sid := stableProviderIdentityLocked(p); sid != "" && r.healthEjectionOpenLocked(sid, now) {
+			return false
+		}
 	}
-	// A private-only machine never serves the public fleet — only its owner's
-	// self-route requests.
-	if p.PrivateOnly && !selfRouteOwner {
-		return false
-	}
+	// Liveness/trust/privacy core. selfRouteOwner relaxes ONLY the hardware-trust
+	// floor (to TrustNone) and private-only admission for a caller's own
+	// (possibly un-enrolled) machine; every privacy-critical gate still applies.
 	minTrust := r.MinTrustLevel
 	if selfRouteOwner {
 		minTrust = TrustNone
 	}
-	if trustRank(p.TrustLevel) < trustRank(minTrust) {
-		return false
-	}
-	if !p.RuntimeVerified {
-		return false
-	}
-	if !r.providerSupportsPrivateTextLocked(p) {
-		return false
-	}
-	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+	if !r.providerLivenessGateLocked(p, minTrust, selfRouteOwner, now) {
 		return false
 	}
 	// Trait eligibility: a render-broken build is fenced for EVERY request shape
@@ -864,7 +1036,7 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if !r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker) {
+	if !r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, false) {
 		return routingSnapshot{}, false
 	}
 
@@ -877,7 +1049,7 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 		decodeTPS:     resolvedDecodeTPS(p),
 		prefillTPS:    resolvedPrefillTPS(p),
 		totalMemoryGB: float64(p.Hardware.MemoryGB),
-		modelSizeGB:   r.catalogSizeGBLocked(model),
+		modelSizeGB:   r.modelSizeGBForFitLocked(p, model),
 		minRAMGb:      r.catalogMinRAMGbLocked(model),
 	}
 
@@ -888,7 +1060,13 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 		snap.pendingForModel++
 		snap.pendingMaxTokens += pendingTokenBudget(pr)
 	}
-	snap.hasHeadroom = p.hasConcurrencyHeadroomForModelLocked(model)
+	// Concurrency headroom with the quality-concurrency cap: a slow model whose
+	// quality batch is below the flat fallback (e.g. Gemma at ~23 tok/s solo →
+	// batch 1-2) stops being admittable once it is at its quality cap, so load
+	// spreads across boxes instead of collapsing a few. Uses the static
+	// single-stream decode rate (snap.decodeTPS = resolvedDecodeTPS), not the
+	// observed-under-load value. No-op (legacy flat cap) when the cap is disabled.
+	snap.hasHeadroom = r.hasConcurrencyHeadroomForModelCapLocked(p, model, snap.decodeTPS)
 	snap.hasBackendCapacity = p.BackendCapacity != nil
 
 	if p.BackendCapacity != nil {
@@ -911,6 +1089,14 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 			snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 			snap.queuedTokenBudget = slot.QueuedTokenBudget
 			snap.kvBytesPerToken = slot.KVBytesPerToken
+			snap.stepsExecuted = slot.StepsExecuted
+			snap.admits = slot.Admits
+			snap.firstTokensEmitted = slot.FirstTokensEmitted
+			snap.secondsSinceLastStep = slot.SecondsSinceLastStep
+			snap.secondsSinceLastFirstToken = slot.SecondsSinceLastFirstToken
+			snap.wedgeSuspected = slot.WedgeSuspected
+			snap.evalInFlightMs = slot.EvalInFlightMs
+			snap.idleClearInFlightMs = slot.IdleClearInFlightMs
 			break
 		}
 	}
@@ -1099,11 +1285,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 		return nil, rejectCapacity, false
 	}
 
-	effectiveQueue := snap.pendingForModel
-	backendDepth := snap.backendRunning + snap.backendWaiting
-	if backendDepth > effectiveQueue {
-		effectiveQueue = backendDepth
-	}
+	effectiveQueue := snapshotOccupancy(snap)
 
 	waitingBacklogTokens := float64(snap.backendWaiting * reqMax)
 	unaccountedPendingTokens := float64(snap.pendingMaxTokens) - float64(snap.maxTokensPotential) - waitingBacklogTokens
@@ -1292,6 +1474,26 @@ func effectiveDecodeTPS(staticTPS float64, backendRunning int) float64 {
 	return tps
 }
 
+// snapshotOccupancy is the per-(provider,model) in-flight occupancy the
+// coordinator already tracks: max(pendingForModel, backend_running +
+// backend_waiting). pendingForModel is the coordinator's own dispatched-but-not-
+// yet-terminal count (incremented at reserve, held the whole dark-time), so this
+// is herd-aware even when the heartbeat gauge still reads backend_running=0 — no
+// parallel reservation counter is needed. It is the same quantity the routing
+// cost's effectiveQueue and the quality-concurrency cap consume; the Phase-0
+// occupancy-aware TTFT term and the shadow admission/spread evaluator reuse it so
+// every occupancy-keyed decision reads one signal.
+func snapshotOccupancy(snap routingSnapshot) int {
+	occ := snap.pendingForModel
+	if backendDepth := snap.backendRunning + snap.backendWaiting; backendDepth > occ {
+		occ = backendDepth
+	}
+	if occ < 0 {
+		occ = 0
+	}
+	return occ
+}
+
 func resolvedDecodeTPS(p *Provider) float64 {
 	if p.DecodeTPS > 0 {
 		return p.DecodeTPS
@@ -1358,6 +1560,34 @@ func SetPrefillToDecodeRatio(ratio float64) {
 // measured prefill rate). Exposed for the routing simulation harness.
 func PrefillToDecodeRatio() float64 {
 	return prefillToDecodeRatio
+}
+
+// ttftOccupancyAlpha scales the Phase-0 occupancy term (see ttftOccupancyMs),
+// which is added ONLY inside occupancyAwareTTFTMsFromSnapshot — the shadow
+// evaluator's estimate — NEVER inside the live ttftMsFromSnapshot. It is the
+// decode-token-times of head-of-line wait charged per occupying peer, divided by
+// the per-request decode rate the new request would see. Because the term never
+// reaches ttftMsFromSnapshot, the routing cost's TTFTMs, the candidate-loop
+// MaxTTFTMs ceiling, and the preflight bestTTFT are occupancy-free at ANY alpha:
+// raising alpha changes only the shadow signal, not the live routing decision
+// (the HARD_REJECT safety invariant — see occupancyAwareTTFTMsFromSnapshot). 0
+// (the default) also makes ttftOccupancyMs itself a no-op. Configured once at
+// startup via SetTTFTOccupancyAlpha (EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA),
+// read-only on routing paths thereafter, mirroring prefillToDecodeRatio.
+var ttftOccupancyAlpha = 0.0
+
+// SetTTFTOccupancyAlpha overrides the occupancy-term coefficient. Negative
+// values are clamped to 0 (term disabled). Must be called before serving starts.
+func SetTTFTOccupancyAlpha(alpha float64) {
+	if alpha < 0 {
+		alpha = 0
+	}
+	ttftOccupancyAlpha = alpha
+}
+
+// TTFTOccupancyAlpha returns the configured occupancy-term coefficient.
+func TTFTOccupancyAlpha() float64 {
+	return ttftOccupancyAlpha
 }
 
 // defaultLongPromptThresholdTokens gates the long-prompt fastest-tier routing
@@ -1458,22 +1688,59 @@ func resolvedPrefillTPS(p *Provider) float64 {
 // reapplied at b+1; otherwise the static benchmark is the solo proxy. Used by the
 // decode-floor quality preference (PendingRequest.MinDecodeTPS).
 func projectedPerRequestDecodeTPS(snap routingSnapshot) float64 {
+	return projectedPerRequestDecodeTPSAtBatch(snap, snap.backendRunning)
+}
+
+// projectedPerRequestDecodeTPSAtBatch is projectedPerRequestDecodeTPS with an
+// EXPLICIT batch the new request would join, used when the heartbeat gauge
+// (backend_running) understates real contention. The observed-rate UNWIND always
+// uses the batch the observation was actually taken at (snap.backendRunning —
+// the heartbeat's observedDecodeTPS pairs with that gauge), while the REAPPLY
+// uses joinBatch. Passing joinBatch == snap.backendRunning reproduces the
+// original result exactly, so the decode-floor caller is byte-for-byte unchanged;
+// the occupancy term passes joinBatch == occ so a herd that has already reserved
+// peers the heartbeat has not yet reflected (occ > backend_running) is charged at
+// the contended rate it will actually see — not the idle/low-batch rate.
+func projectedPerRequestDecodeTPSAtBatch(snap routingSnapshot, joinBatch int) float64 {
 	k := effectiveTPSLoadFactor
 	if k < 0 {
 		k = 0
 	}
-	b := snap.backendRunning
-	if b < 0 {
-		b = 0
+	bObserved := snap.backendRunning
+	if bObserved < 0 {
+		bObserved = 0
 	}
-	solo := snap.decodeTPS
-	if snap.observedDecodeTPS > 0 {
-		solo = snap.observedDecodeTPS * (1 + k*float64(b)) // unwind measured@b to solo (b=0)
+	if joinBatch < 0 {
+		joinBatch = 0
+	}
+	// Solo (b=0) decode-rate base, durable 3-tier chain:
+	solo := snap.decodeTPS // tier 3: static benchmark (last resort)
+	switch {
+	case snap.observedDecodeTPS > 0:
+		// tier 1: this box's own LIVE measured rate, unwound from the batch it
+		// was measured at (bObserved) to solo.
+		solo = snap.observedDecodeTPS * (1 + k*float64(bObserved))
+	case decodeFloorUseFleetMedian() && snap.fleetMedianTPS > 0:
+		// tier 2: durable per-(model,chip) observed median from the tps registry.
+		// Exists even when this box is IDLE, so a historically-slow chip (e.g. the
+		// ~9 tok/s gemma boxes driving client_gone) is deprioritized BEFORE it gets
+		// packed — the static benchmark (~23) otherwise made idle slow boxes look
+		// fast. Conservative for a quality floor: a median that understates true
+		// solo biases AWAY from borderline boxes (the safe direction).
+		solo = snap.fleetMedianTPS
 	}
 	if solo <= 0 {
 		return 0
 	}
-	return solo / (1 + k*float64(b+1))
+	return solo / (1 + k*float64(joinBatch+1))
+}
+
+// decodeFloorUseFleetMedian gates the tier-2 (fleet-median) solo-rate source in
+// projectedPerRequestDecodeTPS. Read LIVE (no restart); default ON. Set
+// EIGENINFERENCE_DECODE_FLOOR_USE_FLEET_MEDIAN=false for byte-for-byte pre-fix
+// behavior (idle boxes fall straight to the static benchmark).
+func decodeFloorUseFleetMedian() bool {
+	return env.EnvBool(env.EnvPrefix+"_DECODE_FLOOR_USE_FLEET_MEDIAN", true)
 }
 
 func providerModelIDs(p *Provider) []string {
@@ -1494,18 +1761,6 @@ func providerModelIDs(p *Provider) []string {
 	return ids
 }
 
-// providerCanAdmitLocked is the under-the-provider-lock admit re-check run in
-// ReserveProviderEx after a winner is selected: it re-applies every routing
-// gate (via the shared providerPassesRoutingGatesLocked — same catalog, trust,
-// privacy, challenge, shape-keyed inference-error cooldown, and trait gates as
-// selection) plus the admit-specific capacity gates (concurrency headroom and
-// non-crashed/non-reloading slot state). This guards the race where the
-// provider's state changed between snapshot and reservation. Caller holds r.mu
-// and p.mu.
-func (r *Registry) providerCanAdmitLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool) bool {
-	return r.providerCanAdmitLockedEx(p, model, traits, selfRouteOwner, false)
-}
-
 // providerCanAdmitLockedEx is providerCanAdmitLocked with an explicit
 // ignoreProviderBreaker switch. ReserveProviderEx sets it true ONLY when the
 // selected winner is itself node-health-breaker-open — which can happen only
@@ -1516,10 +1771,14 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string, traits Requ
 // Caller holds r.mu and p.mu.
 func (r *Registry) providerCanAdmitLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, ignoreProviderBreaker bool) bool {
 	now := time.Now()
-	if !r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker) {
+	if !r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, false) {
 		return false
 	}
-	if !p.hasConcurrencyHeadroomForModelLocked(model) {
+	// Apply the SAME quality-concurrency cap as the selection snapshot and the
+	// preflight. This is the final admit re-check in ReserveProviderEx; if a
+	// heartbeat bumped NumRunning after the snapshot was built, the legacy flat-cap
+	// check here would let a box that just reached its quality cap be over-admitted.
+	if !r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, model) {
 		return false
 	}
 	if p.BackendCapacity != nil {
@@ -1628,7 +1887,48 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		// re-introducing the very model-wide outage the valve exists to prevent.
 		// Every other gate (incl. the shape-keyed inference-error cooldown) is
 		// still honored; the breaker still steers SELECTION away from bad nodes.
-		if !r.providerPassesRoutingGatesLockedEx(p, model, traits, false, now, true) {
+		if !r.providerPassesRoutingGatesLockedEx(p, model, traits, false, now, true, false) {
+			// A pair blocked ONLY by the capacity-reject cooldown is TRANSIENT
+			// capacity, not structural absence: the box exists, serves the model,
+			// and will be re-probed when its TTL lapses. Count it as a
+			// capacityRejection so an all-cooled model surfaces to the consumer
+			// as capacity (429 + Retry-After / queue-before-shed) instead of a
+			// "no providers" 503 — the cooldown must read as "busy fleet", never
+			// as "the model vanished". The ignoreCapacityCooldown re-check keeps
+			// a pair that ALSO fails a structural gate (offline, untrusted,
+			// render-broken, …) out of the count. Structural filters applied
+			// AFTER the gates on the main path must apply here too:
+			// thermal-critical and vision-blind pairs are excluded outright
+			// (same as the main path just below), and a pair whose model can
+			// never fit the hardware counts as modelTooLarge — never as
+			// transient capacity, or a fleet of undersized cooled boxes would
+			// read as "busy, retry" for a model that will never fit.
+			if r.capacityCooldownActiveLocked(p.ID, model, now) &&
+				r.providerPassesRoutingGatesLockedEx(p, model, traits, false, now, true, true) &&
+				p.SystemMetrics.ThermalState != "critical" &&
+				(!requiresVision || r.providerServesVisionModelLocked(p, model, false)) {
+				// Mirror the absolute hardware-fit gate (skipped for a
+				// resident model, which has demonstrably fit).
+				slotState := "unknown"
+				totalMemGB := float64(p.Hardware.MemoryGB)
+				if p.BackendCapacity != nil {
+					if p.BackendCapacity.TotalMemoryGB > 0 {
+						totalMemGB = p.BackendCapacity.TotalMemoryGB
+					}
+					for _, slot := range p.BackendCapacity.Slots {
+						if slot.Model == model {
+							slotState = slot.State
+							break
+						}
+					}
+				}
+				if !slotStateModelLoaded(slotState) &&
+					!modelFitsHardware(r.catalogMinRAMGbLocked(model), r.catalogSizeGBLocked(model), totalMemGB) {
+					modelTooLarge++
+				} else {
+					capacityRejections++
+				}
+			}
 			p.mu.Unlock()
 			continue
 		}
@@ -1636,13 +1936,16 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			p.mu.Unlock()
 			continue
 		}
-		if requiresVision && !r.providerServesVisionModelLocked(p, model) {
+		if requiresVision && !r.providerServesVisionModelLocked(p, model, false) {
 			p.mu.Unlock()
 			continue
 		}
 
-		// Concurrency gate.
-		if !p.hasConcurrencyHeadroomForModelLocked(model) {
+		// Concurrency gate (with the quality-concurrency cap, same as the dispatch
+		// snapshot — uses the static single-stream decode rate so routing and the
+		// shed preflight stay consistent and a slow model's quality cap counts a
+		// saturated box as a capacity rejection here too).
+		if !r.hasConcurrencyHeadroomForModelCapLocked(p, model, resolvedDecodeTPS(p)) {
 			p.mu.Unlock()
 			capacityRejections++
 			continue
@@ -1658,7 +1961,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			decodeTPS:          resolvedDecodeTPS(p),
 			prefillTPS:         resolvedPrefillTPS(p),
 			totalMemoryGB:      float64(p.Hardware.MemoryGB),
-			modelSizeGB:        r.catalogSizeGBLocked(model),
+			modelSizeGB:        r.modelSizeGBForFitLocked(p, model),
 			minRAMGb:           r.catalogMinRAMGbLocked(model),
 			hasBackendCapacity: p.BackendCapacity != nil,
 		}
@@ -1689,6 +1992,14 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 				snap.queuedTokenBudget = slot.QueuedTokenBudget
 				snap.maxTokensPotential = slot.MaxTokensPotential
 				snap.kvBytesPerToken = slot.KVBytesPerToken
+				snap.stepsExecuted = slot.StepsExecuted
+				snap.admits = slot.Admits
+				snap.firstTokensEmitted = slot.FirstTokensEmitted
+				snap.secondsSinceLastStep = slot.SecondsSinceLastStep
+				snap.secondsSinceLastFirstToken = slot.SecondsSinceLastFirstToken
+				snap.wedgeSuspected = slot.WedgeSuspected
+				snap.evalInFlightMs = slot.EvalInFlightMs
+				snap.idleClearInFlightMs = slot.IdleClearInFlightMs
 				break
 			}
 		}
@@ -1777,7 +2088,78 @@ func ttftMsFromSnapshot(snap routingSnapshot, reqPromptTokens int) float64 {
 	queuedPrefillMs := queuedPrefillTokensAhead(snap, reqPromptTokens) / prefillTPS * 1000.0
 	thisPrefillMs := float64(reqPromptTokens) / prefillTPS * 1000.0
 	firstDecodeMs := 1000.0 / effectiveTPS
+	// NOTE: the Phase-0 occupancy term (ttftOccupancyMs) is deliberately NOT added
+	// here. ttftMsFromSnapshot is the LIVE estimate consumed by the routing cost's
+	// TTFTMs, the candidate-loop MaxTTFTMs ceiling, and the preflight bestTTFT — so
+	// it must stay occupancy-FREE regardless of EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA.
+	// The occupancy-aware estimate (base + occupancy term) lives in
+	// occupancyAwareTTFTMsFromSnapshot and is used ONLY by the shadow evaluator.
 	return statePenalty + queuedPrefillMs + thisPrefillMs + firstDecodeMs
+}
+
+// occupancyAwareTTFTMsFromSnapshot is the occupancy-aware TTFT estimate: the base
+// estimate (ttftMsFromSnapshot — what the LIVE cost / MaxTTFTMs ceiling / bestTTFT
+// consume) PLUS the Phase-0 head-of-line occupancy term (ttftOccupancyMs, gated by
+// EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA).
+//
+// It is used ONLY by the shadow evaluator today; a future enforce step will wire
+// it (against the verified ~10s base) into the live path. Keeping the occupancy
+// term OUT of ttftMsFromSnapshot is a SAFETY INVARIANT: prod runs HARD_REJECT
+// (pr.MaxTTFTMs set from the 5s ttftDeadline), so if the term leaked into
+// ttftMsFromSnapshot, raising alpha would tighten the live 5s ceiling and
+// over-shed ~2x (telemetry-db findings §2). The term may therefore only ever
+// reach the shadow estimate, never breakdown.TTFTMs.
+func occupancyAwareTTFTMsFromSnapshot(snap routingSnapshot, reqPromptTokens int) float64 {
+	base := ttftMsFromSnapshot(snap, reqPromptTokens)
+	if base <= 0 {
+		// No reliable base (provider without BackendCapacity) → no occupancy-aware
+		// estimate either, matching ttftMsFromSnapshot's contract.
+		return base
+	}
+	return base + ttftOccupancyMs(snap)
+}
+
+// ttftOccupancyMs is the Phase-0 occupancy term: the head-of-line wait while the
+// box's already-occupying work (the herd) clears enough for a newly admitted
+// request to emit its first token. The base estimate (ttftMsFromSnapshot) counts
+// only WAITING prefill and a single decode step, so it is flat in running
+// occupancy — exactly where the ~11s of "dark time" lives. It is added ONLY in
+// occupancyAwareTTFTMsFromSnapshot (the shadow estimate), never in the live
+// ttftMsFromSnapshot.
+//
+// The term reuses the occupancy the snapshot ALREADY carries
+// (snapshotOccupancy = max(pendingForModel, backend_running+backend_waiting)),
+// not a new parallel counter, so it is herd-aware for free: a burst onto a box
+// still reporting backend_running=0 shows up through pendingForModel. Magnitude
+// per occupying peer is alpha decode-token-times divided by the per-request
+// decode rate the new request will actually see — projected at the SAME occupancy
+// (occ), not the stale backend_running gauge, so in the herd case (pendingForModel
+// > backend_running) it is charged the contended rate, not an idle-batch rate.
+// The rate itself shrinks with occ, making the term super-linear in occupancy.
+//
+// Returns 0 when EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA is 0 (the default) or
+// occupancy is 0 (an idle box never pays the term, so route-to-idle is
+// preserved). The deadline this is gated against in the shadow evaluator is the
+// verified ~10s base, NOT the code's 5s internal budget; gating an occupancy
+// estimate fit to the 5s base over-sheds ~2x (telemetry-db findings §2).
+func ttftOccupancyMs(snap routingSnapshot) float64 {
+	alpha := ttftOccupancyAlpha
+	if alpha <= 0 {
+		return 0
+	}
+	occ := snapshotOccupancy(snap)
+	if occ <= 0 {
+		return 0
+	}
+	// Project the per-request rate at the batch the request ACTUALLY joins (occ),
+	// not the bare heartbeat backend_running: in the herd case the new request
+	// waits behind occ peers, so charging the idle/low-batch rate would under-
+	// state the term in exactly the case it exists to catch.
+	perReqDecodeTPS := projectedPerRequestDecodeTPSAtBatch(snap, occ)
+	if perReqDecodeTPS <= 0 {
+		perReqDecodeTPS = 1.0
+	}
+	return alpha * float64(occ) * 1000.0 / perReqDecodeTPS
 }
 
 func queuedPrefillTokensAhead(snap routingSnapshot, reqPromptTokens int) float64 {

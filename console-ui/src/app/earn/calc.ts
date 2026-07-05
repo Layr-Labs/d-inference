@@ -8,11 +8,12 @@
  *
  *   total = usage + floor − electricity
  *
- *   • usage    — realistic THROUGHPUT at a fixed 80% utilization, where the
- *                throughput credits continuous batching at a quality-preserving
- *                4× (NOT the 16× ceiling the old calculator used — that
- *                overstated earnings by ~10–20×). Utilization and hours are
- *                fixed by product direction and not exposed to the user.
+ *   • usage    — REALISTIC throughput at healthy network demand: 60%
+ *                utilization with ~2.5 concurrent requests while active (NOT
+ *                the 80% × 4× "busy network" ceiling this calculator
+ *                previously used, and NOT the 16× ceiling before that).
+ *                Utilization, concurrency, and hours are fixed by product
+ *                direction and not exposed to the user.
  *   • floor    — the provider base-reward earnings floor (PR #282), set by
  *                verified-memory tier, ramped by uptime. Added ON TOP of usage
  *                (additive), not max(usage, floor).
@@ -24,13 +25,16 @@ import type { Model, PricingResponse } from "@/lib/api";
 
 /* ─── Hardware database ─── */
 
-export interface MacConfig {
-  macType: string;
-  chip: string;
-  ramOptions: number[];
+export interface HardwareProfile {
   bandwidthGBs: number;
   idleWatts: number; // power when model loaded, waiting for requests
   inferWatts: number; // power during active token generation
+}
+
+export interface MacConfig extends HardwareProfile {
+  macType: string;
+  chip: string;
+  ramOptions: number[];
 }
 
 export const MAC_CONFIGS: MacConfig[] = [
@@ -78,10 +82,65 @@ export const MAC_CONFIGS: MacConfig[] = [
 
 export const MAC_TYPES = ["MacBook Air", "MacBook Pro", "Mac Mini", "Mac Studio", "Mac Pro"];
 
+/* ─── Flat chip picker options ─── */
+
+/**
+ * The calculator asks for chip + memory only (users know their chip from
+ *  > About This Mac; the enclosure barely moves the estimate). One option
+ * per chip: RAM options are the union across enclosures, and the power/
+ * bandwidth profile comes from the first (most common) enclosure listed in
+ * MAC_CONFIGS — enclosure variants differ by ~1% of the monthly total.
+ */
+export interface ChipOption extends HardwareProfile {
+  chip: string;
+  ramOptions: number[];
+}
+
+const CHIP_ORDER = [
+  "M1", "M1 Pro", "M1 Max", "M1 Ultra",
+  "M2", "M2 Pro", "M2 Max", "M2 Ultra",
+  "M3", "M3 Pro", "M3 Max", "M3 Ultra",
+  "M4", "M4 Pro", "M4 Max",
+  "M5", "M5 Pro", "M5 Max",
+];
+
+export function buildChipOptions(configs: MacConfig[] = MAC_CONFIGS): ChipOption[] {
+  const byChip = new Map<string, ChipOption>();
+  for (const c of configs) {
+    const existing = byChip.get(c.chip);
+    if (!existing) {
+      byChip.set(c.chip, {
+        chip: c.chip,
+        ramOptions: [...c.ramOptions],
+        bandwidthGBs: c.bandwidthGBs,
+        idleWatts: c.idleWatts,
+        inferWatts: c.inferWatts,
+      });
+    } else {
+      for (const ram of c.ramOptions) {
+        if (!existing.ramOptions.includes(ram)) existing.ramOptions.push(ram);
+      }
+    }
+  }
+  const options = [...byChip.values()];
+  for (const opt of options) opt.ramOptions.sort((a, b) => a - b);
+  options.sort((a, b) => CHIP_ORDER.indexOf(a.chip) - CHIP_ORDER.indexOf(b.chip));
+  return options;
+}
+
+export const CHIP_OPTIONS = buildChipOptions();
+
 /* ─── Tunable model constants ─── */
 
 export const DEFAULT_OUTPUT_PRICE_MICRO_USD = 200_000; // $0.20 / 1M output tokens
 export const DEFAULT_INPUT_PRICE_MICRO_USD = 50_000; // $0.05 / 1M input tokens
+
+/**
+ * Electricity price baked into the estimate (US average). Marginal draw is
+ * small enough (~1–2% of revenue) that a per-user override isn't worth an
+ * input; the assumptions panel states the figure.
+ */
+export const DEFAULT_ELEC_COST_PER_KWH = 0.15;
 
 /**
  * Sustained fraction of peak unified-memory bandwidth a single decode stream
@@ -91,21 +150,21 @@ export const DEFAULT_INPUT_PRICE_MICRO_USD = 50_000; // $0.05 / 1M input tokens
 export const SINGLE_STREAM_EFFICIENCY = 0.6;
 
 /**
- * Continuous-batching gain over single-stream at quality-preserving
- * concurrency (provider-swift BatchScheduler sustains multiple requests in a
- * single fused decode step without dropping per-user latency). Capped at 4× —
- * NOT the theoretical 16× ceiling — to stay within the concurrency the engine
- * holds while keeping decode latency acceptable.
+ * Average request concurrency while the machine is actively serving. The
+ * engine's continuous batching (provider-swift BatchScheduler) sustains up to
+ * 4× concurrent decode at peak without dropping per-user latency; at healthy
+ * demand we credit an average of 2.5 concurrent streams during active periods.
  */
-export const CONTINUOUS_BATCH_FACTOR = 4;
+export const CONTINUOUS_BATCH_FACTOR = 2.5;
 
 /**
- * Assumed network utilization (fraction of time the machine is actively
- * serving a request while online). 100% would mean a request every second;
- * 80% leaves realistic idle gaps between requests at the demand level the
- * calculator targets. Fixed by product direction — not exposed to the user.
+ * Assumed network utilization (fraction of online time the machine is
+ * actively serving at least one request). 80% would be a saturated "busy
+ * network" best case; 60% reflects healthy, sustained demand with realistic
+ * idle gaps between requests. Fixed by product direction — not exposed to
+ * the user.
  */
-export const ASSUMED_UTILIZATION = 0.8;
+export const ASSUMED_UTILIZATION = 0.6;
 
 /**
  * Network-observed prompt:completion token ratio (≈3.5:1 from /v1/stats:
@@ -144,7 +203,7 @@ export const FLOOR_TIERS: FloorTier[] = [
 /** Uptime fraction below which the floor is 0; it ramps linearly to full at 100%. */
 export const MIN_UPTIME_FOR_AVAIL = 0.9;
 
-/** Monthly floor (USD) for a verified memory size, before availability/taper. */
+/** Monthly floor (USD) for a verified memory size, before availability. */
 export function tierFloorUSD(memGB: number): number {
   for (const t of FLOOR_TIERS) {
     if (memGB >= t.minGB) return t.floorUSD;
@@ -163,9 +222,9 @@ export function availFromUptime(uptimeFrac: number): number {
   return v;
 }
 
-/** Per-machine monthly floor (USD): tier × availability × taper. taper=1 today. */
-export function scaledFloorUSD(memGB: number, uptimeFrac: number, taper = 1): number {
-  return tierFloorUSD(memGB) * availFromUptime(uptimeFrac) * taper;
+/** Per-machine monthly floor (USD): tier × availability. */
+export function scaledFloorUSD(memGB: number, uptimeFrac: number): number {
+  return tierFloorUSD(memGB) * availFromUptime(uptimeFrac);
 }
 
 /* ─── Live model catalog ─── */
@@ -299,16 +358,16 @@ export interface ModelEarnings {
  */
 export function calculateModelEarnings(
   model: CatalogModel,
-  config: MacConfig,
+  config: HardwareProfile,
   hoursOnlinePerDay: number,
   elecCostPerKWh: number
 ): ModelEarnings {
   const { activeParamsGB, outputPriceMicro, inputPriceMicro } = model;
 
-  // Effective decode throughput = single-stream × continuous batch × assumed
-  // utilization. The batch factor (4×) credits the engine's continuous batching
-  // at quality-preserving concurrency; the utilization (80%) leaves realistic
-  // idle gaps. See file header.
+  // Effective decode throughput = single-stream × average concurrency ×
+  // assumed utilization. The concurrency factor (2.5×) is the average batch
+  // depth while actively serving (engine peak is 4×); the utilization (60%)
+  // leaves realistic idle gaps. See file header.
   const singleTokPerSec = (config.bandwidthGBs / activeParamsGB) * SINGLE_STREAM_EFFICIENCY;
   const decodeTokPerSec =
     singleTokPerSec * CONTINUOUS_BATCH_FACTOR * ASSUMED_UTILIZATION;
@@ -384,7 +443,7 @@ export interface PortfolioEarnings {
  */
 export function calculatePortfolioEarnings(
   models: CatalogModel[],
-  config: MacConfig,
+  config: HardwareProfile,
   ramGB: number,
   hoursOnlinePerDay: number,
   elecCostPerKWh: number
@@ -431,22 +490,6 @@ export function calculatePortfolioEarnings(
     monthlyNet,
     annualNet: monthlyNet * 12,
   };
-}
-
-/* ─── Fun comparisons ─── */
-
-export function getComparisons(monthlyNet: number): string[] {
-  const comparisons: string[] = [];
-  if (monthlyNet > 2) comparisons.push(`${Math.floor(monthlyNet / 2)} Spotify Premium subscriptions`);
-  if (monthlyNet > 5) comparisons.push(`${Math.floor(monthlyNet / 5)} lattes per month`);
-  if (monthlyNet > 15) comparisons.push(`${Math.floor(monthlyNet / 15)} Netflix Standard plans`);
-  if (monthlyNet > 50) comparisons.push(`a ${Math.floor(monthlyNet / 50)}-day parking meter`);
-  if (monthlyNet > 70) comparisons.push(`${Math.floor(monthlyNet / 70)}x your home internet bill`);
-  if (monthlyNet > 200)
-    comparisons.push(
-      `$${(monthlyNet * 12).toLocaleString(undefined, { maximumFractionDigits: 0 })}/yr — a nice side income`
-    );
-  return comparisons;
 }
 
 /* ─── Format helpers ─── */

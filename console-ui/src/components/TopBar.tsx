@@ -7,14 +7,20 @@ import { E2ELockIndicator } from "./E2ELockIndicator";
 import { TrustExplainerModal } from "./TrustExplainerModal";
 
 export function TopBar({ title }: { title?: string }) {
-  const { sidebarOpen, setSidebarOpen, chats, activeChatId } = useStore();
+  const sidebarOpen = useStore((s) => s.sidebarOpen);
+  const setSidebarOpen = useStore((s) => s.setSidebarOpen);
+  // Subscribe to derived primitives instead of the whole `chats` array so the
+  // header doesn't re-render on every streamed token (perf F3): `hasMessages`
+  // is a boolean and `lastTrust` only changes when a reply completes.
+  const hasMessages = useStore((s) => {
+    const c = s.chats.find((chat) => chat.id === s.activeChatId);
+    return !!c && c.messages.length > 0;
+  });
+  const lastTrust = useStore((s) => {
+    const c = s.chats.find((chat) => chat.id === s.activeChatId);
+    return c?.messages.filter((m) => m.role === "assistant" && m.trust).at(-1)?.trust;
+  });
   const [showExplainer, setShowExplainer] = useState(false);
-
-  const activeChat = chats.find((c) => c.id === activeChatId);
-  // Get trust metadata from the last assistant message with trust info
-  const lastTrust = activeChat?.messages
-    .filter((m) => m.role === "assistant" && m.trust)
-    .at(-1)?.trust;
 
   return (
     <>
@@ -39,7 +45,7 @@ export function TopBar({ title }: { title?: string }) {
         )}
 
         {/* E2E lock indicator — shown when there's an active chat */}
-        {activeChat && activeChat.messages.length > 0 && (
+        {hasMessages && (
           <div className="ml-auto">
             <E2ELockIndicator
               trust={lastTrust}

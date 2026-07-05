@@ -27,7 +27,7 @@ This directory is the source of truth for how Darkbloom works. The code in `coor
 |---|---|
 | [security/encryption.md](security/encryption.md) | NaCl Box encryption between consumer, coordinator, and provider |
 | [security/attestation.md](security/attestation.md) | Secure Enclave, MDM/MDA, APNs code identity, and trust levels |
-| [security/enrollment.md](security/enrollment.md) | Device enrollment: MDM, SCEP, ACME, and profile generation |
+| [security/enrollment.md](security/enrollment.md) | Device enrollment: MDM, SCEP, and profile generation |
 | [security/identity-binding.md](security/identity-binding.md) | How APNs, X25519, SE P-256, and MDA identities bind together |
 
 ## Operations inside the architecture

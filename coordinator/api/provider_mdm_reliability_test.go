@@ -365,9 +365,10 @@ func TestVerifyProviderViaMDM_SuccessGranted(t *testing.T) {
 
 // TestProviderAttestationGatesProofsOnHardware is the drift guard for
 // GET /v1/providers/attestation: a self_signed provider that (incorrectly) has
-// MDAVerified/ACMEVerified=true set must report mda_verified=false /
-// acme_verified=false / mdm_verified=false, while a hardware provider with the
-// same flags reports them true. All three are gated on the live trust level.
+// MDAVerified=true set must report mda_verified=false / mdm_verified=false,
+// while a hardware provider with the same flag reports them true. Both are
+// gated on the live trust level. acme_verified is a deprecated wire key that
+// is always false (the ACME leg was removed) — asserted for both providers.
 func TestProviderAttestationGatesProofsOnHardware(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
@@ -387,9 +388,8 @@ func TestProviderAttestationGatesProofsOnHardware(t *testing.T) {
 		p := reg.Register(id, nil, msg)
 		p.Mu().Lock()
 		p.TrustLevel = trust
-		// Drift: set the hardware proof flags true regardless of trust level.
+		// Drift: set the hardware proof flag true regardless of trust level.
 		p.MDAVerified = true
-		p.ACMEVerified = true
 		p.AttestationResult = &attestation.VerificationResult{SerialNumber: "S-" + id, SIPEnabled: true, SecureBootEnabled: true}
 		p.Mu().Unlock()
 	}
@@ -444,8 +444,11 @@ func TestProviderAttestationGatesProofsOnHardware(t *testing.T) {
 	if !ok {
 		t.Fatal("hardware-prov missing from attestation response")
 	}
-	if !hw.mdm || !hw.mda || !hw.acme {
-		t.Errorf("hardware proofs should all be true, got mdm=%v mda=%v acme=%v", hw.mdm, hw.mda, hw.acme)
+	if !hw.mdm || !hw.mda {
+		t.Errorf("hardware proofs should be true, got mdm=%v mda=%v", hw.mdm, hw.mda)
+	}
+	if hw.acme {
+		t.Error("acme_verified must stay false — deprecated wire key, ACME leg removed")
 	}
 }
 

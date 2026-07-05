@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 // This file holds the consumer-side "use my own machine, for free" (self-route)
@@ -68,11 +70,16 @@ func (s *Server) resolveSelfRoutePolicy(r *http.Request) selfRoutePolicy {
 // when so, writes the precise terminal error. Self-route never falls back to
 // the paid fleet, so "can't serve" is an explicit failure rather than a
 // silent reroute. Distinguishes: no machine linked (409), machine offline
-// (503), and online-but-can't-serve-this-model (503). Returns false (no write)
-// when at least one owned, online machine can serve the model.
-func (s *Server) selfRouteUnavailable(w http.ResponseWriter, r *http.Request, owner, model string) bool {
-	online, servesModel := s.registry.OwnedProviderSummary(owner, model)
-	if servesModel > 0 {
+// (503), model absent (503), and model-present-but-request-shape-unsupported
+// (503) — e.g. a tool call to a node below the tools capability floor, or a
+// media request to a text-only build. traits/requiresVision mirror the
+// dispatch-time gates; without them such requests pass this preflight, queue
+// for up to 120s, and die as machine_busy instead of failing fast with the
+// real cause. Returns false (no write) when at least one owned, online
+// machine can serve this request.
+func (s *Server) selfRouteUnavailable(w http.ResponseWriter, r *http.Request, owner, model string, traits registry.RequestTraits, requiresVision bool) bool {
+	online, servesRequest := s.registry.OwnedProviderSummary(owner, model, traits, requiresVision)
+	if servesRequest > 0 {
 		return false
 	}
 	if online == 0 {
@@ -90,6 +97,25 @@ func (s *Server) selfRouteUnavailable(w http.ResponseWriter, r *http.Request, ow
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("machine_offline",
 			"your machine is offline — self-route will not fall back to paid providers; start your Darkbloom node and retry",
 			withCode("machine_offline")))
+		return true
+	}
+	// Online and the model is served for plain requests, but not for THIS
+	// request's shape: the machine is below a capability floor (tools) or the
+	// build isn't vision-capable (media). Deterministic for this machine, so
+	// say the real cause rather than "not loaded".
+	if _, servesBase := s.registry.OwnedProviderSummary(owner, model, registry.RequestTraits{}, false); servesBase > 0 {
+		var reason string
+		switch {
+		case requiresVision && !traits.HasTools:
+			reason = "image/video input needs a vision-capable build of the model"
+		case traits.HasTools && !requiresVision:
+			reason = "tool calls need a newer node version with a healthy chat template"
+		default:
+			reason = "this request needs capabilities your node build doesn't advertise (vision-capable model / tool support)"
+		}
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+			fmt.Sprintf("your machine serves model %q but cannot take this request: %s — update your Darkbloom node or load a capable build", model, reason),
+			withCode("model_capability_unsupported")))
 		return true
 	}
 	// Online, but no owned machine currently serves this model.

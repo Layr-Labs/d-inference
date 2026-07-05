@@ -2,11 +2,11 @@
 
 How a provider earns **hardware** trust, why ~11% of the fleet got stranded at
 `self_signed`/`untrusted`, what the per-connection MDM fix changed, and how to
-observe and activate the (currently dormant) ACME device-cert leg.
+observe the trust pipeline.
 
 This is engineer-facing operational doc, not a spec. It does **not** change
 trust-grant semantics — hardware trust still requires a genuine, Apple-attested
-device. It makes the existing OR-trust model reliable and observable.
+device. It makes the MDM trust path reliable and observable.
 
 ---
 
@@ -101,8 +101,8 @@ The verification model moved from **poll-forever-per-challenge** to
 - **`mdmVerificationLoop` (per connection).** Spawned alongside the challenge
   loop when a provider connects (`api/provider.go`). It owns SecurityInfo
   verification for the lifetime of that one WebSocket and stops the moment
-  hardware is earned (here or via the ACME leg concurrently), on a terminal
-  posture mismatch, or when the connection closes.
+  hardware is earned, on a terminal posture mismatch, or when the connection
+  closes.
 - **Explicit push + bounded backoff.** It sends the SecurityInfo command, then
   retries on a fast→slow schedule (`30s, 2m, 5m`, then a 15-minute steady
   cadence) — enough to survive APNs / Power-Nap delivery delay and to catch a
@@ -128,73 +128,53 @@ in-connection retry now reliably achieves without spamming APNs.
 
 ---
 
-## 3. The OR-trust model
+## 3. The trust model
 
-Hardware trust is granted by **either** path — it is already an OR:
+Hardware trust has a **single leg**:
 
 ```
-TrustHardware  ==  valid+bound ACME device-attest-01 client cert   (no live MDM command)
-                OR live MDM SecurityInfo posture check passes       (MicroMDM → APNs → device)
+TrustHardware  ==  live MDM SecurityInfo posture check passes   (MicroMDM → APNs → device)
 ```
 
 - **MDM SecurityInfo** (`verifyProviderViaMDM`): the live-command path described
-  above. Operative in prod today.
-- **ACME device-attest-01** (`applyACMETrust`, `api/acme_verify.go`): the
-  provider presents an mTLS client certificate at WebSocket connect. The cert
-  was issued by step-ca only after Apple's ACME `device-attest-01` challenge
-  proved the CSR key lives in this machine's Secure Enclave. Verifying the cert
-  chain against the step-ca root — plus binding it to the provider's attested SE
-  key — proves genuine Apple hardware **with no live MDM/APNs round-trip at
-  all**. This is the throttle-immune leg.
+  above, driven by the per-connection `mdmVerificationLoop`. This is the only
+  way a provider earns `hardware` trust.
+- Two accelerators avoid redundant round-trips without weakening the guarantee:
+  the **trust-reuse fast-skip** (DAR-326) lets a recently-verified provider skip
+  a redundant re-verification on quick reconnect, and **durable MDA reuse**
+  (#436) re-validates the stored Apple MDA cert chain instead of re-fetching it
+  from Apple (which is rate-limited to ~1/device/7d). Both reuse *evidence*; the
+  SecurityInfo posture check remains the trust grant.
 
-  `applyACMETrust` runs at connect but the attestation challenge hasn't
-  completed yet, so the binding checks fail on ordering; the result is stashed
-  (`stashPendingACME`) and re-applied by `retryACMETrust` once the SE-key
-  binding lands. Exit outcomes are now counted (`acme.trust`, §6).
+### ACME leg removed (2026-07-03)
 
-### ACME is currently DORMANT
+There used to be a second, dormant leg: an ACME `device-attest-01` mTLS client
+cert issued by step-ca, intended as a throttle-immune alternative to the live
+MDM command. It was **removed on 2026-07-03** (`api/acme_verify.go`,
+`applyACMETrust`, the step-ca sidecar, the `/acme/*` proxy, the
+`com.apple.security.acme` enrollment payload, and the
+`EIGENINFERENCE_STEP_CA_ROOT`/`_INTERMEDIATE` env vars are all gone) because it
+was never wired end to end — the provider never presented the cert and the
+ingress never did mTLS / `X-Ssl-Client-*` header forwarding (the verification
+code read nginx-era headers that nothing set) — so **zero ACME verifications
+were ever observed in prod**. Meanwhile it actively confused operators: the
+dashboard showed a permanent "ACME device-attest-01" red X on every provider
+(Linear DAR-394).
 
-In prod, **zero** ACME verifications are observed. The cert-presentation leg is
-not wired end to end:
+Two residues to know about:
 
-1. **step-ca must issue the cert.** `enroll.go` already provisions the ACME
-   `device-attest-01` payload in the enrollment `.mobileconfig` (payload type
-   `com.apple.security.acme`, ACME path `eigeninference-acme`), so the client
-   side is ready — but step-ca must actually be running and issuing on that
-   path.
-2. **The ingress must do mTLS client auth** and forward the client cert to the
-   coordinator as `X-Ssl-Client-Verify` / `X-Ssl-Client-Cert` /
-   `X-Ssl-Client-Dn` headers (the headers `extractAndVerifyClientCert` reads).
-3. **`EIGENINFERENCE_STEP_CA_ROOT` must be set** (and optionally
-   `EIGENINFERENCE_STEP_CA_INTERMEDIATE`). Without the root,
-   `extractAndVerifyClientCert` returns early and the entire leg is off. The
-   coordinator now logs a **WARN at startup** when this is unset.
-
-**Activating ACME is out of scope here** — it needs deploy-architecture
-confirmation (is the ingress actually terminating mTLS? is step-ca issuing on
-this path?). This change only makes the dormant-vs-active state observable so
-activation can be validated.
-
-> **SECURITY GATE — do NOT activate ACME without this.** Today `applyACMETrust`
-> grants `hardware` on (a) the cert chaining to the step-ca root and (b) the cert
-> key matching the attested SE key. It does **not** independently verify the
-> device's **SIP / Secure Boot** posture — it implicitly trusts step-ca's
-> issuance policy, and a cert's posture is *issuance-time*, not live. While ACME
-> is dormant this grants nothing, so it is not a live hole. But activating ACME
-> as-is would make `hardware` trust reachable with a *weaker* posture guarantee
-> than MDM SecurityInfo (the exact privacy invariant the gate exists to protect:
-> real traffic only to genuinely SIP-on / Secure-Boot-full hardware). Before
-> activation, `extractAndVerifyClientCert`/`applyACMETrust` MUST **fail closed**
-> unless the cert's Apple device-attest extensions assert SIP enabled + Secure
-> Boot full (OIDs `1.2.840.113635.100.8.13.*`, parsed by `attestation/mda.go`),
-> **and** the certs must be short-lived / re-attested per connection so the
-> posture is fresh (a long-lived cert lets a box that later disables Secure Boot
-> keep presenting an "all good" cert). Implement that OID posture check as step 1
-> of activation, with a test, before wiring step-ca + ingress mTLS.
-
-To validate activation once wired: watch `acme.client_cert{outcome:present_valid}`
-climb (certs are reaching us and verifying) and `acme.trust{outcome:granted}`
-follow (those certs are upgrading providers to hardware). See §6.
+- The wire key `acme_verified` is still emitted by
+  `/v1/providers/attestation`, `/v1/me/providers`, and `/v1/stats` —
+  **hardcoded `false`, deprecated** — because shipped provider builds decode it
+  as a required field. New UI/CLI no longer display it.
+- **Institutional memory**, should a throttle-immune trust leg ever be wanted
+  again: prefer an in-band cert proof (provider sends the cert + a
+  challenge-signature over the existing WebSocket, no ingress mTLS dependency),
+  and make it **fail closed** on the cert's Apple device-attest SIP/Secure-Boot
+  posture extensions (OIDs `1.2.840.113635.100.8.13.*`, parsed by
+  `attestation/mda.go`) with short-lived / per-connection re-attested certs —
+  otherwise the leg grants `hardware` on a weaker, issuance-time posture
+  guarantee than live SecurityInfo.
 
 ---
 
@@ -214,14 +194,14 @@ escape hatch. It is not.
   where one machine answers attestation on behalf of another.
 
 So MDA strengthens *who* a provider is; it does not make trust *more reliable*
-to obtain. Don't reach for it to solve an APNs-delivery problem — that's what the
-ACME leg (no live command) is for.
+to obtain. Don't reach for it to solve an APNs-delivery problem — the mitigation
+for delivery flakiness is the bounded in-connection retry (§2) plus the durable
+MDA reuse and trust-reuse fast-skip (§3), not extra live commands.
 
-**SIP / Secure Boot posture** is available Apple-signed from **either**
-SecurityInfo (live) **or** the ACME device cert's attestation extensions (OIDs
-`1.2.840.113635.100.8.13.*`). The ACME leg therefore carries the same posture
-evidence without a live command, which is exactly why activating it removes the
-APNs dependency for the providers that present a cert.
+**SIP / Secure Boot posture** comes Apple-signed from SecurityInfo (live). (The
+removed ACME leg would have carried the same posture evidence in cert
+extensions, OIDs `1.2.840.113635.100.8.13.*` — see §3 if that idea is ever
+revived.)
 
 ---
 
@@ -266,35 +246,5 @@ Datadog gauges/counters to watch and alert on.
   - any `posture-mismatch` → genuinely insecure machines, expected to stay
     untrusted.
 
-**ACME counters** (new in this change):
-
-- `acme.client_cert{outcome}` — emitted once per provider connect in
-  `extractAndVerifyClientCert`:
-  - `missing` — no client cert reached the coordinator (provider didn't present
-    one, or the ingress isn't forwarding `X-Ssl-Client-*` headers). **While ACME
-    is dormant this is expected to be ~100%.** Once activated, a stuck-high
-    `missing` rate means the ingress mTLS forwarding is broken.
-  - `present_invalid` — a cert was forwarded but failed nginx verify / PEM
-    parse / chain verification / key encoding. Indicates an issuance or
-    chain-of-trust problem.
-  - `present_valid` — cert parsed and verified against the step-ca root.
-- `acme.trust{outcome}` — emitted at each `applyACMETrust` exit:
-  - `nil_or_invalid` — no usable ACME result (the dormant default).
-  - `not_bound` — cert valid but the SE-key attestation hasn't bound yet; the
-    stash/retry path will re-apply after the challenge. Persistent `not_bound`
-    without an eventual `granted` means the retry isn't completing.
-  - `key_mismatch` — terminal: the cert's public key doesn't match the attested
-    Secure Enclave key. **Alert** — this is a relay/mismatch signal.
-  - `granted` — provider upgraded to hardware via ACME.
-
-**Startup signal:** the WARN
-`ACME device-cert verification disabled — EIGENINFERENCE_STEP_CA_ROOT not set; …`
-tells you at boot whether the ACME leg is even configured. Its absence (i.e. the
-companion `step-ca ACME client cert verification enabled` Info log) confirms the
-root is loaded.
-
-**Validation playbook for ACME activation:** after wiring step-ca + ingress mTLS
-+ `EIGENINFERENCE_STEP_CA_ROOT`, restart and confirm the startup WARN is gone,
-then watch `acme.client_cert{outcome:present_valid}` rise as providers reconnect,
-followed by `acme.trust{outcome:granted}`, and a corresponding shrink of the
-`self_signed` cohort in `providers.by_trust_status`.
+(The `acme.client_cert` / `acme.trust` counters that briefly existed to observe
+the dormant ACME leg were removed along with the leg on 2026-07-03; see §3.)

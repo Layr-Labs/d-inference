@@ -17,7 +17,7 @@ import Foundation
 
 /// Namespace for KV-cache cost estimation. Pure functions only; no
 /// actor state, no global mutation.
-enum KVEstimation {
+public enum KVEstimation {
 
     // MARK: - Tunables
 
@@ -70,7 +70,7 @@ enum KVEstimation {
     /// Returns `.empty` when the config can't be read or parsed.
     /// All numeric fields are clamped to defend against malicious or
     /// corrupt configs in operator-writable model directories.
-    static func parseModelArchitecture(at configURL: URL) -> ModelArchitecture {
+    public static func parseModelArchitecture(at configURL: URL) -> ModelArchitecture {
         guard let data = readBoundedConfigJSON(configURL),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return .empty
@@ -97,6 +97,19 @@ enum KVEstimation {
         // `sliding_window_pattern=5` → repeating [S, S, S, S, F].
         var slidingWindowPattern: Int? = cfg["sliding_window_pattern"] as? Int
         var layerTypes: [String]? = cfg["layer_types"] as? [String]
+
+        // MoE + dimension fields for the adaptive-prefill roofline seed.
+        // E (`num_local_experts`) and k (`num_experts_per_tok`) decide how many
+        // tokens land in each expert (Bₑ = C·k/E); hidden/intermediate size the
+        // per-token activation footprint. Dense models omit E/k (treated as 1).
+        var hiddenSize: Int? = cfg["hidden_size"] as? Int
+        var intermediateSize: Int? = cfg["intermediate_size"] as? Int
+            ?? cfg["moe_intermediate_size"] as? Int
+        var numLocalExperts: Int? = cfg["num_local_experts"] as? Int
+            ?? cfg["num_experts"] as? Int
+            ?? cfg["n_routed_experts"] as? Int
+        var numExpertsPerTok: Int? = cfg["num_experts_per_tok"] as? Int
+            ?? cfg["num_active_experts"] as? Int
 
         // Clamp against a malicious config.json (operator-writable dir)
         // that would otherwise inflate the token budget unbounded.
@@ -130,6 +143,17 @@ enum KVEstimation {
             maxContextLength = min(max(mcl, 1), 2_097_152)
         }
 
+        // Clamp MoE / dimension fields against a malicious config.json.
+        let maxDimBound = 1 << 20  // 1,048,576 — far above any real width.
+        if let h = hiddenSize { hiddenSize = min(max(h, 1), maxDimBound) }
+        if let i = intermediateSize { intermediateSize = min(max(i, 1), maxDimBound) }
+        if let e = numLocalExperts { numLocalExperts = min(max(e, 1), maxHeadsBound) }
+        if var k = numExpertsPerTok {
+            k = max(k, 1)
+            if let e = numLocalExperts { k = min(k, e) }
+            numExpertsPerTok = min(k, maxHeadsBound)
+        }
+
         return ModelArchitecture(
             numLayers: numLayers,
             kvHeads: kvHeads,
@@ -139,7 +163,11 @@ enum KVEstimation {
             numGlobalKvHeads: numGlobalKvHeads,
             slidingWindowPattern: slidingWindowPattern,
             layerTypes: layerTypes,
-            maxContextLength: maxContextLength
+            maxContextLength: maxContextLength,
+            numLocalExperts: numLocalExperts,
+            numExpertsPerTok: numExpertsPerTok,
+            hiddenSize: hiddenSize,
+            intermediateSize: intermediateSize
         )
     }
 
@@ -333,7 +361,7 @@ extension BatchScheduler {
     /// When `quantScheme` is non-nil, full-attention layers are charged at
     /// the scheme's effective byte ratio so admission grants the reduced
     /// memory footprint.
-    static func resolvedKVBytesPerToken(
+    public static func resolvedKVBytesPerToken(
         architecture: ModelArchitecture,
         weightBytes: Int,
         quantScheme: KVQuantEngineScheme? = nil

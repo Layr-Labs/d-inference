@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/e2e/testbed"
 	tbassert "github.com/eigeninference/d-inference/e2e/testbed/assert"
@@ -589,6 +590,23 @@ func TestIntegration_AttestationHeaders(t *testing.T) {
 	)
 }
 
+// findRoutableProvider selects a provider for model via the PRODUCTION routing
+// path (ReserveProviderEx), releases the reserved capacity, and returns the
+// selected provider — or nil when no provider can serve the model right now.
+// It replaces the removed score-based registry.FindProvider as a routability
+// probe: the production path applies the same structural/privacy/trust/challenge/
+// capacity gates, so "is this provider routable?" assertions hold without a
+// parallel routing implementation to keep in sync.
+func findRoutableProvider(reg *registry.Registry, model string) *registry.Provider {
+	pr := &registry.PendingRequest{RequestID: "test-route-probe", Model: model, RequestedMaxTokens: 64}
+	p, _ := reg.ReserveProviderEx(model, pr)
+	if p != nil {
+		p.RemovePending(pr.RequestID)
+		reg.SetProviderIdle(p.ID)
+	}
+	return p
+}
+
 func TestIntegration_SwiftProviderRealRoutingGates(t *testing.T) {
 	ctx := context.Background()
 	s := testbed.NewSuite(testbed.SuiteConfig{})
@@ -604,7 +622,7 @@ func TestIntegration_SwiftProviderRealRoutingGates(t *testing.T) {
 	}
 
 	model := s.PrimaryModelID()
-	found := s.Coordinator.Registry.FindProvider(model)
+	found := findRoutableProvider(s.Coordinator.Registry, model)
 	require.NotNil(t, found, "Swift provider should be routable after challenge success without ForceTrustProvider")
 
 	resp := postChatCompletions(t, s, "What is 1+1? Answer with just the number.", false, 20)

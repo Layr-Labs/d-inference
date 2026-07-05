@@ -40,24 +40,30 @@ func sanitizeJinjaObject(
     sanitizeForJinja(object) as? [String: any Sendable] ?? [:]
 }
 
-/// Sanitize a chat-template `messages` array, dropping null / `Optional`
-/// leaves from each message dictionary (e.g. a `null` value inside an
-/// assistant tool call's decoded `arguments`). Behavior-preserving for
-/// messages that carry no null leaves.
+/// Sanitize a chat-template `messages` array: strip raw Harmony channel tags
+/// from assistant string fields, then drop null / `Optional` leaves from each
+/// message dictionary (e.g. a `null` value inside an assistant tool call's
+/// decoded `arguments`). Behavior-preserving for messages that carry neither
+/// null leaves nor Harmony channel framing.
 func sanitizeJinjaMessages(
     _ messages: [[String: any Sendable]]
 ) -> [[String: any Sendable]] {
-    messages.map(sanitizeJinjaObject)
+    messages.map { sanitizeJinjaObject(stripHarmonyFramingFromMessage($0)) }
 }
 
-/// Sanitize a chat-template `tools` array (or `nil`), dropping null /
-/// `Optional` leaves from each tool spec (e.g. `"default": null`,
-/// `"const": null`, or a `null` enum element inside a `function.parameters`
-/// JSON schema). `nil` in ⇒ `nil` out, so the render context still omits
-/// the `tools` key entirely for tool-less requests.
-func sanitizeJinjaTools(
-    _ tools: [[String: any Sendable]]?
-) -> [[String: any Sendable]]? {
-    guard let tools else { return nil }
-    return tools.map(sanitizeJinjaObject)
+/// Strip raw Harmony channel framing from assistant string fields before the
+/// null sanitizer runs. Non-assistant messages and non-string values (for
+/// example multimodal content arrays) pass through unchanged.
+private func stripHarmonyFramingFromMessage(
+    _ message: [String: any Sendable]
+) -> [String: any Sendable] {
+    guard (message["role"] as? String) == "assistant" else { return message }
+
+    var output = message
+    for key in harmonyAssistantTextFields {
+        if let text = output[key] as? String {
+            output[key] = stripHarmonyChannelFraming(fromAssistantContent: text)
+        }
+    }
+    return output
 }

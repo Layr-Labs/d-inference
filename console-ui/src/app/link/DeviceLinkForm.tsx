@@ -4,10 +4,6 @@ import { useState, useCallback } from "react";
 import { useAuthContext } from "@/components/providers/PrivyClientProvider";
 import { trackEvent } from "@/lib/google-analytics";
 
-const COORDINATOR_URL =
-  process.env.NEXT_PUBLIC_COORDINATOR_URL ||
-  "https://api.darkbloom.dev";
-
 type LinkStatus = "idle" | "submitting" | "success" | "error";
 
 export function DeviceLinkForm() {
@@ -39,7 +35,7 @@ export function DeviceLinkForm() {
           return;
         }
 
-        const res = await fetch(`${COORDINATOR_URL}/v1/device/approve`, {
+        const res = await fetch(`/api/device/approve`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

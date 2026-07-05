@@ -13,18 +13,19 @@
 // Configuration is defined per-package and composed into config.AppConfig.
 // See coordinator/config/ for the full schema.
 //
-// Graceful shutdown: The coordinator handles SIGINT/SIGTERM, stops the
-// eviction loop, and drains active connections with a 15-second deadline.
+// Graceful shutdown: The coordinator handles SIGINT/SIGTERM, enters drain mode,
+// stops the eviction loop, waits for in-flight requests to finish (up to
+// EIGENINFERENCE_DRAIN_GRACE, default 10m), then drains connections with a hard
+// 15-second http.Server.Shutdown deadline as the final backstop.
 package main
 
 import (
 	"context"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -43,6 +44,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -157,6 +159,48 @@ func main() {
 		reg.MinTrustLevel = registry.TrustLevel(cfg.RegistryCfg.MinTrustLevel)
 		logger.Info("minimum trust level override", "level", cfg.RegistryCfg.MinTrustLevel)
 	}
+
+	// Dedicated-box routing: model families (matched as case-insensitive
+	// substrings of the resolved build id) that may ONLY route to providers
+	// whose entire advertised catalog is that family — isolating an unstable
+	// model (e.g. Gemma 4) onto dedicated machines so it never contends with
+	// other models. Default: "gemma-4". Override with a comma-separated list, or
+	// set the value to empty / "none" to disable. With no dedicated box
+	// available, a request for such a model sheds to OpenRouter as a transient
+	// 429 (not 503).
+	dedicatedModels := []string{"gemma-4"}
+	if v, ok := os.LookupEnv("EIGENINFERENCE_DEDICATED_MODELS"); ok {
+		if strings.EqualFold(strings.TrimSpace(v), "none") {
+			dedicatedModels = nil
+		} else {
+			dedicatedModels = registry.ParseDedicatedModels(v)
+		}
+	}
+	reg.SetDedicatedModels(dedicatedModels)
+	if len(dedicatedModels) > 0 {
+		logger.Info("dedicated-model routing ENABLED", "patterns", strings.Join(dedicatedModels, ","))
+	} else {
+		logger.Info("dedicated-model routing disabled")
+	}
+
+	// Quality-concurrency admission cap: tighten the flat per-provider concurrency
+	// cap (24) to each model's quality_concurrency × overcommit, computed from the
+	// provider's static single-stream decode rate. Stops slow, saturated models
+	// (e.g. Gemma) from over-admitting onto a few boxes and collapsing decode TPS;
+	// near-no-op for fast/over-provisioned models. Reuses the warm-pool decode
+	// floor + fallback so admission and warm-pool planning share the same math.
+	reg.SetQualityConcurrencyCap(
+		cfg.RegistryCfg.QualityCap.Enabled,
+		cfg.RegistryCfg.QualityCap.Overcommit,
+		cfg.RegistryCfg.WarmPool.DecodeFloorTPS,
+		cfg.RegistryCfg.WarmPool.FallbackQualityConcurrency,
+	)
+	logger.Info("quality-concurrency cap",
+		"enabled", cfg.RegistryCfg.QualityCap.Enabled,
+		"overcommit", cfg.RegistryCfg.QualityCap.Overcommit,
+		"decode_floor_tps", cfg.RegistryCfg.WarmPool.DecodeFloorTPS,
+	)
+
 	reg.ConfigureCacheAffinity(cfg.RegistryCfg.CacheAffinity)
 	cacheAffinityCfg := reg.CacheAffinityConfigSnapshot()
 	logger.Info("cache affinity configured", "ttl", cacheAffinityCfg.TTL.String(), "bonus_ms", cacheAffinityCfg.BonusMs, "enabled", cacheAffinityCfg.BonusMs > 0)
@@ -166,6 +210,14 @@ func main() {
 		logger.Info("warm-pool controller enabled", "observe_only", cfg.RegistryCfg.WarmPool.ObserveOnly, "interval", cfg.RegistryCfg.WarmPool.Interval.String())
 	}
 
+	// Provider/consumer IP geolocation (api.newProviderGeoResolverFromEnv, invoked
+	// from NewServer) reads two optional env vars:
+	//   - EIGENINFERENCE_TRUST_GEO_HEADERS=1 — trust CF/Vercel geo headers from a
+	//     trusted reverse proxy instead of calling ip-api.com.
+	//   - EIGENINFERENCE_IPAPI_KEY — ip-api.com PRO key (SECRET; inject via KMS /
+	//     Secret Manager, never commit). When set, geo lookups use the unmetered
+	//     https://pro.ip-api.com endpoint; unset falls back to the free, 45 req/min
+	//     http://ip-api.com endpoint (graceful, so dev without a key still works).
 	srv := api.NewServer(reg, st, cfg.ServerConfig, logger)
 	// Stop the routing-telemetry sink's worker pool on shutdown. Deferred so it
 	// runs after the HTTP server has drained (no in-flight request can still be
@@ -338,6 +390,69 @@ func main() {
 		}
 	}
 
+	// Routing (Phase-0 TTFT-contention, shadow + measurement slice). All three
+	// knobs are behavior-neutral at their defaults:
+	//
+	//   - EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA (float, default 0): coefficient of
+	//     the occupancy term added to the TTFT estimate (ttftMsFromSnapshot). 0
+	//     leaves the estimate — and therefore the routing cost's TTFTMs, the
+	//     candidate-loop ceiling, and the preflight bestTTFT — byte-for-byte the
+	//     pre-Phase-0 value. Reuses the occupancy the snapshot already tracks
+	//     (max(pendingForModel, backend_running+backend_waiting)); herd-aware.
+	//   - EIGENINFERENCE_TTFT_DEADLINE_BASE_MS (float, default 10000): the SLA
+	//     base the shadow evaluator gates against. The verified OpenRouter SLA is
+	//     ~10s+1ms/token; the live consumer.go ttftDeadline (5s base) is left
+	//     untouched. Used ONLY by the shadow evaluator.
+	//   - EIGENINFERENCE_TTFT_ADMISSION_MODE (off|shadow|enforce, default off):
+	//     off => no evaluation; shadow/enforce => compute would_shed +
+	//     would_redirect_to_idle and emit routing.ttft_admission /
+	//     routing.ttft_spread WITHOUT changing the routing decision. enforce is
+	//     reserved for a future step that would actually shed; it currently
+	//     behaves like shadow.
+	if v := os.Getenv("EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA"); v != "" {
+		if alpha, ok := validateTTFTOccupancyAlpha(v); ok {
+			registry.SetTTFTOccupancyAlpha(alpha)
+			logger.Info("TTFT occupancy term configured via EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA", "alpha", alpha, "behavior_neutral", alpha == 0)
+		} else {
+			logger.Warn("invalid or out-of-range EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA; keeping default 0 (term off)",
+				"value", v, "max", maxTTFTOccupancyAlpha)
+		}
+	}
+	if v := os.Getenv("EIGENINFERENCE_TTFT_DEADLINE_BASE_MS"); v != "" {
+		if base, ok := validateTTFTDeadlineBaseMs(v); ok {
+			registry.SetTTFTDeadlineBaseMs(base)
+			logger.Info("TTFT shadow deadline base configured via EIGENINFERENCE_TTFT_DEADLINE_BASE_MS", "base_ms", base)
+		} else {
+			logger.Warn("invalid or out-of-range EIGENINFERENCE_TTFT_DEADLINE_BASE_MS; keeping default ~10s",
+				"value", v, "min_ms", minTTFTDeadlineBaseMs, "max_ms", maxTTFTDeadlineBaseMs)
+		}
+	}
+	// LIVE TTFT deadline base — the HARD_REJECT cutoff. Distinct from the SHADOW
+	// base above: this sets consumer.go's ttftDeadline = base + 1ms*prompt_tokens,
+	// which drives the live preflight shed, the scheduler MaxTTFTMs candidate
+	// ceiling, and the queued-request ceiling. Default 5000 (5s) is unchanged;
+	// raising it (e.g. 9000) admits more long-prompt requests instead of 429ing
+	// them, at the cost of higher tail TTFT. Reuses the [1s,120s] validation.
+	if v := os.Getenv("EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS"); v != "" {
+		if base, ok := validateTTFTDeadlineBaseMs(v); ok {
+			api.SetTTFTLiveDeadlineBaseMs(base)
+			logger.Warn("LIVE TTFT deadline base OVERRIDDEN via EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS (changes the HARD_REJECT cutoff)", "base_ms", base)
+		} else {
+			logger.Warn("invalid or out-of-range EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS; keeping default 5000",
+				"value", v, "min_ms", minTTFTDeadlineBaseMs, "max_ms", maxTTFTDeadlineBaseMs)
+		}
+	}
+	if v := os.Getenv("EIGENINFERENCE_TTFT_ADMISSION_MODE"); v != "" {
+		mode := registry.ParseTTFTAdmissionMode(v)
+		registry.SetTTFTAdmissionMode(mode)
+		if mode == registry.TTFTAdmissionOff {
+			logger.Info("TTFT admission shadow evaluation OFF (EIGENINFERENCE_TTFT_ADMISSION_MODE)", "value", v)
+		} else {
+			logger.Warn("TTFT admission shadow evaluation ENABLED (measurement only — no decision change)",
+				"mode", mode.String(), "deadline_base_ms", registry.TTFTDeadlineBaseMs(), "occupancy_alpha", registry.TTFTOccupancyAlpha())
+		}
+	}
+
 	// Routing: long-prompt fastest-tier preference. Very long prompts
 	// have a long prefill window that drives pre-first-token client cancellations
 	// (client_gone). When EIGENINFERENCE_LONG_PROMPT_TOKENS is set, the scheduler
@@ -401,6 +516,29 @@ func main() {
 		}
 	}
 
+	// C1 kill switch: deterministic provider client-4xx (400/413/422/415) returns
+	// ONCE instead of failing over up to maxDispatchAttempts. Stop is ON by default;
+	// set EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP=true to restore pre-fix failover.
+	if v := os.Getenv("EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP"); v != "" {
+		if on, err := strconv.ParseBool(v); err == nil && on {
+			srv.SetDisableClientErrorStop(true)
+			logger.Warn("client-error dispatch stop DISABLED via EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP — deterministic provider 4xx will fail over up to maxDispatchAttempts")
+		} else if err != nil {
+			logger.Warn("invalid EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP; stop stays enabled", "value", v)
+		}
+	}
+
+	// Per-family prompt-token estimate calibration for the servability context
+	// check (the len/4 routing estimate undercounts dense content). Default
+	// {gpt-oss:1.3}; override with "family:factor,..." e.g. "gpt-oss:1.3,gemma:1.15".
+	if v := os.Getenv("EIGENINFERENCE_PROMPT_CALIBRATION"); v != "" {
+		if n := api.SetPromptContextCalibrationFromEnv(v); n > 0 {
+			logger.Info("prompt-token context calibration overridden", "pairs", n, "value", v)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_PROMPT_CALIBRATION; using default", "value", v)
+		}
+	}
+
 	// SSE keepalives during long prefill. ON by default at a 10s cadence so a long
 	// prefill never leaves the consumer connection idle long enough for OpenRouter's
 	// fetch timeout to fire and fail us over mid-prefill. The first keepalive fires
@@ -450,6 +588,23 @@ func main() {
 	ledger := payments.NewLedger(st)
 	billingSvc := billing.NewService(st, ledger, logger, billingCfg)
 	srv.SetBilling(billingSvc)
+
+	// Provider base rewards (off unless EIGENINFERENCE_BASE_REWARDS=true).
+	if brc := cfg.ServerConfig.BaseRewards; brc.Enabled {
+		brCfg := baserewards.DefaultConfig()
+		brCfg.Enabled = true
+		brCfg.ReductionK = brc.ReductionK
+		brCfg.PoolBudgetMicroUSD = brc.FloorPoolB
+		brCfg.MinUptimeFrac = brc.MinUptimeFrac
+		brCfg.PerAccountCapFrac = brc.AccountCapFrac
+		srv.SetBaseRewards(baserewards.NewEngine(st, reg, brCfg, logger))
+		logger.Info("base rewards enabled",
+			"reduction_k", brCfg.ReductionK,
+			"pool_micro_usd", brCfg.PoolBudgetMicroUSD,
+			"min_uptime", brCfg.MinUptimeFrac)
+	} else {
+		logger.Info("base rewards disabled (set EIGENINFERENCE_BASE_REWARDS=true to enable)")
+	}
 
 	// Derive the coordinator's long-lived X25519 key.
 	if coordKey, err := e2e.DeriveCoordinatorKey(billingCfg.EncryptionMnemonic); err == nil {
@@ -516,6 +671,9 @@ func main() {
 			// is re-granted this connection.
 			reg.ForEachProvider(func(p *registry.Provider) {
 				if p.SetMDAProofIfHardware(certChain, mdaResult) {
+					// Persist now so the late-arriving chain is durable for reuse on
+					// the next reconnect, rather than waiting on a throttled heartbeat.
+					reg.PersistProvider(p)
 					logger.Info("late MDA cert stored on provider",
 						"provider_id", p.ID,
 						"serial", mdaResult.DeviceSerial,
@@ -549,44 +707,6 @@ func main() {
 			logger.Warn("EIGENINFERENCE_MDM_WEBHOOK_SECRET not set — MDM webhook relies solely on the CommandUUID gate; set it + keep MicroMDM bound to localhost for defense in depth")
 		}
 		logger.Info("MDM verification enabled", "url", mdmCfg.URL)
-	}
-
-	// Configure step-ca root CA for ACME client cert verification.
-	if stepCARoot := os.Getenv("EIGENINFERENCE_STEP_CA_ROOT"); stepCARoot != "" {
-		rootPEM, err := os.ReadFile(stepCARoot)
-		if err != nil {
-			logger.Error("failed to read step-ca root CA", "path", stepCARoot, "error", err)
-		} else {
-			block, _ := pem.Decode(rootPEM)
-			if block != nil {
-				rootCert, err := x509.ParseCertificate(block.Bytes)
-				if err != nil {
-					logger.Error("failed to parse step-ca root CA", "error", err)
-				} else {
-					var intCert *x509.Certificate
-					stepCAInt := os.Getenv("EIGENINFERENCE_STEP_CA_INTERMEDIATE")
-					if stepCAInt != "" {
-						intPEM, err := os.ReadFile(stepCAInt)
-						if err == nil {
-							intBlock, _ := pem.Decode(intPEM)
-							if intBlock != nil {
-								intCert, _ = x509.ParseCertificate(intBlock.Bytes)
-							}
-						}
-					}
-					srv.SetStepCACerts(rootCert, intCert)
-					logger.Info("step-ca ACME client cert verification enabled", "root", stepCARoot)
-				}
-			}
-		}
-	} else {
-		// ACME is the no-live-command leg of the OR-trust model: a provider that
-		// presents a valid, bound device-attest-01 mTLS client cert earns hardware
-		// trust without any MDM SecurityInfo round-trip. Without the step-ca root
-		// that leg is dormant, so every provider must earn hardware trust via the
-		// live MDM SecurityInfo path (subject to APNs delivery). Surface the
-		// dormancy at startup so activation can be planned + validated.
-		logger.Warn("ACME device-cert verification disabled — EIGENINFERENCE_STEP_CA_ROOT not set; providers earn hardware trust via MDM SecurityInfo only")
 	}
 
 	// Optional profile signing: when a code-signing identity (e.g. Developer ID
@@ -660,6 +780,11 @@ func main() {
 	// auto-detects the gemma-dense decode bug). Spawns its own panic-safe loop.
 	srv.StartThroughputAnomalyDetector(ctx)
 
+	// Base-rewards settlement (only when enabled).
+	if br := srv.BaseRewards(); br != nil {
+		saferun.Go(logger, "base_rewards_settlement", func() { br.Run(ctx) })
+	}
+
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{
 		Addr:    ":" + cfg.ServerConfig.Port,
@@ -694,12 +819,38 @@ func main() {
 	sig := <-sigCh
 	logger.Info("shutting down", "signal", sig.String())
 
-	// Graceful shutdown with a deadline.
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer shutdownCancel()
+	// Enter drain mode first so /readyz and /health immediately report not-ready,
+	// the capacity feed stops advertising, and new inference requests get
+	// 429+Retry-After (DAR-327 Phase 1).
+	srv.SetDraining(true)
 
+	// DAR-327 merge note: when Phase 3 (#396) lands, srv.BroadcastGoingAway()
+	// belongs HERE — right after SetDraining(true) and BEFORE cancel() /
+	// WaitForInflightZero — so providers begin draining+reconnecting while we wait
+	// for in-flight HTTP to finish. The canonical combined shutdown order is:
+	// SetDraining → BroadcastGoingAway → cancel → WaitForInflightZero → Shutdown.
 	cancel() // Stop the eviction loop.
 
+	// Wait for already-admitted in-flight requests to finish before shutting the
+	// HTTP server down. Streaming responses can run well past the 15s Shutdown
+	// deadline, so we poll Inflight() until it reaches 0 or EIGENINFERENCE_DRAIN_GRACE
+	// (default 10m) elapses — whichever comes first — instead of cutting them off.
+	// We never block forever: the grace context bounds the wait, and the hard
+	// Shutdown deadline below is the final backstop.
+	grace := api.DrainGraceFromEnv()
+	graceCtx, graceCancel := context.WithTimeout(context.Background(), grace)
+	if srv.WaitForInflightZero(graceCtx) {
+		logger.Info("drain complete; in-flight requests finished", "grace", grace.String())
+	} else {
+		logger.Warn("drain grace elapsed; forcing shutdown with requests still in flight",
+			"grace", grace.String(), "inflight", srv.Inflight())
+	}
+	graceCancel()
+
+	// Hard backstop: even after the grace wait, give Shutdown a bounded deadline so
+	// a stuck connection can't block process exit forever.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer shutdownCancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
 	}
@@ -725,6 +876,55 @@ func parseAPNsEnforceAfter() (time.Time, error) {
 		return time.Time{}, fmt.Errorf("APNS_ENFORCE_AFTER %q is not valid RFC3339: %w", raw, err)
 	}
 	return t, nil
+}
+
+const (
+	// maxTTFTOccupancyAlpha bounds EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA. The term
+	// is alpha·occ·1000/decodeTPS ms, so an alpha above this would imply >1e6
+	// decode-token-times of head-of-line wait per peer — nonsensical and almost
+	// certainly a typo (e.g. a misplaced decimal), so it is rejected for the safe
+	// default (0 = term off) rather than silently distorting the shadow estimate.
+	maxTTFTOccupancyAlpha = 1e6
+	// minTTFTDeadlineBaseMs / maxTTFTDeadlineBaseMs bound
+	// EIGENINFERENCE_TTFT_DEADLINE_BASE_MS. Below ~1s no first-token SLA is
+	// realistic; above ~120s the shadow gate is meaningless. The verified
+	// OpenRouter base is ~10s (telemetry-db findings §2).
+	minTTFTDeadlineBaseMs = 1000.0
+	maxTTFTDeadlineBaseMs = 120000.0
+)
+
+// validateTTFTOccupancyAlpha parses and bounds EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA.
+// It returns (alpha, ok): ok=false means the raw value was unparseable, non-finite,
+// or absurd (> maxTTFTOccupancyAlpha) and the caller should keep the default 0. A
+// negative value is clamped to 0 (occupancy term disabled) and accepted (ok=true).
+func validateTTFTOccupancyAlpha(raw string) (float64, bool) {
+	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, false
+	}
+	if v < 0 {
+		return 0, true
+	}
+	if v > maxTTFTOccupancyAlpha {
+		return 0, false
+	}
+	return v, true
+}
+
+// validateTTFTDeadlineBaseMs parses and range-checks
+// EIGENINFERENCE_TTFT_DEADLINE_BASE_MS. It returns (baseMs, ok): ok=false means
+// the raw value was unparseable, non-finite, or outside
+// [minTTFTDeadlineBaseMs, maxTTFTDeadlineBaseMs], and the caller should keep the
+// verified ~10s default.
+func validateTTFTDeadlineBaseMs(raw string) (float64, bool) {
+	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, false
+	}
+	if v < minTTFTDeadlineBaseMs || v > maxTTFTDeadlineBaseMs {
+		return 0, false
+	}
+	return v, true
 }
 
 // loadAPNsAttestor builds the production APNs code-identity attestor from the

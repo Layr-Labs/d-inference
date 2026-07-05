@@ -7,6 +7,7 @@
 import Foundation
 import Testing
 
+@testable import ProviderBenchmark
 @testable import ProviderCore
 
 @Suite("throughput sweep: bandwidth model")
@@ -195,5 +196,15 @@ struct ThroughputSweepTilingTests {
         #expect(ThroughputSweep.tile([], to: 3) == [0, 0, 0])
         #expect(ThroughputSweep.tile([5], to: 0) == [])
         #expect(ThroughputSweep.tile([5, 6], to: 3, offset: 5) == [6, 5, 6])  // offset wraps
+    }
+}
+
+@Suite("scheduler prefill benchmark helpers")
+struct SchedulerPrefillBenchmarkTests {
+    @Test("strategy parser accepts fixed chunks and adaptive")
+    func strategyParser() {
+        let parsed = SchedulerPrefillBenchmark.parseStrategies("fixed:256, fixed:512, adaptive, bad, fixed:0")
+        #expect(parsed == [.fixed(256), .fixed(512), .adaptive])
+        #expect(parsed.map(\.label) == ["fixed:256", "fixed:512", "adaptive"])
     }
 }

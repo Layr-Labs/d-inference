@@ -8,9 +8,9 @@ import Testing
     // Every reason string the coordinator emits must produce a non-empty,
     // operator-actionable message (and a fix for the actionable ones).
     let reasons = [
-        "SE attestation verified, awaiting MDM/ACME upgrade",
+        "SE attestation verified, awaiting MDM verification",
+        "SE attestation verified, awaiting MDM/ACME upgrade", // pre-removal coordinator
         "MDM verification passed",
-        "ACME device attestation verified",
         "recovered after transient deroute",
         "timeout", "no response", "nonce mismatch", "public key mismatch",
         "empty signature", "SIP status not reported", "SIP disabled",

@@ -124,34 +124,74 @@ func snapshotStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
 	return coldTokenBudgetEstimate(snap.totalMemoryGB, snap.modelSizeGB, snap.kvBytesPerToken), true
 }
 
+// liveStructuralBudget is snapshotStructuralBudget minus the provider's CURRENTLY
+// committed tokens (active + queued) for resident slots, so the fleet-budget shed
+// reflects LIVE remaining headroom rather than the idle structural ceiling: a 50k
+// request fits an idle 131k box but NOT one already holding 100k. Cold/on-disk
+// slots keep the optimistic post-load estimate (nothing is committed there yet).
+// Same fail-open contract as snapshotStructuralBudget (known=false ⇒ skip).
+func liveStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
+	if snap.activeTokenBudgetMax > 0 {
+		rem := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
+		if rem < 0 {
+			rem = 0
+		}
+		return rem, true
+	}
+	if snap.modelLoaded {
+		// Resident but no token budget reported (legacy provider): unknown.
+		return 0, false
+	}
+	if snap.totalMemoryGB <= 0 || snap.modelSizeGB <= 0 {
+		return 0, false
+	}
+	return coldTokenBudgetEstimate(snap.totalMemoryGB, snap.modelSizeGB, snap.kvBytesPerToken), true
+}
+
 // PredictServable reports whether the fleet can structurally serve a request of
 // the given size for the model. contextLimit is the model's max context window
 // (from the model registry record; 0 = unknown → context tier skipped). It is
 // read-only and fail-open (see file header). Self-route requests should not use
 // this fleet-wide gate (they queue on the owner machine), matching the existing
 // preflight which only runs for public routes.
-func (r *Registry) PredictServable(model string, estimatedPromptTokens, requestedMaxTokens, contextLimit int, traits RequestTraits, requiresVision bool, allowedSerials ...string) ServabilityVerdict {
+//
+// contextPromptTokens is the prompt-token count used ONLY for the context-window
+// tier. It exists so a caller can feed a CALIBRATED estimate to the context tier
+// (the len/4 routing estimate undercounts dense content) WITHOUT inflating the
+// token-budget tier — the budget tier always uses the raw estimatedPromptTokens,
+// so a calibration multiplier can never over-reject a request that fits a
+// provider's real KV budget (a false-NO). Callers that don't calibrate pass
+// contextPromptTokens == estimatedPromptTokens; a value below the raw estimate is
+// floored to it (calibration only scales up).
+func (r *Registry) PredictServable(model string, estimatedPromptTokens, contextPromptTokens, requestedMaxTokens, contextLimit int, traits RequestTraits, requiresVision bool, allowedSerials ...string) ServabilityVerdict {
 	reqPrompt := estimatedPromptTokens
 	if reqPrompt < 0 {
 		reqPrompt = 0
+	}
+	reqContextPrompt := contextPromptTokens
+	if reqContextPrompt < reqPrompt {
+		reqContextPrompt = reqPrompt
 	}
 	reqMax := requestedMaxTokens
 	if reqMax <= 0 {
 		reqMax = defaultRequestedMaxTokens
 	}
-	requestTokens := reqPrompt + reqMax
+	budgetRequestTokens := reqPrompt + reqMax
+	contextRequestTokens := reqContextPrompt + reqMax
 
 	verdict := ServabilityVerdict{
 		Servable:      true,
-		RequestTokens: requestTokens,
+		RequestTokens: budgetRequestTokens,
 		ContextLimit:  contextLimit,
 	}
 
 	// Tier 1: context window. Model-level and provider-agnostic. Exceeding the
-	// model's context is a guaranteed failure on every provider.
-	if contextLimit > 0 && requestTokens > contextLimit {
+	// model's context is a guaranteed failure on every provider. Uses the
+	// (possibly calibrated) context-prompt count.
+	if contextLimit > 0 && contextRequestTokens > contextLimit {
 		verdict.Servable = false
 		verdict.Reason = ServabilityContextExceeded
+		verdict.RequestTokens = contextRequestTokens
 		return verdict
 	}
 
@@ -190,7 +230,10 @@ func (r *Registry) PredictServable(model string, estimatedPromptTokens, requeste
 			continue
 		}
 		providerCount++
-		budget, known := snapshotStructuralBudget(snap)
+		// LIVE remaining budget (structural ceiling minus committed) so the shed
+		// reflects real headroom under load, not the idle fleet-max. Gated/ship-dark
+		// (only the default-off servability gate sheds on this verdict).
+		budget, known := liveStructuralBudget(snap)
 		if !known {
 			sawUnknown = true
 			continue
@@ -210,7 +253,7 @@ func (r *Registry) PredictServable(model string, estimatedPromptTokens, requeste
 	// all-zero-budget fleet would fail open and dispatch into a guaranteed
 	// provider-side token/KV rejection. Any unknown budget, or zero eligible
 	// providers (a different rejection path owns that), still fails open.
-	if providerCount > 0 && !sawUnknown && int64(requestTokens) > fleetMax {
+	if providerCount > 0 && !sawUnknown && int64(budgetRequestTokens) > fleetMax {
 		verdict.Servable = false
 		verdict.Reason = ServabilityPromptTooLong
 		return verdict

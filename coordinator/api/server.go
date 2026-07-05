@@ -18,7 +18,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	"crypto/x509"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -32,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/apns"
@@ -41,6 +41,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
@@ -143,7 +144,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // 0.6.0 is the APNs code-identity / VLM-routing / graceful-update release.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.6.11"
+var LatestProviderVersion = "0.7.3"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -166,25 +167,35 @@ func (s *Server) latestReleasedVersion() string {
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
-	registry               *registry.Registry
-	store                  store.Store
-	ledger                 *payments.Ledger
-	billing                *billing.Service
-	logger                 *slog.Logger
-	mux                    *http.ServeMux
-	challengeInterval      time.Duration             // 0 means use DefaultChallengeInterval
-	skipChallenge          bool                      // if true, skip attestation challenges entirely (testing only)
-	privyAuth              *auth.PrivyAuth           // Privy JWT authentication (nil if not configured)
-	adminEmails            map[string]bool           // emails that have admin access
-	adminKey               string                    // EIGENINFERENCE_ADMIN_KEY for admin endpoints
-	mdmClient              *mdm.Client               // MicroMDM client for provider security verification
-	mdmWebhookSecret       string                    // optional shared secret MicroMDM must present on the webhook
-	stepCARootCert         *x509.Certificate         // step-ca root CA for ACME cert verification
-	stepCAIntermediateCert *x509.Certificate         // step-ca intermediate CA
-	profileSigner          *profilesign.Signer       // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
-	codeAttestor           apns.CodeIdentityAttestor // APNs code-identity attestor (nil = disabled; v0.6.0)
-	codeAttestThrottle     *codeAttestThrottle       // per-device APNs push budget + reuse cache (v0.6.0)
-	trustReuseCache        *trustReuseCache          // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
+	registry           *registry.Registry
+	store              store.Store
+	ledger             *payments.Ledger
+	billing            *billing.Service
+	baseRewards        *baserewards.Engine
+	logger             *slog.Logger
+	mux                *http.ServeMux
+	challengeInterval  time.Duration             // 0 means use DefaultChallengeInterval
+	skipChallenge      bool                      // if true, skip attestation challenges entirely (testing only)
+	privyAuth          *auth.PrivyAuth           // Privy JWT authentication (nil if not configured)
+	adminEmails        map[string]bool           // emails that have admin access
+	adminKey           string                    // EIGENINFERENCE_ADMIN_KEY for admin endpoints
+	mdmClient          *mdm.Client               // MicroMDM client for provider security verification
+	mdmWebhookSecret   string                    // optional shared secret MicroMDM must present on the webhook
+	profileSigner      *profilesign.Signer       // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
+	codeAttestor       apns.CodeIdentityAttestor // APNs code-identity attestor (nil = disabled; v0.6.0)
+	codeAttestThrottle *codeAttestThrottle       // per-device APNs push budget + reuse cache (v0.6.0)
+	trustReuseCache    *trustReuseCache          // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
+
+	// Graceful-drain state (DAR-327 Phase 1, zero-downtime upgrades). Set
+	// coordinatorDraining=true before a restart/swap so the drain gate rejects
+	// NEW inference requests with 429+Retry-After while already-admitted ones run
+	// to completion; httpInflight counts requests currently inside the gate so
+	// /readyz (and the deploy script) can wait for it to reach 0 before shutdown.
+	// Deliberately named to avoid collision with the provider-side drain concepts
+	// (protocol.ProviderDrainingForUpdate, registry.drainQueuedRequestsForModels):
+	// this is purely the coordinator's own HTTP-ingress drain. See drain.go.
+	httpInflight        atomic.Int64
+	coordinatorDraining atomic.Bool
 
 	// knownBinaryHashes is the set of accepted provider binary SHA-256 hashes.
 	// When binaryHashPolicyConfigured is true, providers whose binary hash is
@@ -244,6 +255,13 @@ type Server struct {
 	// → 429, which fixes the same failure on the actual provider-rejection path.
 	servabilityGate bool
 
+	// disableClientErrorStop is the kill switch for the C1 StatusCode-driven
+	// non-retryable failover stop. Default false = stop ENABLED: a deterministic
+	// provider client 4xx (400/413/422/415) returns ONCE instead of failing over up
+	// to maxDispatchAttempts. Set EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP=true to
+	// restore the pre-fix behavior (string-only classifyRejection failover).
+	disableClientErrorStop bool
+
 	// prefillKeepaliveInterval enables SSE keepalives during long prefill:
 	// when > 0, a STREAMING request that has been dispatched but not yet produced
 	// its first content chunk commits HTTP 200 and emits ": keepalive" SSE comments
@@ -293,10 +311,6 @@ type Server struct {
 	// Set from EIGENINFERENCE_R2_CDN_URL env var. Empty disables CDN metadata.
 	r2CDNURL string
 
-	// r2SitePackagesCDNURL is the R2 bucket URL for site packages (e.g.
-	// auto-update manifests). Set from EIGENINFERENCE_R2_SITE_PACKAGES_CDN_URL.
-	r2SitePackagesCDNURL string
-
 	// corsOrigin is the allowed CORS origin (e.g. "https://console.darkbloom.dev").
 	// Set from CORS_ORIGIN env var. Empty defaults to the production console domain.
 	corsOrigin string
@@ -315,6 +329,12 @@ type Server struct {
 	// requests from senders. Set via SetCoordinatorKey. nil disables the
 	// /v1/encryption-key endpoint and the sealed-request middleware.
 	coordinatorKey *e2e.CoordinatorKey
+
+	// chunkKeys memoizes the per-request NaCl shared key so streaming chunk
+	// decryption skips the X25519 scalar multiplication per token. Zero value
+	// is ready; entries are dropped on request completion/error and bounded
+	// by chunkKeyCacheMax.
+	chunkKeys chunkKeyCache
 
 	// metrics is the in-process metrics registry exposed via /v1/admin/metrics
 	// and used by internal counters/histograms. Never nil.
@@ -336,15 +356,6 @@ type Server struct {
 	// dd is the Datadog integration client for DogStatsD metrics and
 	// Logs API event forwarding. Nil when DD is not configured.
 	dd *datadog.Client
-
-	// pendingACME holds the connect-time ACME (mTLS device-cert) verification
-	// result per provider so the trust upgrade can be retried after the first
-	// passing challenge. applyACMETrust runs at registration BEFORE the first
-	// challenge response sets AttestationResult, so its binding checks fail
-	// purely on ordering and the provider stays self_signed forever. Cleared on
-	// successful upgrade or disconnect.
-	pendingACMEMu sync.Mutex
-	pendingACME   map[string]*ACMEVerificationResult
 
 	// apiKeyCache memoizes ValidateKeyFull results so repeated requests
 	// with the same API key skip the DB round trip. Entries expire after
@@ -681,7 +692,6 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		readCache:            newTTLCache(),
 		geoResolver:          newProviderGeoResolverFromEnv(logger),
 		apiKeyCache:          make(map[string]apiKeyCacheEntry),
-		pendingACME:          make(map[string]*ACMEVerificationResult),
 		codeAttestThrottle:   newCodeAttestThrottle(),
 		trustReuseCache:      newTrustReuseCache(),
 		settlements:          newSettlementHolder(),
@@ -711,7 +721,6 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.baseURL = strings.TrimRight(cfg.BaseURL, "/")
 	s.minProviderVersion = strings.TrimSpace(cfg.MinProviderVersion)
 	s.r2CDNURL = strings.TrimRight(cfg.R2CDNURL, "/")
-	s.r2SitePackagesCDNURL = strings.TrimRight(cfg.R2SitePackagesCDNURL, "/")
 	s.releaseKey = cfg.ReleaseKey
 
 	return s
@@ -859,12 +868,6 @@ func (s *Server) emitPanic(ctx context.Context, message, stack string, fields ma
 	})
 }
 
-// SetStepCACerts configures the step-ca CA certificates for ACME client cert verification.
-func (s *Server) SetStepCACerts(root, intermediate *x509.Certificate) {
-	s.stepCARootCert = root
-	s.stepCAIntermediateCert = intermediate
-}
-
 // SetProfileSigner configures the CMS signing identity used to sign the
 // enrollment .mobileconfig served by /v1/enroll. When unset (nil), profiles are
 // served unsigned (the historical behaviour).
@@ -879,6 +882,17 @@ func (s *Server) SetBilling(svc *billing.Service) {
 
 func (s *Server) Billing() *billing.Service {
 	return s.billing
+}
+
+// SetBaseRewards configures the provider base-rewards engine (off unless the
+// EIGENINFERENCE_BASE_REWARDS flag is set; nil = disabled).
+func (s *Server) SetBaseRewards(e *baserewards.Engine) {
+	s.baseRewards = e
+}
+
+// BaseRewards returns the base-rewards engine, or nil when disabled.
+func (s *Server) BaseRewards() *baserewards.Engine {
+	return s.baseRewards
 }
 
 func (s *Server) SetChallengeInterval(d time.Duration) {
@@ -1067,6 +1081,13 @@ func (s *Server) SetServabilityGate(enabled bool) {
 	s.servabilityGate = enabled
 }
 
+// SetDisableClientErrorStop is the kill switch for the C1 client-shape failover
+// stop. true restores pre-fix behavior (deterministic provider 4xx fails over up
+// to maxDispatchAttempts). Default (false) = stop enabled. Call before serving.
+func (s *Server) SetDisableClientErrorStop(disabled bool) {
+	s.disableClientErrorStop = disabled
+}
+
 // SetPrefillKeepaliveInterval sets the prefill SSE keepalive cadence.
 // <= 0 disables it. Production enables it by default (see cmd/coordinator). See
 // the prefillKeepaliveInterval field. Call before serving starts.
@@ -1148,16 +1169,6 @@ func hasConfiguredHashInput(hashes []string) bool {
 	return false
 }
 
-// SetConsoleURL sets the frontend URL for device auth verification links.
-func (s *Server) SetConsoleURL(url string) {
-	s.consoleURL = url
-}
-
-// SetCORSOrigin configures the allowed CORS origin.
-func (s *Server) SetCORSOrigin(origin string) {
-	s.corsOrigin = origin
-}
-
 // SetReleaseKey configures the scoped release key for GitHub Actions.
 func (s *Server) SetReleaseKey(key string) {
 	s.releaseKey = key
@@ -1167,12 +1178,6 @@ func (s *Server) SetReleaseKey(key string) {
 // for sender-to-coordinator request encryption. Pass nil to disable.
 func (s *Server) SetCoordinatorKey(k *e2e.CoordinatorKey) {
 	s.coordinatorKey = k
-}
-
-// CoordinatorKey returns the configured coordinator encryption key (or nil).
-// Exposed for tests; production code should not need this.
-func (s *Server) CoordinatorKey() *e2e.CoordinatorKey {
-	return s.coordinatorKey
 }
 
 // SyncBinaryHashes rebuilds knownBinaryHashes from all active releases.
@@ -1605,7 +1610,7 @@ func (s *Server) mdmWebhookTokenValid(r *http.Request) bool {
 var installScript []byte
 
 // installScriptPlaceholder is substituted with the coordinator's public URL at
-// serve time. Keep in sync with coordinator/internal/api/install.sh.
+// serve time. Keep in sync with coordinator/api/install.sh.
 //
 // The legacy install.sh also substituted __DARKBLOOM_R2_CDN_URL__ and
 // __DARKBLOOM_R2_SITE_PACKAGES_CDN_URL__ for the Python runtime download.
@@ -1644,6 +1649,11 @@ func (s *Server) routes() {
 	// Health check — no auth required.
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 
+	// Readiness probe — no auth required. Reports graceful-drain state so load
+	// balancers and the deploy script treat a draining coordinator as not-ready
+	// (503) and can wait for inflight==0 before restart. See drain.go (DAR-327).
+	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
+
 	// Provider WebSocket — no API key auth (providers authenticate differently).
 	s.mux.HandleFunc("GET /ws/provider", s.handleProviderWS)
 
@@ -1671,10 +1681,21 @@ func (s *Server) routes() {
 	// rateLimitConsumer is chained inside requireAuth so the accountID is in
 	// context. Read-only endpoints (GET /v1/models) skip rate limiting since
 	// they're cheap and clients poll them.
-	s.mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions))))
-	s.mux.HandleFunc("POST /v1/responses", s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions)))) // Responses API — same handler, auto-detects input vs messages
-	s.mux.HandleFunc("POST /v1/completions", s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions))))
-	s.mux.HandleFunc("POST /v1/messages", s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages))))
+	// drainGate is the OUTERMOST wrapper: while the coordinator is draining for a
+	// restart/upgrade it rejects NEW inference requests with 429+Retry-After
+	// before any auth/decrypt work, and otherwise counts the request as in-flight
+	// so /readyz can report when it's safe to shut down (DAR-327 Phase 1).
+	//
+	// IMPORTANT: ANY future provider-routed inference endpoint (e.g.
+	// /v1/audio/transcriptions, /v1/images/generations, /v1/embeddings) MUST also
+	// be wrapped in s.drainGate(...). An ungated route won't 429 during drain and,
+	// because it isn't counted in httpInflight, won't be seen by WaitForInflightZero
+	// — so a graceful shutdown could cut it off mid-flight. Add new dispatch routes
+	// here, gated, alongside the four below.
+	s.mux.HandleFunc("POST /v1/chat/completions", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions)))))
+	s.mux.HandleFunc("POST /v1/responses", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions))))) // Responses API — same handler, auto-detects input vs messages
+	s.mux.HandleFunc("POST /v1/completions", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions)))))
+	s.mux.HandleFunc("POST /v1/messages", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages)))))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
 	// Dedicated OpenRouter provider feed — pure OpenRouter schema, no Darkbloom metadata.
 	s.mux.HandleFunc("GET /v1/models/openrouter", s.requireAuth(s.handleListModelsOpenRouter))
@@ -1702,11 +1723,14 @@ func (s *Server) routes() {
 	// Account-scoped provider dashboard.
 	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.handleMyProviders))
 	s.mux.HandleFunc("GET /v1/me/summary", s.requirePrivyAuth(s.handleMySummary))
+	// Alias-aware owned live-model ids for the console's self-route key picker.
+	s.mux.HandleFunc("GET /v1/me/self-route-models", s.requirePrivyAuth(s.handleMySelfRouteModels))
 	// Ownership-checked hard delete of a retired/offline machine's record(s).
 	s.mux.HandleFunc("DELETE /v1/me/providers/{serial}", s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeleteMyProvider)))
 
-	// ACME enrollment — generates per-device .mobileconfig for device-attest-01.
-	// No auth needed — security comes from Apple's attestation during ACME challenge.
+	// MDM enrollment — generates the per-device .mobileconfig (SCEP + MDM).
+	// No auth needed — trust comes from MDM SecurityInfo verification after
+	// enrollment, not from possession of the profile.
 	s.mux.HandleFunc("POST /v1/enroll", s.handleEnroll)
 
 	// Attestation verification — public, no auth needed.
@@ -1839,10 +1863,21 @@ func (s *Server) routes() {
 
 	// Metrics snapshot (admin only)
 	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)
+	s.mux.HandleFunc("GET /v1/admin/base-rewards", s.handleAdminBaseRewards)
 
 	// Network utilization snapshot (admin only) — handler enforces admin auth
 	// internally via requireAdminKey.
 	s.mux.HandleFunc("GET /v1/admin/utilization", s.handleAdminUtilization)
+
+	// Graceful drain toggle (admin only) — sets the coordinator into drain mode
+	// before a restart/upgrade so new inference requests get 429 while in-flight
+	// ones finish. Wrapped with requireAuth (the SAME pattern as the other
+	// isAdminAuthorized/requireAdminKey endpoints, e.g. invite codes) so a Privy
+	// admin JWT is parsed into the request context AND the admin key is accepted
+	// as a pseudo-account; handleAdminDrain then authorizes via isAdminAuthorized
+	// (admin key OR Privy admin). Registered before the /v1/ catch-all. Note:
+	// /readyz stays unauthenticated. See drain.go (DAR-327 Phase 1).
+	s.mux.HandleFunc("POST /v1/admin/drain", s.requireAuth(s.handleAdminDrain))
 
 	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
 	// Browse as JSON or stream a CSV/NDJSON download for offline analysis.

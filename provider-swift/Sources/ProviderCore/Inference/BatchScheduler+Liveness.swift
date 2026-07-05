@@ -57,6 +57,11 @@ extension BatchScheduler {
         // nonisolated — it never touches or awaits the budget actor.
         kvBudget?.proactiveReclaimSweep()
         await assessBackendLiveness()
+        // Engine-health (first-token wedge) telemetry trail. MEASUREMENT ONLY:
+        // emits an `engine_health` event on a wedge-suspected transition or on
+        // the coarse periodic cadence. Independent of the liveness verdict above
+        // (which can't see a pre-first-token wedge — see report §C4).
+        emitEngineHealthTelemetry()
     }
 
     /// Assess backend liveness from live scheduler state and, on a degraded

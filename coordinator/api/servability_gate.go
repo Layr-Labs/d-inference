@@ -43,9 +43,21 @@ func (s *Server) shedIfUnservable(
 		return false
 	}
 
+	// The context tier gets a CALIBRATED prompt estimate; the token-budget tier
+	// keeps the RAW estimate (see PredictServable). estimatePromptTokens uses
+	// len/4, which UNDERcounts real tokenization (observed prod actual/estimate
+	// p50 1.19, heavy right tail to ~5.9 on dense code/JSON), so a ~130K-real
+	// prompt looks like ~100K est and slips past the raw context tier — then the
+	// provider exact-tokenizes and 503s. The per-family multiplier
+	// (calibratedContextPromptTokens) biases ONLY the context-window comparison so
+	// it never over-rejects a request that fits a provider's real KV budget; the
+	// dispatch-time deterministic stop is the exact backstop for what it misses.
+	// Billing (estimateBillingPromptTokens) and the capacity/TTFT estimate are
+	// likewise untouched.
 	verdict := s.registry.PredictServable(
 		model,
 		estimatedPromptTokens,
+		calibratedContextPromptTokens(model, estimatedPromptTokens),
 		requestedMaxTokens,
 		modelMaxContext,
 		registry.RequestTraits{HasTools: hasTools},
@@ -64,6 +76,16 @@ func (s *Server) shedIfUnservable(
 		"model:" + model,
 		"model_type:" + s.registry.ModelType(model),
 		"outcome:unservable_429",
+	})
+	// Oversized-request observability (DAR-347): counts the preflight catch so it
+	// can be compared against stage:dispatch (the deterministic dispatch-time stop)
+	// to measure how much the estimate calibration catches before any dispatch. The
+	// rejection ledger row below carries estimated_prompt_tokens / requested_max_tokens
+	// for the prompt/max histograms-by-outcome.
+	s.ddIncr("routing.oversized_request_rejected", []string{
+		"model:" + model,
+		"stage:preflight",
+		"reason:" + verdict.Reason,
 	})
 	s.recordRejection(rejectionInfo{
 		r:                     r,

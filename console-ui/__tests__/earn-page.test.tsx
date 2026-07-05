@@ -85,45 +85,79 @@ describe("model variant dedupe", () => {
 });
 
 describe("EarnPage", () => {
-  it("keeps rendering when selected hardware has no eligible models", async () => {
+  it("shows the floor-only hero when no catalog model fits the selected hardware", async () => {
     const EarnPage = (await import("@/app/earn/page")).default;
     render(<EarnPage />);
+    await screen.findAllByText(/Runs in your 48 GB/);
 
-    fireEvent.click(screen.getByRole("button", { name: "MacBook Air" }));
-    fireEvent.click(screen.getByRole("button", { name: "16 GB" }));
+    fireEvent.change(screen.getByLabelText("Chip"), { target: { value: "M1" } });
+    fireEvent.change(screen.getByLabelText("Unified memory"), { target: { value: "16" } });
 
-    expect(screen.getByText("Provider Earnings Calculator")).toBeInTheDocument();
-    expect(await screen.findByText("No models fit in 16 GB RAM")).toBeInTheDocument();
-    expect(screen.getByText("No compatible model for this hardware")).toBeInTheDocument();
+    // Nothing fits in 16 GB (min RAM is 24/36 in the fixture) and the 16 GB
+    // floor tier is $0 — the hero degrades honestly instead of disappearing.
+    expect(
+      await screen.findByText(/No catalog model fits in 16 GB/)
+    ).toBeInTheDocument();
+    expect(screen.getByText("Needs 24 GB+ of unified memory")).toBeInTheDocument();
+    expect(screen.getByText("Needs 36 GB+ of unified memory")).toBeInTheDocument();
   });
 
-  it("allows adding another model when it fits beside the auto-selected model", async () => {
+  it("lets under-provisioned machines register interest in smaller models", async () => {
+    window.localStorage.clear();
     const EarnPage = (await import("@/app/earn/page")).default;
     render(<EarnPage />);
+    await screen.findAllByText(/Runs in your 48 GB/);
 
-    const gptButton = await screen.findByRole("button", { name: /GPT-OSS 20B/ });
+    fireEvent.change(screen.getByLabelText("Chip"), { target: { value: "M1" } });
+    fireEvent.change(screen.getByLabelText("Unified memory"), { target: { value: "16" } });
 
-    expect(screen.getByText("12 GB weights / 48 GB RAM")).toBeInTheDocument();
-    expect(gptButton).not.toBeDisabled();
-    fireEvent.click(gptButton);
-
-    const gemmaButton = await screen.findByRole("button", { name: /Gemma 4 26B/ });
-    expect(gemmaButton).not.toBeDisabled();
-    fireEvent.click(gemmaButton);
+    const notifyButton = await screen.findByRole("button", {
+      name: /Notify me when smaller models launch/,
+    });
+    fireEvent.click(notifyButton);
 
     expect(
-      screen.getByText("Selected models share active inference hours, so usage earnings are not double-counted.")
+      await screen.findByText(/You're on the list — we'll notify you when smaller models go live/)
     ).toBeInTheDocument();
-    expect(screen.getByText("40 GB weights / 48 GB RAM")).toBeInTheDocument();
+    expect(window.localStorage.getItem("darkbloom.smallModelsInterest")).toContain('"chip":"M1"');
   });
 
-  it("adds the base-reward floor on top of usage earnings (additive, not max)", async () => {
+  it("always prices the best-earning model automatically (read-only list, no selection)", async () => {
     const EarnPage = (await import("@/app/earn/page")).default;
     render(<EarnPage />);
 
-    // Default hardware is MacBook Pro / M4 Max / 48GB → 48GB base-reward tier = $16/mo,
-    // at the default 24h online (100% uptime). The floor is shown on top of usage.
-    expect(await screen.findByText("Base rewards (earnings floor)")).toBeInTheDocument();
-    expect(await screen.findByText("+ $16.00")).toBeInTheDocument();
+    // GPT-OSS 20B out-earns Gemma on the default M4 Max (fewer active params →
+    // higher decode throughput) so it gets the badge; both fit in 48 GB.
+    expect(await screen.findByText("Best earner")).toBeInTheDocument();
+    expect(screen.getByText(/Runs in your 48 GB \(12 GB weights\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Runs in your 48 GB \(28 GB weights\)/)).toBeInTheDocument();
+
+    // The list is read-only — no model checkboxes/buttons to mis-toggle.
+    expect(screen.queryByRole("button", { name: /GPT-OSS 20B/ })).not.toBeInTheDocument();
+  });
+
+  it("presents earnings as a floor→estimate range with the base reward additive", async () => {
+    const EarnPage = (await import("@/app/earn/page")).default;
+    render(<EarnPage />);
+
+    // Default hardware is M4 Max / 48GB → 48GB base-reward tier = $16/mo floor
+    // (appears in both the hero chip and the formula breakdown).
+    expect((await screen.findAllByText(/\$16\/mo/)).length).toBeGreaterThan(0);
+    expect(screen.getByText("Base rewards (earnings floor)")).toBeInTheDocument();
+    // Assumptions decomposition shows the floor added on top of usage.
+    expect(screen.getByText("+ $16")).toBeInTheDocument();
+  });
+
+  it("bakes electricity in as a fixed assumption with no user input", async () => {
+    const { DEFAULT_ELEC_COST_PER_KWH } = await import("@/app/earn/calc");
+    const { useEarningsCalculator } = await import("@/app/earn/useEarningsCalculator");
+    const { renderHook } = await import("@testing-library/react");
+    const { result } = renderHook(() => useEarningsCalculator());
+
+    expect(result.current.elecCostNum).toBe(DEFAULT_ELEC_COST_PER_KWH);
+
+    const EarnPage = (await import("@/app/earn/page")).default;
+    render(<EarnPage />);
+    expect(screen.queryByLabelText(/Electricity cost/i)).not.toBeInTheDocument();
   });
 });

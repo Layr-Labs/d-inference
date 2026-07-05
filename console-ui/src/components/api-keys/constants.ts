@@ -1,10 +1,13 @@
 import type { KeyResetWindow } from "@/lib/api";
+import { STORAGE_KEYS } from "@/lib/constants";
 
 // localStorage keys. The console uses a single "active" key for its own chat /
 // test calls (API_KEY_STORAGE) and tracks which managed key that is so the
-// "Console key" badge and rotate/delete bookkeeping stay in sync.
-export const API_KEY_STORAGE = "darkbloom_api_key";
-export const CONSOLE_KEY_ID_STORAGE = "darkbloom_console_key_id";
+// "Console key" badge and rotate/delete bookkeeping stay in sync. The string
+// values live in lib/constants (single source); these names are kept for the
+// existing import sites in this folder.
+export const API_KEY_STORAGE = STORAGE_KEYS.apiKey;
+export const CONSOLE_KEY_ID_STORAGE = STORAGE_KEYS.consoleKeyId;
 
 // Shared Tailwind class strings for form controls.
 export const INPUT_CLS =

@@ -832,3 +832,57 @@ func TestReputationLatencyMeasuredToContentEndToEnd(t *testing.T) {
 		t.Fatalf("reputation latency = %v, want >= ~%v (measured to content, not the immediate preamble)", got, contentDelay)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// C1: deterministic client-shape 4xx must stop after ONE dispatch
+// ---------------------------------------------------------------------------
+
+// always400Script makes EVERY dispatched provider reject pre-content with a
+// deterministic client-shape 400 (the Harmony multi-tool-call case). It records
+// each dispatch so the test can prove the loop did NOT fail over.
+func always400Script(rec *dispatchRecorder) inferenceScript {
+	return func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, body []byte) {
+		rec.record(fp.name)
+		fp.sendInferenceError(ctx, req,
+			"assistant message contains multiple tool_calls; Harmony supports one tool call per assistant message",
+			http.StatusBadRequest)
+	}
+}
+
+// TestProviderClientError400_StopsAfterOne: a provider 400 is deterministic
+// (identical on every provider), so the dispatch loop must return it ONCE after a
+// single dispatch instead of failing over. Pre-fix this walked to provider B
+// (total 2 dispatches); the fix stops at 1. Asserts HTTP 400 + invalid_request_error.
+func TestProviderClientError400_StopsAfterOne(t *testing.T) {
+	reg, _, ts := setupFailoverServer(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	model := "client-error-400-model"
+	rec := &dispatchRecorder{}
+	script := always400Script(rec)
+
+	pA := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
+		Name: "provider-a", Version: "0.6.4", DecodeTPS: 200,
+		Models: []failoverModelSpec{{ID: model}}, Script: script,
+	})
+	pB := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
+		Name: "provider-b", Version: "0.6.4", DecodeTPS: 1,
+		Models: []failoverModelSpec{{ID: model}}, Script: script,
+	})
+
+	status, body, err := postChat(ctx, ts.URL, "test-key", buildChatBody(t, model, false, nil))
+	if err != nil {
+		t.Fatalf("chat request: %v", err)
+	}
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (deterministic client error returned once); body = %s", status, body)
+	}
+	if got := pA.dispatchCount() + pB.dispatchCount(); got != 1 {
+		t.Fatalf("total dispatches = %d, want 1 — a deterministic 400 must NOT fail over across the fleet; body = %s", got, body)
+	}
+	if !strings.Contains(body, "invalid_request_error") {
+		t.Errorf("body should surface invalid_request_error; got %s", body)
+	}
+}

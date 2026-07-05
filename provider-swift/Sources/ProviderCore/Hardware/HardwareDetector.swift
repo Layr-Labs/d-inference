@@ -216,6 +216,76 @@ internal func lookupBandwidth(family: ChipFamily, tier: ChipTier, gpuCores: UInt
     }
 }
 
+// MARK: - GPU Peak FLOPS / Roofline Ridge
+//
+// Used ONLY to seed the adaptive-prefill chunk ladder from physics. macOS
+// exposes neither GPU clock nor FLOPS, so — exactly like `lookupBandwidth` —
+// these are small, explicit per-family tables. They are computed locally in the
+// provider and are deliberately NOT added to the wire `HardwareInfo` (no
+// protocol change / blast radius). Unknown family ⇒ nil/0 ⇒ seeding is skipped
+// and the climber falls back to the generic empirical ladder.
+
+/// Per-family GPU clock in GHz. Tier is accepted for future per-tier tuning;
+/// today the clock is family-uniform. nil ⇒ unknown family.
+internal func gpuClockGHz(family: ChipFamily, tier _: ChipTier) -> Double? {
+    switch family {
+    case .m1: return 1.28
+    case .m2, .m3: return 1.40
+    case .m4: return 1.80
+    case .m5: return 1.90
+    case .unknown: return nil
+    }
+}
+
+/// FP16 FLOPs per GPU core per clock cycle. M1–M4 use the SIMD/vector ALU
+/// throughput (≈512 FP16 FLOP/core/cycle, anchored to the verified M4 Max 40c
+/// = 36.9 TFLOPS). M5 adds per-core matrix units (Neural Accelerators); 2048 is
+/// an UNCERTAIN matrix-unit estimate and it is unverified whether the bundled
+/// MLX dispatches prefill GEMM to them — the 8192 rung stays gated accordingly.
+internal func flopPerCorePerCycle(family: ChipFamily) -> Double? {
+    switch family {
+    case .m1, .m2, .m3, .m4: return 512
+    case .m5: return 2048
+    case .unknown: return nil
+    }
+}
+
+/// Peak FP16 throughput in FLOP/s = gpuCores × FLOP/core/cycle × clockGHz × 1e9.
+/// Returns 0 for unknown family/tier or missing cores ⇒ seeding skipped.
+internal func peakFp16Flops(family: ChipFamily, tier: ChipTier, gpuCores: UInt32) -> Double {
+    guard gpuCores > 0,
+          let clock = gpuClockGHz(family: family, tier: tier),
+          let perCore = flopPerCorePerCycle(family: family)
+    else { return 0 }
+    return Double(gpuCores) * perCore * clock * 1e9
+}
+
+/// Roofline ridge point in FLOP/byte = peak FP16 FLOPS ÷ memory bandwidth.
+/// Higher ridge ⇒ a larger prefill chunk is needed to become compute-bound.
+/// Returns 0 when peak or bandwidth is unknown ⇒ seeding skipped.
+internal func rooflineRidge(
+    family: ChipFamily, tier: ChipTier, gpuCores: UInt32, memoryBandwidthGbs: UInt32
+) -> Double {
+    let peak = peakFp16Flops(family: family, tier: tier, gpuCores: gpuCores)
+    guard peak > 0, memoryBandwidthGbs > 0 else { return 0 }
+    return peak / (Double(memoryBandwidthGbs) * 1e9)
+}
+
+public extension HardwareInfo {
+    /// Estimated peak FP16 throughput (FLOP/s). 0 ⇒ unknown hardware.
+    var estimatedPeakFp16Flops: Double {
+        peakFp16Flops(family: chipFamily, tier: chipTier, gpuCores: gpuCores)
+    }
+
+    /// Roofline ridge point (FLOP/byte). 0 ⇒ unknown hardware.
+    var rooflineRidgeFlopPerByte: Double {
+        rooflineRidge(
+            family: chipFamily, tier: chipTier,
+            gpuCores: gpuCores, memoryBandwidthGbs: memoryBandwidthGbs
+        )
+    }
+}
+
 // MARK: - Errors
 
 public enum HardwareError: Error, CustomStringConvertible {

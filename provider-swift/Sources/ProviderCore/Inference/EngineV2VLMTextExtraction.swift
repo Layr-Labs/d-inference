@@ -101,17 +101,10 @@ enum EngineV2VLMTextExtraction {
 
     /// Result of one extraction: the CBv2-adapted text model (sharing the
     /// wrapper's weight arrays) plus the parity probe's max |Δlogit| for the
-    /// slot factory's log line (nil when the parity gate was disabled), the
-    /// number of MoE layers whose fused gate+up cache is shared between
-    /// the wrapper and the extracted model (the v0.7.3 black-hole fix), and
-    /// the MEASURED total bytes of that fused cache — module-retained
-    /// active memory the slot factory must net out of the v2 engine's
-    /// weights-derived KV admission ceiling (PR#508 finding 2).
+    /// slot factory's log line (nil when the parity gate was disabled).
     struct Extraction {
         let model: Gemma4TextModel
         let parityMaxAbsLogitDiff: Float?
-        let sharedFusedMoELayerCount: Int
-        let fusedMoECacheBytes: Int
     }
 
     /// Build an MLXLLM `Gemma4TextModel` over the weight arrays of a loaded
@@ -162,24 +155,7 @@ enum EngineV2VLMTextExtraction {
         try skeleton.update(
             parameters: ModuleParameters.unflattened(textWeights), verify: [.all])
 
-        // 4. Share the MoE fused gate+up caches (v0.7.3 — the 64 GB
-        //    black-hole fix). `MLXLMCommon.SwitchGLU` lazily concatenates a
-        //    fused copy of its gate+up expert weights on FIRST FORWARD and
-        //    retains it on the module (~540 MB/layer, ~15 GiB model-wide on
-        //    gemma-4-26b-8bit). The wrapper's tree and this extracted tree
-        //    each hold their own SwitchGLU instances, so without sharing the
-        //    load-time parity probe below (or, with the gate disabled, the
-        //    first live request on each path) builds TWO identical multi-GiB
-        //    copies — pushing weights+caches past the 90% unified-memory cap
-        //    on 64 GB (8-bit) and 36 GB (qat-4bit) boxes, after which the
-        //    shared KV gate rejected every request (the v0.7.2 incident).
-        //    Pairing wrapper↔extracted instances keeps the total at ONE
-        //    fused copy, built eagerly here where the load path's admission
-        //    guards can see it. Runs before the probe so neither probe
-        //    forward can trigger a private build.
-        let sharedFusedLayers = shareMoEFusedCaches(wrapper: wrapper, extracted: skeleton)
-
-        // 5. Load-time forward parity gate (env-gated, default on).
+        // 4. Load-time forward parity gate (env-gated, default on).
         var parityDiff: Float? = nil
         if parityCheckEnabled(environment: environment) {
             // Return the probe's transient buffers to the OS before the load
@@ -195,78 +171,7 @@ enum EngineV2VLMTextExtraction {
                 wrapper: wrapper, extracted: skeleton, vocabSize: textConfig.vocabSize)
         }
 
-        // Measure AFTER the probe: on the (defensive) path where some layer
-        // pair was NOT shared, the probe's forwards are what lazily built
-        // each tree's private cache, and the capacity derivation must see
-        // the full retained footprint either way.
-        let fusedBytes = fusedMoECacheBytes(of: [wrapper, skeleton])
-
-        return Extraction(
-            model: skeleton,
-            parityMaxAbsLogitDiff: parityDiff,
-            sharedFusedMoELayerCount: sharedFusedLayers,
-            fusedMoECacheBytes: fusedBytes)
-    }
-
-    /// Total bytes of MoE fused gate+up caches retained across `roots`,
-    /// counting each cache ONCE even when it is shared between trees
-    /// (`shareFusedGateUpCache` hands the SAME `MLXArray` instances to both
-    /// SwitchGLUs, so dedup is by weight-buffer identity). This is the
-    /// engine-retained residency overhead the v2 capacity derivation nets
-    /// out (`EngineV2KVSizing.netOfEngineResidentOverhead`) and the load
-    /// path records on the model slot — the fused arrays are plain module
-    /// properties, so they appear in neither `parameters()` sums nor
-    /// `scheduler.modelWeightBytes`. Zero for dense checkpoints and before
-    /// any cache is built.
-    static func fusedMoECacheBytes(of roots: [Module]) -> Int {
-        var seen = Set<ObjectIdentifier>()
-        var total = 0
-        for root in roots {
-            for (_, module) in root.namedModules() {
-                guard let glu = module as? SwitchGLU,
-                    let weight = glu.fusedGateUpWeightForVerification
-                else { continue }
-                guard seen.insert(ObjectIdentifier(weight)).inserted else { continue }
-                total += glu.fusedGateUpCacheBytes
-            }
-        }
-        return total
-    }
-
-    /// Pair every MoE `SwitchGLU` in the wrapper's language model with its
-    /// counterpart in the extracted text model (same dotted module path minus
-    /// the `language_model.` prefix — the exact re-keying the parameter
-    /// update used) and share ONE fused gate+up cache between each pair.
-    /// Returns the number of pairs shared. Zero for dense checkpoints (no
-    /// SwitchGLU anywhere) — and, defensively, when the two trees' module
-    /// paths ever diverge, in which case each side keeps its lazy build (the
-    /// pre-v0.7.2 behavior) rather than failing the extraction.
-    private static func shareMoEFusedCaches(
-        wrapper: MLXVLM.Gemma4, extracted: Gemma4TextModel
-    ) -> Int {
-        var extractedSwitchGLUs: [String: SwitchGLU] = [:]
-        for (path, module) in extracted.namedModules() {
-            if let glu = module as? SwitchGLU {
-                extractedSwitchGLUs[path] = glu
-            }
-        }
-        guard !extractedSwitchGLUs.isEmpty else { return 0 }
-
-        var shared = 0
-        for (path, module) in wrapper.namedModules() {
-            guard let wrapperGLU = module as? SwitchGLU,
-                path.hasPrefix(languageModelPrefix),
-                let extractedGLU =
-                    extractedSwitchGLUs[String(path.dropFirst(languageModelPrefix.count))]
-            else { continue }
-            // Counts only pairs where a cache actually exists and is shared —
-            // an ineligible layer (opt-out env, cache limit, non-quantized)
-            // propagates its no-fusion verdict but is not "shared".
-            if wrapperGLU.shareFusedGateUpCache(with: extractedGLU) {
-                shared += 1
-            }
-        }
-        return shared
+        return Extraction(model: skeleton, parityMaxAbsLogitDiff: parityDiff)
     }
 
     // MARK: - Steps

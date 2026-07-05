@@ -140,17 +140,13 @@ struct GemmaVLMEngineV2LiveTests {
 
     /// Stage (a): weight-sharing extraction + the load-time parity gate.
     ///
-    /// Three concerns, measured separately:
+    /// Two concerns, measured separately:
     ///   * WEIGHT-SHARING — extract with the parity gate OFF and require MLX
-    ///     active memory to grow by no more than the (single, shared) MoE
-    ///     fused gate+up cache plus tolerance. Skeleton construction is lazy;
-    ///     `update(parameters:)` re-points at the wrapper's arrays; the only
-    ///     legitimate load-time materialization is the ONE fused cache the
-    ///     extraction eagerly builds and shares wrapper↔extracted (v0.7.3).
-    ///     A second weight copy would show up as ≥ the model size.
-    ///   * FUSED-CACHE SHARING (the v0.7.2 64 GB black-hole regression) —
-    ///     every extracted SwitchGLU must hold the SAME fused arrays as its
-    ///     wrapper counterpart, not a private second concatenation.
+    ///     active memory to grow by no more than a small tolerance. Skeleton
+    ///     construction is lazy; `update(parameters:)` re-points at the
+    ///     wrapper's arrays; nothing multi-GiB may be retained (the removed
+    ///     SwitchGLU fused gate+up cache was the v0.7.2 black hole — a
+    ///     second weight copy would show up as ≥ the model size).
     ///   * PARITY GATE — extract again with the gate ON (production default)
     ///     and require it to pass and report a bounded max |Δlogit|. Both
     ///     extractions share the same wrapper arrays, so this is not a second
@@ -165,44 +161,14 @@ struct GemmaVLMEngineV2LiveTests {
             from: slot.model, modelDirectory: slot.directory,
             environment: ["DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK": "0"])
         #expect(noParity.parityMaxAbsLogitDiff == nil)
-        // The one legitimate materialization: the shared fused MoE cache.
-        let fusedBytes = slot.model.namedModules()
-            .compactMap { ($0.1 as? SwitchGLU)?.fusedGateUpCacheBytes }
-            .reduce(0, +)
         let growth = max(0, MLX.GPU.activeMemory - activeBefore)
-        let allowance = fusedBytes + 1_536 * 1024 * 1024
+        let allowance = 1_536 * 1024 * 1024
         #expect(
             growth < allowance,
             Comment(
                 rawValue: "extraction grew MLX active memory by \(growth) bytes "
-                    + "(> shared fused cache \(fusedBytes) + 1.5 GiB) — weights or the "
-                    + "fused MoE cache were duplicated instead of shared"))
-
-        // v0.7.2 black-hole regression: the extracted tree must ADOPT the
-        // wrapper's fused gate+up cache, never build its own copy.
-        #expect(
-            noParity.sharedFusedMoELayerCount > 0,
-            "MoE checkpoint extracted with zero shared fused-cache layers")
-        var extractedGLUs: [String: SwitchGLU] = [:]
-        for (path, module) in noParity.model.namedModules() {
-            if let glu = module as? SwitchGLU { extractedGLUs[path] = glu }
-        }
-        var verifiedPairs = 0
-        for (path, module) in slot.model.namedModules() {
-            guard let wrapperGLU = module as? SwitchGLU,
-                path.hasPrefix("language_model."),
-                let extractedGLU = extractedGLUs[String(path.dropFirst("language_model.".count))]
-            else { continue }
-            #expect(
-                wrapperGLU.fusedGateUpWeightForVerification != nil
-                    && wrapperGLU.fusedGateUpWeightForVerification
-                        === extractedGLU.fusedGateUpWeightForVerification,
-                Comment(
-                    rawValue: "fused gate+up cache not shared at \(path) — the extracted "
-                        + "tree built (or will lazily build) its own multi-GiB copy"))
-            verifiedPairs += 1
-        }
-        #expect(verifiedPairs == noParity.sharedFusedMoELayerCount)
+                    + "(> 1.5 GiB) — weights or a module cache were duplicated "
+                    + "instead of shared"))
 
         // Parity gate (production default env). Returns the model stages
         // (b)/(c) run on.
@@ -212,8 +178,7 @@ struct GemmaVLMEngineV2LiveTests {
             extraction.parityMaxAbsLogitDiff, "parity gate did not run under the default env")
         print(
             "[gemma-vlm-v2] \(slot.modelID) parity max |Δlogit| = \(diff), "
-                + "weight-share growth = \(growth) bytes, shared fused cache = \(fusedBytes) bytes "
-                + "across \(extraction.sharedFusedMoELayerCount) layer(s)")
+                + "weight-share growth = \(growth) bytes")
         return extraction
     }
 

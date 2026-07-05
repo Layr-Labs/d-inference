@@ -68,10 +68,7 @@ public actor EngineV2Runtime {
     /// from live inputs (`EngineV2KVSizing.liveEngineKVBytesBudget`).
     public struct FleetKVContext: Sendable {
         /// Σ resident model weights across ALL slots (v2 AND legacy),
-        /// including each bridge's own model — PLUS each slot's measured
-        /// engine-retained residency overhead (the shared MoE fused gate+up
-        /// cache a VLM extraction eagerly builds), which behaves like
-        /// weights for budget purposes but appears in no parameters() sum.
+        /// including each bridge's own model.
         public let totalResidentWeightBytes: UInt64
         /// Operator `memory_reserve_gb`, in bytes (see `EngineV2KVSizing`).
         public let configReserveBytes: UInt64

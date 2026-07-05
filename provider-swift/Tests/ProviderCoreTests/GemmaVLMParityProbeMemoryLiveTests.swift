@@ -6,31 +6,23 @@
 // permanently).
 //
 // ROOT CAUSE (measured on the real 8-bit checkpoint, 2026-07-03):
-// `MLXLMCommon.SwitchGLU` lazily concatenates a fused gate+up copy of its
-// quantized expert weights on FIRST FORWARD and retains it on the module
-// (~540 MB per MoE layer, ~15 GiB model-wide on gemma-4-26b-8bit). The
-// v0.7.2 VLM text extraction created a SECOND SwitchGLU tree over the same
-// weights, and the load-time parity probe ran one forward through EACH tree
-// — materializing TWO ~15 GiB fused copies before the first request:
+// `MLXLMCommon.SwitchGLU` used to lazily concatenate a fused gate+up copy
+// of its quantized expert weights on FIRST FORWARD and retain it on the
+// module (~540 MB per MoE layer, ~15 GiB model-wide on gemma-4-26b-8bit).
+// The v0.7.2 VLM text extraction created a SECOND SwitchGLU tree over the
+// same weights, and the load-time parity probe ran one forward through
+// EACH tree — materializing TWO ~15 GiB fused copies before the first
+// request and pushing the box past the 90% unified-memory cap forever.
 //
-//     26.04 GiB (weights) + 15.06 (wrapper fused) + 15.07 (extracted fused)
-//     = 56.17 GiB active  vs  57.6 GiB cap (0.9 × 64 GB)
-//
-// → `UnifiedMemoryCap.liveKVHeadroomBytes` ≈ 0 forever. MLX `clearCache`
-// cannot reclaim module-retained ACTIVE memory, so the KVPoolReclaimer
-// self-heal never helped, while the engine's own ledger stayed idle — the
-// two-ledgers-disagree signature. Deterministic on any box where
-// weights + 2×fusedCache crosses the cap (64 GB/8-bit, 36 GB/qat-4bit).
-//
-// THE FIX (v0.7.3): the extraction eagerly builds ONE fused cache and
-// shares it wrapper↔extracted (`SwitchGLU.shareFusedGateUpCache`), so the
-// load-time footprint returns to the pre-v0.7.2 steady state
-// (weights + ONE fused cache — what a 0.7.1 box reached after its first
-// request). This test asserts, on the real checkpoint:
+// The fused cache has since been DELETED from SwitchGLU (benchmarks showed
+// ~0% decode win at its only active shape, B=1 solo decode, for 8–15 GiB
+// of always-resident memory). The regression therefore tightens: the
+// extraction + parity probe must retain (almost) NOTHING beyond the
+// already-resident weights. This test asserts, on the real checkpoint:
 //
 //   1. GROWTH BOUND — extraction WITH the parity probe (production default)
-//      grows MLX active memory by at most ONE fused cache (+ tolerance),
-//      not two.
+//      grows MLX active memory by no more than a small tolerance (rope
+//      tables / compiled-graph constants) — no multi-GiB retained state.
 //   2. STEADY STATE AT LOAD — re-running both probe forwards afterwards
 //      grows active memory by ~nothing: no lazy build is waiting to fire
 //      mid-serving.
@@ -38,6 +30,10 @@
 //      state through a simulated 64 GB profile admits a typical worst-case
 //      request reservation (the incident's first-request rejection,
 //      inverted).
+//   4. CAPACITY CONSISTENCY — the weights-derived v2 static ceiling equals
+//      the shared gate's live headroom on the same profile: with no
+//      engine-retained overhead there is nothing to net out, and the
+//      heartbeat max and the gate agree by construction.
 //
 // Gated like the other multi-GB Gemma tests: DARKBLOOM_LIVE_MLX_TESTS +
 // DARKBLOOM_LIVE_MLX_GEMMA; skipped cleanly when no checkpoint is cached.
@@ -55,8 +51,8 @@ import Testing
 struct GemmaVLMParityProbeMemoryLiveTests {
 
     /// The incident checkpoint (catalog id `gemma-4-26b-8bit`); falls back to
-    /// the qat-4bit build when only that one is cached — the fused-cache
-    /// sharing invariant is checkpoint-independent.
+    /// the qat-4bit build when only that one is cached — the no-retained-
+    /// growth invariant is checkpoint-independent.
     private static let preferredModelIDs = [
         LiveInferenceFixtures.gemmaModelID,
         "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
@@ -145,36 +141,27 @@ struct GemmaVLMParityProbeMemoryLiveTests {
         let extraction = try EngineV2VLMTextExtraction.extractTextModel(
             from: slot.model, modelDirectory: slot.directory)
         #expect(extraction.parityMaxAbsLogitDiff != nil)
-        #expect(extraction.sharedFusedMoELayerCount > 0)
 
         let activeAfter = MLX.GPU.activeMemory
         let cacheAfter = MLX.GPU.cacheMemory
         let activeGrowth = max(0, activeAfter - activeBefore)
-        // ONE shared fused MoE cache is the only legitimate retained growth.
-        let fusedBytes = slot.model.namedModules()
-            .compactMap { ($0.1 as? SwitchGLU)?.fusedGateUpCacheBytes }
-            .reduce(0, +)
-        // The extraction's own measurement — what the slot factory nets out
-        // of the v2 KV ceiling (PR#508 finding 2) — must agree with the
-        // wrapper-side sum (shared arrays, counted once).
-        #expect(extraction.fusedMoECacheBytes == fusedBytes)
-        #expect(extraction.fusedMoECacheBytes > 0)
         print(
             "[parity-mem] post-extraction: active=\(Self.gib(activeAfter)) "
-                + "cache=\(Self.gib(cacheAfter)) activeGrowth=\(Self.gib(activeGrowth)) "
-                + "sharedFusedCache=\(Self.gib(fusedBytes)) "
-                + "layers=\(extraction.sharedFusedMoELayerCount)")
+                + "cache=\(Self.gib(cacheAfter)) activeGrowth=\(Self.gib(activeGrowth))")
 
-        // 1. GROWTH BOUND: at most ONE fused cache (+ 2 GiB tolerance for
-        //    rope tables / compiled-graph constants / probe stragglers).
-        //    Pre-fix, this measured fusedBytes × 2 (30.13 GiB on 8-bit).
+        // 1. GROWTH BOUND: the extraction shares the wrapper's weight arrays
+        //    and retains no engine-side caches, so the only legitimate
+        //    growth is small one-time state (rope tables, compiled-graph
+        //    constants, probe stragglers). Pre-v0.7.3 this measured ~30 GiB
+        //    (two fused copies); with the fused cache deleted outright the
+        //    bar is a flat 2 GiB.
         let tolerance = 2 * 1024 * 1024 * 1024
         #expect(
-            activeGrowth < fusedBytes + tolerance,
+            activeGrowth < tolerance,
             Comment(
                 rawValue: "extraction + parity probe retained \(Self.gib(activeGrowth)) "
-                    + "(> one shared fused cache \(Self.gib(fusedBytes)) + 2 GiB) — a second "
-                    + "fused/weight copy is being built (the v0.7.2 black hole)"))
+                    + "(> 2 GiB) — a weight or cache copy is being built "
+                    + "(the v0.7.2 black-hole shape)"))
         //    The pool must also come back trimmed (post-probe clearCache).
         #expect(
             cacheAfter < 1 * 1024 * 1024 * 1024,
@@ -240,46 +227,31 @@ struct GemmaVLMParityProbeMemoryLiveTests {
         await budget.release(requestID: "incident-probe")
         #expect(await budget.reservationIDsForTesting().isEmpty)
 
-        // 4. CAPACITY CONSISTENCY (PR#508 finding 2): the v2 static ceiling —
-        //    the weights-derived grant netted of the MEASURED fused cache,
-        //    exactly what the slot factory now hands `makeProductionEngine`
-        //    and the heartbeat advertises — must equal the shared gate's
-        //    live headroom on the same simulated 64 GB profile. Pre-fix the
-        //    unadjusted grant exceeded that headroom by the cache size
-        //    (~1.7×), so the coordinator over-routed into gate rejects.
+        // 4. CAPACITY CONSISTENCY: with no engine-retained overhead, the v2
+        //    static ceiling derived from the live resident set IS the shared
+        //    gate's headroom on the same simulated 64 GB profile — heartbeat
+        //    max, engine admission, and the gate agree with nothing netted.
         MLX.Stream().synchronize()
         MLX.Memory.clearCache()
         let mlxUsedNow =
             UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
-        // Resident weights as the static derivation would see them: live MLX
-        // usage minus the (measured) engine-retained cache.
-        let residentWeights =
-            mlxUsedNow > UInt64(extraction.fusedMoECacheBytes)
-            ? mlxUsedNow - UInt64(extraction.fusedMoECacheBytes) : 0
-        let baseCeiling = EngineV2KVSizing.engineKVBytesCapacity(
-            newModelWeightBytes: Int(min(residentWeights, UInt64(Int.max))),
+        let ceiling = EngineV2KVSizing.engineKVBytesCapacity(
+            newModelWeightBytes: Int(min(mlxUsedNow, UInt64(Int.max))),
             coResidentWeightBytes: 0,
             existingEngineKVCapacities: [],
             physicalBytes: totalBytes)
-        let grantedCeiling = EngineV2KVSizing.netOfEngineResidentOverhead(
-            baseCeiling, overheadBytes: extraction.fusedMoECacheBytes)
         let gateHeadroom = UnifiedMemoryCap.liveKVHeadroomBytes(
             physicalBytes: totalBytes,
             mlxUsedBytes: mlxUsedNow,
             systemAvailableBytes: .max)
         print(
-            "[parity-mem] 64GB-profile capacity: base=\(Self.gib(baseCeiling)) "
-                + "granted=\(Self.gib(grantedCeiling)) gateHeadroom=\(Self.gib(Int(gateHeadroom)))")
+            "[parity-mem] 64GB-profile capacity: ceiling=\(Self.gib(ceiling)) "
+                + "gateHeadroom=\(Self.gib(Int(gateHeadroom)))")
         #expect(
-            UInt64(grantedCeiling) == gateHeadroom,
+            UInt64(ceiling) == gateHeadroom,
             Comment(
-                rawValue: "advertised v2 ceiling \(Self.gib(grantedCeiling)) != shared-gate "
+                rawValue: "advertised v2 ceiling \(Self.gib(ceiling)) != shared-gate "
                     + "headroom \(Self.gib(Int(gateHeadroom))) — heartbeat max and the gate "
                     + "would disagree (the finding-2 over-routing shape)"))
-        #expect(
-            UInt64(baseCeiling) > gateHeadroom,
-            Comment(
-                rawValue: "pre-fix (weights-only) ceiling no longer exceeds the gate headroom "
-                    + "— the regression premise vanished; re-derive this stage"))
     }
 }

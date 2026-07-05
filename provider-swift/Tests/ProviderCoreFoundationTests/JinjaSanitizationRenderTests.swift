@@ -58,6 +58,20 @@ final class JinjaSanitizationRenderTests: XCTestCase {
         XCTAssertNoThrow(try Value(any: sanitizeForJinja(schema)))
     }
 
+    func testHarmonyChannelTagsStripBeforeValueConversion() throws {
+        let framed = "<|channel|>analysis<|message|>think<|end|><|channel|>final<|message|>Answer"
+        var message: [String: Any] = ["role": "assistant", "content": framed]
+        message["content"] = stripHarmonyChannelFraming(fromAssistantContent: framed)
+
+        let sanitized = sanitizeForJinja(message)
+        XCTAssertNoThrow(try Value(any: sanitized))
+
+        let sanitizedMessage = sanitized as? [String: Any]
+        let content = sanitizedMessage?["content"] as? String
+        XCTAssertEqual(content, "Answer")
+        XCTAssertFalse(content?.contains("<|channel|>") ?? true)
+    }
+
     // MARK: - Scan-time self-check renders the null fixtures
 
     /// A template that actively dereferences the null-prone fields — the
@@ -99,5 +113,10 @@ final class JinjaSanitizationRenderTests: XCTestCase {
     func testCanonicalFixturesIncludeNullBearingToolFlow() {
         let names = TemplateRenderCheck.canonicalFixtures(includeMultimodal: false).map(\.name)
         XCTAssertTrue(names.contains("tool_flow_with_nulls"))
+    }
+
+    func testCanonicalFixturesIncludeAssistantChannelTags() {
+        let names = TemplateRenderCheck.canonicalFixtures(includeMultimodal: false).map(\.name)
+        XCTAssertTrue(names.contains("assistant_channel_tags"))
     }
 }

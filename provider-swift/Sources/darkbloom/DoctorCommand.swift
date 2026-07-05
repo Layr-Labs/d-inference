@@ -227,7 +227,6 @@ private struct ProviderAttestation: Decodable {
     let trustLevel: String
     let status: String
     let mdmVerified: Bool
-    let acmeVerified: Bool
     let mdaVerified: Bool
     let secureEnclave: Bool
     let sipEnabled: Bool
@@ -241,7 +240,6 @@ private struct ProviderAttestation: Decodable {
         case trustLevel = "trust_level"
         case status
         case mdmVerified = "mdm_verified"
-        case acmeVerified = "acme_verified"
         case mdaVerified = "mda_verified"
         case secureEnclave = "secure_enclave"
         case sipEnabled = "sip_enabled"
@@ -321,7 +319,6 @@ func buildCoordinatorDoctorChecks(
         let status: CheckStatus = provider.trustLevel == "hardware" ? .pass : .warn
         let proofs = [
             provider.mdmVerified ? "mdm" : nil,
-            provider.acmeVerified ? "acme" : nil,
             provider.mdaVerified ? "mda" : nil,
         ].compactMap { $0 }.joined(separator: ",")
         // When still self_signed, spell out that the MDM SecurityInfo proof is
@@ -352,7 +349,6 @@ private func providerTrustSort(_ lhs: ProviderAttestation, _ rhs: ProviderAttest
         if provider.status == "online" { total += 100 }
         if provider.trustLevel == "hardware" { total += 50 }
         if provider.mdaVerified { total += 10 }
-        if provider.acmeVerified { total += 5 }
         if provider.mdmVerified { total += 5 }
         return total
     }

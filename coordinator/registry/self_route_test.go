@@ -2,6 +2,8 @@ package registry
 
 import (
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func setProviderAccount(p *Provider, accountID string) {
@@ -151,7 +153,7 @@ func TestOwnedProviderSummary(t *testing.T) {
 	a2.Status = StatusOffline
 	a2.mu.Unlock()
 
-	online, serves := reg.OwnedProviderSummary("acct-A", model)
+	online, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{}, false)
 	if online != 1 {
 		t.Fatalf("acct-A online=%d, want 1 (a1 online, a2 offline)", online)
 	}
@@ -160,7 +162,7 @@ func TestOwnedProviderSummary(t *testing.T) {
 	}
 
 	// Unknown model: online still counts, servesModel drops to 0.
-	online, serves = reg.OwnedProviderSummary("acct-A", "model-not-served")
+	online, serves = reg.OwnedProviderSummary("acct-A", "model-not-served", RequestTraits{}, false)
 	if online != 1 {
 		t.Fatalf("acct-A online=%d for unknown model, want 1", online)
 	}
@@ -169,12 +171,12 @@ func TestOwnedProviderSummary(t *testing.T) {
 	}
 
 	// An account with no providers gets zeros.
-	if online, serves = reg.OwnedProviderSummary("acct-none", model); online != 0 || serves != 0 {
+	if online, serves = reg.OwnedProviderSummary("acct-none", model, RequestTraits{}, false); online != 0 || serves != 0 {
 		t.Fatalf("acct-none summary=(%d,%d), want (0,0)", online, serves)
 	}
 
 	// Empty account never matches.
-	if online, serves = reg.OwnedProviderSummary("", model); online != 0 || serves != 0 {
+	if online, serves = reg.OwnedProviderSummary("", model, RequestTraits{}, false); online != 0 || serves != 0 {
 		t.Fatalf("empty account summary=(%d,%d), want (0,0)", online, serves)
 	}
 }
@@ -341,4 +343,239 @@ func lowerTrust(p *Provider, level TrustLevel) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.TrustLevel = level
+}
+
+// TestSelfRouteVisionRoutesToOwnedOffCatalogVLM verifies that a self-route
+// media request reaches the owner's off-catalog VLM: the owner context that
+// admits an off-catalog model past the routable gate must also carry through
+// the vision gate, or the model would be listed/accepted but never selectable
+// for image/video input. The same off-catalog VLM stays invisible to public
+// media requests.
+func TestSelfRouteVisionRoutesToOwnedOffCatalogVLM(t *testing.T) {
+	reg := New(testLogger())
+	model := "local/off-catalog-vlm"
+
+	mine := makeSchedulerProvider(t, reg, "mine", model, 100)
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", IsVision: true}}
+	mine.mu.Unlock()
+	setProviderAccount(mine, "acct-A")
+	reg.SetModelCatalog([]CatalogEntry{{ID: "catalog-only-model"}})
+
+	owner := &PendingRequest{
+		RequestID:          "req-vlm",
+		Model:              model,
+		RequestedMaxTokens: 128,
+		SelfRouteOnly:      true,
+		OwnerAccountID:     "acct-A",
+		RequiresVision:     true,
+	}
+	selected, decision := reg.ReserveProviderEx(model, owner)
+	if selected == nil {
+		t.Fatalf("owner media request failed to reach their off-catalog VLM; decision=%+v", decision)
+	}
+	if selected.ID != mine.ID {
+		t.Fatalf("selected %q, want %q", selected.ID, mine.ID)
+	}
+
+	// Contrast: a public media request must not route to the off-catalog model.
+	public := &PendingRequest{RequestID: "req-pub", Model: model, RequestedMaxTokens: 128, RequiresVision: true}
+	if selected := reg.ReserveProvider(model, public); selected != nil {
+		t.Fatalf("public media request reached off-catalog model on %q", selected.ID)
+	}
+
+	// A text-only off-catalog build must still be rejected for media, even for
+	// its owner — the owner context relaxes the catalog filter, not the
+	// vision-capability requirement.
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", IsVision: false}}
+	mine.mu.Unlock()
+	if selected, _ := reg.ReserveProviderEx(model, owner); selected != nil {
+		t.Fatalf("owner media request reached a text-only build on %q", selected.ID)
+	}
+}
+
+// TestSelfRouteOffCatalogFitGateUsesAdvertisedSize verifies that the
+// hardware-fit gate does not fail open for an off-catalog model: with no
+// catalog sizing, the provider-advertised SizeBytes must be used, so a local
+// model that can never fit the machine is rejected deterministically as
+// model-too-large instead of dispatching into a provider-side load failure.
+func TestSelfRouteOffCatalogFitGateUsesAdvertisedSize(t *testing.T) {
+	reg := New(testLogger())
+	model := "local/off-catalog-huge"
+
+	mine := makeSchedulerProvider(t, reg, "mine", model, 100)
+	mine.mu.Lock()
+	// 200 GB advertised weights on a 64 GB machine, and the model is NOT
+	// resident (slot unknown) so the cold-load fit gate applies.
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", SizeBytes: 200_000_000_000}}
+	mine.BackendCapacity.Slots[0].State = "unknown"
+	mine.mu.Unlock()
+	setProviderAccount(mine, "acct-A")
+	reg.SetModelCatalog([]CatalogEntry{{ID: "catalog-only-model"}})
+
+	owner := &PendingRequest{
+		RequestID:          "req-huge",
+		Model:              model,
+		RequestedMaxTokens: 128,
+		SelfRouteOnly:      true,
+		OwnerAccountID:     "acct-A",
+	}
+	selected, decision := reg.ReserveProviderEx(model, owner)
+	if selected != nil {
+		t.Fatalf("selected %q for a 200GB model on a 64GB machine; fit gate failed open", selected.ID)
+	}
+	if decision.ModelTooLargeRejections != 1 {
+		t.Fatalf("ModelTooLargeRejections=%d, want 1; decision=%+v", decision.ModelTooLargeRejections, decision)
+	}
+
+	// A right-sized off-catalog model on the same machine routes fine.
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", SizeBytes: 5_000_000_000}}
+	mine.mu.Unlock()
+	if selected, decision := reg.ReserveProviderEx(model, owner); selected == nil {
+		t.Fatalf("right-sized off-catalog model failed to route; decision=%+v", decision)
+	}
+}
+
+// TestSelfRouteCatalogModelKeepsWeightHashGate verifies that the owner
+// self-route exemption widens WHICH models are reachable (off-catalog local
+// models) without lifting the weight-hash tamper tripwire on builds the
+// catalog DOES track: an owned box advertising a catalog model with a
+// mismatched weight hash stays unroutable even for its owner.
+func TestSelfRouteCatalogModelKeepsWeightHashGate(t *testing.T) {
+	reg := New(testLogger())
+	model := "catalog-model"
+
+	mine := makeSchedulerProvider(t, reg, "mine", model, 100)
+	setProviderAccount(mine, "acct-A")
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, WeightHash: "expected-hash"}})
+
+	owner := &PendingRequest{
+		RequestID:          "req-hash",
+		Model:              model,
+		RequestedMaxTokens: 128,
+		SelfRouteOnly:      true,
+		OwnerAccountID:     "acct-A",
+	}
+
+	// Advertised hash disagrees with the catalog: blocked, owner or not.
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", WeightHash: "tampered-hash"}}
+	mine.mu.Unlock()
+	if selected, _ := reg.ReserveProviderEx(model, owner); selected != nil {
+		t.Fatalf("owner self-route reached a catalog model with mismatched weight hash on %q", selected.ID)
+	}
+	// List/route agreement: the unroutable stale-hash build must not be
+	// advertised by OwnedModels either (a listed model every request then
+	// fails to dispatch is worse than an absent one).
+	if listed := reg.OwnedModels("acct-A"); len(listed) != 0 {
+		t.Fatalf("OwnedModels advertises unroutable stale-hash build: %+v", listed)
+	}
+
+	// Matching hash routes.
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", WeightHash: "expected-hash"}}
+	mine.mu.Unlock()
+	if selected, decision := reg.ReserveProviderEx(model, owner); selected == nil {
+		t.Fatalf("hash-matching catalog model failed to self-route; decision=%+v", decision)
+	}
+	if listed := reg.OwnedModels("acct-A"); len(listed) != 1 || listed[0].ID != model {
+		t.Fatalf("OwnedModels = %+v, want the hash-matching catalog build %q", listed, model)
+	}
+
+	// A provider that omits the hash entirely is admitted (grading happens at
+	// registration; an absent hash is not a mismatch) — unchanged semantics of
+	// modelAllowedByCatalogLocked.
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
+	mine.mu.Unlock()
+	if selected, decision := reg.ReserveProviderEx(model, owner); selected == nil {
+		t.Fatalf("hash-less catalog model failed to self-route; decision=%+v", decision)
+	}
+}
+
+// TestOwnedProviderSummaryAppliesTraitAndVisionGates verifies the owner
+// preflight matches the dispatch-time gates for the REQUEST's shape: a tool
+// call to an owned box below the tools capability floor, or a media request to
+// a text-only build, must report servesModel=0 (fast 503 with the real cause)
+// instead of passing preflight, queueing 120s, and dying as machine_busy.
+func TestOwnedProviderSummaryAppliesTraitAndVisionGates(t *testing.T) {
+	reg := New(testLogger())
+	model := "traits-summary-model"
+
+	mine := makeSchedulerProvider(t, reg, "mine", model, 100)
+	setProviderAccount(mine, "acct-A")
+
+	// Below the tools version floor (0.6.3): plain requests serve, tool
+	// requests don't.
+	mine.mu.Lock()
+	mine.Version = "0.6.0"
+	mine.mu.Unlock()
+	if _, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{}, false); serves != 1 {
+		t.Fatalf("plain request servesModel=%d, want 1", serves)
+	}
+	if _, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{HasTools: true}, false); serves != 0 {
+		t.Fatalf("tools request to below-floor box servesModel=%d, want 0", serves)
+	}
+
+	// At/above the floor, tool requests serve again.
+	mine.mu.Lock()
+	mine.Version = "0.6.3"
+	mine.mu.Unlock()
+	if _, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{HasTools: true}, false); serves != 1 {
+		t.Fatalf("tools request to at-floor box servesModel=%d, want 0 — floor gate stuck", serves)
+	}
+
+	// Media requires a vision-capable build; a text-only advertisement fails
+	// the vision leg, a VLM build passes it (owner context: off-catalog OK).
+	if _, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{}, true); serves != 0 {
+		t.Fatalf("media request to text-only build servesModel=%d, want 0", serves)
+	}
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", IsVision: true}}
+	mine.mu.Unlock()
+	if _, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{}, true); serves != 1 {
+		t.Fatalf("media request to VLM build servesModel=%d, want 1", serves)
+	}
+}
+
+// TestOwnedModelsExcludesRenderBrokenBuilds: list/route agreement for the
+// template-render gate — an advertised build with an explicit
+// template_render_ok=false is fenced at dispatch for every request shape, so
+// OwnedModels (which feeds /v1/models and the key picker) must not list it.
+// A nil tri-state (pre-0.6.5 provider, no opinion) stays listed.
+func TestOwnedModelsExcludesRenderBrokenBuilds(t *testing.T) {
+	reg := New(testLogger())
+	model := "render-broken-model"
+
+	mine := makeSchedulerProvider(t, reg, "mine", model, 100)
+	setProviderAccount(mine, "acct-A")
+
+	broken := false
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", TemplateRenderOK: &broken}}
+	mine.mu.Unlock()
+	if listed := reg.OwnedModels("acct-A"); len(listed) != 0 {
+		t.Fatalf("OwnedModels lists render-broken build: %+v", listed)
+	}
+	// And the preflight agrees (base traits fence render-broken everywhere).
+	if _, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{}, false); serves != 0 {
+		t.Fatalf("preflight admits render-broken build: servesModel=%d", serves)
+	}
+
+	ok := true
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", TemplateRenderOK: &ok}}
+	mine.mu.Unlock()
+	if listed := reg.OwnedModels("acct-A"); len(listed) != 1 || listed[0].ID != model {
+		t.Fatalf("OwnedModels = %+v, want the render-OK build", listed)
+	}
+
+	mine.mu.Lock()
+	mine.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}} // nil tri-state
+	mine.mu.Unlock()
+	if listed := reg.OwnedModels("acct-A"); len(listed) != 1 {
+		t.Fatalf("OwnedModels = %+v, want the no-opinion build listed", listed)
+	}
 }

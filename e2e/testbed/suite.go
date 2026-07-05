@@ -74,6 +74,13 @@ type Provider struct {
 	Logger        *slog.Logger
 	ProviderIndex int
 	AuthDir       string
+	// StateDir is a per-instance temp dir that holds the provider's
+	// persisted state files (daemon-state.json, loaded-models.json).
+	// Without it every testbed provider shares the real
+	// ~/.darkbloom/loaded-models.json, so provider N+1 startup-preloads
+	// (and self-tests) whatever provider N was serving — cross-test
+	// state leakage that does not represent a fresh provider boot.
+	StateDir string
 
 	cmd    *os.Process
 	cancel context.CancelFunc
@@ -432,12 +439,29 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 		args = append(args, "--model", cfg.ModelID)
 	}
 
+	// Isolate the provider's persisted state per testbed instance. The
+	// provider defaults these files to ~/.darkbloom/, which is shared by
+	// every provider process on the machine (and across CI runs on a
+	// persistent runner): test 1's provider would persist its loaded-model
+	// set there, and test 2's freshly-booted provider would then
+	// startup-preload + self-test it — behavior a fresh boot must not have.
+	if p.StateDir == "" {
+		stateDir, err := os.MkdirTemp("",
+			"darkbloom-testbed-state-"+strconv.Itoa(p.ProviderIndex)+"-")
+		if err != nil {
+			return fmt.Errorf("create provider state dir: %w", err)
+		}
+		p.StateDir = stateDir
+	}
+
 	cmd := execCommandContext(ctx, p.BinaryPath, args...)
 	cmd.Stdout = &logWriter{logger: p.Logger, prefix: "provider:stdout"}
 	cmd.Stderr = &logWriter{logger: p.Logger, prefix: "provider:stderr"}
 	cmd.Env = append(os.Environ(),
 		"DARKBLOOM_PID_FILE=/tmp/darkbloom-testbed-"+strconv.Itoa(p.ProviderIndex)+".pid",
 		"DARKBLOOM_NO_UPDATE_CHECK=1",
+		"DARKBLOOM_STATE_FILE="+filepath.Join(p.StateDir, "daemon-state.json"),
+		"DARKBLOOM_LOADED_MODELS_FILE="+filepath.Join(p.StateDir, "loaded-models.json"),
 	)
 	if cfg.AuthTokenPath != "" {
 		cmd.Env = append(cmd.Env, "DARKBLOOM_AUTH_TOKEN_PATH="+cfg.AuthTokenPath)
@@ -481,6 +505,9 @@ func (p *Provider) Stop() {
 	}
 	if p.AuthDir != "" {
 		_ = os.RemoveAll(p.AuthDir)
+	}
+	if p.StateDir != "" {
+		_ = os.RemoveAll(p.StateDir)
 	}
 	p.Logger.Info("provider stopped")
 }

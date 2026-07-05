@@ -85,10 +85,9 @@ const FIX_TABLE: Record<string, FixAction> = {
     command: "darkbloom restart",
   },
   mda_missing: {
-    kind: "link",
-    label: "Finish Apple attestation",
-    href: "/providers/setup",
-    note: "Proves to consumers this is a real Apple device.",
+    kind: "guidance",
+    label: "Automatic — no setup needed",
+    note: "Earned automatically once the coordinator completes the Apple attestation, then reused across restarts. Keep the Mac awake and reachable if it stays pending.",
   },
   thermal_serious: {
     kind: "guidance",

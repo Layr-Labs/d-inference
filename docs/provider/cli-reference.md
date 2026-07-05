@@ -206,6 +206,27 @@ darkbloom autoupdate <enable|disable|status>
 
 This toggles `provider.auto_update` in `provider.toml`.
 
+## `darkbloom beta`
+
+Manage opt-in beta features. Beta features are off by default and config-backed
+(a TOML field), so they apply to the launchd daemon too — unlike environment
+variables, which the daemon does not inherit.
+
+```bash
+darkbloom beta list                 # all features + on/off (default subcommand)
+darkbloom beta status [feature]     # details for all features, or one
+darkbloom beta enable <feature>     # turn on (then: darkbloom restart)
+darkbloom beta disable <feature>    # turn off
+```
+
+| Feature | Effect |
+|---------|--------|
+| `kv-quant` | 8-bit KV cache for GPT-OSS / Gemma 4 (~1.9x more concurrent context); toggles `backend.kv_quant` |
+
+`enable`/`disable` read-modify-write the TOML config and report whether a restart
+is required. See [Beta Features](beta-features.md) for the full guide. `darkbloom
+beta list` also accepts `--json`.
+
 ## `darkbloom login`
 
 Link this machine to a Darkbloom account via RFC 8628 device-code flow.

@@ -5,7 +5,7 @@ import { GoogleAnalytics } from "@/components/GoogleAnalytics";
 import { Analytics } from "@vercel/analytics/next";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import { PrivyClientProvider } from "@/components/providers/PrivyClientProvider";
-import { VerificationModeProvider } from "@/lib/verification-mode";
+import { VerificationModeProvider } from "@/components/providers/verification-mode";
 import { TelemetryInitializer } from "@/components/TelemetryInitializer";
 import { DatadogRUM } from "@/components/DatadogRUM";
 
@@ -28,6 +28,18 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Preload the Louize hero weight — it renders the LCP heading on the
+            chat empty state and the /login hero, so fetching it eagerly cuts
+            LCP text delay and font-swap CLS (perf F12). */}
+        <link
+          rel="preload"
+          href="/fonts/Louize-Regular.otf"
+          as="font"
+          type="font/otf"
+          crossOrigin="anonymous"
+        />
+      </head>
       <body className="font-sans antialiased">
         <Analytics />
         <GoogleAnalytics />

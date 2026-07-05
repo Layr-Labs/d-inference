@@ -205,7 +205,6 @@ import Testing
             signature: "c2ln",
             statusSignature: "c3RhdHVz",
             publicKey: "cGs=",
-            hypervisorActive: true,
             rdmaDisabled: true,
             sipEnabled: true,
             secureBootEnabled: true,
@@ -222,6 +221,41 @@ import Testing
         let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: encoded)
         #expect(decoded == message)
     }
+}
+
+@Test func inferenceErrorEncodesErrorReasonOnlyWhenPresent() throws {
+    // DAR-341: the normalized `error_reason` rides the inference-error message.
+    // Present → snake_case key on the wire + round-trips back to the value.
+    let withReason = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
+        requestId: "req-error",
+        error: "(Jinja.TemplateException error 1.)",
+        statusCode: 500,
+        errorReason: "jinja_channel_tags"
+    ))
+    let withData = try ProviderProtocolCodec.encodeProviderMessage(withReason)
+    let withObject = try jsonObject(withData)
+    #expect(withObject["error_reason"] as? String == "jinja_channel_tags")
+
+    let decodedWith = try ProviderProtocolCodec.decodeProviderMessage(from: withData)
+    #expect(decodedWith == withReason)
+    guard case .inferenceError(let e) = decodedWith else { throw TestFailure.unexpectedMessage }
+    #expect(e.errorReason == "jinja_channel_tags")
+
+    // Absent (nil) → the key is OMITTED on the wire (mirrors Go `omitempty`) and
+    // round-trips back to nil.
+    let withoutReason = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
+        requestId: "req-error",
+        error: "model not loaded",
+        statusCode: 503
+    ))
+    let withoutData = try ProviderProtocolCodec.encodeProviderMessage(withoutReason)
+    let withoutObject = try jsonObject(withoutData)
+    #expect(withoutObject["error_reason"] == nil)
+
+    let decodedWithout = try ProviderProtocolCodec.decodeProviderMessage(from: withoutData)
+    #expect(decodedWithout == withoutReason)
+    guard case .inferenceError(let e2) = decodedWithout else { throw TestFailure.unexpectedMessage }
+    #expect(e2.errorReason == nil)
 }
 
 @Test func loadModelMessagesRoundTripWithCoordinator() throws {
@@ -616,6 +650,15 @@ import Testing
     #expect(decoded.queuedTokenBudget == 0)
     #expect(decoded.kvBytesPerToken == 0)
     #expect(decoded.modelLoadTimeMs == 0)
+    // Pre-instrumentation provider: wedge fields default to zero/false.
+    #expect(decoded.stepsExecuted == 0)
+    #expect(decoded.admits == 0)
+    #expect(decoded.firstTokensEmitted == 0)
+    #expect(decoded.secondsSinceLastStep == 0)
+    #expect(decoded.secondsSinceLastFirstToken == 0)
+    #expect(decoded.wedgeSuspected == false)
+    #expect(decoded.evalInFlightMs == 0)
+    #expect(decoded.idleClearInFlightMs == 0)
 }
 
 @Test func backendSlotCapacityDecodesMaxConcurrencyZero() throws {
@@ -655,13 +698,94 @@ import Testing
     #expect(object["queued_token_budget"] == nil)
     #expect(object["kv_bytes_per_token"] == nil)
     #expect(object["model_load_time_ms"] == nil)
+    // Wedge fields default to zero/false and must be omitted too.
+    #expect(object["steps_executed"] == nil)
+    #expect(object["admits"] == nil)
+    #expect(object["first_tokens_emitted"] == nil)
+    #expect(object["seconds_since_last_step"] == nil)
+    #expect(object["seconds_since_last_first_token"] == nil)
+    #expect(object["wedge_suspected"] == nil)
+    #expect(object["eval_in_flight_ms"] == nil)
+    #expect(object["idle_clear_in_flight_ms"] == nil)
 }
 
-@Test func privacyCapabilitiesDecodesMissingHypervisorActiveAsFalse() throws {
-    let raw = #"{"text_backend_inprocess":true,"text_proxy_disabled":true,"python_runtime_locked":true,"dangerous_modules_blocked":true,"sip_enabled":true,"anti_debug_enabled":true,"core_dumps_disabled":true,"env_scrubbed":true}"#
-    let decoded = try JSONDecoder().decode(PrivacyCapabilities.self, from: Data(raw.utf8))
+@Test func backendSlotCapacityRoundTripsWedgeFields() throws {
+    // The wedge signature: admits climbing, 0 first tokens, steps frozen.
+    let slot = BackendSlotCapacity(
+        model: "gpt-oss-20b",
+        state: "running",
+        numRunning: 0,
+        numWaiting: 0,
+        activeTokens: 0,
+        maxTokensPotential: 0,
+        stepsExecuted: 4321,
+        admits: 7,
+        firstTokensEmitted: 0,
+        secondsSinceLastStep: 12.5,
+        secondsSinceLastFirstToken: 13.0,
+        wedgeSuspected: true,
+        evalInFlightMs: 11_000,
+        idleClearInFlightMs: 1_500
+    )
 
-    #expect(decoded.hypervisorActive == false)
+    let data = try JSONEncoder().encode(slot)
+    let object = try jsonObject(data)
+    #expect(object["steps_executed"] as? Int == 4321)
+    #expect(object["admits"] as? Int == 7)
+    // 0 first tokens is the wedge signal — omitted on the wire (its ABSENCE,
+    // paired with admits>0, is what reveals the wedge).
+    #expect(object["first_tokens_emitted"] == nil)
+    #expect(object["seconds_since_last_step"] as? Double == 12.5)
+    #expect(object["seconds_since_last_first_token"] as? Double == 13.0)
+    #expect(object["wedge_suspected"] as? Bool == true)
+    #expect(object["eval_in_flight_ms"] as? Int == 11_000)
+    #expect(object["idle_clear_in_flight_ms"] as? Int == 1_500)
+
+    let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: data)
+    #expect(decoded == slot)
+}
+
+@Test func privacyCapabilitiesJSONOmitsHypervisorKeys() throws {
+    // The hypervisor concept was removed from the provider (it never uses
+    // hypervisors; the old field was a hardcoded-false trust signal). Pin
+    // that registration privacy_capabilities JSON carries NO hypervisor key.
+    let data = try JSONEncoder().encode(samplePrivacyCapabilities())
+    let object = try jsonObject(data)
+
+    #expect(object["hypervisor_active"] == nil)
+    #expect(object["hypervisorActive"] == nil)
+    // Sanity: the remaining capabilities still encode under snake_case keys.
+    #expect(object["text_backend_inprocess"] as? Bool == true)
+    #expect(object["env_scrubbed"] as? Bool == true)
+    #expect(object.count == 8)
+}
+
+@Test func attestationResponseJSONOmitsHypervisorKeys() throws {
+    // Challenge-response wire shape: no hypervisor_active key, ever -- the
+    // canonical status bytes (StatusCanonical) omit it too, so the coordinator
+    // and provider sign/verify the same bytes.
+    let message = ProviderMessage.attestationResponse(ProviderMessage.AttestationResponse(
+        nonce: "bm9uY2U=",
+        signature: "c2ln",
+        statusSignature: "c3RhdHVz",
+        publicKey: "cGs=",
+        rdmaDisabled: true,
+        sipEnabled: true,
+        secureBootEnabled: true,
+        binaryHash: "binaryhash",
+        activeModelHash: "modelhash",
+        runtimeHash: "runtimehash",
+        templateHashes: ["chatml": "templatehash"],
+        modelHashes: ["model": "weighthash"]
+    ))
+    let data = try ProviderProtocolCodec.encodeProviderMessage(message)
+    let object = try jsonObject(data)
+
+    #expect(object["hypervisor_active"] == nil)
+    #expect(object["hypervisorActive"] == nil)
+    // Sanity: the posture fields that remain still ride the response.
+    #expect(object["rdma_disabled"] as? Bool == true)
+    #expect(object["sip_enabled"] as? Bool == true)
 }
 
 @Test func heartbeatBackendCapacityEncodesSnakeCaseFields() throws {
@@ -781,8 +905,7 @@ private func samplePrivacyCapabilities() -> PrivacyCapabilities {
         sipEnabled: true,
         antiDebugEnabled: true,
         coreDumpsDisabled: true,
-        envScrubbed: true,
-        hypervisorActive: false
+        envScrubbed: true
     )
 }
 

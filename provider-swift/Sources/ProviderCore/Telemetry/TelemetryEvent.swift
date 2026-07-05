@@ -1,5 +1,5 @@
 /// Telemetry wire types -- mirror of
-/// `coordinator/internal/protocol/telemetry.go`.
+/// `coordinator/protocol/telemetry.go`.
 ///
 /// JSON shapes MUST match the Go definitions. Source, Severity, and Kind raw
 /// values are the exact strings the coordinator expects. Any mismatch silently
@@ -31,7 +31,9 @@ public enum TelemetrySeverity: String, Codable, Sendable {
 
 /// Coarse categorization for filtering in the admin UI.
 /// Raw values match `TelemetryKind` constants in Go.
-public enum TelemetryKind: String, Codable, Sendable {
+/// `CaseIterable` mirrors the Go `KnownKinds()` set so the symmetry test can
+/// pin the kind list + count across layers.
+public enum TelemetryKind: String, Codable, Sendable, CaseIterable {
     case panic
     case httpError = "http_error"
     case protocolError = "protocol_error"
@@ -43,6 +45,10 @@ public enum TelemetryKind: String, Codable, Sendable {
     /// Out-of-memory: a jetsam/crash-log OOM detected on the next launch, or a
     /// critical memory-pressure event observed before death.
     case oom
+    /// Engine-health diagnostics for the first-token wedge (model-load
+    /// milestones, periodic engine snapshots, wedge-suspected transitions). All
+    /// fields are NON-PRIVATE operational counters — see `WedgeMonitor`.
+    case engineHealth = "engine_health"
     case log
     case custom
 }
@@ -227,7 +233,7 @@ public struct AnyCodableValue: Codable, Sendable, CustomStringConvertible {
 
 /// Client-side allowlist. The coordinator enforces its own, but we preempt
 /// bandwidth waste. Keys must match the server list in
-/// `coordinator/internal/api/telemetry_handlers.go`.
+/// `coordinator/api/telemetry_handlers.go`.
 public enum TelemetryFieldFilter {
     private static let allowed: Set<String> = [
         "component", "operation", "duration_ms", "attempt", "endpoint",
@@ -239,6 +245,23 @@ public enum TelemetryFieldFilter {
         // OOM / memory-pressure fields (non-sensitive). Mirror in Go allowlist.
         "detect_source", "peak_memory_bytes", "report", "pressure",
         "available_bytes", "mlx_active_bytes", "memory_pressure", "in_flight",
+        // Engine-health / first-token-wedge diagnostics (non-sensitive
+        // operational counters). Mirror in Go + TS allowlists.
+        "steps_executed", "admits", "first_tokens_emitted",
+        "consecutive_admits_without_first_token", "seconds_since_last_step",
+        "seconds_since_last_first_token", "num_running", "wedge_suspected",
+        // Eval-in-flight + idle-clear + prefill-sampling-health diagnostics.
+        "eval_in_flight_ms", "longest_eval_ms", "evals_completed",
+        "idle_clear_in_flight_ms", "idle_clears_completed",
+        "prefill_samples_accepted", "prefill_samples_dropped_floor",
+        "prefill_samples_dropped_ceiling", "last_prefill_sample_tps",
+        "observed_prefill_tps_ewma",
+        // KV-budget sustained-rejection audit (v0.7.3 black-hole hardening):
+        // reservation ids/byte counts/ages + memory snapshot terms — pure
+        // operational bookkeeping, no prompt/response data. Mirror in Go + TS.
+        "streak_seconds", "reservation_count", "reserved_bytes",
+        "mlx_cache_bytes", "system_available_bytes", "reservations",
+        "request_id", "age_seconds",
     ]
 
     /// Filter a dictionary to only the keys the coordinator accepts.

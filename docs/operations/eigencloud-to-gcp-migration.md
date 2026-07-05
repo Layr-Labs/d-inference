@@ -11,8 +11,8 @@ Tickets: `DAR-69` (build CVM target) → `DAR-70` (extract + rehydrate sealed st
 1. [ ] A fully configured **dev GCP environment** already running (`deploy/gcp/*`) so the container image, startup scripts, and Secret Manager wiring are known-good.
 2. [ ] A **separate prod GCP project** with billing, IAM, and APIs enabled.
 3. [ ] The **state-export runbook** reviewed and the offline `age` identity generated. See [`state-export.md`](state-export.md).
-4. [ ] A decision on HA posture: CVMs can't live-migrate (`--maintenance-policy=TERMINATE`), so host maintenance reboots the box. With local-disk state (CA keys + BoltDB) there is **no clean multi-instance HA** — accept a single-CVM availability regression vs blue-green, or plan a maintenance-window posture.
-5. [ ] `DAR-105` policy sign-off: confirm that a one-shot in-TEE export of the CA key to an offline-held key is acceptable, or choose the alternative (re-key on GCP + full fleet re-enroll).
+4. [ ] A decision on HA posture: CVMs can't live-migrate (`--maintenance-policy=TERMINATE`), so host maintenance reboots the box. With local-disk state (MicroMDM BoltDB + push cert) there is **no clean multi-instance HA** — accept a single-CVM availability regression vs blue-green, or plan a maintenance-window posture.
+5. [ ] `DAR-105` policy sign-off: confirm that a one-shot in-TEE export of the MDM state (BoltDB + push key) to an offline-held key is acceptable, or choose the alternative (fresh MDM state on GCP + full fleet re-enroll).
 6. [ ] Confirmation that the domain stays `api.darkbloom.dev` for this move (scopes `DAR-243` out).
 
 ## The core idea: this is a state move, not a rebuild
@@ -29,7 +29,7 @@ The **dev environment already is the GCP target shape** (`deploy/gcp/*`: GCE VM 
 |---|---|
 | **Keep `api.darkbloom.dev`** — repoint DNS only | The MDM `ServerURL` is baked into every enrolled device's profile, and the provider binary self-heals to `wss://api.darkbloom.dev`. Same host = nothing to re-enroll or re-release. |
 | **Keep the same AWS RDS** (cross-cloud) | The store is DSN-portable → zero data migration; users/balances/releases/providers all just work. |
-| **Lift the sealed state faithfully** (`DAR-70`) | Same step-ca CA that signed device certs + same MicroMDM BoltDB → providers re-earn hardware trust normally. |
+| **Lift the sealed state faithfully** (`DAR-70`) | Same MicroMDM BoltDB (enrolled-device records + push cert) → providers re-earn hardware trust normally. (step-ca no longer needs lifting — the ACME leg was removed 2026-07-03; hardware trust is MDM SecurityInfo only.) |
 | **Carry `MNEMONIC` byte-identical** | Same X25519 `kid` on `/v1/encryption-key` → sealed senders don't break. |
 | **Stage + verify everything before the DNS flip; roll back by reverting DNS** | The cutover is a single, reversible DNS change with EigenCloud kept warm. |
 
@@ -62,17 +62,17 @@ curl https://<cvm-staging-host>/health
 
 ### Phase 2 — Extract the sealed state (`DAR-70`)
 
-Human ships the export build to EigenCloud and runs the one-shot extraction per [`state-export.md`](state-export.md). Output: an age-encrypted archive of `step-ca/**` + `micromdm/**`, decrypted offline.
+Human ships the export build to EigenCloud and runs the one-shot extraction per [`state-export.md`](state-export.md). Output: an age-encrypted archive of `micromdm/**` (plus any legacy `step-ca/**` present on the old disk — no longer needed since the ACME leg was removed 2026-07-03; destroy rather than migrate it), decrypted offline.
 
 ### Phase 3 — Rehydrate + verify on the CVM (no prod traffic yet)
 
-1. Land the decrypted `/data` at `/mnt/disks/userdata` **before** the coordinator's first boot (so `start.sh`'s `if [ ! -d /data/step-ca/config ]` guard preserves the real CA).
+1. Land the decrypted `/data` at `/mnt/disks/userdata` **before** the coordinator's first boot (so `start.sh` finds the real MicroMDM state and push cert instead of generating fresh ones).
 2. Inject `MNEMONIC` (byte-identical) + the full secret set.
 3. Boot the CVM on a **staging hostname**.
 4. Run the verification gates from [`state-export.md`](state-export.md):
    - `GET /v1/encryption-key` `kid` == prod EigenCloud's (proves `MNEMONIC` continuity).
    - A known-enrolled Mac pointed at the CVM completes a MicroMDM SecurityInfo round-trip and reaches hardware trust.
-   - SCEP re-enroll + ACME cert renewal chain to the carried step-ca.
+   - SCEP re-enroll succeeds against the carried MicroMDM state.
    - APNs attestor logs ENABLED; MDM webhook returns 200 (not 403).
 
 ### Phase 4 — Cutover (`DAR-71`)
@@ -104,7 +104,7 @@ flowchart TD
 |---|---|
 | `MNEMONIC` byte-identical | `curl https://<cvm>/v1/encryption-key \| jq .kid` matches prod EigenCloud |
 | Sealed state rehydrated | Known-enrolled Mac reaches hardware trust against the CVM |
-| CA continuity | SCEP re-enroll / ACME renewal succeeds |
+| SCEP continuity | SCEP re-enroll succeeds |
 | MDM continuity | APNs attestor ENABLED; MDM webhook 200 |
 | Traffic health | `/v1/stats` returns capacity; consumer chat round-trip succeeds |
 | No split-brain | Only one Stripe webhook target active during overlap |
@@ -113,7 +113,7 @@ flowchart TD
 
 - **Before DNS cutover:** do not flip DNS. Prod stays on EigenCloud.
 - **After DNS cutover:** revert the `api.darkbloom.dev` A-record to the EigenCloud IP. The fleet reconnects to the original coordinator with its original `/data` and the same RDS; trust re-earns normally.
-- **If the CVM is corrupted before rehydration:** stop it before first boot, fix `/mnt/disks/userdata`, and retry. If `start.sh` already initialized a fresh CA, wipe `/mnt/disks/userdata/step-ca/config` and re-export from EigenCloud.
+- **If the CVM is corrupted before rehydration:** stop it before first boot, fix `/mnt/disks/userdata`, and retry. If `start.sh` already generated fresh MicroMDM state, wipe `/mnt/disks/userdata/micromdm` and re-land the exported tree.
 
 ## Changing the domain (`darkbloom.dev → darkbloom.ai`) — DECOUPLE it
 
@@ -143,7 +143,7 @@ flowchart LR
 
 - [ ] `MNEMONIC` byte-identical (kid match verified) — **in `CRITICAL_VARS`**
 - [ ] `MICROMDM_API_KEY` present — **in `CRITICAL_VARS`** (empty ⇒ MicroMDM skipped ⇒ outage)
-- [ ] step-ca CA keys + MicroMDM BoltDB rehydrated (consistent snapshot; a real device reaches hardware trust)
+- [ ] MicroMDM BoltDB rehydrated (consistent snapshot; a real device reaches hardware trust) — step-ca keys no longer needed (ACME leg removed 2026-07-03)
 - [ ] `APNS_*` + `EIGENINFERENCE_MDM_WEBHOOK_SECRET` in Secret Manager (confirm prod has them)
 - [ ] RDS network path proven from GCP; `sslmode=require`
 - [ ] `--confidential-compute-type=SEV_SNP` + boot-time confidential assertion

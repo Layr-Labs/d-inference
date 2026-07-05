@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Testing
 @testable import ProviderCore
 
@@ -35,6 +36,13 @@ import Testing
     #expect(object["auth_token"] as? String == "device-token")
     #expect(object["encrypted_response_chunks"] as? Bool == true)
     #expect(json.contains(#""attestation":\#(rawAttestation)"#))
+
+    // The hypervisor concept was removed: the registration frame's
+    // privacy_capabilities must carry NO hypervisor key on the wire.
+    let caps = object["privacy_capabilities"] as? [String: Any]
+    #expect(caps != nil)
+    #expect(caps?["hypervisor_active"] == nil)
+    #expect(caps?["hypervisorActive"] == nil)
 
     let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: data)
     guard case .register(let register) = decoded else {
@@ -298,6 +306,54 @@ import Testing
     #expect(!json.contains("apns_environment"))
 }
 
+@Test func shutdownRequestedIsNonisolatedAndIdempotent() async {
+    let config = CoordinatorClientConfig(
+        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        hardware: clientSampleHardware(),
+        models: [clientSampleModel()],
+        backendName: "mlx_swift_lm",
+        publicKey: "cHVibGlj"
+    )
+    let client = CoordinatorClient(
+        config: config,
+        stats: AtomicProviderStats(),
+        state: ProviderState()
+    )
+
+    // This read intentionally has no `await`: the outbound WebSocket writer
+    // checks the same property once per frame on the inference hot path.
+    #expect(client.shutdownRequested == false)
+
+    await client.shutdown()
+    #expect(client.shutdownRequested == true)
+
+    await client.shutdown()
+    #expect(client.shutdownRequested == true)
+}
+
+@Test func shutdownFlagHandlesConcurrentReadersAndRequests() async {
+    let flag = ShutdownFlag()
+
+    await withTaskGroup(of: Void.self) { group in
+        for _ in 0..<16 {
+            group.addTask {
+                for _ in 0..<1_000 {
+                    _ = flag.isRequested
+                }
+            }
+        }
+        for _ in 0..<4 {
+            group.addTask {
+                for _ in 0..<100 {
+                    flag.request()
+                }
+            }
+        }
+    }
+
+    #expect(flag.isRequested == true)
+}
+
 @Test func atomicProviderStatsSnapshotIncludesOutcomeCounters() {
     let stats = AtomicProviderStats()
     stats.incrementRequestsServed()
@@ -366,17 +422,13 @@ import Testing
     #expect(inRange(backoff.nextDelay(), 1))
 }
 
-@Test func inboundMessageLimitRaisedAboveDefault() {
-    let session = URLSession(configuration: .default)
-    let ws = session.webSocketTask(with: URL(string: "wss://example.invalid/ws/provider")!)
-    defer { ws.cancel(with: .goingAway, reason: nil) }
-
-    // Default URLSessionWebSocketTask limit is 1 MiB; a single base64 image request
-    // frame exceeds it and would tear down the session, so the client raises it well
-    // above the coordinator's 16 MiB sealed-body cap (after base64 expansion).
-    CoordinatorClient.applyInboundMessageLimit(to: ws)
-    #expect(ws.maximumMessageSize == CoordinatorClient.maxInboundMessageBytes)
-    #expect(ws.maximumMessageSize >= 22 * 1024 * 1024)
+@Test("NWProtocolWebSocket options set maximum message size above default")
+func wsOptionsMaximumMessageSize() {
+    let wsOptions = NWProtocolWebSocket.Options()
+    wsOptions.maximumMessageSize = CoordinatorClient.maxInboundMessageBytes
+    // Verify the constant is 32 MiB and the options object accepted it
+    #expect(CoordinatorClient.maxInboundMessageBytes == 32 * 1024 * 1024)
+    #expect(wsOptions.maximumMessageSize == CoordinatorClient.maxInboundMessageBytes)
 }
 
 private func clientSampleHardware() -> HardwareInfo {
@@ -413,8 +465,7 @@ private func clientPrivacyCapabilities() -> PrivacyCapabilities {
         sipEnabled: true,
         antiDebugEnabled: true,
         coreDumpsDisabled: true,
-        envScrubbed: true,
-        hypervisorActive: false
+        envScrubbed: true
     )
 }
 

@@ -32,16 +32,23 @@ public extension MultiModelBatchSchedulerEngine {
         /// `vision_config`). When true, requests that carry image/video
         /// content are routed to the container's vision path.
         public let isVLM: Bool
+        /// ContinuousBatchingV2 bridge for this model (flag-gated). When
+        /// non-nil, text generation routes through the v2 engine instead of
+        /// `scheduler` — see `streamChatCompletion`. nil (the default, and
+        /// every fallback path) keeps the legacy path byte-identical.
+        public let engineV2Bridge: EngineV2Bridge?
 
         public init(
             scheduler: BatchScheduler, tokenizer: TokenizerHandle, modelType: String? = nil,
-            container: ModelContainer? = nil, isVLM: Bool = false
+            container: ModelContainer? = nil, isVLM: Bool = false,
+            engineV2Bridge: EngineV2Bridge? = nil
         ) {
             self.scheduler = scheduler
             self.tokenizer = tokenizer
             self.modelType = modelType
             self.container = container
             self.isVLM = isVLM
+            self.engineV2Bridge = engineV2Bridge
         }
     }
 
@@ -66,6 +73,9 @@ public extension MultiModelBatchSchedulerEngine {
         public let container: ModelContainer?
         /// Whether this model is a vision-language model.
         public let isVLM: Bool
+        /// ContinuousBatchingV2 bridge for this model (flag-gated) — see
+        /// ``ModelRegistryEntry/engineV2Bridge``.
+        public let engineV2Bridge: EngineV2Bridge?
 
         public init(
             scheduler: BatchScheduler,
@@ -73,7 +83,8 @@ public extension MultiModelBatchSchedulerEngine {
             releaseToken: OneShotRelease,
             modelType: String? = nil,
             container: ModelContainer? = nil,
-            isVLM: Bool = false
+            isVLM: Bool = false,
+            engineV2Bridge: EngineV2Bridge? = nil
         ) {
             self.scheduler = scheduler
             self.tokenizer = tokenizer
@@ -81,6 +92,7 @@ public extension MultiModelBatchSchedulerEngine {
             self.modelType = modelType
             self.container = container
             self.isVLM = isVLM
+            self.engineV2Bridge = engineV2Bridge
         }
     }
 }

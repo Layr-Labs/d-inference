@@ -178,11 +178,11 @@ public struct BinarySHA256Hasher: Sendable {
     }
 
     public func hashData(_ data: Data) -> String {
-        hexString(for: SHA256.hash(data: data))
+        SHA256.hash(data: data).hexString
     }
 
     public func hashFile(at url: URL) throws -> String {
-        try hexString(for: hashFileDigest(at: url))
+        try hashFileDigest(at: url).hexString
     }
 
     public func hashFilesSorted(_ urls: [URL]) throws -> String {
@@ -191,7 +191,7 @@ public struct BinarySHA256Hasher: Sendable {
             let digest = try hashFileDigest(at: url)
             finalHasher.update(data: Data(digest))
         }
-        return hexString(for: finalHasher.finalize())
+        return finalHasher.finalize().hexString
     }
 
     private func hashFileDigest(at url: URL) throws -> SHA256.Digest {
@@ -215,10 +215,6 @@ public struct BinarySHA256Hasher: Sendable {
             hasher.update(data: chunk)
         }
         return hasher.finalize()
-    }
-
-    private func hexString<D: Sequence>(for bytes: D) -> String where D.Element == UInt8 {
-        bytes.map { String(format: "%02x", $0) }.joined()
     }
 }
 

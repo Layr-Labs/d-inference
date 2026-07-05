@@ -34,6 +34,11 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// 400 so callers can fix the role rather than the previous silent
     /// coercion to `user` that changed prompt semantics.
     case invalidRole(String)
+    /// Tool-bearing chat payload violates the chat-template invariants
+    /// before generation begins. Surfaced as 400 so malformed OpenAI
+    /// histories do not trip model-specific Jinja assertions as provider
+    /// 500s.
+    case invalidToolPayload(String)
     /// Admission rejection caused by the batch token budget / global
     /// KV-cache headroom / pending-queue timeout. Surfaces as 503 so
     /// clients back off and retry once capacity frees up.
@@ -62,6 +67,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return "No model is loaded; cannot tokenize or apply template"
         case .invalidRole(let role):
             return "Unsupported chat message role: '\(role)'"
+        case .invalidToolPayload(let message):
+            return message
         case .tokenBudgetExhausted(let message):
             return message
         case .queueFull(let message):

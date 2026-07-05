@@ -86,4 +86,4 @@ See `architecture/decisions/kv-cache-lookup-shadowing.md`.
 | Checkpoint manager | `PrefixCacheManager.swift`, `PrefixCacheIndex.swift`, `PrefixCacheRAM.swift` |
 | Serializer | `KVCacheSerializer.swift` |
 | BatchScheduler wiring | `Inference/BatchScheduler.swift` |
-| Live equivalence tests | `provider-swift/Tests/ProviderCoreTests/KVCache/HybridCheckpointLiveTests.swift` |
+| Live equivalence tests | `provider-swift/Tests/ProviderCoreTests/HybridCheckpointLiveTests.swift` |

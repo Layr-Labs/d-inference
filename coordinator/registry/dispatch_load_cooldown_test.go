@@ -50,32 +50,9 @@ func TestDispatchLoadCooldownLifecycle(t *testing.T) {
 	}
 }
 
-// End-to-end through the dispatch selector: a cooling-down pair must not be
-// picked, and must return to rotation once cleared.
-func TestFindProviderWithTrustSkipsCoolingPair(t *testing.T) {
-	r := New(testLogger())
-	const model = aliasQAT
-	p := registerProviderWithModel(r, "p1", model)
-	makeProviderRoutable(p)
-
-	if got := r.FindProviderWithTrust(model, ""); got == nil {
-		t.Fatal("healthy provider not selected (fixture broken?)")
-	}
-
-	r.RecordDispatchLoadFailure(p.ID, model)
-	if got := r.FindProviderWithTrust(model, ""); got != nil {
-		t.Fatal("cooling-down provider was selected for dispatch")
-	}
-
-	r.ClearDispatchLoadCooldown(p.ID, model)
-	if got := r.FindProviderWithTrust(model, ""); got == nil {
-		t.Fatal("provider not selected after cool-down cleared")
-	}
-}
-
-// The production dispatch hot path is ReserveProviderEx (not
-// FindProviderWithTrust). A cooling-down pair must be excluded there too,
-// otherwise the cool-down is cosmetic and the retry storm continues.
+// The production dispatch hot path is ReserveProviderEx. A cooling-down pair
+// must be excluded there, otherwise the cool-down is cosmetic and the retry
+// storm continues.
 func TestReserveProviderExSkipsCoolingPair(t *testing.T) {
 	reg := New(testLogger())
 	model := "cooldown-reserve-model"

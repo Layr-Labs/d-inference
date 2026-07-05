@@ -116,8 +116,6 @@ EIGENINFERENCE_REFERRAL_SHARE_PCT=15
 DOMAIN=api.dev.darkbloom.xyz
 APP_PORT=8080
 EIGENINFERENCE_MDM_URL=https://localhost:9002
-EIGENINFERENCE_STEP_CA_ROOT=/data/step-ca/certs/root_ca.crt
-EIGENINFERENCE_STEP_CA_INTERMEDIATE=/data/step-ca/certs/intermediate_ca.crt
 EIGENINFERENCE_ADMIN_KEY=$(fetch eigeninference-admin-key)
 EIGENINFERENCE_RELEASE_KEY=$(fetch eigeninference-release-key)
 EIGENINFERENCE_PRIVY_APP_ID=$(fetch eigeninference-privy-app-id)
@@ -257,24 +255,13 @@ else
   echo "DD_API_KEY empty — skipping Datadog Agent install"
 fi
 
-# ---- 7. Caddy config (TLS terminator + path routing for coordinator/step-ca/MicroMDM) ----
+# ---- 7. Caddy config (TLS terminator + path routing for coordinator/MicroMDM) ----
 # Mirrors the prod coordinator/Caddyfile routes:
 #   /scep, /mdm/*  -> MicroMDM (127.0.0.1:9002, HTTPS self-signed)
-#   /acme/*        -> step-ca  (127.0.0.1:9000, HTTPS self-signed)
 #   everything else -> coordinator (127.0.0.1:8080, HTTP)
 # Without these routes, Mac enrollment fails with "SCEP server rejected."
 cat > /etc/caddy/Caddyfile <<'CADDYFILE'
 api.dev.darkbloom.xyz {
-  # step-ca ACME proxy (device-attest-01 challenges)
-  handle /acme/* {
-    reverse_proxy https://127.0.0.1:9000 {
-      transport http {
-        tls_insecure_skip_verify
-      }
-      header_up Host {host}
-    }
-  }
-
   # MicroMDM — SCEP + MDM checkin/connect
   handle /scep {
     reverse_proxy https://127.0.0.1:9002 {

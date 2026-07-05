@@ -18,7 +18,7 @@ Add an APNs-delivered code-identity challenge that is bound to the provider's We
 4. **Per-connection state.** `CodeAttested` is in-memory only, reset on disconnect. A SIP downgrade requires reboot, which drops the WebSocket and forces re-attestation.
 5. **Routing gate.** Private text traffic is gated at the single chokepoint `providerSupportsPrivateTextLocked`. Enforcement is live-configurable via a grace deadline so the fleet can roll out without a hard cutover.
 6. **APNs mode.** The sender is dual-mode: `background` (default, silent, ~2–3/hour device budget) and `alert` (priority 10, reliable but visible). Alert mode is safe only because the provider never requests `UNUserNotificationCenter` authorization, so the alert is not persisted to the Notification Center DB.
-7. **MDM remains required.** The only working, non-circular SIP/Secure-Boot proof is the Apple-signed MDA obtained via MDM. ACME `device-attest-01` does not currently carry or verify the SIP OID, so slimming enrollment is out of scope.
+7. **MDM remains required.** The only working, non-circular SIP/Secure-Boot proof is the Apple-signed MDA obtained via MDM. ACME `device-attest-01` did not carry or verify the SIP OID, so slimming enrollment was out of scope. (The ACME leg was removed entirely on 2026-07-03; hardware trust is MDM SecurityInfo only.)
 
 ![APNs code-identity attestation flow](../../assets/diagrams/apns-code-identity.svg)
 

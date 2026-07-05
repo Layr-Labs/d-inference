@@ -203,7 +203,6 @@ export default async function MachineDetailPage({
         <Row label="Trust level" value={machine.trust_level || "—"} />
         <Row label="Attested" value={<BoolBadge value={machine.attested} />} />
         <Row label="MDA verified" value={<BoolBadge value={machine.mda_verified} />} />
-        <Row label="ACME verified" value={<BoolBadge value={machine.acme_verified} />} />
         <Row
           label="Runtime verified"
           value={<BoolBadge value={machine.runtime_verified} />}

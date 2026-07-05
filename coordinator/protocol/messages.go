@@ -161,12 +161,17 @@ type RegisterMessage struct {
 
 	// Runtime integrity hashes — used for runtime verification against known-good manifests.
 	PythonHash          string               `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
-	RuntimeHash         string               `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
+	RuntimeHash         string               `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (MLX-Swift)
 	TemplateHashes      map[string]string    `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
 	PrivacyCapabilities *PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
 }
 
 // PrivacyCapabilities describes the provider's privacy invariants at registration time.
+//
+// Note: legacy providers (< v0.6.31) also send a `hypervisor_active` key here.
+// The concept is retired (Darkbloom never uses hypervisors — it was a
+// hardcoded-false stub) and is intentionally not modeled; encoding/json drops
+// unknown fields, so old providers remain wire-compatible.
 type PrivacyCapabilities struct {
 	TextBackendInprocess    bool `json:"text_backend_inprocess"`
 	TextProxyDisabled       bool `json:"text_proxy_disabled"`
@@ -176,7 +181,6 @@ type PrivacyCapabilities struct {
 	AntiDebugEnabled        bool `json:"anti_debug_enabled"`
 	CoreDumpsDisabled       bool `json:"core_dumps_disabled"`
 	EnvScrubbed             bool `json:"env_scrubbed"`
-	HypervisorActive        bool `json:"hypervisor_active"`
 }
 
 // HeartbeatMessage is sent periodically by connected providers.
@@ -204,7 +208,7 @@ type HeartbeatMessage struct {
 }
 
 // BackendSlotCapacity describes the capacity state of a single backend slot
-// (one vllm-mlx instance serving one model).
+// (one MLX-Swift in-process model serving one model).
 type BackendSlotCapacity struct {
 	Model              string `json:"model"`                     // model ID for this slot
 	State              string `json:"state"`                     // "running", "idle_shutdown", "crashed", "reloading"
@@ -221,6 +225,22 @@ type BackendSlotCapacity struct {
 	QueuedTokenBudget     int64   `json:"queued_token_budget,omitempty"`      // tokens reserved by queued requests
 	KVBytesPerToken       int64   `json:"kv_bytes_per_token,omitempty"`       // per-token KV cache memory cost in bytes (provider-side only)
 	ModelLoadTimeMS       int64   `json:"model_load_time_ms,omitempty"`       // measured cold-start load time (ms) for the model in this slot; omitted when unmeasured
+
+	// Engine-health (first-token wedge) signals — low-cardinality, NON-PRIVATE
+	// diagnostics that let the coordinator SEE a wedged MLX/Metal first-token
+	// path (provider emits the preamble, then the first blocking eval never
+	// returns; see docs/reports/2026-06-22-cancel-root-cause-and-fix.md §C and
+	// the Swift WedgeMonitor). All omitempty so legacy providers (and a
+	// freshly-idle slot) keep the prior wire shape. MEASUREMENT ONLY — decoded
+	// into the routing snapshot for observability; routing is NOT gated on them.
+	StepsExecuted              int64   `json:"steps_executed,omitempty"`                 // cumulative EngineCore.stepsExecuted (engine-loop progress); flatlines under demand ⇒ wedge
+	Admits                     int64   `json:"admits,omitempty"`                         // cumulative requests handed to the engine (preamble path)
+	FirstTokensEmitted         int64   `json:"first_tokens_emitted,omitempty"`           // cumulative requests that produced a first content token
+	SecondsSinceLastStep       float64 `json:"seconds_since_last_step,omitempty"`        // seconds since the step counter last advanced (large under demand ⇒ frozen loop)
+	SecondsSinceLastFirstToken float64 `json:"seconds_since_last_first_token,omitempty"` // seconds since the last first content token (0 = none yet this load)
+	WedgeSuspected             bool    `json:"wedge_suspected,omitempty"`                // provider-computed: ≥N consecutive admits, 0 first-tokens, ≥T seconds
+	EvalInFlightMs             int64   `json:"eval_in_flight_ms,omitempty"`              // ms the current blocking eval has run (process-global, evalLock); seconds-range = wedge smoking gun
+	IdleClearInFlightMs        int64   `json:"idle_clear_in_flight_ms,omitempty"`        // ms the current idle GPU drain+clearCache has run for this slot; seconds-range = clearCache/IOKit race
 }
 
 // BackendCapacity describes the aggregate capacity across all backend slots
@@ -306,10 +326,11 @@ type InferenceCompleteMessage struct {
 
 // InferenceErrorMessage signals an error during inference.
 type InferenceErrorMessage struct {
-	Type       string `json:"type"`
-	RequestID  string `json:"request_id"`
-	Error      string `json:"error"`
-	StatusCode int    `json:"status_code"`
+	Type        string `json:"type"`
+	RequestID   string `json:"request_id"`
+	Error       string `json:"error"`
+	StatusCode  int    `json:"status_code"`
+	ErrorReason string `json:"error_reason,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -471,12 +492,17 @@ type AttestationChallengeMessage struct {
 // which case the status fields are treated as advisory (not a basis for
 // trust upgrades).
 type AttestationResponseMessage struct {
-	Type              string `json:"type"`
-	Nonce             string `json:"nonce"`                         // echoed back from the challenge
-	Signature         string `json:"signature"`                     // base64-encoded signature of nonce+timestamp
-	StatusSignature   string `json:"status_signature,omitempty"`    // base64-encoded signature of canonical status JSON (see attestation.BuildStatusCanonical)
-	PublicKey         string `json:"public_key"`                    // base64-encoded public key
-	HypervisorActive  *bool  `json:"hypervisor_active,omitempty"`   // reported hypervisor containment status, if any
+	Type            string `json:"type"`
+	Nonce           string `json:"nonce"`                      // echoed back from the challenge
+	Signature       string `json:"signature"`                  // base64-encoded signature of nonce+timestamp
+	StatusSignature string `json:"status_signature,omitempty"` // base64-encoded signature of canonical status JSON (see attestation.BuildStatusCanonical)
+	PublicKey       string `json:"public_key"`                 // base64-encoded public key
+	// HypervisorActive — legacy fleet compat only: old providers (< v0.6.31)
+	// sign hypervisor_active into the canonical status (see
+	// attestation.BuildStatusCanonical), so this field must keep decoding for
+	// their StatusSignature to verify. The concept is retired — new providers
+	// omit it. Remove once the fleet floor passes v0.6.31.
+	HypervisorActive  *bool  `json:"hypervisor_active,omitempty"`
 	RDMADisabled      *bool  `json:"rdma_disabled,omitempty"`       // fresh RDMA status (true = disabled, false = enabled)
 	SIPEnabled        *bool  `json:"sip_enabled,omitempty"`         // fresh SIP status at challenge time
 	SecureBootEnabled *bool  `json:"secure_boot_enabled,omitempty"` // fresh Secure Boot status
@@ -485,7 +511,7 @@ type AttestationResponseMessage struct {
 
 	// Runtime integrity hashes — fresh values reported at challenge time.
 	PythonHash     string            `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
-	RuntimeHash    string            `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
+	RuntimeHash    string            `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (MLX-Swift)
 	TemplateHashes map[string]string `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
 	ModelHashes    map[string]string `json:"model_hashes,omitempty"`    // model_id -> SHA-256 weight hash (all active models)
 }
@@ -554,16 +580,27 @@ type ProviderMessage struct {
 
 // UnmarshalJSON reads the "type" field first, then unmarshals the full object
 // into the appropriate concrete struct.
+//
+// Fast path: scanTopLevelString reads "type" with a cheap byte walk so each
+// frame is json.Unmarshal'ed exactly once. Previously every frame — including
+// one per streamed token chunk — was parsed twice (envelope pass just to read
+// "type", then the concrete struct). If the scanner is unsure (escapes,
+// non-string value, malformed input, missing key) it falls back to the
+// envelope decode, preserving the original error behavior.
 func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
-	var envelope struct {
-		Type string `json:"type"`
+	msgType, ok := scanTopLevelString(data, "type")
+	if !ok {
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			return fmt.Errorf("protocol: failed to read message type: %w", err)
+		}
+		msgType = envelope.Type
 	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return fmt.Errorf("protocol: failed to read message type: %w", err)
-	}
-	pm.Type = envelope.Type
+	pm.Type = msgType
 
-	switch envelope.Type {
+	switch msgType {
 	case TypeRegister:
 		var msg RegisterMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
@@ -642,7 +679,7 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		pm.Payload = &msg
 
 	default:
-		return fmt.Errorf("protocol: unknown message type %q", envelope.Type)
+		return fmt.Errorf("protocol: unknown message type %q", msgType)
 	}
 
 	return nil

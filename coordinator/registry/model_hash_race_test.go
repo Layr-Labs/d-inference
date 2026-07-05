@@ -19,7 +19,7 @@ import (
 //
 // This test drives UpdateModelWeightHashes concurrently with every reader that
 // reaches p.Models — ForEachProvider (the stats and attestation handlers),
-// ListModels, FindProviderWithTrust (via providerServesCatalogModelLocked), and
+// ListModels, QuickCapacityCheck (via providerServesCatalogModelLocked), and
 // ModelCapacitySnapshot. Run under -race it fails (DATA RACE on the p.Models
 // slice header) before the reader-side locking fix and passes after.
 func TestUpdateModelWeightHashesConcurrentReaders(t *testing.T) {
@@ -42,7 +42,7 @@ func TestUpdateModelWeightHashesConcurrentReaders(t *testing.T) {
 	}}
 	p := reg.Register("p1", nil, msg)
 	testMakeTextRoutable(p)
-	// FindProviderWithTrust additionally gates on RuntimeVerified before reaching
+	// QuickCapacityCheck additionally gates on RuntimeVerified before reaching
 	// providerServesCatalogModelLocked; PrivacyCapabilities is already populated
 	// by Register from the registration message.
 	p.RuntimeVerified = true
@@ -88,7 +88,7 @@ func TestUpdateModelWeightHashesConcurrentReaders(t *testing.T) {
 			})
 		},
 		func() { _ = reg.ListModels() },
-		func() { _ = reg.FindProviderWithTrust(modelID, "") },
+		func() { _, _, _ = reg.QuickCapacityCheck(modelID, 100, 100, RequestTraits{}) },
 		func() { _ = reg.ModelCapacitySnapshot() },
 		func() { _ = reg.ModelCountryCodes(modelID) },
 		func() { _ = reg.ModelType(modelID) },

@@ -3,55 +3,10 @@ set -e
 
 # EigenCloud persistent storage (survives upgrades via blue-green disk transfer).
 PERSIST=${USER_PERSISTENT_DATA_PATH:-/mnt/disks/userdata}
-mkdir -p "$PERSIST/step-ca" "$PERSIST/micromdm"
+mkdir -p "$PERSIST/micromdm"
 
 # Symlink /data -> persistent storage so all components use the same paths.
 ln -sfn "$PERSIST" /data
-
-# ---- step-ca ----
-if [ ! -d "/data/step-ca/config" ]; then
-    echo "Initializing step-ca (first boot)..."
-    mkdir -p /data/step-ca/secrets
-    echo "eigeninference-step-ca" > /data/step-ca/secrets/password
-
-    # Copy Apple attestation root CA and ACME template to persistent storage
-    mkdir -p /data/step-ca/apple /data/step-ca/templates
-    cp /opt/step-ca-seed/acme-device.tpl /data/step-ca/templates/
-
-    STEPPATH=/data/step-ca step ca init \
-        --name "Darkbloom CA" \
-        --dns "${DOMAIN:-localhost}" \
-        --address ":9000" \
-        --provisioner "eigeninference-admin" \
-        --password-file /data/step-ca/secrets/password \
-        --deployment-type standalone \
-        --acme 2>&1
-    echo "step-ca initialized."
-
-    # Patch ca.json: replace the default ACME provisioner with one configured
-    # for device-attest-01 (Apple Secure Enclave attestation).
-    echo "Configuring ACME device-attest-01 provisioner..."
-    CA_JSON=/data/step-ca/config/ca.json
-    jq '(.authority.provisioners[] | select(.type == "ACME")) |=
-        {
-            "type": "ACME",
-            "name": "eigeninference-acme",
-            "challenges": ["device-attest-01"],
-            "attestationFormats": ["apple"],
-            "forceCN": false,
-            "options": {
-                "x509": {
-                    "templateFile": "/data/step-ca/templates/acme-device.tpl"
-                }
-            }
-        }' "$CA_JSON" > /tmp/ca.json && mv /tmp/ca.json "$CA_JSON"
-    echo "ACME provisioner configured."
-fi
-echo "Starting step-ca..."
-STEPPATH=/data/step-ca step-ca /data/step-ca/config/ca.json \
-    --password-file /data/step-ca/secrets/password \
-    >> /data/step-ca.log 2>&1 &
-echo "step-ca started (port 9000)."
 
 # ---- MicroMDM ----
 if [ -n "$MICROMDM_API_KEY" ]; then

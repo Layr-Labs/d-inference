@@ -99,17 +99,16 @@ APNs proves that the WebSocket peer is the genuine, team-signed, Apple-provision
 
 APNs does **not** prove the exact release `cdhash`. It binds App ID / Team ID, not binary version. Version/downgrade control is intended to come from reproducible builds + a public transparency log of blessed cdhashes. Once APNs has established that the binary is genuine, its self-reported `binaryHash` becomes trustworthy enough to match against that log.
 
-## Why ACME SE P-384 is not the signing/decryption endpoint
+## Why an ACME SE P-384 key was never the signing/decryption endpoint
 
-The enrollment profile includes an ACME `device-attest-01` payload that generates a P-384 key in the Secure Enclave. That key is attested by Apple and bound to the device, but on macOS it lands in the data-protection keychain inside a restricted system access group. Third-party processes—including the Darkbloom provider—cannot use it for application-level signing or decryption. Apple system services (Wi-Fi EAP-TLS, built-in VPN, MDM, Safari mTLS) are the only consumers.
+Earlier enrollment profiles included an ACME `device-attest-01` payload that generated a P-384 key in the Secure Enclave (the payload — and the entire ACME trust leg — was removed on 2026-07-03; hardware trust is MDM SecurityInfo only). Even while it existed, that key could never serve as the application identity: on macOS a hardware-bound ACME key lands in the data-protection keychain inside a restricted system access group, and third-party processes—including the Darkbloom provider—cannot use it for application-level signing or decryption. Apple system services (Wi-Fi EAP-TLS, built-in VPN, MDM, Safari mTLS) are the only consumers.
 
 Therefore:
 
 - The provider's operational signing key is a separate **SE P-256** key created by CryptoKit / the Security framework and protected by the team's keychain access group.
 - The provider's operational decryption key is the **in-memory X25519 `K`**, not SE-backed.
-- The ACME P-384 cert is retained for future transport-layer use but is not the active application-trust anchor today.
 
-See `enrollment.md` for the full ACME limitation discussion.
+See `enrollment.md` for the ACME-removal record.
 
 ## Why the provider must remain the decryption endpoint
 

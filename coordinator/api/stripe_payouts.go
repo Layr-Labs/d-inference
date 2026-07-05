@@ -105,17 +105,29 @@ func (s *Server) handleStripeOnboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reuse the user's existing Stripe account if we have one. If we don't,
-	// create a fresh Express account and persist the ID before we ever hand
-	// the user a link — otherwise a webhook arriving before our DB write
-	// could reference an unknown account.
+	// Normalize the requested country up front. Stripe Express country is
+	// immutable once the account is created, so we treat the user's selection
+	// as the source of truth.
+	requestedCountry := strings.ToUpper(strings.TrimSpace(req.Country))
+	if requestedCountry == "" && user.StripeAccountID == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+			"country is required before creating a Stripe payout account"))
+		return
+	}
+
+	// Stripe locks the country when the Express account is created. If the
+	// user picked a different country than their existing (possibly unfinished)
+	// account, create a new account so they can onboard in the right country.
+	// See https://docs.stripe.com/connect/accounts — Express country cannot be
+	// changed later.
 	stripeAcctID := user.StripeAccountID
-	if stripeAcctID == "" {
-		country := strings.ToUpper(strings.TrimSpace(req.Country))
+	countryChanged := stripeAcctID != "" && requestedCountry != "" &&
+		(user.StripeAccountCountry == "" || requestedCountry != user.StripeAccountCountry)
+
+	if stripeAcctID == "" || countryChanged {
+		country := requestedCountry
 		if country == "" {
-			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
-				"country is required before creating a Stripe payout account"))
-			return
+			country = s.billing.StripeConnect().PlatformCountry()
 		}
 		acct, err := s.billing.StripeConnect().CreateExpressAccount(billing.CreateExpressAccountParams{
 			Email:   user.Email,
@@ -127,7 +139,7 @@ func (s *Server) handleStripeOnboard(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		stripeAcctID = acct.ID
-		if err := s.billing.Store().SetUserStripeAccount(user.AccountID, stripeAcctID, stripeStatusPending, "", "", false); err != nil {
+		if err := s.billing.Store().SetUserStripeAccount(user.AccountID, stripeAcctID, stripeStatusPending, country, "", "", false); err != nil {
 			s.logger.Error("stripe connect: persist account id failed", "error", err)
 			writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to persist Stripe account"))
 			return
@@ -173,6 +185,7 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 		"configured":             true,
 		"stripe_account_id":      user.StripeAccountID,
 		"status":                 user.StripeAccountStatus,
+		"stripe_account_country": user.StripeAccountCountry,
 		"destination_type":       user.StripeDestinationType,
 		"destination_last4":      user.StripeDestinationLast4,
 		"instant_eligible":       user.StripeInstantEligible,
@@ -191,7 +204,7 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 		} else {
 			status := stripeStatusForAccount(acct)
 			if err := s.billing.Store().SetUserStripeAccount(user.AccountID, user.StripeAccountID,
-				status, acct.DestinationType, acct.DestinationLast4, acct.InstantEligible); err != nil {
+				status, "", acct.DestinationType, acct.DestinationLast4, acct.InstantEligible); err != nil {
 				s.logger.Warn("stripe connect: status persist failed", "error", err)
 			} else {
 				resp["status"] = status
@@ -523,7 +536,7 @@ func (s *Server) handleAccountUpdated(event *billing.WebhookEvent) {
 	}
 	status := stripeStatusForAccount(acct)
 	if err := s.billing.Store().SetUserStripeAccount(user.AccountID, acct.ID,
-		status, acct.DestinationType, acct.DestinationLast4, acct.InstantEligible); err != nil {
+		status, "", acct.DestinationType, acct.DestinationLast4, acct.InstantEligible); err != nil {
 		s.logger.Error("stripe connect webhook: persist account state failed", "error", err)
 	}
 }

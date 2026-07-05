@@ -94,6 +94,19 @@ extension BatchScheduler {
         activeTokenBudgetUsed + queuedTokenBudget
     }
 
+    // MARK: - Demo / diagnostics accessors
+    //
+    // Exposed so standalone harnesses (e.g. `kv-engine-demo`) can read the
+    // exact per-token KV cost and admitted-token budget the scheduler uses
+    // without reimplementing the architecture-aware estimation math.
+
+    /// Per-token KV-cache byte cost for the currently loaded model. This is the
+    /// value admission uses; it changes when KV quantization is enabled.
+    public func resolvedKVBytesPerToken() -> Int { kvBytesPerToken }
+
+    /// Memory-aware maximum token budget for the currently loaded model.
+    public func resolvedTokenBudgetMax() -> Int { tokenBudgetMax }
+
     private var averageReservedTokensForAdmission: Int {
         let requestCount = activeBridges.count + pendingRequestCount
         guard requestCount > 0 else { return defaultMaxTokens }
@@ -116,6 +129,35 @@ extension BatchScheduler {
 
     // MARK: - Heartbeat payload
 
+    /// Truthful slot_state for the heartbeat. A wedged or pinned backend must not
+    /// keep advertising "idle"/"running" (a healthy-looking slot the coordinator
+    /// routes to); it reports "crashed" so the coordinator deroutes, and
+    /// "reloading" while a recovery self-restart is in flight. Only a genuinely
+    /// healthy backend reports the normal running/idle pair.
+    func heartbeatSlotState(activeRequests: Int) -> String {
+        if isReloadingForRecovery { return "reloading" }
+        switch livenessState {
+        case .wedged, .pinned: return "crashed"
+        case .healthy: return activeRequests > 0 ? "running" : "idle"
+        }
+    }
+
+    /// Truthful slot `model` for the heartbeat. During a recovery self-restart the
+    /// live `modelId` is transiently "" — `loadModel` → `stopCurrentEngine` clears
+    /// it before `loadModel` re-sets it — so report the captured REAL id being
+    /// reloaded for the WHOLE window. Paired with the `reloading` state above, this
+    /// keeps the coordinator seeing the real model as not-servable (and derouting
+    /// it) instead of a phantom `model:""` slot, which would make the real model
+    /// look absent/cold here and let the coordinator route a request into a nil
+    /// engine ("No model loaded" 500). Outside a recovery restart this returns the
+    /// live capacity model unchanged, so the normal load/teardown path is unaffected.
+    func heartbeatSlotModel(capacityModel: String) -> String {
+        if isReloadingForRecovery, let id = recoveryReloadModelId, !id.isEmpty {
+            return id
+        }
+        return capacityModel
+    }
+
     /// Public surface called from `ProviderLoop` on every heartbeat tick.
     /// Implementation lives in the telemetry extension because most of
     /// the fields are EWMA / queued-budget state owned here.
@@ -123,6 +165,12 @@ extension BatchScheduler {
         await refreshPendingSummaryCache()
         let cap = capacity()
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
+
+        // Engine-health (first-token wedge) sampling: read the engine's live
+        // step counter into the wedge monitor so the slot below carries the
+        // "loop progress / admits-vs-first-tokens" signals. MEASUREMENT ONLY.
+        let now = ContinuousClock.now
+        sampleEngineSteps(now: now)
 
         var activeTokens: Int64 = 0
         var maxTokensPotential: Int64 = 0
@@ -134,8 +182,8 @@ extension BatchScheduler {
         let budgetMax = Int64(tokenBudgetMax)
 
         let slot = BackendSlotCapacity(
-            model: cap.model,
-            state: cap.activeRequests > 0 ? "running" : "idle",
+            model: heartbeatSlotModel(capacityModel: cap.model),
+            state: heartbeatSlotState(activeRequests: cap.activeRequests),
             numRunning: UInt32(cap.activeRequests),
             numWaiting: UInt32(cap.pendingRequests),
             activeTokens: activeTokens,
@@ -147,7 +195,17 @@ extension BatchScheduler {
             activeTokenBudgetMax: budgetMax,
             queuedTokenBudget: Int64(queuedTokenBudget),
             kvBytesPerToken: Int64(kvBytesPerToken),
-            modelLoadTimeMs: lastModelLoadMs
+            modelLoadTimeMs: lastModelLoadMs,
+            stepsExecuted: Int64(wedgeMonitor.lastStepsSample),
+            admits: Int64(wedgeMonitor.admits),
+            firstTokensEmitted: Int64(wedgeMonitor.firstTokens),
+            secondsSinceLastStep: wedgeMonitor.secondsSinceLastStep(now: now),
+            secondsSinceLastFirstToken: wedgeMonitor.secondsSinceLastFirstToken(now: now),
+            wedgeSuspected: wedgeMonitor.wedgeSuspected(now: now),
+            // Smoking-gun scalars: how long the current blocking eval (process-
+            // global) and this slot's idle GPU clear have been running. 0 = none.
+            evalInFlightMs: MLX.EvalProbe.currentEvalElapsedMs,
+            idleClearInFlightMs: engine?.core.idleClearElapsedMs ?? 0
         )
         return BackendCapacity(
             slots: [slot],
@@ -178,10 +236,51 @@ extension BatchScheduler {
             observedBatchSize: observedBatchSize,
             performanceByBatchSize: performanceByBatchSize
         )
-        guard next != dynamicMaxConcurrentRequests else { return }
-        dynamicMaxConcurrentRequests = next
-        // Mirror to the engine (planner also enforces, ahead of admission).
-        engine?.setMaxNumSeqs(next)
+        if next != dynamicMaxConcurrentRequests {
+            dynamicMaxConcurrentRequests = next
+        }
+        // Re-sync unconditionally — NOT only when the adaptive cap moved. This is
+        // called on every finish (via `recordBatchPerformance`); even when the
+        // adaptive cap is unchanged the memory clamp can have shifted (a
+        // finish/admission changes `averageReservedTokensForAdmission` and
+        // `tokenBudgetMax`), so the *effective* cap the engine must admit at can
+        // differ from what was last pushed. `syncEngineConcurrency()` is itself a
+        // no-op unless the effective cap changed.
+        syncEngineConcurrency()
+    }
+
+    /// Push the current effective concurrency cap to the engine's admission
+    /// ceiling (`setMaxNumSeqs` → engine `runtimeMaxNumSeqs`), but only when it
+    /// changed since the last push.
+    ///
+    /// The pushed value is computed IDENTICALLY to
+    /// `effectiveMaxConcurrentRequests`:
+    /// `max(1, min(maxConcurrentRequests, dynamicMaxConcurrentRequests,
+    /// memoryBoundMaxConcurrentRequests))`. This is the single point that keeps
+    /// the engine's admission cap in sync with the scheduler's view of the cap:
+    ///
+    ///  * At load it replaces the old raw `setMaxNumSeqs(dynamicMaxConcurrent…)`
+    ///    call.
+    ///  * After the adaptive policy ramps `dynamicMaxConcurrentRequests` (or the
+    ///    memory clamp moves) it re-pushes. Previously the engine was told the
+    ///    cold-start value ONCE at load and never heard the ramp, so a configured
+    ///    `maxConcurrentRequests` of 8 ran as two serialized waves of the pinned
+    ///    4 — roughly halving aggregate throughput at concurrency.
+    ///
+    /// The pushed value can NEVER exceed `memoryBoundMaxConcurrentRequests` (OOM
+    /// safety) or `maxConcurrentRequests`, because both bound the `min` inside
+    /// `effectiveMaxConcurrentRequests`. Returns the effective cap (the value
+    /// pushed, or the unchanged current value) so callers/tests can observe what
+    /// the engine was told even when no engine is attached.
+    @discardableResult
+    func syncEngineConcurrency() -> Int {
+        let effectiveCap = effectiveMaxConcurrentRequests
+        guard effectiveCap != lastPushedMaxNumSeqs else { return effectiveCap }
+        lastPushedMaxNumSeqs = effectiveCap
+        // No-op when no engine is loaded; the next load pushes via `loadModel`
+        // (which resets `lastPushedMaxNumSeqs` to -1 in `stopCurrentEngine`).
+        engine?.setMaxNumSeqs(effectiveCap)
+        return effectiveCap
     }
 
     /// EWMA update for `observedDecodeTpsEwma`. Split out of

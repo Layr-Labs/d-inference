@@ -55,10 +55,28 @@ extension BatchScheduler {
         continuation: AsyncStream<GenerationEvent>.Continuation
     ) {
         let scheduler = self
+        // Capture the load epoch: wedge callbacks from THIS bridge are ignored if
+        // a reload (`stopCurrentEngine`, which bumps `generationEpoch` and resets
+        // the monitor) supersedes this load while the request is still in flight,
+        // so a stale bridge can't corrupt the fresh model's counters.
+        let bridgeEpoch = generationEpoch
         Task { [continuation] in
             var sawAdmission = false
             var sawFirstToken = false
             var sawTerminal = false
+            // Wedge instrumentation (measurement only): count the admit at bridge
+            // start, BEFORE awaiting the engine. This is REQUIRED — not a
+            // queued-stream miscount: in THIS engine a `RequestOutput` is emitted
+            // ONLY from the decode phase (`Scheduler.processGenResponses`); there
+            // is NO prefill/admission-stage output, so a wedged first `eval`
+            // produces NO `RequestOutput` at all. Tying the admit to a "real
+            // engine admission signal" (first `RequestOutput`) would make the
+            // exact wedge we exist to detect invisible. A merely-queued request on
+            // a HEALTHY engine does NOT false-trip: `wedgeSuspected` additionally
+            // requires the engine step counter to be FROZEN (steps keep advancing
+            // while the engine serves other work), so only a truly frozen engine
+            // trips. (See docs/reports/2026-06-22-cancel-root-cause-and-fix.md §C4.)
+            await scheduler.recordWedgeAdmit(epoch: bridgeEpoch)
             for await output in outputStream {
                 // First `RequestOutput` (even prefill-only with no tokens)
                 // marks engine admission. Required by `expirePlannerTimeouts`
@@ -76,6 +94,9 @@ extension BatchScheduler {
                     || output.completionTokens > 0
                 if !sawFirstToken, hasNewToken {
                     await scheduler.recordFirstToken(requestId: id, at: .now)
+                    // Wedge instrumentation: a real first content token clears
+                    // the monitor's zero-first-token dry streak.
+                    await scheduler.recordWedgeFirstToken(epoch: bridgeEpoch)
                     sawFirstToken = true
                 }
 
@@ -120,7 +141,8 @@ extension BatchScheduler {
                                 continuation.yield(.info(
                                     promptTokens: usage.promptTokens,
                                     completionTokens: usage.completionTokens,
-                                    tokensPerSecond: usage.tps
+                                    tokensPerSecond: usage.tps,
+                                    finishReason: nil
                                 ))
                             }
                             // Distinct pending-timeout vs. client-cancel
@@ -144,11 +166,21 @@ extension BatchScheduler {
                         // Emit the authoritative (max of observed-vs-terminal)
                         // counts from recordFinish, not the raw terminal output
                         // — the terminal can under-report and zero out billing.
+                        // Thread the engine's finish reason ("stop"/"length")
+                        // so a max_tokens truncation reaches the client as
+                        // finish_reason "length" (abort was handled above).
                         continuation.yield(.info(
                             promptTokens: usage.promptTokens,
                             completionTokens: usage.completionTokens,
-                            tokensPerSecond: usage.tps
+                            tokensPerSecond: usage.tps,
+                            finishReason: output.finishReason
                         ))
+                    }
+                    // Wedge instrumentation: this request terminated. If it never
+                    // produced a first token (cancel/abort/error/0-token finish),
+                    // drop it from the hanging streak so it can't read as a wedge.
+                    if !sawFirstToken {
+                        await scheduler.recordWedgeTerminalWithoutFirstToken(epoch: bridgeEpoch)
                     }
                     continuation.finish()
                     return
@@ -160,6 +192,11 @@ extension BatchScheduler {
             if !sawTerminal {
                 continuation.yield(.error(
                     "request stream closed by engine teardown"))
+            }
+            // Wedge instrumentation: stream-closed end without a first token is
+            // also a no-first-token terminal — clear it from the hanging streak.
+            if !sawFirstToken {
+                await scheduler.recordWedgeTerminalWithoutFirstToken(epoch: bridgeEpoch)
             }
             await scheduler.dropBridge(requestId: id)
             continuation.finish()
@@ -242,6 +279,11 @@ extension BatchScheduler {
                 ? Double(finalCompletion) / elapsedSeconds : 0
         }
 
+        // Backend-liveness watchdog: a real successful completion is proof the
+        // engine is decoding — it clears the "budget pinned with 0 successes"
+        // signal regardless of the measured TPS.
+        if success { lastSuccessAt = finishedAt }
+
         if success, tps > 0 {
             // Previously `activeBridges.count + 1` mixed in
             // queued-not-admitted bridges. Use admitted-and-running
@@ -287,11 +329,25 @@ extension BatchScheduler {
                 + Double(prefillElapsed.components.attoseconds) / 1e18
             // Cold prefill ⇒ restoredPrefixTokens == 0, so this is the full prompt.
             let prefilledTokens = finalPrompt - bridge.restoredPrefixTokens
-            if prefilledTokens > 0, prefillSeconds >= Self.minPrefillWindowSeconds {
-                let tps = Double(prefilledTokens) / prefillSeconds
-                if tps.isFinite, tps <= Self.maxPlausiblePrefillTps {
-                    updatePrefillTpsEwma(tps: tps)
-                }
+            // Measurement: record the raw sample rate (incl. the inflated
+            // below-floor value) before applying the unchanged bounds.
+            if let raw = Self.rawPrefillSampleTps(
+                prefilledTokens: prefilledTokens, prefillSeconds: prefillSeconds) {
+                prefillHealth.lastSampleTps = raw
+            }
+            // Same bounds as before, now routed through a pure classifier so the
+            // accept/drop reasons can be counted. `.accepted` ⇔ the original `if`.
+            switch Self.classifyPrefillSample(
+                prefilledTokens: prefilledTokens, prefillSeconds: prefillSeconds) {
+            case .accepted(let tps):
+                updatePrefillTpsEwma(tps: tps)
+                prefillHealth.accepted += 1
+            case .belowFloor:
+                prefillHealth.droppedFloor += 1
+            case .aboveCeiling:
+                prefillHealth.droppedCeiling += 1
+            case .notColdPrefill:
+                break
             }
         }
 
@@ -490,5 +546,34 @@ extension BatchScheduler {
     /// be aborted rather than handed to `runBridge`.
     func _bridgeIsActiveForTest(_ id: String) -> Bool {
         activeBridges[id] != nil
+    }
+
+    /// Test seam: set the live `modelId` without a real load (production sets it
+    /// in `loadModel`). Lets a non-live unit test assert the heartbeat's
+    /// steady-state slot model. Internal + @testable-only; stripped from
+    /// production binaries.
+    func _setModelIdForTest(_ id: String) {
+        modelId = id
+    }
+
+    /// Test seam: seed `prefillHealth` without driving `recordFinish`, so a unit
+    /// test can assert the model-swap (`stopCurrentEngine`) reset. Internal +
+    /// @testable-only; stripped from production binaries.
+    func _setPrefillHealthForTest(_ health: PrefillSamplingHealth) {
+        prefillHealth = health
+    }
+
+    /// Test seam: reproduce the mid-self-restart heartbeat window WITHOUT a live
+    /// engine. Mirrors the exact transient state that `selfRestartForRecovery` +
+    /// `loadModel` → `stopCurrentEngine` produce mid-restart: the recovery flag is
+    /// set and the REAL model id is captured, while the live `modelId` has been
+    /// cleared to "" and the engine nil'd. Lets a non-live unit test assert the
+    /// heartbeat still advertises the real model id as `reloading` (never `model:""`
+    /// and never a servable state). Internal + @testable-only.
+    func _enterRecoveryReloadWindowForTest(realModelId: String) {
+        isReloadingForRecovery = true
+        recoveryReloadModelId = realModelId
+        modelId = ""
+        engine = nil
     }
 }

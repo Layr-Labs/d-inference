@@ -47,7 +47,7 @@ func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cf
 		ledger:   ledger,
 		logger:   logger,
 		config:   cfg,
-		referral: NewReferralService(st, ledger, logger, cfg.ReferralSharePercent),
+		referral: NewReferralService(st, logger, cfg.ReferralSharePercent),
 	}
 
 	// Initialize Stripe if configured

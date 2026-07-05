@@ -73,7 +73,6 @@ public struct SignedAttestation: Codable, Sendable {
 public struct StatusCanonicalInput: Sendable, Equatable {
     public var nonce: String
     public var timestamp: String
-    public var hypervisorActive: Bool?
     public var rdmaDisabled: Bool?
     public var sipEnabled: Bool?
     public var secureBootEnabled: Bool?
@@ -87,7 +86,6 @@ public struct StatusCanonicalInput: Sendable, Equatable {
     public init(
         nonce: String,
         timestamp: String,
-        hypervisorActive: Bool? = nil,
         rdmaDisabled: Bool? = nil,
         sipEnabled: Bool? = nil,
         secureBootEnabled: Bool? = nil,
@@ -100,7 +98,6 @@ public struct StatusCanonicalInput: Sendable, Equatable {
     ) {
         self.nonce = nonce
         self.timestamp = timestamp
-        self.hypervisorActive = hypervisorActive
         self.rdmaDisabled = rdmaDisabled
         self.sipEnabled = sipEnabled
         self.secureBootEnabled = secureBootEnabled
@@ -119,7 +116,6 @@ public enum StatusCanonical {
             "nonce": input.nonce,
             "timestamp": input.timestamp,
         ]
-        if let value = input.hypervisorActive { object["hypervisor_active"] = value }
         if let value = input.rdmaDisabled { object["rdma_disabled"] = value }
         if let value = input.sipEnabled { object["sip_enabled"] = value }
         if let value = input.secureBootEnabled { object["secure_boot_enabled"] = value }
@@ -284,7 +280,6 @@ extension AttestationBuilder {
         binaryHash: String? = nil,
         activeModelHash: String? = nil,
         runtimeHashes: RuntimeHashes? = nil,
-        hypervisorActive: Bool? = nil,
         modelHashes: [String: String] = [:]
     ) throws -> ProviderMessage.AttestationResponse {
         let signature = try signChallenge(nonce: nonce, timestamp: timestamp)
@@ -295,7 +290,6 @@ extension AttestationBuilder {
         let statusData = try StatusCanonical.build(StatusCanonicalInput(
             nonce: nonce,
             timestamp: timestamp,
-            hypervisorActive: hypervisorActive,
             rdmaDisabled: rdmaDisabled,
             sipEnabled: sipEnabled,
             secureBootEnabled: secureBootEnabled,
@@ -313,7 +307,6 @@ extension AttestationBuilder {
             signature: signature,
             statusSignature: statusSignature,
             publicKey: providerPublicKey,
-            hypervisorActive: hypervisorActive,
             rdmaDisabled: rdmaDisabled,
             sipEnabled: sipEnabled,
             secureBootEnabled: secureBootEnabled,

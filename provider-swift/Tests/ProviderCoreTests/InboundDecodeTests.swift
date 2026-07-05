@@ -161,6 +161,37 @@ struct InboundDecodeTests {
         #expect(req.messages[1].textContent == "sunny")
     }
 
+    @Test("legacy assistant function_call is translated to tool_calls")
+    func legacyFunctionCallTranslatedToToolCalls() throws {
+        let req = try decode(#"""
+        {"model":"m","messages":[
+           {"role":"user","content":"weather?"},
+           {"role":"assistant","function_call":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}},
+           {"role":"function","name":"get_weather","content":"sunny"}
+        ]}
+        """#)
+
+        #expect(req.messages[1].role == .assistant)
+        #expect(req.messages[1].textContent == "")
+        #expect(req.messages[1].toolCalls?.count == 1)
+        #expect(req.messages[1].toolCalls?.first?.id == "call_legacy_1")
+        #expect(req.messages[1].toolCalls?.first?.function.name == "get_weather")
+        #expect(req.messages[1].toolCalls?.first?.function.arguments == #"{"city":"SF"}"#)
+        #expect(req.messages[2].role == .tool)
+    }
+
+    @Test("malformed legacy function_call throws invalidToolPayload")
+    func malformedLegacyFunctionCallThrowsInvalidToolPayload() throws {
+        #expect(throws: MultiModelBatchSchedulerEngineError.invalidToolPayload(
+            "assistant function_call is missing a function name")) {
+            _ = try decode(#"""
+            {"model":"m","messages":[
+               {"role":"assistant","function_call":{"arguments":"{}"}}
+            ]}
+            """#)
+        }
+    }
+
     @Test("unrecognised role throws a clear invalidRole (not a masked decode error)")
     func unknownRoleThrowsInvalidRole() throws {
         #expect(throws: MultiModelBatchSchedulerEngineError.invalidRole("robot")) {
@@ -223,5 +254,71 @@ struct InboundDecodeTests {
     @Test("non-string reasoning_effort is ignored")
     func reasoningEffortNonString() {
         #expect(effort(#"{"model":"m","messages":[],"reasoning_effort":3}"#) == nil)
+    }
+
+    // MARK: - logprobs / top_logprobs extraction
+
+    private func logprobsSpec(_ json: String) -> (topLogprobs: Int?, requested: Bool)? {
+        ProviderLoop.extractLogprobsSpec(from: Data(json.utf8))
+    }
+
+    @Test("logprobs:true is extracted, with and without top_logprobs")
+    func logprobsSpecExtracted() {
+        let bare = logprobsSpec(#"{"model":"m","messages":[],"logprobs":true}"#)
+        #expect(bare != nil)
+        #expect(bare?.topLogprobs == nil)
+        let withTop = logprobsSpec(
+            #"{"model":"m","messages":[],"logprobs":true,"top_logprobs":5}"#)
+        #expect(withTop?.topLogprobs == 5)
+    }
+
+    @Test("logprobs absent/false/non-bool yields nil (top_logprobs alone is not a request)")
+    func logprobsSpecAbsent() {
+        #expect(logprobsSpec(#"{"model":"m","messages":[]}"#) == nil)
+        #expect(logprobsSpec(#"{"model":"m","messages":[],"logprobs":false}"#) == nil)
+        #expect(logprobsSpec(#"{"model":"m","messages":[],"logprobs":"yes"}"#) == nil)
+        // Per the OpenAI contract, top_logprobs is only meaningful when
+        // logprobs is true.
+        #expect(logprobsSpec(#"{"model":"m","messages":[],"top_logprobs":5}"#) == nil)
+    }
+
+    // MARK: - logit_bias / seed extraction (v2 sampling overrides)
+
+    private func sampling(_ json: String) -> EngineV2SamplingOverrides? {
+        ProviderLoop.extractSamplingOverrides(from: Data(json.utf8))
+    }
+
+    @Test("logit_bias and seed are extracted from the sealed body")
+    func samplingOverridesExtracted() {
+        let both = sampling(
+            #"{"model":"m","messages":[],"logit_bias":{"50256":-100,"42":1.5},"seed":7}"#)
+        #expect(both?.logitBias == ["50256": -100, "42": 1.5])
+        #expect(both?.seed == 7)
+        let biasOnly = sampling(#"{"model":"m","messages":[],"logit_bias":{"1":2}}"#)
+        #expect(biasOnly?.logitBias == ["1": 2])
+        #expect(biasOnly?.seed == nil)
+        let seedOnly = sampling(#"{"model":"m","messages":[],"seed":42}"#)
+        #expect(seedOnly?.logitBias == nil)
+        #expect(seedOnly?.seed == 42)
+    }
+
+    @Test("absent/empty logit_bias and absent seed yield nil (no allocation downstream)")
+    func samplingOverridesAbsent() {
+        #expect(sampling(#"{"model":"m","messages":[]}"#) == nil)
+        #expect(sampling(#"{"model":"m","messages":[],"logit_bias":{}}"#) == nil)
+    }
+
+    @Test("a malformed value for one field never discards the other")
+    func samplingOverridesFieldIndependence() {
+        // Negative seed can't decode as UInt64 — logit_bias must survive.
+        let badSeed = sampling(
+            #"{"model":"m","messages":[],"logit_bias":{"9":-5},"seed":-1}"#)
+        #expect(badSeed?.logitBias == ["9": -5])
+        #expect(badSeed?.seed == nil)
+        // Non-object logit_bias — seed must survive.
+        let badBias = sampling(
+            #"{"model":"m","messages":[],"logit_bias":"junk","seed":3}"#)
+        #expect(badBias?.logitBias == nil)
+        #expect(badBias?.seed == 3)
     }
 }

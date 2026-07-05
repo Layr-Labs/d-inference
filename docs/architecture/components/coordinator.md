@@ -18,7 +18,7 @@ Production runs in a Confidential VM (AMD SEV-SNP). The coordinator therefore de
 | Rate limiting (RPM + ITPM/OTPM) | `coordinator/ratelimit/`, `coordinator/api/server.go` |
 | Model registry, aliases, and public catalog | `coordinator/api/model_registry_handlers.go`, `coordinator/api/model_alias_handlers.go`; see [`../operations/model-registry.md`](../operations/model-registry.md) |
 | Telemetry ingestion and Datadog forwarding | `coordinator/api/telemetry_handlers.go`, `coordinator/protocol/telemetry.go`, `coordinator/datadog/`; see [`../operations/telemetry.md`](../operations/telemetry.md) |
-| ACME/MDM enrollment and APNs code-identity attestation | `coordinator/api/enroll.go`, `coordinator/mdm/`, `coordinator/apns/`, `coordinator/api/provider.go` |
+| MDM/SCEP enrollment and APNs code-identity attestation | `coordinator/api/enroll.go`, `coordinator/mdm/`, `coordinator/apns/`, `coordinator/api/provider.go` |
 
 ## Key modules
 

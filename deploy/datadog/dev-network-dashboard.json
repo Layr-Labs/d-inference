@@ -362,6 +362,99 @@
           {
             "definition": {
               "type": "timeseries",
+              "title": "OpenRouter-Formula Uptime % (success / (success+5xx+midstream+timeout)) by model",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "ok",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.inference.request_outcome{$env,$model,class:success} by {model}.as_count()"
+                    },
+                    {
+                      "name": "e5xx",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.inference.request_outcome{$env,$model,class:provider_5xx} by {model}.as_count()"
+                    },
+                    {
+                      "name": "mid",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.inference.request_outcome{$env,$model,class:mid_stream} by {model}.as_count()"
+                    },
+                    {
+                      "name": "tmo",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.inference.request_outcome{$env,$model,class:timeout} by {model}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "100 * ok / (ok + e5xx + mid + tmo)"
+                    }
+                  ],
+                  "display_type": "lines"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Request Outcomes by class",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.inference.request_outcome{$env,$model} by {class}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Unservable 5xx→429 reclassified",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.routing.unservable_reclassified{$env} by {model}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
               "title": "Completion Tokens by Model",
               "show_legend": true,
               "legend_layout": "auto",

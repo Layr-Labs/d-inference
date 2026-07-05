@@ -51,10 +51,9 @@ enum DoctorRunner {
                                   fix: "run `darkbloom start`, then `darkbloom doctor`."))
         }
         // Enrollment hint (local) — but skip it when the coordinator already
-        // grants this provider hardware trust (e.g. via ACME device attestation,
-        // which needs no MDM profile). Nagging an already-hardware-trusted box to
-        // enroll in MDM is a false warning that sends the operator down the wrong
-        // flow and contradicts the trust line printed just above.
+        // grants this provider hardware trust. Nagging an already-hardware-trusted
+        // box to enroll in MDM is a false warning that sends the operator down the
+        // wrong flow and contradicts the trust line printed just above.
         //
         // Otherwise, delegate the verdict to the pure MDMTrustDiagnosis helper,
         // which combines the daemon's last trust level with this Mac's actual MDM
@@ -175,10 +174,7 @@ enum DoctorRunner {
     }
 
     private static func formatDuration(_ seconds: Double) -> String {
-        let s = Int(seconds)
-        if s < 60 { return "\(s)s" }
-        if s < 3600 { return "\(s / 60)m" }
-        return "\(s / 3600)h\((s % 3600) / 60)m"
+        DurationFormatting.compact(seconds, spaced: false, elideZeroMinutesInHourRange: false)
     }
 
     /// Best-effort read of whether the system is currently being kept awake,

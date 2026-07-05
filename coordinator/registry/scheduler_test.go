@@ -1299,12 +1299,6 @@ func TestPerSlotMaxConcurrencyLimitsRoutingForModel(t *testing.T) {
 	if candidates != 0 || rejections != 1 {
 		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 0/1", candidates, rejections)
 	}
-	if found := reg.FindProvider(model); found != nil {
-		t.Fatalf("FindProvider selected %q, want nil at per-slot cap", found.ID)
-	}
-	if score := ScoreProvider(p, model); score != 0 {
-		t.Fatalf("ScoreProvider=%f, want 0 at per-slot cap", score)
-	}
 }
 
 func TestPerSlotMaxConcurrencyZeroFallsBack(t *testing.T) {
@@ -1325,9 +1319,6 @@ func TestPerSlotMaxConcurrencyZeroFallsBack(t *testing.T) {
 	candidates, rejections, _ := reg.QuickCapacityCheck(model, 100, 128, RequestTraits{})
 	if candidates != 1 || rejections != 0 {
 		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 1/0", candidates, rejections)
-	}
-	if found := reg.FindProvider(model); found == nil {
-		t.Fatal("FindProvider should use fallback cap when max_concurrency is zero")
 	}
 }
 

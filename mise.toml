@@ -13,13 +13,13 @@ node = "22"
 # cross builds of ProviderCoreFoundation.
 swift = "6.1"
 
-# Python is used by helper scripts (scripts/benchmark-models.py,
-# scripts/mlx_lm_batch_bench.py) and to fetch the MLX metallib in CI
-# (.github/workflows/integration.yml). MLX 0.31.x wheels target 3.10–3.12.
+# Python is used by helper scripts (scripts/benchmark-models.py) and to
+# fetch the MLX metallib in CI (.github/workflows/integration.yml).
+# MLX 0.31.x wheels target 3.10–3.12.
 python = "3.12"
 
 # Common CLIs the repo's scripts shell out to.
-jq = "latest"           # scripts/calibrate-routing.sh, scripts/smoke-dev.sh
+jq = "latest"           # scripts/smoke-dev.sh
 gh = "latest"           # release + admin tooling
 awscli = "latest"       # R2 uploads in release-swift.yml
 gcloud = "latest"       # dev coordinator on GCP (gcloud logging read ...)

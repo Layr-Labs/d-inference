@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const DEFAULT_COORD = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
+import { coordinatorUrl, cacheControl } from "@/lib/server/coordinator";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -253,11 +252,15 @@ async function publicCatalogResponse(coordUrl: string) {
     aliases,
     data: (aliases.length > 0 ? publicModelRows(catalogModels, aliases) : applyGemmaRolloutQuickFix(catalogModels, capacityByID))
       .map((model) => toModelEntry(model, capacityByID.get(model.id as string))),
+  }, {
+    // Public, unauthenticated catalog — edge-cacheable (perf F5a). The private
+    // (api-key) branch below is never cached.
+    headers: { "Cache-Control": cacheControl(30, 120) },
   });
 }
 
 export async function GET(req: NextRequest) {
-  const coordUrl = DEFAULT_COORD;
+  const coordUrl = coordinatorUrl();
   const apiKey = req.headers.get("x-api-key") || "";
 
   if (!apiKey) {

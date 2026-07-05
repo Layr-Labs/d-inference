@@ -321,8 +321,8 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 			"fee_usd":           formatUSD(feeMicroUSD),
 			"net_usd":           formatUSD(netMicroUSD),
 			"method":            method,
-			"eta":               etaForMethod(method),
-			"message":           "funds are on the way — Stripe pays out to your bank on a daily schedule",
+			"eta":               etaForMethod(method, acct.Country),
+			"message":           sweepDeliveryMessage(acct.Country),
 			"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
 		})
 		return
@@ -440,7 +440,7 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		"fee_usd":           formatUSD(feeMicroUSD),
 		"net_usd":           formatUSD(netMicroUSD),
 		"method":            method,
-		"eta":               etaForMethod(method),
+		"eta":               etaForMethod(method, acct.Country),
 		"arrival_unix":      payout.ArrivalDate,
 		"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
 	})

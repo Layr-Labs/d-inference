@@ -160,7 +160,7 @@ func TestMemoryMarkStripeWithdrawalPaidGuards(t *testing.T) {
 	}
 
 	mk("wd-mp-ok", "transferred", false)
-	if applied, err := s.MarkStripeWithdrawalPaid("wd-mp-ok", "po_sweep_1"); err != nil || !applied {
+	if applied, err := s.MarkStripeWithdrawalPaid("wd-mp-ok", "", "po_sweep_1"); err != nil || !applied {
 		t.Fatalf("transferred row: applied=%v err=%v, want applied", applied, err)
 	}
 	row, _ := s.GetStripeWithdrawal("wd-mp-ok")
@@ -169,20 +169,75 @@ func TestMemoryMarkStripeWithdrawalPaidGuards(t *testing.T) {
 	}
 
 	mk("wd-mp-refunded", "transferred", true)
-	if applied, _ := s.MarkStripeWithdrawalPaid("wd-mp-refunded", ""); applied {
+	if applied, _ := s.MarkStripeWithdrawalPaid("wd-mp-refunded", "", ""); applied {
 		t.Error("refunded row must not flip to paid")
 	}
 	mk("wd-mp-failed", "failed", false)
-	if applied, _ := s.MarkStripeWithdrawalPaid("wd-mp-failed", ""); applied {
+	if applied, _ := s.MarkStripeWithdrawalPaid("wd-mp-failed", "", ""); applied {
 		t.Error("failed row must not flip to paid")
 	}
-	if _, err := s.MarkStripeWithdrawalPaid("wd-mp-missing", ""); !errors.Is(err, ErrNotFound) {
+	if _, err := s.MarkStripeWithdrawalPaid("wd-mp-missing", "", ""); !errors.Is(err, ErrNotFound) {
 		t.Errorf("missing row err = %v, want ErrNotFound", err)
+	}
+
+	// Payout-ID condition: a row whose in-flight payout was detached (or
+	// replaced) concurrently must not flip for the stale event.
+	if err := s.CreateStripeWithdrawal(&StripeWithdrawal{
+		ID: "wd-mp-detached", AccountID: "acct-mp", StripeAccountID: "acct_mp",
+		AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
+		Method: "instant", Status: "transferred",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if applied, _ := s.MarkStripeWithdrawalPaid("wd-mp-detached", "po_gone", ""); applied {
+		t.Error("row without the expected payout ID must not flip to paid")
+	}
+	if applied, _ := s.MarkStripeWithdrawalPaid("wd-mp-detached", "", ""); !applied {
+		t.Error("row with no in-flight payout should flip for the sweep case")
 	}
 
 	// Sweep-stamp lookup returns exactly the stamped rows.
 	rows, err := s.ListStripeWithdrawalsBySweepPayoutID("po_sweep_1")
 	if err != nil || len(rows) != 1 || rows[0].ID != "wd-mp-ok" {
 		t.Errorf("sweep lookup = %v (err %v), want [wd-mp-ok]", rows, err)
+	}
+}
+
+// TestMemoryReopenStripeWithdrawalAfterPayoutFailureGuards pins the guarded
+// bounce-reopen: refunded/terminal rows are never reopened (a concurrent
+// transfer.reversed wins), live rows reopen with the payout detached.
+func TestMemoryReopenStripeWithdrawalAfterPayoutFailureGuards(t *testing.T) {
+	s := NewMemory(Config{})
+	mk := func(id, status, payoutID string, refunded bool) {
+		if err := s.CreateStripeWithdrawal(&StripeWithdrawal{
+			ID: id, AccountID: "acct-ro", StripeAccountID: "acct_ro",
+			AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
+			Method: "instant", Status: status, PayoutID: payoutID, Refunded: refunded,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mk("wd-ro-ok", "paid", "po_ro1", false)
+	applied, err := s.ReopenStripeWithdrawalAfterPayoutFailure("wd-ro-ok", "payout_failed: bounce", true)
+	if err != nil || !applied {
+		t.Fatalf("live row: applied=%v err=%v, want applied", applied, err)
+	}
+	row, _ := s.GetStripeWithdrawal("wd-ro-ok")
+	if row.Status != "transferred" || row.PayoutID != "" || !row.FeeRefunded {
+		t.Errorf("row = %q/%q/feeRefunded=%v, want transferred/empty/true", row.Status, row.PayoutID, row.FeeRefunded)
+	}
+	// Detached payout ID must leave the lookup index.
+	if _, err := s.GetStripeWithdrawalByPayoutID("po_ro1"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("detached payout lookup err = %v, want ErrNotFound", err)
+	}
+
+	mk("wd-ro-refunded", "transferred", "po_ro2", true)
+	if applied, _ := s.ReopenStripeWithdrawalAfterPayoutFailure("wd-ro-refunded", "x", false); applied {
+		t.Error("refunded row must not reopen (reversal owns it)")
+	}
+	mk("wd-ro-failed", "failed", "", false)
+	if applied, _ := s.ReopenStripeWithdrawalAfterPayoutFailure("wd-ro-failed", "x", false); applied {
+		t.Error("failed row must not reopen")
 	}
 }

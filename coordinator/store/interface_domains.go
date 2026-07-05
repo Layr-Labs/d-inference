@@ -314,13 +314,24 @@ type BillingStore interface {
 
 	// MarkStripeWithdrawalPaid atomically flips a withdrawal to "paid" —
 	// but only from a non-terminal, non-refunded state ("pending" or
-	// "transferred" with Refunded=false). Guarding inside the store closes
-	// the read-modify-write race between concurrent webhook deliveries
-	// (e.g. payout.paid racing transfer.reversed): a stale in-memory copy
-	// can never overwrite Refunded/failed state back to paid. A non-empty
-	// sweepPayoutID is recorded on the row (sweep attribution). Returns
-	// whether the flip was applied.
-	MarkStripeWithdrawalPaid(id, sweepPayoutID string) (bool, error)
+	// "transferred" with Refunded=false) AND only while the row's PayoutID
+	// still equals expectedPayoutID ("" = the row must have no in-flight
+	// payout, the sweep case). Guarding inside the store closes the
+	// read-modify-write races between concurrent webhook deliveries:
+	// a stale copy can never overwrite Refunded/failed state back to paid,
+	// and a payout.paid whose payout was concurrently detached (bounced)
+	// can't re-claim the reopened row. A non-empty sweepPayoutID is
+	// recorded on the row (sweep attribution). Returns whether the flip
+	// was applied.
+	MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayoutID string) (bool, error)
+
+	// ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a
+	// withdrawal whose own payout failed: status back to "transferred",
+	// payout ID detached, failure reason recorded, FeeRefunded OR-ed in —
+	// but only while the row is not refunded and not terminally failed
+	// (a concurrent transfer.reversed wins; its refund must never be
+	// overwritten back to sweep-eligible). Returns whether it was applied.
+	ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason string, feeRefunded bool) (bool, error)
 
 	// ListStripeWithdrawalsBySweepPayoutID returns the withdrawals a given
 	// automatic sweep payout claimed (SweepPayoutID stamp). Used to reopen

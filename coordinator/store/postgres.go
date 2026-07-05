@@ -3530,7 +3530,7 @@ func (s *PostgresStore) ListStripeWithdrawals(accountID string, limit int) ([]St
 
 // MarkStripeWithdrawalPaid atomically flips a non-terminal, non-refunded
 // withdrawal to "paid" with an in-database guard (see interface doc).
-func (s *PostgresStore) MarkStripeWithdrawalPaid(id, sweepPayoutID string) (bool, error) {
+func (s *PostgresStore) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayoutID string) (bool, error) {
 	if id == "" {
 		return false, errors.New("stripe withdrawal id is required")
 	}
@@ -3540,15 +3540,43 @@ func (s *PostgresStore) MarkStripeWithdrawalPaid(id, sweepPayoutID string) (bool
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE stripe_withdrawals
 		 SET status = 'paid',
-		     sweep_payout_id = CASE WHEN $2 <> '' THEN $2 ELSE sweep_payout_id END,
+		     sweep_payout_id = CASE WHEN $3 <> '' THEN $3 ELSE sweep_payout_id END,
 		     updated_at = NOW()
 		 WHERE id = $1
 		   AND refunded = FALSE
-		   AND status IN ('pending', 'transferred')`,
-		id, sweepPayoutID,
+		   AND status IN ('pending', 'transferred')
+		   AND payout_id = $2`,
+		id, expectedPayoutID, sweepPayoutID,
 	)
 	if err != nil {
 		return false, fmt.Errorf("store: mark stripe withdrawal paid: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a bounced
+// withdrawal for sweep retry with an in-database guard (see interface doc).
+func (s *PostgresStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason string, feeRefunded bool) (bool, error) {
+	if id == "" {
+		return false, errors.New("stripe withdrawal id is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE stripe_withdrawals
+		 SET status = 'transferred',
+		     payout_id = '',
+		     failure_reason = $2,
+		     fee_refunded = (fee_refunded OR $3),
+		     updated_at = NOW()
+		 WHERE id = $1
+		   AND refunded = FALSE
+		   AND status <> 'failed'`,
+		id, failureReason, feeRefunded,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: reopen stripe withdrawal: %w", err)
 	}
 	return tag.RowsAffected() > 0, nil
 }

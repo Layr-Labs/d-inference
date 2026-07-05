@@ -150,7 +150,7 @@ func (s *Server) handlePayoutTerminal(event *billing.WebhookEvent, connectedAcct
 		// !Refunded rows flip): a concurrent payout.failed/transfer.reversed
 		// delivery that persisted Refunded after our read above can't be
 		// overwritten by this stale copy.
-		applied, err := s.billing.Store().MarkStripeWithdrawalPaid(wd.ID, "")
+		applied, err := s.billing.Store().MarkStripeWithdrawalPaid(wd.ID, pe.ID, "")
 		if err != nil {
 			s.logger.Error("stripe connect webhook: mark paid failed", "error", err)
 			return err
@@ -213,16 +213,24 @@ func (s *Server) handlePayoutTerminal(event *billing.WebhookEvent, connectedAcct
 		wd.FeeRefunded = true
 	}
 
-	wd.Status = "transferred"
-	wd.FailureReason = "payout_failed " + pe.FailureCode + ": " + pe.FailureReason +
+	// Reopen for the sweep to retry: status back to "transferred" with the
+	// dead payout ID detached (the sweep matcher only completes rows with
+	// no in-flight payout of their own). The transition is guarded INSIDE
+	// the store: if a concurrent transfer.reversed terminalized the row
+	// (Refunded/failed) after our read above, this stale copy cannot
+	// overwrite the refund back to a sweep-eligible state.
+	reason := "payout_failed " + pe.FailureCode + ": " + pe.FailureReason +
 		" (payout " + pe.ID + "; auto-payout will retry)"
-	// Detach the dead payout ID: the sweep matcher only completes rows with
-	// no in-flight payout of their own.
-	wd.PayoutID = ""
-	if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
+	applied, err := s.billing.Store().ReopenStripeWithdrawalAfterPayoutFailure(wd.ID, reason, wd.FeeRefunded)
+	if err != nil {
 		s.logger.Error("stripe connect webhook: persist payout failure failed",
 			"error", err, "withdrawal_id", wd.ID)
 		return err
+	}
+	if !applied {
+		s.logger.Warn("stripe connect webhook: payout failure not applied — row terminalized concurrently (reversal wins)",
+			"withdrawal_id", wd.ID, "payout_id", pe.ID)
+		return nil
 	}
 	s.logger.Warn("stripe connect webhook: payout failed — funds returned to connected balance, sweep will retry",
 		"withdrawal_id", wd.ID, "payout_id", pe.ID,
@@ -329,50 +337,73 @@ func (s *Server) reconcileUnmatchedPayout(pe *billing.PayoutEvent, success bool)
 
 	payoutCreated := time.Unix(pe.Created, 0)
 	settledBefore := payoutCreated.Add(-availabilityDelay)
-	marked := 0
+
+	// The account list is capped (MaxStripeWithdrawalsByStatusLimit) and
+	// Stripe never redelivers an acked payout.paid — so keep claiming pages
+	// until a page comes back short or makes no progress. Claimed rows
+	// leave the "transferred" filter, so each iteration sees the remainder.
+	totalMarked := 0
 	var firstErr error
-	for i := range rows {
-		wd := &rows[i]
-		if wd.PayoutID != "" {
-			continue // in-flight instant payout — its own webhook drives it
-		}
-		if wd.Refunded {
-			continue // ledger already refunded (legacy state) — never mark paid
-		}
-		if pe.Created > 0 && wd.CreatedAt.After(settledBefore) {
-			continue // funds not yet available when this sweep was cut — the next sweep covers it
-		}
-		// The row must have REACHED its current "transferred" state before
-		// the sweep was cut. This closes two gaps CreatedAt can't see:
-		// (1) the row is inserted before transfers.create, so a sweep cut
-		// in that window predates the money; (2) a row reopened by a sweep
-		// bounce has a fresh UpdatedAt, so a redelivered payout.paid from
-		// the OLD (bounced) sweep can't re-claim it — only a sweep cut
-		// after the reopen (i.e. one that can actually contain the
-		// re-parked funds) completes it.
-		if pe.Created > 0 && wd.UpdatedAt.After(payoutCreated) {
-			continue
-		}
-		// Guarded flip (store-side): a concurrent refund/failure delivery
-		// can't be overwritten by this loop's stale copy. The sweep payout
-		// ID is stamped so a later bounce (payout.failed after paid) can
-		// reopen exactly these rows via reopenSweepBouncedRows.
-		applied, err := s.billing.Store().MarkStripeWithdrawalPaid(wd.ID, pe.ID)
-		if err != nil {
-			s.logger.Error("stripe connect webhook: sweep mark paid failed",
-				"error", err, "withdrawal_id", wd.ID)
-			if firstErr == nil {
+	for page := 0; page < 50; page++ {
+		if page > 0 {
+			rows, err = s.billing.Store().ListStripeWithdrawalsForStripeAccount(pe.ConnectedAcct, "transferred")
+			if err != nil {
+				s.logger.Error("stripe connect webhook: sweep reconcile list failed",
+					"error", err, "stripe_account_id", pe.ConnectedAcct)
 				firstErr = err
+				break
 			}
-			continue
 		}
-		if applied {
-			marked++
+		marked := 0
+		for i := range rows {
+			wd := &rows[i]
+			if wd.PayoutID != "" {
+				continue // in-flight instant payout — its own webhook drives it
+			}
+			if wd.Refunded {
+				continue // ledger already refunded (legacy state) — never mark paid
+			}
+			if pe.Created > 0 && wd.CreatedAt.After(settledBefore) {
+				continue // funds not yet available when this sweep was cut — the next sweep covers it
+			}
+			// The row must have REACHED its current "transferred" state
+			// before the sweep was cut. This closes two gaps CreatedAt
+			// can't see: (1) the row is inserted before transfers.create,
+			// so a sweep cut in that window predates the money; (2) a row
+			// reopened by a sweep bounce has a fresh UpdatedAt, so a
+			// redelivered payout.paid from the OLD (bounced) sweep can't
+			// re-claim it — only a sweep cut after the reopen (i.e. one
+			// that can actually contain the re-parked funds) completes it.
+			if pe.Created > 0 && wd.UpdatedAt.After(payoutCreated) {
+				continue
+			}
+			// Guarded flip (store-side): a concurrent refund/failure
+			// delivery can't be overwritten by this loop's stale copy, and
+			// the payout_id='' condition rejects rows that acquired an
+			// in-flight payout since our read. The sweep payout ID is
+			// stamped so a later bounce (payout.failed after paid) can
+			// reopen exactly these rows via reopenSweepBouncedRows.
+			applied, merr := s.billing.Store().MarkStripeWithdrawalPaid(wd.ID, "", pe.ID)
+			if merr != nil {
+				s.logger.Error("stripe connect webhook: sweep mark paid failed",
+					"error", merr, "withdrawal_id", wd.ID)
+				if firstErr == nil {
+					firstErr = merr
+				}
+				continue
+			}
+			if applied {
+				marked++
+			}
+		}
+		totalMarked += marked
+		if firstErr != nil || marked == 0 || len(rows) < store.MaxStripeWithdrawalsByStatusLimit {
+			break
 		}
 	}
-	if marked > 0 {
+	if totalMarked > 0 {
 		s.logger.Info("stripe connect webhook: sweep payout reconciled",
-			"stripe_account_id", pe.ConnectedAcct, "payout_id", pe.ID, "withdrawals_paid", marked)
+			"stripe_account_id", pe.ConnectedAcct, "payout_id", pe.ID, "withdrawals_paid", totalMarked)
 	}
 	// A partial failure redelivers; rows already marked "paid" drop out of
 	// the "transferred" list, so the retry only touches the stragglers.

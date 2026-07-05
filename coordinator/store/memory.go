@@ -2269,7 +2269,7 @@ func (s *MemoryStore) ListStripeWithdrawals(accountID string, limit int) ([]Stri
 
 // MarkStripeWithdrawalPaid atomically flips a non-terminal, non-refunded
 // withdrawal to "paid" under the store lock (see interface doc).
-func (s *MemoryStore) MarkStripeWithdrawalPaid(id, sweepPayoutID string) (bool, error) {
+func (s *MemoryStore) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayoutID string) (bool, error) {
 	if id == "" {
 		return false, errors.New("stripe withdrawal id is required")
 	}
@@ -2282,10 +2282,39 @@ func (s *MemoryStore) MarkStripeWithdrawalPaid(id, sweepPayoutID string) (bool, 
 	if w.Refunded || (w.Status != "pending" && w.Status != "transferred") {
 		return false, nil
 	}
+	if w.PayoutID != expectedPayoutID {
+		return false, nil // payout detached/replaced concurrently — stale event
+	}
 	w.Status = "paid"
 	if sweepPayoutID != "" {
 		w.SweepPayoutID = sweepPayoutID
 	}
+	w.UpdatedAt = time.Now()
+	return true, nil
+}
+
+// ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a bounced
+// withdrawal for sweep retry under the store lock (see interface doc).
+func (s *MemoryStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason string, feeRefunded bool) (bool, error) {
+	if id == "" {
+		return false, errors.New("stripe withdrawal id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w, ok := s.stripeWithdrawalsByID[id]
+	if !ok {
+		return false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+	}
+	if w.Refunded || w.Status == "failed" {
+		return false, nil // a concurrent reversal terminalized it — never reopen
+	}
+	if w.PayoutID != "" {
+		delete(s.stripeWithdrawalsByPayoutID, w.PayoutID)
+	}
+	w.Status = "transferred"
+	w.PayoutID = ""
+	w.FailureReason = failureReason
+	w.FeeRefunded = w.FeeRefunded || feeRefunded
 	w.UpdatedAt = time.Now()
 	return true, nil
 }

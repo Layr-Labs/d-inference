@@ -54,7 +54,7 @@ describe("VerificationModeProvider hydration determinism", () => {
     expect(screen.getByTestId("mode").textContent).toBe("normal");
   });
 
-  it("toggle flips the mode and persists it", () => {
+  it("toggle flips the mode and persists it, and toggles back", () => {
     render(
       <VerificationModeProvider>
         <Probe />
@@ -65,5 +65,19 @@ describe("VerificationModeProvider hydration determinism", () => {
     fireEvent.click(screen.getByTestId("mode"));
     expect(screen.getByTestId("mode").textContent).toBe("technical");
     expect(localStorage.getItem(STORAGE_KEYS.verificationMode)).toBe("technical");
+    fireEvent.click(screen.getByTestId("mode"));
+    expect(screen.getByTestId("mode").textContent).toBe("normal");
+  });
+
+  it("ignores invalid persisted values and stays in normal mode", () => {
+    localStorage.setItem(STORAGE_KEYS.verificationMode, "garbage");
+
+    render(
+      <VerificationModeProvider>
+        <Probe />
+      </VerificationModeProvider>,
+    );
+
+    expect(screen.getByTestId("mode").textContent).toBe("normal");
   });
 });

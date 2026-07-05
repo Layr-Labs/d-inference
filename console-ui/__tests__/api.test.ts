@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import {
   fetchBalance,
   fetchUsage,
@@ -13,38 +13,9 @@ import {
   deleteApiKey,
   rotateApiKey,
 } from "@/lib/api";
+import { jsonResponse, stubClientFetch } from "./helpers/client-harness";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Build a minimal Response mock for JSON responses. */
-function jsonResponse(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: () => Promise.resolve(body),
-    text: () => Promise.resolve(JSON.stringify(body)),
-    headers: new Headers(),
-  } as unknown as Response;
-}
-
-// ---------------------------------------------------------------------------
-// Setup
-// ---------------------------------------------------------------------------
-
-let fetchMock: ReturnType<typeof vi.fn>;
-
-beforeEach(() => {
-  fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
-
-  localStorage.clear();
-});
-
-afterEach(() => {
-  vi.restoreAllMocks();
-});
+const client = stubClientFetch();
 
 // ---------------------------------------------------------------------------
 // fetchBalance
@@ -53,12 +24,12 @@ afterEach(() => {
 describe("fetchBalance", () => {
   it("calls /api/payments/balance with correct headers", async () => {
     const payload = { balance_micro_usd: 5_000_000, balance_usd: 5.0 };
-    fetchMock.mockResolvedValueOnce(jsonResponse(payload));
+    client.fetch.mockResolvedValueOnce(jsonResponse(payload));
 
     const result = await fetchBalance();
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const [url, opts] = fetchMock.mock.calls[0];
+    expect(client.fetch).toHaveBeenCalledOnce();
+    const [url, opts] = client.fetch.mock.calls[0];
     expect(url).toBe("/api/payments/balance");
     expect(opts.headers["Content-Type"]).toBe("application/json");
     expect(opts.headers["x-api-key"]).toBeUndefined();
@@ -66,7 +37,7 @@ describe("fetchBalance", () => {
   });
 
   it("throws on non-ok response", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({}, 500));
+    client.fetch.mockResolvedValueOnce(jsonResponse({}, 500));
     await expect(fetchBalance()).rejects.toThrow("Failed to fetch balance: 500");
   });
 });
@@ -87,12 +58,12 @@ describe("fetchUsage", () => {
         timestamp: "2025-01-01T00:00:00Z",
       },
     ];
-    fetchMock.mockResolvedValueOnce(jsonResponse({ usage: entries }));
+    client.fetch.mockResolvedValueOnce(jsonResponse({ usage: entries }));
 
     const result = await fetchUsage();
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const [url] = fetchMock.mock.calls[0];
+    expect(client.fetch).toHaveBeenCalledOnce();
+    const [url] = client.fetch.mock.calls[0];
     expect(url).toBe("/api/payments/usage");
     expect(result).toEqual(entries);
   });
@@ -108,14 +79,14 @@ describe("fetchUsage", () => {
         timestamp: "2025-06-01T00:00:00Z",
       },
     ];
-    fetchMock.mockResolvedValueOnce(jsonResponse(entries));
+    client.fetch.mockResolvedValueOnce(jsonResponse(entries));
 
     const result = await fetchUsage();
     expect(result).toEqual(entries);
   });
 
   it("throws on non-ok response", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({}, 403));
+    client.fetch.mockResolvedValueOnce(jsonResponse({}, 403));
     await expect(fetchUsage()).rejects.toThrow("Failed to fetch usage: 403");
   });
 });
@@ -127,12 +98,12 @@ describe("fetchUsage", () => {
 describe("createStripeCheckout", () => {
   it("sends POST to /api/payments/stripe/checkout with amount_usd", async () => {
     const payload = { url: "https://checkout.stripe.com/session/123", session_id: "cs_123" };
-    fetchMock.mockResolvedValueOnce(jsonResponse(payload));
+    client.fetch.mockResolvedValueOnce(jsonResponse(payload));
 
     const result = await createStripeCheckout("10");
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const [url, opts] = fetchMock.mock.calls[0];
+    expect(client.fetch).toHaveBeenCalledOnce();
+    const [url, opts] = client.fetch.mock.calls[0];
     expect(url).toBe("/api/payments/stripe/checkout");
     expect(opts.method).toBe("POST");
     expect(JSON.parse(opts.body)).toEqual({ amount_usd: "10" });
@@ -141,16 +112,16 @@ describe("createStripeCheckout", () => {
 
   it("includes email when provided", async () => {
     const payload = { url: "https://checkout.stripe.com/session/456", session_id: "cs_456" };
-    fetchMock.mockResolvedValueOnce(jsonResponse(payload));
+    client.fetch.mockResolvedValueOnce(jsonResponse(payload));
 
     await createStripeCheckout("5", "test@example.com");
 
-    const [, opts] = fetchMock.mock.calls[0];
+    const [, opts] = client.fetch.mock.calls[0];
     expect(JSON.parse(opts.body)).toEqual({ amount_usd: "5", email: "test@example.com" });
   });
 
   it("throws on failure", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({}, 400));
+    client.fetch.mockResolvedValueOnce(jsonResponse({}, 400));
     await expect(createStripeCheckout("0")).rejects.toThrow("Checkout failed (400)");
   });
 });
@@ -162,12 +133,12 @@ describe("createStripeCheckout", () => {
 describe("redeemInviteCode", () => {
   it("sends POST with { code } and returns credited/balance", async () => {
     const payload = { credited_usd: "5.00", balance_usd: "15.00" };
-    fetchMock.mockResolvedValueOnce(jsonResponse(payload));
+    client.fetch.mockResolvedValueOnce(jsonResponse(payload));
 
     const result = await redeemInviteCode("INV-ABCD1234");
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const [url, opts] = fetchMock.mock.calls[0];
+    expect(client.fetch).toHaveBeenCalledOnce();
+    const [url, opts] = client.fetch.mock.calls[0];
     expect(url).toBe("/api/invite/redeem");
     expect(opts.method).toBe("POST");
     expect(JSON.parse(opts.body)).toEqual({ code: "INV-ABCD1234" });
@@ -176,7 +147,7 @@ describe("redeemInviteCode", () => {
 
   it("throws with server error message on failure", async () => {
     const errorBody = { error: { message: "Code already redeemed" } };
-    fetchMock.mockResolvedValueOnce(jsonResponse(errorBody, 409));
+    client.fetch.mockResolvedValueOnce(jsonResponse(errorBody, 409));
 
     await expect(redeemInviteCode("INV-USED")).rejects.toThrow(
       "Code already redeemed"
@@ -184,7 +155,7 @@ describe("redeemInviteCode", () => {
   });
 
   it("falls back to generic message when no error.message", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({}, 500));
+    client.fetch.mockResolvedValueOnce(jsonResponse({}, 500));
 
     await expect(redeemInviteCode("INV-BAD")).rejects.toThrow(
       "Redemption failed (500)"
@@ -212,7 +183,7 @@ describe("fetchModels", () => {
         },
       ],
     };
-    fetchMock.mockResolvedValueOnce(jsonResponse(raw));
+    client.fetch.mockResolvedValueOnce(jsonResponse(raw));
 
     const result = await fetchModels();
 
@@ -224,7 +195,7 @@ describe("fetchModels", () => {
   });
 
   it("unwraps the public catalog response shape", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({
+    client.fetch.mockResolvedValueOnce(jsonResponse({
       models: [
         {
           id: "gpt-oss-20b",
@@ -245,7 +216,7 @@ describe("fetchModels", () => {
   });
 
   it("surfaces OpenRouter provider fields (pricing, modalities, features)", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({
+    client.fetch.mockResolvedValueOnce(jsonResponse({
       data: [
         {
           id: "mlx-community/Qwen3.5-9B-MLX-4bit",
@@ -284,7 +255,7 @@ describe("fetchModels", () => {
   });
 
   it("throws on non-ok response", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({}, 503));
+    client.fetch.mockResolvedValueOnce(jsonResponse({}, 503));
     await expect(fetchModels()).rejects.toThrow("Failed to fetch models: 503");
   });
 });
@@ -300,7 +271,7 @@ describe("fetchPricing", () => {
         { model: "m1", input_price: 100, output_price: 200, input_usd: "0.01", output_usd: "0.02" },
       ],
     };
-    fetchMock.mockResolvedValueOnce(jsonResponse(payload));
+    client.fetch.mockResolvedValueOnce(jsonResponse(payload));
 
     const result = await fetchPricing();
     expect(result.prices).toHaveLength(1);
@@ -315,14 +286,14 @@ describe("fetchPricing", () => {
 describe("healthCheck", () => {
   it("calls /api/health and returns status", async () => {
     const payload = { status: "ok", providers: 5 };
-    fetchMock.mockResolvedValueOnce(jsonResponse(payload));
+    client.fetch.mockResolvedValueOnce(jsonResponse(payload));
 
     const result = await healthCheck();
     expect(result).toEqual(payload);
   });
 
   it("throws on non-ok response", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({}, 500));
+    client.fetch.mockResolvedValueOnce(jsonResponse({}, 500));
     await expect(healthCheck()).rejects.toThrow("Health check failed: 500");
   });
 });
@@ -333,13 +304,13 @@ describe("healthCheck", () => {
 
 describe("API key management client", () => {
   it("listApiKeys GETs /api/keys with a Bearer token and unwraps data", async () => {
-    fetchMock.mockResolvedValueOnce(
+    client.fetch.mockResolvedValueOnce(
       jsonResponse({ object: "list", data: [{ id: "key_1", name: "prod" }] })
     );
 
     const result = await listApiKeys("privy-tok");
 
-    const [url, opts] = fetchMock.mock.calls[0];
+    const [url, opts] = client.fetch.mock.calls[0];
     expect(url).toBe("/api/keys");
     expect(opts.headers.Authorization).toBe("Bearer privy-tok");
     expect(opts.headers["x-api-key"]).toBeUndefined();
@@ -347,12 +318,12 @@ describe("API key management client", () => {
   });
 
   it("listApiKeys throws the server error message on failure", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: { message: "forbidden" } }, 403));
+    client.fetch.mockResolvedValueOnce(jsonResponse({ error: { message: "forbidden" } }, 403));
     await expect(listApiKeys("t")).rejects.toThrow("forbidden");
   });
 
   it("createApiKey POSTs the body and returns the once-only secret", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ key: "sk-db-x", data: { id: "key_2" } }));
+    client.fetch.mockResolvedValueOnce(jsonResponse({ key: "sk-db-x", data: { id: "key_2" } }));
 
     const result = await createApiKey("t", {
       name: "prod",
@@ -360,7 +331,7 @@ describe("API key management client", () => {
       limit_reset: "monthly",
     });
 
-    const [url, opts] = fetchMock.mock.calls[0];
+    const [url, opts] = client.fetch.mock.calls[0];
     expect(url).toBe("/api/keys");
     expect(opts.method).toBe("POST");
     expect(opts.headers.Authorization).toBe("Bearer t");
@@ -374,11 +345,11 @@ describe("API key management client", () => {
   });
 
   it("updateApiKey PATCHes /api/keys/{id} and forwards null to clear a field", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ id: "key_2", disabled: true }));
+    client.fetch.mockResolvedValueOnce(jsonResponse({ id: "key_2", disabled: true }));
 
     await updateApiKey("t", "key_2", { disabled: true, limit_usd: null });
 
-    const [url, opts] = fetchMock.mock.calls[0];
+    const [url, opts] = client.fetch.mock.calls[0];
     expect(url).toBe("/api/keys/key_2");
     expect(opts.method).toBe("PATCH");
     expect(opts.headers.Authorization).toBe("Bearer t");
@@ -386,22 +357,22 @@ describe("API key management client", () => {
   });
 
   it("deleteApiKey DELETEs /api/keys/{id}", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ status: "revoked" }));
+    client.fetch.mockResolvedValueOnce(jsonResponse({ status: "revoked" }));
 
     await deleteApiKey("t", "key_2");
 
-    const [url, opts] = fetchMock.mock.calls[0];
+    const [url, opts] = client.fetch.mock.calls[0];
     expect(url).toBe("/api/keys/key_2");
     expect(opts.method).toBe("DELETE");
     expect(opts.headers.Authorization).toBe("Bearer t");
   });
 
   it("rotateApiKey POSTs /api/keys/{id}/rotate and returns the new secret", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ key: "sk-db-rot", data: { id: "key_2" } }));
+    client.fetch.mockResolvedValueOnce(jsonResponse({ key: "sk-db-rot", data: { id: "key_2" } }));
 
     const result = await rotateApiKey("t", "key_2");
 
-    const [url, opts] = fetchMock.mock.calls[0];
+    const [url, opts] = client.fetch.mock.calls[0];
     expect(url).toBe("/api/keys/key_2/rotate");
     expect(opts.method).toBe("POST");
     expect(opts.headers.Authorization).toBe("Bearer t");
@@ -409,11 +380,11 @@ describe("API key management client", () => {
   });
 
   it("URL-encodes the key id in management routes", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ status: "revoked" }));
+    client.fetch.mockResolvedValueOnce(jsonResponse({ status: "revoked" }));
 
     await deleteApiKey("t", "key/with space");
 
-    const [url] = fetchMock.mock.calls[0];
+    const [url] = client.fetch.mock.calls[0];
     expect(url).toBe("/api/keys/key%2Fwith%20space");
   });
 });
@@ -424,27 +395,27 @@ describe("API key management client", () => {
 
 describe("proxy headers", () => {
   it("does not include x-coordinator-url (server-side only)", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ balance_micro_usd: 0, balance_usd: 0 }));
+    client.fetch.mockResolvedValueOnce(jsonResponse({ balance_micro_usd: 0, balance_usd: 0 }));
     await fetchBalance();
 
-    const [, opts] = fetchMock.mock.calls[0];
+    const [, opts] = client.fetch.mock.calls[0];
     expect(opts.headers["x-coordinator-url"]).toBeUndefined();
   });
 
   it("includes x-api-key when set in localStorage", async () => {
     localStorage.setItem("darkbloom_api_key", "test-key-123");
-    fetchMock.mockResolvedValueOnce(jsonResponse({ balance_micro_usd: 0, balance_usd: 0 }));
+    client.fetch.mockResolvedValueOnce(jsonResponse({ balance_micro_usd: 0, balance_usd: 0 }));
     await fetchBalance();
 
-    const [, opts] = fetchMock.mock.calls[0];
+    const [, opts] = client.fetch.mock.calls[0];
     expect(opts.headers["x-api-key"]).toBe("test-key-123");
   });
 
   it("omits x-api-key when not set", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ balance_micro_usd: 0, balance_usd: 0 }));
+    client.fetch.mockResolvedValueOnce(jsonResponse({ balance_micro_usd: 0, balance_usd: 0 }));
     await fetchBalance();
 
-    const [, opts] = fetchMock.mock.calls[0];
+    const [, opts] = client.fetch.mock.calls[0];
     expect(opts.headers["x-api-key"]).toBeUndefined();
   });
 });

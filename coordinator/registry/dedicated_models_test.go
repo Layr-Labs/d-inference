@@ -3,25 +3,7 @@ package registry
 import (
 	"testing"
 	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
-
-const (
-	gemmaBuild     = "gemma-4-26b-qat-4bit"
-	gemmaBuildOrg  = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
-	gemmaBuildSmol = "gemma-4-12b-qat-4bit"
-	qwenBuild      = "qwen-3-32b"
-)
-
-// addModelToProvider appends an advertised model id to an already-registered
-// provider (makeSchedulerProvider gives it exactly one). Mirrors how a real
-// multi-model provider advertises its on-disk catalog.
-func addAdvertisedModel(p *Provider, modelID string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.Models = append(p.Models, protocol.ModelInfo{ID: modelID, ModelType: "chat", Quantization: "4bit"})
-}
 
 func TestParseDedicatedModels(t *testing.T) {
 	cases := []struct {

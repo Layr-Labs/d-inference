@@ -6,3 +6,6 @@ edition = "2021"
 [dependencies]
 crypto_box = "0.9"
 base64 = "0.22"
+# Transitive dep of crypto_box. zeroize >= 1.9 requires edition2024 (cargo >=
+# 1.85); cap it so the cross-compat test still builds on older toolchains.
+zeroize = ">=1.6, <1.9"

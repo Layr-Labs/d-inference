@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -20,152 +18,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
-
-// handleProviderMessages reads WebSocket messages in a loop, dispatches
-// challenges vs inference requests, and sends responses. It exits when
-// the context is cancelled or the connection closes.
-func handleProviderMessages(ctx context.Context, t *testing.T, conn *websocket.Conn, handler func(msgType string, data []byte) []byte) {
-	t.Helper()
-	for {
-		_, data, err := conn.Read(ctx)
-		if err != nil {
-			return
-		}
-		var envelope struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(data, &envelope); err != nil {
-			continue
-		}
-		resp := handler(envelope.Type, data)
-		if resp != nil {
-			if err := conn.Write(ctx, websocket.MessageText, resp); err != nil {
-				return
-			}
-		}
-	}
-}
-
-// makeValidChallengeResponse creates a valid attestation response for a challenge.
-// "Valid" here means: echoed nonce, matching public key, non-empty signature,
-// and all security posture fields set to safe values.
-func makeValidChallengeResponse(data []byte, publicKey string) []byte {
-	var challenge protocol.AttestationChallengeMessage
-	json.Unmarshal(data, &challenge)
-	rdmaDisabled := true
-	sipEnabled := true
-	secureBootEnabled := true
-	resp := protocol.AttestationResponseMessage{
-		Type:              protocol.TypeAttestationResponse,
-		Nonce:             challenge.Nonce,
-		Signature:         testChallengeSignature(challenge.Nonce, challenge.Timestamp, publicKey),
-		PublicKey:         publicKey,
-		RDMADisabled:      &rdmaDisabled,
-		SIPEnabled:        &sipEnabled,
-		SecureBootEnabled: &secureBootEnabled,
-	}
-	respData, _ := json.Marshal(resp)
-	return respData
-}
-
-// makeInvalidChallengeResponse creates a response with the correct nonce
-// but a wrong public key. This ensures the response reaches the challenge
-// tracker (nonce must match for dispatch) but verification fails.
-func makeInvalidChallengeResponse(data []byte) []byte {
-	var challenge protocol.AttestationChallengeMessage
-	json.Unmarshal(data, &challenge)
-	rdmaDisabled := true
-	sipEnabled := true
-	secureBootEnabled := true
-	resp := protocol.AttestationResponseMessage{
-		Type:              protocol.TypeAttestationResponse,
-		Nonce:             challenge.Nonce, // correct nonce so tracker dispatches it
-		Signature:         "c2lnbmF0dXJl",
-		PublicKey:         "d3Jvbmdfa2V5X21pc21hdGNo", // wrong key, causes verification failure
-		RDMADisabled:      &rdmaDisabled,
-		SIPEnabled:        &sipEnabled,
-		SecureBootEnabled: &secureBootEnabled,
-	}
-	respData, _ := json.Marshal(resp)
-	return respData
-}
-
-// findRoutableProvider selects a provider for model via the PRODUCTION routing
-// path (ReserveProviderEx), releases the reserved capacity, and returns the
-// selected provider — or nil when no provider can serve the model right now.
-// It replaces the removed score-based registry.FindProvider as a routability
-// probe in API-layer tests: routing applies the same structural/privacy/trust/
-// challenge/capacity gates, so "is this routable?" assertions hold without a
-// parallel routing implementation.
-func findRoutableProvider(reg *registry.Registry, model string) *registry.Provider {
-	pr := &registry.PendingRequest{RequestID: "test-route-probe", Model: model, RequestedMaxTokens: 64}
-	p, _ := reg.ReserveProviderEx(model, pr)
-	if p != nil {
-		p.RemovePending(pr.RequestID)
-		reg.SetProviderIdle(p.ID)
-	}
-	return p
-}
-
-// connectProvider dials the WebSocket, sends a register message, and returns
-// the connection. It waits briefly for registration to be processed.
-func connectProvider(t *testing.T, ctx context.Context, tsURL string, models []protocol.ModelInfo, publicKey string) *websocket.Conn {
-	t.Helper()
-	wsURL := "ws" + strings.TrimPrefix(tsURL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	regMsg := protocol.RegisterMessage{
-		Type: protocol.TypeRegister,
-		Hardware: protocol.Hardware{
-			MachineModel: "Mac15,8",
-			ChipName:     "Apple M3 Max",
-			MemoryGB:     64,
-		},
-		Models:                  models,
-		Backend:                 "mlx-swift",
-		PublicKey:               publicKey,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-	}
-	regData, _ := json.Marshal(regMsg)
-	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
-		t.Fatalf("write register: %v", err)
-	}
-	time.Sleep(150 * time.Millisecond)
-	return conn
-}
-
-// connectProviderWithToken dials the WebSocket with an auth token.
-func connectProviderWithToken(t *testing.T, ctx context.Context, tsURL string, models []protocol.ModelInfo, publicKey, authToken string) *websocket.Conn {
-	t.Helper()
-	wsURL := "ws" + strings.TrimPrefix(tsURL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	regMsg := protocol.RegisterMessage{
-		Type: protocol.TypeRegister,
-		Hardware: protocol.Hardware{
-			MachineModel: "Mac15,8",
-			ChipName:     "Apple M3 Max",
-			MemoryGB:     64,
-		},
-		Models:                  models,
-		Backend:                 "mlx-swift",
-		PublicKey:               publicKey,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-		AuthToken:               authToken,
-	}
-	regData, _ := json.Marshal(regMsg)
-	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
-		t.Fatalf("write register: %v", err)
-	}
-	time.Sleep(150 * time.Millisecond)
-	return conn
-}
 
 // TestIntegration_ProviderReconnectRequiresChallenge verifies that a provider
 // that disconnects and reconnects is NOT routable until it passes a new challenge.
@@ -789,11 +641,4 @@ func TestIntegration_RequestQueueDrain(t *testing.T) {
 	if reg.Queue().QueueSize(model) != 0 {
 		t.Errorf("queue size after drain = %d, want 0", reg.Queue().QueueSize(model))
 	}
-}
-
-// sha256Hex computes SHA-256 of a string and returns hex encoding.
-// Mirrors the store's internal helper.
-func sha256Hex(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(h[:])
 }

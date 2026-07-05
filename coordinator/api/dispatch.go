@@ -177,6 +177,26 @@ func (d *dispatchState) traits() registry.RequestTraits {
 	return registry.RequestTraits{HasTools: d.hasTools, AvoidVersion: d.lastFailedVersion}
 }
 
+// envTTFTTerminalReject is the kill switch for the terminal TTFT-rejection fix.
+// A reservation that fails because every candidate exceeds the TTFT ceiling
+// (errTTFTTooSlow) is DETERMINISTIC: it is computed from the same fleet-wide
+// estimate on every scan, so re-running it within the same request cannot
+// succeed. Default true: the dispatch ladder stops on the FIRST such rejection
+// at ANY attempt and returns the same 429 the attempt-0 path always produced
+// (prod: mid-ladder rejections previously looped to maxDispatchAttempts,
+// re-running the doomed scan ~63x per request and writing a ttft_429 route row
+// each time — 28% of inference_routes). Set =false to restore the legacy
+// attempt-0-only fast path. Read live (not a Server field) following the
+// cold_dispatch.go flag pattern, so it stays confined to this file and is
+// overridable in tests via t.Setenv.
+const envTTFTTerminalReject = "EIGENINFERENCE_TTFT_TERMINAL_REJECT"
+
+// ttftTerminalRejectEnabled reports whether a TTFT-too-slow reservation
+// rejection terminates the dispatch ladder on any attempt. Default true.
+func ttftTerminalRejectEnabled() bool {
+	return envEnabledDefaultTrue(envTTFTTerminalReject)
+}
+
 // queueMaxTTFTMs returns the TTFT ceiling for queued requests. Public routes
 // inherit the prompt-scaled admission threshold; self-route / prefer-owner paths
 // are not subject to the public SLA ceiling.
@@ -392,6 +412,14 @@ func (d *dispatchState) commitFirstContent(pr *registry.PendingRequest, chunk st
 	// ever stamps FirstContentAt for the attempt that actually delivered content —
 	// never a late-completing abandoned/retried attempt sharing the same Timing.
 	pr.MarkContentCommitted()
+	d.s.observeTTFTCalibration(pr)
+	// First CONTENT chunk == the provider ACCEPTED and is serving: clear the
+	// pair's capacity-reject streak NOW rather than at completion. A long
+	// generation on a busy box must keep vouching for the pair while the box
+	// legitimately sheds concurrent dispatches — waiting for the completion
+	// accept (noteInferenceSuccess) would let transient fullness masquerade as
+	// the zero-accepts black-hole signature. See registry/capacity_cooldown.go.
+	d.s.registry.RecordCapacityAccept(pr.ProviderID, pr.Model)
 }
 
 // successRoutingOutcome builds a success outcome for the committed attempt.
@@ -662,14 +690,34 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			return outcomeFailFast
 		}
 
-		// Providers are available but all exceed the TTFT ceiling. On the
-		// first attempt, fail fast with a retryable 429 instead of queueing
-		// for a provider that would miss the OpenRouter SLA target. On retry
-		// attempts, fall through to normal retry logic so we don't abort an
-		// in-flight stream mid-way.
-		if dispatchErr == errTTFTTooSlow && attempt == 0 {
+		// Providers are available but all exceed the TTFT ceiling. This
+		// rejection is deterministic — the scheduler computes it from the same
+		// fleet-wide estimate on every scan — so retrying the reservation
+		// within this request cannot succeed. Fail fast with a retryable 429
+		// on ANY attempt (kill switch: EIGENINFERENCE_TTFT_TERMINAL_REJECT=
+		// false restores the legacy attempt-0-only fast path, under which a
+		// mid-ladder rejection looped to maxDispatchAttempts re-running the
+		// doomed scan). Nothing has been committed to the client at a
+		// reservation failure except, possibly, a prefill keepalive's HTTP
+		// 200 from an earlier attempt — the status code is then frozen, so
+		// route that case through the exhausted ladder, which surfaces the
+		// 429 in-band exactly once. takeOver() also guarantees no keepalive
+		// goroutine can commit the SSE 200 while the 429 below is written.
+		if dispatchErr == errTTFTTooSlow && (attempt == 0 || ttftTerminalRejectEnabled()) {
+			if attempt > 0 && d.keepalive.takeOver() {
+				d.setLastError(dispatchErr, dispatchErrCode)
+				return outcomeFailFast
+			}
 			bestTTFT := time.Duration(decision.BestTTFTMs * float64(time.Millisecond))
 			d.refundReservation()
+			if attempt > 0 {
+				// The legacy loop's exhausted ladder wrote ONE request_rejections
+				// row and ONE OR-uptime outcome for a mid-ladder TTFT storm; keep
+				// both (the attempt-0 path emits neither, unchanged).
+				retryAfter := s.estimateTTFTRetryAfter(d.model, bestTTFT, d.deadline)
+				s.recordRejection(d.rejectionInfoWithDecision("dispatch", "ttft_too_slow", http.StatusTooManyRequests, retryAfter*1000, decision))
+				s.recordRequestOutcome(d.model, classifyOutcomeByCode(http.StatusTooManyRequests))
+			}
 			s.writeTTFTTooSlow(w, d.model, d.publicModel, bestTTFT, d.deadline)
 			return outcomeResponseWritten
 		}
@@ -776,6 +824,21 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
 				d.refundReservation()
 				return outcomeClientGone
+			}
+			if errors.Is(err, registry.ErrQueueTTFTTooSlow) {
+				// The drain proved every eligible provider fails ONLY the TTFT
+				// ceiling — deterministic, so answer with the standard
+				// ttft_too_slow 429 instead of waiting out the queue.
+				s.recordWarmPoolQueueState(d.model)
+				d.updateRoutingOutcome(d.errorRoutingOutcome("error", "ttft_too_slow", http.StatusTooManyRequests))
+				d.refundReservation()
+				s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
+				s.triggerWarmPool()
+				bestTTFT := time.Duration(queuedReq.Decision.BestTTFTMs * float64(time.Millisecond))
+				retryAfter := s.estimateTTFTRetryAfter(d.model, bestTTFT, d.deadline)
+				s.recordRejection(d.rejectionInfoWithDecision("queue", "ttft_too_slow", http.StatusTooManyRequests, retryAfter*1000, queuedReq.Decision))
+				s.writeTTFTTooSlow(w, d.model, d.publicModel, bestTTFT, d.deadline)
+				return outcomeResponseWritten
 			}
 			d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "queue_timeout", http.StatusTooManyRequests))
 			d.refundReservation()

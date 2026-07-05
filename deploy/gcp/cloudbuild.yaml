@@ -5,8 +5,8 @@
 # Artifact Registry, then pins the VM's container image tag and restarts the
 # systemd unit so it picks up the new image.
 #
-# Why GCE VM instead of Cloud Run: the coordinator runs step-ca (ACME CA) and
-# MicroMDM (BoltDB). Both need reliable local filesystem semantics, which
+# Why GCE VM instead of Cloud Run: the coordinator runs
+# MicroMDM (BoltDB), which needs reliable local filesystem semantics that
 # Cloud Run's ephemeral FS + gcsfuse can't provide. The VM has a persistent
 # disk at /mnt/disks/userdata — same path prod uses on EigenCloud.
 #

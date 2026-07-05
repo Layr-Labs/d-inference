@@ -6,8 +6,55 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
+
+func TestNewRequestQueueFromEnvDefaults(t *testing.T) {
+	t.Setenv(env.EnvPrefix+"_QUEUE_MAX_DEPTH", "")
+	t.Setenv(env.EnvPrefix+"_QUEUE_MAX_WAIT", "")
+
+	q := NewRequestQueueFromEnv()
+	if q.MaxSize() != 32 {
+		t.Fatalf("MaxSize() = %d, want default 32", q.MaxSize())
+	}
+	if q.maxWait != 120*time.Second {
+		t.Fatalf("maxWait = %v, want default 120s", q.maxWait)
+	}
+}
+
+func TestNewRequestQueueFromEnvOverrides(t *testing.T) {
+	t.Setenv(env.EnvPrefix+"_QUEUE_MAX_DEPTH", "7")
+	t.Setenv(env.EnvPrefix+"_QUEUE_MAX_WAIT", "45s")
+
+	q := NewRequestQueueFromEnv()
+	if q.MaxSize() != 7 {
+		t.Fatalf("MaxSize() = %d, want 7", q.MaxSize())
+	}
+	if q.maxWait != 45*time.Second {
+		t.Fatalf("maxWait = %v, want 45s", q.maxWait)
+	}
+}
+
+func TestNewRequestQueueFromEnvRejectsInvalidValues(t *testing.T) {
+	t.Setenv(env.EnvPrefix+"_QUEUE_MAX_DEPTH", "0")
+	t.Setenv(env.EnvPrefix+"_QUEUE_MAX_WAIT", "-5s")
+
+	q := NewRequestQueueFromEnv()
+	if q.MaxSize() != 32 {
+		t.Fatalf("MaxSize() = %d, want default 32 for non-positive depth", q.MaxSize())
+	}
+	if q.maxWait != 120*time.Second {
+		t.Fatalf("maxWait = %v, want default 120s for non-positive wait", q.maxWait)
+	}
+
+	t.Setenv(env.EnvPrefix+"_QUEUE_MAX_DEPTH", "not-a-number")
+	t.Setenv(env.EnvPrefix+"_QUEUE_MAX_WAIT", "soon")
+	q = NewRequestQueueFromEnv()
+	if q.MaxSize() != 32 || q.maxWait != 120*time.Second {
+		t.Fatalf("malformed env -> (%d, %v), want defaults (32, 120s)", q.MaxSize(), q.maxWait)
+	}
+}
 
 func TestEnqueueAndSize(t *testing.T) {
 	q := NewRequestQueue(10, 30*time.Second)

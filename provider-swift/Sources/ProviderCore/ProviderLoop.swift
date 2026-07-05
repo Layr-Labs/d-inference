@@ -171,6 +171,18 @@ public actor ProviderLoop {
     /// BatchScheduler and worker task. Keyed by model ID.
     internal var modelSlots: [String: ModelSlot] = [:]
 
+    /// ContinuousBatchingV2 bridge registry consulted by the capacity and
+    /// cancellation hooks — but ONLY when at least one v2 slot exists (see
+    /// the `hasEngineV2Slots` guards in `ProviderLoop+Capacity` /
+    /// `+Cancellation`), so flag-off providers never pay the actor hop.
+    /// Defaults to the process-global instance; tests inject an isolated one.
+    internal var engineV2Runtime: EngineV2Runtime = .shared
+
+    /// Test seam (`ProviderLoop+Testing`): overrides the environment, the
+    /// container EOS snapshot, and the production CBv2 engine builder used
+    /// by `makeEngineV2BridgeForSlot`. nil in production.
+    internal var engineV2SlotHooks: EngineV2SlotHooks?
+
     /// Operator-configured hard cap on concurrent model slots
     /// (`backend.maxModelSlots`). This is the memory-safety ceiling: the
     /// effective cap never exceeds it. A provider configured with `1` has opted
@@ -322,6 +334,35 @@ public actor ProviderLoop {
 
     /// Tracks coordinator-driven preload tasks so they can be cancelled on shutdown.
     internal var preloadTasks: [String: Task<Void, Never>] = [:]
+
+    /// Startup preload driver (`ProviderLoop+StartupPreload`). Non-nil while
+    /// the boot-time preload of the configured/previously-served model set is
+    /// still running — it may outlive the registration gate when the
+    /// `startup_preload_timeout_secs` deadline passes (loads continue in the
+    /// background). Cancelled and awaited on shutdown alongside the
+    /// coordinator-driven preloads.
+    internal var startupPreloadTask: Task<Void, Never>?
+
+    /// Test seam: overrides the loaded-models persistence file
+    /// (default: `LoadedModelsStore.path()`).
+    internal var loadedModelsFileOverride: URL?
+
+    /// Gate on the loaded-models persistence writes. `run()` flips it on at
+    /// startup; it stays FALSE for `ProviderLoop` instances that never serve
+    /// (unit tests exercising load/unload paths), so an unrelated test can
+    /// never clobber the operator's real `~/.darkbloom/loaded-models.json`
+    /// — that file is the next boot's preload plan. The test seam
+    /// `setLoadedModelsFileForTesting` enables it together with a temp path.
+    internal var loadedModelsPersistenceEnabled = false
+
+    /// Test seams for the startup preload driver: replace the real
+    /// `ensureModelLoaded` / self-test decode / free-memory probe with
+    /// scripted stubs so the plan, gate timing, admission, and
+    /// fail-open/closed paths run without model weights or a live memory
+    /// reading. nil in production.
+    internal var startupPreloadLoadOverride: (@Sendable (String) async throws -> Void)?
+    internal var startupSelfTestOverride: (@Sendable (String) async throws -> Duration)?
+    internal var startupPreloadFreeMemoryOverride: (@Sendable () async -> Double)?
 
     /// Senders waiting for the terminal status of an in-flight preload.
     internal var preloadStatusSubscribers: [String: [SendHandle]] = [:]
@@ -489,6 +530,13 @@ public actor ProviderLoop {
 
     internal struct ModelSlot {
         let scheduler: BatchScheduler
+        /// ContinuousBatchingV2 bridge for this slot — non-nil ONLY when
+        /// `EngineV2Config` selected the v2 engine at load time AND its
+        /// construction succeeded. Stored ALONGSIDE (never replacing) the
+        /// legacy scheduler: requests route through the bridge when present,
+        /// and every fallback path (flag off, non-allowlisted model, v2 init
+        /// failure) leaves this nil and serves via `scheduler` unchanged.
+        let engineV2: EngineV2Bridge?
         let container: MLXLMCommon.ModelContainer
         let tokenizer: TokenizerHandle
         /// Vision-language model (config has `vision_config`). Multimodal
@@ -538,6 +586,7 @@ public actor ProviderLoop {
     //   - ProviderLoop+Serve.swift               run() loop + registration setup
     //   - ProviderLoop+InferenceHandler.swift    handleInferenceRequest + draining gates
     //   - ProviderLoop+Preload.swift             load_model preload + preload/shutdown waits
+    //   - ProviderLoop+StartupPreload.swift      boot-time preload + registration readiness gate
     //   - ProviderLoop+Prefetch.swift            background prefetch + desired-models reconcile
     //   - ProviderLoop+Testing.swift             test-only seams (ProviderCoreTests)
     //   - ProviderLoop+Trust.swift               trust status + one-time auto-report
@@ -546,6 +595,7 @@ public actor ProviderLoop {
     //   - ProviderLoop+Capacity.swift            capacity refresh + updateAggregateCapacity
     //   - ProviderLoop+AutoUpdate.swift          background self-update + phase transitions
     //   - ProviderLoop+ModelLoading.swift        ensureModelLoaded/unload + memory admission
+    //   - ProviderLoop+EngineV2.swift            ContinuousBatchingV2 slot wiring (flag-gated)
     //   - ProviderLoop+Cancellation.swift        cancellation + in-flight drain
     //   - ProviderLoop+AttestationChallenge.swift attestation + APNs code challenge
     //   - ProviderLoop+LocalEndpoint.swift       unified local HTTP endpoint

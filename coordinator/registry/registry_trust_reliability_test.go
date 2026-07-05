@@ -8,11 +8,11 @@ import (
 )
 
 // TestRestoreProviderStateDoesNotResurrectMDAWhenSelfSigned is the drift fix:
-// a stored record with hardware trust + MDAVerified/ACMEVerified=true must NOT
+// a stored record with hardware trust + MDAVerified=true must NOT
 // resurrect those proof badges onto a fresh connection. RestoreProviderState
 // caps restored trust to self_signed (hardware must be re-earned live), and when
-// the live trust is below hardware the MDA/ACME flags are forced false — they
-// are only meaningful for the connection that earned hardware live. This is what
+// the live trust is below hardware the MDA flag is forced false — it is
+// only meaningful for the connection that earned hardware live. This is what
 // kills the misleading "mda_verified=true while self_signed" state on
 // /v1/providers/attestation.
 func TestRestoreProviderStateDoesNotResurrectMDAWhenSelfSigned(t *testing.T) {
@@ -20,11 +20,10 @@ func TestRestoreProviderStateDoesNotResurrectMDAWhenSelfSigned(t *testing.T) {
 	p := reg.Register("p1", nil, testRegisterMessage())
 
 	rec := &store.ProviderRecord{
-		ID:           "p1",
-		TrustLevel:   string(TrustHardware), // stored as hardware...
-		Attested:     true,
-		MDAVerified:  true,
-		ACMEVerified: true,
+		ID:          "p1",
+		TrustLevel:  string(TrustHardware), // stored as hardware...
+		Attested:    true,
+		MDAVerified: true,
 	}
 
 	reg.RestoreProviderState(p, rec)
@@ -33,34 +32,30 @@ func TestRestoreProviderStateDoesNotResurrectMDAWhenSelfSigned(t *testing.T) {
 	if p.GetTrustLevel() != TrustSelfSigned {
 		t.Errorf("trust = %q, want %q (restore caps hardware → self_signed)", p.GetTrustLevel(), TrustSelfSigned)
 	}
-	// The drift fix: MDA/ACME proofs must be cleared, not carried over.
+	// The drift fix: the MDA proof must be cleared, not carried over.
 	p.Mu().Lock()
-	mda, acme := p.MDAVerified, p.ACMEVerified
+	mda := p.MDAVerified
 	p.Mu().Unlock()
 	if mda {
 		t.Error("MDAVerified must be false on a self_signed reconnect (drift guard)")
-	}
-	if acme {
-		t.Error("ACMEVerified must be false on a self_signed reconnect (drift guard)")
 	}
 }
 
 // TestRestoreProviderStateClearsProofsForSelfSignedRecord verifies the
 // complementary branch: a record whose stored trust is at/below self_signed is
-// restored verbatim (not capped), and MDA/ACME proofs are still forced false.
+// restored verbatim (not capped), and the MDA proof is still forced false.
 // RestoreProviderState always clears the proof flags (a restored connection is
 // always <= self_signed since hardware is capped away), so the guarantee is that
-// a restore never produces MDA/ACME proofs on a non-hardware connection — they
-// are re-earned live by the MDM/ACME legs this connection.
+// a restore never produces an MDA proof on a non-hardware connection — it is
+// re-earned live by the MDA leg this connection.
 func TestRestoreProviderStateClearsProofsForSelfSignedRecord(t *testing.T) {
 	reg := New(testLogger())
 	p := reg.Register("p1", nil, testRegisterMessage())
 
 	rec := &store.ProviderRecord{
-		ID:           "p1",
-		TrustLevel:   string(TrustSelfSigned),
-		MDAVerified:  true,
-		ACMEVerified: true,
+		ID:          "p1",
+		TrustLevel:  string(TrustSelfSigned),
+		MDAVerified: true,
 	}
 	reg.RestoreProviderState(p, rec)
 
@@ -68,10 +63,10 @@ func TestRestoreProviderStateClearsProofsForSelfSignedRecord(t *testing.T) {
 		t.Errorf("trust = %q, want %q", p.GetTrustLevel(), TrustSelfSigned)
 	}
 	p.Mu().Lock()
-	mda, acme := p.MDAVerified, p.ACMEVerified
+	mda := p.MDAVerified
 	p.Mu().Unlock()
-	if mda || acme {
-		t.Errorf("proofs must be false for a non-hardware restore, got mda=%v acme=%v", mda, acme)
+	if mda {
+		t.Errorf("MDA proof must be false for a non-hardware restore, got mda=%v", mda)
 	}
 }
 

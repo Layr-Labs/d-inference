@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -175,6 +176,62 @@ func TestWarmPoolQueueClearStopsStaleQueueLoads(t *testing.T) {
 	}
 }
 
+// TestWarmPoolEnvDefaultIsActiveAndSendsLoads pins the deploy-critical default:
+// with NO warm-pool env set, ReadConfig yields an ACTIVE controller whose ticks
+// actually issue load_model commands (not observe-only planning).
+func TestWarmPoolEnvDefaultIsActiveAndSendsLoads(t *testing.T) {
+	clearWarmPoolEnv(t)
+	reg := New(testLogger())
+	model := "warm-pool-env-default"
+	makeSchedulerProvider(t, reg, "warm", model, 80)
+	makeWarmPoolColdProvider(t, reg, "cold", model, 80, 64, 8)
+	cfg := ReadConfig().WarmPool
+	if cfg.ObserveOnly {
+		t.Fatal("ObserveOnly = true with env unset, want false (active)")
+	}
+	reg.ConfigureWarmPool(cfg)
+	sent := captureWarmPoolLoads(reg)
+
+	reg.RecordWarmPoolCapacityReject(model)
+	snaps := reg.warmPool.tick(time.Now())
+
+	if len(*sent) != 1 {
+		t.Fatalf("sent loads = %d, want 1 with the env-default (active) config", len(*sent))
+	}
+	if len(snaps) == 0 || snaps[0].ObserveOnly {
+		t.Fatalf("snapshot = %+v, want active (ObserveOnly=false)", snaps)
+	}
+}
+
+// TestWarmPoolEnvObserveOnlyOverridePreserved pins the operator override:
+// EIGENINFERENCE_WARM_POOL_OBSERVE_ONLY=true keeps planning ticks side-effect
+// free (decisions computed, no load_model sent).
+func TestWarmPoolEnvObserveOnlyOverridePreserved(t *testing.T) {
+	clearWarmPoolEnv(t)
+	t.Setenv(env.EnvPrefix+"_WARM_POOL_OBSERVE_ONLY", "true")
+	reg := New(testLogger())
+	model := "warm-pool-env-observe"
+	makeSchedulerProvider(t, reg, "warm", model, 80)
+	makeWarmPoolColdProvider(t, reg, "cold", model, 80, 64, 8)
+	reg.ConfigureWarmPool(ReadConfig().WarmPool)
+	sent := captureWarmPoolLoads(reg)
+
+	reg.RecordWarmPoolCapacityReject(model)
+	// The periodic ticker still runs planning passes in observe-only mode; they
+	// must not issue loads. Hot-path triggers must be rejected outright.
+	snaps := reg.warmPool.tick(time.Now())
+
+	if len(*sent) != 0 {
+		t.Fatalf("sent loads = %d, want 0 in observe-only mode", len(*sent))
+	}
+	if len(snaps) == 0 || !snaps[0].ObserveOnly {
+		t.Fatalf("snapshot = %+v, want ObserveOnly=true", snaps)
+	}
+	if reg.RequestWarmPoolTrigger() {
+		t.Fatal("RequestWarmPoolTrigger accepted in observe-only mode, want rejection")
+	}
+}
+
 func TestTriggerWarmPoolObserveOnlyDoesNotSendLoads(t *testing.T) {
 	reg := New(testLogger())
 	model := "warm-pool-observe-only"
@@ -194,6 +251,77 @@ func TestTriggerWarmPoolObserveOnlyDoesNotSendLoads(t *testing.T) {
 	}
 	if len(snaps) != 0 {
 		t.Fatalf("snapshots = %+v, want no active trigger in observe-only mode", snaps)
+	}
+}
+
+// TestWarmPoolDedicatedQueueSpillStillDrivesWarming pins the demand signals the
+// controller sees now that dedicated-pool overflow QUEUES instead of fast-429ing:
+// the admission preflight still records a capacity reject on the queue-spill
+// branch, and the enqueue records queue pressure. Either signal alone must keep
+// growing the dedicated pool — toward the WHOLE eligible dedicated set — and
+// never target a mixed (non-dedicated) box.
+func TestWarmPoolDedicatedQueueSpillStillDrivesWarming(t *testing.T) {
+	signals := map[string]func(reg *Registry, model string){
+		"capacity_reject": func(reg *Registry, model string) {
+			reg.RecordWarmPoolCapacityReject(model)
+		},
+		"queue_pressure_only": func(reg *Registry, model string) {
+			reg.RecordWarmPoolQueueEnqueued(model, 3, 3*time.Second)
+		},
+	}
+	for name, feed := range signals {
+		t.Run(name, func(t *testing.T) {
+			reg := New(testLogger())
+			reg.SetDedicatedModels([]string{"gemma-4"})
+			makeSchedulerProvider(t, reg, "warm-dedicated", gemmaBuild, 80)
+			coldA := makeWarmPoolColdProvider(t, reg, "cold-dedicated-a", gemmaBuild, 80, 64, 8)
+			coldB := makeWarmPoolColdProvider(t, reg, "cold-dedicated-b", gemmaBuild, 80, 64, 8)
+			mixed := makeWarmPoolColdProvider(t, reg, "cold-mixed", gemmaBuild, 80, 64, 8)
+			addAdvertisedModel(mixed, qwenBuild)
+
+			cfg := testWarmPoolConfig()
+			cfg.MaxLoadsPerTick = 4
+			reg.ConfigureWarmPool(cfg)
+			sent := captureWarmPoolLoads(reg)
+
+			feed(reg, gemmaBuild)
+			snaps := reg.warmPool.tick(time.Now())
+
+			var snap WarmPoolSnapshot
+			found := false
+			for _, s := range snaps {
+				if s.Model == gemmaBuild {
+					snap = s
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("no warm-pool snapshot for %q in %+v", gemmaBuild, snaps)
+			}
+			// Dedicated pool under demand pressure warms the whole eligible set:
+			// 1 warm + 2 eligible cold (the mixed box is excluded).
+			if snap.TargetWarm != 3 {
+				t.Fatalf("TargetWarm = %d, want 3 (whole dedicated pool)", snap.TargetWarm)
+			}
+			if snap.EligibleCold != 2 {
+				t.Fatalf("EligibleCold = %d, want 2 (mixed box excluded)", snap.EligibleCold)
+			}
+			if snap.ColdDisqualifiers["dedicated_excluded"] != 1 {
+				t.Fatalf("ColdDisqualifiers = %v, want mixed box tallied as dedicated_excluded", snap.ColdDisqualifiers)
+			}
+			if len(*sent) != 2 {
+				t.Fatalf("sent loads = %d, want 2 (both cold dedicated boxes)", len(*sent))
+			}
+			for _, action := range *sent {
+				if action.providerID != coldA.ID && action.providerID != coldB.ID {
+					t.Fatalf("load sent to %q, want only dedicated boxes", action.providerID)
+				}
+				if action.modelID != gemmaBuild {
+					t.Fatalf("load model = %q, want %q", action.modelID, gemmaBuild)
+				}
+			}
+		})
 	}
 }
 

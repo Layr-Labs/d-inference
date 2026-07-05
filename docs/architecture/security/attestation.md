@@ -108,5 +108,5 @@ Users can independently verify the MDA chain against Apple's public Enterprise A
 ## See also
 
 - [Identity binding](./identity-binding.md) — how SE keys, X25519 `K`, APNs tokens, and MDA certificates are bound together.
-- [Provider enrollment](./enrollment.md) — the combined `.mobileconfig` profile and MDM/ACME enrollment flow.
+- [Provider enrollment](./enrollment.md) — the combined `.mobileconfig` profile and MDM/SCEP enrollment flow.
 - [Encryption](./encryption.md) — hop-by-hop NaCl Box model and why the provider must be the decryption endpoint.

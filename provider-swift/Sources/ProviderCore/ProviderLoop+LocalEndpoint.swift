@@ -140,7 +140,10 @@ extension ProviderLoop {
             // hard-swap drop window (see ModelSlot.modelType).
             modelType: slot.modelType,
             container: slot.container,
-            isVLM: slot.isVLM
+            isVLM: slot.isVLM,
+            // ContinuousBatchingV2 (flag-gated): local requests route through
+            // the same v2 bridge as coordinator requests when the slot has one.
+            engineV2Bridge: slot.engineV2
         )
     }
 

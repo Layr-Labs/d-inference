@@ -3,7 +3,7 @@ package registry
 // Provider state persistence: the bridge between the in-memory registry and the
 // durable store. Loads stored provider records + reputation at startup, restores
 // them onto reconnecting live providers (never resurrecting hardware trust or
-// MDA/ACME proofs — those are re-earned live), and writes provider + reputation
+// the MDA proof — that is re-earned live), and writes provider + reputation
 // state back (unconditionally for critical changes, throttled for heartbeats).
 
 import (
@@ -66,7 +66,7 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	defer p.mu.Unlock()
 
 	// Restore trust level, but NEVER above self_signed. Hardware trust must be
-	// re-earned via a fresh live challenge + MDM/ACME on every (re)connection.
+	// re-earned via a fresh live challenge + MDM verification on every (re)connection.
 	// Resurrecting a stored "hardware" level would route real traffic to a
 	// provider that has not yet passed a live challenge, and is the source of
 	// the "registry says hardware but the live verdict is self_signed" drift.
@@ -85,16 +85,14 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	if !p.Attested {
 		p.Attested = rec.Attested
 	}
-	// Never resurrect MDA/ACME proofs from the store. Trust above self_signed was
+	// Never resurrect the MDA proof from the store. Trust above self_signed was
 	// just capped away (see above), so a restored connection is always
 	// self_signed or lower — and a hardware proof is only meaningful for the
 	// connection that earned it live. Restoring MDAVerified=true here produced the
 	// misleading "mda_verified=true while self_signed" drift on
-	// /v1/providers/attestation. These flags are re-set by the live MDM/ACME legs
-	// (verifyAppleDeviceAttestation / applyACMETrust) once hardware is re-earned
-	// this connection.
+	// /v1/providers/attestation. The flag is re-set by the live MDA leg
+	// (verifyAppleDeviceAttestation) once hardware is re-earned this connection.
 	p.MDAVerified = false
-	p.ACMEVerified = false
 
 	// Stage the durable Apple-signed MDA cert chain (if the store has one) for
 	// local re-verification at this connection's hardware-grant. We deliberately
@@ -285,7 +283,6 @@ func (r *Registry) persistProviderNow(p *Provider) {
 			SerialNumber:               serial,
 			MDAVerified:                p.MDAVerified,
 			MDACertChain:               mdaCertJSON,
-			ACMEVerified:               p.ACMEVerified,
 			Version:                    p.Version,
 			RuntimeVerified:            p.RuntimeVerified,
 			PythonHash:                 p.PythonHash,

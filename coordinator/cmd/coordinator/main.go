@@ -21,9 +21,7 @@ package main
 
 import (
 	"context"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -199,7 +197,7 @@ func main() {
 	)
 	logger.Info("quality-concurrency cap",
 		"enabled", cfg.RegistryCfg.QualityCap.Enabled,
-		"overcommit", cfg.RegistryCfg.QualityCap.Overcommit,
+		"overcommit", reg.QualityCapOvercommit(),
 		"decode_floor_tps", cfg.RegistryCfg.WarmPool.DecodeFloorTPS,
 	)
 
@@ -503,19 +501,24 @@ func main() {
 	srv.SetMinDecodeTPS(minDecodeTPS)
 	logger.Info("per-request decode floor (quality bar)", "min_decode_tps", minDecodeTPS)
 
-	// Smart early-429 admission gate. OFF by default (behavior-neutral).
-	// When enabled, a request whose (prompt+max_tokens) cannot fit the model
-	// context window or any provider's structural token budget is rejected with an
-	// uptime-neutral 429 at preflight instead of being admitted and 5xx'ing on the
-	// provider. The always-on dispatch-exhausted reclassification of a provider
-	// token-budget 5xx → 429 is independent of this flag.
+	// Smart early-429 admission gate. ON by default: a request whose
+	// (prompt+max_tokens) cannot fit the model context window or any provider's
+	// structural token budget is rejected with an uptime-neutral 429 at preflight
+	// instead of being admitted and 5xx'ing on the provider. Only an explicit
+	// parseable EIGENINFERENCE_SERVABILITY_GATE=false disables it (resolved live
+	// in servabilityGateEnabled). The always-on dispatch-exhausted
+	// reclassification of a provider token-budget 5xx → 429 is independent.
 	if v := os.Getenv("EIGENINFERENCE_SERVABILITY_GATE"); v != "" {
 		if on, err := strconv.ParseBool(v); err == nil && on {
 			srv.SetServabilityGate(true)
 			logger.Info("smart servability gate ENABLED via EIGENINFERENCE_SERVABILITY_GATE (unservable long prompts → early 429)")
+		} else if err == nil && !on {
+			logger.Info("smart servability gate DISABLED via EIGENINFERENCE_SERVABILITY_GATE=false")
 		} else if err != nil {
-			logger.Warn("invalid EIGENINFERENCE_SERVABILITY_GATE; gate stays off", "value", v)
+			logger.Warn("invalid EIGENINFERENCE_SERVABILITY_GATE; gate defaults ON", "value", v)
 		}
+	} else {
+		logger.Info("smart servability gate ENABLED (default; set EIGENINFERENCE_SERVABILITY_GATE=false to disable)")
 	}
 
 	// C1 kill switch: deterministic provider client-4xx (400/413/422/415) returns
@@ -709,44 +712,6 @@ func main() {
 			logger.Warn("EIGENINFERENCE_MDM_WEBHOOK_SECRET not set — MDM webhook relies solely on the CommandUUID gate; set it + keep MicroMDM bound to localhost for defense in depth")
 		}
 		logger.Info("MDM verification enabled", "url", mdmCfg.URL)
-	}
-
-	// Configure step-ca root CA for ACME client cert verification.
-	if stepCARoot := os.Getenv("EIGENINFERENCE_STEP_CA_ROOT"); stepCARoot != "" {
-		rootPEM, err := os.ReadFile(stepCARoot)
-		if err != nil {
-			logger.Error("failed to read step-ca root CA", "path", stepCARoot, "error", err)
-		} else {
-			block, _ := pem.Decode(rootPEM)
-			if block != nil {
-				rootCert, err := x509.ParseCertificate(block.Bytes)
-				if err != nil {
-					logger.Error("failed to parse step-ca root CA", "error", err)
-				} else {
-					var intCert *x509.Certificate
-					stepCAInt := os.Getenv("EIGENINFERENCE_STEP_CA_INTERMEDIATE")
-					if stepCAInt != "" {
-						intPEM, err := os.ReadFile(stepCAInt)
-						if err == nil {
-							intBlock, _ := pem.Decode(intPEM)
-							if intBlock != nil {
-								intCert, _ = x509.ParseCertificate(intBlock.Bytes)
-							}
-						}
-					}
-					srv.SetStepCACerts(rootCert, intCert)
-					logger.Info("step-ca ACME client cert verification enabled", "root", stepCARoot)
-				}
-			}
-		}
-	} else {
-		// ACME is the no-live-command leg of the OR-trust model: a provider that
-		// presents a valid, bound device-attest-01 mTLS client cert earns hardware
-		// trust without any MDM SecurityInfo round-trip. Without the step-ca root
-		// that leg is dormant, so every provider must earn hardware trust via the
-		// live MDM SecurityInfo path (subject to APNs delivery). Surface the
-		// dormancy at startup so activation can be planned + validated.
-		logger.Warn("ACME device-cert verification disabled — EIGENINFERENCE_STEP_CA_ROOT not set; providers earn hardware trust via MDM SecurityInfo only")
 	}
 
 	// Optional profile signing: when a code-signing identity (e.g. Developer ID

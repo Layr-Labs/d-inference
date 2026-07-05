@@ -256,6 +256,12 @@ public enum TelemetryFieldFilter {
         "prefill_samples_accepted", "prefill_samples_dropped_floor",
         "prefill_samples_dropped_ceiling", "last_prefill_sample_tps",
         "observed_prefill_tps_ewma",
+        // KV-budget sustained-rejection audit (v0.7.3 black-hole hardening):
+        // reservation ids/byte counts/ages + memory snapshot terms — pure
+        // operational bookkeeping, no prompt/response data. Mirror in Go + TS.
+        "streak_seconds", "reservation_count", "reserved_bytes",
+        "mlx_cache_bytes", "system_available_bytes", "reservations",
+        "request_id", "age_seconds",
     ]
 
     /// Filter a dictionary to only the keys the coordinator accepts.

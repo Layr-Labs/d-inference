@@ -13,7 +13,7 @@ The coordinator stores a `TrustLevel` for each provider
 |-------|------|---------|
 | `none` | No attestation | Provider registered without an attestation. Not routed for private text. |
 | `self_signed` | Self-attested | A valid Secure-Enclave-signed attestation was verified. |
-| `hardware` | Hardware-attested | Self-signed attestation plus MDM/ACME/MDA cross-check against Apple. |
+| `hardware` | Hardware-attested | Self-signed attestation plus MDM SecurityInfo cross-check (with Apple MDA as the genuineness proof). |
 
 The default minimum trust level for public routing is `hardware`
 (`coordinator/registry/registry.go:773`). Self-route relaxes the trust floor for
@@ -104,27 +104,23 @@ consecutive timeouts force a WebSocket reconnect
 
 ## Upgrading from `self_signed` to `hardware`
 
-A provider starts at `self_signed` after SE attestation verifies. It can be
-promoted to `hardware` through one of these independent paths:
+A provider starts at `self_signed` after SE attestation verifies. It is
+promoted to `hardware` exclusively through **MDM verification** —
+`verifyProviderViaMDM` (`coordinator/api/provider.go`). The coordinator queries
+its MicroMDM server for the device's serial number and checks that MDM-reported
+SIP/Secure Boot match the provider's self-report. If they match, trust is
+upgraded to `hardware` and Apple Device Attestation (MDA) is requested.
 
-1. **MDM verification** — `verifyProviderViaMDM`
-   (`coordinator/api/provider.go:2268-2340`). The coordinator queries its
-   MicroMDM server for the device's serial number and checks that MDM-reported
-   SIP/Secure Boot match the provider's self-report. If they match, trust is
-   upgraded to `hardware` and Apple Device Attestation (MDA) is requested.
+**Apple MDA** — `verifyAppleDeviceAttestation`
+(`coordinator/api/provider.go`) — supplies the informational Apple-genuineness
+proof after MDM succeeds: the coordinator asks Apple to sign a device
+attestation certificate, verifies the chain to the Apple Enterprise Attestation
+Root CA, and checks that the MDA serial matches the provider's serial. The MDA
+cert may also bind the SE public key via the `FreshnessCode` OID.
 
-2. **ACME device-attest-01** — `applyACMETrust`
-   (`coordinator/api/provider.go:693-737`). A provider that presents an Apple
-   device-attest-01 client certificate proves possession of the same SE key the
-   attestation claims. The coordinator verifies the cert chain and upgrades to
-   `hardware`.
-
-3. **Apple MDA** — `verifyAppleDeviceAttestation`
-   (`coordinator/api/provider.go:2342-2466`). After MDM succeeds, the
-   coordinator asks Apple to sign a device attestation certificate. The
-   coordinator verifies the chain to the Apple Enterprise Attestation Root CA
-   and checks that the MDA serial matches the provider's serial. The MDA cert
-   may also bind the SE public key via the `FreshnessCode` OID.
+(An ACME `device-attest-01` client-certificate path used to exist as a second
+trust leg; it was never wired end-to-end and was removed on 2026-07-03.
+Hardware trust is MDM SecurityInfo only.)
 
 The `hardware` verdict means the coordinator has an independent, Apple-signed
 proof that the provider is running on genuine Apple hardware with the claimed
@@ -215,7 +211,7 @@ The response is built by `handleProviderAttestation`
 | `trust_level` | `none`, `self_signed`, or `hardware` |
 | `status` | `online`, `offline`, `untrusted`, etc. |
 | `mdm_verified` | `true` for `hardware` trust via MDM |
-| `acme_verified` | `true` if ACME device-attest-01 verified |
+| `acme_verified` | Deprecated — always `false` (the ACME leg was removed 2026-07-03; kept on the wire because shipped provider builds decode it as required) |
 | `mda_verified` | `true` if Apple MDA chain verified |
 | `mda_cert_chain_b64` | Base64 DER certificates for independent verification |
 | `sip_enabled`, `secure_boot_enabled`, `authenticated_root_enabled` | Latest verified posture |
@@ -228,7 +224,7 @@ MDA chain independently.
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| `trust_level: self_signed` | MDM/ACME not completed | Run `darkbloom enroll` and install the profile; or check ACME cert provisioning |
+| `trust_level: self_signed` | MDM verification not completed | Run `darkbloom enroll` and install the profile; approve MDM in System Settings |
 | `mdm_verified: false` | Device not enrolled or MDM check timed out | Confirm enrollment in System Settings → Device Management |
 | `mda_verified: false` | MDA command failed or freshness expired | Wait for next MDM/MDA retry; re-enroll if persistent |
 | Code-attest never passes | No Aqua session / no APNs token | Log in at the console, enable automatic login, disable auto-logout |

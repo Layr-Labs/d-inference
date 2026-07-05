@@ -231,6 +231,11 @@ func TestAdaptiveCapacityIntegrationHTTP429WhenTokenBudgetExhausted(t *testing.T
 	// TestAdaptiveCapacityIntegrationQueueBeforeShedQueuesInsteadOf429). This test
 	// pins the legacy fast-shed path that the flag-off behaviour preserves.
 	t.Setenv(envQueueBeforeShed, "false")
+	// The servability gate (default-on) sheds this known-insufficient budget at
+	// preflight with its own 429 before the capacity ladder runs; disable it so
+	// this test keeps pinning the capacity fast-shed path (still reachable in
+	// prod whenever any eligible provider's budget is unknown).
+	t.Setenv("EIGENINFERENCE_SERVABILITY_GATE", "false")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -282,6 +287,11 @@ func TestAdaptiveCapacityIntegrationQueueBeforeShedQueuesInsteadOf429(t *testing
 	// Keep cold-dispatch from kicking model swaps in this single-warm-provider
 	// scenario — irrelevant here and keeps the test focused on queueing.
 	t.Setenv(envColdDispatch, "false")
+	// The servability gate (default-on) would shed this known-insufficient
+	// budget at preflight before the queue-before-shed branch runs; disable it
+	// so this test keeps pinning the queueing path (still reachable in prod
+	// whenever any eligible provider's budget is unknown).
+	t.Setenv("EIGENINFERENCE_SERVABILITY_GATE", "false")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

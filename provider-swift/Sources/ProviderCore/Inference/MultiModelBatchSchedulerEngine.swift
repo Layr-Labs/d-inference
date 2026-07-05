@@ -82,8 +82,25 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     private let reasoningEffort: String?
     /// Per-tenant prefix-cache scope (`SHA256(prompt_cache_key)`/`user`, ""
     /// ⇒ unscoped). Threaded into `submitTokenized` so the checkpoint cache is
-    /// partitioned per consumer (closes the TB-007 cross-tenant channel).
+    /// partitioned per consumer (closes the TB-007 cross-tenant channel). On
+    /// the v2 path the same value maps onto `CBv2Request.cacheSalt` (inert
+    /// today — the production v2 engine is built with `prefixCache: nil`).
     private let cacheScope: String
+    /// Per-request logprobs plumbing (v2 engine path only; the legacy engine
+    /// never emitted logprobs). Non-nil ⇒ the sealed request asked for
+    /// logprobs: the v2 translation flips `logprobs`/`top_logprobs` on so
+    /// the engine captures them, and the bridge publishes OpenAI-shaped
+    /// entries to `engineV2Logprobs.channel` for the caller's SSE frame
+    /// decorator. Ignored (silently) when the model serves via legacy.
+    private let engineV2Logprobs: EngineV2LogprobsPlumbing?
+    /// OpenAI `logit_bias`/`seed` decoded out-of-band from the sealed body
+    /// (the upstream `OpenAIChatCompletionRequest` models neither — same
+    /// pattern as `engineV2Logprobs`/`reasoningEffort`/`cacheScope`).
+    /// Overlaid onto the v2 translation so
+    /// `EngineV2Translation.samplingParams` sees the real values; ignored
+    /// (silently) when the model serves via legacy, which never honored
+    /// either knob.
+    private let engineV2Sampling: EngineV2SamplingOverrides?
 
     public init(
         registryProvider: @escaping @Sendable () async -> Registry,
@@ -92,7 +109,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         releaseModel: @escaping @Sendable (String) async -> Void = { _ in },
         defaultMaxTokens: Int = 4096,
         reasoningEffort: String? = nil,
-        cacheScope: String = ""
+        cacheScope: String = "",
+        engineV2Logprobs: EngineV2LogprobsPlumbing? = nil,
+        engineV2Sampling: EngineV2SamplingOverrides? = nil
     ) {
         self.registryProvider = registryProvider
         self.ensureLoaded = ensureLoaded
@@ -101,6 +120,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.defaultMaxTokens = defaultMaxTokens
         self.reasoningEffort = reasoningEffort
         self.cacheScope = cacheScope
+        self.engineV2Logprobs = engineV2Logprobs
+        self.engineV2Sampling = engineV2Sampling
         self.acquire = nil
         self.tokenizerProvider = nil
         self.availableModelsOverride = nil
@@ -139,6 +160,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // ⇒ unscoped (default). Set via DARKBLOOM_PREFIX_CACHE_SCOPE; used to
         // exercise/validate cross-tenant isolation on a single box.
         self.cacheScope = cacheScope
+        // The --local path serves SSE frames inside the upstream router, so
+        // there is no provider seam to decorate frames with logprobs on this
+        // init (same visible behavior as the legacy engine: none emitted).
+        self.engineV2Logprobs = nil
+        // Same reason: the --local path decodes the raw body inside the
+        // upstream router, so `logit_bias`/`seed` cannot be recovered here
+        // (the upstream request shape omits them — see the KNOWN DEVIATION on
+        // `translate(...)`).
+        self.engineV2Sampling = nil
     }
 
     // MARK: - MLXServerEngine
@@ -165,6 +195,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let releaseBox: OneShotRelease
         let container: ModelContainer?
         let isVLM: Bool
+        let engineV2Bridge: EngineV2Bridge?
         let modelId = request.model
         if let acquire {
             let acquired = try await acquire(modelId)
@@ -174,6 +205,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             releaseBox = acquired.releaseToken
             container = acquired.container
             isVLM = acquired.isVLM
+            engineV2Bridge = acquired.engineV2Bridge
         } else {
             try await ensureLoaded(modelId)
             let registry = await (registryProvider?() ?? [:])
@@ -187,11 +219,18 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             releaseBox = OneShotRelease(release: releaseModel, modelId: modelId)
             container = entry.container
             isVLM = entry.isVLM
+            engineV2Bridge = entry.engineV2Bridge
         }
 
         // Multimodal (image/video) requests can't flow through the token-only
         // batched engine. For VLM models, serve them via the container's
         // non-batched prepare/generate vision path.
+        //
+        // ORDERING CONTRACT (v0.7.2 VLM text routing): this media check MUST
+        // stay ABOVE the engineV2Bridge branch below. A VLM slot may carry a
+        // v2 bridge built over its extracted text model — text-only requests
+        // route through that bridge, but image/video requests must keep this
+        // legacy vision path (the extracted text model cannot embed pixels).
         if isVLM, let container, VLMRequestInference.hasMedia(request) {
             // Decode + validate inline media SYNCHRONOUSLY, before returning the
             // stream. A MediaError (oversized/malformed/non-`data:` payload) thrown
@@ -343,19 +382,62 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         }
 
         let requestId = "req-\(UUID().uuidString.prefix(12))"
-        let upstream = await scheduler.submitTokenized(
-            promptTokens: promptTokens,
-            maxTokens: maxTokens,
-            temperature: temperature,
-            topP: request.topP,
-            topK: request.topK,
-            requestId: requestId,
-            cacheScope: cacheScope,
-            // Keep tool-bearing requests off the greedy text-only B=1 fast path:
-            // it cannot reproduce the engine's raw-text tool-call contract. No
-            // tools ⇒ fast path may apply (subject to the scheduler's gates).
-            allowFastPath: toolHandler == nil
-        )
+
+        // ContinuousBatchingV2 routing (flag-gated): when the resolved model
+        // carries a v2 bridge, submit the SAME tokenized prompt through it.
+        // The bridge yields the identical `AsyncStream<GenerationEvent>`
+        // shape the scheduler produces, so everything downstream — tool-call
+        // parsing, SSE framing, error→status mapping, billing extraction —
+        // is engine-agnostic. nil bridge ⇒ the legacy path, byte-identical.
+        //
+        // INTENTIONAL sampling delta on the v2 path: the legacy submit below
+        // forwards only temperature/topP/topK, silently dropping repetition/
+        // frequency/presence penalties and `stop` strings; the v2 translation
+        // honors them (more OpenAI-faithful). Identical wire requests using
+        // those knobs therefore sample differently across the two engines.
+        let upstream: AsyncStream<GenerationEvent>
+        let cancelUpstream: @Sendable () async -> Void
+        if let bridge = engineV2Bridge {
+            upstream = await bridge.submitTokenized(
+                promptTokens: promptTokens,
+                // Sampling/stop/max-token translation reuses the OpenAI →
+                // internal request mapping (`EngineV2Translation` reads the
+                // internal shape). `logprobs`/`top_logprobs` and
+                // `logit_bias`/`seed` are not on the upstream request shape,
+                // so they arrive via the `engineV2Logprobs`/`engineV2Sampling`
+                // plumbing (decoded from the sealed body) and are overlaid
+                // here.
+                request: Self.translate(
+                    openAIRequest: request, defaultMaxTokens: defaultMaxTokens,
+                    logprobs: engineV2Logprobs != nil ? true : nil,
+                    topLogprobs: engineV2Logprobs?.topLogprobs,
+                    logitBias: engineV2Sampling?.logitBias,
+                    seed: engineV2Sampling?.seed),
+                requestId: requestId,
+                // Same per-tenant scope the legacy submit threads into the
+                // checkpoint cache; the bridge maps it to CBv2Request.cacheSalt
+                // (TB-007; inert — production builds the engine with
+                // prefixCache: nil).
+                cacheScope: cacheScope,
+                logprobsChannel: engineV2Logprobs?.channel
+            )
+            cancelUpstream = { await bridge.cancel(requestId: requestId) }
+        } else {
+            upstream = await scheduler.submitTokenized(
+                promptTokens: promptTokens,
+                maxTokens: maxTokens,
+                temperature: temperature,
+                topP: request.topP,
+                topK: request.topK,
+                requestId: requestId,
+                cacheScope: cacheScope,
+                // Keep tool-bearing requests off the greedy text-only B=1 fast path:
+                // it cannot reproduce the engine's raw-text tool-call contract. No
+                // tools ⇒ fast path may apply (subject to the scheduler's gates).
+                allowFastPath: toolHandler == nil
+            )
+            cancelUpstream = { await scheduler.cancel(requestId: requestId) }
+        }
 
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -370,7 +452,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
                 for await event in upstream {
                     if Task.isCancelled {
-                        await scheduler.cancel(requestId: requestId)
+                        await cancelUpstream()
                         await releaseBox.fire()
                         continuation.finish()
                         return
@@ -390,9 +472,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                 continuation.yield(.content(text))
                             }
                         }
-                    case .info(let p, let c, _):
+                    case .info(let p, let c, _, let reason):
                         promptTokenCount = p
                         completionTokens = c
+                        // Engine-reported finish reason ("stop"/"length");
+                        // nil (cancel-partials, older paths) keeps "stop".
+                        // Threaded into ServerGenerationInfo.stopReason below,
+                        // which MLXOpenAIService emits as finish_reason —
+                        // max_tokens truncations now reach clients as "length".
+                        if let reason { stopReason = reason }
                     case .error(let message):
                         failed = message
                     }
@@ -441,7 +529,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             continuation.onTermination = { @Sendable _ in
                 task.cancel()
                 Task {
-                    await scheduler.cancel(requestId: requestId)
+                    await cancelUpstream()
                     await releaseBox.fire()
                 }
             }

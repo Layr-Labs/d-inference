@@ -7,8 +7,10 @@
 // request is assigned to that provider.
 //
 // Queue limits:
-//   - maxSize: maximum number of queued requests per model (default 10)
-//   - maxWait: maximum time a request can wait in the queue (default 120s)
+//   - maxSize: maximum number of queued requests per model (default 32,
+//     EIGENINFERENCE_QUEUE_MAX_DEPTH)
+//   - maxWait: maximum time a request can wait in the queue (default 120s,
+//     EIGENINFERENCE_QUEUE_MAX_WAIT)
 //
 // Stale requests (those past maxWait) are cleaned up lazily: Enqueue and
 // QueuedModels sweep a model's queue via cleanStaleLocked, PopNextFresh
@@ -22,6 +24,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/env"
 )
 
 // ErrQueueFull is returned when the queue for a model has reached maxSize.
@@ -29,6 +33,14 @@ var ErrQueueFull = errors.New("request queue is full")
 
 // ErrQueueTimeout is returned when a queued request times out waiting for a provider.
 var ErrQueueTimeout = errors.New("request queue timeout")
+
+// ErrQueueTTFTTooSlow is returned when the queue drain determines the waiter is
+// deterministically unservable: every provider that could otherwise serve the
+// model fails ONLY the per-request TTFT ceiling (pr.MaxTTFTMs, hard-reject
+// mode). Waiting out maxWait cannot change that verdict within the pass, so the
+// waiter is failed immediately and the API layer writes the standard
+// ttft_too_slow 429 instead of a queue timeout.
+var ErrQueueTTFTTooSlow = errors.New("all providers for queued request exceed the TTFT target")
 
 // QueuedRequest represents a request waiting for a provider.
 type QueuedRequest struct {
@@ -42,10 +54,20 @@ type QueuedRequest struct {
 	doneOnce   sync.Once
 
 	// Decision captures the cost breakdown of the routing decision that
-	// dispatched this queued request. Populated by drainQueuedRequestsForModels
-	// just before ResponseCh is signaled, so consumers can emit the same
-	// metrics they would for an immediate (non-queued) selection.
+	// dispatched (or terminally failed) this queued request. Populated by
+	// drainQueuedRequestsForModels just before ResponseCh is signaled, so
+	// consumers can emit the same metrics they would for an immediate
+	// (non-queued) selection — and, on a TTFT failure, compute Retry-After
+	// from BestTTFTMs.
 	Decision RoutingDecision
+
+	// FailureReason, when non-nil, is the terminal cause recorded before
+	// ResponseCh was signaled with nil. WaitForProviderContext returns it in
+	// place of ErrQueueTimeout so the API waiter can write the precise
+	// rejection (e.g. the ttft_too_slow 429). Written before the ResponseCh
+	// send and read only after receiving nil, so the channel orders the
+	// accesses.
+	FailureReason error
 }
 
 func (r *QueuedRequest) init() {
@@ -69,6 +91,43 @@ func (r *QueuedRequest) Done() <-chan struct{} {
 	return r.DoneCh
 }
 
+// failWithReason terminally rejects the waiter with a specific cause. If the
+// waiter already gave up (timeout/cancel), the buffered nil send is a no-op and
+// the reason is never read.
+func (r *QueuedRequest) failWithReason(reason error) {
+	r.init()
+	r.FailureReason = reason
+	r.markDone()
+	select {
+	case r.ResponseCh <- nil:
+	default:
+	}
+}
+
+// drainRejectionTTFTTerminal reports whether a drain-time reservation failure
+// is a PURE TTFT rejection — deterministic for this pass, so the waiter should
+// be failed with ErrQueueTTFTTooSlow instead of hanging until maxWait:
+//   - at least one provider was rejected only by the per-request TTFT ceiling
+//     (TTFTRejections > 0 requires pr.MaxTTFTMs > 0, i.e. hard-reject mode);
+//   - no provider was capacity-rejected: a busy fast provider freeing up could
+//     still serve the request, so mixed rejections keep waiting;
+//   - no candidate passed the scan: CandidateCount > 0 with a nil provider is
+//     the transient admit re-check race, not unservability.
+//
+// Owner-scoped waiters are never TTFT-failed on the public-fleet verdict
+// (mirrors FailQueuedRequestsForModel's preservation semantics). Their queue
+// ceiling is already 0 (queueMaxTTFTMs), so they cannot produce TTFT
+// rejections; the explicit guard keeps the invariant even if that wiring
+// changes.
+func drainRejectionTTFTTerminal(pr *PendingRequest, decision RoutingDecision) bool {
+	if pr == nil || pr.SelfRouteOnly || pr.PreferOwner {
+		return false
+	}
+	return decision.TTFTRejections > 0 &&
+		decision.CapacityRejections == 0 &&
+		decision.CandidateCount == 0
+}
+
 // RequestQueue manages per-model queues for requests awaiting providers.
 type RequestQueue struct {
 	mu      sync.Mutex
@@ -77,6 +136,12 @@ type RequestQueue struct {
 	maxWait time.Duration               // max time a request waits
 }
 
+// Default queue limits (see NewRequestQueueFromEnv for the sizing rationale).
+const (
+	defaultQueueMaxDepth = 32
+	defaultQueueMaxWait  = 120 * time.Second
+)
+
 // NewRequestQueue creates a new RequestQueue with the given limits.
 func NewRequestQueue(maxSize int, maxWait time.Duration) *RequestQueue {
 	return &RequestQueue{
@@ -84,6 +149,30 @@ func NewRequestQueue(maxSize int, maxWait time.Duration) *RequestQueue {
 		maxSize: maxSize,
 		maxWait: maxWait,
 	}
+}
+
+// NewRequestQueueFromEnv creates a RequestQueue sized from the environment:
+//
+//   - EIGENINFERENCE_QUEUE_MAX_DEPTH — per-model depth, default 32. The queue
+//     drains fleet-wide (every SetProviderIdle / heartbeat sweeps it), so with a
+//     pool of hundreds of boxes and a few-second service time the fleet turns
+//     over hundreds of slots per second; a 32-deep queue clears in well under a
+//     second of fleet throughput and adds negligible tail latency, while depth
+//     10 rejected overflow bursts the fleet could absorb almost immediately.
+//   - EIGENINFERENCE_QUEUE_MAX_WAIT — per-request wait bound, default 120s
+//     (Go duration string, e.g. "45s").
+//
+// Non-positive or malformed values fall back to the defaults.
+func NewRequestQueueFromEnv() *RequestQueue {
+	depth := env.EnvInt(env.EnvPrefix+"_QUEUE_MAX_DEPTH", defaultQueueMaxDepth)
+	if depth < 1 {
+		depth = defaultQueueMaxDepth
+	}
+	wait := envDuration(env.EnvPrefix+"_QUEUE_MAX_WAIT", defaultQueueMaxWait)
+	if wait <= 0 {
+		wait = defaultQueueMaxWait
+	}
+	return NewRequestQueue(depth, wait)
 }
 
 // Enqueue adds a request to the queue for the given model.
@@ -118,6 +207,9 @@ func (q *RequestQueue) WaitForProviderContext(ctx context.Context, req *QueuedRe
 	case p := <-req.ResponseCh:
 		req.markDone()
 		if p == nil {
+			if req.FailureReason != nil {
+				return nil, req.FailureReason
+			}
 			return nil, ErrQueueTimeout
 		}
 		return p, nil
@@ -162,6 +254,9 @@ func (q *RequestQueue) PopNextFresh(model string) *QueuedRequest {
 		req := queue[0]
 		queue = queue[1:]
 		q.queues[model] = queue
+		if len(queue) == 0 {
+			delete(q.queues, model)
+		}
 		if now.Sub(req.EnqueuedAt) > q.maxWait {
 			req.markDone()
 			select {
@@ -341,6 +436,13 @@ func (q *RequestQueue) cleanStaleLocked(model string) {
 		} else {
 			fresh = append(fresh, req)
 		}
+	}
+	// Drop the key entirely when nothing survives so the per-model map tracks
+	// live queues only (model ids are catalog-bounded, but no reason to retain
+	// empty entries).
+	if len(fresh) == 0 {
+		delete(q.queues, model)
+		return
 	}
 	q.queues[model] = fresh
 }

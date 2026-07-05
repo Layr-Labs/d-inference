@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   formatUSD,
-  formatNumber,
   abbreviateNumber,
   maskSerial,
   shortModelName,
@@ -54,6 +53,10 @@ describe("maskSerial", () => {
     expect(maskSerial("ABCD1234XY")).toBe("ABCD••••XY");
     expect(maskSerial("")).toBe("");
     expect(maskSerial("SHORT")).toBe("SHORT");
+  });
+
+  it("caps the mask at 6 bullets for long serials", () => {
+    expect(maskSerial("ABCD123456789012XY")).toBe("ABCD••••••XY");
   });
 });
 

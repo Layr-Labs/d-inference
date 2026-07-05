@@ -13,7 +13,9 @@ import "time"
 // with version-diverse retry, to other binary versions.
 //
 // SHAPE-KEYED. The breaker is keyed by (provider, model, shape) rather than a
-// "providerID:modelID" string. Shape ("tools" / "base", from
+// "providerID:modelID" string — where "provider" is the STABLE fault key
+// (faultKeyLocked: serial/SE-key when bound, session id otherwise), so strikes
+// and cooldowns survive reconnect churn. Shape ("tools" / "base", from
 // RequestTraits.CooldownShape) closes the root bug behind the prod incident: a
 // deterministic tool/template failure that fails EVERY tool request can be
 // interleaved with clean non-tool text successes for the same pair. With a
@@ -46,10 +48,13 @@ const (
 	inferenceErrorCooldownTTL = 5 * time.Minute
 )
 
-// inferenceErrorKey identifies a circuit-breaker bucket. Shape is the request
-// dimension from RequestTraits.CooldownShape ("tools" / "base"), so a failure
-// that only affects one shape quarantines only that shape. A struct key (vs a
-// delimiter-joined string) cannot alias across ids that contain the delimiter.
+// inferenceErrorKey identifies a circuit-breaker bucket. ProviderID holds the
+// provider's STABLE fault key (faultKeyLocked: serial/SE-key when bound, the
+// session id otherwise) so buckets survive reconnect churn. Shape is the
+// request dimension from RequestTraits.CooldownShape ("tools" / "base"), so a
+// failure that only affects one shape quarantines only that shape. A struct
+// key (vs a delimiter-joined string) cannot alias across ids that contain the
+// delimiter.
 type inferenceErrorKey struct {
 	ProviderID string
 	ModelID    string
@@ -86,10 +91,13 @@ func (r *Registry) RecordInferenceError(providerID, modelID string, statusCode i
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now()
+	// Key by the stable fault key (serial/SE-key when bound, session id
+	// otherwise) so strikes and cooldowns survive reconnect churn.
+	providerID = r.faultKeyLocked(providerID)
 
-	// Opportunistic sweep, mirroring dispatchLoadCooldowns: provider ids are
-	// per-session UUIDs, so dead entries never get re-keyed — bound both maps
-	// by dropping expired ones once they grow.
+	// Opportunistic sweep, mirroring dispatchLoadCooldowns: churned identities
+	// are never re-keyed — bound both maps by dropping expired ones once they
+	// grow.
 	if len(r.inferenceErrorCooldowns) > 1024 {
 		for key, expiry := range r.inferenceErrorCooldowns {
 			if !now.Before(expiry) {
@@ -140,7 +148,7 @@ func (r *Registry) RecordInferenceError(providerID, modelID string, statusCode i
 func (r *Registry) RecordInferenceSuccess(providerID, modelID, shape string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := inferenceErrorKey{ProviderID: providerID, ModelID: modelID, Shape: shape}
+	key := inferenceErrorKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID, Shape: shape}
 	delete(r.inferenceErrorStrikes, key)
 	delete(r.inferenceErrorCooldowns, key)
 }
@@ -157,7 +165,7 @@ func (r *Registry) InferenceErrorCooldownActive(providerID, modelID, shape strin
 // triple. READ-ONLY (no lazy delete) — some callers hold only r.mu.RLock.
 // Caller holds r.mu in either mode (mirrors dispatchLoadCooldownActiveLocked).
 func (r *Registry) inferenceErrorCooldownActiveLocked(providerID, modelID, shape string, now time.Time) bool {
-	key := inferenceErrorKey{ProviderID: providerID, ModelID: modelID, Shape: shape}
+	key := inferenceErrorKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID, Shape: shape}
 	expiry, ok := r.inferenceErrorCooldowns[key]
 	return ok && now.Before(expiry)
 }

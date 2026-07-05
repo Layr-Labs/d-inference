@@ -2,22 +2,9 @@ package store
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"testing"
 	"time"
 )
-
-// storeBackends returns the store impls to exercise. MemoryStore always runs;
-// PostgresStore runs only when DATABASE_URL is set (throwaway test DB).
-func storeBackends(t *testing.T) map[string]Store {
-	t.Helper()
-	backends := map[string]Store{"memory": NewMemory(Config{})}
-	if os.Getenv("DATABASE_URL") != "" {
-		backends["postgres"] = testPostgresStore(t)
-	}
-	return backends
-}
 
 // TestCreditProviderAccount_DuplicateJobNoop is the regression for the
 // double-credit bug (design §8 required fix). Crediting twice with the same
@@ -449,15 +436,6 @@ func TestSettleProviderFloorDraw_RecordsVisibleEarning(t *testing.T) {
 }
 
 // --- test helpers ---
-
-var idSeq int64
-
-// uniqueID returns a process-unique identifier with the given prefix so the
-// memory and postgres variants never collide across sub-tests.
-func uniqueID(prefix string) string {
-	idSeq++
-	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), idSeq)
-}
 
 // unionCoveredSeconds clamps open sessions to `end`, then unions overlapping
 // intervals for one serial and returns total covered seconds.

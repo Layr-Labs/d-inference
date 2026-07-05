@@ -15,12 +15,12 @@ type enrollRequest struct {
 
 var serialRegex = regexp.MustCompile(`^[A-Z0-9]{8,14}$`)
 
-// handleEnroll generates a per-device .mobileconfig containing both MDM
-// enrollment (SCEP + MDM payloads) and ACME device-attest-01 (SE key binding).
-// One profile, one install — the user doesn't need to install two profiles.
+// handleEnroll generates a per-device .mobileconfig containing MDM
+// enrollment (SCEP + MDM payloads).
 //
-// No authentication required — the serial number is not secret.
-// Security comes from Apple's attestation during the ACME challenge.
+// No authentication required — the serial number is not secret. Trust comes
+// from MDM SecurityInfo verification after enrollment, not from possession of
+// the profile.
 func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	var req enrollRequest
 	if !decodeCappedJSON(w, r, maxControlPlaneBodyBytes, &req) {
@@ -42,7 +42,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Use the configured canonical base URL (EIGENINFERENCE_BASE_URL) for the
-	// SCEP/MDM/ACME enrollment endpoints. Critically, since the profile is now
+	// SCEP/MDM enrollment endpoints. Critically, since the profile is now
 	// CMS-signed, deriving these from a client-controlled Host header would let an
 	// attacker obtain a Darkbloom-signed .mobileconfig that points enrollment at
 	// their own host — the signature would launder a malicious enrollment profile.
@@ -53,7 +53,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	body := []byte(generateCombinedProfile(req.SerialNumber, baseURL))
 
 	// CMS-sign the profile so macOS shows it as signed at install time. Signing is
-	// install-time trust only (does not affect the SCEP/MDM/ACME chain inside). If
+	// install-time trust only (does not affect the SCEP/MDM chain inside). If
 	// no signer is configured or signing fails, serve unsigned so enrollment is
 	// never blocked — but make the failure loud (error log + metric).
 	switch {
@@ -78,17 +78,19 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	w.Write(body)
 }
 
-// generateCombinedProfile creates a .mobileconfig with three payloads:
+// generateCombinedProfile creates a .mobileconfig with two payloads:
 //  1. SCEP — MDM identity certificate (for enrollment)
 //  2. MDM — enrolls with MicroMDM (SecurityInfo verification)
-//  3. ACME — device-attest-01 (SE key binding via Apple attestation)
+//
+// (A third ACME device-attest-01 payload existed historically, but the
+// coordinator-side verification leg was never wired end-to-end and the leg was
+// removed — hardware trust is earned via MDM SecurityInfo. Re-enrolling with
+// this profile replaces the old one in place, dropping the dormant payload.)
 //
 // Display strings are branded "Darkbloom"; functional identifiers are deliberately
 // NOT renamed so existing installs keep working and re-enrolls update in place: the
 // io.darkbloom.enroll.* PayloadIdentifiers + SCEP/MDM PayloadUUIDs (macOS keys
-// profile identity on these), the MDM push Topic (tied to the APNs cert), and the
-// "eigeninference-acme" ACME path (must match step-ca in deploy/start.sh — renaming
-// breaks in-flight cert renewals for enrolled devices; needs a parallel provisioner).
+// profile identity on these), and the MDM push Topic (tied to the APNs cert).
 //
 // AccessRights=1041: profile inspection (1) + device info queries (16) + security queries (1024).
 // This is strictly read-only MDM — no device control or personal data access.
@@ -109,7 +111,6 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 //	Bit 11 (2048) — Change device settings                     ✗ NOT requested
 //	Bit 12 (4096) — App management                             ✗ NOT requested
 func generateCombinedProfile(serialNumber, baseURL string) string {
-	acmePayloadUUID := uuid.New().String()
 	profileUUID := uuid.New().String()
 
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
@@ -199,55 +200,9 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
       <key>Topic</key>
       <string>com.apple.mgmt.External.10520cbe-9635-453d-ac4e-c79aab56f8ce</string>
     </dict>
-    <!-- Payload 3: ACME device-attest-01 — SE key binding via Apple -->
-    <dict>
-      <key>PayloadType</key>
-      <string>com.apple.security.acme</string>
-      <key>PayloadVersion</key>
-      <integer>1</integer>
-      <key>PayloadIdentifier</key>
-      <string>io.darkbloom.enroll.acme.%s</string>
-      <key>PayloadUUID</key>
-      <string>%s</string>
-      <key>PayloadDisplayName</key>
-      <string>%s</string>
-      <key>PayloadDescription</key>
-      <string>Generates a hardware-bound key in the Secure Enclave. Apple verifies your device is genuine and a certificate is issued binding the key to your Mac.</string>
-      <key>PayloadOrganization</key>
-      <string>Darkbloom</string>
-      <key>DirectoryURL</key>
-      <string>%s/acme/eigeninference-acme/directory</string>
-      <key>ClientIdentifier</key>
-      <string>%s</string>
-      <key>KeySize</key>
-      <integer>384</integer>
-      <key>KeyType</key>
-      <string>ECSECPrimeRandom</string>
-      <key>HardwareBound</key>
-      <true/>
-      <key>Attest</key>
-      <true/>
-      <key>KeyIsExtractable</key>
-      <false/>
-      <key>Subject</key>
-      <array>
-        <array>
-          <array>
-            <string>O</string>
-            <string>Darkbloom Provider</string>
-          </array>
-        </array>
-        <array>
-          <array>
-            <string>CN</string>
-            <string>%s</string>
-          </array>
-        </array>
-      </array>
-    </dict>
   </array>
   <key>PayloadDescription</key>
-  <string>Darkbloom provider enrollment and device attestation. Grants read-only security verification (SIP, SecureBoot) and generates an Apple-attested Secure Enclave key.</string>
+  <string>Darkbloom provider enrollment. Grants read-only security verification (SIP, SecureBoot) via MDM.</string>
   <key>PayloadDisplayName</key>
   <string>Darkbloom Provider Enrollment</string>
   <key>PayloadIdentifier</key>
@@ -261,5 +216,5 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
   <key>PayloadVersion</key>
   <integer>1</integer>
 </dict>
-</plist>`, baseURL, baseURL, baseURL, serialNumber, acmePayloadUUID, serialNumber, baseURL, serialNumber, serialNumber, serialNumber, profileUUID)
+</plist>`, baseURL, baseURL, baseURL, serialNumber, profileUUID)
 }

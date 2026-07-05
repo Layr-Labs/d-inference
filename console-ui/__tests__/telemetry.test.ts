@@ -1,25 +1,14 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { NextRequest } from "next/server";
+import { stubUpstreamFetch } from "./helpers/route-harness";
 
 // Tests for the browser telemetry client AND the /api/telemetry proxy.
 
-let upstreamFetch: ReturnType<typeof vi.fn>;
-
-beforeEach(() => {
-  upstreamFetch = vi.fn();
-  vi.stubGlobal("fetch", upstreamFetch);
-  // Make sure modules pick up our mocked fetch.
-  vi.resetModules();
-});
-
-afterEach(() => {
-  vi.restoreAllMocks();
-  vi.resetModules();
-});
+const upstream = stubUpstreamFetch();
 
 describe("/api/telemetry route", () => {
   it("forwards a small batch to the coordinator", async () => {
-    upstreamFetch.mockResolvedValue(
+    upstream.fetch.mockResolvedValue(
       new Response(JSON.stringify({ accepted: 1, rejected: 0 }), { status: 202 })
     );
     const { POST } = await import("@/app/api/telemetry/route");
@@ -41,8 +30,8 @@ describe("/api/telemetry route", () => {
     });
     const res = await POST(req);
     expect(res.status).toBe(202);
-    expect(upstreamFetch).toHaveBeenCalledOnce();
-    const [calledUrl, init] = upstreamFetch.mock.calls[0];
+    expect(upstream.fetch).toHaveBeenCalledOnce();
+    const [calledUrl, init] = upstream.fetch.mock.calls[0];
     expect(String(calledUrl)).toMatch(/\/v1\/telemetry\/events$/);
     expect((init as RequestInit).headers).toMatchObject({
       Authorization: "Bearer abc",
@@ -58,11 +47,11 @@ describe("/api/telemetry route", () => {
     });
     const res = await POST(req);
     expect(res.status).toBe(413);
-    expect(upstreamFetch).not.toHaveBeenCalled();
+    expect(upstream.fetch).not.toHaveBeenCalled();
   });
 
   it("returns 502 when the coordinator is unreachable", async () => {
-    upstreamFetch.mockRejectedValue(new Error("network down"));
+    upstream.fetch.mockRejectedValue(new Error("network down"));
     const { POST } = await import("@/app/api/telemetry/route");
     const req = new NextRequest("http://localhost:3000/api/telemetry", {
       method: "POST",
@@ -78,7 +67,7 @@ describe("telemetry client", () => {
     const tel = await import("@/lib/telemetry");
     tel._resetForTest();
     // Stub fetch so flush goes through.
-    upstreamFetch.mockResolvedValue(new Response("{}", { status: 202 }));
+    upstream.fetch.mockResolvedValue(new Response("{}", { status: 202 }));
 
     tel.emit({
       kind: "http_error",

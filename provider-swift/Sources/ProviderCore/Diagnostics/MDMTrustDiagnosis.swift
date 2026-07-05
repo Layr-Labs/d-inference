@@ -12,7 +12,7 @@ import Foundation
 /// upgrades it past `self_signed`, so it stays ONLINE but receives NO traffic.
 ///
 /// The coordinator does NOT emit a distinct "MDM timed out" trust reason — at
-/// registration it sends "SE attestation verified, awaiting MDM/ACME upgrade"
+/// registration it sends "SE attestation verified, awaiting MDM verification"
 /// and stays there. So this state can only be INFERRED locally, by combining
 /// the daemon's last trust level (`self_signed`) with this Mac's actual MDM
 /// enrollment (`profiles status` says it IS enrolled in Darkbloom). That pair —
@@ -41,8 +41,8 @@ public enum MDMTrustDiagnosis {
     ///
     /// Callers should only invoke this when the box is NOT already
     /// hardware-trusted (the enrollment hint is pointless once hardware trust is
-    /// granted — e.g. via ACME, which needs no MDM profile). The `"hardware"`
-    /// short-circuit below is a defensive backstop, not the primary gate.
+    /// granted). The `"hardware"` short-circuit below is a defensive backstop,
+    /// not the primary gate.
     public static func diagnose(
         trustLevel: String?,
         status: String?,

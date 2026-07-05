@@ -85,3 +85,61 @@ func TestMemoryCreditWithdrawableOnce(t *testing.T) {
 		t.Errorf("balance = %d, want 5_000_100", bal)
 	}
 }
+
+// --- CreateStripeWithdrawalWithDebit (atomic debit + row insert) ---
+
+func TestMemoryCreateStripeWithdrawalWithDebit(t *testing.T) {
+	s := NewMemory(Config{})
+	if err := s.CreditWithdrawable("acct-wdb", 10_000_000, LedgerPayout, "earnings"); err != nil {
+		t.Fatal(err)
+	}
+
+	wd := &StripeWithdrawal{
+		ID: "wd-atomic-1", AccountID: "acct-wdb", StripeAccountID: "acct_wdb",
+		AmountMicroUSD: 4_000_000, NetMicroUSD: 4_000_000,
+		Method: "standard", Status: "pending",
+	}
+	if err := s.CreateStripeWithdrawalWithDebit(wd, LedgerStripePayout, "stripe_withdraw:wd-atomic-1"); err != nil {
+		t.Fatalf("atomic debit+insert: %v", err)
+	}
+	if bal := s.GetBalance("acct-wdb"); bal != 6_000_000 {
+		t.Errorf("balance = %d, want 6_000_000", bal)
+	}
+	if _, wdr := s.GetBalanceWithWithdrawable("acct-wdb"); wdr != 6_000_000 {
+		t.Errorf("withdrawable = %d, want 6_000_000", wdr)
+	}
+	row, err := s.GetStripeWithdrawal("wd-atomic-1")
+	if err != nil || row.Status != "pending" {
+		t.Fatalf("row = %+v err = %v", row, err)
+	}
+
+	// Insufficient withdrawable: typed error, no debit, no row.
+	wd2 := &StripeWithdrawal{
+		ID: "wd-atomic-2", AccountID: "acct-wdb", StripeAccountID: "acct_wdb",
+		AmountMicroUSD: 60_000_000, NetMicroUSD: 60_000_000,
+		Method: "standard", Status: "pending",
+	}
+	err = s.CreateStripeWithdrawalWithDebit(wd2, LedgerStripePayout, "stripe_withdraw:wd-atomic-2")
+	if !errors.Is(err, ErrInsufficientBalance) {
+		t.Fatalf("err = %v, want ErrInsufficientBalance", err)
+	}
+	if bal := s.GetBalance("acct-wdb"); bal != 6_000_000 {
+		t.Errorf("failed attempt moved the balance: %d", bal)
+	}
+	if _, err := s.GetStripeWithdrawal("wd-atomic-2"); err == nil {
+		t.Error("row must not exist after a failed debit")
+	}
+
+	// Duplicate ID: rejected without debiting.
+	dup := &StripeWithdrawal{
+		ID: "wd-atomic-1", AccountID: "acct-wdb", StripeAccountID: "acct_wdb",
+		AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
+		Method: "standard", Status: "pending",
+	}
+	if err := s.CreateStripeWithdrawalWithDebit(dup, LedgerStripePayout, "stripe_withdraw:dup"); err == nil {
+		t.Fatal("duplicate ID must fail")
+	}
+	if bal := s.GetBalance("acct-wdb"); bal != 6_000_000 {
+		t.Errorf("duplicate attempt moved the balance: %d", bal)
+	}
+}

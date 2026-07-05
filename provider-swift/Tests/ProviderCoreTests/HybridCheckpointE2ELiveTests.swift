@@ -38,7 +38,7 @@ struct HybridCheckpointE2ELiveTests {
             case .chunk(let c):
                 if first { ttft = Date().timeIntervalSince(start); first = false }
                 text += c
-            case .info(_, _, let t): tps = t
+            case .info(_, _, let t, _): tps = t
             case .error(let e): Issue.record("stream error: \(e)")
             }
         }

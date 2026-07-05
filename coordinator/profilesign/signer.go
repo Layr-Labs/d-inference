@@ -2,7 +2,7 @@
 // macOS/iOS show them as signed/trusted at install time instead of "Unsigned".
 //
 // Signing is optional and install-time trust only: it does not affect the
-// SCEP/MDM/ACME attestation chain inside the profile, and a missing or broken
+// SCEP/MDM attestation chain inside the profile, and a missing or broken
 // identity must degrade to serving unsigned (never block enrollment). The trust
 // shown depends solely on the signing cert chaining to a CA already on the
 // device — i.e. a code-signing cert such as an Apple "Developer ID Application"

@@ -31,6 +31,7 @@ import (
 	"errors"
 
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -123,17 +124,58 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 	providerID := uuid.New().String()
 	s.logger.Info("provider websocket connected", "provider_id", providerID, "remote", r.RemoteAddr)
 
-	// Check for ACME client certificate (TLS client auth via nginx).
-	// If present and valid, the provider's SE key is Apple-attested.
-	acmeResult := s.extractAndVerifyClientCert(r)
-
 	// Run the read loop; on return the provider is disconnected.
-	s.providerReadLoop(r.Context(), conn, providerID, acmeResult, r)
+	s.providerReadLoop(r.Context(), conn, providerID, r)
+}
+
+// sessionDisconnectReason maps a provider read-loop exit to the disconnect
+// reason recorded on its provider_sessions row. Kept to a small, fixed
+// vocabulary so the column stays aggregatable:
+//   - "oom_suspected"   — abrupt drop under memory pressure with in-flight work
+//     (same classification as the provider.oom_suspected metric);
+//   - "ws_close_<code>" — the peer sent a WebSocket close frame (1000 = normal
+//     shutdown, 1001 = going away, 1006/close codes from intermediaries, ...);
+//   - "read_error"      — the socket died without a close frame (TCP reset,
+//     NAT/LB teardown, machine went to sleep mid-write).
+//
+// The registry's own generic "disconnect" remains the reason for closes the
+// read loop did NOT observe first — in practice the stale-eviction sweep —
+// so post-fix, lingering "disconnect" rows ≈ silent drops reaped by eviction.
+func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool) string {
+	switch {
+	case oomSuspected:
+		return string(registry.DisconnectReasonOOMSuspected)
+	case closeStatus != -1:
+		return "ws_close_" + strconv.Itoa(int(closeStatus))
+	default:
+		return "read_error"
+	}
+}
+
+// closeSessionWithReason closes this connection's provider_sessions row with a
+// specific disconnect reason. Synchronous with a short timeout: it must land
+// before the deferred registry.Disconnect issues its generic "disconnect"
+// close (first close wins in the store), and a bounded wait means a stalled DB
+// delays only this connection's teardown by at most the timeout — the store's
+// upsert semantics make the registry's later write a safe fallback if this one
+// times out. The caller marks the provider StatusOffline before calling, so
+// the wait is never routing-critical: the dead provider cannot be selected
+// while the write is in flight.
+func (s *Server) closeSessionWithReason(providerID, reason string) {
+	if s.store == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := s.store.CloseProviderSession(ctx, providerID, reason, time.Now()); err != nil {
+		s.logger.Warn("failed to close provider session with reason",
+			"provider_id", providerID, "reason", reason, "error", err)
+	}
 }
 
 // providerReadLoop reads messages from the provider WebSocket and dispatches
 // them. It runs until the connection closes or the context is cancelled.
-func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, acmeResult *ACMEVerificationResult, r *http.Request) {
+func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
 	var provider *registry.Provider
 	tracker := newChallengeTracker()
 
@@ -142,15 +184,29 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	defer func() {
 		loopCancel()
 		s.registry.Disconnect(providerID)
-		s.clearPendingACME(providerID)
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
 
 	for {
 		_, data, err := conn.Read(loopCtx)
 		if err != nil {
-			if websocket.CloseStatus(err) != -1 {
-				s.logger.Info("provider websocket closed", "provider_id", providerID)
+			closeStatus := websocket.CloseStatus(err)
+			oomSuspected := false
+			if closeStatus != -1 {
+				s.logger.Info("provider websocket closed",
+					"provider_id", providerID, "close_code", int(closeStatus))
+				// Peer-initiated closes were previously unmetered — only
+				// read_error incremented ws_disconnects_total — so dashboards
+				// could not split graceful closes (update/shutdown) from drops.
+				if s.metrics != nil {
+					s.metrics.IncCounter("ws_disconnects_total",
+						MetricLabel{"reason", "peer_close"},
+					)
+				}
+				s.ddIncr("ws.disconnects", []string{
+					"reason:peer_close",
+					"code:" + strconv.Itoa(int(closeStatus)),
+				})
 			} else {
 				s.logger.Error("provider websocket read error", "provider_id", providerID, "error", err)
 				s.emit(context.Background(), protocol.SeverityWarn, protocol.KindConnectivity,
@@ -177,6 +233,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				if provider != nil {
 					memPressure, inFlight := provider.DisconnectDiagnostics()
 					if inFlight > 0 && registry.ClassifyDisconnectReason(true, memPressure, inFlight) == registry.DisconnectReasonOOMSuspected {
+						oomSuspected = true
 						if s.metrics != nil {
 							s.metrics.IncCounter("provider_oom_suspected_total")
 						}
@@ -190,6 +247,38 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 							})
 					}
 				}
+			}
+
+			// Stamp this connection's session row with the observed socket
+			// outcome. Every registry.Disconnect path writes the catch-all
+			// "disconnect", which made 97% of provider_sessions rows carry a
+			// single indistinguishable reason (2026-07-03 churn analysis). The
+			// stamp is written synchronously BEFORE the deferred
+			// registry.Disconnect so the store's first-close-wins semantics keep
+			// the specific reason; the registry's later generic close becomes a
+			// no-op. Skipped when:
+			//   - provider == nil: never registered, so no session row exists
+			//     (writing would fabricate a zero-duration row);
+			//   - ctx.Err() != nil: coordinator shutdown — the next instance's
+			//     startup reconcile labels these "coordinator_restart";
+			//   - the registry no longer has the provider: registry.Disconnect
+			//     already ran (stale eviction, duplicate-serial kick) and owns
+			//     the reason for that path.
+			if provider != nil && ctx.Err() == nil && s.registry.GetProvider(providerID) != nil {
+				// The socket is dead, but the deferred registry.Disconnect
+				// only runs after the stamp lands (first close wins requires
+				// that order). Flip the provider offline first — StatusOffline
+				// fails every routing-eligibility gate — so a slow store write
+				// can never leave a dead provider selectable. Untrusted stays
+				// untrusted: it is equally unroutable, and overwriting it would
+				// make Disconnect's status-gated online/model decrements run a
+				// second time after markUntrusted already decremented.
+				provider.Mu().Lock()
+				if provider.Status != registry.StatusUntrusted {
+					provider.Status = registry.StatusOffline
+				}
+				provider.Mu().Unlock()
+				s.closeSessionWithReason(providerID, sessionDisconnectReason(closeStatus, oomSuspected))
 			}
 			return
 		}
@@ -235,6 +324,11 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					provider.Mu().Lock()
 					provider.AccountID = pt.AccountID
 					provider.Mu().Unlock()
+					// Account linkage can be the provider's ONLY stable identity
+					// (Open Mode / invalid attestation → the acct: fallback), and
+					// it lands after the attestation-time bind — re-bind so fault
+					// state keys by identity instead of the session UUID.
+					provider.RebindStableFaultKey()
 					s.logger.Info("provider linked to account",
 						"provider_id", providerID,
 						"account_id", pt.AccountID,
@@ -319,8 +413,6 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				provider.RuntimeManifestChecked = false
 				provider.Mu().Unlock()
 			}
-
-			s.applyACMETrust(providerID, provider, acmeResult)
 
 			// Declaratively tell the provider the desired build per alias it
 			// already serves, so a fresh/reconnected provider converges without a
@@ -581,167 +673,6 @@ func (s *Server) attachProviderLocation(providerID string, provider *registry.Pr
 		"country", loc.CountryCode,
 		"source", loc.Source,
 	)
-}
-
-func (s *Server) applyACMETrust(providerID string, provider *registry.Provider, acmeResult *ACMEVerificationResult) {
-	if acmeResult == nil || !acmeResult.Valid {
-		s.ddIncr("acme.trust", []string{"outcome:nil_or_invalid"})
-		return
-	}
-
-	provider.Mu().Lock()
-	provider.ACMEVerified = true
-	provider.Mu().Unlock()
-
-	// Stash the result so retryACMETrust can re-run this on the first passing
-	// challenge. At registration the attestation challenge/response has not yet
-	// completed, so AttestationResult is nil and the two binding checks below
-	// fail purely on ordering — without a retry the provider would stay
-	// self_signed forever despite presenting a valid device cert.
-	s.stashPendingACME(providerID, acmeResult)
-
-	if !providerHasBoundEncryptionAttestation(provider) {
-		// Expected before the first challenge completes; logged at debug so it
-		// doesn't look like a failure. The retry path resolves it.
-		s.ddIncr("acme.trust", []string{"outcome:not_bound"})
-		s.logger.Debug("ACME cert verified but attestation not yet bound — will retry after challenge",
-			"provider_id", providerID,
-			"acme_serial", acmeResult.SerialNumber,
-		)
-		return
-	}
-	if !providerAttestationMatchesACMEKey(provider, acmeResult) {
-		s.ddIncr("acme.trust", []string{"outcome:key_mismatch"})
-		s.logger.Warn("ACME client cert key does not match the attested Secure Enclave key",
-			"provider_id", providerID,
-			"acme_serial", acmeResult.SerialNumber,
-			"acme_issuer", acmeResult.Issuer,
-			"acme_key_alg", acmeResult.PublicKeyAlg,
-		)
-		return
-	}
-
-	provider.SetAttested(true, registry.TrustHardware)
-	s.sendTrustStatus(provider, registry.TrustHardware, "online", "ACME device attestation verified")
-	s.clearPendingACME(providerID)
-	s.ddIncr("acme.trust", []string{"outcome:granted"})
-	s.logger.Info("ACME client cert verified — hardware trust via Apple SE attestation",
-		"provider_id", providerID,
-		"acme_serial", acmeResult.SerialNumber,
-		"acme_issuer", acmeResult.Issuer,
-		"acme_key_alg", acmeResult.PublicKeyAlg,
-	)
-}
-
-// stashPendingACME records the connect-time ACME result for later retry.
-func (s *Server) stashPendingACME(providerID string, acmeResult *ACMEVerificationResult) {
-	s.pendingACMEMu.Lock()
-	s.pendingACME[providerID] = acmeResult
-	s.pendingACMEMu.Unlock()
-}
-
-// clearPendingACME drops a stashed ACME result (after a successful upgrade or
-// on disconnect).
-func (s *Server) clearPendingACME(providerID string) {
-	s.pendingACMEMu.Lock()
-	delete(s.pendingACME, providerID)
-	s.pendingACMEMu.Unlock()
-}
-
-// hasPendingACME reports whether a connect-time ACME result is still stashed for a
-// provider (i.e. its SE-key binding has not completed — applyACMETrust clears it on
-// a successful bind).
-func (s *Server) hasPendingACME(providerID string) bool {
-	s.pendingACMEMu.Lock()
-	_, ok := s.pendingACME[providerID]
-	s.pendingACMEMu.Unlock()
-	return ok
-}
-
-// reconcileACMEAfterFastSkip keeps ACMEVerified honest after a trust-reuse
-// fast-skip granted hardware via MDM-reuse (DAR-326 FIX 4a). applyACMETrust sets
-// ACMEVerified=true as soon as a device cert is valid, BEFORE its SE-key binding is
-// proven (the binding needs a passing challenge). The challenge has now passed, so
-// try the binding once: if it binds, ACME genuinely backs hardware and the flag is
-// legitimate (applyACMETrust clears the pending result on success). If it still
-// does not bind, the cert was never proven against the attested SE key, so we must
-// NOT report acme_verified=true off an MDM-reuse grant — clear the flag and discard
-// the stale pending result. No-op when nothing is stashed (then any ACMEVerified
-// was already granted+bound, or was never set).
-func (s *Server) reconcileACMEAfterFastSkip(providerID string, provider *registry.Provider) {
-	if !s.hasPendingACME(providerID) {
-		return
-	}
-	s.retryACMETrust(providerID, provider)
-	if s.hasPendingACME(providerID) {
-		// Binding still did not complete → unbound ACME. Don't claim ACME proof.
-		provider.SetACMEVerified(false)
-		s.clearPendingACME(providerID)
-	}
-}
-
-// retryACMETrust re-applies a stashed ACME result. Called from the
-// challenge-success path so a provider whose device cert was presented at
-// connect — but whose attestation had not yet bound — gets upgraded to
-// hardware once the binding completes. Mirrors the MDM re-verification retry.
-func (s *Server) retryACMETrust(providerID string, provider *registry.Provider) {
-	s.pendingACMEMu.Lock()
-	acmeResult := s.pendingACME[providerID]
-	s.pendingACMEMu.Unlock()
-	if acmeResult == nil {
-		return
-	}
-	s.applyACMETrust(providerID, provider, acmeResult)
-}
-
-func providerHasBoundEncryptionAttestation(provider *registry.Provider) bool {
-	provider.Mu().Lock()
-	defer provider.Mu().Unlock()
-
-	if provider.PublicKey == "" || provider.AttestationResult == nil || !provider.AttestationResult.Valid {
-		return false
-	}
-
-	return provider.AttestationResult.EncryptionPublicKey != "" &&
-		provider.AttestationResult.EncryptionPublicKey == provider.PublicKey
-}
-
-func providerAttestationMatchesACMEKey(provider *registry.Provider, acmeResult *ACMEVerificationResult) bool {
-	if acmeResult == nil || acmeResult.PublicKey == "" {
-		return false
-	}
-
-	provider.Mu().Lock()
-	if provider.AttestationResult == nil || !provider.AttestationResult.Valid {
-		provider.Mu().Unlock()
-		return false
-	}
-	attestedKeyB64 := provider.AttestationResult.PublicKey
-	provider.Mu().Unlock()
-
-	if attestedKeyB64 == "" {
-		return false
-	}
-
-	attestedRaw, err := base64.StdEncoding.DecodeString(attestedKeyB64)
-	if err != nil {
-		return false
-	}
-	acmeRaw, err := base64.StdEncoding.DecodeString(acmeResult.PublicKey)
-	if err != nil {
-		return false
-	}
-
-	attestedKey, err := attestation.ParseP256PublicKey(attestedRaw)
-	if err != nil {
-		return false
-	}
-	acmeKey, err := attestation.ParseP256PublicKey(acmeRaw)
-	if err != nil {
-		return false
-	}
-
-	return attestedKey.X.Cmp(acmeKey.X) == 0 && attestedKey.Y.Cmp(acmeKey.Y) == 0
 }
 
 // challengeLoop periodically sends attestation challenges to a provider.
@@ -1382,29 +1313,11 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			saferun.Go(s.logger, "trustReuseDrain", func() {
 				s.registry.DrainQueuedRequestsForProvider(provider)
 			})
-			// FIX 4a: keep ACMEVerified honest after an MDM-reuse grant — a connect-time
-			// cert may have set the flag before its SE-key binding completed.
-			s.reconcileACMEAfterFastSkip(providerID, provider)
 		} else {
-			// Fast-skip missed. FIX 4b: re-attempt ACME FIRST — applyACMETrust ran at
-			// registration before attestation was bound, so a provider that presented a
-			// valid device cert can be promoted to hardware now that the challenge has
-			// passed, WITHOUT forcing a live MDM round-trip. Only nudge the
-			// mdmVerificationLoop (SignalChallengeSettled, so it stops deferring and
-			// runs the live verify) if ACME did NOT grant hardware.
-			s.retryACMETrust(providerID, provider)
-			if provider.GetTrustLevel() == registry.TrustHardware {
-				// ACME granted hardware without the live MDM verify, so
-				// verifyAppleDeviceAttestation (which runs the MDA leg) never fires and
-				// the mdmVerificationLoop exits. Attach the durable MDA proof here too,
-				// or an ACME-trusted reconnect keeps mda_verified=false despite a valid
-				// cached chain.
-				if ar := provider.GetAttestationResult(); ar != nil {
-					s.attachCachedMDAProof(providerID, provider, *ar)
-				}
-			} else {
-				provider.SignalChallengeSettled()
-			}
+			// Fast-skip missed. Nudge the mdmVerificationLoop
+			// (SignalChallengeSettled, so it stops deferring and runs the live
+			// verify) — hardware trust is earned via MDM SecurityInfo.
+			provider.SignalChallengeSettled()
 		}
 	}
 }
@@ -2377,7 +2290,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 	}
 
 	provider.SetAttested(true, registry.TrustSelfSigned)
-	s.sendTrustStatus(provider, registry.TrustSelfSigned, "online", "SE attestation verified, awaiting MDM/ACME upgrade")
+	s.sendTrustStatus(provider, registry.TrustSelfSigned, "online", "SE attestation verified, awaiting MDM verification")
 
 	// The SE attestation already proves SIP, Secure Boot, and binary hash —
 	// the same checks a challenge re-verifies. Set LastChallengeVerified so
@@ -2751,8 +2664,8 @@ func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoRespon
 // / Power-Nap delivery delays and to catch a provider that finishes enrollment
 // mid-connection, while staying well under Apple's push budget.
 //
-// It stops as soon as hardware trust is earned (here or via ACME concurrently),
-// on a terminal posture mismatch, or when the connection closes (ctx done).
+// It stops as soon as hardware trust is earned, on a terminal posture
+// mismatch, or when the connection closes (ctx done).
 func (s *Server) mdmVerificationLoop(ctx context.Context, providerID string, provider *registry.Provider) {
 	if s.mdmClient == nil {
 		return
@@ -2801,8 +2714,8 @@ func (s *Server) mdmVerificationLoop(ctx context.Context, providerID string, pro
 	const steadyInterval = 15 * time.Minute
 
 	for attempt := 0; ; attempt++ {
-		// Stop if hardware was already earned — by this loop on a prior iteration,
-		// or by the ACME leg (retryACMETrust) concurrently.
+		// Stop if hardware was already earned — by this loop on a prior
+		// iteration, or by the trust-reuse fast-skip concurrently.
 		if provider.GetTrustLevel() == registry.TrustHardware {
 			return
 		}
@@ -3098,7 +3011,10 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		// MDM SecurityInfo (verified by Apple's MDM framework)
 		MDMVerified bool `json:"mdm_verified"`
 
-		// ACME device-attest-01 (SE key proven by Apple)
+		// Deprecated: the ACME device-attest-01 leg was removed (it was never
+		// wired end-to-end; hardware trust is earned via MDM SecurityInfo).
+		// The key is kept, always false, because shipped provider builds decode
+		// it as a required field.
 		ACMEVerified bool `json:"acme_verified"`
 
 		// Apple Device Attestation (MDA) — certificate chain signed by Apple
@@ -3119,7 +3035,6 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		trustLevel := p.TrustLevel
 		status := p.Status
 		mdaVerified := p.MDAVerified
-		acmeVerified := p.ACMEVerified
 		attestResult := p.AttestationResult
 		mdaCertChain := p.MDACertChain
 		mdaResult := p.MDAResult
@@ -3133,23 +3048,22 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		}
 		p.Mu().Unlock()
 
-		// The public proofs (mdm/mda/acme) are reported true ONLY for a connection
+		// The public proofs (mdm/mda) are reported true ONLY for a connection
 		// that currently holds hardware trust. A hardware proof is meaningful for
-		// the connection that earned it live; surfacing mda_verified/acme_verified
-		// on a self_signed connection (e.g. a stored flag, an early-set ACME flag
-		// before binding, or a late-arriving MDA webhook) is the misleading
-		// "mda_verified=true while self_signed" drift. Gating all three on the
-		// live trust level keeps the endpoint internally consistent.
+		// the connection that earned it live; surfacing mda_verified on a
+		// self_signed connection (e.g. a stored flag or a late-arriving MDA
+		// webhook) is the misleading "mda_verified=true while self_signed"
+		// drift. Gating on the live trust level keeps the endpoint internally
+		// consistent.
 		isHardware := trustLevel == registry.TrustHardware
 		pa := providerAttestation{
-			ProviderID:   p.ID,
-			TrustLevel:   string(trustLevel),
-			Status:       string(status),
-			MemoryGB:     p.Hardware.MemoryGB,
-			GPUCores:     p.Hardware.GPUCores,
-			MDMVerified:  isHardware,
-			MDAVerified:  mdaVerified && isHardware,
-			ACMEVerified: acmeVerified && isHardware,
+			ProviderID:  p.ID,
+			TrustLevel:  string(trustLevel),
+			Status:      string(status),
+			MemoryGB:    p.Hardware.MemoryGB,
+			GPUCores:    p.Hardware.GPUCores,
+			MDMVerified: isHardware,
+			MDAVerified: mdaVerified && isHardware,
 		}
 
 		pa.Models = append(pa.Models, modelIDs...)

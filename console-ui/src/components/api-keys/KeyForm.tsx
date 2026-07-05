@@ -12,6 +12,7 @@ import { expiryOrClear, intOrClear, modelsOrClear, numOrClear } from "./limits";
 export function KeyForm({
   initial,
   models,
+  selfRouteModels = [],
   mode,
   submitting,
   onCancel,
@@ -19,6 +20,7 @@ export function KeyForm({
 }: {
   initial?: ApiKey;
   models: string[];
+  selfRouteModels?: string[];
   mode: "create" | "edit";
   submitting: boolean;
   onCancel: () => void;
@@ -36,7 +38,20 @@ export function KeyForm({
   const [modelText, setModelText] = useState((initial?.allowed_models ?? []).join(", "));
   const [selfRouteOnly, setSelfRouteOnly] = useState(initial?.self_route_only ?? false);
 
-  const hasModels = models.length > 0;
+  const visibleModels = selfRouteOnly ? selfRouteModels : models;
+  const otherModeModels = selfRouteOnly ? models : selfRouteModels;
+  const hasModels = visibleModels.length > 0;
+  // Selections made in the other route mode stay in `allowed` (so toggling
+  // back restores them) but must never be submitted: the coordinator checks
+  // the allow-list before self-route routing, so a hidden public id on a
+  // "My Machine only" key would block the machine models the picker shows.
+  // Only ids that provably belong to the OTHER mode's list are dropped —
+  // an allow-list entry in neither list (a temporarily offline machine's
+  // model, a since-delisted public model) is preserved, so an unrelated edit
+  // never silently strips it from the saved key.
+  const visibleAllowed = allowed.filter(
+    (m) => visibleModels.includes(m) || !otherModeModels.includes(m)
+  );
   const nameTrim = name.trim();
   const canSubmit = !!nameTrim && !submitting;
 
@@ -45,15 +60,23 @@ export function KeyForm({
   };
 
   const filteredModels = modelQuery.trim()
-    ? models.filter((m) => m.toLowerCase().includes(modelQuery.trim().toLowerCase()))
-    : models;
+    ? visibleModels.filter((m) => m.toLowerCase().includes(modelQuery.trim().toLowerCase()))
+    : visibleModels;
 
   const handleSubmit = () => {
     if (!canSubmit) return;
     const clear = mode === "edit";
+    // The free-text fallback (no picker data for this mode) applies the same
+    // other-mode exclusion as the picker: with "My Machine only" on and no
+    // machine models fetched, the text field still holds the key's saved
+    // PUBLIC ids — submitting those would block every local model request.
     const selectedModels = hasModels
-      ? allowed
-      : modelText.split(",").map((s) => s.trim()).filter(Boolean);
+      ? visibleAllowed
+      : modelText
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .filter((m) => !otherModeModels.includes(m));
 
     const body: UpdateKeyBody = {
       name: nameTrim,
@@ -213,8 +236,8 @@ export function KeyForm({
           />
         )}
         <p className="mt-1.5 text-xs text-text-tertiary">
-          {allowed.length > 0 && hasModels
-            ? `${plural(allowed.length, "model")} selected.`
+          {visibleAllowed.length > 0 && hasModels
+            ? `${plural(visibleAllowed.length, "model")} selected.`
             : "Leave empty to allow all models."}
         </p>
       </div>

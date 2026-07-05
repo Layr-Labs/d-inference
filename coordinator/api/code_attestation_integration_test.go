@@ -10,8 +10,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
 	"math/big"
 	"sync/atomic"
 	"testing"
@@ -45,8 +43,6 @@ func (f *fakeCodeAttestor) SendCodeChallenge(_ context.Context, deviceToken, env
 }
 
 func (f *fakeCodeAttestor) Mode() apns.Mode { return f.mode }
-
-func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 // marshalP256 returns the uncompressed (0x04||X||Y) encoding ParseP256PublicKey expects.
 func marshalP256(pub *ecdsa.PublicKey) []byte {

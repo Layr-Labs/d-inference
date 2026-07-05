@@ -2,6 +2,11 @@
 
 How to build, deploy, and update the Darkbloom coordinator and the Swift provider CLI.
 
+> **Prod moved off EigenCloud (July 2026).** The production coordinator now runs on a GCE VM
+> in project `darkbloom-mainnet`. If you are reading instructions that mention `ecloud`,
+> they are for the retired EigenCloud deployment — see
+> [`eigencloud-to-gcp-migration.md`](eigencloud-to-gcp-migration.md) for the migration record.
+
 ## Prerequisites
 
 - [ ] `mise` installed and `mise install` run (toolchain versions are pinned in [`mise.toml`](../../mise.toml)).
@@ -9,89 +14,161 @@ How to build, deploy, and update the Darkbloom coordinator and the Swift provide
   ```bash
   make coordinator-test
   ```
-- [ ] For provider releases: a macOS Apple Silicon build host or the `release-swift.yml` GitHub Actions runner (macOS, Xcode, Developer ID cert).
-- [ ] For prod EigenCloud deploys: `ecloud` CLI access and approval to push to `origin/master`.
-- [ ] For dev GCP deploys: `gcloud` authenticated to project `sepolia-ai` with IAM to run Cloud Build and SSH via IAP.
+- [ ] For prod deploys: `gcloud` authenticated with IAM to SSH via IAP into project `darkbloom-mainnet`.
+- [ ] `psql` access to the prod RDS database (for the pre-swap lock check).
+- [ ] For provider releases: the `release-swift.yml` GitHub Actions runner (macOS, Xcode, Developer ID cert).
+- [ ] For dev GCP deploys: `gcloud` authenticated to project `sepolia-ai` (see [`dev-environment.md`](dev-environment.md)).
 
-## Infrastructure
+## Infrastructure (prod)
 
-| Item | Prod (EigenCloud) | Dev (GCP) |
-|---|---|---|
-| Platform | EigenCloud TEE | GCE VM (`d-inference-dev`) |
-| Domain | `api.darkbloom.dev` | `api.dev.darkbloom.xyz` |
-| App / VM | `d-inference` | `d-inference-dev` in `us-central1-a` |
-| Reverse proxy | Caddy (injected by EigenCloud, [`coordinator/Caddyfile`](../../coordinator/Caddyfile)) | Host Caddy + Cloud Build-deployed container |
-| Coordinator | Go binary, port 8080 ([`coordinator/cmd/coordinator`](../../coordinator/cmd/coordinator)) | Same Docker image as prod |
-| MicroMDM | Port 9002, same container ([`coordinator/deploy/start.sh`](../../coordinator/deploy/start.sh)) | Same |
-| step-ca | Port 9000, same container | Same |
-| Database | AWS RDS PostgreSQL | Cloud SQL Postgres 16 via cloud-sql-proxy sidecar |
-| Persistent storage | `/mnt/disks/userdata` | `/mnt/disks/userdata` persistent disk |
-| Install script | `curl -fsSL https://api.darkbloom.dev/install.sh \| bash` | Templated to dev URL by coordinator |
+| Item | Value |
+|---|---|
+| Platform | GCE VM `darkbloom-coordinator` (`c3d-highcpu-30`), zone `us-east4-a`, project `darkbloom-mainnet` |
+| Access | IAP SSH only: `gcloud compute ssh darkbloom-coordinator --project darkbloom-mainnet --zone us-east4-a --tunnel-through-iap` |
+| Domain | `api.darkbloom.dev` (host Caddy systemd service terminates TLS, proxies to `:8080`) |
+| Coordinator | Docker container `coordinator`, **host network**, `--restart unless-stopped`, entrypoint [`coordinator/deploy/start.sh`](../../coordinator/deploy/start.sh) |
+| MicroMDM | Port 9002, same container, **state on the persistent disk** (see below) |
+| Database | AWS RDS PostgreSQL (external, `EIGENINFERENCE_DATABASE_URL`) |
+| Persistent storage | Host disk `/mnt/disks/userdata`, bind-mounted into the container. Holds the MicroMDM BoltDB (`micromdm/`), step-ca state (`step-ca/`), and logs. `start.sh` symlinks `/data -> /mnt/disks/userdata`. |
+| Images | Cloud Build trigger builds on every master push → `us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:<SHORT_SHA>` |
+| Env file | `/etc/d-inference/env` on the VM (root-only). **Hand-maintained:** several tuned vars are NOT emitted by any generator script — never regenerate this file; edit it in place and keep a timestamped backup. |
+| Fallback | The previous container is kept (stopped) as `coordinator_fallback_<timestamp>` for instant rollback |
 
-The container entrypoint is [`coordinator/deploy/start.sh`](../../coordinator/deploy/start.sh). It symlinks `/data -> /mnt/disks/userdata`, initializes step-ca and MicroMDM on first boot, and `exec`s the coordinator as PID 1.
+## Steps — coordinator deploy (prod)
 
-## Steps
+### 1. Confirm the image is built
 
-### 1. Build and test locally
-
-```bash
-make coordinator-test
-make coordinator-build
-```
-
-Cross-compile for the Linux/EigenCloud target:
+Cloud Build builds every master push automatically. Confirm your commit's image exists:
 
 ```bash
-make coordinator-build-linux
+gcloud builds list --project darkbloom-mainnet --limit 5 \
+  --format 'table(createTime.date(tz=LOCAL),substitutions.SHORT_SHA,status)'
 ```
 
-This produces `coordinator/coordinator-linux` ([`Makefile`](../../Makefile):`coordinator-build-linux`).
+The image tag is the 7-char short SHA of the master commit.
 
-### 2. Push to master
+### 2. Pre-swap checks
 
-EigenCloud builds from the repo. Push your changes:
+**Check RDS for lock holders before restarting.** Coordinator startup runs schema
+migrations; an `ALTER TABLE` queued behind a long-running query's relation lock will
+hang the whole deploy (2026-07-03 outage: repeated restarts stacked migrations behind a
+58-minute runaway query — recovery was killing the blocking PID, not more restarts).
 
 ```bash
-git push origin master
+# No rows = safe to proceed. Rows here = investigate/kill blockers first.
+psql "$PROD_DB_URL" -c "select pid, now()-query_start as runtime, state, left(query,80)
+  from pg_stat_activity
+  where state <> 'idle' and query_start < now() - interval '60 seconds'
+    and pid <> pg_backend_pid();"
+psql "$PROD_DB_URL" -c "select count(*) as blocked from pg_locks where granted = false;"
 ```
 
-### 3. Trigger prod deploy on EigenCloud
-
-EigenCloud layers Caddy + TLS on top of [`coordinator/Dockerfile`](../../coordinator/Dockerfile). Deploy via the EigenCloud CLI or dashboard:
+Then, on the VM: pull the image and snapshot current health.
 
 ```bash
-ecloud compute app deploy d-inference
+sudo docker pull us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:<TAG>
+curl -s localhost:8080/health   # note the provider count for post-swap comparison
 ```
 
-### 4. Verify prod
+### 3. Env changes (if any)
 
 ```bash
-# Health check
-curl https://api.darkbloom.dev/health
-
-# Provider connectivity / public stats
-curl https://api.darkbloom.dev/v1/stats
-
-# Logs
-ecloud compute app logs d-inference
+sudo cp /etc/d-inference/env /etc/d-inference/env.bak.$(date +%Y%m%d-%H%M%S)
+sudo vim /etc/d-inference/env   # or targeted sed
+sudo grep -E "^THE_VARS_YOU_CHANGED" /etc/d-inference/env   # verify
 ```
 
-Expected deploy time: 5–7 minutes for EigenCloud blue-green upgrade.
+New env vars take effect only on container start — flip flags in the same maintenance
+window as the swap.
+
+### 4. Swap
+
+Rules learned the hard way:
+
+- **One host-network container at a time.** Stop the old container *before* starting the
+  new one. Two containers fighting over `:8080` caused the 2026-07-03 outage.
+- **The volume mount is mandatory.** Omitting `-v /mnt/disks/userdata:/mnt/disks/userdata`
+  boots a **blank MicroMDM** — every device lookup returns "device not found", the fleet
+  falls to `self_signed` trust, and with `MIN_TRUST=hardware` the network is effectively
+  down (2026-07-04 incident: ~6 minutes of near-zero traffic).
+
+```bash
+FALLBACK=coordinator_fallback_$(date +%Y%m%d-%H%M%S)
+sudo docker rename coordinator $FALLBACK
+sudo docker stop $FALLBACK
+sudo docker run -d --name coordinator \
+  --network host \
+  --restart unless-stopped \
+  -v /mnt/disks/userdata:/mnt/disks/userdata \
+  --env-file /etc/d-inference/env \
+  us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:<TAG>
+```
+
+Startup takes ~15–40 s (MicroMDM init + migrations + listeners). If health does not
+respond after ~60 s, suspect a migration stuck behind a DB lock — re-run the
+`pg_stat_activity` query from step 2 and kill the blocking PID (`select
+pg_terminate_backend(<pid>)`); do **not** restart the container again.
+
+### 5. Verify
+
+```bash
+# Health + provider reconnection ramp (fleet reconnects within ~1 min)
+curl -s localhost:8080/health
+
+# Trust rebuild: hardware upgrades should dominate within ~2 minutes.
+sudo docker logs coordinator 2>&1 | grep -c "upgraded to hardware trust"
+# "device not found in MDM" should stay at the baseline (a few dozen genuinely
+# unenrolled boxes). HUNDREDS of these = the volume mount is missing; go to Rollback.
+sudo docker logs coordinator 2>&1 | grep -c "device not found in MDM"
+
+# Startup config lines — confirm flags picked up
+sudo docker logs coordinator 2>&1 | grep -E "quality-concurrency|servability|warm-pool|dedicated"
+
+# Public check (from anywhere)
+curl -s https://api.darkbloom.dev/health
+curl -s https://api.darkbloom.dev/v1/stats | head -c 300
+```
+
+Traffic-level verification (from any machine with DB access): served requests per minute
+should return to the pre-swap rate within ~2 minutes:
+
+```bash
+psql "$PROD_DB_URL" -c "select date_trunc('minute', created_at) m,
+  count(*) filter (where outcome='selected') selected,
+  count(distinct provider_id) filter (where outcome='selected') providers
+  from inference_routes where created_at > now() - interval '15 minutes'
+  group by 1 order by 1;"
+```
+
+### 6. Rollback
+
+The old container is still on the box, stopped, with the pre-swap image and env:
+
+```bash
+sudo docker stop coordinator && sudo docker rm coordinator
+sudo docker rename <fallback-name> coordinator   # or docker start <fallback-name>
+sudo docker start coordinator
+# If env was changed, restore the timestamped backup first:
+sudo cp /etc/d-inference/env.bak.<timestamp> /etc/d-inference/env
+```
+
+Rollback time: ~30 seconds. Providers reconnect automatically (the live registry is
+in-process and rebuilt on reconnect; durable state is in RDS and on the persistent disk).
 
 ## Provider CLI release
 
-Provider releases are built and shipped by `.github/workflows/release-swift.yml` (CLI-only Swift; the legacy Rust/Python/app bundle pipeline was removed). The workflow:
+Provider releases are built and shipped by `.github/workflows/release-swift.yml` (CLI-only Swift). The workflow:
 
 1. Builds `darkbloom` and `darkbloom-enclave` from `provider-swift/`.
-2. Fetches a matching `mlx.metallib` from the pinned MLX Python wheel (`MLX_PYTHON_PIN` in the workflow).
+2. Fetches a matching `mlx.metallib` (built from the MLX source nested in `libs/mlx-swift`).
 3. Embeds the provisioning profile and signs with Developer ID Application.
 4. Notarizes with Apple.
-5. Computes SHA-256 hashes **after** signing/notarization (see `Notarize bundle` step).
+5. Computes SHA-256 hashes **after** signing/notarization.
 6. Uploads the tarball to R2 under `releases/v${VERSION}` and `releases/latest`.
 7. Registers the release with `POST /v1/releases` using `RELEASE_KEY`.
 8. Creates a GitHub release.
 
-Reference: [`release-swift.yml`](../../.github/workflows/release-swift.yml), lines 1–653.
+Reference: [`release-swift.yml`](../../.github/workflows/release-swift.yml).
 
 ### Cutting a release
 
@@ -103,17 +180,19 @@ Tag conventions:
 | `vX.Y.Z-dev.N` | Dev |
 | `vX.Y.Z-swift` or `vX.Y.Z-swift.N` | Accepted aliases during migration |
 
-The fallback version advertised when no release is registered is `LatestProviderVersion` in [`coordinator/api/server.go`](../../coordinator/api/server.go):146 (currently `"0.6.4"`). Keep this in sync with the Swift binary's expected floor.
+The fallback version advertised when no release is registered is `LatestProviderVersion` in
+[`coordinator/api/server.go`](../../coordinator/api/server.go). Keep it in sync with
+`ProviderCore.version`. `GET /v1/releases/latest` returns **404 when no release row
+exists** — fixed by registering the release, not by bumping code.
 
 ```bash
-# Example prod release
-git tag -a v0.7.0 -m "Release v0.7.0"
+git tag -a v0.7.4 -m "Release v0.7.4"
 git push origin master --tags
 ```
 
 ### Required GitHub secrets
 
-The workflow resolves prefixed secrets (`DEV_*` / `PROD_*`) with legacy unprefixed fallbacks for prod. Required:
+The workflow resolves prefixed secrets (`DEV_*` / `PROD_*`) with legacy unprefixed fallbacks for prod:
 
 | Secret | Purpose |
 |---|---|
@@ -122,7 +201,7 @@ The workflow resolves prefixed secrets (`DEV_*` / `PROD_*`) with legacy unprefix
 | `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`, `R2_BUCKET`, `R2_PUBLIC_URL` | R2 artifact storage |
 | `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD` | Developer ID signing |
 | `APPLE_ID`, `APPLE_APP_PASSWORD` | Notarization |
-| `PROVISIONING_PROFILE_BASE64` | Required since PR #146; grants `keychain-access-groups` and `aps-environment=production` |
+| `PROVISIONING_PROFILE_BASE64` | Grants `keychain-access-groups` and `aps-environment=production` |
 
 ### Install
 
@@ -132,72 +211,42 @@ Users install via the coordinator-served script:
 curl -fsSL https://api.darkbloom.dev/install.sh | bash
 ```
 
-The script is embedded in the coordinator binary via `go:embed` ([`scripts/install.sh`](../../scripts/install.sh)). The coordinator substitutes its own URL at serve time so the same binary works for dev and prod.
+The script is embedded in the coordinator binary via `go:embed`
+([`scripts/install.sh`](../../scripts/install.sh)); the coordinator substitutes its own
+URL at serve time so the same binary works for dev and prod.
 
-## Verification
+## Environment variables (prod env file)
 
-| Check | Command / signal |
+Lives at `/etc/d-inference/env` on the VM. Secrets and operational flags together;
+timestamped backups sit alongside. The authoritative reference for routing-flag
+semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlights:
+
+| Variable | Notes |
 |---|---|
-| Coordinator health | `curl https://api.darkbloom.dev/health` |
-| Latest provider release | `curl https://api.darkbloom.dev/v1/releases/latest` |
-| Provider reconnects after restart | `/v1/stats` shows capacity returning; provider logs show `register` success |
-| Install script templating | `curl -fsSL https://api.dev.darkbloom.xyz/install.sh \| grep COORD_URL` should show dev URL |
-
-## Rollback
-
-### Coordinator
-
-- **EigenCloud prod:** use the EigenCloud dashboard/CLI to roll back to the previous revision. EigenCloud keeps the previous revision warm during blue-green.
-- **Dev GCP:** point the VM at an older image tag and restart:
-  ```bash
-  gcloud compute instances add-metadata d-inference-dev --zone=us-central1-a \
-    --metadata=DINF_IMAGE_TAG=<older-short-sha>
-  gcloud compute ssh d-inference-dev --zone=us-central1-a --tunnel-through-iap -- \
-    'sudo systemctl restart d-inference-coordinator'
-  ```
-  Rollback time is ~1 minute because the image is already in the registry.
-
-### Provider CLI release
-
-Releases are immutable in R2. To roll back:
-
-1. Re-run the release workflow against an older tag, **or**
-2. Use the admin API to mark an older release as active (if your coordinator build supports it), **or**
-3. Update the `latest` pointer in R2 to the previous bundle and re-run `install.sh` on affected providers.
-
-## Environment variables
-
-Managed via EigenCloud KMS (prod) or GCP Secret Manager (dev). Core coordinator env vars:
-
-| Variable | Purpose |
-|---|---|
-| `EIGENINFERENCE_PORT` | Coordinator HTTP port (default 8080) |
-| `EIGENINFERENCE_ADMIN_KEY` | Admin API access (constant-time compared in state-export, etc.) |
-| `EIGENINFERENCE_DATABASE_URL` | Postgres DSN |
-| `EIGENINFERENCE_CONSOLE_URL` | Console UI URL |
-| `EIGENINFERENCE_RELEASE_KEY` | Scoped key for CI release registration |
-| `EIGENINFERENCE_PRIVY_APP_ID`, `EIGENINFERENCE_PRIVY_APP_SECRET`, `EIGENINFERENCE_PRIVY_VERIFICATION_KEY` | Privy JWT auth |
-| `EIGENINFERENCE_ADMIN_EMAILS` | Comma-separated admin emails |
-| `EIGENINFERENCE_MDM_URL` | Internal MicroMDM URL, e.g. `https://localhost:9002` |
-| `EIGENINFERENCE_MDM_API_KEY` | Must match `MICROMDM_API_KEY` |
-| `MICROMDM_API_KEY` | Used by `start.sh` to launch MicroMDM |
-| `MDM_PUSH_P12_B64` | Base64url-encoded Apple MDM push PKCS#12 |
-| `EIGENINFERENCE_STEP_CA_ROOT`, `EIGENINFERENCE_STEP_CA_INTERMEDIATE` | CA cert paths |
-| `MNEMONIC` | 12-word BIP39 Solana wallet for coordinator |
-| `EIGENINFERENCE_SOLANA_RPC_URL` | Solana RPC endpoint |
-| `EIGENINFERENCE_IPAPI_KEY` | ip-api.com **PRO** key (secret, optional). When set, provider/consumer geo lookups use the unmetered `https://pro.ip-api.com` endpoint; unset falls back to the free 45 req/min `http://ip-api.com` tier. Dev: `gcloud secrets create eigeninference-ipapi-key`. Never commit the value. |
-| `DOMAIN` | Public domain, used by Caddyfile and `start.sh` |
-| `APP_PORT` | Port Caddy reverse-proxies to (default 8080) |
-
-`MICROMDM_API_KEY` and `EIGENINFERENCE_MDM_API_KEY` must be byte-identical; a mismatch causes MicroMDM device lookup to fail.
+| `EIGENINFERENCE_DATABASE_URL` | RDS DSN — presence selects the Postgres store |
+| `EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_RELEASE_KEY` | Admin / CI release auth |
+| `EIGENINFERENCE_PRIVY_*` | Consumer JWT auth |
+| `MICROMDM_API_KEY` = `EIGENINFERENCE_MDM_API_KEY` | Must be byte-identical or MDM lookups fail |
+| `MDM_PUSH_P12_B64`, `PROFILE_SIGNING_P12_*` | Apple MDM push + profile signing |
+| `EIGENINFERENCE_MDM_WEBHOOK_SECRET` | Optional; unset logs a startup warning (webhook then relies on the CommandUUID gate alone) |
+| `MNEMONIC` | X25519 key derivation (legacy name) |
+| `EIGENINFERENCE_TTFT_HARD_REJECT`, `_TTFT_LIVE_DEADLINE_BASE_MS`, `_TTFT_CALIBRATION`, `_TTFT_TERMINAL_REJECT` | TTFT gate + calibration + ladder termination |
+| `EIGENINFERENCE_QUEUE_BEFORE_SHED`, `_QUEUE_MAX_DEPTH`, `_QUEUE_MAX_WAIT` | Capacity queueing (dedicated pools included) |
+| `EIGENINFERENCE_HEALTH_EJECTION` | Stable-identity ejection kill switch — **`on` in prod**; `off` disables black-hole ejection entirely |
+| `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT`, `_BY_MODEL` | Per-box admission density (default 1.2) |
+| `EIGENINFERENCE_WARM_POOL_*` | Warm-pool controller (active; `OBSERVE_ONLY=false`) |
+| `EIGENINFERENCE_DEDICATED_MODELS` | Static dedicated-box partition (`gemma-4`) |
+| `EIGENINFERENCE_IPAPI_KEY` | ip-api.com PRO key; unset falls back to the free 45 req/min tier |
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `/v1/models` empty or providers show `self_signed` trust | MicroMDM not running or API key mismatch | Verify `MICROMDM_API_KEY` == `EIGENINFERENCE_MDM_API_KEY`; check `start.sh` logs |
-| MDM webhook 403 | `EIGENINFERENCE_MDM_WEBHOOK_SECRET` set on coordinator but `?token=` missing from MicroMDM webhook URL | Ensure `start.sh` templates the token into `-command-webhook-url` |
-| step-ca re-initializes on every boot | Persistent storage not mounted or `/data` symlink missing | Confirm `/mnt/disks/userdata` is mounted and `/data -> /mnt/disks/userdata` exists |
-| Provider disconnects frequently | Caddy health check timeout or WebSocket EOF | Check EigenCloud/Caddy logs; increase idle timeout if needed |
+| Startup hangs, no health response >60 s | Migration stuck behind an RDS relation lock | `pg_stat_activity` → `pg_terminate_backend(<blocking pid>)`. Do NOT restart the container repeatedly — restarts stack migrations (2026-07-03 outage) |
+| Fleet drops to `self_signed`, "device not found in MDM" storms | Container started **without** `-v /mnt/disks/userdata:/mnt/disks/userdata` → blank MicroMDM BoltDB | Stop container, re-run with the mount (2026-07-04 incident) |
+| `/v1/models` empty or providers show `self_signed` | MicroMDM not running or API key mismatch | Verify `MICROMDM_API_KEY` == `EIGENINFERENCE_MDM_API_KEY`; check container logs |
+| Port conflict / crash loop on start | Another host-network container still running | `docker ps`, stop the old one first — one at a time |
+| MDM webhook 403 | `EIGENINFERENCE_MDM_WEBHOOK_SECRET` set but `?token=` missing from webhook URL | `start.sh` templates the token into `-command-webhook-url`; restart the container |
+| MicroMDM state resets on every boot | Persistent disk not mounted or `/data` symlink missing | Confirm the bind mount and `/data -> /mnt/disks/userdata` inside the container |
 | Release registration 500 | `releases` table schema mismatch | Run pending Postgres migrations |
-| Signed provider binary lacks keychain access | Missing provisioning profile or wrong entitlements | Check `release-swift.yml` entitlement verification steps |
+| New routing flags "not working" | Env var kill switch still set from a previous incident | `grep` the env file — flags like `HEALTH_EJECTION=off` / `QUEUE_BEFORE_SHED=false` silently disable whole subsystems |

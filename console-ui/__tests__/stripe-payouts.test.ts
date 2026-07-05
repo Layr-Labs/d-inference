@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import {
   computeStripeFeeUsd,
   fetchStripeStatus,
@@ -6,36 +6,16 @@ import {
   withdrawStripe,
   fetchStripeWithdrawals,
 } from "@/lib/api";
+import { jsonResponse, stubClientFetch } from "./helpers/client-harness";
 
 // Stripe Payouts client tests. These cover:
 //   * Fee math (must mirror billing.FeeForMethodMicroUSD on the server side)
 //   * Each API client function calls the right proxy URL with the right body
 //   * Error responses are surfaced cleanly so the UI can show a toast
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: () => Promise.resolve(body),
-    text: () => Promise.resolve(JSON.stringify(body)),
-    headers: new Headers(),
-  } as unknown as Response;
-}
-
-let fetchMock: ReturnType<typeof vi.fn>;
+const client = stubClientFetch();
 
 const onboardingReturnUrl = "https://app.test/billing?stripe_return=1";
-
-beforeEach(() => {
-  fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
-
-  localStorage.clear();
-});
-
-afterEach(() => {
-  vi.restoreAllMocks();
-});
 
 // ---------------------------------------------------------------------------
 // computeStripeFeeUsd
@@ -82,22 +62,22 @@ describe("computeStripeFeeUsd", () => {
 
 describe("fetchStripeStatus", () => {
   it("calls /api/payments/stripe/status without refresh by default", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({
+    client.fetch.mockResolvedValueOnce(jsonResponse({
       configured: true, has_account: true, status: "ready",
     }));
     const s = await fetchStripeStatus();
-    expect(fetchMock).toHaveBeenCalledWith("/api/payments/stripe/status", expect.any(Object));
+    expect(client.fetch).toHaveBeenCalledWith("/api/payments/stripe/status", expect.any(Object));
     expect(s.status).toBe("ready");
   });
 
   it("appends ?refresh=1 when called with refresh=true", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ configured: true, has_account: true, status: "ready" }));
+    client.fetch.mockResolvedValueOnce(jsonResponse({ configured: true, has_account: true, status: "ready" }));
     await fetchStripeStatus(true);
-    expect(fetchMock).toHaveBeenCalledWith("/api/payments/stripe/status?refresh=1", expect.any(Object));
+    expect(client.fetch).toHaveBeenCalledWith("/api/payments/stripe/status?refresh=1", expect.any(Object));
   });
 
   it("throws on non-2xx responses", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({}, 500));
+    client.fetch.mockResolvedValueOnce(jsonResponse({}, 500));
     await expect(fetchStripeStatus()).rejects.toThrow(/500/);
   });
 });
@@ -108,29 +88,29 @@ describe("fetchStripeStatus", () => {
 
 describe("startStripeOnboarding", () => {
   it("POSTs return_url to /api/payments/stripe/onboard", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({
+    client.fetch.mockResolvedValueOnce(jsonResponse({
       url: "https://connect.stripe.com/setup/abc",
       stripe_account_id: "acct_x",
       status: "pending",
     }));
 
     const resp = await startStripeOnboarding(onboardingReturnUrl);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [, opts] = fetchMock.mock.calls[0];
+    expect(client.fetch).toHaveBeenCalledTimes(1);
+    const [, opts] = client.fetch.mock.calls[0];
     expect(opts.method).toBe("POST");
     expect(JSON.parse(opts.body)).toEqual({ return_url: onboardingReturnUrl });
     expect(resp.url).toContain("connect.stripe.com");
   });
 
   it("POSTs country when provided", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({
+    client.fetch.mockResolvedValueOnce(jsonResponse({
       url: "https://connect.stripe.com/setup/abc",
       stripe_account_id: "acct_x",
       status: "pending",
     }));
 
     await startStripeOnboarding(onboardingReturnUrl, "GB");
-    const [, opts] = fetchMock.mock.calls[0];
+    const [, opts] = client.fetch.mock.calls[0];
     expect(JSON.parse(opts.body)).toEqual({
       return_url: onboardingReturnUrl,
       country: "GB",
@@ -138,7 +118,7 @@ describe("startStripeOnboarding", () => {
   });
 
   it("surfaces server error message when present", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: { message: "Stripe is down" } }, 502));
+    client.fetch.mockResolvedValueOnce(jsonResponse({ error: { message: "Stripe is down" } }, 502));
     await expect(startStripeOnboarding()).rejects.toThrow(/Stripe is down/);
   });
 });
@@ -149,7 +129,7 @@ describe("startStripeOnboarding", () => {
 
 describe("withdrawStripe", () => {
   it("POSTs amount and method to /api/payments/withdraw/stripe", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({
+    client.fetch.mockResolvedValueOnce(jsonResponse({
       status: "submitted",
       withdrawal_id: "wd-1",
       transfer_id: "tr_1",
@@ -162,8 +142,8 @@ describe("withdrawStripe", () => {
       balance_micro_usd: 0,
     }));
     const resp = await withdrawStripe("10.00", "instant");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, opts] = fetchMock.mock.calls[0];
+    expect(client.fetch).toHaveBeenCalledTimes(1);
+    const [url, opts] = client.fetch.mock.calls[0];
     expect(url).toBe("/api/payments/withdraw/stripe");
     expect(JSON.parse(opts.body)).toEqual({ amount_usd: "10.00", method: "instant" });
     expect(resp.fee_usd).toBe("0.50");
@@ -171,14 +151,14 @@ describe("withdrawStripe", () => {
   });
 
   it("surfaces insufficient_funds error", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({
+    client.fetch.mockResolvedValueOnce(jsonResponse({
       error: { type: "insufficient_funds", message: "insufficient balance" },
     }, 400));
     await expect(withdrawStripe("10.00", "standard")).rejects.toThrow(/insufficient balance/);
   });
 
   it("surfaces instant_unavailable error", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({
+    client.fetch.mockResolvedValueOnce(jsonResponse({
       error: { type: "instant_unavailable", message: "instant payouts require a debit card destination" },
     }, 400));
     await expect(withdrawStripe("10.00", "instant")).rejects.toThrow(/debit card/);
@@ -191,26 +171,26 @@ describe("withdrawStripe", () => {
 
 describe("fetchStripeWithdrawals", () => {
   it("returns the withdrawals array, default limit=20", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({
+    client.fetch.mockResolvedValueOnce(jsonResponse({
       withdrawals: [
         { id: "wd-1", account_id: "a", stripe_account_id: "acct_x", amount_micro_usd: 5_000_000, fee_micro_usd: 0, net_micro_usd: 5_000_000, method: "standard", status: "paid", created_at: "", updated_at: "" },
       ],
     }));
     const wds = await fetchStripeWithdrawals();
-    expect(fetchMock).toHaveBeenCalledWith("/api/payments/stripe/withdrawals?limit=20", expect.any(Object));
+    expect(client.fetch).toHaveBeenCalledWith("/api/payments/stripe/withdrawals?limit=20", expect.any(Object));
     expect(wds).toHaveLength(1);
     expect(wds[0].id).toBe("wd-1");
   });
 
   it("returns [] when the response has no withdrawals key", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({}));
+    client.fetch.mockResolvedValueOnce(jsonResponse({}));
     const wds = await fetchStripeWithdrawals();
     expect(wds).toEqual([]);
   });
 
   it("respects custom limit", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ withdrawals: [] }));
+    client.fetch.mockResolvedValueOnce(jsonResponse({ withdrawals: [] }));
     await fetchStripeWithdrawals(5);
-    expect(fetchMock).toHaveBeenCalledWith("/api/payments/stripe/withdrawals?limit=5", expect.any(Object));
+    expect(client.fetch).toHaveBeenCalledWith("/api/payments/stripe/withdrawals?limit=5", expect.any(Object));
   });
 });

@@ -138,7 +138,6 @@ export function AttestationPanel({
       <ChainNode ok={enclaveOK} title="Secure Enclave">
         <CheckLine ok={p.secure_enclave} label="Hardware-bound P-256 identity" />
         <CheckLine ok={p.se_key_bound} label="SE key bound to MDA nonce" />
-        <CheckLine ok={p.acme_verified} label="ACME device-attest-01" />
       </ChainNode>
 
       <ChainNode ok={osOK} title="OS security">

@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -14,14 +15,45 @@ import (
 // This is the proactive half of the fix: before admitting/dispatching a public
 // request, ask the registry whether the fleet could STRUCTURALLY serve a request
 // of this size (prompt + max_tokens vs the model context window and the largest
-// provider token budget). When it confidently cannot, return an uptime-neutral
-// 429 + Retry-After so OpenRouter fails over, instead of admitting it and letting
-// the provider 5xx (the uptime-damaging "admitted_but_failed" path).
+// provider token-budget CEILING). When it confidently cannot, return an
+// uptime-neutral 429 + Retry-After so OpenRouter fails over, instead of
+// admitting it and letting the provider 5xx (the uptime-damaging
+// "admitted_but_failed" path).
 //
-// It is gated behind s.servabilityGate (default off) and is fail-open by
+// Structural-only contract: this gate may 429 only requests that could NEVER
+// fit — the budget comparison uses each provider's ceiling (resident
+// active_token_budget_max / optimistic cold post-load estimate), never the live
+// remaining budget. A request that fits some ceiling but not the fleet's
+// current headroom is transient fullness and must fall through to the
+// capacity/queue path (queue-before-shed in runInferenceAdmission), which holds
+// it until a slot frees rather than shedding it.
+//
+// The gate is ON by default (see servabilityGateEnabled) and is fail-open by
 // construction (PredictServable only rejects clearly-unservable requests). The
 // always-on reclassification of an actual provider token-budget 5xx → 429 lives
 // on the dispatch-exhausted path (see classifyInferenceFailure / dispatch.go).
+
+// servabilityGateEnabled resolves the effective gate state. The explicit server
+// toggle (SetServabilityGate, wired from main when the env var parses true)
+// forces ON; otherwise EIGENINFERENCE_SERVABILITY_GATE decides, defaulting to
+// ON when unset or unparseable — prod has run =true since DAR-347, and the
+// per-provider admission gap (coordinator admit → provider token-budget 503) is
+// exactly what this gate sheds, so an off-by-default no longer matches reality.
+// Only an explicit parseable false disables it.
+func (s *Server) servabilityGateEnabled() bool {
+	if s.servabilityGate {
+		return true
+	}
+	v := os.Getenv("EIGENINFERENCE_SERVABILITY_GATE")
+	if v == "" {
+		return true
+	}
+	on, err := strconv.ParseBool(v)
+	if err != nil {
+		return true
+	}
+	return on
+}
 
 // shedIfUnservable returns true when it has fully handled the request by writing
 // an early 429 (the caller must then return). It is a no-op (returns false) when
@@ -39,7 +71,7 @@ func (s *Server) shedIfUnservable(
 	allowedProviderSerials []string,
 	refundReservation func(),
 ) bool {
-	if s == nil || !s.servabilityGate || s.registry == nil {
+	if s == nil || s.registry == nil || !s.servabilityGateEnabled() {
 		return false
 	}
 

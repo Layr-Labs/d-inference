@@ -7,7 +7,7 @@
 // attestation that cannot be spoofed by a compromised OS.
 //
 // Two attestation paths exist:
-//  1. ACME device-attest-01: OIDs in 1.2.840.113635.100.8.13.* (SIP, SecureBoot, Kext)
+//  1. Device-attest OID set: 1.2.840.113635.100.8.13.* (SIP, SecureBoot, Kext)
 //  2. DeviceInformation DevicePropertiesAttestation: OIDs in 100.8.9.*, 100.8.10.*, 100.8.11.*
 //     (Serial, UDID, SepOS version, OS version, freshness code)
 //
@@ -23,7 +23,7 @@ import (
 	"sync"
 )
 
-// Apple MDA OID constants — ACME device-attest-01 path (existing).
+// Apple MDA OID constants — device-attest OID set (100.8.13.*).
 var (
 	OIDSIPStatus        = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 13, 1}
 	OIDSecureBootStatus = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 13, 2}
@@ -114,7 +114,7 @@ type MDAResult struct {
 	DeviceSerial string
 	DeviceUDID   string
 
-	// Security properties from ACME path OIDs (100.8.13.*).
+	// Security properties from the device-attest OID set (100.8.13.*).
 	SIPEnabled        bool
 	SecureBootEnabled bool
 	ThirdPartyKexts   bool
@@ -207,7 +207,7 @@ func VerifyMDADeviceAttestation(certChainDER [][]byte) (*MDAResult, error) {
 				result.FreshnessCode = ext.Value
 			}
 
-		// ACME path OIDs (100.8.13.*) — may also be present
+		// Device-attest OIDs (100.8.13.*) — may also be present
 		case ext.Id.Equal(OIDSIPStatus):
 			result.SIPEnabled = parseBoolOID(ext.Value)
 		case ext.Id.Equal(OIDSecureBootStatus):
@@ -221,7 +221,7 @@ func VerifyMDADeviceAttestation(certChainDER [][]byte) (*MDAResult, error) {
 }
 
 // VerifyMDACertChain verifies a PEM-encoded MDA certificate chain.
-// Kept for backward compatibility with the ACME path.
+// Kept for backward compatibility with the 100.8.13.* OID set.
 func VerifyMDACertChain(certChainPEM []byte, appleRootCA *x509.Certificate) (*MDAResult, error) {
 	certs, err := parsePEMCertificates(certChainPEM)
 	if err != nil {

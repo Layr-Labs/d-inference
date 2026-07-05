@@ -544,7 +544,7 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 				running, waiting := warmPoolModelLoadLocked(p, model)
 				s.running += running
 				s.waiting += waiting
-				if !p.hasConcurrencyHeadroomForModelLocked(model) || warmPoolBackendSlotBusyLocked(p) {
+				if !r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, model) || warmPoolBackendSlotBusyLocked(p) {
 					s.warmSaturated++
 				}
 				out[model] = s

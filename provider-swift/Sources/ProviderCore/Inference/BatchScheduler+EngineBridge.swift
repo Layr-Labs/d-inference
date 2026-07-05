@@ -141,7 +141,8 @@ extension BatchScheduler {
                                 continuation.yield(.info(
                                     promptTokens: usage.promptTokens,
                                     completionTokens: usage.completionTokens,
-                                    tokensPerSecond: usage.tps
+                                    tokensPerSecond: usage.tps,
+                                    finishReason: nil
                                 ))
                             }
                             // Distinct pending-timeout vs. client-cancel
@@ -165,10 +166,14 @@ extension BatchScheduler {
                         // Emit the authoritative (max of observed-vs-terminal)
                         // counts from recordFinish, not the raw terminal output
                         // — the terminal can under-report and zero out billing.
+                        // Thread the engine's finish reason ("stop"/"length")
+                        // so a max_tokens truncation reaches the client as
+                        // finish_reason "length" (abort was handled above).
                         continuation.yield(.info(
                             promptTokens: usage.promptTokens,
                             completionTokens: usage.completionTokens,
-                            tokensPerSecond: usage.tps
+                            tokensPerSecond: usage.tps,
+                            finishReason: output.finishReason
                         ))
                     }
                     // Wedge instrumentation: this request terminated. If it never

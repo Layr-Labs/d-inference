@@ -399,7 +399,6 @@ type Provider struct {
 	MDAVerified       bool                   // true if Apple Device Attestation cert chain verified
 	MDACertChain      [][]byte               // DER-encoded Apple MDA certificate chain (leaf first)
 	MDAResult         *attestation.MDAResult // parsed OIDs from Apple cert
-	ACMEVerified      bool                   // true if ACME device-attest-01 client cert verified (SE key proven)
 	SEKeyBound        bool                   // true if SE key was bound to device via MDA nonce
 
 	// restoredMDAChain holds the durable Apple-signed MDA cert chain recovered
@@ -525,6 +524,12 @@ type Provider struct {
 
 	mu          sync.Mutex
 	pendingReqs map[string]*PendingRequest
+
+	// registry back-pointer, set once in Register (nil for bare test Providers).
+	// SetAttestationResult uses it to bind this session's id to its stable
+	// identity so the fault-tracking maps (breakers/cooldowns) key by identity
+	// and survive reconnect churn. Read-only after Register.
+	registry *Registry
 }
 
 // providerSupportsPrivateTextLocked is the SINGLE routing chokepoint for
@@ -647,17 +652,6 @@ func (p *Provider) GetStatus() ProviderStatus {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.Status
-}
-
-// SetACMEVerified sets the ACME-verified flag (thread-safe). Used to clear a
-// flag that applyACMETrust set optimistically (it marks the cert verified before
-// the SE-key binding completes) when a trust-reuse fast-skip grants hardware via
-// MDM-reuse and the stashed ACME never bound (DAR-326 FIX 4a) — so the attestation
-// report does not claim acme_verified for an unproven binding.
-func (p *Provider) SetACMEVerified(v bool) {
-	p.mu.Lock()
-	p.ACMEVerified = v
-	p.mu.Unlock()
 }
 
 // SetMDMFailureReason records the bucketed reason this connection's MDM
@@ -972,13 +966,41 @@ func (p *Provider) HardUntrustEpoch() uint64 {
 // shallow copy is a complete, immutable snapshot owned by the Provider.
 func (p *Provider) SetAttestationResult(result *attestation.VerificationResult) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if result == nil {
 		p.AttestationResult = nil
-		return
+	} else {
+		snapshot := *result
+		p.AttestationResult = &snapshot
 	}
-	snapshot := *result
-	p.AttestationResult = &snapshot
+	// Re-derive the stable identity while p.mu is held, then bind it OUTSIDE
+	// p.mu (bindStableFaultKey takes r.mu; the established order is r.mu →
+	// p.mu, so taking r.mu here while holding p.mu could deadlock). Binding at
+	// attestation time is what re-attaches a reconnecting machine's fault
+	// state (breakers/cooldowns keyed by serial/SE-key) to its fresh session
+	// id BEFORE it becomes routable — public routing requires attestation.
+	id, stableID, r := p.ID, stableProviderIdentityLocked(p), p.registry
+	p.mu.Unlock()
+	if r != nil {
+		r.bindStableFaultKey(id, stableID)
+	}
+}
+
+// RebindStableFaultKey re-derives this session's stable identity and re-binds
+// its fault key. Account linkage happens AFTER the registration-time
+// attestation bind (api/provider.go resolves the auth token only once
+// Register + verifyProviderAttestation have returned), so a provider whose
+// identity resolves to the ACCOUNT fallback — attestation absent (Open Mode)
+// or invalid — would otherwise never bind: all its fault state would key by
+// session UUID and be wiped on reconnect. Same lock discipline as
+// SetAttestationResult: derive under p.mu, bind OUTSIDE it (bindStableFaultKey
+// takes r.mu; the established order is r.mu → p.mu).
+func (p *Provider) RebindStableFaultKey() {
+	p.mu.Lock()
+	id, stableID, r := p.ID, stableProviderIdentityLocked(p), p.registry
+	p.mu.Unlock()
+	if r != nil {
+		r.bindStableFaultKey(id, stableID)
+	}
 }
 
 // GetAttestationResult returns the current attestation result (thread-safe).
@@ -1143,11 +1165,6 @@ func (p *Provider) pendingLoadForModelLocked(model string) int {
 	return load
 }
 
-func (p *Provider) hasConcurrencyHeadroomForModelLocked(model string) bool {
-	return p.pendingLoadForModelLocked(model) < p.maxConcurrencyForModelLocked(model) &&
-		p.pendingCount() < p.maxConcurrency()
-}
-
 // Registry holds all connected providers and provides routing.
 type Registry struct {
 	mu        sync.RWMutex
@@ -1275,10 +1292,31 @@ type Registry struct {
 	// The breaker FAILS OPEN: when it would deroute every provider for a model,
 	// selection re-scans with it bypassed (selectBestCandidateLockedFull) so a
 	// bad fleet-wide rollout cannot zero out routing. Guarded by r.mu like the
-	// maps above; cleared on Disconnect. See provider_breaker.go.
+	// maps above. Keyed by the stable fault key (faultKeyLocked) and NOT
+	// cleared on Disconnect — state re-attaches on reconnect; only a provider
+	// with no stable identity has its session-keyed residue dropped. See
+	// provider_breaker.go.
 	providerOutcomes         map[string]*providerHealthWindow // per-provider sliding fault/success ring
 	providerBreakerOpenUntil map[string]time.Time             // breaker-open expiry per provider
 	providerBreakerTrips     map[string]int                   // trip count per provider (exponential backoff)
+
+	// capacityRejectStrikes / capacityCooldowns / capacityCooldownTrips
+	// implement the capacity-reject routing cooldown (capacity_cooldown.go),
+	// SEPARATE from every breaker above — all of which deliberately IGNORE
+	// capacity-class rejections (sound for occasional sheds from a busy box,
+	// catastrophic for a box that capacity-rejects EVERYTHING while its
+	// idle-looking heartbeats keep winning the cost scheduler: the 2026-07
+	// black-hole incident, 7 boxes, ~9k rejects/30min, zero successes). A
+	// (provider, model) pair that accumulates threshold-many capacity rejects
+	// inside the window with ZERO interleaved accepts enters a routing
+	// cooldown with exponential re-trip backoff; any accept (first content
+	// chunk or clean completion) clears all three entries. Config is
+	// env-tunable (EIGENINFERENCE_CAPACITY_COOLDOWN_*), loaded at
+	// construction. Guarded by r.mu like the maps above.
+	capacityCooldownCfg   capacityCooldownConfig
+	capacityRejectStrikes map[capacityRejectKey][]time.Time            // recent capacity-reject strikes per (provider, model)
+	capacityCooldowns     map[capacityRejectKey]*capacityCooldownEntry // cooldown expiry + half-open probe claim per (provider, model)
+	capacityCooldownTrips map[capacityRejectKey]int                    // trip count per (provider, model) (exponential backoff)
 
 	// Stable-identity health ejection (health_ejection.go). Keyed by a STABLE
 	// identity (serial/SE-key/account), NOT the session UUID, and DELIBERATELY
@@ -1287,12 +1325,35 @@ type Registry struct {
 	healthEjectionWindows map[string]*providerHealthWindow // stable-id sliding fault/success ring
 	healthEjectionUntil   map[string]time.Time             // ejection-open expiry per stable id
 	healthEjectionTrips   map[string]int                   // trip count per stable id (exponential backoff)
+	// healthEjectionCapacityStreaks counts CONSECUTIVE capacity-shaped 5xx
+	// rejections (zero interleaved successes) per stable identity — the
+	// capacity black-hole signature that every fault breaker deliberately
+	// ignores (prod: 13,333 "token_budget"-shaped 503s, 100% error rate, 90
+	// min, never ejected). Any success clears the streak, so a busy-but-
+	// serving box can never trip. See health_ejection.go.
+	healthEjectionCapacityStreaks map[string]capacityStreak
+	// healthEjectionLastTripCapacity records whether an identity's most recent
+	// ejection came from the capacity streak (true) or the fault path (false).
+	// The capacity branch's half-open instant re-arm applies only to capacity
+	// trips: a single capacity shed — legitimate for a healthy-but-full box —
+	// must not re-arm a FAULT ejection whose cooldown just expired.
+	healthEjectionLastTripCapacity map[string]bool
 	// disconnectedStableIDs caches a provider's stable identity at Disconnect time,
 	// keyed by its (now-removed) session id, so the pending-request ErrorCh flush —
 	// which runs AFTER Disconnect deletes the provider and carries the 502 "provider
 	// disconnected" faults that define a reconnecting zombie — can still resolve the
 	// identity and record those faults against the stable-identity breaker.
 	disconnectedStableIDs map[string]disconnectedStableID
+	// faultKeyBySession maps a LIVE session id to its stable identity
+	// (serial/SE-key/account). Bound by SetAttestationResult, removed on
+	// Disconnect (the disconnectedStableIDs cache covers the trailing flush).
+	// Every fault-tracking map above (inference-error cooldowns, node-health
+	// breaker, dispatch-load cooldowns) keys by faultKeyLocked(sessionID) —
+	// the stable identity when bound, the session id itself otherwise — so a
+	// reconnecting machine re-attaches its accumulated fault state instead of
+	// wiping it (the prod zombie exploit: median 18 sessions/machine/week
+	// reset every session-keyed breaker before it could trip).
+	faultKeyBySession map[string]string
 
 	// evictStrikes counts consecutive eviction sweeps a provider has been stale.
 	// A provider is only evicted after STALE on two sweeps in a row, so a single
@@ -1354,27 +1415,34 @@ type modelLoadAction struct {
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
-		providers:                make(map[string]*Provider),
-		queue:                    NewRequestQueue(10, 120*time.Second),
-		MinTrustLevel:            TrustHardware,
-		tpsRegistry:              NewTPSRegistry(),
-		modelProviders:           make(map[string]*atomic.Int64),
-		pendingModelLoads:        make(map[string]time.Time),
-		pendingModelLoadStarted:  make(map[string]time.Time),
-		dispatchLoadCooldowns:    make(map[string]time.Time),
-		inferenceErrorStrikes:    make(map[inferenceErrorKey][]time.Time),
-		inferenceErrorCooldowns:  make(map[inferenceErrorKey]time.Time),
-		providerOutcomes:         make(map[string]*providerHealthWindow),
-		providerBreakerOpenUntil: make(map[string]time.Time),
-		providerBreakerTrips:     make(map[string]int),
-		healthEjectionWindows:    make(map[string]*providerHealthWindow),
-		healthEjectionUntil:      make(map[string]time.Time),
-		healthEjectionTrips:      make(map[string]int),
-		disconnectedStableIDs:    make(map[string]disconnectedStableID),
-		evictStrikes:             make(map[string]int),
-		cacheAffinity:            newCacheAffinityTracker(cacheAffinityTTL),
-		cacheAffinityBonusMs:     defaultCacheAffinityBonusMs,
-		logger:                   logger,
+		providers:                      make(map[string]*Provider),
+		queue:                          NewRequestQueueFromEnv(),
+		MinTrustLevel:                  TrustHardware,
+		tpsRegistry:                    NewTPSRegistry(),
+		modelProviders:                 make(map[string]*atomic.Int64),
+		pendingModelLoads:              make(map[string]time.Time),
+		pendingModelLoadStarted:        make(map[string]time.Time),
+		dispatchLoadCooldowns:          make(map[string]time.Time),
+		inferenceErrorStrikes:          make(map[inferenceErrorKey][]time.Time),
+		inferenceErrorCooldowns:        make(map[inferenceErrorKey]time.Time),
+		providerOutcomes:               make(map[string]*providerHealthWindow),
+		providerBreakerOpenUntil:       make(map[string]time.Time),
+		providerBreakerTrips:           make(map[string]int),
+		capacityCooldownCfg:            loadCapacityCooldownConfig(),
+		capacityRejectStrikes:          make(map[capacityRejectKey][]time.Time),
+		capacityCooldowns:              make(map[capacityRejectKey]*capacityCooldownEntry),
+		capacityCooldownTrips:          make(map[capacityRejectKey]int),
+		healthEjectionWindows:          make(map[string]*providerHealthWindow),
+		healthEjectionUntil:            make(map[string]time.Time),
+		healthEjectionTrips:            make(map[string]int),
+		healthEjectionCapacityStreaks:  make(map[string]capacityStreak),
+		healthEjectionLastTripCapacity: make(map[string]bool),
+		disconnectedStableIDs:          make(map[string]disconnectedStableID),
+		faultKeyBySession:              make(map[string]string),
+		evictStrikes:                   make(map[string]int),
+		cacheAffinity:                  newCacheAffinityTracker(cacheAffinityTTL),
+		cacheAffinityBonusMs:           defaultCacheAffinityBonusMs,
+		logger:                         logger,
 	}
 }
 
@@ -1401,13 +1469,15 @@ func (r *Registry) CacheAffinityConfigSnapshot() CacheAffinityConfig {
 // RecordDispatchLoadFailure puts a provider-model pair on a routing cool-down
 // after the provider rejected a dispatch with a load failure. Returns true
 // when this call started a new cool-down (false when one was already live),
-// so callers can emit metrics without double-counting the retry storm.
+// so callers can emit metrics without double-counting the retry storm. Keyed
+// by the provider's stable fault key (faultKeyLocked) so the cool-down
+// survives a reconnect within its TTL.
 func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now()
-	// Opportunistic sweep: provider ids are per-session UUIDs, so dead entries
-	// never get re-keyed — bound the map by dropping expired ones when it grows.
+	// Opportunistic sweep: bound the map by dropping expired entries when it
+	// grows (churned identities are never re-keyed).
 	if len(r.dispatchLoadCooldowns) > 1024 {
 		for key, expiry := range r.dispatchLoadCooldowns {
 			if !now.Before(expiry) {
@@ -1415,7 +1485,7 @@ func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
 			}
 		}
 	}
-	key := providerID + ":" + modelID
+	key := r.faultKeyLocked(providerID) + ":" + modelID
 	_, active := r.dispatchLoadCooldowns[key]
 	active = active && now.Before(r.dispatchLoadCooldowns[key])
 	r.dispatchLoadCooldowns[key] = now.Add(dispatchLoadCooldownTTL)
@@ -1427,25 +1497,14 @@ func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
 func (r *Registry) ClearDispatchLoadCooldown(providerID, modelID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.dispatchLoadCooldowns, providerID+":"+modelID)
-}
-
-// clearDispatchLoadCooldownsLocked drops a provider's cool-downs on
-// (re-)registration — a fresh process has fresh memory. Caller holds r.mu.
-func (r *Registry) clearDispatchLoadCooldownsLocked(providerID string) {
-	prefix := providerID + ":"
-	for key := range r.dispatchLoadCooldowns {
-		if strings.HasPrefix(key, prefix) {
-			delete(r.dispatchLoadCooldowns, key)
-		}
-	}
+	delete(r.dispatchLoadCooldowns, r.faultKeyLocked(providerID)+":"+modelID)
 }
 
 // dispatchLoadCooldownActiveLocked reports whether routing should skip the pair.
 // READ-ONLY (no lazy delete) — some callers hold only r.mu.RLock. Caller holds
 // r.mu in either mode.
 func (r *Registry) dispatchLoadCooldownActiveLocked(providerID, modelID string, now time.Time) bool {
-	expiry, ok := r.dispatchLoadCooldowns[providerID+":"+modelID]
+	expiry, ok := r.dispatchLoadCooldowns[r.faultKeyLocked(providerID)+":"+modelID]
 	return ok && now.Before(expiry)
 }
 
@@ -2038,15 +2097,66 @@ func (r *Registry) providerServesCatalogModelLocked(p *Provider, model string) b
 	return false
 }
 
+// modelTrackedByCatalogLocked reports whether the catalog has an entry for the
+// model id at all (regardless of weight-hash agreement). A nil catalog tracks
+// nothing — filtering is disabled and modelAllowedByCatalogLocked admits
+// everything, so callers never reach the off-catalog distinction. Caller must
+// hold r.mu.
+func (r *Registry) modelTrackedByCatalogLocked(id string) bool {
+	if r.modelCatalog == nil {
+		return false
+	}
+	_, ok := r.modelCatalog[id]
+	return ok
+}
+
+// modelServableForOwnerLocked is the owner self-route admission for a single
+// advertised build: a model the catalog does NOT track is servable on the
+// owner's box (the off-catalog local-model case), but a model the catalog DOES
+// track must still pass the catalog gate — including the weight-hash tamper
+// tripwire. The owner exemption widens WHICH models are reachable, never the
+// integrity check on catalog builds. Caller must hold r.mu.
+func (r *Registry) modelServableForOwnerLocked(m protocol.ModelInfo) bool {
+	return r.modelAllowedByCatalogLocked(m) || !r.modelTrackedByCatalogLocked(m.ID)
+}
+
+// providerServesOwnedRoutableModelLocked is providerServesCatalogModelLocked's
+// owner self-route counterpart: true when the provider advertises the model
+// and that build is servable for its owner (catalog-allowed, or absent from
+// the catalog entirely). Caller must hold r.mu and p.mu.
+func (r *Registry) providerServesOwnedRoutableModelLocked(p *Provider, model string) bool {
+	for _, m := range p.Models {
+		if m.ID == model && r.modelServableForOwnerLocked(m) {
+			return true
+		}
+	}
+	return false
+}
+
 // providerServesVisionModelLocked reports whether the provider advertises the
 // model as a vision-capable (VLM) build — required to route image/video requests
-// so the media is actually perceived rather than silently dropped. Caller must
-// hold r.mu AND p.mu (mirrors providerServesCatalogModelLocked): p.Models is
-// guarded by p.mu and mutated by MergeProviderModels/UpdateModelWeightHashes.
-// Pre-0.6.0 providers never set IsVision, so they are correctly excluded.
-func (r *Registry) providerServesVisionModelLocked(p *Provider, model string) bool {
+// so the media is actually perceived rather than silently dropped. allowOffCatalog
+// is the owner self-route context (mirrors providerServesRoutableModelLocked's
+// allowDedicated): an owner's off-catalog local VLM passes the routable gate, so
+// the vision gate must accept the same advertisement or media requests would be
+// listed/accepted but never routable. It relaxes only catalog MEMBERSHIP — a
+// catalog-tracked build still has to pass the weight-hash gate, mirroring the
+// routable gate. Caller must hold r.mu AND p.mu (mirrors
+// providerServesCatalogModelLocked): p.Models is guarded by p.mu and mutated by
+// MergeProviderModels/UpdateModelWeightHashes. Pre-0.6.0 providers never set
+// IsVision, so they are correctly excluded.
+func (r *Registry) providerServesVisionModelLocked(p *Provider, model string, allowOffCatalog bool) bool {
 	for _, m := range p.Models {
-		if m.ID == model && m.IsVision && r.modelAllowedByCatalogLocked(m) {
+		if m.ID != model || !m.IsVision {
+			continue
+		}
+		if allowOffCatalog {
+			if r.modelServableForOwnerLocked(m) {
+				return true
+			}
+			continue
+		}
+		if r.modelAllowedByCatalogLocked(m) {
 			return true
 		}
 	}
@@ -2081,7 +2191,7 @@ func (r *Registry) HasVisionProviderForModel(model string, allowedSerials ...str
 		// whole eligibility read must happen under the provider lock.
 		p.mu.Lock()
 		eligible := p.Status != StatusOffline && p.Status != StatusUntrusted &&
-			r.providerServesVisionModelLocked(p, model)
+			r.providerServesVisionModelLocked(p, model, false)
 		p.mu.Unlock()
 		if eligible {
 			return true
@@ -2102,6 +2212,42 @@ func (r *Registry) catalogSizeGBLocked(model string) float64 {
 	return 0
 }
 
+// advertisedModelSizeGBLocked returns the provider-advertised on-disk weight
+// size for model in decimal GB (SizeBytes/1e9 — the same unpadded basis as the
+// catalog's SizeGB), or 0 when the provider does not advertise the model or
+// reports no size. Caller must hold p.mu.
+func advertisedModelSizeGBLocked(p *Provider, model string) float64 {
+	for _, m := range p.Models {
+		if m.ID == model && m.SizeBytes > 0 {
+			return float64(m.SizeBytes) / 1e9
+		}
+	}
+	return 0
+}
+
+// modelSizeGBForFitLocked returns the weight footprint (GB) the hardware-fit
+// and free-memory admission gates should use for a provider/model pair: the
+// catalog's authoritative SizeGB when present, else — for a model with NO
+// catalog entry (an owner's off-catalog local model, reachable only via
+// self-route) — the provider-advertised size. Without the fallback an
+// off-catalog model snapshots as size 0, disabling both gates, so routing
+// could pick a machine whose oversized local model can never load and turn a
+// deterministic model_too_large into a provider-side load failure. A nil
+// catalog (dev/test: filtering disabled) and a catalog entry the operator left
+// unsized both keep the gate disabled, as before. Caller holds r.mu and p.mu.
+func (r *Registry) modelSizeGBForFitLocked(p *Provider, model string) float64 {
+	if size := r.catalogSizeGBLocked(model); size > 0 {
+		return size
+	}
+	if r.modelCatalog == nil {
+		return 0
+	}
+	if _, ok := r.modelCatalog[model]; ok {
+		return 0
+	}
+	return advertisedModelSizeGBLocked(p, model)
+}
+
 // catalogMinRAMGbLocked returns the model's authoritative minimum-RAM
 // requirement (GB) from the catalog, or 0 when unknown. Caller must hold r.mu.
 func (r *Registry) catalogMinRAMGbLocked(model string) int {
@@ -2116,8 +2262,13 @@ func (r *Registry) trustMeetsMinimum(level TrustLevel) bool {
 	return trustRank(level) >= trustRank(r.MinTrustLevel)
 }
 
-// Queue returns the registry's request queue.
+// Queue returns the registry's request queue. Reads under r.mu so it
+// synchronizes with SetQueue (tests swap the queue while heartbeat/drain
+// goroutines are live); internal paths that already hold r.mu read r.queue
+// directly.
 func (r *Registry) Queue() *RequestQueue {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.queue
 }
 
@@ -2347,6 +2498,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		Reputation:              NewReputation(),
 		pendingReqs:             make(map[string]*PendingRequest),
 		challengeSettled:        make(chan struct{}, 1),
+		registry:                r,
 	}
 
 	// Connection-scope the challenge-settled signal (DAR-326 FIX 4c): the channel is
@@ -2360,9 +2512,11 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	for _, m := range models {
 		r.modelProviderInc(m.ID)
 	}
-	// A (re-)registration means a fresh provider process: any dispatch-time
-	// load-failure cool-downs belonged to the previous process's memory state.
-	r.clearDispatchLoadCooldownsLocked(id)
+	// Fault-tracking state (breakers, cooldowns) is deliberately NOT cleared
+	// here: it is keyed by stable identity and re-attaches when attestation
+	// binds this session id (SetAttestationResult → bindStableFaultKey). The
+	// old register-time clear was the reconnect exploit — a churning zombie
+	// wiped its record every session.
 	r.mu.Unlock()
 
 	// Open a session row for this connection (async; durable uptime history).
@@ -2777,11 +2931,12 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 // Called after heartbeat processing and queue drain to catch demand that
 // can't be satisfied by warm providers alone.
 func (r *Registry) TriggerModelSwaps() {
-	if r.queue == nil {
+	queue := r.Queue()
+	if queue == nil {
 		return
 	}
 
-	queuedModels := r.queue.QueuedModels()
+	queuedModels := queue.QueuedModels()
 	if len(queuedModels) == 0 {
 		return
 	}
@@ -3137,10 +3292,11 @@ func (r *Registry) BackoffPendingModelLoadForMemory(providerID, modelID string) 
 // rejected immediately rather than waiting for the 120s queue timeout.
 // Called after a load_model failure to give consumers a fast error.
 func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
-	if r.queue == nil {
+	queue := r.Queue()
+	if queue == nil {
 		return
 	}
-	if r.queue.QueueSize(modelID) == 0 {
+	if queue.QueueSize(modelID) == 0 {
 		return
 	}
 
@@ -3165,12 +3321,15 @@ func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
 	// should fail fast like any public request. Compute eligibility here —
 	// OUTSIDE the queue lock — since OwnedProviderSummary takes the registry lock.
 	preferOwnerEligible := make(map[string]bool)
-	for _, owner := range r.queue.PreferWaiterOwners(modelID) {
-		_, servesModel := r.OwnedProviderSummary(owner, modelID)
+	for _, owner := range queue.PreferWaiterOwners(modelID) {
+		// Base-shape question (like the QuickCapacityCheck above): does the
+		// owner have ANY box serving this model — no per-request trait/vision
+		// constraint at this granularity.
+		_, servesModel := r.OwnedProviderSummary(owner, modelID, RequestTraits{}, false)
 		preferOwnerEligible[owner] = servesModel > 0
 	}
 
-	failed := r.queue.FailQueuedRequestsForModel(modelID, preferOwnerEligible)
+	failed := queue.FailQueuedRequestsForModel(modelID, preferOwnerEligible)
 	if failed > 0 {
 		r.logger.Warn("rejected queued requests for unservable model",
 			"model_id", modelID,
@@ -3245,26 +3404,44 @@ func (r *Registry) Disconnect(id string) {
 				delete(r.pendingModelLoadStarted, key)
 			}
 		}
-		// Drop per-provider node-health breaker state. The id is a per-session
-		// UUID that will never recur, so its health ring, open expiry, and trip
-		// count must not linger after disconnect.
-		delete(r.providerOutcomes, id)
-		delete(r.providerBreakerOpenUntil, id)
-		delete(r.providerBreakerTrips, id)
-		// NOTE: the STABLE-IDENTITY health-ejection maps (healthEjectionWindows/
-		// Until/Trips, health_ejection.go) are intentionally NOT cleared here — they
-		// are keyed by serial/SE-key/account, not this session UUID, and MUST survive
-		// reconnect churn so a zombie that fails ~every request while disconnecting
-		// constantly still accumulates to the ejection threshold.
 		p.mu.Lock()
+		// FAULT STATE IS NOT CLEARED ON DISCONNECT. Every fault-tracking map
+		// (node-health breaker, inference-error cooldowns, dispatch-load
+		// cooldowns, health ejection) keys by the STABLE identity when one is
+		// bound, so it must survive reconnect churn — wiping it here was the
+		// zombie exploit. Only when the provider never had a stable identity
+		// (sid == "": its fault key WAS this session id, which never recurs)
+		// is the session-keyed residue dropped for hygiene.
+		//
 		// Cache the stable identity (keyed by this session id) before the pending
-		// flush below: GetProviderStableIdentity falls back to it so the 502 "provider
-		// disconnected" faults — the dominant reconnecting-zombie signal — are recorded
-		// against the stable-identity breaker even though the provider is already gone
-		// from r.providers.
+		// flush below: GetProviderStableIdentity and faultKeyLocked fall back to it
+		// so the 502 "provider disconnected" faults — the dominant reconnecting-
+		// zombie signal — are still recorded against the stable-identity state even
+		// though the provider is already gone from r.providers.
 		if sid := stableProviderIdentityLocked(p); sid != "" {
 			r.rememberDisconnectedStableIDLocked(id, sid)
+		} else {
+			delete(r.providerOutcomes, id)
+			delete(r.providerBreakerOpenUntil, id)
+			delete(r.providerBreakerTrips, id)
+			for key := range r.inferenceErrorStrikes {
+				if key.ProviderID == id {
+					delete(r.inferenceErrorStrikes, key)
+				}
+			}
+			for key := range r.inferenceErrorCooldowns {
+				if key.ProviderID == id {
+					delete(r.inferenceErrorCooldowns, key)
+				}
+			}
+			prefix := id + ":"
+			for key := range r.dispatchLoadCooldowns {
+				if strings.HasPrefix(key, prefix) {
+					delete(r.dispatchLoadCooldowns, key)
+				}
+			}
 		}
+		delete(r.faultKeyBySession, id)
 		if p.Status != StatusUntrusted {
 			r.onlineCount.Add(-1)
 			for _, m := range p.Models {
@@ -3770,6 +3947,98 @@ func (r *Registry) ListModels() []AggregateModel {
 		models = append(models, am)
 	}
 
+	return models
+}
+
+// OwnedModels returns deduplicated live models advertised by providers owned by
+// accountID. Unlike ListModels, it intentionally does not apply the public
+// catalog filter; self-route keys may target off-catalog local models.
+func (r *Registry) OwnedModels(accountID string) []AggregateModel {
+	if accountID == "" {
+		return nil
+	}
+	now := time.Now()
+	agg := make(map[string]*AggregateModel)
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		p.mu.Lock()
+		eligible := p.AccountID == accountID &&
+			p.Status != StatusOffline &&
+			p.Status != StatusUntrusted &&
+			p.RuntimeVerified &&
+			r.providerSupportsPrivateTextLocked(p) &&
+			!p.LastChallengeVerified.IsZero() &&
+			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
+		if !eligible {
+			p.mu.Unlock()
+			continue
+		}
+		trust := p.TrustLevel
+		attested := p.Attested
+		attestResult := p.AttestationResult
+		models := make([]protocol.ModelInfo, len(p.Models))
+		copy(models, p.Models)
+		p.mu.Unlock()
+
+		for _, m := range models {
+			if m.ID == "" {
+				continue
+			}
+			// List/route agreement: only builds the routing path would admit for
+			// this owner appear in the list — an off-catalog local model, or a
+			// catalog build passing the weight-hash gate. A stale-hash catalog
+			// build must not be advertised here only to fail every dispatch.
+			if !r.modelServableForOwnerLocked(m) {
+				continue
+			}
+			// Same principle for the template-render gate: an explicit
+			// template_render_ok=false fences EVERY request shape at dispatch
+			// (see providerTemplateRenderBrokenLocked / the trait gate), so a
+			// render-broken build must not be listed either. nil (pre-0.6.5, no
+			// opinion) stays listed, matching dispatch.
+			if m.TemplateRenderOK != nil && !*m.TemplateRenderOK {
+				continue
+			}
+			a, ok := agg[m.ID]
+			if !ok {
+				a = &AggregateModel{
+					ID:         m.ID,
+					TrustLevel: TrustNone,
+				}
+				agg[m.ID] = a
+			}
+			// Metadata backfill rather than first-writer-wins: two owned boxes
+			// can advertise the same id with one omitting metadata, and map
+			// iteration order must not decide which copy the owner sees.
+			if a.ModelType == "" {
+				a.ModelType = m.ModelType
+			}
+			if a.Quantization == "" {
+				a.Quantization = m.Quantization
+			}
+			a.Providers++
+			if trustRank(trust) > trustRank(a.TrustLevel) {
+				a.TrustLevel = trust
+			}
+			if attested && attestResult != nil {
+				a.AttestedProviders++
+				if a.Attestation == nil {
+					a.Attestation = &AttestationSummary{}
+				}
+				a.Attestation.SecureEnclave = a.Attestation.SecureEnclave || attestResult.SecureEnclaveAvailable
+				a.Attestation.SIPEnabled = a.Attestation.SIPEnabled || attestResult.SIPEnabled
+				a.Attestation.SecureBoot = a.Attestation.SecureBoot || attestResult.SecureBootEnabled
+			}
+		}
+	}
+
+	models := make([]AggregateModel, 0, len(agg))
+	for _, a := range agg {
+		models = append(models, *a)
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models
 }
 
@@ -4310,16 +4579,17 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 	}
 
 	// Phase 3: read queue sizes (separate lock, safe to call after releasing r.mu).
+	queue := r.Queue()
 	queueLimit := 0
-	if r.queue != nil {
-		queueLimit = r.queue.MaxSize()
+	if queue != nil {
+		queueLimit = queue.MaxSize()
 	}
 
 	result := make([]ModelCapacity, 0, len(agg))
 	for model, a := range agg {
 		queued := 0
-		if r.queue != nil {
-			queued = r.queue.QueueSize(model)
+		if queue != nil {
+			queued = queue.QueueSize(model)
 		}
 		ready := a.routable > 0
 		canAccept := ready && (queued < queueLimit || a.anyImmediateSlot)

@@ -28,12 +28,11 @@ func TestGenerateCombinedProfile(t *testing.T) {
 
 	profile := generateCombinedProfile(serial, baseURL)
 
-	// Must contain all 4 domain-specific URLs with the correct base
+	// Must contain all 3 domain-specific URLs with the correct base
 	expectedURLs := []string{
 		"https://api.darkbloom.dev/scep",
 		"https://api.darkbloom.dev/mdm/checkin",
 		"https://api.darkbloom.dev/mdm/connect",
-		"https://api.darkbloom.dev/acme/eigeninference-acme/directory",
 	}
 	for _, url := range expectedURLs {
 		if !strings.Contains(profile, url) {
@@ -46,10 +45,7 @@ func TestGenerateCombinedProfile(t *testing.T) {
 		t.Error("profile still contains old hardcoded domain")
 	}
 
-	// Must contain serial number in payload identifiers
-	if !strings.Contains(profile, "io.darkbloom.enroll.acme."+serial) {
-		t.Error("profile missing ACME payload identifier with serial")
-	}
+	// Must contain serial number in the profile identifier
 	if !strings.Contains(profile, "io.darkbloom.enroll."+serial) {
 		t.Error("profile missing profile identifier with serial")
 	}
@@ -64,21 +60,27 @@ func TestGenerateCombinedProfile(t *testing.T) {
 		t.Error("profile is not valid XML plist")
 	}
 
-	// Must contain all three payload types
+	// Must contain both payload types
 	for _, payloadType := range []string{
 		"com.apple.security.scep",
 		"com.apple.mdm",
-		"com.apple.security.acme",
 	} {
 		if !strings.Contains(profile, payloadType) {
 			t.Errorf("profile missing payload type: %s", payloadType)
 		}
 	}
 
+	// The dormant ACME device-attest-01 payload was removed — it must be gone
+	// so re-enrolls drop it (profile identity is unchanged, install replaces).
+	for _, gone := range []string{"com.apple.security.acme", "/acme/", "io.darkbloom.enroll.acme."} {
+		if strings.Contains(profile, gone) {
+			t.Errorf("profile still contains removed ACME artifact: %s", gone)
+		}
+	}
+
 	// Display strings are rebranded to Darkbloom. The capitalized "EigenInference"
 	// must be gone from all visible fields (PayloadOrganization, SCEP subject,
-	// display names). The lowercase "eigeninference-acme" provisioner path stays
-	// (functional step-ca identifier) and is asserted separately above.
+	// display names).
 	if strings.Contains(profile, "EigenInference") {
 		t.Error("profile still contains capitalized 'EigenInference' display string")
 	}
@@ -109,9 +111,6 @@ func TestGenerateCombinedProfileDifferentDomains(t *testing.T) {
 			}
 			if !strings.Contains(profile, tt.baseURL+"/mdm/connect") {
 				t.Errorf("expected ServerURL with base %s", tt.baseURL)
-			}
-			if !strings.Contains(profile, tt.baseURL+"/acme/eigeninference-acme/directory") {
-				t.Errorf("expected ACME DirectoryURL with base %s", tt.baseURL)
 			}
 		})
 	}
@@ -242,7 +241,6 @@ func TestHandleEnrollSigned(t *testing.T) {
 	for _, want := range []string{
 		"com.apple.security.scep",
 		"com.apple.mdm",
-		"com.apple.security.acme",
 		"https://api.darkbloom.dev/scep",
 		"io.darkbloom.enroll.ABCD1234EFGH",
 	} {
@@ -279,7 +277,7 @@ func TestHandleEnrollUnsignedFallback(t *testing.T) {
 
 // TestHandleEnrollPinsCanonicalBaseURL is a regression for the P1 finding: when a
 // canonical base URL is configured, a spoofed Host header must NOT end up in the
-// (signed) profile's SCEP/MDM/ACME URLs — otherwise an attacker could obtain a
+// (signed) profile's SCEP/MDM URLs — otherwise an attacker could obtain a
 // Darkbloom-signed profile pointing enrollment at their own host.
 func TestHandleEnrollPinsCanonicalBaseURL(t *testing.T) {
 	srv := enrollTestServer(t)

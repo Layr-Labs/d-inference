@@ -2119,6 +2119,13 @@ func (s *MemoryStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
 	if _, exists := s.stripeWithdrawalsByID[w.ID]; exists {
 		return fmt.Errorf("stripe withdrawal %q already exists", w.ID)
 	}
+	s.createStripeWithdrawalLocked(w)
+	return nil
+}
+
+// createStripeWithdrawalLocked inserts the row and its secondary indexes.
+// Caller must hold s.mu and must have validated w.
+func (s *MemoryStore) createStripeWithdrawalLocked(w *StripeWithdrawal) {
 	cp := *w
 	if cp.CreatedAt.IsZero() {
 		cp.CreatedAt = time.Now()
@@ -2134,6 +2141,40 @@ func (s *MemoryStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
 		s.stripeWithdrawalsByPayoutID[cp.PayoutID] = cp.ID
 	}
 	s.stripeWithdrawalsByAccount[cp.AccountID] = append(s.stripeWithdrawalsByAccount[cp.AccountID], cp.ID)
+}
+
+// CreateStripeWithdrawalWithDebit atomically debits both balance columns and
+// inserts the withdrawal row under one lock — either both happen or neither.
+func (s *MemoryStore) CreateStripeWithdrawalWithDebit(w *StripeWithdrawal, entryType LedgerEntryType, reference string) error {
+	if w == nil || w.ID == "" {
+		return errors.New("stripe withdrawal id is required")
+	}
+	amount := w.AmountMicroUSD
+	if amount <= 0 {
+		return errors.New("stripe withdrawal amount must be positive")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.stripeWithdrawalsByID[w.ID]; exists {
+		return fmt.Errorf("stripe withdrawal %q already exists", w.ID)
+	}
+	if s.withdrawable[w.AccountID] < amount || s.balances[w.AccountID] < amount {
+		return fmt.Errorf("insufficient withdrawable balance: have %d, need %d micro-USD: %w",
+			s.withdrawable[w.AccountID], amount, ErrInsufficientBalance)
+	}
+	s.balances[w.AccountID] -= amount
+	s.withdrawable[w.AccountID] -= amount
+	s.ledgerSeq++
+	s.ledgerEntries = append(s.ledgerEntries, LedgerEntry{
+		ID:             s.ledgerSeq,
+		AccountID:      w.AccountID,
+		Type:           entryType,
+		AmountMicroUSD: -amount,
+		BalanceAfter:   s.balances[w.AccountID],
+		Reference:      reference,
+		CreatedAt:      time.Now(),
+	})
+	s.createStripeWithdrawalLocked(w)
 	return nil
 }
 
@@ -2227,8 +2268,12 @@ func (s *MemoryStore) ListStripeWithdrawals(accountID string, limit int) ([]Stri
 }
 
 // ListStripeWithdrawalsByStatus returns up to limit withdrawals in the given
-// status created before olderThan, oldest first.
+// status created before olderThan, oldest first. Limits <= 0 or above the cap
+// are clamped to MaxStripeWithdrawalsByStatusLimit.
 func (s *MemoryStore) ListStripeWithdrawalsByStatus(status string, olderThan time.Time, limit int) ([]StripeWithdrawal, error) {
+	if limit <= 0 || limit > MaxStripeWithdrawalsByStatusLimit {
+		limit = MaxStripeWithdrawalsByStatusLimit
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := []StripeWithdrawal{}
@@ -2238,7 +2283,7 @@ func (s *MemoryStore) ListStripeWithdrawalsByStatus(status string, olderThan tim
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
-	if limit > 0 && len(out) > limit {
+	if len(out) > limit {
 		out = out[:limit]
 	}
 	return out, nil

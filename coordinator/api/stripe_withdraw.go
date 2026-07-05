@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -180,23 +181,6 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 	withdrawalID := uuid.New().String()
 	debitRef := "stripe_withdraw:" + withdrawalID
 
-	// DebitWithdrawable atomically checks and subtracts from both
-	// balance_micro_usd and withdrawable_micro_usd. This prevents the
-	// inflation bug where Debit eats non-withdrawable credits and a
-	// subsequent refund via CreditWithdrawable restores the amount as
-	// withdrawable earnings.
-	//
-	// Known narrow window: a process crash between this debit and the row
-	// insert below leaves a debited balance with no withdrawal row (and no
-	// Stripe movement). The debit's ledger entry (type stripe_payout, ref
-	// stripe_withdraw:<uuid>) with no matching stripe_withdrawals row is the
-	// audit signature. Closing it needs a store-level debit+insert
-	// transaction — tracked as a follow-up.
-	if err := s.store.DebitWithdrawable(user.AccountID, grossMicroUSD, store.LedgerStripePayout, debitRef); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("insufficient_withdrawable", err.Error()))
-		return
-	}
-
 	wd := &store.StripeWithdrawal{
 		ID:              withdrawalID,
 		AccountID:       user.AccountID,
@@ -207,14 +191,20 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		Method:          method,
 		Status:          "pending",
 	}
-	if err := s.billing.Store().CreateStripeWithdrawal(wd); err != nil {
-		// No Stripe calls yet — refund and bail.
-		msg := "failed to record withdrawal — refunded to your balance"
-		if !s.creditRefundOnceWithRetry(user.AccountID, grossMicroUSD, debitRef, withdrawalID) {
-			msg = "failed to record withdrawal — the refund to your balance is still pending; contact support if it doesn't appear shortly"
+	// One store transaction debits both balance columns (preventing the
+	// inflation bug where a plain Debit eats non-withdrawable credits and a
+	// refund restores them as withdrawable) AND inserts the withdrawal row —
+	// either both happen or neither. A crash here can no longer leave a
+	// debited balance with no withdrawal row.
+	if err := s.billing.Store().CreateStripeWithdrawalWithDebit(wd, store.LedgerStripePayout, debitRef); err != nil {
+		if errors.Is(err, store.ErrInsufficientBalance) {
+			writeJSON(w, http.StatusBadRequest, errorResponse("insufficient_withdrawable",
+				"insufficient withdrawable balance — only earned funds can be withdrawn"))
+			return
 		}
-		s.logger.Error("stripe payout: persist withdrawal failed", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", msg))
+		s.logger.Error("stripe payout: debit+persist withdrawal failed", "error", err, "withdrawal_id", withdrawalID)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error",
+			"could not start the withdrawal — nothing was debited; try again shortly"))
 		return
 	}
 
@@ -401,6 +391,11 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 // creditRefundOnceWithRetry credits a reference-idempotent refund, riding out
 // transient store blips with short retries (safe: duplicates are deduped on
 // the ledger reference). Returns whether the credit is durably applied.
+//
+// The retries deliberately ignore the request context and run to completion:
+// they only execute AFTER money has moved (or a debit landed), and a client
+// disconnect must not abandon the user's refund. Worst case is bounded at
+// 600ms of backoff (3 attempts × 0/200/400ms).
 func (s *Server) creditRefundOnceWithRetry(accountID string, amountMicroUSD int64, ref, withdrawalID string) bool {
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -421,7 +416,10 @@ func (s *Server) creditRefundOnceWithRetry(accountID string, amountMicroUSD int6
 // persistWithdrawalUpdate retries a withdrawal-row update with short backoff.
 // Used after money has moved (transfer/payout created): losing the update
 // strands the row in a state the webhook matcher and sweep reconciler don't
-// look at, so it's worth riding out a transient store blip in-request.
+// look at, so it's worth riding out a transient store blip in-request. Like
+// creditRefundOnceWithRetry, it deliberately ignores request-context
+// cancellation (bounded at 600ms total backoff) — abandoning the persist on
+// client disconnect is exactly how rows get orphaned.
 func (s *Server) persistWithdrawalUpdate(wd *store.StripeWithdrawal, stage string) error {
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {

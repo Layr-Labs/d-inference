@@ -290,6 +290,14 @@ type BillingStore interface {
 	// responsible for debiting the ledger atomically before calling this.
 	CreateStripeWithdrawal(withdrawal *StripeWithdrawal) error
 
+	// CreateStripeWithdrawalWithDebit atomically debits both the balance and
+	// withdrawable columns (recording a ledger entry with the given type and
+	// reference) AND inserts the withdrawal row in a single transaction —
+	// either both happen or neither, closing the crash window between a
+	// ledger debit and its withdrawal row. Returns ErrInsufficientBalance
+	// (checkable with errors.Is) when the account can't cover the debit.
+	CreateStripeWithdrawalWithDebit(withdrawal *StripeWithdrawal, entryType LedgerEntryType, reference string) error
+
 	// GetStripeWithdrawal returns a withdrawal by its internal UUID.
 	GetStripeWithdrawal(id string) (*StripeWithdrawal, error)
 
@@ -310,7 +318,9 @@ type BillingStore interface {
 
 	// ListStripeWithdrawalsByStatus returns up to limit withdrawals in the
 	// given status created before olderThan, oldest first. Used by the payout
-	// reconciler to find withdrawals stuck in "transferred".
+	// reconciler to find withdrawals stuck in "transferred". A limit <= 0 (or
+	// above MaxStripeWithdrawalsByStatusLimit) is capped at
+	// MaxStripeWithdrawalsByStatusLimit — the result set is never unbounded.
 	ListStripeWithdrawalsByStatus(status string, olderThan time.Time, limit int) ([]StripeWithdrawal, error)
 
 	// ListStripeWithdrawalsForStripeAccount returns withdrawals destined for

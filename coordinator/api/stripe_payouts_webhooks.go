@@ -11,6 +11,12 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
+// stripeRecipientTransferDelay is how long a platform transfer takes to
+// become available in a recipient-agreement connected account's balance
+// (documented Stripe behavior: +24h). The sweep matcher uses it as the
+// settlement-safe cutoff when attributing automatic payouts to rows.
+const stripeRecipientTransferDelay = 24 * time.Hour
+
 // handleStripeConnectWebhook handles POST /v1/billing/stripe/connect/webhook.
 // Drives the local withdrawal state machine for Connect events. This is a
 // separate endpoint from the Checkout webhook because Stripe lets you
@@ -105,6 +111,10 @@ func (s *Server) handleAccountUpdated(event *billing.WebhookEvent) {
 // delivers. Ledger principal refunds only happen on transfer.reversed, where
 // the money actually returns to the platform.
 //
+// A failure can arrive after payout.paid (banks bounce payouts days later);
+// in that case the row is reopened to "transferred" so the retrying sweep
+// stays observable — see the inline comment on the failure branch.
+//
 // Returns a non-nil error only for transient store failures, so the webhook
 // responds non-2xx and Stripe redelivers.
 func (s *Server) handlePayoutTerminal(event *billing.WebhookEvent, connectedAcct string, success bool) error {
@@ -131,14 +141,11 @@ func (s *Server) handlePayoutTerminal(event *billing.WebhookEvent, connectedAcct
 		return s.reconcileUnmatchedPayout(pe, success)
 	}
 
-	// "paid" is terminal: nothing after this changes the ledger. This also
-	// guards redelivered/out-of-order payout.failed events arriving after the
-	// row was completed (by this payout's own paid event or by a sweep).
-	if wd.Status == "paid" {
-		return nil
-	}
-
 	if success {
+		// Idempotent redelivery of payout.paid on a completed row.
+		if wd.Status == "paid" {
+			return nil
+		}
 		wd.Status = "paid"
 		if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
 			s.logger.Error("stripe connect webhook: mark paid failed", "error", err)
@@ -149,7 +156,25 @@ func (s *Server) handlePayoutTerminal(event *billing.WebhookEvent, connectedAcct
 
 	// Matched payout failed. Funds are back in the connected account balance;
 	// the daily sweep will retry via the standard rail.
+	//
+	// This applies to "paid" rows too: Stripe documents payout.failed arriving
+	// AFTER payout.paid for the same payout when the bank later bounces it.
+	// Because this row was looked up BY the event's payout ID, the failure is
+	// provably about the row's own in-flight payout — not a stale one — so we
+	// reopen the row for the sweep to retry. Stale failures from an older
+	// payout can never reach this path: processing a failure detaches the
+	// payout ID from the row (below), so a redelivered or out-of-order event
+	// for that payout misses the lookup and falls into
+	// reconcileUnmatchedPayout, which ignores non-automatic payouts.
 	if wd.Refunded {
+		if wd.Status == "paid" {
+			// Refunded AND paid — the ledger was already made whole under
+			// the old semantics while the bank payout completed. Ambiguous
+			// clawback state; never touch it automatically.
+			s.logger.Error("stripe connect webhook: payout failed on a paid+refunded withdrawal — manual review required",
+				"withdrawal_id", wd.ID, "payout_id", pe.ID)
+			return nil
+		}
 		// Legacy row already refunded under the old semantics — leave it
 		// terminal so we never double-account.
 		if wd.Status != "failed" {
@@ -207,13 +232,15 @@ func (s *Server) handlePayoutTerminal(event *billing.WebhookEvent, connectedAcct
 // We deliberately do NOT match on amount: a sweep payout is denominated in
 // the connected account's settlement currency (EUR, AUD, …) after Stripe's
 // FX conversion, so it is not comparable to our USD row amounts. A sweep
-// covers the balance available at its creation time, so on payout.paid we
-// mark every eligible "transferred" row created before the payout as "paid".
-// Rows whose transfer hadn't settled by then (e.g. the +24h availability
-// delay on recipient accounts) may be marked a sweep early — a cosmetic
-// status-display tradeoff, not a money movement: the ledger was already
-// debited and the funds are en route either way. Genuinely stuck rows are
-// caught by the 48h reconciler alert.
+// covers the balance AVAILABLE at its creation time, so on payout.paid we
+// mark every "transferred" row whose funds had become available by then as
+// "paid". Transfers to recipient-agreement accounts take +24h to become
+// available, so rows younger than that cannot be in this sweep — claiming
+// them early would hide a row from the 48h stuck detector if the NEXT sweep
+// then failed. Full-agreement transfers are available immediately, and their
+// rows must be claimed by the same-day sweep (a later sweep may never come
+// if the balance is empty). The availability delay is derived from the
+// account's service agreement.
 func (s *Server) reconcileUnmatchedPayout(pe *billing.PayoutEvent, success bool) error {
 	if pe.ConnectedAcct == "" {
 		s.logger.Debug("stripe connect webhook: unknown payout without account", "payout_id", pe.ID)
@@ -245,7 +272,29 @@ func (s *Server) reconcileUnmatchedPayout(pe *billing.PayoutEvent, success bool)
 		return nil
 	}
 
-	payoutCreated := time.Unix(pe.Created, 0)
+	// Settlement-safe cutoff: recipient-agreement transfers become available
+	// +24h after creation, so this sweep cannot contain them until then.
+	availabilityDelay := time.Duration(0)
+	acct, aerr := s.billing.StripeConnect().GetAccount(pe.ConnectedAcct)
+	if aerr != nil {
+		if billing.IsAccountGoneErr(aerr) {
+			// Account deleted after the sweep fired — nothing left to claim
+			// safely; the 48h reconciler surfaces any stragglers.
+			s.logger.Warn("stripe connect webhook: sweep reconcile skipped — account gone",
+				"stripe_account_id", pe.ConnectedAcct, "payout_id", pe.ID)
+			return nil
+		}
+		// Transient — redeliver rather than guess the wrong cutoff in
+		// either direction.
+		s.logger.Error("stripe connect webhook: sweep reconcile account fetch failed",
+			"error", aerr, "stripe_account_id", pe.ConnectedAcct)
+		return aerr
+	}
+	if billing.NormalizeServiceAgreement(acct.ServiceAgreement) == billing.ServiceAgreementRecipient {
+		availabilityDelay = stripeRecipientTransferDelay
+	}
+
+	settledBefore := time.Unix(pe.Created, 0).Add(-availabilityDelay)
 	marked := 0
 	var firstErr error
 	for i := range rows {
@@ -253,8 +302,8 @@ func (s *Server) reconcileUnmatchedPayout(pe *billing.PayoutEvent, success bool)
 		if wd.PayoutID != "" {
 			continue // in-flight instant payout — its own webhook drives it
 		}
-		if pe.Created > 0 && wd.CreatedAt.After(payoutCreated) {
-			continue // transferred after this sweep was cut — next sweep covers it
+		if pe.Created > 0 && wd.CreatedAt.After(settledBefore) {
+			continue // funds not yet available when this sweep was cut — the next sweep covers it
 		}
 		wd.Status = "paid"
 		if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
@@ -279,6 +328,10 @@ func (s *Server) reconcileUnmatchedPayout(pe *billing.PayoutEvent, success bool)
 // handleTransferFailed handles the rare case where Stripe rolls back a transfer
 // after we've considered it successful. This is the only event that re-credits
 // the ledger principal: the money is actually back at the platform.
+//
+// Only FULL reversals (reversed=true, i.e. amount_reversed == amount) refund
+// automatically and terminalize the row; partial reversals are ops-initiated
+// and alert for manual review instead (see the inline comment).
 //
 // The refund is split into two reference-idempotent credits — principal-net
 // (gross − fee) and the fee — so it composes with the instant-fee refund
@@ -313,6 +366,23 @@ func (s *Server) handleTransferFailed(event *billing.WebhookEvent) error {
 			wd.Status = "failed"
 			_ = s.billing.Store().UpdateStripeWithdrawal(wd)
 		}
+		return nil
+	}
+	if !te.Reversed {
+		// PARTIAL reversal: Stripe only sets reversed=true once
+		// amount_reversed == amount. Our code never creates reversals, so a
+		// partial one is always a deliberate ops action in the dashboard —
+		// often precisely because the ledger was already adjusted by hand
+		// (e.g. clawing back a historical double-refund). Auto-crediting the
+		// full net here would over-pay, and auto-crediting the partial
+		// amount can double-pay against the manual adjustment the reversal
+		// is compensating for. No automatic ledger movement: surface for
+		// the human who initiated it. The row stays non-terminal so the
+		// sweep/reconciler keep watching the remaining funds.
+		s.logger.Error("stripe connect webhook: PARTIAL transfer reversal — no automatic refund, manual ledger review required",
+			"withdrawal_id", wd.ID, "transfer_id", te.ID,
+			"amount_cents", te.AmountCents, "amount_reversed_cents", te.AmountReversedCents,
+			"stripe_account_id", wd.StripeAccountID)
 		return nil
 	}
 	netMicroUSD := wd.AmountMicroUSD - wd.FeeMicroUSD

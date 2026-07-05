@@ -3345,6 +3345,80 @@ func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
 	return nil
 }
 
+// CreateStripeWithdrawalWithDebit atomically debits both balance columns
+// (recording the ledger entry) and inserts the withdrawal row in a single
+// transaction — a crash can no longer leave a debited balance with no
+// withdrawal row. Returns ErrInsufficientBalance when the guarded debit
+// matches no row.
+func (s *PostgresStore) CreateStripeWithdrawalWithDebit(w *StripeWithdrawal, entryType LedgerEntryType, reference string) error {
+	if w == nil || w.ID == "" {
+		return errors.New("stripe withdrawal id is required")
+	}
+	if w.AmountMicroUSD <= 0 {
+		return errors.New("stripe withdrawal amount must be positive")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	now := time.Now()
+	if w.CreatedAt.IsZero() {
+		w.CreatedAt = now
+	}
+	if w.UpdatedAt.IsZero() {
+		w.UpdatedAt = w.CreatedAt
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Same guarded dual-column debit as DebitWithdrawable: both the total
+	// and withdrawable balances must cover the amount.
+	var balanceAfter int64
+	err = tx.QueryRow(ctx,
+		`UPDATE balances
+		 SET balance_micro_usd = balance_micro_usd - $2,
+		     withdrawable_micro_usd = withdrawable_micro_usd - $2,
+		     updated_at = NOW()
+		 WHERE account_id = $1
+		   AND balance_micro_usd >= $2
+		   AND withdrawable_micro_usd >= $2
+		 RETURNING balance_micro_usd`,
+		w.AccountID, w.AmountMicroUSD,
+	).Scan(&balanceAfter)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("store: insufficient withdrawable balance: %w", ErrInsufficientBalance)
+		}
+		return fmt.Errorf("store: withdrawal debit: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		w.AccountID, string(entryType), -w.AmountMicroUSD, balanceAfter, reference,
+	); err != nil {
+		return fmt.Errorf("store: insert ledger entry: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO stripe_withdrawals
+		 (id, account_id, stripe_account_id, transfer_id, payout_id,
+		  amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
+		  failure_reason, refunded, fee_refunded, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		w.ID, w.AccountID, w.StripeAccountID, w.TransferID, w.PayoutID,
+		w.AmountMicroUSD, w.FeeMicroUSD, w.NetMicroUSD, w.Method, w.Status,
+		w.FailureReason, w.Refunded, w.FeeRefunded, w.CreatedAt, w.UpdatedAt,
+	); err != nil {
+		return fmt.Errorf("store: create stripe withdrawal: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
 const stripeWithdrawalSelectColumns = `id, account_id, stripe_account_id, transfer_id, payout_id,
 	amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
 	failure_reason, refunded, fee_refunded, created_at, updated_at`
@@ -3455,18 +3529,18 @@ func (s *PostgresStore) ListStripeWithdrawals(accountID string, limit int) ([]St
 }
 
 // ListStripeWithdrawalsByStatus returns up to limit withdrawals in the given
-// status created before olderThan, oldest first.
+// status created before olderThan, oldest first. Limits <= 0 or above the cap
+// are clamped to MaxStripeWithdrawalsByStatusLimit — never unbounded.
 func (s *PostgresStore) ListStripeWithdrawalsByStatus(status string, olderThan time.Time, limit int) ([]StripeWithdrawal, error) {
+	if limit <= 0 || limit > MaxStripeWithdrawalsByStatusLimit {
+		limit = MaxStripeWithdrawalsByStatusLimit
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	q := `SELECT ` + stripeWithdrawalSelectColumns + ` FROM stripe_withdrawals
-		 WHERE status = $1 AND created_at < $2 ORDER BY created_at ASC`
-	args := []any{status, olderThan}
-	if limit > 0 {
-		q += ` LIMIT $3`
-		args = append(args, limit)
-	}
+		 WHERE status = $1 AND created_at < $2 ORDER BY created_at ASC LIMIT $3`
+	args := []any{status, olderThan, limit}
 	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list stripe withdrawals by status: %w", err)

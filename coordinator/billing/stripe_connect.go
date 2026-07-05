@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -108,6 +109,24 @@ func (c *StripeConnect) PlatformCountry() string { return c.platformCountry }
 
 // stripeAPIBase is overridden by tests to point at httptest.NewServer().
 var stripeAPIBase = "https://api.stripe.com"
+
+// stripeAccountIDRe validates connected-account IDs before they are
+// interpolated into Stripe API paths or the Stripe-Account header. The IDs we
+// use always originate from Stripe responses we stored ourselves, but
+// validating at the client boundary makes path/header injection structurally
+// impossible if a corrupted or attacker-influenced value ever reaches here
+// (threat-model review advisory).
+var stripeAccountIDRe = regexp.MustCompile(`^acct_[A-Za-z0-9_-]{1,128}$`)
+
+// validAccountID returns an error unless id looks like a Stripe connected
+// account ID (acct_…). Mock-mode code paths return before this check so the
+// synthetic acct_mock_… IDs (which may embed emails) are unaffected.
+func validAccountID(id string) error {
+	if !stripeAccountIDRe.MatchString(id) {
+		return fmt.Errorf("stripe connect: invalid account id %q", id)
+	}
+	return nil
+}
 
 // SetStripeAPIBaseForTest swaps the Stripe API base URL and returns the
 // previous value so the caller can restore it. Test-only helper — production
@@ -235,6 +254,9 @@ func (c *StripeConnect) UpdateAccountPayoutScheduleDaily(accountID string) error
 	if c.mockMode {
 		return nil
 	}
+	if err := validAccountID(accountID); err != nil {
+		return err
+	}
 	form := url.Values{}
 	form.Set("settings[payouts][schedule][interval]", "daily")
 	if _, err := c.do("POST", "/v1/accounts/"+accountID, form, ""); err != nil {
@@ -304,6 +326,9 @@ func (c *StripeConnect) GetAccount(accountID string) (*ExpressAccount, error) {
 		}, nil
 	}
 
+	if err := validAccountID(accountID); err != nil {
+		return nil, err
+	}
 	body, err := c.do("GET", "/v1/accounts/"+accountID, nil, "")
 	if err != nil {
 		return nil, fmt.Errorf("stripe connect: get account: %w", err)
@@ -425,6 +450,9 @@ func (c *StripeConnect) CreatePayout(params CreatePayoutParams) (*Payout, error)
 			Status:      "in_transit",
 			ArrivalDate: time.Now().Add(24 * time.Hour).Unix(),
 		}, nil
+	}
+	if err := validAccountID(params.OnBehalfOfAccountID); err != nil {
+		return nil, err
 	}
 
 	form := url.Values{}
@@ -555,7 +583,13 @@ type TransferEvent struct {
 	ID          string
 	AmountCents int64
 	Destination string
-	Reversed    bool
+	// Reversed is Stripe's authoritative "fully reversed" flag: it is only
+	// true once amount_reversed == amount. Partial reversals fire
+	// transfer.reversed events with Reversed=false.
+	Reversed bool
+	// AmountReversedCents is the cumulative reversed amount across all
+	// reversals of this transfer.
+	AmountReversedCents int64
 }
 
 // TransferFromEvent extracts the transfer object from a charge/transfer event.
@@ -565,20 +599,22 @@ func (c *StripeConnect) TransferFromEvent(event *WebhookEvent) (*TransferEvent, 
 	}
 	var data struct {
 		Object struct {
-			ID          string `json:"id"`
-			Amount      int64  `json:"amount"`
-			Destination string `json:"destination"`
-			Reversed    bool   `json:"reversed"`
+			ID             string `json:"id"`
+			Amount         int64  `json:"amount"`
+			AmountReversed int64  `json:"amount_reversed"`
+			Destination    string `json:"destination"`
+			Reversed       bool   `json:"reversed"`
 		} `json:"object"`
 	}
 	if err := json.Unmarshal(event.Data, &data); err != nil {
 		return nil, fmt.Errorf("stripe connect: parse transfer event: %w", err)
 	}
 	return &TransferEvent{
-		ID:          data.Object.ID,
-		AmountCents: data.Object.Amount,
-		Destination: data.Object.Destination,
-		Reversed:    data.Object.Reversed,
+		ID:                  data.Object.ID,
+		AmountCents:         data.Object.Amount,
+		AmountReversedCents: data.Object.AmountReversed,
+		Destination:         data.Object.Destination,
+		Reversed:            data.Object.Reversed,
 	}, nil
 }
 

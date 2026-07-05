@@ -999,9 +999,10 @@ func TestConnectWebhookLegacyRefundedRowStaysTerminal(t *testing.T) {
 func TestConnectWebhookSweepPayoutPaidMarksTransferredRows(t *testing.T) {
 	// Standard withdrawals have no payout ID — Stripe's automatic daily sweep
 	// delivers them. When the sweep's payout.paid arrives (an ID we never
-	// recorded), every "transferred" row for that connected account created
-	// before the sweep must flip to "paid".
-	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	// recorded), every "transferred" row for that connected account whose
+	// funds had settled by the sweep's creation must flip to "paid". This
+	// account is under the full agreement, so transfers settle immediately.
+	fakeStripe := accountServingStripe("full")
 	defer fakeStripe.Close()
 
 	srv, st := stripePayoutsTestServer(t, false, fakeStripe)

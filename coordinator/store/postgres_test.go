@@ -1004,3 +1004,60 @@ func TestPostgresDeleteProvidersBySerial_WrongOwner(t *testing.T) {
 		t.Fatal("record deleted by non-owner")
 	}
 }
+
+func TestPostgresCreateStripeWithdrawalWithDebit(t *testing.T) {
+	s := testPostgresStore(t)
+	u := &User{AccountID: "acct-pg-wdb", PrivyUserID: "did:privy:pgwdb"}
+	_ = s.CreateUser(u)
+	if err := s.CreditWithdrawable("acct-pg-wdb", 10_000_000, LedgerPayout, "earnings"); err != nil {
+		t.Fatal(err)
+	}
+
+	wd := &StripeWithdrawal{
+		ID: "wd-pg-atomic-1", AccountID: "acct-pg-wdb", StripeAccountID: "acct_pgwdb",
+		AmountMicroUSD: 4_000_000, NetMicroUSD: 4_000_000,
+		Method: "standard", Status: "pending",
+	}
+	if err := s.CreateStripeWithdrawalWithDebit(wd, LedgerStripePayout, "stripe_withdraw:wd-pg-atomic-1"); err != nil {
+		t.Fatalf("atomic debit+insert: %v", err)
+	}
+	bal, wdr := s.GetBalanceWithWithdrawable("acct-pg-wdb")
+	if bal != 6_000_000 || wdr != 6_000_000 {
+		t.Errorf("balance/withdrawable = %d/%d, want 6_000_000/6_000_000", bal, wdr)
+	}
+	row, err := s.GetStripeWithdrawal("wd-pg-atomic-1")
+	if err != nil || row.Status != "pending" {
+		t.Fatalf("row = %+v err = %v", row, err)
+	}
+
+	// Insufficient withdrawable: typed error, no debit, no row. The whole
+	// transaction rolls back — including the ledger entry.
+	wd2 := &StripeWithdrawal{
+		ID: "wd-pg-atomic-2", AccountID: "acct-pg-wdb", StripeAccountID: "acct_pgwdb",
+		AmountMicroUSD: 60_000_000, NetMicroUSD: 60_000_000,
+		Method: "standard", Status: "pending",
+	}
+	err = s.CreateStripeWithdrawalWithDebit(wd2, LedgerStripePayout, "stripe_withdraw:wd-pg-atomic-2")
+	if !errors.Is(err, ErrInsufficientBalance) {
+		t.Fatalf("err = %v, want ErrInsufficientBalance", err)
+	}
+	if bal, _ := s.GetBalanceWithWithdrawable("acct-pg-wdb"); bal != 6_000_000 {
+		t.Errorf("failed attempt moved the balance: %d", bal)
+	}
+	if _, err := s.GetStripeWithdrawal("wd-pg-atomic-2"); err == nil {
+		t.Error("row must not exist after a failed debit")
+	}
+
+	// Duplicate row ID: the insert fails and the tx rolls back the debit.
+	dup := &StripeWithdrawal{
+		ID: "wd-pg-atomic-1", AccountID: "acct-pg-wdb", StripeAccountID: "acct_pgwdb",
+		AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
+		Method: "standard", Status: "pending",
+	}
+	if err := s.CreateStripeWithdrawalWithDebit(dup, LedgerStripePayout, "stripe_withdraw:pg-dup"); err == nil {
+		t.Fatal("duplicate ID must fail")
+	}
+	if bal, _ := s.GetBalanceWithWithdrawable("acct-pg-wdb"); bal != 6_000_000 {
+		t.Errorf("duplicate attempt leaked a debit: balance = %d", bal)
+	}
+}

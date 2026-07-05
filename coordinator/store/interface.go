@@ -555,6 +555,11 @@ type User struct {
 	StripeInstantEligible  bool   `json:"stripe_instant_eligible,omitempty"` // debit-card destination supports Instant Payouts
 }
 
+// MaxStripeWithdrawalsByStatusLimit caps ListStripeWithdrawalsByStatus result
+// sets. A limit <= 0 no longer means "unbounded" — reading the entire table
+// into memory is never intended (threat-model review advisory).
+const MaxStripeWithdrawalsByStatusLimit = 1000
+
 // StripeWithdrawal records a user-initiated payout via Stripe Connect Express.
 // The lifecycle is: pending (debit recorded) → transferred (platform→connected
 // account transfer succeeded) → paid (Stripe payout to bank/card succeeded).

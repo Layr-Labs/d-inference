@@ -2267,6 +2267,47 @@ func (s *MemoryStore) ListStripeWithdrawals(accountID string, limit int) ([]Stri
 	return out, nil
 }
 
+// MarkStripeWithdrawalPaid atomically flips a non-terminal, non-refunded
+// withdrawal to "paid" under the store lock (see interface doc).
+func (s *MemoryStore) MarkStripeWithdrawalPaid(id, sweepPayoutID string) (bool, error) {
+	if id == "" {
+		return false, errors.New("stripe withdrawal id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w, ok := s.stripeWithdrawalsByID[id]
+	if !ok {
+		return false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+	}
+	if w.Refunded || (w.Status != "pending" && w.Status != "transferred") {
+		return false, nil
+	}
+	w.Status = "paid"
+	if sweepPayoutID != "" {
+		w.SweepPayoutID = sweepPayoutID
+	}
+	w.UpdatedAt = time.Now()
+	return true, nil
+}
+
+// ListStripeWithdrawalsBySweepPayoutID returns the rows stamped by the given
+// automatic sweep payout, oldest first.
+func (s *MemoryStore) ListStripeWithdrawalsBySweepPayoutID(sweepPayoutID string) ([]StripeWithdrawal, error) {
+	if sweepPayoutID == "" {
+		return []StripeWithdrawal{}, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []StripeWithdrawal{}
+	for _, w := range s.stripeWithdrawalsByID {
+		if w.SweepPayoutID == sweepPayoutID {
+			out = append(out, *w)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
 // ListStripeWithdrawalsByStatus returns up to limit withdrawals in the given
 // status created before olderThan, oldest first. Limits <= 0 or above the cap
 // are clamped to MaxStripeWithdrawalsByStatusLimit.

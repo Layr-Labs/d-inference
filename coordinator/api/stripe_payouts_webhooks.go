@@ -146,21 +146,22 @@ func (s *Server) handlePayoutTerminal(event *billing.WebhookEvent, connectedAcct
 		if wd.Status == "paid" {
 			return nil
 		}
-		if wd.Refunded {
-			// The ledger was already refunded (e.g. transfer.reversed
-			// arrived first) AND the payout delivered — the user may hold
-			// both the refund and the card payout. Never overwrite the
-			// refunded/failed row to "paid" (that hides the double-payment);
-			// escalate for manual review instead.
-			s.logger.Error("stripe connect webhook: payout.paid on a refunded withdrawal — possible double payment, manual review required",
-				"withdrawal_id", wd.ID, "payout_id", pe.ID, "status", wd.Status,
-				"stripe_account_id", wd.StripeAccountID)
-			return nil
-		}
-		wd.Status = "paid"
-		if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
+		// The flip is guarded INSIDE the store (only pending/transferred +
+		// !Refunded rows flip): a concurrent payout.failed/transfer.reversed
+		// delivery that persisted Refunded after our read above can't be
+		// overwritten by this stale copy.
+		applied, err := s.billing.Store().MarkStripeWithdrawalPaid(wd.ID, "")
+		if err != nil {
 			s.logger.Error("stripe connect webhook: mark paid failed", "error", err)
 			return err
+		}
+		if !applied {
+			// Refunded or already terminal — e.g. the ledger was refunded
+			// (transfer.reversed) AND the payout delivered; the user may
+			// hold both. Never overwrite; escalate for manual review.
+			s.logger.Error("stripe connect webhook: payout.paid on a refunded/terminal withdrawal — possible double payment, manual review required",
+				"withdrawal_id", wd.ID, "payout_id", pe.ID, "status", wd.Status,
+				"stripe_account_id", wd.StripeAccountID)
 		}
 		return nil
 	}
@@ -282,6 +283,28 @@ func (s *Server) reconcileUnmatchedPayout(pe *billing.PayoutEvent, success bool)
 		return nil
 	}
 
+	// Webhook delivery order is not guaranteed: a stale payout.paid can be
+	// delivered AFTER the same payout already failed (whose failure event,
+	// finding nothing stamped yet, was necessarily a no-op). Confirm the
+	// payout is still live-"paid" before attributing rows to it.
+	livePayout, perr := s.billing.StripeConnect().GetPayout(pe.ConnectedAcct, pe.ID)
+	if perr != nil {
+		if billing.IsAccountGoneErr(perr) {
+			s.logger.Warn("stripe connect webhook: sweep reconcile skipped — account gone",
+				"stripe_account_id", pe.ConnectedAcct, "payout_id", pe.ID)
+			return nil
+		}
+		s.logger.Error("stripe connect webhook: sweep payout live-status check failed",
+			"error", perr, "payout_id", pe.ID)
+		return perr // redeliver
+	}
+	if livePayout.Status != "paid" {
+		s.logger.Warn("stripe connect webhook: stale sweep payout.paid — payout is no longer paid, not claiming rows",
+			"payout_id", pe.ID, "live_status", livePayout.Status,
+			"stripe_account_id", pe.ConnectedAcct)
+		return nil
+	}
+
 	// Settlement-safe cutoff: recipient-agreement transfers become available
 	// +24h after creation, so this sweep cannot contain them until then.
 	availabilityDelay := time.Duration(0)
@@ -330,12 +353,12 @@ func (s *Server) reconcileUnmatchedPayout(pe *billing.PayoutEvent, success bool)
 		if pe.Created > 0 && wd.UpdatedAt.After(payoutCreated) {
 			continue
 		}
-		wd.Status = "paid"
-		// Remember which sweep claimed the row: if this payout later
-		// bounces (payout.failed after paid), reopenSweepBouncedRows finds
-		// the row by this ID and reopens it.
-		wd.SweepPayoutID = pe.ID
-		if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
+		// Guarded flip (store-side): a concurrent refund/failure delivery
+		// can't be overwritten by this loop's stale copy. The sweep payout
+		// ID is stamped so a later bounce (payout.failed after paid) can
+		// reopen exactly these rows via reopenSweepBouncedRows.
+		applied, err := s.billing.Store().MarkStripeWithdrawalPaid(wd.ID, pe.ID)
+		if err != nil {
 			s.logger.Error("stripe connect webhook: sweep mark paid failed",
 				"error", err, "withdrawal_id", wd.ID)
 			if firstErr == nil {
@@ -343,7 +366,9 @@ func (s *Server) reconcileUnmatchedPayout(pe *billing.PayoutEvent, success bool)
 			}
 			continue
 		}
-		marked++
+		if applied {
+			marked++
+		}
 	}
 	if marked > 0 {
 		s.logger.Info("stripe connect webhook: sweep payout reconciled",
@@ -364,7 +389,9 @@ func (s *Server) reconcileUnmatchedPayout(pe *billing.PayoutEvent, success bool)
 // SweepPayoutID stamped when the sweep claimed them; rows claimed by other
 // sweeps are untouched.
 func (s *Server) reopenSweepBouncedRows(pe *billing.PayoutEvent) error {
-	paid, err := s.billing.Store().ListStripeWithdrawalsForStripeAccount(pe.ConnectedAcct, "paid")
+	// Looked up by the sweep stamp directly (not by scanning the account's
+	// paid rows): exact, and immune to any per-account list bound.
+	paid, err := s.billing.Store().ListStripeWithdrawalsBySweepPayoutID(pe.ID)
 	if err != nil {
 		s.logger.Error("stripe connect webhook: sweep bounce list failed",
 			"error", err, "stripe_account_id", pe.ConnectedAcct)
@@ -374,7 +401,7 @@ func (s *Server) reopenSweepBouncedRows(pe *billing.PayoutEvent) error {
 	var firstErr error
 	for i := range paid {
 		wd := &paid[i]
-		if wd.SweepPayoutID != pe.ID || wd.Refunded {
+		if wd.Status != "paid" || wd.Refunded {
 			continue
 		}
 		wd.Status = "transferred"

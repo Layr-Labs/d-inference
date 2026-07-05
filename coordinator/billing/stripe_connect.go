@@ -501,6 +501,49 @@ func (c *StripeConnect) CreatePayout(params CreatePayoutParams) (*Payout, error)
 	}, nil
 }
 
+// GetPayout fetches a payout's live state from Stripe, authenticated as the
+// connected account. Used to confirm an automatic sweep payout is actually
+// still "paid" before attributing it to withdrawal rows — webhook delivery
+// order is not guaranteed, so a stale payout.paid can arrive after the
+// payout already failed.
+func (c *StripeConnect) GetPayout(connectedAcctID, payoutID string) (*Payout, error) {
+	if c.secretKey == "" && !c.mockMode {
+		return nil, errors.New("stripe connect: not configured")
+	}
+	if connectedAcctID == "" || payoutID == "" {
+		return nil, errors.New("stripe connect: account_id and payout_id required")
+	}
+	if c.mockMode {
+		return &Payout{ID: payoutID, Status: "paid"}, nil
+	}
+	if err := validAccountID(connectedAcctID); err != nil {
+		return nil, err
+	}
+	if !stripePayoutIDRe.MatchString(payoutID) {
+		return nil, fmt.Errorf("stripe connect: invalid payout id %q", payoutID)
+	}
+	body, err := c.do("GET", "/v1/payouts/"+payoutID, nil, "", withStripeAccount(connectedAcctID))
+	if err != nil {
+		return nil, fmt.Errorf("stripe connect: get payout: %w", err)
+	}
+	var resp struct {
+		ID          string `json:"id"`
+		Amount      int64  `json:"amount"`
+		Method      string `json:"method"`
+		Status      string `json:"status"`
+		ArrivalDate int64  `json:"arrival_date"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("stripe connect: parse payout: %w", err)
+	}
+	return &Payout{ID: resp.ID, AmountCents: resp.Amount, Method: resp.Method,
+		Status: resp.Status, ArrivalDate: resp.ArrivalDate}, nil
+}
+
+// stripePayoutIDRe validates payout IDs before path construction (same
+// defense-in-depth as stripeAccountIDRe; IDs come from Stripe webhooks).
+var stripePayoutIDRe = regexp.MustCompile(`^po_[A-Za-z0-9_-]{1,128}$`)
+
 // VerifyConnectWebhookSignature mirrors StripeProcessor.VerifyWebhookSignature
 // but uses the Connect-specific webhook secret. Stripe sends Connect events to
 // a separate endpoint configured in the dashboard with its own signing secret.

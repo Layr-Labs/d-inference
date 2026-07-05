@@ -57,13 +57,20 @@ func deliverConnectWebhook(t *testing.T, srv *Server, payload []byte) *httptest.
 
 // accountServingStripe returns a fake Stripe that answers GET
 // /v1/accounts/{id} with a healthy account under the given service agreement
-// (echoing the requested ID) and 200-empty for everything else. The sweep
-// matcher fetches the account to derive its settlement cutoff.
+// (echoing the requested ID), GET /v1/payouts/{id} with a live-"paid" payout
+// (the sweep matcher verifies payout status before claiming rows), and
+// 200-empty for everything else.
 func accountServingStripe(agreement string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/accounts/") {
 			id := strings.TrimPrefix(r.URL.Path, "/v1/accounts/")
 			_, _ = w.Write([]byte(healthyAccountJSON(id, "US", agreement, false)))
+			return
+		}
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/payouts/") {
+			id := strings.TrimPrefix(r.URL.Path, "/v1/payouts/")
+			_, _ = w.Write([]byte(`{"id":"` + id + `","status":"paid","amount":450,"method":"standard"}`))
+			return
 		}
 	}))
 }
@@ -1063,5 +1070,51 @@ func TestConnectWebhookRefundedRowFlipRedelivers(t *testing.T) {
 	wd, _ := flaky.GetStripeWithdrawal("wd-ref-flip")
 	if wd.Status != "failed" {
 		t.Errorf("status = %q, want failed (terminal, out of sweep reconciliation)", wd.Status)
+	}
+}
+
+// TestConnectWebhookStaleSweepPaidForFailedPayoutNoClaim: webhook delivery
+// order isn't guaranteed — a payout.failed can be DELIVERED before the same
+// sweep's payout.paid. The paid handler verifies the payout's live status
+// with Stripe before claiming rows; a payout that already failed claims
+// nothing (the funds are back in the balance and the next sweep delivers).
+func TestConnectWebhookStaleSweepPaidForFailedPayoutNoClaim(t *testing.T) {
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/accounts/") {
+			id := strings.TrimPrefix(r.URL.Path, "/v1/accounts/")
+			_, _ = w.Write([]byte(healthyAccountJSON(id, "US", "full", false)))
+			return
+		}
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/payouts/") {
+			id := strings.TrimPrefix(r.URL.Path, "/v1/payouts/")
+			_, _ = w.Write([]byte(`{"id":"` + id + `","status":"failed","amount":450,"method":"standard","failure_code":"could_not_process"}`))
+			return
+		}
+	}))
+	defer fakeStripe.Close()
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := readyUser(t, st, "acct-stale-sweep", "alice@example.com", false)
+
+	mkWithdrawal(t, st, store.StripeWithdrawal{
+		ID: "wd-stale-sweep", AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
+		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
+		Method: "standard", Status: "transferred", TransferID: "tr_ss",
+		CreatedAt: time.Now().Add(-3 * time.Hour),
+	})
+
+	// The failure was delivered first: no rows were stamped, so it was a
+	// no-op. The stale paid event arrives afterwards.
+	if w := deliverConnectWebhook(t, srv,
+		payoutEventPayload("po_stale_sweep", user.StripeAccountID, "failed", true, time.Now().Unix())); w.Code != http.StatusOK {
+		t.Fatalf("failed delivery got %d", w.Code)
+	}
+	if w := deliverConnectWebhook(t, srv,
+		payoutEventPayload("po_stale_sweep", user.StripeAccountID, "paid", true, time.Now().Unix())); w.Code != http.StatusOK {
+		t.Fatalf("stale paid delivery got %d", w.Code)
+	}
+
+	wd, _ := st.GetStripeWithdrawal("wd-stale-sweep")
+	if wd.Status != "transferred" {
+		t.Errorf("status = %q, want transferred (live payout status is failed — nothing claimed)", wd.Status)
 	}
 }

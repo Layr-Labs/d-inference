@@ -312,6 +312,21 @@ type BillingStore interface {
 	// UpdateStripeWithdrawal persists status/transfer/payout/fail-reason changes.
 	UpdateStripeWithdrawal(withdrawal *StripeWithdrawal) error
 
+	// MarkStripeWithdrawalPaid atomically flips a withdrawal to "paid" —
+	// but only from a non-terminal, non-refunded state ("pending" or
+	// "transferred" with Refunded=false). Guarding inside the store closes
+	// the read-modify-write race between concurrent webhook deliveries
+	// (e.g. payout.paid racing transfer.reversed): a stale in-memory copy
+	// can never overwrite Refunded/failed state back to paid. A non-empty
+	// sweepPayoutID is recorded on the row (sweep attribution). Returns
+	// whether the flip was applied.
+	MarkStripeWithdrawalPaid(id, sweepPayoutID string) (bool, error)
+
+	// ListStripeWithdrawalsBySweepPayoutID returns the withdrawals a given
+	// automatic sweep payout claimed (SweepPayoutID stamp). Used to reopen
+	// exactly those rows when the sweep later bounces.
+	ListStripeWithdrawalsBySweepPayoutID(sweepPayoutID string) ([]StripeWithdrawal, error)
+
 	// ListStripeWithdrawals returns withdrawals for an account, newest first.
 	// Pass limit <= 0 for no limit.
 	ListStripeWithdrawals(accountID string, limit int) ([]StripeWithdrawal, error)

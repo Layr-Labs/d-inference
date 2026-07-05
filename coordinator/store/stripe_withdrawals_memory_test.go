@@ -143,3 +143,46 @@ func TestMemoryCreateStripeWithdrawalWithDebit(t *testing.T) {
 		t.Errorf("duplicate attempt moved the balance: %d", bal)
 	}
 }
+
+// TestMemoryMarkStripeWithdrawalPaidGuards pins the store-side guard that
+// closes the paid-vs-refund webhook race: only non-terminal, non-refunded
+// rows flip to paid.
+func TestMemoryMarkStripeWithdrawalPaidGuards(t *testing.T) {
+	s := NewMemory(Config{})
+	mk := func(id, status string, refunded bool) {
+		if err := s.CreateStripeWithdrawal(&StripeWithdrawal{
+			ID: id, AccountID: "acct-mp", StripeAccountID: "acct_mp",
+			AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
+			Method: "standard", Status: status, Refunded: refunded,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mk("wd-mp-ok", "transferred", false)
+	if applied, err := s.MarkStripeWithdrawalPaid("wd-mp-ok", "po_sweep_1"); err != nil || !applied {
+		t.Fatalf("transferred row: applied=%v err=%v, want applied", applied, err)
+	}
+	row, _ := s.GetStripeWithdrawal("wd-mp-ok")
+	if row.Status != "paid" || row.SweepPayoutID != "po_sweep_1" {
+		t.Errorf("row = %q/%q, want paid/po_sweep_1", row.Status, row.SweepPayoutID)
+	}
+
+	mk("wd-mp-refunded", "transferred", true)
+	if applied, _ := s.MarkStripeWithdrawalPaid("wd-mp-refunded", ""); applied {
+		t.Error("refunded row must not flip to paid")
+	}
+	mk("wd-mp-failed", "failed", false)
+	if applied, _ := s.MarkStripeWithdrawalPaid("wd-mp-failed", ""); applied {
+		t.Error("failed row must not flip to paid")
+	}
+	if _, err := s.MarkStripeWithdrawalPaid("wd-mp-missing", ""); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing row err = %v, want ErrNotFound", err)
+	}
+
+	// Sweep-stamp lookup returns exactly the stamped rows.
+	rows, err := s.ListStripeWithdrawalsBySweepPayoutID("po_sweep_1")
+	if err != nil || len(rows) != 1 || rows[0].ID != "wd-mp-ok" {
+		t.Errorf("sweep lookup = %v (err %v), want [wd-mp-ok]", rows, err)
+	}
+}

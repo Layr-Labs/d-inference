@@ -668,6 +668,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_stripe_account ON stripe_withdrawals(stripe_account_id, status)`,
 		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS fee_refunded BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS sweep_payout_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_sweep_payout ON stripe_withdrawals(sweep_payout_id) WHERE sweep_payout_id != ''`,
 
 		// Telemetry events table + indices removed.
 		// Datadog is the sole durable sink for telemetry — the Postgres table
@@ -3523,6 +3524,60 @@ func (s *PostgresStore) ListStripeWithdrawals(accountID string, limit int) ([]St
 	}
 	if out == nil {
 		return []StripeWithdrawal{}, nil
+	}
+	return out, nil
+}
+
+// MarkStripeWithdrawalPaid atomically flips a non-terminal, non-refunded
+// withdrawal to "paid" with an in-database guard (see interface doc).
+func (s *PostgresStore) MarkStripeWithdrawalPaid(id, sweepPayoutID string) (bool, error) {
+	if id == "" {
+		return false, errors.New("stripe withdrawal id is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE stripe_withdrawals
+		 SET status = 'paid',
+		     sweep_payout_id = CASE WHEN $2 <> '' THEN $2 ELSE sweep_payout_id END,
+		     updated_at = NOW()
+		 WHERE id = $1
+		   AND refunded = FALSE
+		   AND status IN ('pending', 'transferred')`,
+		id, sweepPayoutID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: mark stripe withdrawal paid: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ListStripeWithdrawalsBySweepPayoutID returns the rows stamped by the given
+// automatic sweep payout, oldest first.
+func (s *PostgresStore) ListStripeWithdrawalsBySweepPayoutID(sweepPayoutID string) ([]StripeWithdrawal, error) {
+	if sweepPayoutID == "" {
+		return []StripeWithdrawal{}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+stripeWithdrawalSelectColumns+` FROM stripe_withdrawals
+		 WHERE sweep_payout_id = $1 ORDER BY created_at ASC`,
+		sweepPayoutID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list stripe withdrawals by sweep payout: %w", err)
+	}
+	defer rows.Close()
+
+	out := []StripeWithdrawal{}
+	for rows.Next() {
+		w, err := scanStripeWithdrawal(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan stripe withdrawal: %w", err)
+		}
+		out = append(out, *w)
 	}
 	return out, nil
 }

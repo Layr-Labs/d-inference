@@ -3221,9 +3221,15 @@ func (s *PostgresStore) SetUserStripeAccount(accountID, stripeAccountID, status,
 
 	countryClause := ""
 	args := []any{accountID, stripeAccountID, status, destinationType, destinationLast4, instantEligible}
-	if stripeAccountCountry != "" {
+	switch {
+	case stripeAccountCountry != "":
 		countryClause = ", stripe_account_country = $7"
 		args = append(args, stripeAccountCountry)
+	case stripeAccountID == "":
+		// Unlinking: empty country normally means "keep existing", but with
+		// no account there is no country — a stale value would leak into the
+		// next onboarding attempt.
+		countryClause = ", stripe_account_country = ''"
 	}
 
 	tag, err := s.pool.Exec(ctx,

@@ -2037,8 +2037,14 @@ func (s *MemoryStore) SetUserStripeAccount(accountID, stripeAccountID, status, s
 
 	u.StripeAccountID = stripeAccountID
 	u.StripeAccountStatus = status
-	if stripeAccountCountry != "" {
+	switch {
+	case stripeAccountCountry != "":
 		u.StripeAccountCountry = stripeAccountCountry
+	case stripeAccountID == "":
+		// Unlinking: an empty country normally means "keep existing" (Stripe
+		// webhook partial updates), but with no account there is no country —
+		// keeping a stale one would leak into the next onboarding attempt.
+		u.StripeAccountCountry = ""
 	}
 	u.StripeDestinationType = destinationType
 	u.StripeDestinationLast4 = destinationLast4

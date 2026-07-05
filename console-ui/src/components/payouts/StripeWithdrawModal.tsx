@@ -3,7 +3,7 @@
 import { Clock, Zap, Loader2 } from "lucide-react";
 import { computeStripeFeeUsd, type StripeStatus } from "@/lib/api";
 import { MethodOption } from "./MethodOption";
-import { INSTANT_ETA, STANDARD_ETA, methodExplainer } from "./payout-copy";
+import { INSTANT_ETA, methodExplainer, standardEta } from "./payout-copy";
 
 // The Stripe withdraw modal body (amount input, speed picker, fee preview,
 // confirm). Shared by billing + earnings (previously byte-identical — F3).
@@ -36,6 +36,7 @@ export function StripeWithdrawModal({
   const fee = computeStripeFeeUsd(amountNum, method, instantBps, instantMinUsd);
   const net = Math.max(0, amountNum - fee);
 
+  const country = status?.stripe_account_country;
   const tooSmall = amountNum > 0 && amountNum < minWithdrawUsd;
   const tooLarge = amountNum > balanceUsd;
   const valid = amountNum >= minWithdrawUsd && !tooLarge;
@@ -82,7 +83,7 @@ export function StripeWithdrawModal({
           onClick={() => onMethodChange("standard")}
           icon={<Clock size={14} />}
           label="Standard"
-          eta={STANDARD_ETA}
+          eta={standardEta(country)}
           fee="Free"
         />
         <MethodOption
@@ -97,7 +98,7 @@ export function StripeWithdrawModal({
         />
       </div>
       <p className="text-xs text-text-tertiary mb-4 leading-relaxed">
-        {methodExplainer(method, instantBps, instantMinUsd)}
+        {methodExplainer(method, instantBps, instantMinUsd, country)}
       </p>
 
       {/* Fee breakdown */}

@@ -5,6 +5,7 @@ import {
   classifyOnboardError,
   withdrawSuccessMessage,
   methodExplainer,
+  standardEta,
   withdrawalStatusPresentation,
   STANDARD_ETA,
   INSTANT_ETA,
@@ -208,5 +209,21 @@ describe("withdrawalStatusPresentation", () => {
 
   it("unknown statuses pass through as the label", () => {
     expect(withdrawalStatusPresentation("weird").label).toBe("weird");
+  });
+});
+
+describe("Japan weekly payout copy", () => {
+  it("standardEta reports the weekly cadence for JP and the default elsewhere", () => {
+    expect(standardEta("JP")).toBe("up to 7-10 business days");
+    expect(standardEta("jp")).toBe("up to 7-10 business days");
+    expect(standardEta("DE")).toBe("1-3 business days");
+    expect(standardEta(undefined)).toBe("1-3 business days");
+  });
+
+  it("methodExplainer mentions the weekly schedule for JP standard withdrawals", () => {
+    expect(methodExplainer("standard", 150, 0.5, "JP")).toContain("weekly payout in Japan");
+    expect(methodExplainer("standard", 150, 0.5, "US")).toContain("daily payout");
+    // Instant copy is country-independent.
+    expect(methodExplainer("instant", 150, 0.5, "JP")).toContain("debit card");
   });
 });

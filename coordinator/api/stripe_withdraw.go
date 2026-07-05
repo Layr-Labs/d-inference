@@ -107,6 +107,14 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !acct.PayoutsEnabled {
+		// Persist the fresh (non-ready) snapshot so the UI's status refresh
+		// reflects reality — otherwise the card keeps showing "Ready" while
+		// withdrawals 403, with no visible path to fix the account.
+		if perr := s.billing.Store().SetUserStripeAccount(user.AccountID, user.StripeAccountID,
+			stripeStatusForAccount(acct), acct.Country, acct.DestinationType, acct.DestinationLast4,
+			acct.InstantEligible); perr != nil {
+			s.logger.Error("stripe payout: persist disabled status failed", "error", perr)
+		}
 		writeJSON(w, http.StatusForbidden, errorResponse("not_onboarded",
 			"your Stripe account can't receive payouts yet — finish onboarding from the billing page"))
 		return

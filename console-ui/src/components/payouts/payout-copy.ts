@@ -167,17 +167,33 @@ export function withdrawSuccessMessage(resp: {
 export const STANDARD_ETA = "1-3 business days";
 export const INSTANT_ETA = "~30 minutes";
 
+// standardEta returns the standard-method ETA for the account's country.
+// Japan has no daily automatic payouts (the backend configures weekly sweeps
+// there — see coordinator/billing setAutoPayoutSchedule), so the honest ETA
+// is up to a week to the sweep plus the bank rail.
+export function standardEta(country?: string): string {
+  if (country?.trim().toUpperCase() === "JP") {
+    return "up to 7-10 business days";
+  }
+  return STANDARD_ETA;
+}
+
 // methodExplainer returns the short helper line shown under the speed picker
 // for the selected method. The instant fee terms come from the live status so
-// the copy can't drift from the fee actually charged.
+// the copy can't drift from the fee actually charged; the standard cadence is
+// country-aware (weekly in Japan).
 export function methodExplainer(
   method: "standard" | "instant",
   instantFeeBps: number,
   instantFeeMinUsd: number,
+  country?: string,
 ): string {
   if (method === "instant") {
     const pct = (instantFeeBps / 100).toFixed(1).replace(/\.0$/, "");
     return `Arrives on your debit card in ~30 minutes. ${pct}% fee ($${instantFeeMinUsd.toFixed(2)} min).`;
+  }
+  if (country?.trim().toUpperCase() === "JP") {
+    return "Funds are transferred right away and paid out by Stripe's weekly payout in Japan, arriving in your local currency. Typically up to 7-10 business days.";
   }
   return "Funds are transferred right away and paid out by Stripe's daily payout, arriving in your local currency. Typically 1-3 business days (some countries take up to one extra day).";
 }

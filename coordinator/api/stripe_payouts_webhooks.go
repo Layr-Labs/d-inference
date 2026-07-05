@@ -363,18 +363,18 @@ func (s *Server) reconcileUnmatchedPayout(pe *billing.PayoutEvent, success bool)
 			if wd.Refunded {
 				continue // ledger already refunded (legacy state) — never mark paid
 			}
-			if pe.Created > 0 && wd.CreatedAt.After(settledBefore) {
-				continue // funds not yet available when this sweep was cut — the next sweep covers it
-			}
 			// The row must have REACHED its current "transferred" state
-			// before the sweep was cut. This closes two gaps CreatedAt
-			// can't see: (1) the row is inserted before transfers.create,
-			// so a sweep cut in that window predates the money; (2) a row
-			// reopened by a sweep bounce has a fresh UpdatedAt, so a
+			// (UpdatedAt ≈ when the transfer completed) at least the
+			// availability delay before the sweep was cut — a row that was
+			// still pending, mid-transfer, or inside the recipient +24h
+			// window when the sweep was created cannot have its funds in
+			// that sweep. Anchoring on UpdatedAt rather than CreatedAt also
+			// covers rows that sat parked/pending long after creation, and
+			// rows reopened by a sweep bounce (fresh UpdatedAt), so a
 			// redelivered payout.paid from the OLD (bounced) sweep can't
-			// re-claim it — only a sweep cut after the reopen (i.e. one
-			// that can actually contain the re-parked funds) completes it.
-			if pe.Created > 0 && wd.UpdatedAt.After(payoutCreated) {
+			// re-claim them — only a sweep cut after the funds actually
+			// (re-)settled completes the row.
+			if pe.Created > 0 && wd.UpdatedAt.After(settledBefore) {
 				continue
 			}
 			// Guarded flip (store-side): a concurrent refund/failure

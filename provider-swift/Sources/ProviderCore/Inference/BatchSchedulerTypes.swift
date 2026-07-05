@@ -18,7 +18,15 @@ import MLXLMCommon
 /// Events emitted by the scheduler for a single inference request.
 public enum GenerationEvent: Sendable {
     case chunk(String)
-    case info(promptTokens: Int, completionTokens: Int, tokensPerSecond: Double)
+    /// Terminal usage. `finishReason` is the OpenAI wire value ("stop",
+    /// "length") when the engine reported one; nil maps to "stop"
+    /// downstream. Threaded end-to-end (legacy `RequestOutput.finishReason`,
+    /// v2 `CBv2FinishReason.length`) so a max_tokens truncation reaches
+    /// clients as `finish_reason: "length"` instead of being flattened
+    /// to "stop".
+    case info(
+        promptTokens: Int, completionTokens: Int, tokensPerSecond: Double,
+        finishReason: String?)
     case error(String)
 }
 

@@ -198,6 +198,58 @@ extension ProviderLoop {
         return "data: \(json)\n\n"
     }
 
+    /// Splice OpenAI-standard streaming logprobs
+    /// (`choices[0].logprobs = {"content": [...]}`) into a content-bearing
+    /// SSE chunk. v2-engine path only — the legacy engine never emitted
+    /// logprobs, so this is the OpenAI-standard shape rather than a
+    /// legacy-match (see `EngineV2Logprobs.swift`).
+    ///
+    /// Returns the modified frame when `frame` is a chat-completion chunk
+    /// whose `choices[0].delta.content` is a non-empty string (the frames
+    /// logprobs semantically attach to). Returns nil — caller keeps the
+    /// entries pending for the next frame — for role preambles, reasoning-
+    /// only deltas, usage/terminal chunks, `[DONE]`, and anything that
+    /// fails to parse (never corrupt a frame we cannot faithfully edit).
+    ///
+    /// Like `injectReasoningTokens`, the edit is a generic JSON splice:
+    /// upstream's `OpenAIChatCompletionChunk` has no logprobs field, so we
+    /// decode the `data:` payload to a dictionary, attach the logprobs
+    /// object, and re-serialize with every other field untouched.
+    internal static func injectLogprobs(
+        into frame: String, entries: [SSETokenLogprob]
+    ) -> String? {
+        guard !entries.isEmpty,
+              let payload = joinedDataPayload(frame),
+              payload.trimmingCharacters(in: .whitespacesAndNewlines) != "[DONE]",
+              let bytes = payload.data(using: .utf8),
+              var obj = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+              var choices = obj["choices"] as? [[String: Any]],
+              var choice = choices.first,
+              let delta = choice["delta"] as? [String: Any],
+              let content = delta["content"] as? String,
+              !content.isEmpty
+        else {
+            return nil
+        }
+        // Merge with any existing content entries rather than clobbering
+        // (upstream never emits logprobs today; defensive for the future).
+        var logprobs = choice["logprobs"] as? [String: Any] ?? [:]
+        var contentEntries = logprobs["content"] as? [[String: Any]] ?? []
+        contentEntries.append(contentsOf: entries.map { $0.jsonObject })
+        logprobs["content"] = contentEntries
+        choice["logprobs"] = logprobs
+        choices[0] = choice
+        obj["choices"] = choices
+        guard let out = try? JSONSerialization.data(
+                withJSONObject: obj, options: [.sortedKeys, .withoutEscapingSlashes]
+              ),
+              let json = String(data: out, encoding: .utf8)
+        else {
+            return nil
+        }
+        return "data: \(json)\n\n"
+    }
+
     /// TB-007 P2 #2: deterministic serialization of a `tool_calls`
     /// delta for inclusion in the response-hash accumulator.
     ///

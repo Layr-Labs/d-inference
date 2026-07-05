@@ -399,7 +399,6 @@ type Provider struct {
 	MDAVerified       bool                   // true if Apple Device Attestation cert chain verified
 	MDACertChain      [][]byte               // DER-encoded Apple MDA certificate chain (leaf first)
 	MDAResult         *attestation.MDAResult // parsed OIDs from Apple cert
-	ACMEVerified      bool                   // true if ACME device-attest-01 client cert verified (SE key proven)
 	SEKeyBound        bool                   // true if SE key was bound to device via MDA nonce
 
 	// restoredMDAChain holds the durable Apple-signed MDA cert chain recovered
@@ -647,17 +646,6 @@ func (p *Provider) GetStatus() ProviderStatus {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.Status
-}
-
-// SetACMEVerified sets the ACME-verified flag (thread-safe). Used to clear a
-// flag that applyACMETrust set optimistically (it marks the cert verified before
-// the SE-key binding completes) when a trust-reuse fast-skip grants hardware via
-// MDM-reuse and the stashed ACME never bound (DAR-326 FIX 4a) — so the attestation
-// report does not claim acme_verified for an unproven binding.
-func (p *Provider) SetACMEVerified(v bool) {
-	p.mu.Lock()
-	p.ACMEVerified = v
-	p.mu.Unlock()
 }
 
 // SetMDMFailureReason records the bucketed reason this connection's MDM
@@ -1280,6 +1268,24 @@ type Registry struct {
 	providerBreakerOpenUntil map[string]time.Time             // breaker-open expiry per provider
 	providerBreakerTrips     map[string]int                   // trip count per provider (exponential backoff)
 
+	// capacityRejectStrikes / capacityCooldowns / capacityCooldownTrips
+	// implement the capacity-reject routing cooldown (capacity_cooldown.go),
+	// SEPARATE from every breaker above — all of which deliberately IGNORE
+	// capacity-class rejections (sound for occasional sheds from a busy box,
+	// catastrophic for a box that capacity-rejects EVERYTHING while its
+	// idle-looking heartbeats keep winning the cost scheduler: the 2026-07
+	// black-hole incident, 7 boxes, ~9k rejects/30min, zero successes). A
+	// (provider, model) pair that accumulates threshold-many capacity rejects
+	// inside the window with ZERO interleaved accepts enters a routing
+	// cooldown with exponential re-trip backoff; any accept (first content
+	// chunk or clean completion) clears all three entries. Config is
+	// env-tunable (EIGENINFERENCE_CAPACITY_COOLDOWN_*), loaded at
+	// construction. Guarded by r.mu like the maps above.
+	capacityCooldownCfg   capacityCooldownConfig
+	capacityRejectStrikes map[capacityRejectKey][]time.Time            // recent capacity-reject strikes per (provider, model)
+	capacityCooldowns     map[capacityRejectKey]*capacityCooldownEntry // cooldown expiry + half-open probe claim per (provider, model)
+	capacityCooldownTrips map[capacityRejectKey]int                    // trip count per (provider, model) (exponential backoff)
+
 	// Stable-identity health ejection (health_ejection.go). Keyed by a STABLE
 	// identity (serial/SE-key/account), NOT the session UUID, and DELIBERATELY
 	// NOT deleted on Disconnect — so a zombie that fails ~every request while
@@ -1367,6 +1373,10 @@ func New(logger *slog.Logger) *Registry {
 		providerOutcomes:         make(map[string]*providerHealthWindow),
 		providerBreakerOpenUntil: make(map[string]time.Time),
 		providerBreakerTrips:     make(map[string]int),
+		capacityCooldownCfg:      loadCapacityCooldownConfig(),
+		capacityRejectStrikes:    make(map[capacityRejectKey][]time.Time),
+		capacityCooldowns:        make(map[capacityRejectKey]*capacityCooldownEntry),
+		capacityCooldownTrips:    make(map[capacityRejectKey]int),
 		healthEjectionWindows:    make(map[string]*providerHealthWindow),
 		healthEjectionUntil:      make(map[string]time.Time),
 		healthEjectionTrips:      make(map[string]int),
@@ -2038,15 +2048,66 @@ func (r *Registry) providerServesCatalogModelLocked(p *Provider, model string) b
 	return false
 }
 
+// modelTrackedByCatalogLocked reports whether the catalog has an entry for the
+// model id at all (regardless of weight-hash agreement). A nil catalog tracks
+// nothing — filtering is disabled and modelAllowedByCatalogLocked admits
+// everything, so callers never reach the off-catalog distinction. Caller must
+// hold r.mu.
+func (r *Registry) modelTrackedByCatalogLocked(id string) bool {
+	if r.modelCatalog == nil {
+		return false
+	}
+	_, ok := r.modelCatalog[id]
+	return ok
+}
+
+// modelServableForOwnerLocked is the owner self-route admission for a single
+// advertised build: a model the catalog does NOT track is servable on the
+// owner's box (the off-catalog local-model case), but a model the catalog DOES
+// track must still pass the catalog gate — including the weight-hash tamper
+// tripwire. The owner exemption widens WHICH models are reachable, never the
+// integrity check on catalog builds. Caller must hold r.mu.
+func (r *Registry) modelServableForOwnerLocked(m protocol.ModelInfo) bool {
+	return r.modelAllowedByCatalogLocked(m) || !r.modelTrackedByCatalogLocked(m.ID)
+}
+
+// providerServesOwnedRoutableModelLocked is providerServesCatalogModelLocked's
+// owner self-route counterpart: true when the provider advertises the model
+// and that build is servable for its owner (catalog-allowed, or absent from
+// the catalog entirely). Caller must hold r.mu and p.mu.
+func (r *Registry) providerServesOwnedRoutableModelLocked(p *Provider, model string) bool {
+	for _, m := range p.Models {
+		if m.ID == model && r.modelServableForOwnerLocked(m) {
+			return true
+		}
+	}
+	return false
+}
+
 // providerServesVisionModelLocked reports whether the provider advertises the
 // model as a vision-capable (VLM) build — required to route image/video requests
-// so the media is actually perceived rather than silently dropped. Caller must
-// hold r.mu AND p.mu (mirrors providerServesCatalogModelLocked): p.Models is
-// guarded by p.mu and mutated by MergeProviderModels/UpdateModelWeightHashes.
-// Pre-0.6.0 providers never set IsVision, so they are correctly excluded.
-func (r *Registry) providerServesVisionModelLocked(p *Provider, model string) bool {
+// so the media is actually perceived rather than silently dropped. allowOffCatalog
+// is the owner self-route context (mirrors providerServesRoutableModelLocked's
+// allowDedicated): an owner's off-catalog local VLM passes the routable gate, so
+// the vision gate must accept the same advertisement or media requests would be
+// listed/accepted but never routable. It relaxes only catalog MEMBERSHIP — a
+// catalog-tracked build still has to pass the weight-hash gate, mirroring the
+// routable gate. Caller must hold r.mu AND p.mu (mirrors
+// providerServesCatalogModelLocked): p.Models is guarded by p.mu and mutated by
+// MergeProviderModels/UpdateModelWeightHashes. Pre-0.6.0 providers never set
+// IsVision, so they are correctly excluded.
+func (r *Registry) providerServesVisionModelLocked(p *Provider, model string, allowOffCatalog bool) bool {
 	for _, m := range p.Models {
-		if m.ID == model && m.IsVision && r.modelAllowedByCatalogLocked(m) {
+		if m.ID != model || !m.IsVision {
+			continue
+		}
+		if allowOffCatalog {
+			if r.modelServableForOwnerLocked(m) {
+				return true
+			}
+			continue
+		}
+		if r.modelAllowedByCatalogLocked(m) {
 			return true
 		}
 	}
@@ -2081,7 +2142,7 @@ func (r *Registry) HasVisionProviderForModel(model string, allowedSerials ...str
 		// whole eligibility read must happen under the provider lock.
 		p.mu.Lock()
 		eligible := p.Status != StatusOffline && p.Status != StatusUntrusted &&
-			r.providerServesVisionModelLocked(p, model)
+			r.providerServesVisionModelLocked(p, model, false)
 		p.mu.Unlock()
 		if eligible {
 			return true
@@ -2100,6 +2161,42 @@ func (r *Registry) catalogSizeGBLocked(model string) float64 {
 		return e.SizeGB
 	}
 	return 0
+}
+
+// advertisedModelSizeGBLocked returns the provider-advertised on-disk weight
+// size for model in decimal GB (SizeBytes/1e9 — the same unpadded basis as the
+// catalog's SizeGB), or 0 when the provider does not advertise the model or
+// reports no size. Caller must hold p.mu.
+func advertisedModelSizeGBLocked(p *Provider, model string) float64 {
+	for _, m := range p.Models {
+		if m.ID == model && m.SizeBytes > 0 {
+			return float64(m.SizeBytes) / 1e9
+		}
+	}
+	return 0
+}
+
+// modelSizeGBForFitLocked returns the weight footprint (GB) the hardware-fit
+// and free-memory admission gates should use for a provider/model pair: the
+// catalog's authoritative SizeGB when present, else — for a model with NO
+// catalog entry (an owner's off-catalog local model, reachable only via
+// self-route) — the provider-advertised size. Without the fallback an
+// off-catalog model snapshots as size 0, disabling both gates, so routing
+// could pick a machine whose oversized local model can never load and turn a
+// deterministic model_too_large into a provider-side load failure. A nil
+// catalog (dev/test: filtering disabled) and a catalog entry the operator left
+// unsized both keep the gate disabled, as before. Caller holds r.mu and p.mu.
+func (r *Registry) modelSizeGBForFitLocked(p *Provider, model string) float64 {
+	if size := r.catalogSizeGBLocked(model); size > 0 {
+		return size
+	}
+	if r.modelCatalog == nil {
+		return 0
+	}
+	if _, ok := r.modelCatalog[model]; ok {
+		return 0
+	}
+	return advertisedModelSizeGBLocked(p, model)
 }
 
 // catalogMinRAMGbLocked returns the model's authoritative minimum-RAM
@@ -3166,7 +3263,10 @@ func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
 	// OUTSIDE the queue lock — since OwnedProviderSummary takes the registry lock.
 	preferOwnerEligible := make(map[string]bool)
 	for _, owner := range r.queue.PreferWaiterOwners(modelID) {
-		_, servesModel := r.OwnedProviderSummary(owner, modelID)
+		// Base-shape question (like the QuickCapacityCheck above): does the
+		// owner have ANY box serving this model — no per-request trait/vision
+		// constraint at this granularity.
+		_, servesModel := r.OwnedProviderSummary(owner, modelID, RequestTraits{}, false)
 		preferOwnerEligible[owner] = servesModel > 0
 	}
 
@@ -3770,6 +3870,98 @@ func (r *Registry) ListModels() []AggregateModel {
 		models = append(models, am)
 	}
 
+	return models
+}
+
+// OwnedModels returns deduplicated live models advertised by providers owned by
+// accountID. Unlike ListModels, it intentionally does not apply the public
+// catalog filter; self-route keys may target off-catalog local models.
+func (r *Registry) OwnedModels(accountID string) []AggregateModel {
+	if accountID == "" {
+		return nil
+	}
+	now := time.Now()
+	agg := make(map[string]*AggregateModel)
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		p.mu.Lock()
+		eligible := p.AccountID == accountID &&
+			p.Status != StatusOffline &&
+			p.Status != StatusUntrusted &&
+			p.RuntimeVerified &&
+			r.providerSupportsPrivateTextLocked(p) &&
+			!p.LastChallengeVerified.IsZero() &&
+			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
+		if !eligible {
+			p.mu.Unlock()
+			continue
+		}
+		trust := p.TrustLevel
+		attested := p.Attested
+		attestResult := p.AttestationResult
+		models := make([]protocol.ModelInfo, len(p.Models))
+		copy(models, p.Models)
+		p.mu.Unlock()
+
+		for _, m := range models {
+			if m.ID == "" {
+				continue
+			}
+			// List/route agreement: only builds the routing path would admit for
+			// this owner appear in the list — an off-catalog local model, or a
+			// catalog build passing the weight-hash gate. A stale-hash catalog
+			// build must not be advertised here only to fail every dispatch.
+			if !r.modelServableForOwnerLocked(m) {
+				continue
+			}
+			// Same principle for the template-render gate: an explicit
+			// template_render_ok=false fences EVERY request shape at dispatch
+			// (see providerTemplateRenderBrokenLocked / the trait gate), so a
+			// render-broken build must not be listed either. nil (pre-0.6.5, no
+			// opinion) stays listed, matching dispatch.
+			if m.TemplateRenderOK != nil && !*m.TemplateRenderOK {
+				continue
+			}
+			a, ok := agg[m.ID]
+			if !ok {
+				a = &AggregateModel{
+					ID:         m.ID,
+					TrustLevel: TrustNone,
+				}
+				agg[m.ID] = a
+			}
+			// Metadata backfill rather than first-writer-wins: two owned boxes
+			// can advertise the same id with one omitting metadata, and map
+			// iteration order must not decide which copy the owner sees.
+			if a.ModelType == "" {
+				a.ModelType = m.ModelType
+			}
+			if a.Quantization == "" {
+				a.Quantization = m.Quantization
+			}
+			a.Providers++
+			if trustRank(trust) > trustRank(a.TrustLevel) {
+				a.TrustLevel = trust
+			}
+			if attested && attestResult != nil {
+				a.AttestedProviders++
+				if a.Attestation == nil {
+					a.Attestation = &AttestationSummary{}
+				}
+				a.Attestation.SecureEnclave = a.Attestation.SecureEnclave || attestResult.SecureEnclaveAvailable
+				a.Attestation.SIPEnabled = a.Attestation.SIPEnabled || attestResult.SIPEnabled
+				a.Attestation.SecureBoot = a.Attestation.SecureBoot || attestResult.SecureBootEnabled
+			}
+		}
+	}
+
+	models := make([]AggregateModel, 0, len(agg))
+	for _, a := range agg {
+		models = append(models, *a)
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models
 }
 

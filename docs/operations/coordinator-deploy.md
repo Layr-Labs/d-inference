@@ -23,12 +23,11 @@ How to build, deploy, and update the Darkbloom coordinator and the Swift provide
 | Reverse proxy | Caddy (injected by EigenCloud, [`coordinator/Caddyfile`](../../coordinator/Caddyfile)) | Host Caddy + Cloud Build-deployed container |
 | Coordinator | Go binary, port 8080 ([`coordinator/cmd/coordinator`](../../coordinator/cmd/coordinator)) | Same Docker image as prod |
 | MicroMDM | Port 9002, same container ([`coordinator/deploy/start.sh`](../../coordinator/deploy/start.sh)) | Same |
-| step-ca | Port 9000, same container | Same |
 | Database | AWS RDS PostgreSQL | Cloud SQL Postgres 16 via cloud-sql-proxy sidecar |
 | Persistent storage | `/mnt/disks/userdata` | `/mnt/disks/userdata` persistent disk |
 | Install script | `curl -fsSL https://api.darkbloom.dev/install.sh \| bash` | Templated to dev URL by coordinator |
 
-The container entrypoint is [`coordinator/deploy/start.sh`](../../coordinator/deploy/start.sh). It symlinks `/data -> /mnt/disks/userdata`, initializes step-ca and MicroMDM on first boot, and `exec`s the coordinator as PID 1.
+The container entrypoint is [`coordinator/deploy/start.sh`](../../coordinator/deploy/start.sh). It symlinks `/data -> /mnt/disks/userdata`, initializes MicroMDM on first boot, and `exec`s the coordinator as PID 1.
 
 ## Steps
 
@@ -182,7 +181,6 @@ Managed via EigenCloud KMS (prod) or GCP Secret Manager (dev). Core coordinator 
 | `EIGENINFERENCE_MDM_API_KEY` | Must match `MICROMDM_API_KEY` |
 | `MICROMDM_API_KEY` | Used by `start.sh` to launch MicroMDM |
 | `MDM_PUSH_P12_B64` | Base64url-encoded Apple MDM push PKCS#12 |
-| `EIGENINFERENCE_STEP_CA_ROOT`, `EIGENINFERENCE_STEP_CA_INTERMEDIATE` | CA cert paths |
 | `MNEMONIC` | 12-word BIP39 Solana wallet for coordinator |
 | `EIGENINFERENCE_SOLANA_RPC_URL` | Solana RPC endpoint |
 | `EIGENINFERENCE_IPAPI_KEY` | ip-api.com **PRO** key (secret, optional). When set, provider/consumer geo lookups use the unmetered `https://pro.ip-api.com` endpoint; unset falls back to the free 45 req/min `http://ip-api.com` tier. Dev: `gcloud secrets create eigeninference-ipapi-key`. Never commit the value. |
@@ -197,7 +195,7 @@ Managed via EigenCloud KMS (prod) or GCP Secret Manager (dev). Core coordinator 
 |---|---|---|
 | `/v1/models` empty or providers show `self_signed` trust | MicroMDM not running or API key mismatch | Verify `MICROMDM_API_KEY` == `EIGENINFERENCE_MDM_API_KEY`; check `start.sh` logs |
 | MDM webhook 403 | `EIGENINFERENCE_MDM_WEBHOOK_SECRET` set on coordinator but `?token=` missing from MicroMDM webhook URL | Ensure `start.sh` templates the token into `-command-webhook-url` |
-| step-ca re-initializes on every boot | Persistent storage not mounted or `/data` symlink missing | Confirm `/mnt/disks/userdata` is mounted and `/data -> /mnt/disks/userdata` exists |
+| MicroMDM state resets on every boot | Persistent storage not mounted or `/data` symlink missing | Confirm `/mnt/disks/userdata` is mounted and `/data -> /mnt/disks/userdata` exists |
 | Provider disconnects frequently | Caddy health check timeout or WebSocket EOF | Check EigenCloud/Caddy logs; increase idle timeout if needed |
 | Release registration 500 | `releases` table schema mismatch | Run pending Postgres migrations |
 | Signed provider binary lacks keychain access | Missing provisioning profile or wrong entitlements | Check `release-swift.yml` entitlement verification steps |

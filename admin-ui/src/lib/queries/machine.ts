@@ -25,7 +25,6 @@ export interface MachineDetail {
   version: string;
   trust_level: string;
   attested: boolean;
-  acme_verified: boolean;
   mda_verified: boolean;
   runtime_verified: boolean;
   se_public_key: string;
@@ -62,7 +61,6 @@ export async function getMachineBySerial(serial: string): Promise<MachineDetail 
             version,
             trust_level,
             attested,
-            acme_verified,
             mda_verified,
             runtime_verified,
             se_public_key,

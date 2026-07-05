@@ -24,6 +24,7 @@ export interface UseApiKeys {
   login: () => void;
   keys: ApiKey[];
   models: string[];
+  selfRouteModels: string[];
   loading: boolean;
   error: string | null;
   submitting: boolean;
@@ -44,6 +45,18 @@ export interface UseApiKeys {
   adoptConsoleKey: (created: CreatedKey) => void;
 }
 
+type ProviderModelsResponse = { models?: string[] };
+
+async function fetchSelfRouteModels(token: string): Promise<string[]> {
+  const res = await fetch("/api/me/provider-models", {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  if (!res.ok) return [];
+  const data = (await res.json()) as ProviderModelsResponse;
+  return (data.models ?? []).filter(Boolean).sort();
+}
+
 // useApiKeys owns all server interaction and the console-key localStorage
 // bookkeeping. UI/modal state lives in the component that consumes it.
 export function useApiKeys({ onConsoleKeyChange }: { onConsoleKeyChange?: (key: string) => void }): UseApiKeys {
@@ -52,6 +65,7 @@ export function useApiKeys({ onConsoleKeyChange }: { onConsoleKeyChange?: (key: 
 
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [models, setModels] = useState<string[]>([]);
+  const [selfRouteModels, setSelfRouteModels] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -74,6 +88,10 @@ export function useApiKeys({ onConsoleKeyChange }: { onConsoleKeyChange?: (key: 
     setKeys(await listApiKeys(token));
   }, []);
 
+  const fetchOwnedModels = useCallback(async (token: string) => {
+    setSelfRouteModels(await fetchSelfRouteModels(token).catch(() => []));
+  }, []);
+
   const reload = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -81,21 +99,23 @@ export function useApiKeys({ onConsoleKeyChange }: { onConsoleKeyChange?: (key: 
       const token = await getAccessToken().catch(() => null);
       if (!token) {
         setKeys([]);
+        setSelfRouteModels([]);
         setError("Sign in to view your API keys.");
         return;
       }
-      await fetchKeys(token);
+      await Promise.all([fetchKeys(token), fetchOwnedModels(token)]);
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [getAccessToken, fetchKeys]);
+  }, [getAccessToken, fetchKeys, fetchOwnedModels]);
 
   useEffect(() => {
     if (!authenticated) {
       setLoading(false);
       setKeys([]);
+      setSelfRouteModels([]);
       return;
     }
     void reload();
@@ -266,6 +286,7 @@ export function useApiKeys({ onConsoleKeyChange }: { onConsoleKeyChange?: (key: 
     login,
     keys,
     models,
+    selfRouteModels,
     loading,
     error,
     submitting,

@@ -15,16 +15,6 @@
         file_server
     }
 
-    # step-ca ACME proxy (device-attest-01 challenges)
-    handle /acme/* {
-        reverse_proxy https://127.0.0.1:9000 {
-            transport http {
-                tls_insecure_skip_verify
-            }
-            header_up Host {$DOMAIN}
-        }
-    }
-
     # MicroMDM — SCEP, MDM checkin/connect
     handle /scep {
         reverse_proxy https://127.0.0.1:9002 {

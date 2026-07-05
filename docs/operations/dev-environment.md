@@ -18,9 +18,9 @@ How to stand up, operate, and tear down the Darkbloom dev environment on Google 
 | DNS | Vercel Domains | `api.dev.darkbloom.xyz` A → VM static IP; `console.dev.darkbloom.xyz` CNAME → Vercel |
 | Privy | Separate dev Privy app | Values in Secret Manager |
 | Solana | Mainnet, dev-only BIP39 mnemonic | `EIGENINFERENCE_BILLING_MOCK=false` |
-| MDM / attestation | Full stack — MicroMDM + step-ca run inside the coordinator container | `MIN_TRUST=hardware`, same as prod |
+| MDM / attestation | Full stack — MicroMDM runs inside the coordinator container | `MIN_TRUST=hardware`, same as prod |
 
-**Why GCE VM, not Cloud Run:** the coordinator container runs step-ca (writes CA keys to disk) and MicroMDM (BoltDB). Both need reliable local filesystem semantics. Cloud Run's ephemeral FS doesn't survive revisions, and gcsfuse is unsafe for BoltDB. The VM's persistent disk lives at `/mnt/disks/userdata` — the same path EigenCloud prod uses, so the container's `start.sh` works unchanged.
+**Why GCE VM, not Cloud Run:** the coordinator container runs MicroMDM (BoltDB + push cert on disk), which needs reliable local filesystem semantics. Cloud Run's ephemeral FS doesn't survive revisions, and gcsfuse is unsafe for BoltDB. The VM's persistent disk lives at `/mnt/disks/userdata` — the same path EigenCloud prod uses, so the container's `start.sh` works unchanged.
 
 **Upgrade time:** ~2–4 minutes end-to-end for the coordinator (build + push + `systemctl restart`). ~30–60 seconds for the console UI on Vercel (auto-builds on git push). During a coordinator restart there is a ~10s blip when the container comes down and back up; providers auto-reconnect.
 

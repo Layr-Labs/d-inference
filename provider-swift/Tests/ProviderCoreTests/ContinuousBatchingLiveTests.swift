@@ -198,7 +198,7 @@ struct ContinuousBatchingLiveTests {
             temperature: 0.0)
         var schedulerTPS = 0.0
         for await event in schedStream {
-            if case .info(_, let completion, let tps) = event, completion > 1 {
+            if case .info(_, let completion, let tps, _) = event, completion > 1 {
                 schedulerTPS = tps
             }
         }

@@ -6,7 +6,7 @@ sequenceDiagram
     participant A as Apple MDA
 
     S->>API: POST /v1/enroll {serial}
-    API-->>S: .mobileconfig (SCEP + MDM + ACME)
+    API-->>S: .mobileconfig (SCEP + MDM)
     S->>P: Install profile
     P->>MDM: Enroll via SCEP identity
     MDM-->>P: MDM check-in complete

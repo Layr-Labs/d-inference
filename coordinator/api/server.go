@@ -18,7 +18,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	"crypto/x509"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -145,7 +144,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // 0.6.0 is the APNs code-identity / VLM-routing / graceful-update release.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.6.30"
+var LatestProviderVersion = "0.7.3"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -168,26 +167,24 @@ func (s *Server) latestReleasedVersion() string {
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
-	registry               *registry.Registry
-	store                  store.Store
-	ledger                 *payments.Ledger
-	billing                *billing.Service
-	baseRewards            *baserewards.Engine
-	logger                 *slog.Logger
-	mux                    *http.ServeMux
-	challengeInterval      time.Duration             // 0 means use DefaultChallengeInterval
-	skipChallenge          bool                      // if true, skip attestation challenges entirely (testing only)
-	privyAuth              *auth.PrivyAuth           // Privy JWT authentication (nil if not configured)
-	adminEmails            map[string]bool           // emails that have admin access
-	adminKey               string                    // EIGENINFERENCE_ADMIN_KEY for admin endpoints
-	mdmClient              *mdm.Client               // MicroMDM client for provider security verification
-	mdmWebhookSecret       string                    // optional shared secret MicroMDM must present on the webhook
-	stepCARootCert         *x509.Certificate         // step-ca root CA for ACME cert verification
-	stepCAIntermediateCert *x509.Certificate         // step-ca intermediate CA
-	profileSigner          *profilesign.Signer       // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
-	codeAttestor           apns.CodeIdentityAttestor // APNs code-identity attestor (nil = disabled; v0.6.0)
-	codeAttestThrottle     *codeAttestThrottle       // per-device APNs push budget + reuse cache (v0.6.0)
-	trustReuseCache        *trustReuseCache          // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
+	registry           *registry.Registry
+	store              store.Store
+	ledger             *payments.Ledger
+	billing            *billing.Service
+	baseRewards        *baserewards.Engine
+	logger             *slog.Logger
+	mux                *http.ServeMux
+	challengeInterval  time.Duration             // 0 means use DefaultChallengeInterval
+	skipChallenge      bool                      // if true, skip attestation challenges entirely (testing only)
+	privyAuth          *auth.PrivyAuth           // Privy JWT authentication (nil if not configured)
+	adminEmails        map[string]bool           // emails that have admin access
+	adminKey           string                    // EIGENINFERENCE_ADMIN_KEY for admin endpoints
+	mdmClient          *mdm.Client               // MicroMDM client for provider security verification
+	mdmWebhookSecret   string                    // optional shared secret MicroMDM must present on the webhook
+	profileSigner      *profilesign.Signer       // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
+	codeAttestor       apns.CodeIdentityAttestor // APNs code-identity attestor (nil = disabled; v0.6.0)
+	codeAttestThrottle *codeAttestThrottle       // per-device APNs push budget + reuse cache (v0.6.0)
+	trustReuseCache    *trustReuseCache          // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
 
 	// Graceful-drain state (DAR-327 Phase 1, zero-downtime upgrades). Set
 	// coordinatorDraining=true before a restart/swap so the drain gate rejects
@@ -359,15 +356,6 @@ type Server struct {
 	// dd is the Datadog integration client for DogStatsD metrics and
 	// Logs API event forwarding. Nil when DD is not configured.
 	dd *datadog.Client
-
-	// pendingACME holds the connect-time ACME (mTLS device-cert) verification
-	// result per provider so the trust upgrade can be retried after the first
-	// passing challenge. applyACMETrust runs at registration BEFORE the first
-	// challenge response sets AttestationResult, so its binding checks fail
-	// purely on ordering and the provider stays self_signed forever. Cleared on
-	// successful upgrade or disconnect.
-	pendingACMEMu sync.Mutex
-	pendingACME   map[string]*ACMEVerificationResult
 
 	// apiKeyCache memoizes ValidateKeyFull results so repeated requests
 	// with the same API key skip the DB round trip. Entries expire after
@@ -704,7 +692,6 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		readCache:            newTTLCache(),
 		geoResolver:          newProviderGeoResolverFromEnv(logger),
 		apiKeyCache:          make(map[string]apiKeyCacheEntry),
-		pendingACME:          make(map[string]*ACMEVerificationResult),
 		codeAttestThrottle:   newCodeAttestThrottle(),
 		trustReuseCache:      newTrustReuseCache(),
 		settlements:          newSettlementHolder(),
@@ -879,12 +866,6 @@ func (s *Server) emitPanic(ctx context.Context, message, stack string, fields ma
 		Fields:   fields,
 		Stack:    stack,
 	})
-}
-
-// SetStepCACerts configures the step-ca CA certificates for ACME client cert verification.
-func (s *Server) SetStepCACerts(root, intermediate *x509.Certificate) {
-	s.stepCARootCert = root
-	s.stepCAIntermediateCert = intermediate
 }
 
 // SetProfileSigner configures the CMS signing identity used to sign the
@@ -1742,11 +1723,14 @@ func (s *Server) routes() {
 	// Account-scoped provider dashboard.
 	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.handleMyProviders))
 	s.mux.HandleFunc("GET /v1/me/summary", s.requirePrivyAuth(s.handleMySummary))
+	// Alias-aware owned live-model ids for the console's self-route key picker.
+	s.mux.HandleFunc("GET /v1/me/self-route-models", s.requirePrivyAuth(s.handleMySelfRouteModels))
 	// Ownership-checked hard delete of a retired/offline machine's record(s).
 	s.mux.HandleFunc("DELETE /v1/me/providers/{serial}", s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeleteMyProvider)))
 
-	// ACME enrollment — generates per-device .mobileconfig for device-attest-01.
-	// No auth needed — security comes from Apple's attestation during ACME challenge.
+	// MDM enrollment — generates the per-device .mobileconfig (SCEP + MDM).
+	// No auth needed — trust comes from MDM SecurityInfo verification after
+	// enrollment, not from possession of the profile.
 	s.mux.HandleFunc("POST /v1/enroll", s.handleEnroll)
 
 	// Attestation verification — public, no auth needed.

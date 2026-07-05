@@ -311,7 +311,7 @@ func collect(
         switch event {
         case .chunk(let text):
             collected.chunks.append(text)
-        case .info(let prompt, let completion, let tps):
+        case .info(let prompt, let completion, let tps, _):
             collected.info = (prompt, completion, tps)
         case .error(let message):
             collected.error = message

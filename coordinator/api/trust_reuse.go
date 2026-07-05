@@ -562,8 +562,6 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 	// live SE challenge that just re-proved identity + posture + unchanged binary. It
 	// does NOT re-prove MDA cert-chain freshness within the window — an accepted
 	// trade-off for the restart-herd problem, bounded by the (short) reuse window and
-	// the live SE challenge. Connect-time ACME state is reconciled by the caller
-	// (reconcileACMEAfterFastSkip) so an unbound cert is not reported as verified.
 	s.sendTrustStatus(provider, registry.TrustHardware, "online", "trust-reuse fast-skip (recent MDM verification re-proven by live SE challenge)")
 	s.registry.PersistProvider(provider)
 	s.ddIncr("mdm.verification", []string{"outcome:granted-trust-reuse"})
@@ -578,7 +576,7 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 // awaitTrustReuseGrant lets the mdmVerificationLoop briefly defer to the live SE
 // challenge's trust-reuse fast-skip before running the (herd-causing) live MDM
 // round-trip. It returns true if hardware is granted within trustReuseGrantWait
-// (by the fast-skip, or the ACME leg), false otherwise (challenge settled without
+// (by the fast-skip), false otherwise (challenge settled without
 // a grant / hard untrust / ctx done / timeout) — in which case the caller proceeds
 // to the full live MDM verify, unchanged. Only invoked for fast-skip candidates
 // (hasFreshRecord), so a first-ever / expired device is never delayed.
@@ -606,7 +604,6 @@ func (s *Server) awaitTrustReuseGrant(ctx context.Context, provider *registry.Pr
 		case <-settled:
 			// The live challenge settled WITHOUT a fast-skip grant — stop waiting and
 			// fall through to the full live MDM verify now (no up-to-10s stall). Re-read
-			// trust in case the ACME leg granted in the same challenge pass.
 			return provider.GetTrustLevel() == registry.TrustHardware
 		case <-timer.C:
 			return provider.GetTrustLevel() == registry.TrustHardware

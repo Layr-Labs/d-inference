@@ -210,7 +210,7 @@ struct B1GreedyFastPathBenchmark {
             switch event {
             case .chunk(let text):
                 chunks.append(text)
-            case .info(let prompt, let completion, let tps):
+            case .info(let prompt, let completion, let tps, _):
                 run.promptTokens = prompt
                 run.completionTokens = completion
                 run.tokensPerSecond = tps

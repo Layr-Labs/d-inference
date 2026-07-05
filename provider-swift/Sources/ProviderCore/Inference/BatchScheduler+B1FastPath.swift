@@ -310,7 +310,8 @@ extension BatchScheduler {
                 continuation.yield(.info(
                     promptTokens: usage.promptTokens,
                     completionTokens: usage.completionTokens,
-                    tokensPerSecond: usage.tps))
+                    tokensPerSecond: usage.tps,
+                    finishReason: nil))
             }
             if cancelled {
                 continuation.yield(.error("request cancelled"))
@@ -318,10 +319,14 @@ extension BatchScheduler {
                 continuation.yield(.error(
                     "fast path does not support tool calls; please retry"))
             } else {
+                // `container.generate` stops at maxTokens without surfacing a
+                // reason; a decode that used the full budget is a truncation
+                // (finish_reason "length"), matching the engine paths.
                 continuation.yield(.info(
                     promptTokens: usage.promptTokens,
                     completionTokens: usage.completionTokens,
-                    tokensPerSecond: usage.tps))
+                    tokensPerSecond: usage.tps,
+                    finishReason: usage.completionTokens >= maxTokens ? "length" : "stop"))
             }
             continuation.finish()
             await scheduler.clearFastPathTask(id)

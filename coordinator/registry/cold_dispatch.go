@@ -96,7 +96,7 @@ func (r *Registry) coldSpillProviderEligibleLocked(p *Provider, model string, tr
 	if p.SystemMetrics.ThermalState == "critical" {
 		return false
 	}
-	if requiresVision && !r.providerServesVisionModelLocked(p, model) {
+	if requiresVision && !r.providerServesVisionModelLocked(p, model, false) {
 		return false
 	}
 

@@ -42,10 +42,58 @@ extension ProviderLoop {
         var totalActive = 0
         let slots = modelSlots.filter { !modelsUnloading.contains($0.key) }
         for (_, slot) in slots {
+            // A v2-served slot reports through its bridge (folded in below via
+            // the runtime). Its legacy scheduler is a dormant fallback that
+            // serves no requests while the bridge exists — reporting BOTH
+            // would advertise the same model's capacity twice and over-admit.
+            if slot.engineV2 != nil { continue }
             let cap = await slot.scheduler.backendCapacity()
             allSlots.append(contentsOf: cap.slots)
             let schedCap = await slot.scheduler.capacity()
             totalActive += schedCap.activeRequests
+        }
+
+        // ContinuousBatchingV2 (flag-gated, additive): fold any active v2
+        // bridge slots into the SAME heartbeat payload — identical protocol
+        // fields, truthful bytes-derived token numbers (see
+        // `EngineV2Bridge+Capacity`). Guarded on the slot set so the flag-off
+        // steady state pays ZERO extra cost here — no runtime actor hop, no
+        // allocations; legacy behavior is byte-identical.
+        if hasEngineV2Slots {
+            // Fleet context for the v2 budget clamp (round-3 PR#499 P2): v2
+            // ceilings are construction-fixed, so a model loaded AFTER a
+            // bridge (legacy or v2) would otherwise leave that bridge's
+            // heartbeat advertising a stale `activeTokenBudgetMax` — the
+            // coordinator keeps routing what the shared KV gate then rejects
+            // post-acceptance. Snapshot the CURRENT resident set (ALL slots'
+            // weights — v2 and legacy, including slots mid-unload whose
+            // weights are still resident) + the operator reserve so the
+            // runtime can recompute each bridge's live budget and clamp the
+            // reported max. Heartbeat cadence only — never the submit path.
+            var totalResidentWeightBytes: UInt64 = 0
+            for (_, slot) in modelSlots {
+                let weights = await slot.scheduler.modelWeightBytes
+                // Engine-retained residency overhead (the shared MoE fused
+                // gate+up cache a VLM extraction built) counts like weights:
+                // module-retained active memory that `modelWeightBytes`
+                // cannot see. Omitting it would let the live budget clamp
+                // recompute OTHER bridges' budgets against a rosier resident
+                // set than the shared KV gate actually observes.
+                var slotResident = UInt64(max(0, weights))
+                let (withOverhead, overheadOverflow) = slotResident
+                    .addingReportingOverflow(slot.engineResidentOverheadBytes)
+                slotResident = overheadOverflow ? .max : withOverhead
+                let (sum, overflow) = totalResidentWeightBytes
+                    .addingReportingOverflow(slotResident)
+                totalResidentWeightBytes = overflow ? .max : sum
+            }
+            let engineV2 = await engineV2Runtime.capacitySummary(
+                fleetKV: EngineV2Runtime.FleetKVContext(
+                    totalResidentWeightBytes: totalResidentWeightBytes,
+                    configReserveBytes: Self.memoryReserveBytes(
+                        forGiB: loopConfig.config.provider.memoryReserveGB)))
+            allSlots.append(contentsOf: engineV2.slots)
+            totalActive += engineV2.activeRequests
         }
 
         let gbDivisor = 1024.0 * 1024.0 * 1024.0

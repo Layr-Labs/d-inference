@@ -49,9 +49,9 @@ func collectGateOutcomes(reg *Registry, p *Provider, model string, now time.Time
 
 	var out gateOutcomes
 	p.mu.Lock()
-	out.routingGates = reg.providerPassesRoutingGatesLockedEx(p, model, RequestTraits{}, false, now, false)
-	out.routingGatesSelf = reg.providerPassesRoutingGatesLockedEx(p, model, RequestTraits{}, true, now, false)
-	out.routingGatesBypass = reg.providerPassesRoutingGatesLockedEx(p, model, RequestTraits{}, false, now, true)
+	out.routingGates = reg.providerPassesRoutingGatesLockedEx(p, model, RequestTraits{}, false, now, false, false)
+	out.routingGatesSelf = reg.providerPassesRoutingGatesLockedEx(p, model, RequestTraits{}, true, now, false, false)
+	out.routingGatesBypass = reg.providerPassesRoutingGatesLockedEx(p, model, RequestTraits{}, false, now, true, false)
 	out.canRoutePublic = reg.providerCanRouteBuildLocked(p, model, reg.MinTrustLevel, now, false)
 	out.canRouteRelaxed = reg.providerCanRouteBuildLocked(p, model, TrustNone, now, true)
 	out.hasWarm = reg.providerHasWarmModelLocked(p, model, now)
@@ -332,7 +332,7 @@ func TestRoutingGateInferenceErrorCooldown(t *testing.T) {
 
 	reg.mu.RLock()
 	p.mu.Lock()
-	dispatch := reg.providerPassesRoutingGatesLockedEx(p, gateCharModel, traits, false, now, false)
+	dispatch := reg.providerPassesRoutingGatesLockedEx(p, gateCharModel, traits, false, now, false, false)
 	canRoute := reg.providerCanRouteBuildLocked(p, gateCharModel, reg.MinTrustLevel, now, false)
 	hasWarm := reg.providerHasWarmModelLocked(p, gateCharModel, now)
 	p.mu.Unlock()

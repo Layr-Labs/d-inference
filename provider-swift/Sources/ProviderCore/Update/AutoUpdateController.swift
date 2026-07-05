@@ -56,6 +56,14 @@ public struct AutoUpdateController: Sendable {
         /// live layout. `.completed` means a verified bundle is staged on
         /// disk; the process keeps serving the old binary.
         public var downloadVerifyStage: @Sendable (ReleaseInfo) async -> StepOutcome
+        /// Rollover jitter: awaited AFTER the bundle is verified + staged and
+        /// BEFORE the drain begins, so a fleet that discovers a release on
+        /// aligned update ticks does not drain + restart in unison (the
+        /// v0.6.30 cold-restart storm). The provider keeps serving normally
+        /// while it waits, and no security-critical check is deferred (verify
+        /// already ran). Defaults to a no-op; production wires a uniformly
+        /// random sleep of up to `update_jitter_seconds`.
+        public var waitBeforeInstall: @Sendable () async -> Void
         /// Stop accepting new requests (drain mode). In-flight requests continue.
         public var beginDraining: @Sendable () async -> Void
         /// Wait until in-flight work reaches zero or `timeout` elapses.
@@ -77,6 +85,7 @@ public struct AutoUpdateController: Sendable {
             resumeServing: @escaping @Sendable () async -> Void,
             check: @escaping @Sendable () async -> UpdateCheckResult,
             downloadVerifyStage: @escaping @Sendable (ReleaseInfo) async -> StepOutcome,
+            waitBeforeInstall: @escaping @Sendable () async -> Void = {},
             beginDraining: @escaping @Sendable () async -> Void,
             waitForDrain: @escaping @Sendable (Duration) async -> Bool,
             forceCancelInflight: @escaping @Sendable () async -> Void,
@@ -88,6 +97,7 @@ public struct AutoUpdateController: Sendable {
             self.resumeServing = resumeServing
             self.check = check
             self.downloadVerifyStage = downloadVerifyStage
+            self.waitBeforeInstall = waitBeforeInstall
             self.beginDraining = beginDraining
             self.waitForDrain = waitForDrain
             self.forceCancelInflight = forceCancelInflight
@@ -101,6 +111,11 @@ public struct AutoUpdateController: Sendable {
     public enum Outcome: Sendable, Equatable {
         /// A cycle was already in progress; this call did nothing.
         case alreadyRunning
+        /// The cycle was cancelled (provider shutdown / monitor teardown)
+        /// during the pre-install rollover-jitter wait. Nothing was drained,
+        /// committed, or restarted; the staged bundle is discarded by
+        /// `resumeServing` and a later tick can retry.
+        case cancelled
         /// Already on the latest version.
         case upToDate
         /// The version check failed.
@@ -158,6 +173,21 @@ public struct AutoUpdateController: Sendable {
                 return .stageFailed(reason)
 
             case .completed:
+                // Rollover jitter (see Dependencies.waitBeforeInstall): the
+                // bundle is verified + staged and we are STILL serving; this
+                // staggers the drain+restart across the fleet.
+                await deps.waitBeforeInstall()
+                // A cancelled cycle (provider shutdown / monitor teardown
+                // landing in the jitter window) must NOT proceed: the sleep
+                // returning early on cancellation is not permission to
+                // install. Abort before any drain/commit/restart side effect;
+                // resumeServing discards the staged bundle and a later tick
+                // retries.
+                if Task.isCancelled {
+                    deps.log("auto-update: cycle cancelled during the pre-install wait; aborting before drain")
+                    await deps.resumeServing()
+                    return .cancelled
+                }
                 deps.log("auto-update: v\(release.version) staged; draining in-flight requests before install + restart")
                 await deps.beginDraining()
 

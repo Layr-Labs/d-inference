@@ -460,6 +460,11 @@ public actor StandaloneServer {
             release: releaseClosure,
             modelId: modelId
         )
+        // ContinuousBatchingV2 is deliberately NOT wired here: standalone
+        // (`--local`-only) mode builds its own slots outside ProviderLoop and
+        // always serves the legacy engine, regardless of DARKBLOOM_ENGINE_V2
+        // / engine_v2. The unified local endpoint (ProviderLoop+LocalEndpoint)
+        // does route through the v2 bridge when the slot carries one.
         return MultiModelBatchSchedulerEngine.AcquiredModel(
             scheduler: cached.scheduler,
             tokenizer: cached.tokenizer,

@@ -144,12 +144,13 @@ func multiModelEngineTranslateDropsEmptyStop() {
     #expect(translated.stop == nil)
 }
 
-// P1 #3 deviation guard: seed dropped on the OpenAI path because the
-// upstream request type does not carry one. If a future upstream PR
-// adds `OpenAIChatCompletionRequest.seed`, plumb it through `translate`
-// and update this test. Until then this fixture pins the current
-// behaviour so the deviation is visible.
-@Test("translate drops seed because OpenAIChatCompletionRequest has no seed field (P1 #3)")
+// P1 #3 deviation guard (narrowed): the upstream request type carries
+// neither `seed` nor `logit_bias`, so a translation WITHOUT the sealed-body
+// overlay yields nil for both. If a future upstream PR adds the fields,
+// plumb them through `translate` directly and retire the overlay. Until
+// then this fixture pins the bare-translation behaviour so the deviation
+// stays visible.
+@Test("translate without an overlay yields nil seed/logit_bias (upstream shape omits them)")
 func multiModelEngineTranslateDropsSeed() {
     let request = OpenAIChatCompletionRequest(
         model: "any",
@@ -160,7 +161,32 @@ func multiModelEngineTranslateDropsSeed() {
         defaultMaxTokens: 4096
     )
     #expect(translated.seed == nil,
-        "until OpenAIChatCompletionRequest exposes a seed field, the engine adapter must hard-code seed:nil")
+        "the upstream OpenAIChatCompletionRequest exposes no seed field; without the sealed-body overlay the adapter must yield nil")
+    #expect(translated.logit_bias == nil)
+}
+
+// Coordinator-path recovery for the same two fields: the inference handler
+// decodes them from the sealed body (`extractSamplingOverrides`) and
+// overlays them here, so the v2 engine sees the caller's real values.
+@Test("translate overlays sealed-body logit_bias and seed onto the internal shape")
+func multiModelEngineTranslateOverlaysSamplingFields() {
+    let request = OpenAIChatCompletionRequest(
+        model: "any",
+        messages: [.init(role: .user, content: .text("hi"))]
+    )
+    let translated = MultiModelBatchSchedulerEngine.translate(
+        openAIRequest: request,
+        defaultMaxTokens: 4096,
+        logitBias: ["50256": -100],
+        seed: 1234
+    )
+    #expect(translated.logit_bias == ["50256": -100])
+    #expect(translated.seed == 1234)
+    // The overlay feeds EngineV2Translation verbatim: the parsed bias and
+    // seed land in the CBv2 sampling params.
+    let sampling = EngineV2Translation.samplingParams(from: translated)
+    #expect(sampling.logitBias == [50256: -100])
+    #expect(sampling.seed == 1234)
 }
 
 // MARK: - Scheduler error mapping (P2 #6)

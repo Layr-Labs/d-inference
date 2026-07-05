@@ -500,7 +500,7 @@ struct PerformanceLiveTests {
             case .chunk:
                 if firstChunkAt == nil { firstChunkAt = .now }
                 lastChunkAt = .now
-            case .info(_, let completion, let tps):
+            case .info(_, let completion, let tps, _):
                 completionTokens = completion
                 schedulerTPS = tps
             case .error:
@@ -716,9 +716,9 @@ struct PerformanceLiveTests {
                                 ttft = ContinuousClock.now - start
                                 sawFirst = true
                             }
-                        case .info(_, let completion, _):
+                        case .info(_, let completion, _, _):
                             completionTokens = completion
-                            if case .info(_, _, let tps) = event {
+                            if case .info(_, _, let tps, _) = event {
                                 modelSideTPS = tps
                             }
                         case .error:

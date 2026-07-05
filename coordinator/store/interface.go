@@ -843,7 +843,6 @@ type ProviderRecord struct {
 	SerialNumber               string          `json:"serial_number,omitempty"`
 	MDAVerified                bool            `json:"mda_verified"`
 	MDACertChain               json.RawMessage `json:"mda_cert_chain,omitempty"`
-	ACMEVerified               bool            `json:"acme_verified"`
 	Version                    string          `json:"version,omitempty"`
 	RuntimeVerified            bool            `json:"runtime_verified"`
 	PythonHash                 string          `json:"python_hash,omitempty"`

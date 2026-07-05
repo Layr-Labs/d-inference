@@ -15,7 +15,6 @@ type ProviderRow = {
   runtime_verified?: boolean;
   certificate_available?: boolean;
   mda_verified?: boolean;
-  acme_verified?: boolean;
   failed_challenges?: number;
   routable?: boolean;
   [key: string]: unknown;
@@ -40,7 +39,6 @@ function withMockGeography(data: Record<string, unknown>): Record<string, unknow
         runtime_verified: row.runtime_verified ?? hardware,
         certificate_available: certificateAvailable,
         mda_verified: row.mda_verified ?? (hardware && index % 3 === 0),
-        acme_verified: row.acme_verified ?? hardware,
         last_challenge_verified: challengeVerified,
         failed_challenges: row.failed_challenges ?? 0,
         routable,

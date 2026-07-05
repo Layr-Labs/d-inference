@@ -18,6 +18,26 @@ extension BatchScheduler {
         _forceEnginePrefixCacheActiveForTest = active
     }
 
+    /// TEST SEAM: pin the live per-token KV rates without loading a model, so
+    /// the v2 slot factory's kv_quant → fp16 sizing decision
+    /// (`EngineV2KVSizing`) can be exercised end-to-end with scripted hooks.
+    /// `kvBytesPerToken` is the quantized (live) rate; `fp16KVBytesPerToken`
+    /// is the un-quantized cost the v2 caches actually consume. Not used in
+    /// production.
+    func _setKVRatesForTest(kvBytesPerToken: Int, fp16KVBytesPerToken: Int) {
+        self.kvBytesPerToken = kvBytesPerToken
+        self.fp16KVBytesPerToken = fp16KVBytesPerToken
+    }
+
+    /// TEST SEAM: pin the resident-weight figure without loading a model, so
+    /// the v2 slot factory's FLEET-WIDE KV-capacity derivation
+    /// (`EngineV2KVSizing.engineKVBytesCapacity`) can be exercised with
+    /// scripted hooks across multiple co-resident slots. Not used in
+    /// production.
+    func _setModelWeightBytesForTest(_ bytes: Int) {
+        self.modelWeightBytes = bytes
+    }
+
     /// TEST SEAM: install a checkpoint manager + capture hook onto the live
     /// engine, replicating exactly what `makeBatchedEngine` wires for a
     /// `.checkpoint` model. Production builds the manager with an SE-wrapped

@@ -1209,7 +1209,7 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
 
       <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
         <ZoomableMapViewport
-          className="relative aspect-[2/1] min-h-[260px] overflow-hidden rounded-xl border border-border-dim shadow-inner"
+          className="relative w-full aspect-[2/1] min-h-[260px] overflow-hidden rounded-xl border border-border-dim shadow-inner"
           style={{
             background:
               "radial-gradient(115% 78% at 50% -10%, color-mix(in srgb, var(--accent-brand) 11%, transparent), transparent 55%), radial-gradient(85% 70% at 50% 118%, color-mix(in srgb, var(--accent-green) 7%, transparent), transparent 52%), linear-gradient(180deg, var(--bg-primary), var(--bg-secondary))",
@@ -1531,7 +1531,7 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-5">
         <div
-          className="relative aspect-[2/1] min-h-[260px] overflow-hidden rounded-lg border border-border-dim shadow-inner"
+          className="relative w-full aspect-[2/1] min-h-[260px] overflow-hidden rounded-lg border border-border-dim shadow-inner"
           style={{
             background:
               "radial-gradient(110% 80% at 50% -8%, color-mix(in srgb, var(--accent-green) 9%, transparent), transparent 55%), linear-gradient(180deg, var(--bg-primary), var(--bg-secondary))",

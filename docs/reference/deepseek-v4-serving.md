@@ -1,5 +1,13 @@
 # DeepSeek-V4 single-machine serving
 
+> **Status: PARKED (2026-07-05).** DeepSeek-V4 is no longer the rollout
+> target — the flagship moved to `mlx-community/gemma-4-31b-4bit`
+> ([gemma-4-31b-serving.md](gemma-4-31b-serving.md)), which is fully resident
+> and needs none of the machinery below. The code and tests documented here
+> remain in the tree and green (expert streaming, sequential serving, DSML
+> are all opt-in per model and inert for non-DSV4 models); this document is
+> kept as the reference for them.
+
 How the provider serves DeepSeek-V4-Flash-4bit (284B-total / 13B-active MoE,
 141GB on disk) on 36–128GB Apple Silicon machines. Everything below shipped on
 the `deepseek-v4-flash-4bit` branch (provider) + `deepseek-v4-flash`

@@ -61,9 +61,50 @@ Gate-by-gate coverage: `coordinator/registry/gemma4_31b_resident_test.go`
 (admission across 32/36/48/64/96/128GB tiers, below-floor rejection at 24GB,
 cold-spill eligibility at the 32GB floor).
 
+## Engine selection
+
+`EngineV2Config.defaultModelAllowlist`
+(`provider-swift/Sources/ProviderCore/Inference/EngineV2Config.swift`) does
+NOT include `gemma-4-31b-4bit`: the v2 engine allowlist is
+parity/soak-validation-gated, and this model has not been validated on
+hardware yet. It therefore serves on the legacy `BatchedEngine` (still
+continuous batching — the allowlist selects WHICH batched engine, not whether
+batching happens). Staging path once hardware validation passes: set
+`DARKBLOOM_ENGINE_V2_MODELS=gpt-oss-20b,gemma-4-26b-8bit,gemma-4-26b-qat-4bit,gemma-4-31b-4bit`
+on a canary box, run the parity/soak protocol, then add it to
+`defaultModelAllowlist` in a release.
+
+## Rollout runbook
+
+Human-run steps (in order); none are executed by CI or agents:
+
+1. **Publish to R2**: `scripts/publish-model.sh` with
+   Model directory = local checkpoint download,
+   Model id = `gemma-4-31b-4bit` (registry/catalog id — bare, matching
+   `gpt-oss-20b`/`gemma-4-26b-*` conventions, NOT the HF repo id),
+   Version = e.g. `2026-07-05`. This hashes via `darkbloom-publish hash`,
+   uploads to R2, and registers the version with the coordinator.
+2. **Registration parameters**: `min_ram_gb=32`; no `catalog_size_gb`
+   runtime-parameter (default on-disk derivation is correct for a resident
+   model); type `text`.
+3. **Pricing**: fallback defaults apply automatically
+   (`coordinator/payments/pricing.go`: $0.05/M input, $0.20/M output) —
+   set per-model pricing via the admin API only if the flagship should be
+   priced differently.
+4. **Alias** (optional, for a clean public name): catalog alias
+   `gemma-4-31b` → desired build `gemma-4-31b-4bit`, so future quantization
+   swaps don't change the public id (`CatalogAlias`,
+   `coordinator/store/interface.go`). The provider picker consumes aliases
+   automatically; without one the raw build id is shown.
+5. **No provider release is required** — the serving path is entirely
+   pre-existing machinery; any provider ≥ the current fleet floor serves it.
+
 ## Validation surface
 
 - Coordinator: `go test ./registry/ -run TestGemma31b`
+- Provider scanner: `swift test --filter Gemma31bScanTests` (checkpoint-shape
+  fixture: resident disk×1.2 estimate in GiB, memory-filter tier behavior,
+  vision_config detection).
 - Model/engine (mlx-swift-lm): existing Gemma-4 suites (`Gemma4*Tests`)
   cover the architecture; no new model code was needed for the 31B dense
   variant.

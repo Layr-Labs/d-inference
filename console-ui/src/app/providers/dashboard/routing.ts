@@ -64,12 +64,12 @@ export interface RoutingMeta {
 const META: Record<RoutingState, RoutingMeta> = {
   routable: {
     state: "routable",
-    color: "text-accent-green",
-    tint: "bg-accent-green/8",
-    rail: "border-l-accent-green",
+    color: "text-blue",
+    tint: "bg-blue/8",
+    rail: "border-l-blue",
     label: "Earning",
     verb: "EARNING — receiving traffic",
-    segment: "bg-accent-green",
+    segment: "bg-blue",
   },
   degraded: {
     state: "degraded",

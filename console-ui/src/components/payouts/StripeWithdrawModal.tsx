@@ -57,7 +57,7 @@ export function StripeWithdrawModal({
           type="number"
           value={amount}
           onChange={(e) => onAmountChange(e.target.value)}
-          className="flex-1 bg-bg-primary border border-border-dim rounded-lg px-4 py-3 text-text-primary font-mono text-lg outline-none focus:border-teal transition-colors"
+          className="flex-1 bg-bg-primary border border-border-dim rounded-lg px-4 py-3 text-text-primary font-mono text-lg outline-none focus:border-blue transition-colors"
           min={minWithdrawUsd}
           max={balanceUsd}
           step="0.01"
@@ -113,7 +113,7 @@ export function StripeWithdrawModal({
         </div>
         <div className="flex justify-between text-text-primary font-bold pt-1 border-t border-border-subtle">
           <span>You receive</span>
-          <span className="font-mono text-teal">${net.toFixed(2)}</span>
+          <span className="font-mono text-blue">${net.toFixed(2)}</span>
         </div>
       </div>
 
@@ -128,7 +128,7 @@ export function StripeWithdrawModal({
         <button
           onClick={onConfirm}
           disabled={loading || !valid}
-          className="flex-1 py-3 rounded-lg bg-teal border border-border-dim text-white font-bold text-sm hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+          className="flex-1 py-3 rounded-lg bg-blue border border-border-dim text-white font-bold text-sm hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
         >
           {loading && <Loader2 size={14} className="animate-spin" />}
           {loading ? "Processing..." : `Withdraw $${amountNum.toFixed(2)}`}

@@ -10,7 +10,7 @@ const ORDER: Thermal[] = ["nominal", "fair", "serious", "critical"];
 
 // Lit color per index (0..3). Index 2 (serious) reuses amber but the label
 // disambiguates; index 3 (critical) is red.
-const LIT = ["bg-accent-green", "bg-accent-amber", "bg-accent-amber", "bg-accent-red"];
+const LIT = ["bg-blue", "bg-accent-amber", "bg-accent-amber", "bg-accent-red"];
 
 export function ThermalPips({ state }: { state?: Thermal }) {
   // Unknown/missing thermal strings fall back to nominal (index 0).

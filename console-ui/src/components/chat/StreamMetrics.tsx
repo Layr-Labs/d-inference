@@ -25,13 +25,13 @@ export function StreamMetrics({
     <div
       className={`flex items-center gap-2 sm:gap-3 mt-3 py-2 px-2 sm:px-3 rounded-lg text-xs font-mono border-2 flex-wrap ${
         streaming
-          ? "bg-teal-light/30 border-teal shadow-sm"
+          ? "bg-blue-light/30 border-blue shadow-sm"
           : "bg-bg-secondary border-border-dim"
       }`}
     >
       <span
         className={`flex items-center gap-1 ${
-          streaming ? "text-teal" : "text-text-secondary"
+          streaming ? "text-blue" : "text-text-secondary"
         }`}
       >
         <Gauge size={12} />
@@ -66,8 +66,8 @@ export function StreamMetrics({
       </span>
 
       {streaming && (
-        <span className="ml-auto flex items-center gap-1.5 text-teal">
-          <span className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse" />
+        <span className="ml-auto flex items-center gap-1.5 text-blue">
+          <span className="w-1.5 h-1.5 rounded-full bg-blue animate-pulse" />
           <span className="text-xs font-semibold">live</span>
         </span>
       )}

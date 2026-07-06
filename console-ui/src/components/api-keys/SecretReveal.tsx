@@ -44,7 +44,7 @@ export function SecretReveal({
             onClick={copy}
             className="shrink-0 px-3 rounded-lg border border-border-dim text-text-secondary hover:bg-bg-hover transition-colors flex items-center gap-1.5 text-xs font-medium"
           >
-            {copied ? <Check size={14} className="text-accent-green" /> : <Copy size={14} />}
+            {copied ? <Check size={14} className="text-blue" /> : <Copy size={14} />}
             {copied ? "Copied" : "Copy"}
           </button>
         </div>
@@ -59,7 +59,7 @@ export function SecretReveal({
           disabled={didSet}
           className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg border border-border-dim text-sm font-medium text-text-secondary hover:bg-bg-hover transition-colors disabled:opacity-60"
         >
-          {didSet ? <Check size={14} className="text-accent-green" /> : <Key size={14} />}
+          {didSet ? <Check size={14} className="text-blue" /> : <Key size={14} />}
           {didSet ? "Set as this console's key" : "Use as this console's key"}
         </button>
       )}

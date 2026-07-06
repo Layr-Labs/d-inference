@@ -19,8 +19,8 @@ export function AttentionFeed({ groups }: { groups: AttentionGroup[] }) {
 
   if (groups.length === 0) {
     return (
-      <div className="rounded-xl bg-accent-green/8 border border-accent-green/20 p-4 flex items-center gap-3">
-        <CheckCircle2 size={18} className="text-accent-green shrink-0" />
+      <div className="rounded-xl bg-blue/8 border border-blue/20 p-4 flex items-center gap-3">
+        <CheckCircle2 size={18} className="text-blue shrink-0" />
         <p className="text-sm font-medium text-text-primary">
           All clear — every machine is routable and earning.
         </p>

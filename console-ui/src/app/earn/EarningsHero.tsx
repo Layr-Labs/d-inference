@@ -71,8 +71,8 @@ export function EarningsHero({
             </div>
           )}
           {showRange && bestModel && (
-            <div className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-green/10 text-sm text-text-primary">
-              <TrendingUp size={14} className="text-accent-green shrink-0" />
+            <div className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue/10 text-sm text-text-primary">
+              <TrendingUp size={14} className="text-blue shrink-0" />
               <span>
                 up to <span className="font-mono font-medium">{fmtUSDWhole(monthlyEstimate)}/mo</span>{" "}
                 serving {bestModel.name} at healthy demand

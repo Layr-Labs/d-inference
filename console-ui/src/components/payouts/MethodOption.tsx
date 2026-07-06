@@ -28,10 +28,10 @@ export function MethodOption({
       title={tooltip}
       className={`flex items-center justify-between gap-3 px-3 py-3 rounded-lg border-2 transition-all text-left ${
         selected
-          ? "bg-teal/10 border-teal text-teal"
+          ? "bg-blue/10 border-blue text-blue"
           : disabled
           ? "bg-bg-primary border-border-dim text-text-tertiary cursor-not-allowed opacity-60"
-          : "bg-bg-primary border-border-dim text-text-secondary hover:border-teal/30 hover:text-teal"
+          : "bg-bg-primary border-border-dim text-text-secondary hover:border-blue/30 hover:text-blue"
       }`}
     >
       <div className="flex items-center gap-3">

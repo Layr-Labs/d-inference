@@ -59,7 +59,7 @@ function formatContextLength(tokens?: number): string {
 function TrustIndicator({ level }: { level?: string }) {
   if (level === "hardware") {
     return (
-      <div className="flex items-center gap-1 text-accent-green">
+      <div className="flex items-center gap-1 text-blue">
         <ShieldCheck size={12} />
         <span className="text-xs font-mono uppercase tracking-wider">
           Hardware
@@ -173,7 +173,7 @@ export default function ModelsPage() {
                         </span>
                       )}
                       {model.quantization && (
-                        <span className="px-2 py-0.5 rounded bg-accent-green-dim/30 text-xs font-mono text-accent-green border border-accent-green/20">
+                        <span className="px-2 py-0.5 rounded bg-blue-light/30 text-xs font-mono text-blue border border-blue/20">
                           {model.quantization}
                         </span>
                       )}
@@ -204,8 +204,8 @@ export default function ModelsPage() {
                         </div>
                         {baselinePricing[model.id] && (
                           <div className="flex items-center gap-1.5 mt-1">
-                            <TrendingDown size={10} className="text-accent-green" />
-                            <span className="text-xs font-medium text-accent-green">
+                            <TrendingDown size={10} className="text-blue" />
+                            <span className="text-xs font-medium text-blue">
                               {savingsPercent(eigenPricing[model.id].output, baselinePricing[model.id].output)}% cheaper
                             </span>
                             <span className="text-xs text-text-tertiary opacity-50">vs {baselinePricing[model.id].baseline}</span>
@@ -225,8 +225,8 @@ export default function ModelsPage() {
                       </div>
                       {model.attested && (
                         <div className="flex items-center gap-1">
-                          <HardDrive size={10} className="text-accent-green" />
-                          <span className="text-xs font-mono text-accent-green">
+                          <HardDrive size={10} className="text-blue" />
+                          <span className="text-xs font-mono text-blue">
                             Attested
                           </span>
                         </div>
@@ -249,12 +249,12 @@ export default function ModelsPage() {
               </p>
             </div>
 
-            <div className="rounded-xl bg-bg-white border border-border-dim overflow-hidden shadow-md">
-              <table className="w-full text-sm">
+            <div className="rounded-xl bg-bg-white border border-border-dim overflow-x-auto shadow-md">
+              <table className="w-full min-w-[520px] text-sm">
                 <thead>
                   <tr className="border-b border-border-dim">
                     <th className="text-left px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wider">Model</th>
-                    <th>Darkbloom</th>
+                    <th className="text-right px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wider">Darkbloom</th>
                     <th className="text-right px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wider">Baseline</th>
                     <th className="text-right px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wider">Savings</th>
                   </tr>
@@ -281,7 +281,7 @@ export default function ModelsPage() {
                             <span className="block text-xs opacity-50">{baseline.baseline}</span>
                           </td>
                           <td className="px-4 py-3 text-right">
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-green-dim/30 text-accent-green text-xs font-medium">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-light/30 text-blue text-xs font-medium">
                               <TrendingDown size={10} />
                               {savings}%
                             </span>

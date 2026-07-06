@@ -131,7 +131,7 @@ export function KeyCard({
             {keyData.self_route_only && (
               <span
                 title="Routes only to a machine you run — free, never the public fleet"
-                className="text-[10px] font-mono uppercase tracking-wide text-teal bg-teal/10 border border-teal/30 rounded px-1.5 py-0.5"
+                className="text-[10px] font-mono uppercase tracking-wide text-blue bg-blue/10 border border-blue/30 rounded px-1.5 py-0.5"
               >
                 My Machine · Free
               </span>

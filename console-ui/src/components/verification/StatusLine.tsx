@@ -16,7 +16,7 @@ export function StatusLine({
   return (
     <div className="flex items-center gap-2 py-1">
       {ok ? (
-        <Check size={12} className="text-accent-green shrink-0" />
+        <Check size={12} className="text-blue shrink-0" />
       ) : (
         <X size={12} className="text-accent-red shrink-0" />
       )}
@@ -35,7 +35,7 @@ export function VerifyStepLine({ step }: { step: VerificationStep }) {
   return (
     <div className="flex items-center gap-2 py-0.5">
       {step.status === "success" && (
-        <Check size={12} className="text-accent-green shrink-0" />
+        <Check size={12} className="text-blue shrink-0" />
       )}
       {step.status === "error" && (
         <X size={12} className="text-accent-red shrink-0" />
@@ -48,7 +48,7 @@ export function VerifyStepLine({ step }: { step: VerificationStep }) {
       )}
       <span className="text-xs text-text-primary">{step.label}</span>
       {step.detail && (
-        <span className="text-xs text-text-tertiary ml-auto font-mono truncate max-w-[180px]">
+        <span className="text-xs text-text-tertiary ml-auto font-mono truncate max-w-[45%] sm:max-w-[180px]">
           {step.detail}
         </span>
       )}

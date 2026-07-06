@@ -51,7 +51,7 @@ export function ModelsStrip({ provider }: { provider: MyProvider }) {
                     active ? "bg-accent-brand/15 text-accent-brand" : "bg-bg-tertiary text-text-secondary"
                   }`}
                 >
-                  {active && <span className="w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse" />}
+                  {active && <span className="w-1.5 h-1.5 rounded-full bg-blue animate-pulse" />}
                   {shortModelName(m)}
                   {active && <span className="opacity-70">active</span>}
                   {tag && (

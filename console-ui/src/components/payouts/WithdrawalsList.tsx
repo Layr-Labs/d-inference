@@ -21,7 +21,7 @@ export function WithdrawalsList({ withdrawals }: { withdrawals: StripeWithdrawal
             <div key={w.id} className="flex items-center justify-between text-sm">
               <div className="flex items-center gap-2">
                 {w.status === "paid" ? (
-                  <Check size={12} className="text-teal" />
+                  <Check size={12} className="text-blue" />
                 ) : w.status === "failed" ? (
                   <X size={12} className="text-coral" />
                 ) : (
@@ -38,7 +38,7 @@ export function WithdrawalsList({ withdrawals }: { withdrawals: StripeWithdrawal
                 title={presentation.detail}
                 className={`text-xs font-mono ${
                   w.status === "paid"
-                    ? "text-teal"
+                    ? "text-blue"
                     : w.status === "failed"
                     ? "text-coral"
                     : "text-text-tertiary"

@@ -31,7 +31,7 @@ function KPI({
   return (
     <div>
       <p className="text-[10px] uppercase tracking-wider text-text-tertiary flex items-center gap-1">
-        {dot && <span className="w-1.5 h-1.5 rounded-full bg-accent-green" />}
+        {dot && <span className="w-1.5 h-1.5 rounded-full bg-blue" />}
         {label}
       </p>
       <p className="text-2xl font-mono font-bold text-text-primary leading-tight mt-0.5 tabular-nums">{value}</p>

@@ -96,9 +96,9 @@ export function DeviceLinkForm() {
   if (status === "success") {
     return (
       <div className="bg-bg-white rounded-2xl border border-border-dim shadow-md p-8 text-center">
-        <div className="w-16 h-16 bg-teal-light border-2 border-teal rounded-full flex items-center justify-center mx-auto mb-4">
+        <div className="w-16 h-16 bg-blue-light border-2 border-blue rounded-full flex items-center justify-center mx-auto mb-4">
           <svg
-            className="w-8 h-8 text-teal"
+            className="w-8 h-8 text-blue"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"

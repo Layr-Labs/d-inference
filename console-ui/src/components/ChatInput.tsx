@@ -162,13 +162,13 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                   }}
                   className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-text-tertiary hover:text-text-secondary hover:bg-bg-hover border-2 border-transparent hover:border-border-subtle transition-all"
                 >
-                  <span className="w-1.5 h-1.5 rounded-full bg-teal shrink-0" />
-                  <span className="font-mono truncate max-w-[120px] sm:max-w-none">{displayModel}</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue shrink-0" />
+                  <span className="font-mono truncate max-w-[120px] sm:max-w-[220px]">{displayModel}</span>
                   <ChevronDown size={12} />
                 </button>
 
                 {modelOpen && chatModels.length > 0 && (
-                  <div className="absolute bottom-full left-0 mb-1 w-[calc(100vw-3rem)] sm:w-80 bg-bg-white border border-border-dim rounded-xl shadow-lg overflow-hidden z-50">
+                  <div className="absolute bottom-full left-0 mb-1 w-[min(calc(100vw-2rem),20rem)] bg-bg-white border border-border-dim rounded-xl shadow-lg overflow-hidden z-50">
                     {chatModels.map((m) => {
                       const name = m.display_name || m.id.split("/").pop() || m.id;
                       return (
@@ -219,7 +219,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                 aria-pressed={useMyMachine}
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border-2 transition-all ${
                   useMyMachine
-                    ? "text-teal bg-teal/10 border-teal/40 font-semibold"
+                    ? "text-blue bg-blue/10 border-blue/40 font-semibold"
                     : "text-text-tertiary border-transparent hover:text-text-secondary hover:bg-bg-hover hover:border-border-subtle"
                 }`}
               >

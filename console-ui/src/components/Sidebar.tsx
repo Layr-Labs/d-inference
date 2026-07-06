@@ -51,10 +51,10 @@ export function Sidebar() {
       {/* Brand header */}
       <div className="px-5 pt-5 pb-4 flex items-center justify-between">
         <a href="/" className="group" onClick={closeSidebarOnMobile}>
-          <h1 className="text-2xl text-ink tracking-tight" style={{ fontFamily: "'Louize', Georgia, serif" }}>
+          <h1 className="font-display text-2xl text-ink tracking-[0.04em]">
             Darkbloom
           </h1>
-          <p className="text-[10px] font-mono text-text-tertiary tracking-wide uppercase mt-1">
+          <p className="text-[9px] font-mono text-text-tertiary tracking-[0.12em] uppercase mt-1">
             An Eigen Labs project · Public Alpha
           </p>
         </a>
@@ -85,13 +85,13 @@ export function Sidebar() {
               key={href}
               href={href}
               onClick={closeSidebarOnMobile}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-semibold transition-all ${
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-r2 font-mono text-[12.5px] font-medium tracking-[0.02em] transition-all ${
                 isActive
-                  ? "bg-coral/15 text-coral border-2 border-coral"
-                  : "text-text-secondary hover:bg-bg-hover hover:text-text-primary border-2 border-transparent"
+                  ? "bg-coral/10 text-coral font-semibold"
+                  : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"
               }`}
             >
-              <Icon size={18} className={isActive ? "text-coral" : "opacity-60"} />
+              <Icon size={17} className={isActive ? "text-coral" : "opacity-55"} />
               {label}
             </a>
           );
@@ -104,12 +104,12 @@ export function Sidebar() {
           <div className="px-3 mt-4">
             <button
               onClick={() => createChat()}
-              className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg
-                         bg-coral text-white border border-border-dim
-                         text-sm font-bold transition-all
-                         hover:opacity-90"
+              className="w-full flex items-center justify-center gap-2 px-3 h-[38px] rounded-r2
+                         bg-coral text-white font-mono text-[11px] font-medium uppercase
+                         tracking-[0.07em] transition-all hover:bg-accent-brand-hover
+                         hover:shadow-md active:scale-[0.985]"
             >
-              <Plus size={16} />
+              <Plus size={15} />
               New chat
             </button>
           </div>
@@ -160,13 +160,13 @@ export function Sidebar() {
             key={href}
             href={href}
             onClick={closeSidebarOnMobile}
-            className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all ${
+            className={`flex items-center gap-3 px-3 py-2 rounded-r2 font-mono text-[12.5px] font-medium tracking-[0.02em] transition-all ${
               pathname === href
-                ? "bg-bg-elevated text-text-primary font-semibold"
+                ? "bg-coral/10 text-coral font-semibold"
                 : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"
             }`}
           >
-            <Icon size={16} className="opacity-50" />
+            <Icon size={16} className={pathname === href ? "text-coral" : "opacity-55"} />
             {label}
           </a>
         ))}

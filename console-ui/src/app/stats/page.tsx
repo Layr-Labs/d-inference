@@ -343,7 +343,7 @@ function formatTokenBudget(capacity?: CapacityModelSummary): string {
 function StatusDot({ status }: { status: string }) {
   const color =
     status === "online" || status === "serving"
-      ? "bg-accent-green"
+      ? "bg-blue"
       : status === "untrusted"
       ? "bg-accent-red"
       : "bg-accent-amber";
@@ -360,7 +360,7 @@ function StatusDot({ status }: { status: string }) {
 function TrustBadge({ level }: { level: string }) {
   if (level === "hardware") {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-green/10 border border-accent-green/20 text-accent-green text-xs font-medium uppercase tracking-wider">
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue/10 border border-blue/20 text-blue text-xs font-medium uppercase tracking-wider">
         <ShieldCheck size={10} />
         Hardware
       </span>
@@ -387,11 +387,11 @@ function HeroStat({
   sub?: string;
 }) {
   return (
-    <div className="text-center">
-      <p className="text-2xl sm:text-4xl md:text-5xl font-mono font-bold text-text-primary tracking-tighter">
+    <div className="min-w-0 text-center">
+      <p className="text-2xl sm:text-3xl lg:text-4xl xl:text-5xl font-mono font-bold text-text-primary tracking-tight tabular-nums leading-none">
         {value}
       </p>
-      <p className="text-xs font-mono text-text-tertiary uppercase tracking-widest mt-1">
+      <p className="text-[10px] sm:text-xs font-mono text-text-tertiary uppercase tracking-widest mt-1.5">
         {label}
       </p>
       {sub && (
@@ -611,7 +611,6 @@ function ModelRow({
   const { model } = item;
   const pct = maxProviders > 0 ? (model.providers / maxProviders) * 100 : 0;
   const routablePct = model.providers > 0 ? (item.routable / model.providers) * 100 : 0;
-  const isLeader = rank === 1;
   const statusLabel = deprecatedModelLabel(item.catalogStatus);
   const catalog = item.catalogModel;
   const capacity = item.capacity;
@@ -626,30 +625,12 @@ function ModelRow({
     : "--";
 
   return (
-    <div
-      className={`relative overflow-hidden rounded-xl border px-4 py-4 shadow-sm transition-colors ${
-        isLeader
-          ? "border-accent-brand/30 bg-[linear-gradient(135deg,var(--accent-brand-dim),var(--bg-secondary)_42%,var(--bg-primary))]"
-          : "border-border-dim bg-bg-secondary"
-      }`}
-    >
-      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+    <div className="relative overflow-hidden rounded-xl border border-border-dim bg-bg-secondary px-4 py-4 shadow-sm transition-colors">
+      <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-start 2xl:justify-between">
         <div className="flex min-w-0 items-start gap-3">
-          <div
-            className={`relative mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border ${
-              isLeader
-                ? "border-accent-brand/40 bg-accent-brand text-bg-primary"
-                : "border-accent-brand/20 bg-accent-brand/10 text-accent-brand"
-            }`}
-          >
+          <div className="relative mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-accent-brand/20 bg-accent-brand/10 text-accent-brand">
             <Layers size={16} />
-            <span
-              className={`absolute -right-1.5 -top-1.5 rounded-full border px-1.5 py-0.5 text-[9px] font-mono font-bold ${
-                isLeader
-                  ? "border-accent-brand bg-bg-primary text-accent-brand"
-                  : "border-border-dim bg-bg-primary text-text-tertiary"
-              }`}
-            >
+            <span className="absolute -right-1.5 -top-1.5 rounded-full border border-border-dim bg-bg-primary px-1.5 py-0.5 text-[9px] font-mono font-bold text-text-tertiary">
               {rank}
             </span>
           </div>
@@ -679,7 +660,7 @@ function ModelRow({
           </div>
         </div>
 
-        <div className="grid grid-cols-4 gap-2 text-right md:min-w-[330px]">
+        <div className="grid grid-cols-4 gap-2 text-right 2xl:min-w-[280px]">
           <ModelMiniMetric label="Nodes" value={model.providers.toString()} />
           <ModelMiniMetric label="Routable" value={item.routable.toString()} tone="green" />
           <ModelMiniMetric label="Hardware" value={item.hardware.toString()} />
@@ -708,14 +689,13 @@ function ModelRow({
         </div>
         <div className="relative h-2.5 overflow-hidden rounded-full bg-bg-elevated">
           <div
-            className="absolute inset-y-0 left-0 rounded-full bg-accent-brand/75"
+            className="absolute inset-y-0 left-0 rounded-full bg-accent-brand/25"
             style={{ width: `${Math.max(4, pct)}%` }}
           />
           <div
-            className="absolute inset-y-0 left-0 rounded-full bg-accent-green/70"
+            className="absolute inset-y-0 left-0 rounded-full bg-accent-brand"
             style={{ width: `${Math.max(item.routable > 0 ? 4 : 0, (pct * routablePct) / 100)}%` }}
           />
-          <div className="absolute inset-0 bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.22),transparent)] opacity-50" />
         </div>
       </div>
     </div>
@@ -733,7 +713,7 @@ function ModelMiniMetric({
 }) {
   const valueClass =
     tone === "green"
-      ? "text-accent-green"
+      ? "text-blue"
       : tone === "muted"
         ? "text-text-tertiary"
         : "text-text-primary";
@@ -759,7 +739,7 @@ function CapacityMetric({
 }) {
   let toneClass = "text-text-primary";
   if (tone === "green") {
-    toneClass = "text-accent-green";
+    toneClass = "text-blue";
   } else if (tone === "amber") {
     toneClass = "text-accent-amber";
   }
@@ -881,7 +861,7 @@ function ActiveModelsSection({
         </div>
       </div>
 
-      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-[1.2fr_0.8fr]">
+      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
         <div className="space-y-3">
           {visibleInventory.length === 0 ? (
             <div className="rounded-xl border border-dashed border-border-dim bg-bg-secondary px-4 py-5 text-sm text-text-tertiary">
@@ -933,10 +913,10 @@ function ActiveModelsSection({
               ))
             )}
           </div>
-          <div className="mt-5 rounded-lg border border-accent-green/20 bg-accent-green/10 px-3 py-2">
+          <div className="mt-5 rounded-lg border border-blue/20 bg-blue/10 px-3 py-2">
             <div className="flex items-center justify-between gap-3">
-              <span className="text-xs font-mono text-accent-green">Routable coverage</span>
-              <span className="text-sm font-mono font-bold text-accent-green">
+              <span className="text-xs font-mono text-blue">Routable coverage</span>
+              <span className="text-sm font-mono font-bold text-blue">
                 {totalSlots > 0 ? Math.round((routableSlots / totalSlots) * 100) : 0}%
               </span>
             </div>
@@ -1209,29 +1189,21 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
 
       <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
         <ZoomableMapViewport
-          className="relative aspect-[2/1] min-h-[260px] overflow-hidden rounded-xl border border-border-dim shadow-inner"
-          style={{
-            background:
-              "radial-gradient(115% 78% at 50% -10%, color-mix(in srgb, var(--accent-brand) 11%, transparent), transparent 55%), radial-gradient(85% 70% at 50% 118%, color-mix(in srgb, var(--accent-green) 7%, transparent), transparent 52%), linear-gradient(180deg, var(--bg-primary), var(--bg-secondary))",
-            boxShadow:
-              "inset 0 1px 0 color-mix(in srgb, white 45%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 5%, transparent), inset 0 0 72px 6px color-mix(in srgb, var(--text-primary) 13%, transparent)",
-          }}
+          className="relative h-[300px] sm:h-[340px] lg:h-[380px] overflow-hidden rounded-xl border border-border-dim shadow-inner"
+          style={{ background: "var(--bg-secondary)" }}
           interactive={fallbackPlotted.length > 0}
           overlay={
             <div className="pointer-events-none absolute left-3 top-3 z-30 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border-dim bg-bg-primary/85 px-3 py-1.5 shadow-sm backdrop-blur">
               <span className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wide text-text-secondary">
-                <span
-                  className="h-2 w-2 rounded-full"
-                  style={{ background: "radial-gradient(circle at 30% 28%, color-mix(in srgb, white 30%, var(--accent-brand)), var(--accent-brand))" }}
-                />
+                <span className="h-2 w-2 rounded-full bg-accent-brand" />
                 providers
               </span>
               <span className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wide text-text-secondary">
-                <span className="h-2 w-2 rounded-full bg-accent-green" />
+                <span className="h-2 w-2 rounded-full bg-blue" />
                 consumers
               </span>
               <span className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wide text-text-secondary">
-                <span className="h-2 w-2 rounded-full border-[1.5px] border-accent-amber" />
+                <span className="h-2 w-2 rounded-full border-[1.5px] border-blue" />
                 demand
               </span>
             </div>
@@ -1247,23 +1219,6 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
                 aria-hidden="true"
                 style={{ pointerEvents: "none" }}
               >
-                <defs>
-                  <linearGradient id="flow-stroke" x1="0" y1="0" x2="1" y2="0">
-                    <stop offset="0%" stopColor="var(--accent-brand)" stopOpacity="0.04" />
-                    <stop offset="50%" stopColor="var(--accent-brand)" stopOpacity="0.5" />
-                    <stop offset="100%" stopColor="var(--accent-green)" stopOpacity="0.04" />
-                  </linearGradient>
-                  <radialGradient id="consumer-dot-fill" cx="35%" cy="30%" r="75%">
-                    <stop offset="0%" stopColor="color-mix(in srgb, white 50%, var(--accent-green))" />
-                    <stop offset="62%" stopColor="var(--accent-green)" />
-                    <stop offset="100%" stopColor="color-mix(in srgb, black 14%, var(--accent-green))" />
-                  </radialGradient>
-                  <radialGradient id="demand-dot-fill" cx="35%" cy="30%" r="75%">
-                    <stop offset="0%" stopColor="color-mix(in srgb, white 52%, var(--accent-amber))" />
-                    <stop offset="62%" stopColor="var(--accent-amber)" />
-                    <stop offset="100%" stopColor="color-mix(in srgb, black 14%, var(--accent-amber))" />
-                  </radialGradient>
-                </defs>
                 <g fill="none" strokeLinecap="round">
                   {requestFlows.map((flow) => {
                     const path = flowPath(flow.from, flow.to);
@@ -1272,7 +1227,8 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
                       <path
                         key={flow.key}
                         d={path}
-                        stroke="url(#flow-stroke)"
+                        stroke="var(--accent-brand)"
+                        strokeOpacity="0.28"
                         strokeWidth={width}
                         vectorEffect="non-scaling-stroke"
                       />
@@ -1288,7 +1244,7 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
                         className="network-flow-ping"
                         d={path}
                         fill="none"
-                        stroke={index % 3 === 0 ? "var(--accent-brand)" : "var(--accent-green)"}
+                        stroke={index % 3 === 0 ? "var(--accent-brand)" : "var(--blue)"}
                         strokeWidth={index < 4 ? 2.1 : 1.5}
                         strokeLinecap="round"
                         strokeDasharray="0.1 46"
@@ -1314,14 +1270,14 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
                       >
                         <circle
                           r={r + (demandOnly ? 4 : 2.6)}
-                          fill={demandOnly ? "var(--accent-amber)" : "var(--accent-green)"}
+                          fill={demandOnly ? "var(--blue)" : "var(--blue)"}
                           opacity={demandOnly ? "0.16" : "0.12"}
                         />
                         {demandOnly && (
                           <circle
                             r={r + 2}
                             fill="none"
-                            stroke="var(--accent-amber)"
+                            stroke="var(--blue)"
                             strokeDasharray="2 3.5"
                             strokeOpacity="0.55"
                             strokeWidth="1"
@@ -1329,7 +1285,7 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
                         )}
                         <circle
                           r={r}
-                          fill={demandOnly ? "url(#demand-dot-fill)" : "url(#consumer-dot-fill)"}
+                          fill="var(--blue)"
                           stroke="var(--bg-primary)"
                           strokeWidth="1.3"
                         />
@@ -1364,7 +1320,7 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
           )}
         </ZoomableMapViewport>
 
-        <div className="space-y-4">
+        <div className="space-y-4 lg:h-[380px] lg:overflow-y-auto lg:pr-1">
           <div className="grid grid-cols-2 gap-3">
             <FlowMetric label="30m requests" value={formatNumber(recentRequests)} sub={`${formatNumber(peakRequests)} peak/min`} />
             <FlowMetric label="30m tokens" value={formatNumber(recentTokens)} sub={`${formatNumber(Math.round(recentTokens / recentBuckets.length))}/min avg`} />
@@ -1530,64 +1486,67 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-5">
-        <div
-          className="relative aspect-[2/1] min-h-[260px] overflow-hidden rounded-lg border border-border-dim shadow-inner"
-          style={{
-            background:
-              "radial-gradient(110% 80% at 50% -8%, color-mix(in srgb, var(--accent-green) 9%, transparent), transparent 55%), linear-gradient(180deg, var(--bg-primary), var(--bg-secondary))",
-            boxShadow:
-              "inset 0 1px 0 color-mix(in srgb, white 45%, transparent), inset 0 0 64px 6px color-mix(in srgb, var(--text-primary) 12%, transparent)",
-          }}
+        <ZoomableMapViewport
+          className="relative h-[300px] sm:h-[340px] lg:h-[380px] overflow-hidden rounded-lg border border-border-dim shadow-inner"
+          style={{ background: "var(--bg-secondary)" }}
+          interactive={fallbackPlotted.length > 0}
         >
-          <WorldDotMatrix className="absolute inset-0 h-full w-full" preserveAspectRatio="xMidYMid meet" />
+          {(ctx) => (
+            <>
+              <WorldDotMatrix className="absolute inset-0 h-full w-full" preserveAspectRatio="xMidYMid meet" />
 
-          {fallbackPlotted.length === 0 ? (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center">
-              <MapPin size={22} className="text-text-tertiary" />
-              <div className="relative z-10 rounded-md border border-border-dim bg-bg-secondary px-4 py-2 shadow-sm">
-                <p className="text-sm font-semibold text-text-secondary">
-                  Request origins will appear after deployment
-                </p>
-                <p className="text-xs text-text-tertiary mt-1">
-                  City buckets need at least {privacyMin} requests.
-                </p>
-              </div>
-            </div>
-          ) : (
-            fallbackPlotted.map((bucket) => {
-              const point = projectedPoint(bucket);
-              const size = Math.min(34, 8 + Math.sqrt(bucket.requests) * 4);
-              return (
-                <div
-                  key={bucket.key}
-                  className="group absolute -translate-x-1/2 -translate-y-1/2"
-                  style={{ left: `${point.x}%`, top: `${point.y}%` }}
-                >
-                  <div
-                    className="relative rounded-full border-2 border-bg-primary bg-accent-green shadow-lg shadow-black/10"
-                    style={{
-                      width: `${size}px`,
-                      height: `${size}px`,
-                      boxShadow: `0 0 0 ${Math.max(5, Math.round(size / 3))}px color-mix(in srgb, var(--accent-green) 15%, transparent), 0 10px 28px color-mix(in srgb, var(--accent-green) 22%, transparent)`,
-                    }}
-                  >
-                    <span className="absolute inset-[22%] rounded-full bg-white/20" />
-                  </div>
-                  <div className="absolute left-1/2 bottom-full mb-3 hidden -translate-x-1/2 group-hover:block z-20">
-                    <div className="min-w-[190px] rounded-lg bg-text-primary px-3 py-2 text-bg-primary shadow-lg">
-                      <p className="text-xs font-semibold">{formatPlace(bucket)}</p>
-                      <p className="text-[11px] font-mono opacity-80 mt-1">
-                        {formatNumber(bucket.requests)} requests / {formatNumber(bucket.prompt_tokens + bucket.completion_tokens)} tokens
-                      </p>
-                    </div>
+              {fallbackPlotted.length === 0 ? (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center">
+                  <MapPin size={22} className="text-text-tertiary" />
+                  <div className="relative z-10 rounded-md border border-border-dim bg-bg-secondary px-4 py-2 shadow-sm">
+                    <p className="text-sm font-semibold text-text-secondary">
+                      Request origins will appear after deployment
+                    </p>
+                    <p className="text-xs text-text-tertiary mt-1">
+                      City buckets need at least {privacyMin} requests.
+                    </p>
                   </div>
                 </div>
-              );
-            })
+              ) : (
+                fallbackPlotted.map((bucket) => {
+                  const point = projectedPoint(bucket);
+                  const size = Math.min(26, 7 + Math.sqrt(bucket.requests) * 3.2);
+                  const halo = Math.max(4, Math.round(size / 2.6));
+                  return (
+                    <div
+                      key={bucket.key}
+                      className="group absolute"
+                      style={{
+                        left: `${point.x}%`,
+                        top: `${point.y}%`,
+                        transform: `translate(-50%, -50%) scale(${1 / ctx.scale})`,
+                      }}
+                    >
+                      <div
+                        className="rounded-full border border-bg-primary bg-blue"
+                        style={{
+                          width: `${size}px`,
+                          height: `${size}px`,
+                          boxShadow: `0 0 0 ${halo}px color-mix(in srgb, var(--blue) 12%, transparent)`,
+                        }}
+                      />
+                      <div className="pointer-events-none absolute left-1/2 bottom-full mb-3 hidden -translate-x-1/2 group-hover:block z-20">
+                        <div className="min-w-[190px] rounded-lg bg-text-primary px-3 py-2 text-bg-primary shadow-lg">
+                          <p className="text-xs font-semibold">{formatPlace(bucket)}</p>
+                          <p className="text-[11px] font-mono opacity-80 mt-1">
+                            {formatNumber(bucket.requests)} requests / {formatNumber(bucket.prompt_tokens + bucket.completion_tokens)} tokens
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </>
           )}
-        </div>
+        </ZoomableMapViewport>
 
-        <div className="space-y-5">
+        <div className="space-y-5 lg:h-[380px] lg:overflow-y-auto lg:pr-1">
           <div>
             <h3 className="text-xs font-mono text-text-tertiary uppercase tracking-wider mb-3">
               Top Origins
@@ -1766,12 +1725,6 @@ function ActivityChart({
           </div>
         ) : (
           <svg className="absolute inset-0 h-full w-full" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
-            <defs>
-              <linearGradient id={`area-${label.replace(/\W/g, "-")}`} x1="0" x2="0" y1="0" y2="1">
-                <stop offset="0%" stopColor={color} stopOpacity="0.26" />
-                <stop offset="100%" stopColor={color} stopOpacity="0.02" />
-              </linearGradient>
-            </defs>
             {[0.25, 0.5, 0.75].map((t) => (
               <line
                 key={t}
@@ -1785,7 +1738,7 @@ function ActivityChart({
                 opacity="0.55"
               />
             ))}
-            <path d={areaPath} fill={`url(#area-${label.replace(/\W/g, "-")})`} />
+            <path d={areaPath} fill={color} fillOpacity="0.1" />
             <path
               d={linePath}
               fill="none"
@@ -1889,11 +1842,11 @@ function TokenChart({ data }: { data: TimeSeriesBucket[] }) {
         </div>
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-1 text-xs font-mono text-text-tertiary">
-            <span className="w-2 h-2 rounded-sm" style={{ background: "var(--accent-brand)" }} />
+            <span className="w-2 h-2 rounded-sm" style={{ background: "var(--db-blue-800)" }} />
             Input
           </span>
           <span className="flex items-center gap-1 text-xs font-mono text-text-tertiary">
-            <span className="w-2 h-2 rounded-sm" style={{ background: "var(--accent-green)" }} />
+            <span className="w-2 h-2 rounded-sm" style={{ background: "var(--db-blue-400)" }} />
             Output
           </span>
         </div>
@@ -1946,7 +1899,7 @@ function TokenChart({ data }: { data: TimeSeriesBucket[] }) {
                     width={barWidth}
                     height={inputHeight}
                     rx="2"
-                    fill="var(--accent-brand)"
+                    fill="var(--db-blue-800)"
                     opacity={active ? "0.96" : "0.74"}
                   />
                   <rect
@@ -1955,7 +1908,7 @@ function TokenChart({ data }: { data: TimeSeriesBucket[] }) {
                     width={barWidth}
                     height={outputHeight}
                     rx="2"
-                    fill="var(--accent-green)"
+                    fill="var(--db-blue-400)"
                     opacity={active ? "0.96" : "0.74"}
                   />
                 </g>
@@ -2020,7 +1973,7 @@ function NodeMetric({
 function VerifyStepLine({ step }: { step: VerificationStep }) {
   let icon = <Clock size={12} className="text-text-tertiary" />;
   if (step.status === "success") {
-    icon = <CheckCircle2 size={12} className="text-accent-green" />;
+    icon = <CheckCircle2 size={12} className="text-blue" />;
   }
   if (step.status === "error") {
     icon = <XCircle size={12} className="text-accent-red" />;
@@ -2077,7 +2030,7 @@ function NodeRow({
                 {provider.chip}
               </p>
               {isProviderRoutable(provider) && (
-                <span className="rounded-full bg-accent-green/10 px-1.5 py-0.5 text-[10px] font-medium text-accent-green">
+                <span className="rounded-full bg-blue/10 px-1.5 py-0.5 text-[10px] font-medium text-blue">
                   Routable
                 </span>
               )}
@@ -2160,7 +2113,7 @@ function NodeDetail({
   let verificationColor = "text-text-tertiary";
   if (verifyResult?.success) {
     verificationState = "Apple certificate verified";
-    verificationColor = "text-accent-green";
+    verificationColor = "text-blue";
   }
   if (verifyResult && !verifyResult.success) {
     verificationState = "Certificate check failed";
@@ -2506,7 +2459,7 @@ function NetworkNodes({ providers }: { providers: ProviderStats[] }) {
             onClick={() => setTrustFilter(option.value)}
             className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
               trustFilter === option.value
-                ? "border-accent-green/35 bg-accent-green/10 text-accent-green"
+                ? "border-blue/35 bg-blue/10 text-blue"
                 : "border-border-dim bg-bg-secondary text-text-secondary hover:border-border-subtle hover:bg-bg-hover"
             }`}
           >
@@ -2661,10 +2614,10 @@ export default function StatsPage() {
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1.5">
               <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-green opacity-40" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-accent-green" />
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue opacity-40" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue" />
               </span>
-              <span className="text-xs font-mono text-accent-green uppercase tracking-wider">Live</span>
+              <span className="text-xs font-mono text-blue uppercase tracking-wider">Live</span>
             </div>
             <button onClick={fetchStats} className="p-2 rounded-lg border border-border-dim hover:border-border-subtle hover:bg-bg-hover text-text-tertiary hover:text-text-secondary transition-all">
               <RefreshCw size={14} />
@@ -2673,8 +2626,8 @@ export default function StatsPage() {
         </div>
 
         {/* Hero section -- big numbers */}
-        <div className="bg-bg-white rounded-2xl p-8 shadow-sm">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
+        <div className="bg-bg-white rounded-2xl p-5 sm:p-8 shadow-sm">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-x-4 gap-y-6 sm:gap-6 lg:gap-8">
             <HeroStat
               value={formatNumber(stats.total_tokens)}
               label="Tokens Served"
@@ -2750,7 +2703,7 @@ export default function StatsPage() {
                 style={{
                   width: `${(stats.total_prompt_tokens / stats.total_tokens) * 100}%`,
                   minWidth: stats.total_prompt_tokens > 0 ? "70px" : "0",
-                  background: "var(--accent-brand)",
+                  background: "var(--db-blue-800)",
                   opacity: 0.75,
                 }}
               >
@@ -2761,7 +2714,7 @@ export default function StatsPage() {
                 style={{
                   width: `${(stats.total_completion_tokens / stats.total_tokens) * 100}%`,
                   minWidth: stats.total_completion_tokens > 0 ? "70px" : "0",
-                  background: "var(--accent-green)",
+                  background: "var(--db-blue-400)",
                   opacity: 0.75,
                 }}
               >

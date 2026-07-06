@@ -159,7 +159,7 @@ export function InviteCodeBanner() {
         {/* Success */}
         {success && (
           <div className="px-4 pb-4">
-            <div className="flex items-center gap-2 text-teal text-sm font-semibold">
+            <div className="flex items-center gap-2 text-blue text-sm font-semibold">
               <Check size={14} />
               {success}
             </div>

@@ -39,7 +39,7 @@ export function ModelSupportList({ calc }: { calc: EarningsCalculator }) {
                 } ${fits ? "" : "opacity-60"}`}
               >
                 {fits ? (
-                  <Check size={16} className="text-accent-green shrink-0" aria-hidden />
+                  <Check size={16} className="text-blue shrink-0" aria-hidden />
                 ) : (
                   <X size={16} className="text-text-secondary shrink-0" aria-hidden />
                 )}
@@ -62,7 +62,7 @@ export function ModelSupportList({ calc }: { calc: EarningsCalculator }) {
                 )}
 
                 {isBest && (
-                  <span className="px-2 py-0.5 rounded text-xs font-medium bg-accent-green/10 text-accent-green border border-accent-green/20 whitespace-nowrap">
+                  <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue/10 text-blue border border-blue/20 whitespace-nowrap">
                     Best earner
                   </span>
                 )}

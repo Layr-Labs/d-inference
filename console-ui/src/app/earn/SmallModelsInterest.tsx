@@ -48,8 +48,8 @@ export function SmallModelsInterest({
 
   if (registered) {
     return (
-      <div className="mt-4 inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-accent-green/10 text-sm text-text-primary">
-        <Check size={14} className="text-accent-green shrink-0" />
+      <div className="mt-4 inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-blue/10 text-sm text-text-primary">
+        <Check size={14} className="text-blue shrink-0" />
         You&apos;re on the list — we&apos;ll notify you when smaller models go live.
       </div>
     );

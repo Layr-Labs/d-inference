@@ -67,7 +67,7 @@ export function MachineCard({
             <Cpu size={20} className="text-accent-brand" />
             {/* Pulsing dot when actively serving traffic */}
             {provider.status === "serving" && (
-              <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-accent-green ring-2 ring-bg-secondary animate-pulse" />
+              <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-blue ring-2 ring-bg-secondary animate-pulse" />
             )}
           </div>
           <div className="min-w-0">

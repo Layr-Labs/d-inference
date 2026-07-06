@@ -20,7 +20,7 @@ function LoginContent() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-bg-primary">
       <div className="relative z-10 text-center max-w-md mx-auto px-6">
-        <h1 className="text-5xl text-ink mb-3" style={{ fontFamily: "'Louize', Georgia, serif", letterSpacing: "-0.03em" }}>
+        <h1 className="text-3xl sm:text-4xl md:text-5xl text-ink mb-3" style={{ fontFamily: "'Louize', Georgia, serif", letterSpacing: "-0.02em" }}>
           Darkbloom
         </h1>
         <p className="text-base text-text-secondary mb-8 leading-relaxed">

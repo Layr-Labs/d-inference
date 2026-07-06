@@ -11,13 +11,13 @@ const icons = {
 
 const colors = {
   error: "bg-accent-red-dim border-accent-red/25 text-accent-red",
-  success: "bg-accent-green-dim border-accent-green/25 text-accent-green",
+  success: "bg-blue-light border-blue/25 text-blue",
   info: "bg-accent-brand-dim border-accent-brand/25 text-accent-brand",
 };
 
 const iconColors = {
   error: "text-accent-red",
-  success: "text-accent-green",
+  success: "text-blue",
   info: "text-accent-brand",
 };
 

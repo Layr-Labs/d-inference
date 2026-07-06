@@ -33,7 +33,7 @@ export function NormalMode({
   const guarantees = [
     {
       icon: Fingerprint,
-      color: "text-teal",
+      color: "text-blue",
       title: "Hardware Identity",
       description:
         "This machine's identity is sealed in Apple's Secure Enclave chip — it can't be cloned, copied, or faked.",
@@ -100,7 +100,7 @@ export function NormalMode({
           <button
             onClick={onVerify}
             disabled={verifying}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-teal-light/50 border-2 border-teal/30 text-teal text-xs font-semibold hover:bg-teal-light/70 transition-colors disabled:opacity-50 w-full justify-center"
+            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-light/50 border-2 border-blue/30 text-blue text-xs font-semibold hover:bg-blue-light/70 transition-colors disabled:opacity-50 w-full justify-center"
           >
             {verifying ? (
               <Loader2 size={14} className="animate-spin" />
@@ -125,7 +125,7 @@ export function NormalMode({
           {verifyResult && (
             <p
               className={`mt-2 text-xs font-semibold text-center ${
-                verifyResult.success ? "text-accent-green" : "text-accent-red"
+                verifyResult.success ? "text-blue" : "text-accent-red"
               }`}
             >
               {verifyResult.success
@@ -138,7 +138,7 @@ export function NormalMode({
 
       <button
         onClick={onOpenExplainer}
-        className="flex items-center gap-1.5 text-xs text-teal font-semibold hover:underline mt-2"
+        className="flex items-center gap-1.5 text-xs text-blue font-semibold hover:underline mt-2"
       >
         <Info size={12} />
         Learn how the trust chain works

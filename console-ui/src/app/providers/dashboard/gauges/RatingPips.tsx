@@ -5,7 +5,7 @@
 export function RatingPips({ score }: { score: number }) {
   const s = Math.max(0, Math.min(1, Number.isFinite(score) ? score : 0));
   const filled = Math.round(s * 5);
-  const color = s < 0.3 ? "bg-accent-red" : s < 0.6 ? "bg-accent-amber" : "bg-accent-green";
+  const color = s < 0.3 ? "bg-accent-red" : s < 0.6 ? "bg-accent-amber" : "bg-blue";
   return (
     <div
       className="flex items-center gap-0.5"

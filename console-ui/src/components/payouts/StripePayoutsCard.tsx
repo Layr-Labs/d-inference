@@ -63,7 +63,7 @@ export function StripePayoutsCard({
         {icon}
         <h3 className="text-sm font-semibold text-text-primary">{title}</h3>
         {ready && (
-          <span className="ml-auto text-[10px] font-mono uppercase tracking-widest text-teal bg-teal/10 border border-teal/30 rounded px-2 py-0.5">
+          <span className="ml-auto text-[10px] font-mono uppercase tracking-widest text-blue bg-blue/10 border border-blue/30 rounded px-2 py-0.5">
             Ready
           </span>
         )}
@@ -94,7 +94,7 @@ export function StripePayoutsCard({
           <button
             onClick={onOnboard}
             disabled={onboardLoading || !selectedCountry}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-blue border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
           >
             {onboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
             {onboardLoading ? "Redirecting..." : "Link bank via Stripe"}
@@ -110,9 +110,9 @@ export function StripePayoutsCard({
           <div className="rounded-lg bg-bg-primary border border-border-dim p-3 mb-4 flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm text-text-secondary">
               {status.destination_type === "card" ? (
-                <CreditCard size={14} className="text-teal" />
+                <CreditCard size={14} className="text-blue" />
               ) : (
-                <Building2 size={14} className="text-teal" />
+                <Building2 size={14} className="text-blue" />
               )}
               <span className="font-mono">
                 {status.destination_type === "card" ? "Debit card" : "Bank"} ••{status.destination_last4}
@@ -127,7 +127,7 @@ export function StripePayoutsCard({
           <button
             onClick={onOpenWithdraw}
             disabled={!canWithdraw}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-blue border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
           >
             <ArrowDownToLine size={14} />
             Withdraw
@@ -154,7 +154,7 @@ export function StripePayoutsCard({
           <button
             onClick={onOnboard}
             disabled={onboardLoading || !selectedCountry}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 transition-all"
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-blue border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 transition-all"
           >
             {onboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
             {onboardLoading ? "Redirecting..." : restricted ? "Provide more info" : "Continue setup"}

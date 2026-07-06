@@ -247,12 +247,12 @@ export function KeyForm({
         onClick={() => setSelfRouteOnly((v) => !v)}
         aria-pressed={selfRouteOnly}
         className={`w-full flex items-start gap-3 p-3 rounded-lg border text-left transition-colors ${
-          selfRouteOnly ? "border-teal/50 bg-teal/5" : "border-border-dim hover:bg-bg-hover"
+          selfRouteOnly ? "border-blue/50 bg-blue/5" : "border-border-dim hover:bg-bg-hover"
         }`}
       >
         <span
           className={`mt-0.5 flex items-center justify-center w-4 h-4 rounded border shrink-0 ${
-            selfRouteOnly ? "bg-teal border-teal text-white" : "border-border-subtle"
+            selfRouteOnly ? "bg-blue border-blue text-white" : "border-border-subtle"
           }`}
         >
           {selfRouteOnly && <Check size={11} />}

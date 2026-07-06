@@ -42,8 +42,8 @@ const STEPS: StepData[] = [
   },
   {
     icon: Fingerprint,
-    iconColor: "text-teal",
-    iconBg: "bg-teal-light",
+    iconColor: "text-blue",
+    iconBg: "bg-blue-light",
     title: "Secure Enclave",
     description:
       "The machine's identity key is sealed in a tamper-proof chip that can't be cloned.",
@@ -149,7 +149,7 @@ export function TrustExplainerModal({ open, onClose }: TrustExplainerModalProps)
       />
 
       {/* Modal */}
-      <div className="relative w-full max-w-lg mx-4 max-h-[85vh] overflow-y-auto rounded-2xl bg-bg-white border border-border-dim shadow-xl fade-in">
+      <div className="relative w-[calc(100%-1.5rem)] max-w-lg max-h-[85vh] overflow-y-auto rounded-2xl bg-bg-white border border-border-dim shadow-xl fade-in">
         {/* Header */}
         <div className="sticky top-0 bg-bg-white z-10 px-6 pt-6 pb-4 border-b-2 border-border-dim">
           <div className="flex items-center justify-between">
@@ -214,9 +214,9 @@ export function TrustExplainerModal({ open, onClose }: TrustExplainerModalProps)
 
         {/* Footer */}
         <div className="px-6 pb-6">
-          <div className="rounded-xl bg-teal-light/50 border-2 border-teal/30 p-4">
+          <div className="rounded-xl bg-blue-light/50 border-2 border-blue/30 p-4">
             <div className="flex items-start gap-3">
-              <ShieldCheck size={20} className="text-teal shrink-0 mt-0.5" />
+              <ShieldCheck size={20} className="text-blue shrink-0 mt-0.5" />
               <div>
                 <p className="text-sm font-semibold text-text-primary">
                   Independently Verifiable

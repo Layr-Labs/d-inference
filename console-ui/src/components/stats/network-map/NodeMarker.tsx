@@ -36,9 +36,7 @@ export function NodeMarker({ xPct, yPct, count, scale, label, detail, tooltipBel
         style={{
           width: `${haloRadius * 2}px`,
           height: `${haloRadius * 2}px`,
-          opacity: 0.7,
-          background:
-            "radial-gradient(circle, color-mix(in srgb, var(--accent-brand) 26%, transparent), transparent 70%)",
+          background: "color-mix(in srgb, var(--accent-brand) 12%, transparent)",
         }}
       />
       <div
@@ -47,10 +45,7 @@ export function NodeMarker({ xPct, yPct, count, scale, label, detail, tooltipBel
           width: `${core}px`,
           height: `${core}px`,
           fontSize: `${Math.max(8, core * 0.42)}px`,
-          background:
-            "radial-gradient(circle at 32% 26%, color-mix(in srgb, white 34%, var(--accent-brand)), var(--accent-brand) 68%)",
-          boxShadow:
-            "0 1px 4px color-mix(in srgb, var(--accent-brand) 42%, transparent), 0 0 0 1px color-mix(in srgb, var(--accent-brand) 28%, transparent)",
+          background: "var(--accent-brand)",
         }}
       >
         {isMultiNode ? count : null}

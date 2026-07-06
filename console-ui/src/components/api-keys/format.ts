@@ -8,7 +8,7 @@ export { formatUsd, formatCount, plural, relativeTime } from "@/lib/format";
 export function usageBarColor(pct: number): string {
   if (pct >= 100) return "bg-accent-red";
   if (pct >= 75) return "bg-accent-amber";
-  return "bg-teal";
+  return "bg-blue";
 }
 
 export function windowLabel(reset: KeyResetWindow): string {
@@ -37,5 +37,5 @@ export function keyStatus(key: ApiKey): { label: string; cls: string } {
   if (isExpired(key)) {
     return { label: "Expired", cls: "text-accent-red bg-accent-red-dim border-accent-red/25" };
   }
-  return { label: "Active", cls: "text-teal bg-teal/10 border-teal/30" };
+  return { label: "Active", cls: "text-blue bg-blue/10 border-blue/30" };
 }

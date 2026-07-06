@@ -12,126 +12,178 @@ button, a, [role="button"], summary { cursor: pointer; }
 @font-face { font-family: 'Louize'; src: url('/fonts/Louize-Regular.otf') format('opentype'); font-weight: 400; font-style: normal; font-display: swap; }
 @font-face { font-family: 'Louize'; src: url('/fonts/Louize-Italic.otf') format('opentype'); font-weight: 400; font-style: italic; font-display: swap; }
 
-/* ─── Light mode (default) — EigenCloud brand palette ─── */
+/* ─── Light mode (default) — Darkbloom palette on EigenCloud fonts ───
+   Darkbloom's warm-cream surfaces + royal-blue accent, mapped onto the
+   existing token names so every Tailwind-bridged utility recolors. Fonts
+   stay EigenCloud (ABC Repro / ABC Repro Mono / Louize); Louize carries
+   Darkbloom's serif-display role. */
 :root {
+  /* Darkbloom native tokens (use these in restyled components) */
+  --db-bg:          #f6f5f0;
+  --db-bg-1:        #efeee7;
+  --db-surface:     #fffdf8;
+  --db-surface-2:   #faf9f3;
+  --db-surface-3:   #f2f0e9;
+  --db-hover:       #f1efe7;
+  --db-press:       #e8e6dc;
+  --db-blue:        #1c39d6;
+  --db-blue-hover:  #142ba8;
+  --db-blue-press:  #142ba8;
+  --db-blue-100:    #dbe1ff;
+  --db-blue-400:    #4f66f2;
+  --db-blue-800:    #142ba8;
+  --db-blue-tint:   #dbe1ff;
+  --db-blue-on:     #142ba8;
+  --blueglow:       0 0 0 3px rgba(28, 57, 214, 0.18);
+  --bloom-glow:     0 0 0 1px rgba(28, 57, 214, 0.6),
+                    0 10px 28px -12px rgba(28, 57, 214, 0.3);
+
+  /* radius scale */
+  --r1: 4px;  --r2: 6px;  --r3: 8px;  --r4: 12px;  --r5: 16px;
+  --r-pill: 999px;
+
+  /* motion */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --d1: 90ms; --d2: 150ms; --d3: 240ms; --d4: 420ms;
+
   /* Backgrounds */
-  --bg-primary:     #F2F2F2;
-  --bg-secondary:   #E8E8E8;
-  --bg-tertiary:    #DEDEDE;
-  --bg-elevated:    #D8DCE5;
-  --bg-hover:       #E0E0E4;
-  --bg-white:       #FFFFFF;
+  --bg-primary:     #f6f5f0;
+  --bg-secondary:   #faf9f3;
+  --bg-tertiary:    #f2f0e9;
+  --bg-elevated:    #fffdf8;
+  --bg-hover:       #f1efe7;
+  --bg-white:       #fffdf8;
 
   /* Ink / Text */
-  --ink:            #000000;
-  --ink-light:      #666F7C;
-  --ink-faint:      #ACB1BC;
-  --text-primary:   #000000;
-  --text-secondary: #666F7C;
-  --text-tertiary:  #ACB1BC;
+  --ink:            #0e1117;
+  --ink-light:      #5a6172;
+  --ink-faint:      #8a91a1;
+  --text-primary:   #0e1117;
+  --text-secondary: #5a6172;
+  --text-tertiary:  #8a91a1;
+  --text-faint:     #c2c7d2;
+  --text-body:      #2b2f3a;
 
   /* Borders */
-  --border-dim:     #D8DCE5;
-  --border-subtle:  #ACB1BC;
-  --border-default: #D8DCE5;
+  --border-dim:     rgba(17, 24, 39, 0.10);
+  --border-subtle:  rgba(17, 24, 39, 0.26);
+  --border-default: rgba(17, 24, 39, 0.15);
 
-  /* Brand accents — eigen-blue primary */
-  --coral:          #1A0C6D;
-  --coral-light:    rgba(26, 12, 109, 0.06);
-  --teal:           #2D9E7A;
-  --teal-light:     #D1FAE5;
-  --teal-dark:      #1B6B50;
-  --blue:           #95BFFF;
-  --blue-light:     #DBEAFE;
-  --purple:         #7C3AED;
-  --purple-light:   #DDD6FE;
-  --gold:           #D97706;
-  --gold-light:     #FEF3C7;
-  --pink:           #EC4899;
-  --pink-light:     #FCE7F3;
+  /* Brand accents — royal blue is the sole accent */
+  --coral:          #1c39d6;
+  --coral-light:    #dbe1ff;
+  --blue:           #4f66f2;
+  --blue-light:     #dbe1ff;
+  /* Decorative hues collapsed into the blue ramp (monochrome discipline) */
+  --purple:         #6478f0;
+  --purple-light:   #e2e6ff;
+  --pink:           #96a4f7;
+  --pink-light:     #e8ebff;
+  /* Refined antique gold — reserved for the invite popup; pairs with royal blue */
+  --gold:           #b7791f;
+  --gold-light:     #fbf0d5;
 
-  /* Semantic accents */
-  --accent-brand:       #1A0C6D;
-  --accent-brand-dim:   rgba(26, 12, 109, 0.06);
-  --accent-brand-hover: #130952;
-  --accent-green:       #2D9E7A;
-  --accent-green-dim:   #D1FAE5;
-  --accent-amber:       #D97706;
-  --accent-amber-dim:   #FEF3C7;
+  /* Semantic accents — blue is primary; red = error, gold = invite only */
+  --accent-brand:       #1c39d6;
+  --accent-brand-dim:   #dbe1ff;
+  --accent-brand-hover: #142ba8;
+  --accent-amber:       #b7791f;
+  --accent-amber-dim:   #fbf0d5;
   --accent-red:         #DC2626;
   --accent-red-dim:     #FEE2E2;
   --danger:             #DC2626;
 
-  /* Network map (dot-matrix world) — alpha baked per theme for crisp contrast */
-  --map-land-dot:   rgba(26, 12, 109, 0.30);
-  --map-graticule:  rgba(26, 12, 109, 0.07);
+  /* Network map (dot-matrix world) — royal-blue dots on cream */
+  --map-land-dot:   rgba(28, 57, 214, 0.30);
+  --map-graticule:  rgba(28, 57, 214, 0.08);
 
-  /* Shadows — subtle, professional */
-  --shadow-sm:      0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-md:      0 2px 4px rgba(0, 0, 0, 0.06);
-  --shadow-lg:      0 4px 12px rgba(0, 0, 0, 0.08);
-  --shadow-xl:      0 8px 24px rgba(0, 0, 0, 0.10);
+  /* Shadows — Darkbloom elevation */
+  --shadow-sm:      0 1px 2px rgba(17, 24, 39, 0.07);
+  --shadow-md:      0 6px 20px -8px rgba(17, 24, 39, 0.14);
+  --shadow-lg:      0 18px 48px -16px rgba(17, 24, 39, 0.20);
+  --shadow-xl:      0 24px 60px -18px rgba(17, 24, 39, 0.26);
 
-  /* Fonts — EigenCloud Brand Book */
-  --font-display: 'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
+  /* Fonts — EigenCloud Brand Book; Louize = Darkbloom serif display */
+  --font-display: 'Louize', Georgia, 'Times New Roman', serif;
+  --font-serif: 'Louize', Georgia, 'Times New Roman', serif;
   --font-sans: 'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'ABC Repro Mono', 'IBM Plex Mono', monospace;
   --font-logo: 'Louize', Georgia, serif;
 }
 
-/* ─── Dark mode — Cool professional dark ─── */
+/* ─── Dark mode — Darkbloom near-black palette (eigen .dark mechanism) ─── */
 .dark {
-  --bg-primary:     #0F0F14;
-  --bg-secondary:   #16161F;
-  --bg-tertiary:    #1E1E2A;
-  --bg-elevated:    #262636;
-  --bg-hover:       #2A2A3C;
-  --bg-white:       #1E1E2A;
+  /* Darkbloom native tokens */
+  --db-bg:          #0b0b0c;
+  --db-bg-1:        #0f0f11;
+  --db-surface:     #141416;
+  --db-surface-2:   #161618;
+  --db-surface-3:   #1c1c1f;
+  --db-hover:       #1a1a1d;
+  --db-press:       #242427;
+  --db-blue:        #5470ff;
+  --db-blue-hover:  #6e86ff;
+  --db-blue-press:  #3e55e0;
+  --db-blue-100:    rgba(84, 112, 255, 0.18);
+  --db-blue-400:    #6e86ff;
+  --db-blue-800:    #b9c4ff;
+  --db-blue-tint:   rgba(84, 112, 255, 0.14);
+  --db-blue-on:     #b9c4ff;
+  --blueglow:       0 0 0 3px rgba(84, 112, 255, 0.28);
+  --bloom-glow:     0 0 0 1px rgba(84, 112, 255, 0.7),
+                    0 10px 30px -12px rgba(84, 112, 255, 0.4);
 
-  --ink:            #E8E8EC;
-  --ink-light:      #9CA3AF;
-  --ink-faint:      #6B7280;
-  --text-primary:   #E8E8EC;
-  --text-secondary: #9CA3AF;
-  --text-tertiary:  #6B7280;
+  --bg-primary:     #0b0b0c;
+  --bg-secondary:   #161618;
+  --bg-tertiary:    #1c1c1f;
+  --bg-elevated:    #141416;
+  --bg-hover:       #1a1a1d;
+  --bg-white:       #141416;
 
-  --border-dim:     #262636;
-  --border-subtle:  #363648;
-  --border-default: #363648;
+  --ink:            #eef1fa;
+  --ink-light:      #868fa6;
+  --ink-faint:      #5a627a;
+  --text-primary:   #eef1fa;
+  --text-secondary: #868fa6;
+  --text-tertiary:  #5a627a;
+  --text-faint:     #383f52;
+  --text-body:      #c5cbda;
 
-  --coral:          #818CF8;
-  --coral-light:    rgba(129, 140, 248, 0.10);
-  --teal:           #34D399;
-  --teal-light:     rgba(52, 211, 153, 0.12);
-  --teal-dark:      #6EE7B7;
-  --blue:           #93C5FD;
-  --blue-light:     rgba(147, 197, 253, 0.12);
-  --purple:         #A78BFA;
-  --purple-light:   rgba(167, 139, 250, 0.12);
-  --gold:           #FBBF24;
-  --gold-light:     rgba(251, 191, 36, 0.12);
-  --pink:           #F472B6;
-  --pink-light:     rgba(244, 114, 182, 0.12);
+  --border-dim:     rgba(255, 255, 255, 0.09);
+  --border-subtle:  rgba(255, 255, 255, 0.26);
+  --border-default: rgba(255, 255, 255, 0.15);
 
-  --accent-brand:       #818CF8;
-  --accent-brand-dim:   rgba(129, 140, 248, 0.10);
-  --accent-brand-hover: #6366F1;
-  --accent-green:       #34D399;
-  --accent-green-dim:   rgba(52, 211, 153, 0.12);
-  --accent-amber:       #FBBF24;
-  --accent-amber-dim:   rgba(251, 191, 36, 0.12);
+  --coral:          #5470ff;
+  --coral-light:    rgba(84, 112, 255, 0.14);
+  --blue:           #6e86ff;
+  --blue-light:     rgba(84, 112, 255, 0.14);
+  /* Decorative hues collapsed into the blue ramp */
+  --purple:         #8fa0ff;
+  --purple-light:   rgba(84, 112, 255, 0.12);
+  --pink:           #b9c4ff;
+  --pink-light:     rgba(84, 112, 255, 0.10);
+  /* Refined gold — invite popup only */
+  --gold:           #e3b341;
+  --gold-light:     rgba(227, 179, 65, 0.14);
+
+  --accent-brand:       #5470ff;
+  --accent-brand-dim:   rgba(84, 112, 255, 0.14);
+  --accent-brand-hover: #6e86ff;
+  --accent-amber:       #e3b341;
+  --accent-amber-dim:   rgba(227, 179, 65, 0.14);
   --accent-red:         #F87171;
   --accent-red-dim:     rgba(248, 113, 113, 0.12);
   --danger:             #F87171;
 
-  /* Network map (dot-matrix world) — brighter indigo reads on the dark ocean */
-  --map-land-dot:   rgba(129, 140, 248, 0.34);
-  --map-graticule:  rgba(129, 140, 248, 0.09);
+  /* Network map (dot-matrix world) — brighter blue reads on the dark ocean */
+  --map-land-dot:   rgba(84, 112, 255, 0.34);
+  --map-graticule:  rgba(84, 112, 255, 0.09);
 
-  --shadow-sm:      0 1px 2px rgba(0, 0, 0, 0.30);
-  --shadow-md:      0 2px 6px rgba(0, 0, 0, 0.35);
-  --shadow-lg:      0 4px 12px rgba(0, 0, 0, 0.40);
-  --shadow-xl:      0 8px 24px rgba(0, 0, 0, 0.50);
+  --shadow-sm:      0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-md:      0 6px 22px -8px rgba(0, 0, 0, 0.7);
+  --shadow-lg:      0 18px 50px -14px rgba(0, 0, 0, 0.78);
+  --shadow-xl:      0 24px 64px -16px rgba(0, 0, 0, 0.82);
 }
 
 /* ─── Tailwind theme bridge ─── */
@@ -153,9 +205,6 @@ button, a, [role="button"], summary { cursor: pointer; }
   --color-ink-faint: var(--ink-faint);
   --color-coral: var(--coral);
   --color-coral-light: var(--coral-light);
-  --color-teal: var(--teal);
-  --color-teal-light: var(--teal-light);
-  --color-teal-dark: var(--teal-dark);
   --color-blue: var(--blue);
   --color-blue-light: var(--blue-light);
   --color-purple: var(--purple);
@@ -167,19 +216,36 @@ button, a, [role="button"], summary { cursor: pointer; }
   --color-accent-brand: var(--accent-brand);
   --color-accent-brand-dim: var(--accent-brand-dim);
   --color-accent-brand-hover: var(--accent-brand-hover);
-  --color-accent-green: var(--accent-green);
-  --color-accent-green-dim: var(--accent-green-dim);
   --color-accent-amber: var(--accent-amber);
   --color-accent-amber-dim: var(--accent-amber-dim);
   --color-accent-red: var(--accent-red);
   --color-accent-red-dim: var(--accent-red-dim);
   --color-danger: var(--danger);
+  --color-text-body: var(--text-body);
+  --color-text-faint: var(--text-faint);
+  /* Darkbloom blue scale — available as bg-db-blue, text-db-blue-on, etc. */
+  --color-db-blue: var(--db-blue);
+  --color-db-blue-hover: var(--db-blue-hover);
+  --color-db-blue-tint: var(--db-blue-tint);
+  --color-db-blue-on: var(--db-blue-on);
+  --color-db-surface: var(--db-surface);
+  --color-db-surface-2: var(--db-surface-2);
+  --color-db-surface-3: var(--db-surface-3);
+  --color-db-hover: var(--db-hover);
   --shadow-sm: var(--shadow-sm);
   --shadow-md: var(--shadow-md);
   --shadow-lg: var(--shadow-lg);
   --shadow-xl: var(--shadow-xl);
+  /* Darkbloom radius scale — rounded-r1 … rounded-r5, rounded-pill */
+  --radius-r1: 4px;
+  --radius-r2: 6px;
+  --radius-r3: 8px;
+  --radius-r4: 12px;
+  --radius-r5: 16px;
+  --radius-pill: 999px;
   --font-sans: 'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-display: 'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'Louize', Georgia, 'Times New Roman', serif;
+  --font-serif: 'Louize', Georgia, 'Times New Roman', serif;
   --font-mono: 'ABC Repro Mono', 'IBM Plex Mono', monospace;
   --font-logo: 'Louize', Georgia, serif;
 }
@@ -200,27 +266,44 @@ button, a, [role="button"], summary { cursor: pointer; }
 /* ─── Base ─── */
 body {
   background: var(--bg-primary);
-  color: var(--text-primary);
+  color: var(--text-body);
   font-family: var(--font-sans);
-  line-height: 1.4;
-  letter-spacing: 0.02em;
+  font-size: 14px;
+  line-height: 1.6;
+  letter-spacing: 0.01em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  transition: background var(--d3) var(--ease), color var(--d3) var(--ease);
 }
 
-/* ─── Typography — Brand Book rules ─── */
-/* Headlines: Bold, tracking -2%, leading 100% */
+::selection {
+  background: var(--db-blue-tint);
+  color: var(--db-blue-on);
+}
+
+/* ─── Typography — Darkbloom: serif display, quiet tracking ─── */
 h1, h2, h3 {
-  font-family: var(--font-sans);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.0;
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: 0.005em;
+  line-height: 1.04;
+  color: var(--text-primary);
+}
+
+/* Mono eyebrow/label helper — Darkbloom's machine-register microtype */
+.db-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent-brand);
 }
 
 /* ─── Trust badge glow ─── */
 @keyframes trust-pulse {
-  0%, 100% { box-shadow: 0 0 6px rgba(45, 158, 122, 0.2); }
-  50% { box-shadow: 0 0 14px rgba(45, 158, 122, 0.4); }
+  0%, 100% { box-shadow: 0 0 6px rgba(28, 57, 214, 0.2); }
+  50% { box-shadow: 0 0 14px rgba(28, 57, 214, 0.4); }
 }
 
 .trust-glow-hardware {
@@ -371,8 +454,8 @@ h1, h2, h3 {
   color: rgba(255,255,255,0.88) !important;
 }
 
-.hljs-keyword { color: #c4b5fd; }
-.hljs-string { color: #86efac; }
+.hljs-keyword { color: #b9c4ff; }
+.hljs-string { color: #6e86ff; }
 .hljs-number { color: #93c5fd; }
 .hljs-comment { color: rgba(255,255,255,0.3); font-style: italic; }
 .hljs-function { color: #93c5fd; }
@@ -403,6 +486,6 @@ h1, h2, h3 {
   height: 8px;
   border-radius: 50%;
 }
-.code-dot-r { background: #FF5F57; }
-.code-dot-y { background: #FEBC2E; }
-.code-dot-g { background: #27C93F; }
+.code-dot-r { background: var(--border-subtle); }
+.code-dot-y { background: var(--border-subtle); }
+.code-dot-g { background: var(--border-subtle); }

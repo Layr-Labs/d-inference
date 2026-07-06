@@ -37,7 +37,7 @@ export function CountryPicker({
           setOpen(!open);
           setFilter("");
         }}
-        className="w-full flex items-center justify-between gap-2 bg-bg-primary border border-border-dim rounded-lg px-4 py-3 text-sm text-left transition-colors hover:border-teal/40 focus:outline-none focus:border-teal"
+        className="w-full flex items-center justify-between gap-2 bg-bg-primary border border-border-dim rounded-lg px-4 py-3 text-sm text-left transition-colors hover:border-blue/40 focus:outline-none focus:border-blue"
       >
         {selected ? (
           <span className="flex items-center gap-2 text-text-primary">
@@ -64,7 +64,7 @@ export function CountryPicker({
                 onChange={(e) => setFilter(e.target.value)}
                 placeholder="Search countries..."
                 autoFocus
-                className="w-full bg-bg-primary border border-border-dim rounded-lg pl-9 pr-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary outline-none focus:border-teal"
+                className="w-full bg-bg-primary border border-border-dim rounded-lg pl-9 pr-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary outline-none focus:border-blue"
               />
             </div>
           </div>
@@ -81,7 +81,7 @@ export function CountryPicker({
                   setOpen(false);
                 }}
                 className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm text-left transition-colors ${
-                  value === c.code ? "bg-teal/10 text-teal" : "text-text-secondary hover:bg-bg-hover"
+                  value === c.code ? "bg-blue/10 text-blue" : "text-text-secondary hover:bg-bg-hover"
                 }`}
               >
                 <span className="text-base">{c.flag}</span>

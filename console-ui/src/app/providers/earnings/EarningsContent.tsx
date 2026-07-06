@@ -142,7 +142,7 @@ export default function EarningsContent() {
   const totalBalance = data?.available_balance_micro_usd || 0;
   const creditsBalance = totalBalance - withdrawableBalanceMicro;
   const totalJobs = data?.count || 0;
-  const recentCount = data?.recent_count ?? data?.earnings.length ?? 0;
+  const recentCount = data?.recent_count ?? data?.earnings?.length ?? 0;
 
   const minWithdrawUsd = (payouts.status?.min_withdraw_micro_usd ?? 1_000_000) / 1_000_000;
   const availableUsd = withdrawableBalanceMicro / 1_000_000;
@@ -160,7 +160,7 @@ export default function EarningsContent() {
       <div className="grid grid-cols-3 gap-4">
         <div className="rounded-xl bg-bg-secondary shadow-sm p-5">
           <div className="flex items-center gap-2 mb-2">
-            <DollarSign size={16} className="text-accent-green" />
+            <DollarSign size={16} className="text-blue" />
             <p className="text-xs text-text-tertiary">Total Earned</p>
           </div>
           <p className="text-2xl font-bold text-text-primary">
@@ -202,7 +202,7 @@ export default function EarningsContent() {
           payouts.openWithdraw(availableUsd >= minWithdrawUsd ? availableUsd.toFixed(2) : "10")
         }
         title="Withdraw Earnings"
-        icon={<ArrowDownToLine size={16} className="text-teal" />}
+        icon={<ArrowDownToLine size={16} className="text-blue" />}
         noun="earnings"
         className="rounded-xl bg-bg-secondary shadow-sm p-5"
       >
@@ -246,7 +246,7 @@ export default function EarningsContent() {
                     <td className="px-4 py-3 text-sm font-mono text-text-primary">
                       {e.model.split("/").pop()}
                     </td>
-                    <td className="px-4 py-3 text-sm font-mono text-accent-green">
+                    <td className="px-4 py-3 text-sm font-mono text-blue">
                       +${(e.amount_micro_usd / 1_000_000).toFixed(6)}
                     </td>
                     <td className="px-4 py-3 text-sm text-text-tertiary">

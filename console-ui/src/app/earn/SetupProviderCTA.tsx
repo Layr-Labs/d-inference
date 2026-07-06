@@ -49,8 +49,8 @@ export function SetupProviderCTA({
       ) : (
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div className="flex items-start gap-3">
-            <div className="w-10 h-10 rounded-lg bg-accent-green/10 flex items-center justify-center shrink-0">
-              <Cpu size={20} className="text-accent-green" />
+            <div className="w-10 h-10 rounded-lg bg-blue/10 flex items-center justify-center shrink-0">
+              <Cpu size={20} className="text-blue" />
             </div>
             <div>
               <h3 className="text-sm font-semibold text-text-primary mb-0.5">

@@ -109,7 +109,7 @@ export default function SettingsPage() {
           {/* Coordinator URL */}
           <section className="rounded-xl bg-bg-white border border-border-dim p-6 shadow-md">
             <div className="flex items-center gap-2 mb-4">
-              <Globe size={14} className="text-accent-green" />
+              <Globe size={14} className="text-blue" />
               <h3 className="text-sm font-medium text-text-primary">
                 Coordinator URL
               </h3>
@@ -123,7 +123,7 @@ export default function SettingsPage() {
               value={coordinatorUrl}
               onChange={(e) => setCoordinatorUrl(e.target.value)}
               placeholder="https://coordinator.darkbloom.io"
-              className="w-full bg-bg-tertiary border border-border-subtle rounded-lg px-4 py-3 text-text-primary font-mono text-sm outline-none focus:border-accent-green/50 transition-colors"
+              className="w-full bg-bg-tertiary border border-border-subtle rounded-lg px-4 py-3 text-text-primary font-mono text-sm outline-none focus:border-blue/50 transition-colors"
             />
 
             {/* Health check */}
@@ -141,7 +141,7 @@ export default function SettingsPage() {
                 Test Connection
               </button>
               {healthStatus === "ok" && (
-                <span className="flex items-center gap-1 text-xs text-accent-green font-mono">
+                <span className="flex items-center gap-1 text-xs text-blue font-mono">
                   <Check size={12} />
                   {healthInfo}
                 </span>
@@ -158,7 +158,7 @@ export default function SettingsPage() {
           {/* Sender → Coordinator encryption */}
           <section className="rounded-xl bg-bg-white border border-border-dim p-6 shadow-md">
             <div className="flex items-center gap-2 mb-4">
-              <Lock size={14} className="text-accent-green" />
+              <Lock size={14} className="text-blue" />
               <h3 className="text-sm font-medium text-text-primary">
                 Encrypt requests to coordinator
               </h3>
@@ -188,7 +188,7 @@ export default function SettingsPage() {
                 </span>
               )}
               {encStatus === "ok" && (
-                <span className="flex items-center gap-1 text-accent-green">
+                <span className="flex items-center gap-1 text-blue">
                   <Check size={12} />
                   {encInfo}
                 </span>

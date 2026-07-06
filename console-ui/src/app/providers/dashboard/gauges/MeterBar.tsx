@@ -90,7 +90,7 @@ export function StackedBar({
 export function pressureColor(fraction: number): string {
   if (fraction >= 0.9) return "bg-accent-red";
   if (fraction >= 0.6) return "bg-accent-amber";
-  return "bg-accent-green";
+  return "bg-blue";
 }
 
 /** Threshold color for CPU utilization. */

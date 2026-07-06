@@ -4,8 +4,8 @@
 import { ShieldCheck, ShieldQuestion, ShieldX } from "lucide-react";
 
 const STATUS: Record<string, { color: string; label: string; live: boolean }> = {
-  serving: { color: "bg-accent-green/15 text-accent-green", label: "Serving", live: true },
-  online: { color: "bg-accent-green/15 text-accent-green", label: "Online", live: true },
+  serving: { color: "bg-blue/15 text-blue", label: "Serving", live: true },
+  online: { color: "bg-blue/15 text-blue", label: "Online", live: true },
   offline: { color: "bg-text-tertiary/15 text-text-tertiary", label: "Offline", live: false },
   untrusted: { color: "bg-accent-red/15 text-accent-red", label: "Untrusted", live: false },
   never_seen: { color: "bg-text-tertiary/15 text-text-tertiary", label: "Never seen", live: false },
@@ -30,7 +30,7 @@ export function StatusPill({ status }: { status: string }) {
 export function TrustPill({ trustLevel }: { trustLevel: string }) {
   if (trustLevel === "hardware") {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-green/10 text-accent-green text-[10px] font-semibold uppercase tracking-wider">
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue/10 text-blue text-[10px] font-semibold uppercase tracking-wider">
         <ShieldCheck size={10} /> Hardware
       </span>
     );

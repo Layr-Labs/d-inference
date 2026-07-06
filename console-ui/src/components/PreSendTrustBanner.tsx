@@ -48,8 +48,8 @@ export function PreSendTrustBanner({ visible }: { visible: boolean }) {
   return (
     <>
       <div className="max-w-4xl mx-auto px-3 sm:px-6 pb-2">
-        <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-light/40 border-2 border-teal/30">
-          <ShieldCheck size={16} className="text-teal shrink-0" />
+        <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-light/40 border-2 border-blue/30">
+          <ShieldCheck size={16} className="text-blue shrink-0" />
           <p className="text-xs text-text-secondary flex-1 leading-relaxed">
             <span className="font-semibold text-text-primary">
               End-to-end encrypted
@@ -65,7 +65,7 @@ export function PreSendTrustBanner({ visible }: { visible: boolean }) {
           </p>
           <button
             onClick={() => setShowExplainer(true)}
-            className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold text-teal hover:bg-teal-light/60 transition-colors"
+            className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold text-blue hover:bg-blue-light/60 transition-colors"
           >
             <Info size={12} />
             <span className="hidden sm:inline">How it works</span>

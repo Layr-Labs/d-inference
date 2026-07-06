@@ -28,20 +28,24 @@ export function TopBar({ title }: { title?: string }) {
         {!sidebarOpen && (
           <button
             onClick={() => setSidebarOpen(true)}
-            className="p-2 rounded-lg hover:bg-bg-hover text-text-tertiary hover:text-text-primary transition-colors border-2 border-transparent hover:border-border-subtle"
+            className="w-9 h-9 grid place-items-center rounded-r2 border border-border-default bg-bg-elevated text-text-secondary hover:text-coral hover:bg-bg-hover hover:border-border-subtle transition-all"
           >
-            <Menu size={18} />
+            <Menu size={16} />
           </button>
         )}
         {!sidebarOpen && (
-          <div className="mr-3">
-            <span className="text-xl text-ink tracking-tight" style={{ fontFamily: "'Louize', Georgia, serif" }}>
+          <div className="mr-2">
+            <span className="font-display text-xl text-ink tracking-[0.04em]">
               Darkbloom
             </span>
           </div>
         )}
         {title && (
-          <h1 className="text-base font-medium text-text-secondary">{title}</h1>
+          <nav className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.09em]">
+            <span className="text-text-tertiary">console</span>
+            <span className="text-text-faint">/</span>
+            <span className="text-text-primary">{title}</span>
+          </nav>
         )}
 
         {/* E2E lock indicator — shown when there's an active chat */}

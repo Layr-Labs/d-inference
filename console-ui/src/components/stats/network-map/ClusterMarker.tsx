@@ -62,9 +62,7 @@ export function ClusterMarker({
           style={{
             width: `${core * 2}px`,
             height: `${core * 2}px`,
-            opacity: 0.75,
-            background:
-              "radial-gradient(circle, color-mix(in srgb, var(--accent-brand) 22%, transparent), transparent 70%)",
+            background: "color-mix(in srgb, var(--accent-brand) 10%, transparent)",
           }}
         />
         <span
@@ -91,10 +89,7 @@ export function ClusterMarker({
             width: `${core}px`,
             height: `${core}px`,
             fontSize: `${Math.max(9, core * 0.4)}px`,
-            background:
-              "radial-gradient(circle at 32% 26%, color-mix(in srgb, white 34%, var(--accent-brand)), var(--accent-brand) 70%)",
-            boxShadow:
-              "0 2px 6px color-mix(in srgb, var(--accent-brand) 45%, transparent), 0 0 0 1px color-mix(in srgb, var(--accent-brand) 30%, transparent)",
+            background: "var(--accent-brand)",
           }}
         >
           {totalNodes}

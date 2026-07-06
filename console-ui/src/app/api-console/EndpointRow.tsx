@@ -39,7 +39,7 @@ export function EndpointRow({
         <span
           className={`text-xs font-mono font-bold px-2 py-0.5 rounded ${
             method === "GET"
-              ? "bg-accent-green/10 text-accent-green"
+              ? "bg-blue/10 text-blue"
               : "bg-accent-brand/10 text-accent-brand"
           }`}
         >

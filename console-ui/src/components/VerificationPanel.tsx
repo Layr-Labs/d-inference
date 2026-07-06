@@ -23,8 +23,8 @@ export function VerificationPanel({ trust }: { trust: TrustMetadata }) {
   const isHardware = trust.trustLevel === "hardware";
 
   const Icon = isHardware ? ShieldCheck : Shield;
-  const color = isHardware ? "text-accent-green" : "text-text-tertiary";
-  const bg = isHardware ? "bg-accent-green/5" : "bg-bg-secondary";
+  const color = isHardware ? "text-blue" : "text-text-tertiary";
+  const bg = isHardware ? "bg-blue/5" : "bg-bg-secondary";
   const title = isHardware
     ? trust.mdaVerified
       ? mode === "normal"

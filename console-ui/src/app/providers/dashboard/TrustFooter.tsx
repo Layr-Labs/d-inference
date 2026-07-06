@@ -14,7 +14,7 @@ export function TrustFooter({
 }) {
   return (
     <div className="rounded-xl bg-bg-secondary/60 border border-border-dim/60 p-4 flex items-start gap-3">
-      <ShieldCheck size={16} className="text-accent-green shrink-0 mt-0.5" />
+      <ShieldCheck size={16} className="text-blue shrink-0 mt-0.5" />
       <div className="text-xs text-text-secondary leading-relaxed">
         <span className="font-medium text-text-primary">
           {hardwareCount} of {total} machine{total === 1 ? "" : "s"} hardware-attested.

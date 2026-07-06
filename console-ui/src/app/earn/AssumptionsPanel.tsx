@@ -94,7 +94,7 @@ export function AssumptionsPanel({ calc }: { calc: EarningsCalculator }) {
             <p className="text-lg font-mono text-accent-brand">+ {fmtUSDWhole(result.monthlyFloor)}</p>
             <p className="text-xs text-text-secondary mt-0.5">{effectiveRAM} GB tier, online ≥90%</p>
           </div>
-          <div className="rounded-lg bg-accent-green/5 border border-accent-green/20 p-3 text-center">
+          <div className="rounded-lg bg-blue/5 border border-blue/20 p-3 text-center">
             <p className="text-xs text-text-secondary mb-1">Top of range / mo</p>
             <p className="text-lg font-mono text-text-primary">{fmtUSDWhole(result.monthlyNet)}</p>
             <p className="text-xs text-text-secondary mt-0.5">usage + base reward</p>

@@ -163,7 +163,7 @@ export function TechnicalMode({
           {verifyResult && (
             <p
               className={`mt-2 text-xs font-semibold leading-relaxed ${
-                verifyResult.success ? "text-accent-green" : "text-accent-red"
+                verifyResult.success ? "text-blue" : "text-accent-red"
               }`}
             >
               {verifyResult.success

@@ -70,8 +70,8 @@ function ChatMessageImpl({
       <div className="max-w-4xl mx-auto px-3 sm:px-6">
         <div className="flex gap-2 sm:gap-3">
           {/* Avatar — hand-drawn style */}
-          <div className="shrink-0 w-7 h-7 rounded-lg bg-teal-light border-2 border-teal flex items-center justify-center mt-0.5 hidden sm:flex">
-            <Sparkles size={14} className="text-teal" />
+          <div className="shrink-0 w-7 h-7 rounded-lg bg-blue-light border-2 border-blue flex items-center justify-center mt-0.5 hidden sm:flex">
+            <Sparkles size={14} className="text-blue" />
           </div>
 
           {/* Content */}

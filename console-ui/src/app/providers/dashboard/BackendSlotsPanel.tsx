@@ -7,7 +7,7 @@ import { abbreviateNumber, clampPct, shortModelName } from "./format";
 import { MeterBar } from "./gauges/MeterBar";
 
 const STATE_TAG: Record<string, string> = {
-  running: "bg-accent-green/15 text-accent-green",
+  running: "bg-blue/15 text-blue",
   reloading: "bg-blue/15 text-blue",
   idle_shutdown: "bg-accent-amber/15 text-accent-amber",
   crashed: "bg-accent-red/15 text-accent-red",

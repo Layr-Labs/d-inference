@@ -28,7 +28,7 @@ function CheckLine({ ok, label }: { ok: boolean; label: string }) {
   return (
     <div className="flex items-center gap-2 text-xs">
       {ok ? (
-        <CheckCircle2 size={12} className="text-accent-green shrink-0" />
+        <CheckCircle2 size={12} className="text-blue shrink-0" />
       ) : (
         <XCircle size={12} className="text-accent-red shrink-0" />
       )}
@@ -53,12 +53,12 @@ function ChainNode({
       <div className="flex flex-col items-center">
         <div
           className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
-            ok ? "bg-accent-green/15 text-accent-green" : "bg-accent-amber/15 text-accent-amber"
+            ok ? "bg-blue/15 text-blue" : "bg-accent-amber/15 text-accent-amber"
           }`}
         >
           {ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
         </div>
-        {!last && <div className={`w-px flex-1 my-1 ${ok ? "bg-accent-green/40" : "bg-border-subtle"}`} />}
+        {!last && <div className={`w-px flex-1 my-1 ${ok ? "bg-blue/40" : "bg-border-subtle"}`} />}
       </div>
       <div className="flex-1 pb-4 min-w-0">
         <p className="text-xs font-semibold text-text-primary mb-1.5">{title}</p>
@@ -72,7 +72,7 @@ function VerifyStepLine({ step }: { step: VerificationStep }) {
   return (
     <div className="flex items-center gap-2 text-[11px]">
       {step.status === "success" ? (
-        <CheckCircle2 size={11} className="text-accent-green shrink-0" />
+        <CheckCircle2 size={11} className="text-blue shrink-0" />
       ) : step.status === "error" ? (
         <XCircle size={11} className="text-accent-red shrink-0" />
       ) : step.status === "running" ? (
@@ -122,12 +122,18 @@ export function AttestationPanel({
     if (certs.length < 2 || verifying) return;
     setVerifying(true);
     setResult(null);
+    // Track the latest steps locally — the `steps` state is a stale closure
+    // value here, so the error result must use what the callback last emitted.
+    let latestSteps: VerificationStep[] = [];
     try {
       const { verifyCertificateChain } = await import("@/lib/cert-verify");
-      const r = await verifyCertificateChain(certs, (s) => setSteps(s));
+      const r = await verifyCertificateChain(certs, (s) => {
+        latestSteps = s;
+        setSteps(s);
+      });
       setResult(r);
     } catch {
-      setResult({ success: false, steps, error: "Verification failed" });
+      setResult({ success: false, steps: latestSteps, error: "Verification failed" });
     } finally {
       setVerifying(false);
     }
@@ -194,7 +200,7 @@ export function AttestationPanel({
                   <VerifyStepLine key={i} step={s} />
                 ))}
                 {result && (
-                  <p className={`text-[11px] font-medium mt-1 ${result.success ? "text-accent-green" : "text-accent-red"}`}>
+                  <p className={`text-[11px] font-medium mt-1 ${result.success ? "text-blue" : "text-accent-red"}`}>
                     {result.success ? "✓ Verified Apple-attested device" : `✗ ${result.error || "Verification failed"}`}
                   </p>
                 )}
@@ -224,7 +230,7 @@ export function AttestationPanel({
         )}
         <span>
           Runtime:{" "}
-          <span className={p.runtime_verified ? "text-accent-green" : "text-accent-red"}>
+          <span className={p.runtime_verified ? "text-blue" : "text-accent-red"}>
             {p.runtime_verified ? "verified" : "unverified"}
           </span>
         </span>

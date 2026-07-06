@@ -59,7 +59,7 @@ export function CopyCommand({
     >
       <code className="select-all whitespace-pre overflow-x-auto max-w-full">{command}</code>
       {copied ? (
-        <Check size={13} className="text-accent-green shrink-0" />
+        <Check size={13} className="text-blue shrink-0" />
       ) : (
         <Copy size={13} className="text-text-tertiary group-hover:text-text-secondary shrink-0" />
       )}

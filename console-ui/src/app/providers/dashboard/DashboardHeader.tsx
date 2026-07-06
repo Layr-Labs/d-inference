@@ -57,9 +57,9 @@ export function DashboardHeader({
         <div className="flex items-center gap-1.5">
           <span className="relative flex h-2 w-2">
             {!pollFailed && (
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-green opacity-60" />
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue opacity-60" />
             )}
-            <span className={`relative inline-flex rounded-full h-2 w-2 ${pollFailed ? "bg-accent-amber" : "bg-accent-green"}`} />
+            <span className={`relative inline-flex rounded-full h-2 w-2 ${pollFailed ? "bg-accent-amber" : "bg-blue"}`} />
           </span>
           <span className="text-xs text-text-tertiary hidden sm:inline">
             {pollFailed ? "Reconnecting" : "Live"}

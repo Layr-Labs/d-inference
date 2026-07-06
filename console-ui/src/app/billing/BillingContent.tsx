@@ -219,7 +219,7 @@ export default function BillingContent() {
               </button>
             </div>
             {inviteSuccess && (
-              <div className="mt-3 flex items-center gap-2 text-sm text-teal font-semibold">
+              <div className="mt-3 flex items-center gap-2 text-sm text-blue font-semibold">
                 <Check size={14} />
                 {inviteSuccess}
               </div>
@@ -239,7 +239,7 @@ export default function BillingContent() {
             unlinkLoading={payouts.unlinkLoading}
             onOpenWithdraw={() => payouts.openWithdraw("10")}
             title="Withdraw to Bank"
-            icon={<Building2 size={16} className="text-teal" />}
+            icon={<Building2 size={16} className="text-blue" />}
             noun="credits"
             className="rounded-2xl border border-border-dim bg-bg-white p-6 shadow-md"
           />
@@ -257,7 +257,7 @@ export default function BillingContent() {
                 icon: TrendingUp,
                 label: "Total Tokens",
                 value: totalTokens.toLocaleString(),
-                color: "text-teal",
+                color: "text-blue",
               },
               {
                 icon: Clock,
@@ -353,7 +353,7 @@ export default function BillingContent() {
                             ({entry.prompt_tokens}p / {entry.completion_tokens}c)
                           </span>
                         </td>
-                        <td className="px-3 sm:px-5 py-3 font-mono text-xs text-teal">
+                        <td className="px-3 sm:px-5 py-3 font-mono text-xs text-blue">
                           ${(entry.cost_micro_usd / 1_000_000).toFixed(6)}
                         </td>
                       </tr>

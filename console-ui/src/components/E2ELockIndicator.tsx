@@ -32,7 +32,7 @@ export function E2ELockIndicator({ trust, onOpenExplainer }: E2ELockIndicatorPro
     <div ref={ref} className="relative">
       <button
         onClick={() => setShowPopover(!showPopover)}
-        className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs text-teal hover:bg-teal-light/40 transition-colors"
+        className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs text-blue hover:bg-blue-light/40 transition-colors"
       >
         <Lock size={12} />
         <span className="font-semibold hidden sm:inline">End-to-end encrypted</span>
@@ -42,7 +42,7 @@ export function E2ELockIndicator({ trust, onOpenExplainer }: E2ELockIndicatorPro
         <div className="absolute top-full right-0 mt-1 w-72 rounded-xl bg-bg-white border border-border-dim shadow-lg z-50 fade-in">
           <div className="px-4 py-3 border-b-2 border-border-dim">
             <div className="flex items-center gap-2">
-              <Lock size={14} className="text-teal" />
+              <Lock size={14} className="text-blue" />
               <span className="text-sm font-bold text-text-primary">
                 End-to-End Encrypted
               </span>
@@ -75,7 +75,7 @@ export function E2ELockIndicator({ trust, onOpenExplainer }: E2ELockIndicatorPro
                   setShowPopover(false);
                   onOpenExplainer();
                 }}
-                className="text-xs text-teal font-semibold hover:underline"
+                className="text-xs text-blue font-semibold hover:underline"
               >
                 Learn how your privacy is protected
               </button>

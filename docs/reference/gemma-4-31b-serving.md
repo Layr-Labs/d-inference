@@ -67,6 +67,9 @@ cold-spill eligibility at the 32GB floor).
 - Model/engine (mlx-swift-lm): existing Gemma-4 suites (`Gemma4*Tests`)
   cover the architecture; no new model code was needed for the 31B dense
   variant.
-- Live on-box validation (M5 Max): load, single-stream + batched decode,
-  SSE streaming, mid-decode admission waves — results recorded here when the
-  run completes.
+- Live on-box validation (load, single-stream + batched decode, SSE
+  streaming, mid-decode admission waves): **not yet run** — no test hardware
+  is currently available. Record numbers here when a box comes online. The
+  static analysis above (existing fleet-proven Gemma-4 path, no per-request
+  module state, natively batchable cache layout) is the current basis for
+  confidence.

@@ -1,0 +1,157 @@
+// Copyright © 2026 Eigen Labs.
+//
+// Shared production v2-slot bridge assembly (v0.7.5 one-engine).
+//
+// Both slot owners — the coordinator-serving `ProviderLoop` and the
+// standalone `darkbloom start --local` server — construct their model
+// slots through THIS one path so the assembly can never drift between
+// them: snapshot the loaded module's EOS config out of the container,
+// apply the model-specific EOS policy (`ModelEOSPolicy`), build the
+// production CBv2 engine over the loaded module (with the weight-sharing
+// VLM text extraction for Gemma 4 VLM checkpoints), and wrap it in an
+// `EngineV2Bridge` via the fail-loud `EngineV2Factory.makeBridge` (any
+// construction failure emits the ERROR `engine_v2_refusal` telemetry and
+// throws — the caller unloads and maps to a 503; there is no legacy
+// fallback).
+//
+// Call-site differences stay at the call sites: the ProviderLoop
+// registers the bridge with `EngineV2Runtime` (heartbeat/cancel fan-out)
+// and supports its own `EngineV2SlotHooks` test seam; the standalone
+// server keeps its slots private to the HTTP endpoint. Test seams here
+// are limited to `makeEngineOverride` (scripted engines, no weights).
+
+import Foundation
+import MLXLMCommon
+
+/// Model handle + EOS config snapshot pulled out of `ModelContainer.perform`.
+///
+/// `@unchecked Sendable` justification: the module reference crosses the
+/// container's isolation exactly once, at load time, to be handed to the v2
+/// engine — which serializes every use on its own engine thread.
+struct EngineV2ModelSnapshot: @unchecked Sendable {
+    let model: any LanguageModel
+    let eosTokenIds: Set<Int>
+    let extraEOSTokens: [String]
+}
+
+enum EngineV2SlotFactory {
+
+    /// Build the production `EngineV2Bridge` for a freshly-loaded model.
+    /// THROWS on any construction failure (the factory emits the ERROR
+    /// `engine_v2_refusal` event first) — the caller unloads + maps to 503.
+    ///
+    /// - Parameters:
+    ///   - modelId: catalog id the slot serves under.
+    ///   - modelType: `model_type` from config.json (EOS policy input).
+    ///   - isVLM: config declares `vision_config` — the engine is built
+    ///     over `EngineV2VLMTextExtraction`'s weight-sharing text model.
+    ///   - modelDirectory: checkpoint dir (required for VLM extraction).
+    ///   - container: the just-loaded model container.
+    ///   - tokenizer: the container's tokenizer handle.
+    ///   - sizing: scheduler-free sizing snapshot (fp16 KV rate, context,
+    ///     default max tokens).
+    ///   - kvBytesCapacity: this engine's KV admission grant, already
+    ///     re-sliced against co-resident slots by the caller.
+    ///   - maxConcurrentRequests: effective `engine_v2_max_concurrent`.
+    ///   - kvBudget: process-wide shared KV reservation ledger (nil ⇒ no
+    ///     shared gating — unit tests only; both production callers pass
+    ///     their ledger).
+    ///   - kvQuantConfigured: operator set `kv_quant` — v2 is fp16-only,
+    ///     so a WARN telemetry event fires once per load.
+    ///   - emitTelemetry: injectable sink (tests); nil ⇒ shared client.
+    ///   - makeEngineOverride: scripted engine builder for tests
+    ///     ((modelId, grant) — mirrors `ProviderLoop.EngineV2SlotHooks`);
+    ///     nil ⇒ the real `EngineV2Factory.makeProductionEngine`.
+    ///   - logInfo: sink for the VLM parity-gate info line.
+    static func makeProductionBridge(
+        modelId: String,
+        modelType: String?,
+        isVLM: Bool,
+        modelDirectory: URL?,
+        container: ModelContainer,
+        tokenizer: TokenizerHandle,
+        sizing: SlotSizingSnapshot,
+        kvBytesCapacity: Int,
+        maxConcurrentRequests: Int,
+        kvBudget: GlobalKVCacheBudget?,
+        kvQuantConfigured: Bool,
+        emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
+        makeEngineOverride: (@Sendable (String, Int) throws -> any CBv2Engine)? = nil,
+        logInfo: @escaping @Sendable (String) -> Void = { _ in }
+    ) async throws -> EngineV2Bridge {
+        // Snapshot the model handle + EOS config out of the container.
+        // Handing the module reference to the v2 engine serializes all
+        // forward passes on the engine's own step thread.
+        let snapshot = await container.perform { ctx in
+            EngineV2ModelSnapshot(
+                model: ctx.model,
+                eosTokenIds: ctx.configuration.eosTokenIds,
+                extraEOSTokens: ctx.configuration.extraEOSTokens.sorted())
+        }
+        // Same model-specific EOS augmentation as always (GPT-OSS/Harmony
+        // adds its generation-config action stops) — from the
+        // scheduler-free policy home.
+        let eosTokenIds = ModelEOSPolicy.effectiveEOSTokenIds(
+            modelId: modelId,
+            modelType: modelType,
+            base: snapshot.eosTokenIds,
+            tokenToId: { tokenizer.inner.convertTokenToId($0) }
+        )
+
+        let makeEngine: () throws -> any CBv2Engine
+        if let makeEngineOverride {
+            makeEngine = { try makeEngineOverride(modelId, kvBytesCapacity) }
+        } else {
+            makeEngine = {
+                // VLM slot: extract the CBv2-adapted MLXLLM text model over
+                // the SAME weight arrays (zero extra weight memory) and
+                // build the engine on that; any extraction/verify/parity
+                // failure throws into the factory's engine_v2_refusal ERROR.
+                let servingModel: any LanguageModel
+                if isVLM {
+                    guard let modelDirectory else {
+                        throw EngineV2VLMTextExtractionError.missingModelDirectory
+                    }
+                    let extraction = try EngineV2VLMTextExtraction.extractTextModel(
+                        from: snapshot.model, modelDirectory: modelDirectory)
+                    if let parityDiff = extraction.parityMaxAbsLogitDiff {
+                        logInfo(
+                            "engine_v2: \(modelId) VLM text-model extraction passed the "
+                                + "load-time forward parity gate (max |Δlogit| \(parityDiff))")
+                    }
+                    servingModel = extraction.model
+                } else {
+                    servingModel = snapshot.model
+                }
+                return try EngineV2Factory.makeProductionEngine(
+                    model: servingModel,
+                    tokenizer: tokenizer.inner,
+                    kvBytesCapacity: kvBytesCapacity,
+                    maxConcurrentRequests: maxConcurrentRequests)
+            }
+        }
+
+        let bridge = try EngineV2Factory.makeBridge(
+            modelId: modelId,
+            tokenizer: tokenizer,
+            eosTokenIds: eosTokenIds,
+            extraEOSTokens: snapshot.extraEOSTokens,
+            defaultMaxTokens: sizing.defaultMaxTokens,
+            maxConcurrentRequests: maxConcurrentRequests,
+            kvBytesPerToken: sizing.fp16KVBytesPerToken,
+            // Shared KV ledger: v2 submissions RESERVE their worst-case
+            // KV here before engine admission (process-wide gate) and the
+            // reservation is what the model-LOAD gate subtracts.
+            kvBudget: kvBudget,
+            emitTelemetry: emitTelemetry,
+            makeEngine: makeEngine)
+
+        // WARN once (per load) that kv_quant is ignored on the v2 path
+        // (fp16 caches are what the engine builds).
+        if kvQuantConfigured {
+            EngineV2Factory.emitKVQuantUnsupportedTelemetry(
+                modelId: modelId, emitTelemetry: emitTelemetry)
+        }
+        return bridge
+    }
+}

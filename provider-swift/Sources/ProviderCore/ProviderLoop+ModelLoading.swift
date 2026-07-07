@@ -723,17 +723,9 @@ extension ProviderLoop {
         // Vision-language models (config declares `vision_config`) load via
         // VLMModelFactory so image/video requests can run the container's
         // prepare/generate vision path. Their text path still works through the
-        // batched engine since VLMModel refines LanguageModel.
-        if Self.modelIsVLM(at: directory) {
-            return try await VLMModelFactory.shared.loadContainer(
-                from: directory,
-                using: LocalTokenizerLoader()
-            )
-        }
-        return try await LLMModelFactory.shared.loadContainer(
-            from: directory,
-            using: LocalTokenizerLoader()
-        )
+        // batched engine since VLMModel refines LanguageModel. Shared with the
+        // standalone server via `ModelContainerLoading`.
+        try await ModelContainerLoading.loadContainer(from: directory)
     }
 
     /// A model is a vision-language model when its `config.json` declares a

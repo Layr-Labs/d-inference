@@ -38,43 +38,26 @@ extension ProviderLoop {
     }
 
     internal func updateAggregateCapacity() async {
+        // ONE ENGINE (v0.7.5): `EngineV2Runtime.capacitySummary` is the ONLY
+        // slot source — every loaded model serves through a v2 bridge; the
+        // legacy scheduler fold is gone. Same `BackendSlotCapacity` wire
+        // shape, same slot-state strings ("idle"/"running"/"crashed").
         var allSlots: [BackendSlotCapacity] = []
         var totalActive = 0
-        let slots = modelSlots.filter { !modelsUnloading.contains($0.key) }
-        for (_, slot) in slots {
-            // A v2-served slot reports through its bridge (folded in below via
-            // the runtime). Its legacy scheduler is a dormant fallback that
-            // serves no requests while the bridge exists — reporting BOTH
-            // would advertise the same model's capacity twice and over-admit.
-            if slot.engineV2 != nil { continue }
-            let cap = await slot.scheduler.backendCapacity()
-            allSlots.append(contentsOf: cap.slots)
-            let schedCap = await slot.scheduler.capacity()
-            totalActive += schedCap.activeRequests
-        }
-
-        // ContinuousBatchingV2 (flag-gated, additive): fold any active v2
-        // bridge slots into the SAME heartbeat payload — identical protocol
-        // fields, truthful bytes-derived token numbers (see
-        // `EngineV2Bridge+Capacity`). Guarded on the slot set so the flag-off
-        // steady state pays ZERO extra cost here — no runtime actor hop, no
-        // allocations; legacy behavior is byte-identical.
         if hasEngineV2Slots {
-            // Fleet context for the v2 budget clamp (round-3 PR#499 P2): v2
-            // ceilings are construction-fixed, so a model loaded AFTER a
-            // bridge (legacy or v2) would otherwise leave that bridge's
-            // heartbeat advertising a stale `activeTokenBudgetMax` — the
-            // coordinator keeps routing what the shared KV gate then rejects
-            // post-acceptance. Snapshot the CURRENT resident set (ALL slots'
-            // weights — v2 and legacy, including slots mid-unload whose
-            // weights are still resident) + the operator reserve so the
-            // runtime can recompute each bridge's live budget and clamp the
-            // reported max. Heartbeat cadence only — never the submit path.
+            // Fleet context for the v2 budget clamp: engine grants are now
+            // RE-SLICED at load/unload, so between re-slices this clamp is a
+            // near-inert safety net — but it stays: it recomputes each
+            // bridge's live budget from CURRENT fleet residency (weights of
+            // ALL slots, including mid-unload ones whose bytes are still
+            // resident) so the reported max can never advertise capacity the
+            // shared KV gate would reject. The runtime reads each engine's
+            // CURRENT (post-re-slice) grant per heartbeat — never a stale
+            // construction-time figure. Heartbeat cadence only.
             var totalResidentWeightBytes: UInt64 = 0
             for (_, slot) in modelSlots {
-                let weights = await slot.scheduler.modelWeightBytes
                 let (sum, overflow) = totalResidentWeightBytes
-                    .addingReportingOverflow(UInt64(max(0, weights)))
+                    .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
                 totalResidentWeightBytes = overflow ? .max : sum
             }
             let engineV2 = await engineV2Runtime.capacitySummary(

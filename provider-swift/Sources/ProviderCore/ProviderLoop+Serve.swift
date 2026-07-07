@@ -31,6 +31,21 @@ extension ProviderLoop {
             logger.info("Legacy compiled decode disabled (legacy_compiled_decode=false, env unset)")
         }
 
+        // v0.7.5 one-engine: the v2 selection knobs are retired — warn
+        // operators still setting them so nobody believes a kill switch
+        // exists that doesn't. Selection is unconditional; rollback is
+        // release-level.
+        for retired in EngineV2Config.retiredEnvironmentKeysSet() {
+            logger.warning(
+                "\(retired) is retired and IGNORED as of v0.7.5 — the v2 engine serves "
+                    + "everything; rollback is release-level, not a per-box switch")
+        }
+        if loopConfig.config.backend.engineV2 == false {
+            logger.warning(
+                "provider.toml sets engine_v2 = false, which is retired and IGNORED as of "
+                    + "v0.7.5 — the v2 engine serves everything; remove the key")
+        }
+
         logger.info("darkbloom \(ProviderCore.version) starting")
         logger.info("Hardware: \(loopConfig.hardware.chipName), \(loopConfig.hardware.memoryGb) GB RAM, \(loopConfig.hardware.gpuCores) GPU cores")
         logger.info("Models: \(loopConfig.models.count) advertised")

@@ -91,17 +91,25 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// fixed 512-token production path. Enable with `adaptive_prefill = true`
     /// under `[backend]` in provider.toml.
     public var adaptivePrefill: Bool
-    /// ContinuousBatchingV2 engine for the allowlisted models (the
-    /// coordinator-catalog fleet model ids — see
-    /// `EngineV2Config.defaultModelAllowlist`).
-    /// **Default true as of v0.7.0**: v2 ships on by default for the
-    /// allowlisted models; every other model keeps the legacy
-    /// `BatchedEngine` path byte-identical. Rollback is the env kill
-    /// switch `DARKBLOOM_ENGINE_V2=0` (absolute — beats config, per-box,
-    /// no release needed) or a release rollback. v2 init failure falls
-    /// back to legacy with WARN `engine_health` telemetry (model id +
-    /// error reason).
+    /// RETIRED (v0.7.5): the v2 engine is unconditional — there is no
+    /// legacy engine left to select. The key is still parsed so old
+    /// provider.toml files load cleanly, and startup WARNs when an operator
+    /// set `engine_v2 = false` (the value is otherwise ignored). Full key
+    /// removal happens in a later cleanup pass.
     public var engineV2: Bool
+    /// Box-wide concurrent-request cap per v2 engine slot
+    /// (`engine_v2_max_concurrent` under `[backend]`). Default 4 — the
+    /// CBv2 product target. Clamped to [1, 8] at use: the engine's KV
+    /// byte-ledger admission binds long before count does, and caps past 8
+    /// recreate the batch-collapse regime the one-engine release exists to
+    /// kill. The coordinator sees the effective value in heartbeat
+    /// `max_concurrency`.
+    public var engineV2MaxConcurrent: UInt64
+    /// Optional per-model override map
+    /// (`engine_v2_max_concurrent_by_model` under `[backend]`, TOML table
+    /// of model id → cap). Same [1, 8] clamp. Missing ids use
+    /// `engineV2MaxConcurrent`.
+    public var engineV2MaxConcurrentByModel: [String: UInt64]
     /// Opt-in compiled decode for the LEGACY engine (default false). The
     /// mlx-swift-lm library defaults its `DARKBLOOM_COMPILED_DECODE` env
     /// gate ON; the provider forces it OFF at startup unless this is true
@@ -153,6 +161,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         kvQuant: Bool = false,
         adaptivePrefill: Bool = false,
         engineV2: Bool = true,
+        engineV2MaxConcurrent: UInt64 = 4,
+        engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         legacyCompiledDecode: Bool = false,
         startupPreload: Bool = true,
         preloadModels: [String] = [],
@@ -169,6 +179,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.kvQuant = kvQuant
         self.adaptivePrefill = adaptivePrefill
         self.engineV2 = engineV2
+        self.engineV2MaxConcurrent = engineV2MaxConcurrent
+        self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
         self.legacyCompiledDecode = legacyCompiledDecode
         self.startupPreload = startupPreload
         self.preloadModels = preloadModels
@@ -187,6 +199,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case kvQuant = "kv_quant"
         case adaptivePrefill = "adaptive_prefill"
         case engineV2 = "engine_v2"
+        case engineV2MaxConcurrent = "engine_v2_max_concurrent"
+        case engineV2MaxConcurrentByModel = "engine_v2_max_concurrent_by_model"
         case legacyCompiledDecode = "legacy_compiled_decode"
         case startupPreload = "startup_preload"
         case preloadModels = "preload_models"
@@ -206,6 +220,11 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.kvQuant = try container.decodeIfPresent(Bool.self, forKey: .kvQuant) ?? false
         self.adaptivePrefill = try container.decodeIfPresent(Bool.self, forKey: .adaptivePrefill) ?? false
         self.engineV2 = try container.decodeIfPresent(Bool.self, forKey: .engineV2) ?? true
+        self.engineV2MaxConcurrent =
+            try container.decodeIfPresent(UInt64.self, forKey: .engineV2MaxConcurrent) ?? 4
+        self.engineV2MaxConcurrentByModel =
+            try container.decodeIfPresent(
+                [String: UInt64].self, forKey: .engineV2MaxConcurrentByModel) ?? [:]
         self.legacyCompiledDecode =
             try container.decodeIfPresent(Bool.self, forKey: .legacyCompiledDecode) ?? false
         self.startupPreload = try container.decodeIfPresent(Bool.self, forKey: .startupPreload) ?? true

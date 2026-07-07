@@ -297,12 +297,12 @@ extension ProviderLoop {
             modelSlots[modelId]?.lastInferenceAt = .now
         }
 
-        let sched = slot.scheduler
         let tokenizer = slot.tokenizer
         let modelType = slot.modelType
         let slotContainer = slot.container
         let slotIsVLM = slot.isVLM
         let slotEngineV2 = slot.engineV2
+        let slotVisionGate = slot.visionGate(kvBudget: kvBudget)
 
         let request = OpenAIChatCompletionRequest(
             model: modelId,
@@ -316,9 +316,10 @@ extension ProviderLoop {
         let engine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [modelId: .init(
-                    scheduler: sched, tokenizer: tokenizer, modelType: modelType,
+                    tokenizer: tokenizer, modelType: modelType,
                     container: slotContainer, isVLM: slotIsVLM,
-                    engineV2Bridge: slotEngineV2)]
+                    engineV2Bridge: slotEngineV2,
+                    visionGate: slotVisionGate)]
             },
             defaultMaxTokens: Self.schedulerDefaultMaxTokens
         )

@@ -459,9 +459,23 @@ public actor ProviderLoop {
         beforeModelLoad: (@Sendable (String) async -> Void)? = nil
     ) throws {
         self.loopConfig = config
+        // Architecture-derived supported set (v0.7.5 fail-loud): the v2
+        // engine is the ONLY engine, so a model whose family has no CBv2
+        // adapter can never serve — advertising it would invite requests
+        // that always 5xx. Drop unsupported families here (the single
+        // chokepoint: registration filters through this set, and the local
+        // /v1/models reads it), and WARN so the operator sees why a model
+        // on disk isn't advertised. A stale-catalog load request for a
+        // dropped id then 404s at the advertised-set guard in
+        // `ensureModelLoaded` — never a silent degrade.
         var advertised: [String: ModelInfo] = [:]
+        var unsupportedModelIds: [String] = []
         for model in config.models where advertised[model.id] == nil {
-            advertised[model.id] = model
+            if EngineV2SupportedModels.isSupported(modelType: model.modelType) {
+                advertised[model.id] = model
+            } else {
+                unsupportedModelIds.append(model.id)
+            }
         }
         self.advertisedModels = advertised
         self.modelHashes = config.modelHashes
@@ -502,6 +516,13 @@ public actor ProviderLoop {
         self.beforeModelLoad = beforeModelLoad
         self.liveModelHashes = config.modelHashes
         self.modelHashFingerprints = config.modelHashFingerprints
+        // Phase-1 complete — safe to touch self.logger now.
+        if !unsupportedModelIds.isEmpty {
+            logger.warning(
+                "Not advertising \(unsupportedModelIds.count) model(s) without a CBv2 adapter "
+                    + "(v0.7.5 serves everything through engine v2): "
+                    + unsupportedModelIds.sorted().joined(separator: ", "))
+        }
     }
 
     static func memoryReserveBytes(forGiB gb: UInt64) -> UInt64 {
@@ -529,16 +550,18 @@ public actor ProviderLoop {
     }
 
     internal struct ModelSlot {
-        let scheduler: BatchScheduler
-        /// ContinuousBatchingV2 bridge for this slot — non-nil ONLY when
-        /// `EngineV2Config` selected the v2 engine at load time AND its
-        /// construction succeeded. Stored ALONGSIDE (never replacing) the
-        /// legacy scheduler: requests route through the bridge when present,
-        /// and every fallback path (flag off, non-allowlisted model, v2 init
-        /// failure) leaves this nil and serves via `scheduler` unchanged.
-        let engineV2: EngineV2Bridge?
+        /// ContinuousBatchingV2 bridge — the ONE engine this slot serves
+        /// through (v0.7.5): every chat request routes here; there is no
+        /// legacy scheduler on the slot anymore. Construction failure means
+        /// the slot never exists (`ensureModelLoaded` unloads + 503s).
+        let engineV2: EngineV2Bridge
+        /// Retained for the VLM media path (vision tower shares weights
+        /// with the extracted text model) and for liveness rebuilds.
         let container: MLXLMCommon.ModelContainer
         let tokenizer: TokenizerHandle
+        /// Scheduler-free sizing facts (weights, fp16 KV rate, context) —
+        /// feeds re-slicing, heartbeat fleet context, and the vision gate.
+        let sizing: SlotSizingSnapshot
         /// Vision-language model (config has `vision_config`). Multimodal
         /// requests are served from `container` via the non-batched path.
         let isVLM: Bool
@@ -549,6 +572,33 @@ public actor ProviderLoop {
         /// otherwise fall back to the qwen3 parser and leak <think> tokens).
         let modelType: String?
         var lastInferenceAt: ContinuousClock.Instant
+
+        /// Per-slot memory gate for the legacy VLM media path — the
+        /// scheduler-free home of `reserveVisionRequest` (media-decode RAM
+        /// + generation KV against the shared `GlobalKVCacheBudget`).
+        func visionGate(kvBudget: GlobalKVCacheBudget?) -> VisionMemoryGate {
+            VisionMemoryGate(
+                kvBudget: kvBudget,
+                fp16KVBytesPerToken: sizing.fp16KVBytesPerToken,
+                contextLength: sizing.maxContextLength
+            )
+        }
+    }
+
+    /// Effective concurrent-request cap for a v2 engine slot: the
+    /// per-model override when configured, else the box-wide
+    /// `engine_v2_max_concurrent`, clamped to [1, 8] (the CBv2 product
+    /// ceiling — see `BackendSettings.engineV2MaxConcurrent`).
+    internal func engineV2MaxConcurrent(forModel modelId: String) -> Int {
+        let backend = loopConfig.config.backend
+        let raw = backend.engineV2MaxConcurrentByModel[modelId]
+            ?? backend.engineV2MaxConcurrent
+        return Self.clampEngineV2Concurrency(raw)
+    }
+
+    /// Pure clamp for the configured concurrency (unit-testable).
+    internal static func clampEngineV2Concurrency(_ raw: UInt64) -> Int {
+        Int(min(max(raw, 1), 8))
     }
 
     /// Try persistent keychain-backed SE key first; fall back to ephemeral CryptoKit key.

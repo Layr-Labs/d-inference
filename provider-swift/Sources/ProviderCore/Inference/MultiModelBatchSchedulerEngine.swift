@@ -200,13 +200,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // reserve) and is retained only for ProviderLoop where
         // `requestToModel[id] = modelId` pins the slot before load and
         // closes the same race at the caller side.
-        let scheduler: BatchScheduler
+        let scheduler: BatchScheduler?
         let tokenizer: TokenizerHandle
         let modelType: String?
         let releaseBox: OneShotRelease
         let container: ModelContainer?
         let isVLM: Bool
         let engineV2Bridge: EngineV2Bridge?
+        let visionGate: VisionMemoryGate?
         let modelId = request.model
         if let acquire {
             let acquired = try await acquire(modelId)
@@ -217,6 +218,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             container = acquired.container
             isVLM = acquired.isVLM
             engineV2Bridge = acquired.engineV2Bridge
+            visionGate = acquired.visionGate
         } else {
             try await ensureLoaded(modelId)
             let registry = await (registryProvider?() ?? [:])
@@ -231,6 +233,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             container = entry.container
             isVLM = entry.isVLM
             engineV2Bridge = entry.engineV2Bridge
+            visionGate = entry.visionGate
         }
 
         // Multimodal (image/video) requests can't flow through the token-only
@@ -269,6 +272,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // Released on every exit.
             let mediaReqId = "vlm-\(UUID().uuidString.prefix(12))"
             let projectedBytes = VLMRequestInference.projectedDecodeBytes(request)
+            // Scheduler-free vision gate (v0.7.5): the per-slot
+            // `VisionMemoryGate` carries the slot's fp16 KV rate + context
+            // window and reserves against the same shared budget the old
+            // scheduler surface did. A nil gate (standalone/unit tests
+            // without a shared ledger) degrades to "always proceed" —
+            // identical to the old nil-kvBudget scheduler behavior.
+            let mediaGate = visionGate
+                ?? VisionMemoryGate(kvBudget: nil, fp16KVBytesPerToken: 0, contextLength: 0)
             // Full KV-token span the vision cache will hold: prompt text + image/
             // video soft tokens + generated output (clamped to the context). The
             // vision path bypasses the batched KV reservation, so charging only the
@@ -276,8 +287,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // occupy KV.
             let kvTokens = VLMRequestInference.projectedKVTokens(
                 request, defaultMaxTokens: defaultMaxTokens,
-                contextLength: await scheduler.contextLength())
-            let mediaReserved = await scheduler.reserveVisionRequest(
+                contextLength: mediaGate.contextLength)
+            let mediaReserved = await mediaGate.reserve(
                 requestId: mediaReqId, mediaDecodeBytes: projectedBytes,
                 kvTokens: kvTokens)
             if !mediaReserved {
@@ -290,7 +301,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             do {
                 try await VLMRequestInference.validateMedia(request)
             } catch {
-                await scheduler.releaseVisionRequest(requestId: mediaReqId)
+                await mediaGate.release(requestId: mediaReqId)
                 await releaseBox.fire()
                 throw error
             }
@@ -338,7 +349,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // the embeddings were eval'ed inside `prepare`. Holding
                     // both would double-charge the KV span for the whole
                     // stream, so release the vision reservation here.
-                    await scheduler.releaseVisionRequest(requestId: mediaReqId)
+                    await mediaGate.release(requestId: mediaReqId)
                     return makeEventStream(
                         upstream: upstream,
                         cancelUpstream: { await bridge.cancel(requestId: visionRequestId) },
@@ -350,7 +361,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // v2 failure, so don't burn a fallback WARN or re-serve
                     // the whole request through the legacy path. Release and
                     // propagate like every other pre-stream throw above.
-                    await scheduler.releaseVisionRequest(requestId: mediaReqId)
+                    await mediaGate.release(requestId: mediaReqId)
                     await releaseBox.fire()
                     throw CancellationError()
                 } catch {
@@ -365,9 +376,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
             let vlmStream = VLMRequestInference.stream(
                 container: container, request: request, defaultMaxTokens: defaultMaxTokens)
-            // Capture the scheduler so the stream task can release the media
-            // reservation; `scheduler` is Sendable (an actor reference).
-            let mediaReleaseScheduler = scheduler
+            // Capture the gate so the stream task can release the media
+            // reservation; `VisionMemoryGate` is a Sendable value.
+            let mediaReleaseGate = mediaGate
             return AsyncThrowingStream { continuation in
                 let task = Task {
                     do {
@@ -375,11 +386,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             if Task.isCancelled { break }
                             continuation.yield(event)
                         }
-                        await mediaReleaseScheduler.releaseVisionRequest(requestId: mediaReqId)
+                        await mediaReleaseGate.release(requestId: mediaReqId)
                         await releaseBox.fire()
                         continuation.finish()
                     } catch {
-                        await mediaReleaseScheduler.releaseVisionRequest(requestId: mediaReqId)
+                        await mediaReleaseGate.release(requestId: mediaReqId)
                         await releaseBox.fire()
                         continuation.finish(throwing: error)
                     }
@@ -387,7 +398,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 continuation.onTermination = { @Sendable _ in
                     task.cancel()
                     Task {
-                        await mediaReleaseScheduler.releaseVisionRequest(requestId: mediaReqId)
+                        await mediaReleaseGate.release(requestId: mediaReqId)
                         await releaseBox.fire()
                     }
                 }
@@ -467,18 +478,19 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
         let requestId = "req-\(UUID().uuidString.prefix(12))"
 
-        // ContinuousBatchingV2 routing (flag-gated): when the resolved model
-        // carries a v2 bridge, submit the SAME tokenized prompt through it.
-        // The bridge yields the identical `AsyncStream<GenerationEvent>`
-        // shape the scheduler produces, so everything downstream — tool-call
-        // parsing, SSE framing, error→status mapping, billing extraction —
-        // is engine-agnostic. nil bridge ⇒ the legacy path, byte-identical.
+        // ONE ENGINE (v0.7.5): a ProviderLoop slot ALWAYS carries a v2
+        // bridge — the tokenized prompt submits through it. The bridge
+        // yields the identical `AsyncStream<GenerationEvent>` shape, so
+        // everything downstream — tool-call parsing, SSE framing,
+        // error→status mapping, billing extraction — is engine-agnostic.
         //
-        // INTENTIONAL sampling delta on the v2 path: the legacy submit below
-        // forwards only temperature/topP/topK, silently dropping repetition/
-        // frequency/presence penalties and `stop` strings; the v2 translation
-        // honors them (more OpenAI-faithful). Identical wire requests using
-        // those knobs therefore sample differently across the two engines.
+        // The legacy `scheduler.submitTokenized` branch remains ONLY for
+        // the standalone `darkbloom local` server, which still constructs
+        // its own `BatchScheduler` slots (separate workstream; see
+        // MultiModelBatchSchedulerEngine+Registry.swift). A TEXT request
+        // that reaches an entry with NEITHER engine is a hard internal
+        // error (500) — structurally unreachable, kept as loud insurance
+        // per the fail-loud contract.
         let upstream: AsyncStream<GenerationEvent>
         let cancelUpstream: @Sendable () async -> Void
         if let bridge = engineV2Bridge {
@@ -498,15 +510,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     logitBias: engineV2Sampling?.logitBias,
                     seed: engineV2Sampling?.seed),
                 requestId: requestId,
-                // Same per-tenant scope the legacy submit threads into the
-                // checkpoint cache; the bridge maps it to CBv2Request.cacheSalt
-                // (TB-007; inert — production builds the engine with
-                // prefixCache: nil).
+                // Per-tenant prefix-cache scope; the bridge maps it to
+                // CBv2Request.cacheSalt (TB-007; inert — production builds
+                // the engine with prefixCache: nil).
                 cacheScope: cacheScope,
                 logprobsChannel: engineV2Logprobs?.channel
             )
             cancelUpstream = { await bridge.cancel(requestId: requestId) }
-        } else {
+        } else if let scheduler {
             upstream = await scheduler.submitTokenized(
                 promptTokens: promptTokens,
                 maxTokens: maxTokens,
@@ -521,6 +532,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 allowFastPath: toolHandler == nil
             )
             cancelUpstream = { await scheduler.cancel(requestId: requestId) }
+        } else {
+            // Fail-loud backstop: no engine at all on the entry. This can
+            // only mean a wiring bug — surface it as a 500 provider fault,
+            // never a silent degrade.
+            await releaseBox.fire()
+            throw MultiModelBatchSchedulerEngineError.generationFailed(
+                "internal error: model '\(modelId)' has no serving engine (no v2 bridge)")
         }
 
         return makeEventStream(

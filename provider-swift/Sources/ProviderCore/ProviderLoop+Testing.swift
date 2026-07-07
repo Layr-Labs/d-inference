@@ -149,55 +149,72 @@ extension ProviderLoop {
         engineV2Runtime = runtime
     }
 
-    /// Test seam: install slot-factory hooks (environment + EOS snapshot +
-    /// engine builder) so `makeEngineV2BridgeForSlot` runs end-to-end with a
-    /// scripted `CBv2Engine` — no model weights, no container reads.
+    /// Test seam: install slot-factory hooks (EOS snapshot + engine builder
+    /// + physical-memory override) so the re-slice + bridge construction
+    /// path runs end-to-end with a scripted `CBv2Engine` — no model
+    /// weights, no container reads.
     func setEngineV2SlotHooksForTesting(_ hooks: EngineV2SlotHooks?) {
         engineV2SlotHooks = hooks
     }
 
-    /// Test seam: drive the model-load slot factory directly (production
-    /// entry point is `ensureModelLoaded`, which needs real weights).
-    func makeEngineV2BridgeForSlotForTesting(
+    /// Test seam: drive the re-slice + slot-build orchestration directly
+    /// (production entry point is `ensureModelLoaded`, which needs real
+    /// weights). Computes fair-share grants against the CURRENT installed
+    /// slots, shrinks them, builds the newcomer via the hooks' engine
+    /// builder, and restores grants on throw — exactly the production path.
+    func resliceAndBuildEngineV2SlotForTesting(
         modelId: String,
         modelType: String?,
         isVLM: Bool = false,
         modelDirectory: URL? = nil,
         container: MLXLMCommon.ModelContainer,
         tokenizer: TokenizerHandle,
-        scheduler: BatchScheduler
-    ) async -> EngineV2Bridge? {
-        await makeEngineV2BridgeForSlot(
+        sizing: SlotSizingSnapshot
+    ) async throws -> EngineV2Bridge {
+        try await resliceAndBuildEngineV2Slot(
             modelId: modelId,
             modelType: modelType,
             isVLM: isVLM,
             modelDirectory: modelDirectory,
             container: container,
             tokenizer: tokenizer,
-            scheduler: scheduler
+            sizing: sizing
         )
     }
 
-    /// Test seam: install a fully-formed model slot (optionally carrying a
-    /// v2 bridge) so capacity/cancellation guard tests can exercise the
-    /// slot-dependent paths without loading weights.
+    /// Test seam: the unload-side re-slice (grow survivors back to their
+    /// fair shares).
+    func resliceGrowSurvivorsForTesting() async {
+        await resliceGrowSurvivors()
+    }
+
+    /// Test seam: install a fully-formed v2 model slot so capacity/
+    /// cancellation/re-slice tests can exercise the slot-dependent paths
+    /// without loading weights.
     func installModelSlotForTesting(
         modelId: String,
-        scheduler: BatchScheduler,
         container: MLXLMCommon.ModelContainer,
         tokenizer: TokenizerHandle,
-        engineV2: EngineV2Bridge? = nil,
+        engineV2: EngineV2Bridge,
+        sizing: SlotSizingSnapshot = SlotSizingSnapshot(
+            weightsBytes: 0, fp16KVBytesPerToken: 0,
+            maxContextLength: 0, defaultMaxTokens: 4096),
         modelType: String? = nil
     ) {
         modelSlots[modelId] = ModelSlot(
-            scheduler: scheduler,
             engineV2: engineV2,
             container: container,
             tokenizer: tokenizer,
+            sizing: sizing,
             isVLM: false,
             modelType: modelType,
             lastInferenceAt: .now
         )
+    }
+
+    /// Test seam: remove an installed slot without the unload machinery.
+    func removeModelSlotForTesting(modelId: String) {
+        modelSlots.removeValue(forKey: modelId)
     }
 
     /// Test seam: whether any live slot carries a v2 bridge (the capacity/

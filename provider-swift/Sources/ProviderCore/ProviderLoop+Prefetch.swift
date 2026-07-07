@@ -196,6 +196,18 @@ extension ProviderLoop {
             logger.error("Prefetch verified \(modelId) but the weight hash could not be computed; not advertising (keeping the previous build to avoid an unverifiable swap)")
             return
         }
+        // Architecture-derived supported set (v0.7.5): a prefetched build
+        // whose family has no CBv2 adapter can never serve — advertising it
+        // would invite requests that always refuse. Keep the previous build
+        // serving; the catalog entry is the thing that needs fixing.
+        guard EngineV2SupportedModels.isSupported(modelType: info.modelType) else {
+            desiredSwapDrop.removeValue(forKey: modelId)
+            logger.error(
+                "Prefetch verified \(modelId) but model_type '\(info.modelType ?? "unknown")' "
+                    + "has no CBv2 adapter (v0.7.5 serves everything through engine v2); "
+                    + "not advertising (keeping the previous build)")
+            return
+        }
         // Adding to `advertisedModels` also raises the effective slot cap
         // (`maxModelSlots` is computed from this set), so the newly-verified
         // build can be held resident alongside the model currently being served

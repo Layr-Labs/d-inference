@@ -267,7 +267,6 @@ extension ProviderLoop {
         // 7. Capture values for the spawned task
         let responsePublicKeyData: Data = senderKey
         let kp = self.keyPair
-        let sched = slot.scheduler
         let providerStats = self.stats
         let registry = self.cancellationRegistry
         let signingIdentity = self.signer
@@ -281,17 +280,17 @@ extension ProviderLoop {
         let modelType = slot.modelType
         let slotContainer = slot.container
         let slotIsVLM = slot.isVLM
-        // ContinuousBatchingV2 (flag-gated): non-nil only when the slot was
-        // loaded with a v2 bridge. The engine below routes text generation
-        // through it; nil keeps the legacy scheduler path byte-identical.
+        // ONE ENGINE (v0.7.5): the slot's v2 bridge serves every request;
+        // the scheduler-free vision gate covers the legacy VLM media path's
+        // memory reservations.
         let slotEngineV2 = slot.engineV2
-        // Logprobs passthrough (v2 only): a per-request channel the bridge
-        // pump fills with OpenAI-shaped entries and the frames loop below
-        // drains into content-bearing SSE chunks. nil (request didn't ask,
-        // or the slot serves via legacy) ⇒ frames pass through untouched.
+        let slotVisionGate = slot.visionGate(kvBudget: kvBudget)
+        // Logprobs passthrough: a per-request channel the bridge pump fills
+        // with OpenAI-shaped entries and the frames loop below drains into
+        // content-bearing SSE chunks. nil (request didn't ask) ⇒ frames
+        // pass through untouched.
         let logprobsChannel: EngineV2LogprobsChannel? =
-            (logprobsSpec != nil && slotEngineV2 != nil)
-            ? EngineV2LogprobsChannel() : nil
+            logprobsSpec != nil ? EngineV2LogprobsChannel() : nil
 
         // 8. Spawn inference task. The streaming pipeline now flows through
         // the upstream `MLXLMServer` library:
@@ -380,9 +379,10 @@ extension ProviderLoop {
             let providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in
                     [chatRequest.model: .init(
-                        scheduler: sched, tokenizer: tokenizer, modelType: modelType,
+                        tokenizer: tokenizer, modelType: modelType,
                         container: slotContainer, isVLM: slotIsVLM,
-                        engineV2Bridge: slotEngineV2)]
+                        engineV2Bridge: slotEngineV2,
+                        visionGate: slotVisionGate)]
                 },
                 ensureLoaded: { _ in },
                 reserveModel: { _ in },

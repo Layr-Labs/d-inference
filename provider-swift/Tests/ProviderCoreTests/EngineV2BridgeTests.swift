@@ -1113,193 +1113,179 @@ struct EngineV2CapacityTests {
 
 // MARK: - Config gating
 
-@Suite("EngineV2 config gating (flag, allowlist, fallback)")
-struct EngineV2ConfigGatingTests {
+@Suite("EngineV2 fail-loud factory (v0.7.5 one engine — no selection, no fallback)")
+struct EngineV2FailLoudFactoryTests {
 
-    @Test("flag resolution: env overrides config; garbage fails safe")
-    func flagResolution() {
-        #expect(EngineV2Config.flagEnabled(environment: ["DARKBLOOM_ENGINE_V2": "1"], configEnabled: false))
-        #expect(EngineV2Config.flagEnabled(environment: ["DARKBLOOM_ENGINE_V2": "true"], configEnabled: false))
-        // Env kill switch beats config.
-        #expect(!EngineV2Config.flagEnabled(environment: ["DARKBLOOM_ENGINE_V2": "0"], configEnabled: true))
-        #expect(!EngineV2Config.flagEnabled(environment: ["DARKBLOOM_ENGINE_V2": "off"], configEnabled: true))
-        // Absent env defers to the `engine_v2` provider-config key.
-        #expect(EngineV2Config.flagEnabled(environment: [:], configEnabled: true))
-        #expect(!EngineV2Config.flagEnabled(environment: [:], configEnabled: false))
-        // Unrecognized value fails safe (legacy).
-        #expect(!EngineV2Config.flagEnabled(environment: ["DARKBLOOM_ENGINE_V2": "maybe"], configEnabled: true))
+    @Test("retired selection env vars are detected for the startup WARN, never consulted")
+    func retiredEnvDetection() {
+        #expect(EngineV2Config.retiredEnvironmentKeysSet(environment: [:]).isEmpty)
+        #expect(
+            EngineV2Config.retiredEnvironmentKeysSet(
+                environment: ["DARKBLOOM_ENGINE_V2": "0"])
+                == ["DARKBLOOM_ENGINE_V2"])
+        #expect(
+            EngineV2Config.retiredEnvironmentKeysSet(
+                environment: [
+                    "DARKBLOOM_ENGINE_V2": "1",
+                    "DARKBLOOM_ENGINE_V2_MODELS": "qwen3*",
+                ])
+                == ["DARKBLOOM_ENGINE_V2", "DARKBLOOM_ENGINE_V2_MODELS"])
+        // Empty values do not count as "set".
+        #expect(
+            EngineV2Config.retiredEnvironmentKeysSet(
+                environment: ["DARKBLOOM_ENGINE_V2": ""]).isEmpty)
     }
 
-    @Test("default allowlist: fleet catalog model ids only")
-    func defaultAllowlist() {
-        // The three coordinator-catalog ids the production fleet advertises —
-        // the default-on scope must equal the parity/soak-validated scope,
-        // nothing broader. These are NOT HuggingFace repo ids.
-        #expect(EngineV2Config.modelAllowlisted("gpt-oss-20b"))
-        #expect(EngineV2Config.modelAllowlisted("gemma-4-26b-8bit"))
-        #expect(EngineV2Config.modelAllowlisted("gemma-4-26b-qat-4bit"))
-        // Case-insensitive matching still applies.
-        #expect(EngineV2Config.modelAllowlisted("GPT-OSS-20B"))
-        #expect(EngineV2Config.modelAllowlisted("Gemma-4-26B-QAT-4bit"))
-        // The old HuggingFace repo ids are now REJECTED: their last path
-        // component (`gpt-oss-20b-mxfp4-q8`, `gemma-4-26b-a4b-it-8bit`) differs
-        // from the fleet catalog id, so v2 must NOT engage on them. This is the
-        // exact mismatch that made v0.7.0 inert fleet-wide.
-        #expect(!EngineV2Config.modelAllowlisted("mlx-community/gpt-oss-20b-MXFP4-Q8"))
-        #expect(!EngineV2Config.modelAllowlisted("mlx-community/gemma-4-26b-a4b-it-8bit"))
-        // Other quantizations / families are NOT default-enabled — they were
-        // not validated on real weights. Operators widen via
-        // DARKBLOOM_ENGINE_V2_MODELS.
-        #expect(!EngineV2Config.modelAllowlisted("gemma-4-27b-it-4bit"))
-        #expect(!EngineV2Config.modelAllowlisted("qwen3-8b"))
-        #expect(!EngineV2Config.modelAllowlisted("llama-3.3-70b"))
-        #expect(!EngineV2Config.modelAllowlisted(""))
+    @Test("refusal reasons classify construction errors")
+    func refusalReasonClassification() {
+        struct SomeError: Error {}
+        #expect(EngineV2RefusalReason.classify(
+            EngineV2ProductionError.noKVHeadroom) == .noKVHeadroom)
+        #expect(EngineV2RefusalReason.classify(
+            EngineV2ProductionError.unsupportedModel("Qwen3Model")) == .unsupportedModel)
+        #expect(EngineV2RefusalReason.classify(
+            EngineV2VLMTextExtractionError.parityMismatch("x")) == .vlmExtractionFailed)
+        #expect(EngineV2RefusalReason.classify(SomeError()) == .engineInitFailed)
     }
 
-    @Test("allowlist env override")
-    func allowlistOverride() {
-        let env = ["DARKBLOOM_ENGINE_V2_MODELS": "qwen3*, exact-model"]
-        let patterns = EngineV2Config.allowlistPatterns(environment: env)
-        #expect(EngineV2Config.modelAllowlisted("qwen3-8b", patterns: patterns))
-        #expect(EngineV2Config.modelAllowlisted("exact-model", patterns: patterns))
-        #expect(!EngineV2Config.modelAllowlisted("exact-model-2", patterns: patterns))
-        #expect(!EngineV2Config.modelAllowlisted("gemma-4-27b-it", patterns: patterns))
-    }
-
-    @Test("selection matrix")
-    func selectionMatrix() {
-        let prodGemma = "gemma-4-26b-8bit"
-        // Config off (explicit opt-out) → legacy even for allowlisted models.
-        #expect(EngineV2Config.selection(
-            modelId: prodGemma, environment: [:], configEnabled: false
-        ) == .legacy)
-        // DEFAULT-ON posture (v0.7.0): config default true + no env
-        // → v2 for the exact prod checkpoints, legacy for everything else.
-        #expect(EngineV2Config.selection(
-            modelId: prodGemma, environment: [:],
-            configEnabled: BackendSettings().engineV2
-        ) == .v2)
-        #expect(EngineV2Config.selection(
-            modelId: "gpt-oss-20b", environment: [:],
-            configEnabled: BackendSettings().engineV2
-        ) == .v2)
-        #expect(EngineV2Config.selection(
-            modelId: "mlx-community/Qwen3.5-0.8B-MLX-4bit", environment: [:],
-            configEnabled: BackendSettings().engineV2
-        ) == .legacy)
-        // Env kill switch is absolute — beats the default-on config.
-        #expect(EngineV2Config.selection(
-            modelId: prodGemma,
-            environment: ["DARKBLOOM_ENGINE_V2": "0"],
-            configEnabled: BackendSettings().engineV2
-        ) == .legacy)
-        // Flag on + allowlisted → v2.
-        #expect(EngineV2Config.selection(
-            modelId: prodGemma,
-            environment: ["DARKBLOOM_ENGINE_V2": "1"], configEnabled: false
-        ) == .v2)
-        // Flag on + non-allowlisted → legacy.
-        #expect(EngineV2Config.selection(
-            modelId: "qwen3-8b",
-            environment: ["DARKBLOOM_ENGINE_V2": "1"], configEnabled: false
-        ) == .legacy)
-    }
-
-    @Test("factory: flag off → legacy, builder never invoked")
-    func factoryFlagOff() {
+    @Test("factory: healthy builder → v2 bridge, no telemetry")
+    func factoryBuilds() async throws {
         let telemetry = TelemetrySink()
-        var builderCalls = 0
-        let bridge = EngineV2Factory.makeBridgeIfSelected(
-            modelId: "gemma-4-27b-it",
-            configEnabled: false,
-            environment: [:],
+        let bridge = try EngineV2Factory.makeBridge(
+            modelId: "gemma-4-26b-qat-4bit",
             tokenizer: TokenizerHandle(StubTokenizer()),
             eosTokenIds: [2],
             emitTelemetry: telemetry.callback(),
-            makeEngine: {
-                builderCalls += 1
-                return ScriptedCBv2Engine(script: .manual)
-            }
+            makeEngine: { ScriptedCBv2Engine(script: .manual) }
         )
-        #expect(bridge == nil)
-        #expect(builderCalls == 0)
+        #expect(await bridge.modelId == "gemma-4-26b-qat-4bit")
         #expect(telemetry.events.isEmpty)
     }
 
-    @Test("factory: flag on + non-allowlisted model → legacy, builder never invoked")
-    func factoryNonAllowlisted() {
-        var builderCalls = 0
-        let bridge = EngineV2Factory.makeBridgeIfSelected(
-            modelId: "qwen3-8b",
-            configEnabled: true,
-            environment: [:],
-            tokenizer: TokenizerHandle(StubTokenizer()),
-            eosTokenIds: [2],
-            makeEngine: {
-                builderCalls += 1
-                return ScriptedCBv2Engine(script: .manual)
-            }
-        )
-        #expect(bridge == nil)
-        #expect(builderCalls == 0)
-    }
-
-    @Test("factory: init failure → legacy fallback + engine_v2_fallback telemetry")
-    func factoryInitFailureFallsBack() {
+    @Test("factory: init failure THROWS + ERROR engine_v2_refusal telemetry (no fallback)")
+    func factoryInitFailureRefusesLoudly() {
         struct InitFailure: Error {}
         let telemetry = TelemetrySink()
-        let bridge = EngineV2Factory.makeBridgeIfSelected(
-            modelId: "gpt-oss-20b",
-            configEnabled: true,
-            environment: [:],
-            tokenizer: TokenizerHandle(StubTokenizer()),
-            eosTokenIds: [2],
-            emitTelemetry: telemetry.callback(),
-            makeEngine: { throw InitFailure() }
-        )
-        #expect(bridge == nil)
+        #expect(throws: InitFailure.self) {
+            _ = try EngineV2Factory.makeBridge(
+                modelId: "gpt-oss-20b",
+                tokenizer: TokenizerHandle(StubTokenizer()),
+                eosTokenIds: [2],
+                emitTelemetry: telemetry.callback(),
+                makeEngine: { throw InitFailure() }
+            )
+        }
         let events = telemetry.events
         #expect(events.count == 1)
         #expect(events.first?.kind == .engineHealth)
-        #expect(events.first?.severity == .warn)
-        #expect(events.first?.fields?["operation"]?.description == "engine_v2_fallback")
+        // ERROR, not WARN: with no legacy engine left a refusal must alarm.
+        #expect(events.first?.severity == .error)
+        #expect(events.first?.fields?["operation"]?.description == "engine_v2_refusal")
         #expect(events.first?.fields?["backend"]?.description == "engine_v2")
         #expect(events.first?.fields?["model"]?.description == "gpt-oss-20b")
+        #expect(events.first?.fields?["reason"]?.description == "engine_init_failed")
         #expect(events.first?.fields?["error_class"]?.description.contains("InitFailure") == true)
-        // Default-on posture: the fallback is load-bearing, so the event must
-        // carry the human-readable reason too, not just the error type.
         #expect(events.first?.fields?["error"]?.description.contains("InitFailure") == true)
     }
 
-    @Test("factory: selected + healthy builder → v2 bridge")
-    func factorySelectedBuilds() {
-        let bridge = EngineV2Factory.makeBridgeIfSelected(
-            modelId: "gemma-4-26b-8bit",
-            configEnabled: true,
-            environment: [:],
-            tokenizer: TokenizerHandle(StubTokenizer()),
-            eosTokenIds: [2],
-            makeEngine: { ScriptedCBv2Engine(script: .manual) }
-        )
-        #expect(bridge != nil)
+    @Test("factory: refusal reasons ride the telemetry for every classified failure")
+    func factoryRefusalReasonsOnTelemetry() {
+        let cases: [(any Error, String)] = [
+            (EngineV2ProductionError.noKVHeadroom, "no_kv_headroom"),
+            (EngineV2ProductionError.unsupportedModel("StubModel"), "unsupported_model"),
+            (EngineV2VLMTextExtractionError.parityMismatch("probe"), "vlm_extraction_failed"),
+        ]
+        for (error, expectedReason) in cases {
+            let telemetry = TelemetrySink()
+            #expect(throws: (any Error).self) {
+                _ = try EngineV2Factory.makeBridge(
+                    modelId: "gemma-4-26b-qat-4bit",
+                    tokenizer: TokenizerHandle(StubTokenizer()),
+                    eosTokenIds: [2],
+                    emitTelemetry: telemetry.callback(),
+                    makeEngine: { throw error }
+                )
+            }
+            #expect(
+                telemetry.events.first?.fields?["reason"]?.description == expectedReason,
+                "reason for \(error)")
+        }
     }
 
-    @Test("backend config decodes engine_v2 key (default TRUE as of v0.7.0)")
-    func backendConfigKey() throws {
+    @Test("supported set mirrors the makeProductionEngine switch (model_type keyed)")
+    func supportedSetPredicate() {
+        // The two CBv2-adapted production families.
+        #expect(EngineV2SupportedModels.isSupported(modelType: "gpt_oss"))
+        #expect(EngineV2SupportedModels.isSupported(modelType: "gemma4"))        // VLM wrapper
+        #expect(EngineV2SupportedModels.isSupported(modelType: "gemma4_text"))   // text config
+        #expect(EngineV2SupportedModels.isSupported(modelType: "GEMMA4_TEXT"))   // case-insensitive
+        // Everything else fails closed — including nil/empty and the
+        // near-miss families that must never match by accident.
+        #expect(!EngineV2SupportedModels.isSupported(modelType: nil))
+        #expect(!EngineV2SupportedModels.isSupported(modelType: ""))
+        #expect(!EngineV2SupportedModels.isSupported(modelType: "gemma3"))
+        #expect(!EngineV2SupportedModels.isSupported(modelType: "gemma"))
+        #expect(!EngineV2SupportedModels.isSupported(modelType: "qwen3"))
+        #expect(!EngineV2SupportedModels.isSupported(modelType: "llama"))
+    }
+
+    @Test("backend config: engine_v2 still parses (retired, ignored); concurrency keys decode")
+    func backendConfigKeys() throws {
         let decoder = JSONDecoder()
+        // The retired key must still DECODE so old provider.toml files load
+        // (startup warns when false); selection no longer consults it.
         let off = try decoder.decode(
             BackendSettings.self,
             from: Data(#"{"engine_v2": false}"#.utf8)
         )
         #expect(!off.engineV2)
-        // v0.7.0 ships v2 default-on for the exact-id allowlist; rollback is
-        // the DARKBLOOM_ENGINE_V2=0 kill switch or a release rollback.
-        let absent = try decoder.decode(
+        // New concurrency keys: default 4, per-model override map.
+        let absent = try decoder.decode(BackendSettings.self, from: Data(#"{}"#.utf8))
+        #expect(absent.engineV2MaxConcurrent == 4)
+        #expect(absent.engineV2MaxConcurrentByModel.isEmpty)
+        let configured = try decoder.decode(
             BackendSettings.self,
-            from: Data(#"{}"#.utf8)
+            from: Data(#"""
+                {"engine_v2_max_concurrent": 6,
+                 "engine_v2_max_concurrent_by_model": {"gemma-4-26b-qat-4bit": 2}}
+                """#.utf8)
         )
-        #expect(absent.engineV2)
-        #expect(BackendSettings().engineV2)
+        #expect(configured.engineV2MaxConcurrent == 6)
+        #expect(configured.engineV2MaxConcurrentByModel == ["gemma-4-26b-qat-4bit": 2])
+    }
+
+    @Test("TOML: engine_v2_max_concurrent + per-model map parse from provider.toml")
+    func tomlConcurrencyKeys() {
+        let toml = """
+            [provider]
+            name = "cfg-test"
+
+            [backend]
+            engine_v2_max_concurrent = 6
+
+            [backend.engine_v2_max_concurrent_by_model]
+            "gemma-4-26b-qat-4bit" = 2
+            "gpt-oss-20b" = 8
+            """
+        let config = ConfigManager.parse(toml)
+        #expect(config.backend.engineV2MaxConcurrent == 6)
+        #expect(config.backend.engineV2MaxConcurrentByModel == [
+            "gemma-4-26b-qat-4bit": 2, "gpt-oss-20b": 8,
+        ])
+        // Defaults when the keys are absent.
+        let defaults = ConfigManager.parse("[provider]\nname = \"cfg-test\"\n")
+        #expect(defaults.backend.engineV2MaxConcurrent == 4)
+        #expect(defaults.backend.engineV2MaxConcurrentByModel.isEmpty)
+    }
+
+    @Test("concurrency clamp: [1, 8] product ceiling")
+    func concurrencyClamp() {
+        #expect(ProviderLoop.clampEngineV2Concurrency(0) == 1)
+        #expect(ProviderLoop.clampEngineV2Concurrency(1) == 1)
+        #expect(ProviderLoop.clampEngineV2Concurrency(4) == 4)
+        #expect(ProviderLoop.clampEngineV2Concurrency(8) == 8)
+        #expect(ProviderLoop.clampEngineV2Concurrency(24) == 8)
+        #expect(ProviderLoop.clampEngineV2Concurrency(UInt64.max) == 8)
     }
 }
 

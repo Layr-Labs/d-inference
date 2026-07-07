@@ -7,6 +7,15 @@
 // constructors. The types here are pure data + the
 // ``OneShotRelease`` actor; they have no behaviour beyond holding
 // references.
+//
+// v0.7.5 ONE-ENGINE shape: `engineV2Bridge` is the serving engine for
+// every ProviderLoop-owned slot (text + image requests); `scheduler`
+// is OPTIONAL and only populated by the standalone `darkbloom local`
+// server, which still builds its own legacy `BatchScheduler` slots (its
+// v2 wiring is a separate workstream — see StandaloneServer.swift). A
+// TEXT request that reaches an entry with NEITHER is a hard internal
+// error. `visionGate` replaces the scheduler-owned vision reservation
+// surface for the legacy VLM media path.
 
 import Foundation
 import MLXLMCommon
@@ -15,33 +24,38 @@ public extension MultiModelBatchSchedulerEngine {
 
     /// Snapshot entry for a single loaded model. Returned by the
     /// `registryProvider` closure each time the engine needs to route
-    /// a request to a scheduler.
+    /// a request.
     struct ModelRegistryEntry: Sendable {
-        /// The scheduler that owns this model's `BatchedEngine`.
-        public let scheduler: BatchScheduler
+        /// Legacy scheduler — STANDALONE SERVER ONLY (see header). nil for
+        /// every ProviderLoop slot as of v0.7.5.
+        public let scheduler: BatchScheduler?
         /// Tokenizer wrapper for token-utility endpoints
         /// (`/tokenize`, `/detokenize`, `/apply-template`).
         public let tokenizer: TokenizerHandle
-        /// The `model_type` from config.json (e.g. `"gpt_oss"`, `"gemma2"`,
-        /// `"qwen3"`). Used to auto-select reasoning and tool call parsers.
+        /// The `model_type` from config.json (e.g. `"gpt_oss"`, `"gemma4"`).
+        /// Used to auto-select reasoning and tool call parsers.
         public let modelType: String?
         /// The loaded model container. Present for VLM models so multimodal
         /// requests can run the non-batched `prepare`/`generate` vision path.
         public let container: ModelContainer?
         /// Whether this model is a vision-language model (config has a
         /// `vision_config`). When true, requests that carry image/video
-        /// content are routed to the container's vision path.
+        /// content are routed to the media path.
         public let isVLM: Bool
-        /// ContinuousBatchingV2 bridge for this model (flag-gated). When
-        /// non-nil, text generation routes through the v2 engine instead of
-        /// `scheduler` — see `streamChatCompletion`. nil (the default, and
-        /// every fallback path) keeps the legacy path byte-identical.
+        /// ContinuousBatchingV2 bridge — the serving engine. Non-nil for
+        /// every ProviderLoop slot; nil only on the standalone legacy path.
         public let engineV2Bridge: EngineV2Bridge?
+        /// Memory gate for the legacy VLM media path (media-decode RAM +
+        /// generation KV against the shared budget). nil ⇒ gating disabled
+        /// (standalone / unit tests without a shared ledger).
+        public let visionGate: VisionMemoryGate?
 
         public init(
-            scheduler: BatchScheduler, tokenizer: TokenizerHandle, modelType: String? = nil,
+            scheduler: BatchScheduler? = nil, tokenizer: TokenizerHandle,
+            modelType: String? = nil,
             container: ModelContainer? = nil, isVLM: Bool = false,
-            engineV2Bridge: EngineV2Bridge? = nil
+            engineV2Bridge: EngineV2Bridge? = nil,
+            visionGate: VisionMemoryGate? = nil
         ) {
             self.scheduler = scheduler
             self.tokenizer = tokenizer
@@ -49,6 +63,7 @@ public extension MultiModelBatchSchedulerEngine {
             self.container = container
             self.isVLM = isVLM
             self.engineV2Bridge = engineV2Bridge
+            self.visionGate = visionGate
         }
     }
 
@@ -56,14 +71,15 @@ public extension MultiModelBatchSchedulerEngine {
     /// exactly as it appears in `OpenAIChatCompletionRequest.model`.
     typealias Registry = [String: ModelRegistryEntry]
 
-    /// Result of `acquire(modelId:)`. Carries the scheduler/tokenizer
-    /// pair for the just-acquired model plus a `releaseToken` actor
-    /// that must be fired exactly once when the request is finished
-    /// (whether by normal completion, cancellation, or error). Used by
-    /// the atomic `ensureLoaded + reserve` path that `StandaloneServer`
-    /// implements as a single actor-isolated method (I1 fix).
+    /// Result of `acquire(modelId:)`. Carries the engine/tokenizer state
+    /// for the just-acquired model plus a `releaseToken` actor that must be
+    /// fired exactly once when the request is finished (whether by normal
+    /// completion, cancellation, or error). Used by the atomic
+    /// `ensureLoaded + reserve` paths (`StandaloneServer`,
+    /// `ProviderLoop+LocalEndpoint`).
     struct AcquiredModel: Sendable {
-        public let scheduler: BatchScheduler
+        /// Legacy scheduler — STANDALONE SERVER ONLY (see header).
+        public let scheduler: BatchScheduler?
         public let tokenizer: TokenizerHandle
         public let releaseToken: OneShotRelease
         /// The `model_type` from config.json.
@@ -73,18 +89,22 @@ public extension MultiModelBatchSchedulerEngine {
         public let container: ModelContainer?
         /// Whether this model is a vision-language model.
         public let isVLM: Bool
-        /// ContinuousBatchingV2 bridge for this model (flag-gated) — see
-        /// ``ModelRegistryEntry/engineV2Bridge``.
+        /// ContinuousBatchingV2 bridge — the serving engine (see
+        /// ``ModelRegistryEntry/engineV2Bridge``).
         public let engineV2Bridge: EngineV2Bridge?
+        /// Memory gate for the legacy VLM media path (see
+        /// ``ModelRegistryEntry/visionGate``).
+        public let visionGate: VisionMemoryGate?
 
         public init(
-            scheduler: BatchScheduler,
+            scheduler: BatchScheduler? = nil,
             tokenizer: TokenizerHandle,
             releaseToken: OneShotRelease,
             modelType: String? = nil,
             container: ModelContainer? = nil,
             isVLM: Bool = false,
-            engineV2Bridge: EngineV2Bridge? = nil
+            engineV2Bridge: EngineV2Bridge? = nil,
+            visionGate: VisionMemoryGate? = nil
         ) {
             self.scheduler = scheduler
             self.tokenizer = tokenizer
@@ -93,6 +113,7 @@ public extension MultiModelBatchSchedulerEngine {
             self.container = container
             self.isVLM = isVLM
             self.engineV2Bridge = engineV2Bridge
+            self.visionGate = visionGate
         }
     }
 }

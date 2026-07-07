@@ -145,6 +145,20 @@ public actor EngineV2Bridge {
     var wedgeMonitor = WedgeMonitor()
     var observedDecodeTpsEwma: Double = 0
     var ewmaInitialized = false
+    /// Cold-prefill EWMA (`observed_prefill_tps` heartbeat field), fed per
+    /// successful finish from the bridge's own timing: prefill window =
+    /// first-token time − submit; rate = prompt tokens / window. Absorbs
+    /// PR #454's measurement approach for the v2 engine (that PR added an
+    /// engine prefill-start marker for the LEGACY engine; the v2 bridge
+    /// already owns both timestamps, so no engine change is needed) with
+    /// the same plausibility bounds — see `recordPrefillSample`.
+    var observedPrefillTpsEwma: Double = 0
+    var prefillEwmaInitialized = false
+    /// Cold-start model load time (ms) for this slot, recorded by
+    /// `ProviderLoop.ensureModelLoaded` once the load completes (the
+    /// bridge exists before the load finishes, so this arrives post-init).
+    /// Reported per-slot as `model_load_time_ms`.
+    var modelLoadTimeMs: Int64 = 0
     /// Last wedge verdict emitted, for transition-edge telemetry.
     var lastWedgeSuspectedEmitted = false
 
@@ -409,6 +423,26 @@ public actor EngineV2Bridge {
         engine.cancel(cbv2Id)
     }
 
+    // MARK: - Runtime KV re-slicing / slot bookkeeping
+
+    /// Update the engine's KV admission ceiling (multi-model co-residency
+    /// re-slicing). Fans out to the engine (`AdmissionV2` + backend +
+    /// capacity gauges — see `EngineV2.updateKVBytesCapacity`): shrink
+    /// leaves in-flight reservations untouched and fails new admissions
+    /// until the pool drains; grow admits immediately. The engine's
+    /// `capacity()` snapshot reflects the new ceiling right away, so
+    /// heartbeats and later re-slices read the CURRENT grant.
+    public func updateKVBytesCapacity(_ bytes: Int) {
+        engine.updateKVBytesCapacity(bytes)
+    }
+
+    /// Record the slot's cold-start load time for heartbeat reporting
+    /// (`model_load_time_ms`) — slot-level bookkeeping, previously held by
+    /// the legacy scheduler.
+    public func recordModelLoadTime(ms: Int64) {
+        modelLoadTimeMs = max(0, ms)
+    }
+
     /// Runtime fan-out helper: cancel iff this bridge owns the request-id.
     func cancelIfOwned(requestId: String) -> Bool {
         guard let cbv2Id = idMap[requestId] else { return false }
@@ -627,7 +661,68 @@ public actor EngineV2Bridge {
         if success, tps > 0 {
             updateDecodeTpsEwma(tps)
         }
+        if success {
+            recordPrefillSample(
+                promptTokens: prompt,
+                submittedAt: state.submittedAt,
+                firstTokenAt: state.firstTokenAt)
+        }
         return (prompt, completion, tps)
+    }
+
+    // MARK: - Prefill sampling (observed_prefill_tps)
+
+    /// Minimum submit→first-token window (seconds) for a prefill sample to
+    /// count. A near-zero window (scripted engines, degenerate prompts)
+    /// divides into an absurd rate; 1 ms is far below any real cold
+    /// prefill. Same floor as the legacy classifier (PR #454 lineage).
+    static let minPrefillWindowSeconds = 0.001
+
+    /// Upper plausibility bound (tok/s) for a prefill sample — PR #454's
+    /// raised ceiling: above the MEASURED real-prefill p90 (~17,707 tok/s,
+    /// docs/reports/2026-06-22-live-prefill-tps-check.md) so a legitimately
+    /// fast cold prefill registers, finite so a window-collapse artifact is
+    /// still rejected.
+    static let maxPlausiblePrefillTps = 20_000.0
+
+    /// Classify one prefill sample against the plausibility bounds. Pure —
+    /// mirrors `BatchScheduler.classifyPrefillSample`'s floor/ceiling shape
+    /// with the v2 measurement (window = first token − SUBMIT: the bridge
+    /// owns both timestamps, so no engine prefill-start marker is needed;
+    /// under load the window includes engine queue wait, making this the
+    /// same load-inclusive observed rate the decode EWMA reports).
+    static func classifyPrefillSample(
+        prefilledTokens: Int, prefillSeconds: Double
+    ) -> Double? {
+        guard prefilledTokens > 0 else { return nil }
+        guard prefillSeconds >= minPrefillWindowSeconds else { return nil }
+        let tps = Double(prefilledTokens) / prefillSeconds
+        guard tps.isFinite, tps <= maxPlausiblePrefillTps else { return nil }
+        return tps
+    }
+
+    /// Feed the prefill EWMA (α = 0.3, mirroring the decode EWMA) from a
+    /// successful request's timing. The v2 production engine runs with the
+    /// prefix cache OFF, so every sample is a genuine cold prefill; the
+    /// bounds above still reject degenerate windows.
+    private func recordPrefillSample(
+        promptTokens: Int,
+        submittedAt: ContinuousClock.Instant,
+        firstTokenAt: ContinuousClock.Instant?
+    ) {
+        guard let firstTokenAt else { return }
+        let prefillSeconds = WedgeMonitor.seconds(firstTokenAt - submittedAt)
+        guard
+            let tps = Self.classifyPrefillSample(
+                prefilledTokens: promptTokens, prefillSeconds: prefillSeconds)
+        else { return }
+        let alpha = 0.3
+        if prefillEwmaInitialized {
+            observedPrefillTpsEwma = alpha * tps + (1 - alpha) * observedPrefillTpsEwma
+        } else {
+            observedPrefillTpsEwma = tps
+            prefillEwmaInitialized = true
+        }
     }
 
     /// Stream torn down without a terminal event — drop local state.

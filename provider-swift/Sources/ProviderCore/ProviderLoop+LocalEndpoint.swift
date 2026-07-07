@@ -133,7 +133,6 @@ extension ProviderLoop {
             await self?.releaseLocalReservation(mid)
         }
         return MultiModelBatchSchedulerEngine.AcquiredModel(
-            scheduler: slot.scheduler,
             tokenizer: slot.tokenizer,
             releaseToken: OneShotRelease(release: release, modelId: modelId),
             // From the loaded slot, not advertisedModels — correct during the
@@ -141,9 +140,11 @@ extension ProviderLoop {
             modelType: slot.modelType,
             container: slot.container,
             isVLM: slot.isVLM,
-            // ContinuousBatchingV2 (flag-gated): local requests route through
-            // the same v2 bridge as coordinator requests when the slot has one.
-            engineV2Bridge: slot.engineV2
+            // ONE ENGINE (v0.7.5): local requests route through the same v2
+            // bridge as coordinator requests; the vision gate covers the
+            // legacy VLM media path's memory reservations.
+            engineV2Bridge: slot.engineV2,
+            visionGate: slot.visionGate(kvBudget: kvBudget)
         )
     }
 

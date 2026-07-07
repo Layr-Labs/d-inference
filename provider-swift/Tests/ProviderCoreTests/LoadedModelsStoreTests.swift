@@ -161,9 +161,9 @@ struct LoadedModelsPersistenceWiringTests {
 
         await loop.installModelSlotForTesting(
             modelId: "gemma-4-26b-it",
-            scheduler: BatchScheduler(maxConcurrentRequests: 2, defaultMaxTokens: 64),
             container: makePersistStubContainer(),
-            tokenizer: TokenizerHandle(PersistStubTokenizer())
+            tokenizer: TokenizerHandle(PersistStubTokenizer()),
+            engineV2: makeInertStubBridge(modelId: "gemma-4-26b-it").bridge
         )
         await loop.persistLoadedModelSetForTesting()
 
@@ -179,9 +179,9 @@ struct LoadedModelsPersistenceWiringTests {
 
         await loop.installModelSlotForTesting(
             modelId: "gemma-4-26b-it",
-            scheduler: BatchScheduler(maxConcurrentRequests: 2, defaultMaxTokens: 64),
             container: makePersistStubContainer(),
-            tokenizer: TokenizerHandle(PersistStubTokenizer())
+            tokenizer: TokenizerHandle(PersistStubTokenizer()),
+            engineV2: makeInertStubBridge(modelId: "gemma-4-26b-it").bridge
         )
         await loop.persistLoadedModelSetForTesting()
         #expect(LoadedModelsStore.read(from: url) == ["gemma-4-26b-it"])
@@ -204,9 +204,9 @@ struct LoadedModelsPersistenceWiringTests {
 
         await loop.installModelSlotForTesting(
             modelId: "gemma-4-26b-it",
-            scheduler: BatchScheduler(maxConcurrentRequests: 2, defaultMaxTokens: 64),
             container: makePersistStubContainer(),
-            tokenizer: TokenizerHandle(PersistStubTokenizer())
+            tokenizer: TokenizerHandle(PersistStubTokenizer()),
+            engineV2: makeInertStubBridge(modelId: "gemma-4-26b-it").bridge
         )
         await loop.persistLoadedModelSetForTesting()
         await loop.unloadModel("gemma-4-26b-it")
@@ -228,9 +228,9 @@ struct LoadedModelsPersistenceWiringTests {
 
         await loop.installModelSlotForTesting(
             modelId: "gemma-4-26b-it",
-            scheduler: BatchScheduler(maxConcurrentRequests: 2, defaultMaxTokens: 64),
             container: makePersistStubContainer(),
-            tokenizer: TokenizerHandle(PersistStubTokenizer())
+            tokenizer: TokenizerHandle(PersistStubTokenizer()),
+            engineV2: makeInertStubBridge(modelId: "gemma-4-26b-it").bridge
         )
         await loop.persistLoadedModelSetForTesting()
 

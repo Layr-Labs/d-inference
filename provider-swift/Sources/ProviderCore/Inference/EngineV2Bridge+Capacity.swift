@@ -125,12 +125,17 @@ extension EngineV2Bridge {
             maxTokensPotential: maxTokensPotential,
             maxConcurrency: UInt32(clamping: maxConcurrentRequests),
             observedDecodeTps: observedDecodeTpsEwma,
-            observedPrefillTps: 0,
+            // Bridge-measured cold-prefill EWMA (submit → first token over
+            // prompt tokens; see EngineV2Bridge.recordPrefillSample). Feeds
+            // the coordinator's prefill-honest TTFT estimation.
+            observedPrefillTps: observedPrefillTpsEwma,
             activeTokenBudgetUsed: budgetUsed,
             activeTokenBudgetMax: budgetMax,
             queuedTokenBudget: 0,
             kvBytesPerToken: Int64(kvBytesPerToken),
-            modelLoadTimeMs: 0,
+            // Slot-level bookkeeping (recorded by ensureModelLoaded on
+            // load completion) — previously the legacy scheduler's field.
+            modelLoadTimeMs: modelLoadTimeMs,
             stepsExecuted: Int64(wedgeMonitor.lastStepsSample),
             admits: Int64(wedgeMonitor.admits),
             firstTokensEmitted: Int64(wedgeMonitor.firstTokens),

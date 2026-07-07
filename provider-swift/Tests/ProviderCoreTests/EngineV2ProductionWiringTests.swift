@@ -5,26 +5,22 @@
 // over a stub `LanguageModel`, isolated `EngineV2Runtime` instances.
 // No model weights, no network, no prod anything.
 //
-// Covers the P1 integration gap (bridge implemented but never
-// instantiated on production paths):
+// v0.7.5 ONE-ENGINE semantics under test:
 //
-//   * Slot factory (`ProviderLoop.makeEngineV2BridgeForSlot`, the
-//     `ensureModelLoaded` call site): flag-on + allowlisted model builds
-//     a bridge via the factory seam AND registers it with the runtime;
-//     flag-off / non-allowlisted returns nil without invoking the builder
-//     or consulting the runtime; init failure falls back to legacy with
-//     the WARN `engine_v2_fallback` telemetry event.
+//   * Slot build (`ProviderLoop.resliceAndBuildEngineV2Slot`, the
+//     `ensureModelLoaded` call site): ALWAYS builds a v2 bridge — no flag,
+//     no allowlist; construction failure THROWS (ERROR `engine_v2_refusal`
+//     telemetry) and restores co-resident engines' KV grants exactly.
+//   * KV re-slicing: a second model shrinks the first engine's grant to
+//     its fair share; Σ(grants) ≤ the fleet KV budget; unload grows the
+//     survivors back; a slice below the serviceability floor REFUSES the
+//     load.
 //   * Request routing (`MultiModelBatchSchedulerEngine`): both production
-//     inits — the registryProvider shape used by the coordinator
-//     inference handler and the atomic-acquire shape used by the local
-//     endpoint — route generation through the bridge when present and
-//     return the translated stream; the legacy scheduler path is
-//     untouched when no bridge exists.
-//   * Zero-overhead guards: `updateAggregateCapacity` and
-//     `handleCancellation` consult the `EngineV2Runtime` ONLY when at
-//     least one v2 slot exists (assert zero runtime consults flag-off);
-//     with a v2 slot, capacity folds the bridge slot into the heartbeat
-//     payload and cancellation fans out to the owning engine.
+//     inits route text through the bridge; a scheduler-only entry (the
+//     standalone server shape) still runs legacy; an entry with NO engine
+//     at all is a hard internal error.
+//   * Heartbeat/cancellation: the runtime summary is the ONLY slot source;
+//     grants are read live (post-re-slice), never construction-time.
 
 import Foundation
 import MLX
@@ -50,9 +46,12 @@ private final class WiringScriptedEngine: CBv2Engine, @unchecked Sendable {
     private var _cancelled: [CBv2RequestID] = []
     private var _shutdownCalls = 0
     private var _manualContinuation: AsyncStream<CBv2Event>.Continuation?
+    private var _kvBytesCapacity: Int
+    private var _capacityUpdates: [Int] = []
 
-    init(script: Script) {
+    init(script: Script, kvBytesCapacity: Int = 0) {
         self.script = script
+        self._kvBytesCapacity = kvBytesCapacity
     }
 
     var submitted: [CBv2Request] { lock.withLock { _submitted } }
@@ -61,6 +60,8 @@ private final class WiringScriptedEngine: CBv2Engine, @unchecked Sendable {
     var manualContinuation: AsyncStream<CBv2Event>.Continuation? {
         lock.withLock { _manualContinuation }
     }
+    /// Every `updateKVBytesCapacity` value, in order — the re-slice trail.
+    var capacityUpdates: [Int] { lock.withLock { _capacityUpdates } }
 
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
         let script = lock.withLock { () -> Script in
@@ -87,10 +88,19 @@ private final class WiringScriptedEngine: CBv2Engine, @unchecked Sendable {
     }
 
     func capacity() -> CBv2CapacitySnapshot {
-        let running = lock.withLock { _submitted.count - _cancelled.count }
-        return CBv2CapacitySnapshot(
-            activeRequests: max(0, running), waitingRequests: 0,
-            kvBytesInUse: 0, kvBytesCapacity: 0, activeTokens: 0)
+        lock.withLock {
+            CBv2CapacitySnapshot(
+                activeRequests: max(0, _submitted.count - _cancelled.count),
+                waitingRequests: 0,
+                kvBytesInUse: 0, kvBytesCapacity: _kvBytesCapacity, activeTokens: 0)
+        }
+    }
+
+    func updateKVBytesCapacity(_ bytes: Int) {
+        lock.withLock {
+            _kvBytesCapacity = max(0, bytes)
+            _capacityUpdates.append(max(0, bytes))
+        }
     }
 
     func shutdown() async {
@@ -127,7 +137,7 @@ private struct WiringStubTokenizer: MLXLMCommon.Tokenizer {
 }
 
 /// Minimal `LanguageModel` so a real `ModelContainer` can exist in tests.
-/// Never forward-passed: the slot-factory tests run with hooks installed
+/// Never forward-passed: the slot-build tests run with hooks installed
 /// (container snapshot skipped) and the routing tests never touch it.
 private final class WiringStubLanguageModel: Module, LanguageModel {
     func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
@@ -177,9 +187,26 @@ private final class BuilderCallCounter: @unchecked Sendable {
     func increment() { lock.withLock { _calls += 1 } }
 }
 
+/// Thread-safe recorder for the kvBytesCapacity grants handed to the hooks.
+private final class GrantRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _granted: [Int] = []
+    var granted: [Int] { lock.withLock { _granted } }
+    func record(_ capacity: Int) { lock.withLock { _granted.append(capacity) } }
+}
+
 // MARK: - Shared builders
 
-private func makeWiringLoop(engineV2Enabled: Bool = false) throws -> ProviderLoop {
+private let wiringGiB: UInt64 = 1024 * 1024 * 1024
+/// Deterministic machine memory for every re-slice in this file.
+private let wiringPhysicalBytes: UInt64 = 64 * wiringGiB
+/// makeWiringLoop's configured reserve (memory_reserve_gb = 1).
+private let wiringReserveBytes: UInt64 = 1 * wiringGiB
+
+private func makeWiringLoop(
+    engineV2MaxConcurrent: UInt64 = 4,
+    engineV2MaxConcurrentByModel: [String: UInt64] = [:]
+) throws -> ProviderLoop {
     let config = ProviderLoopConfig(
         coordinatorURL: "ws://127.0.0.1:0/ignored",
         hardware: HardwareInfo(
@@ -192,8 +219,9 @@ private func makeWiringLoop(engineV2Enabled: Bool = false) throws -> ProviderLoo
         config: ProviderConfig(
             provider: ProviderSettings(name: "engine-v2-wiring-test", memoryReserveGB: 1),
             backend: BackendSettings(
-                continuousBatching: true, idleTimeoutMins: 0, maxModelSlots: 2,
-                engineV2: engineV2Enabled),
+                continuousBatching: true, idleTimeoutMins: 0, maxModelSlots: 3,
+                engineV2MaxConcurrent: engineV2MaxConcurrent,
+                engineV2MaxConcurrentByModel: engineV2MaxConcurrentByModel),
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
     )
@@ -202,17 +230,29 @@ private func makeWiringLoop(engineV2Enabled: Bool = false) throws -> ProviderLoo
 
 private func makeBridge(
     engine: WiringScriptedEngine,
-    modelId: String = "gemma-4-27b-it"
+    modelId: String = "gemma-4-26b-qat-4bit",
+    kvBytesPerToken: Int = 0
 ) -> EngineV2Bridge {
     EngineV2Bridge(
         engine: engine,
         modelId: modelId,
         tokenizer: TokenizerHandle(WiringStubTokenizer()),
-        eosTokenIds: [2]
+        eosTokenIds: [2],
+        kvBytesPerToken: kvBytesPerToken
     )
 }
 
-private func makeOpenAIRequest(model: String = "gemma-4-27b-it") -> OpenAIChatCompletionRequest {
+private func makeSizing(
+    weightsGiB: UInt64, kvRate: Int = 20_480, maxContext: Int = 131_072
+) -> SlotSizingSnapshot {
+    SlotSizingSnapshot(
+        weightsBytes: Int(weightsGiB * wiringGiB),
+        fp16KVBytesPerToken: kvRate,
+        maxContextLength: maxContext,
+        defaultMaxTokens: 4096)
+}
+
+private func makeOpenAIRequest(model: String = "gemma-4-26b-qat-4bit") -> OpenAIChatCompletionRequest {
     OpenAIChatCompletionRequest(
         model: model,
         messages: [OpenAIChatMessage(role: .user, content: .text("hi"))]
@@ -242,67 +282,14 @@ private func recordServerStream(
     return events
 }
 
-// MARK: - Slot factory (the ensureModelLoaded call site)
+// MARK: - Slot build (the ensureModelLoaded call site)
 
-@Suite("EngineV2 production wiring: model-load slot factory")
-struct EngineV2SlotFactoryTests {
+@Suite("EngineV2 production wiring: v2-only slot build")
+struct EngineV2SlotBuildTests {
 
-    @Test("flag off: no bridge, builder never invoked, runtime never consulted")
-    func flagOffBuildsNothing() async throws {
-        let loop = try makeWiringLoop(engineV2Enabled: false)
-        let runtime = EngineV2Runtime()
-        let counter = BuilderCallCounter()
-        await loop.setEngineV2RuntimeForTesting(runtime)
-        await loop.setEngineV2SlotHooksForTesting(
-            ProviderLoop.EngineV2SlotHooks(
-                environment: [:],
-                makeEngine: { _, _ in
-                    counter.increment()
-                    return WiringScriptedEngine(script: .manual)
-                }))
-
-        let bridge = await loop.makeEngineV2BridgeForSlotForTesting(
-            modelId: "gemma-4-27b-it",
-            modelType: "gemma4_text",
-            container: makeStubContainer(),
-            tokenizer: TokenizerHandle(WiringStubTokenizer()),
-            scheduler: BatchScheduler()
-        )
-        #expect(bridge == nil)
-        #expect(counter.calls == 0)
-        #expect(await runtime.bridge(forModel: "gemma-4-27b-it") == nil)
-        #expect(await runtime.consultCount == 0)
-    }
-
-    @Test("flag on + non-allowlisted model: legacy, builder never invoked")
-    func flagOnNonAllowlistedStaysLegacy() async throws {
-        let loop = try makeWiringLoop(engineV2Enabled: true)
-        let runtime = EngineV2Runtime()
-        let counter = BuilderCallCounter()
-        await loop.setEngineV2RuntimeForTesting(runtime)
-        await loop.setEngineV2SlotHooksForTesting(
-            ProviderLoop.EngineV2SlotHooks(
-                environment: [:],
-                makeEngine: { _, _ in
-                    counter.increment()
-                    return WiringScriptedEngine(script: .manual)
-                }))
-
-        let bridge = await loop.makeEngineV2BridgeForSlotForTesting(
-            modelId: "qwen3-8b",
-            modelType: "qwen3",
-            container: makeStubContainer(),
-            tokenizer: TokenizerHandle(WiringStubTokenizer()),
-            scheduler: BatchScheduler()
-        )
-        #expect(bridge == nil)
-        #expect(counter.calls == 0)
-        #expect(await runtime.bridge(forModel: "qwen3-8b") == nil)
-    }
-
-    @Test("flag on + allowlisted model: builds, registers, and streams translated events")
-    func flagOnAllowlistedBuildsRegistersAndStreams() async throws {
-        let loop = try makeWiringLoop(engineV2Enabled: false)  // env flag wins
+    @Test("slot build is unconditional: builds, registers, and streams translated events")
+    func slotBuildAlwaysBuildsRegistersAndStreams() async throws {
+        let loop = try makeWiringLoop()
         let runtime = EngineV2Runtime()
         let engine = WiringScriptedEngine(script: .stream([
             .delta(text: "Hello", tokens: [10], logprobs: nil),
@@ -311,34 +298,28 @@ struct EngineV2SlotFactoryTests {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
-                environment: [
-                    "DARKBLOOM_ENGINE_V2": "1",
-                    // The default allowlist is now the exact prod checkpoint ids;
-                    // these wiring fixtures use family-glob test ids, so widen it.
-                    "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*,gpt-oss*",
-                ],
                 eosTokenIds: [2],
+                physicalMemoryBytes: wiringPhysicalBytes,
                 makeEngine: { _, _ in engine }))
 
-        let bridge = await loop.makeEngineV2BridgeForSlotForTesting(
-            modelId: "gemma-4-27b-it",
-            modelType: "gemma4_text",
+        let bridge = try await loop.resliceAndBuildEngineV2SlotForTesting(
+            modelId: "gemma-4-26b-qat-4bit",
+            modelType: "gemma4",
             container: makeStubContainer(),
             tokenizer: TokenizerHandle(WiringStubTokenizer()),
-            scheduler: BatchScheduler()
+            sizing: makeSizing(weightsGiB: 15)
         )
-        let unwrapped = try #require(bridge)
 
         // Registered with the runtime BEFORE the slot goes live.
-        #expect(await runtime.bridge(forModel: "gemma-4-27b-it") === unwrapped)
+        #expect(await runtime.bridge(forModel: "gemma-4-26b-qat-4bit") === bridge)
 
         // The bridge streams the translated events (legacy GenerationEvent
         // framing) from the scripted engine.
         var sawChunk = false
         var sawInfo = false
-        let stream = await unwrapped.submit(
+        let stream = await bridge.submit(
             request: ChatCompletionRequest(
-                model: "gemma-4-27b-it",
+                model: "gemma-4-26b-qat-4bit",
                 messages: [ChatMessage(role: "user", content: "hi")]))
         for await event in stream {
             switch event {
@@ -360,119 +341,110 @@ struct EngineV2SlotFactoryTests {
         #expect(engine.submitted[0].promptTokens == [1, 2, 3, 4, 5])
     }
 
-    @Test("non-allowlisted VLM slot: silently legacy (no WARN noise, builder never invoked)")
-    func nonAllowlistedVLMSlotStaysLegacySilently() async throws {
-        let loop = try makeWiringLoop(engineV2Enabled: true)
+    @Test("single-model box gets the FULL fleet KV budget (never a static split)")
+    func singleModelGetsFullBudget() async throws {
+        let loop = try makeWiringLoop()
         let runtime = EngineV2Runtime()
-        let counter = BuilderCallCounter()
-        let telemetry = WiringTelemetrySink()
+        let recorder = GrantRecorder()
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
-                environment: [
-                    "DARKBLOOM_ENGINE_V2": "1"
-                    // DEFAULT allowlist (exact prod checkpoint ids) — the
-                    // fixture id below is NOT on it.
-                ],
-                emitTelemetry: telemetry.callback(),
-                makeEngine: { _, _ in
-                    counter.increment()
-                    return WiringScriptedEngine(script: .manual)
+                eosTokenIds: [2],
+                physicalMemoryBytes: wiringPhysicalBytes,
+                makeEngine: { _, grant in
+                    recorder.record(grant)
+                    return WiringScriptedEngine(script: .manual, kvBytesCapacity: grant)
                 }))
 
-        // A VLM build that is NOT allowlisted (e.g. a bare vision conversion
-        // an operator never staged) must be a SILENT legacy skip — no
-        // extraction attempt, no per-load WARN spam.
-        let bridge = await loop.makeEngineV2BridgeForSlotForTesting(
-            modelId: "gemma-4-27b-it-vision-experimental",
+        let sizing = makeSizing(weightsGiB: 15)
+        _ = try await loop.resliceAndBuildEngineV2SlotForTesting(
+            modelId: "gemma-4-26b-qat-4bit",
             modelType: "gemma4",
-            isVLM: true,
             container: makeStubContainer(),
             tokenizer: TokenizerHandle(WiringStubTokenizer()),
-            scheduler: BatchScheduler()
+            sizing: sizing
         )
-        #expect(bridge == nil)
-        #expect(counter.calls == 0)
-        #expect(telemetry.events.isEmpty)
-        #expect(await runtime.bridge(forModel: "gemma-4-27b-it-vision-experimental") == nil)
+        let expected = UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: wiringPhysicalBytes,
+            residentWeightBytes: UInt64(sizing.weightsBytes),
+            configReserveBytes: wiringReserveBytes)
+        #expect(recorder.granted == [Int(expected)])
     }
 
-    @Test("allowlisted VLM slot: builds + registers a bridge (extraction seam via hooks)")
-    func allowlistedVLMSlotBuildsBridge() async throws {
-        // v0.7.2: allowlisted VLM slots are no longer gated out per-slot —
-        // the factory attempts the weight-sharing text-model extraction and
-        // serves TEXT through v2. The hooks' engine builder stands in for
-        // the extraction+engine step.
-        let loop = try makeWiringLoop(engineV2Enabled: true)
-        let runtime = EngineV2Runtime()
-        let engine = WiringScriptedEngine(script: .manual)
-        await loop.setEngineV2RuntimeForTesting(runtime)
-        await loop.setEngineV2SlotHooksForTesting(
-            ProviderLoop.EngineV2SlotHooks(
-                environment: [
-                    "DARKBLOOM_ENGINE_V2": "1",
-                    "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*",
-                ],
-                eosTokenIds: [2],
-                makeEngine: { _, _ in engine }))
-
-        let bridge = await loop.makeEngineV2BridgeForSlotForTesting(
-            modelId: "gemma-4-26b-8bit",
-            modelType: "gemma4",
-            isVLM: true,
-            container: makeStubContainer(),
-            tokenizer: TokenizerHandle(WiringStubTokenizer()),
-            scheduler: BatchScheduler()
-        )
-        let unwrapped = try #require(bridge)
-        #expect(await runtime.bridge(forModel: "gemma-4-26b-8bit") === unwrapped)
-    }
-
-    @Test("allowlisted VLM slot: extraction failure → legacy + WARN engine_v2_fallback")
-    func allowlistedVLMExtractionFailureFallsBackWithWarn() async throws {
-        let loop = try makeWiringLoop(engineV2Enabled: true)
+    @Test("engine construction failure THROWS + ERROR engine_v2_refusal; nothing registered")
+    func constructionFailureRefusesLoudly() async throws {
+        struct InitFailure: Error {}
+        let loop = try makeWiringLoop()
         let runtime = EngineV2Runtime()
         let telemetry = WiringTelemetrySink()
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
-                environment: [
-                    "DARKBLOOM_ENGINE_V2": "1",
-                    "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*",
-                ],
                 emitTelemetry: telemetry.callback(),
+                physicalMemoryBytes: wiringPhysicalBytes,
+                makeEngine: { _, _ in throw InitFailure() }))
+
+        await #expect(throws: InitFailure.self) {
+            _ = try await loop.resliceAndBuildEngineV2SlotForTesting(
+                modelId: "gpt-oss-20b",
+                modelType: "gpt_oss",
+                container: makeStubContainer(),
+                tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                sizing: makeSizing(weightsGiB: 12, kvRate: 24_576)
+            )
+        }
+        // Nothing registered — the load fails; there is no legacy fallback.
+        #expect(await runtime.bridge(forModel: "gpt-oss-20b") == nil)
+        let events = telemetry.events
+        #expect(events.count == 1)
+        #expect(events.first?.kind == .engineHealth)
+        #expect(events.first?.severity == .error)
+        #expect(events.first?.fields?["operation"]?.description == "engine_v2_refusal")
+        #expect(events.first?.fields?["reason"]?.description == "engine_init_failed")
+        #expect(events.first?.fields?["model"]?.description == "gpt-oss-20b")
+        #expect(events.first?.fields?["error_class"]?.description.contains("InitFailure") == true)
+    }
+
+    @Test("VLM slot: extraction failure surfaces as vlm_extraction_failed refusal")
+    func vlmExtractionFailureRefusesLoudly() async throws {
+        let loop = try makeWiringLoop()
+        let runtime = EngineV2Runtime()
+        let telemetry = WiringTelemetrySink()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        await loop.setEngineV2SlotHooksForTesting(
+            ProviderLoop.EngineV2SlotHooks(
+                emitTelemetry: telemetry.callback(),
+                physicalMemoryBytes: wiringPhysicalBytes,
                 makeEngine: { _, _ in
                     // Stands in for any extraction failure (config decode,
                     // verify [.all] mismatch, forward-parity gate).
                     throw EngineV2VLMTextExtractionError.parityMismatch("scripted")
                 }))
 
-        let bridge = await loop.makeEngineV2BridgeForSlotForTesting(
-            modelId: "gemma-4-26b-8bit",
-            modelType: "gemma4",
-            isVLM: true,
-            container: makeStubContainer(),
-            tokenizer: TokenizerHandle(WiringStubTokenizer()),
-            scheduler: BatchScheduler()
-        )
-        #expect(bridge == nil)
-        #expect(await runtime.bridge(forModel: "gemma-4-26b-8bit") == nil)
-        let events = telemetry.events
-        #expect(events.count == 1)
-        #expect(events.first?.kind == .engineHealth)
-        #expect(events.first?.severity == .warn)
-        #expect(events.first?.fields?["operation"]?.description == "engine_v2_fallback")
-        #expect(events.first?.fields?["model"]?.description == "gemma-4-26b-8bit")
-        #expect(
-            events.first?.fields?["error_class"]?.description
-                .contains("EngineV2VLMTextExtractionError") == true)
+        await #expect(throws: EngineV2VLMTextExtractionError.self) {
+            _ = try await loop.resliceAndBuildEngineV2SlotForTesting(
+                modelId: "gemma-4-26b-qat-4bit",
+                modelType: "gemma4",
+                isVLM: true,
+                container: makeStubContainer(),
+                tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                sizing: makeSizing(weightsGiB: 15)
+            )
+        }
+        #expect(await runtime.bridge(forModel: "gemma-4-26b-qat-4bit") == nil)
+        let refusal = telemetry.events.first {
+            $0.fields?["operation"]?.description == "engine_v2_refusal"
+        }
+        #expect(refusal != nil)
+        #expect(refusal?.severity == .error)
+        #expect(refusal?.fields?["reason"]?.description == "vlm_extraction_failed")
     }
 
-    @Test("production factory: unsupported model class throws (→ fallback)")
+    @Test("production factory: unsupported model class throws (→ refusal)")
     func productionFactoryRejectsUnsupportedModel() {
         // A module that is neither Gemma4TextModel nor GPTOSSModel must throw
         // BEFORE any engine machinery is built — the factory catch turns this
-        // into the WARN fallback.
+        // into the ERROR refusal.
         #expect(throws: EngineV2ProductionError.self) {
             _ = try EngineV2Factory.makeProductionEngine(
                 model: WiringStubLanguageModel(),
@@ -482,7 +454,7 @@ struct EngineV2SlotFactoryTests {
         }
     }
 
-    @Test("production factory: zero KV headroom throws (→ fallback)")
+    @Test("production factory: zero KV headroom throws (→ refusal)")
     func productionFactoryRejectsZeroKVHeadroom() {
         #expect(throws: EngineV2ProductionError.self) {
             _ = try EngineV2Factory.makeProductionEngine(
@@ -493,7 +465,7 @@ struct EngineV2SlotFactoryTests {
         }
     }
 
-    @Test("kvBytesCapacity clamp: a ceiling above physical RAM is capped (fix #10)")
+    @Test("kvBytesCapacity clamp: a ceiling above physical RAM is capped")
     func kvBytesCapacityClamp() {
         let physical: UInt64 = 16 * 1024 * 1024 * 1024  // 16 GiB
         // A sane budget passes through untouched.
@@ -506,456 +478,342 @@ struct EngineV2SlotFactoryTests {
         #expect(EngineV2Factory.clampKVBytesCapacity(-1, physicalBytes: physical) == 0)
     }
 
-    @Test("kv_quant off: bridge sized at the scheduler rate, no kv_quant WARN")
-    func kvQuantOffNoWarn() async throws {
-        let loop = try makeWiringLoop(engineV2Enabled: true)
+    @Test("configured concurrency reaches the bridge (box-wide + per-model override)")
+    func concurrencyConfigReachesBridge() async throws {
+        let loop = try makeWiringLoop(
+            engineV2MaxConcurrent: 6,
+            engineV2MaxConcurrentByModel: ["gpt-oss-20b": 2])
         let runtime = EngineV2Runtime()
-        let telemetry = WiringTelemetrySink()
-        let engine = WiringScriptedEngine(script: .manual)
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
-                environment: [
-                    "DARKBLOOM_ENGINE_V2": "1",
-                    // The default allowlist is now the exact prod checkpoint ids;
-                    // these wiring fixtures use family-glob test ids, so widen it.
-                    "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*,gpt-oss*",
-                ],
                 eosTokenIds: [2],
-                emitTelemetry: telemetry.callback(),
-                makeEngine: { _, _ in engine }))
+                physicalMemoryBytes: wiringPhysicalBytes,
+                makeEngine: { _, grant in
+                    WiringScriptedEngine(script: .manual, kvBytesCapacity: grant)
+                }))
 
-        // Rates equal ⇒ kv_quant not engaged.
-        let scheduler = BatchScheduler()
-        await scheduler._setKVRatesForTest(
-            kvBytesPerToken: 400_000, fp16KVBytesPerToken: 400_000)
-        let bridge = await loop.makeEngineV2BridgeForSlotForTesting(
-            modelId: "gemma-4-27b-it",
-            modelType: "gemma4_text",
+        // Per-model override wins for gpt-oss-20b…
+        let gptoss = try await loop.resliceAndBuildEngineV2SlotForTesting(
+            modelId: "gpt-oss-20b",
+            modelType: "gpt_oss",
             container: makeStubContainer(),
             tokenizer: TokenizerHandle(WiringStubTokenizer()),
-            scheduler: scheduler
+            sizing: makeSizing(weightsGiB: 12, kvRate: 24_576)
         )
-        _ = try #require(bridge)
-        // No kv_quant WARN fired.
-        #expect(telemetry.events.allSatisfy {
-            $0.fields?["operation"]?.description != "engine_v2_kv_quant_unsupported"
-        })
+        #expect(await gptoss.backendSlotCapacity().maxConcurrency == 2)
+
+        // …and the box-wide value covers everything else. Heartbeat
+        // max_concurrency reports the effective per-slot value.
+        let gemma = try await loop.resliceAndBuildEngineV2SlotForTesting(
+            modelId: "gemma-4-26b-qat-4bit",
+            modelType: "gemma4",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            sizing: makeSizing(weightsGiB: 15)
+        )
+        #expect(await gemma.backendSlotCapacity().maxConcurrency == 6)
+    }
+}
+
+// MARK: - KV re-slicing across loads/unloads
+
+@Suite("EngineV2 production wiring: KV re-slicing", .serialized)
+struct EngineV2ReslicingWiringTests {
+
+    init() {
+        // unloadModel / updateAggregateCapacity read MLX GPU counters.
+        _ = LiveInferenceFixtures.ensureMetallibColocated()
     }
 
-    @Test("kv_quant on: WARN engine_v2_kv_quant_unsupported + fp16 sizing")
-    func kvQuantOnWarnsAndSizesFP16() async throws {
-        let loop = try makeWiringLoop(engineV2Enabled: true)
-        let runtime = EngineV2Runtime()
-        let telemetry = WiringTelemetrySink()
-        // A stream so the bridge admits + heartbeats; the capacity math uses
-        // the fp16 rate the factory chose.
-        let engine = WiringScriptedEngine(script: .manual)
+    /// Install slot A via the real build path, returning its engine + the
+    /// grants recorder.
+    private func buildAndInstallSlotA(
+        _ loop: ProviderLoop, runtime: EngineV2Runtime, recorder: GrantRecorder,
+        engines: @escaping @Sendable (String, Int) -> WiringScriptedEngine
+    ) async throws -> (bridge: EngineV2Bridge, engine: WiringScriptedEngine, sizing: SlotSizingSnapshot) {
+        let enginesBox = EngineBox()
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
-                environment: [
-                    "DARKBLOOM_ENGINE_V2": "1",
-                    // The default allowlist is now the exact prod checkpoint ids;
-                    // these wiring fixtures use family-glob test ids, so widen it.
-                    "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*,gpt-oss*",
-                ],
                 eosTokenIds: [2],
-                emitTelemetry: telemetry.callback(),
-                makeEngine: { _, _ in engine }))
-
-        // Quantized rate below fp16 ⇒ kv_quant engaged for this model.
-        let scheduler = BatchScheduler()
-        await scheduler._setKVRatesForTest(
-            kvBytesPerToken: 100_000, fp16KVBytesPerToken: 400_000)
-        let bridge = try #require(await loop.makeEngineV2BridgeForSlotForTesting(
-            modelId: "gemma-4-27b-it",
-            modelType: "gemma4_text",
+                physicalMemoryBytes: wiringPhysicalBytes,
+                makeEngine: { modelId, grant in
+                    recorder.record(grant)
+                    let engine = engines(modelId, grant)
+                    enginesBox.append(engine)
+                    return engine
+                }))
+        let sizingA = makeSizing(weightsGiB: 15, kvRate: 20_480, maxContext: 262_144)
+        let bridgeA = try await loop.resliceAndBuildEngineV2SlotForTesting(
+            modelId: "gemma-4-26b-qat-4bit",
+            modelType: "gemma4",
             container: makeStubContainer(),
             tokenizer: TokenizerHandle(WiringStubTokenizer()),
-            scheduler: scheduler
-        ))
-        // WARN fired with allowlisted fields.
-        let warn = telemetry.events.first {
-            $0.fields?["operation"]?.description == "engine_v2_kv_quant_unsupported"
+            sizing: sizingA
+        )
+        await loop.installModelSlotForTesting(
+            modelId: "gemma-4-26b-qat-4bit",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            engineV2: bridgeA,
+            sizing: sizingA,
+            modelType: "gemma4")
+        return (bridgeA, enginesBox.all[0], sizingA)
+    }
+
+    private final class EngineBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _engines: [WiringScriptedEngine] = []
+        var all: [WiringScriptedEngine] { lock.withLock { _engines } }
+        func append(_ engine: WiringScriptedEngine) { lock.withLock { _engines.append(engine) } }
+    }
+
+    @Test("second load shrinks A to its fair share; Σ(grants) ≤ fleet budget")
+    func secondLoadShrinksFirstEngine() async throws {
+        let loop = try makeWiringLoop()
+        let runtime = EngineV2Runtime()
+        let recorder = GrantRecorder()
+        let (bridgeA, engineA, sizingA) = try await buildAndInstallSlotA(
+            loop, runtime: runtime, recorder: recorder,
+            engines: { _, grant in WiringScriptedEngine(script: .manual, kvBytesCapacity: grant) })
+        let grantA0 = await bridgeA.engineKVBytesCapacity()
+
+        // Load B (gpt-oss): A must SHRINK to its fair share before B's
+        // engine is built, and B's grant is its own fair share.
+        let sizingB = makeSizing(weightsGiB: 12, kvRate: 24_576, maxContext: 131_072)
+        let bridgeB = try await loop.resliceAndBuildEngineV2SlotForTesting(
+            modelId: "gpt-oss-20b",
+            modelType: "gpt_oss",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            sizing: sizingB
+        )
+        await loop.installModelSlotForTesting(
+            modelId: "gpt-oss-20b",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            engineV2: bridgeB,
+            sizing: sizingB,
+            modelType: "gpt_oss")
+
+        // Expected fair shares from the same pure policy.
+        let fleetBudget = UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: wiringPhysicalBytes,
+            residentWeightBytes: UInt64(sizingA.weightsBytes + sizingB.weightsBytes),
+            configReserveBytes: wiringReserveBytes)
+        let targets = EngineV2KVSizing.resliceGrants(
+            existing: [
+                .init(
+                    modelId: "gemma-4-26b-qat-4bit",
+                    fp16KVBytesPerToken: sizingA.fp16KVBytesPerToken,
+                    maxContextLength: sizingA.maxContextLength)
+            ],
+            newcomer: .init(
+                modelId: "gpt-oss-20b",
+                fp16KVBytesPerToken: sizingB.fp16KVBytesPerToken,
+                maxContextLength: sizingB.maxContextLength),
+            fleetKVBudgetBytes: fleetBudget)
+
+        let grantA1 = await bridgeA.engineKVBytesCapacity()
+        let grantB = await bridgeB.engineKVBytesCapacity()
+        #expect(grantA1 == targets["gemma-4-26b-qat-4bit"])
+        #expect(grantB == targets["gpt-oss-20b"])
+        #expect(grantA1 < grantA0)
+        #expect(UInt64(grantA1 + grantB) <= fleetBudget)
+        // The shrink flowed through the engine's resize hook.
+        #expect(engineA.capacityUpdates.last == grantA1)
+        // Both models share ∝ rate × min(context, 131_072): gemma's 262k
+        // context is capped, so the weights are 20480×131072 vs 24576×131072
+        // — gemma gets the SMALLER share despite the longer context.
+        #expect(grantA1 < grantB)
+    }
+
+    @Test("unload grows the survivor back to the FULL fleet budget")
+    func unloadRegrowsSurvivor() async throws {
+        let loop = try makeWiringLoop()
+        let runtime = EngineV2Runtime()
+        let recorder = GrantRecorder()
+        let (bridgeA, engineA, sizingA) = try await buildAndInstallSlotA(
+            loop, runtime: runtime, recorder: recorder,
+            engines: { _, grant in WiringScriptedEngine(script: .manual, kvBytesCapacity: grant) })
+
+        let sizingB = makeSizing(weightsGiB: 12, kvRate: 24_576, maxContext: 131_072)
+        let bridgeB = try await loop.resliceAndBuildEngineV2SlotForTesting(
+            modelId: "gpt-oss-20b",
+            modelType: "gpt_oss",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            sizing: sizingB
+        )
+        await runtime.register(modelId: "gpt-oss-20b", bridge: bridgeB)
+        await loop.installModelSlotForTesting(
+            modelId: "gpt-oss-20b",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            engineV2: bridgeB,
+            sizing: sizingB,
+            modelType: "gpt_oss")
+        let shrunkA = await bridgeA.engineKVBytesCapacity()
+
+        // Unload B: A grows back to the full budget under ITS weights alone.
+        await loop.unloadModel("gpt-oss-20b")
+        let grownA = await bridgeA.engineKVBytesCapacity()
+        let fullBudget = UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: wiringPhysicalBytes,
+            residentWeightBytes: UInt64(sizingA.weightsBytes),
+            configReserveBytes: wiringReserveBytes)
+        #expect(grownA == Int(fullBudget))
+        #expect(grownA > shrunkA)
+        #expect(engineA.capacityUpdates.last == grownA)
+    }
+
+    @Test("restore-on-throw: B's construction failure restores A's grant EXACTLY")
+    func constructionFailureRestoresGrants() async throws {
+        struct BFailure: Error {}
+        let loop = try makeWiringLoop()
+        let runtime = EngineV2Runtime()
+        let recorder = GrantRecorder()
+        let (bridgeA, engineA, _) = try await buildAndInstallSlotA(
+            loop, runtime: runtime, recorder: recorder,
+            engines: { _, grant in WiringScriptedEngine(script: .manual, kvBytesCapacity: grant) })
+        let grantA0 = await bridgeA.engineKVBytesCapacity()
+
+        // Swap the hooks: B's builder throws AFTER A has been shrunk.
+        await loop.setEngineV2SlotHooksForTesting(
+            ProviderLoop.EngineV2SlotHooks(
+                eosTokenIds: [2],
+                physicalMemoryBytes: wiringPhysicalBytes,
+                makeEngine: { _, _ in throw BFailure() }))
+
+        await #expect(throws: BFailure.self) {
+            _ = try await loop.resliceAndBuildEngineV2SlotForTesting(
+                modelId: "gpt-oss-20b",
+                modelType: "gpt_oss",
+                container: makeStubContainer(),
+                tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                sizing: makeSizing(weightsGiB: 12, kvRate: 24_576, maxContext: 131_072)
+            )
         }
-        #expect(warn != nil)
-        #expect(warn?.severity == .warn)
-        #expect(warn?.kind == .engineHealth)
-        #expect(warn?.fields?["backend"]?.description == "engine_v2")
-        #expect(warn?.fields?["model"]?.description == "gemma-4-27b-it")
-        // The bridge was sized at the fp16 rate (400_000), not the quantized
-        // 100_000: the heartbeat slot reports kvBytesPerToken == fp16.
-        let slot = await bridge.backendSlotCapacity()
-        #expect(slot.kvBytesPerToken == 400_000)
+
+        // A was shrunk for the attempt, then restored to the EXACT prior
+        // grant — the capacityUpdates trail shows shrink → restore.
+        #expect(await bridgeA.engineKVBytesCapacity() == grantA0)
+        let updates = engineA.capacityUpdates
+        #expect(updates.count == 2)
+        #expect(updates.first ?? 0 < grantA0)
+        #expect(updates.last == grantA0)
+        // B never registered.
+        #expect(await runtime.bridge(forModel: "gpt-oss-20b") == nil)
     }
 
-    @Test("engine init failure: legacy fallback + WARN engine_v2_fallback telemetry")
-    func initFailureFallsBackWithTelemetry() async throws {
-        struct InitFailure: Error {}
-        let loop = try makeWiringLoop(engineV2Enabled: true)
+    @Test("serviceability floor: a slice below 1 GiB per slot REFUSES the load (reslice_floor)")
+    func resliceFloorRefusesLoad() async throws {
+        // A 8 GiB "machine": budget after 4 GiB of weights ≈ 8×0.9−4−3 ≈
+        // ~0 — any two-way slice lands below the 1 GiB floor.
+        let tinyPhysical: UInt64 = 8 * wiringGiB
+        let loop = try makeWiringLoop()
         let runtime = EngineV2Runtime()
         let telemetry = WiringTelemetrySink()
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
-                environment: [:],
+                eosTokenIds: [2],
                 emitTelemetry: telemetry.callback(),
-                makeEngine: { _, _ in throw InitFailure() }))
+                physicalMemoryBytes: tinyPhysical,
+                makeEngine: { _, grant in
+                    WiringScriptedEngine(script: .manual, kvBytesCapacity: grant)
+                }))
 
-        let bridge = await loop.makeEngineV2BridgeForSlotForTesting(
-            modelId: "gpt-oss-20b",
-            modelType: "gpt_oss",
+        // Slot A exists with a small grant already.
+        let sizingA = makeSizing(weightsGiB: 2, kvRate: 20_480)
+        let bridgeA = try await loop.resliceAndBuildEngineV2SlotForTesting(
+            modelId: "gemma-4-26b-qat-4bit",
+            modelType: "gemma4",
             container: makeStubContainer(),
             tokenizer: TokenizerHandle(WiringStubTokenizer()),
-            scheduler: BatchScheduler()
+            sizing: sizingA
         )
-        #expect(bridge == nil)
-        // Nothing registered — the slot serves legacy.
+        await loop.installModelSlotForTesting(
+            modelId: "gemma-4-26b-qat-4bit",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            engineV2: bridgeA,
+            sizing: sizingA,
+            modelType: "gemma4")
+        let grantA0 = await bridgeA.engineKVBytesCapacity()
+
+        // Loading B would slice both below the serviceability floor →
+        // REFUSED (503-shaped modelLoadFailed), A untouched, ERROR telemetry
+        // with reason reslice_floor.
+        await #expect(throws: InferenceError.self) {
+            _ = try await loop.resliceAndBuildEngineV2SlotForTesting(
+                modelId: "gpt-oss-20b",
+                modelType: "gpt_oss",
+                container: makeStubContainer(),
+                tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                sizing: makeSizing(weightsGiB: 2, kvRate: 24_576)
+            )
+        }
+        #expect(await bridgeA.engineKVBytesCapacity() == grantA0)
+        let refusal = telemetry.events.first {
+            $0.fields?["operation"]?.description == "engine_v2_refusal"
+        }
+        #expect(refusal?.severity == .error)
+        #expect(refusal?.fields?["reason"]?.description == "reslice_floor")
         #expect(await runtime.bridge(forModel: "gpt-oss-20b") == nil)
-        let events = telemetry.events
-        #expect(events.count == 1)
-        #expect(events.first?.kind == .engineHealth)
-        #expect(events.first?.severity == .warn)
-        #expect(events.first?.fields?["operation"]?.description == "engine_v2_fallback")
-        #expect(events.first?.fields?["backend"]?.description == "engine_v2")
-        #expect(events.first?.fields?["error_class"]?.description.contains("InitFailure") == true)
-    }
-}
-
-// MARK: - Multi-slot KV capacity sizing (fleet-wide ceilings)
-
-/// Engine stub that reports a construction-granted KV admission ceiling —
-/// what the slot factory reads back (via
-/// `EngineV2Bridge.engineKVBytesCapacity`) when sizing a LATER engine.
-private final class CapacityReportingEngine: CBv2Engine, @unchecked Sendable {
-    let kvBytesCapacity: Int
-    init(kvBytesCapacity: Int) { self.kvBytesCapacity = kvBytesCapacity }
-
-    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
-        let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
-        continuation.finish()
-        return stream
-    }
-    func cancel(_ id: CBv2RequestID) {}
-    func capacity() -> CBv2CapacitySnapshot {
-        CBv2CapacitySnapshot(
-            activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
-            kvBytesCapacity: kvBytesCapacity, activeTokens: 0)
-    }
-    func shutdown() async {}
-}
-
-/// Thread-safe recorder for the kvBytesCapacity values handed to the hooks.
-private final class CapacityRecorder: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _granted: [Int] = []
-    var granted: [Int] { lock.withLock { _granted } }
-    func record(_ capacity: Int) { lock.withLock { _granted.append(capacity) } }
-}
-
-@Suite("EngineV2 production wiring: multi-slot KV capacity")
-struct EngineV2MultiSlotCapacityTests {
-
-    private static let gib: UInt64 = 1024 * 1024 * 1024
-
-    @Test("pure sizing: the second engine's ceiling subtracts co-resident weights AND the first ceiling")
-    func pureSizingSubtractsFleetResidency() {
-        let physical = 64 * Self.gib
-        let wA = Int(8 * Self.gib)
-        let wB = Int(12 * Self.gib)
-        // First engine, alone on the box: the whole budget under its weights.
-        let capA = EngineV2KVSizing.engineKVBytesCapacity(
-            newModelWeightBytes: wA, coResidentWeightBytes: 0,
-            existingEngineKVCapacities: [], physicalBytes: physical)
-        #expect(UInt64(capA) == UnifiedMemoryCap.kvBudgetBytes(
-            physicalBytes: physical, residentWeightBytes: UInt64(wA)))
-        // Second engine: fleet budget now counts BOTH models' weights, and
-        // the first engine's construction-fixed grant comes off the top.
-        // Here the first grant already consumed everything (kvBudget(wA+wB)
-        // = capA − wB < capA), so the second slot gets 0 → the factory
-        // throws noKVHeadroom and the slot serves via the legacy scheduler
-        // (v2 effectively single-slot when the first engine took the pie).
-        let capB = EngineV2KVSizing.engineKVBytesCapacity(
-            newModelWeightBytes: wB, coResidentWeightBytes: UInt64(wA),
-            existingEngineKVCapacities: [capA], physicalBytes: physical)
-        #expect(capB == 0)
-        // The pre-fix behavior — sizing B as if ONLY its weights were
-        // resident — would have granted far more than the fleet budget:
-        let naiveB = UnifiedMemoryCap.kvBudgetBytes(
-            physicalBytes: physical, residentWeightBytes: UInt64(wB))
-        let fleetBudget = UnifiedMemoryCap.kvBudgetBytes(
-            physicalBytes: physical, residentWeightBytes: UInt64(wA) + UInt64(wB))
-        #expect(UInt64(capA) + naiveB > fleetBudget)   // the bug this fixes
-        #expect(UInt64(capA + capB)
-            <= UnifiedMemoryCap.kvBudgetBytes(
-                physicalBytes: physical, residentWeightBytes: UInt64(wA)))
     }
 
-    @Test("pure sizing: two-slot ceilings sum exactly to the fleet budget when headroom remains")
-    func pureSizingSumsWithinBudget() {
-        let physical = 64 * Self.gib
-        let wA = Int(8 * Self.gib)
-        let wB = Int(4 * Self.gib)
-        // First engine granted under a TIGHTER view (e.g. operator cap /
-        // memory pressure at its load): 10 GiB ceiling.
-        let capA = Int(10 * Self.gib)
-        let capB = EngineV2KVSizing.engineKVBytesCapacity(
-            newModelWeightBytes: wB, coResidentWeightBytes: UInt64(wA),
-            existingEngineKVCapacities: [capA], physicalBytes: physical)
-        let fleetBudget = UnifiedMemoryCap.kvBudgetBytes(
-            physicalBytes: physical, residentWeightBytes: UInt64(wA) + UInt64(wB))
-        #expect(capB > 0)
-        // Σ(ceilings) lands exactly ON the fleet-wide KV budget — the
-        // process-wide invariant the pre-fix per-slot sizing violated.
-        #expect(UInt64(capA + capB) == fleetBudget)
-    }
-
-    @Test("pure sizing honors memory_reserve_gb in both regimes (round-3 PR#499 P2)")
-    func pureSizingHonorsMemoryReserve() {
-        // 32 GiB box: cap = 0.9 × 32 = 28.8 GiB ⇒ cap-implied reserve 3.2 GiB.
-        let physical = 32 * Self.gib
-        let weights = Int(8 * Self.gib)
-        let unreserved = EngineV2KVSizing.engineKVBytesCapacity(
-            newModelWeightBytes: weights, coResidentWeightBytes: 0,
-            existingEngineKVCapacities: [], physicalBytes: physical)
-        // Regime 1 — reserve BELOW the cap-implied reserve (2 GiB < 3.2 GiB):
-        // the cap already holds back more; the configured reserve is a no-op.
-        #expect(EngineV2KVSizing.engineKVBytesCapacity(
-            newModelWeightBytes: weights, coResidentWeightBytes: 0,
-            existingEngineKVCapacities: [], configReserveBytes: 2 * Self.gib,
-            physicalBytes: physical) == unreserved)
-        // Regime 2 — reserve ABOVE the cap-implied reserve (the DEFAULT
-        // memory_reserve_gb of 4 GiB on a 32 GiB box): the effective cap
-        // drops to physical − reserve = 28 GiB, the same hold-back the
-        // shared KV gate and the load gate apply, so the v2 ceiling can no
-        // longer advertise capacity the shared gate would reject.
-        let reserved = EngineV2KVSizing.engineKVBytesCapacity(
-            newModelWeightBytes: weights, coResidentWeightBytes: 0,
-            existingEngineKVCapacities: [], configReserveBytes: 4 * Self.gib,
-            physicalBytes: physical)
-        #expect(reserved < unreserved)
-        #expect(UInt64(reserved) == UnifiedMemoryCap.kvBudgetBytes(
-            physicalBytes: physical, residentWeightBytes: UInt64(weights),
-            configReserveBytes: 4 * Self.gib))
-        // Exact delta: the cap shrank by (configReserve − capImplied).
-        let cap = UnifiedMemoryCap.hardCapBytes(physicalBytes: physical)
-        let capImplied = physical - cap
-        #expect(UInt64(unreserved - reserved) == 4 * Self.gib - capImplied)
-    }
-
-    @Test("live budget clamp: a later load shrinks the REPORTED budget, never the grant")
-    func liveBudgetClampTracksFleetResidency() {
-        let physical = 64 * Self.gib
-        let wA = Int(8 * Self.gib)
-        let grantA = EngineV2KVSizing.engineKVBytesCapacity(
-            newModelWeightBytes: wA, coResidentWeightBytes: 0,
-            existingEngineKVCapacities: [], physicalBytes: physical)
-        // Nothing changed since construction ⇒ the current answer IS the
-        // grant (no spurious shrink, and never inflation past the grant).
-        #expect(EngineV2KVSizing.liveEngineKVBytesBudget(
-            grantedKVBytesCapacity: grantA,
-            totalResidentWeightBytes: UInt64(wA),
-            otherEngineKVCapacities: [], physicalBytes: physical) == grantA)
-        // A 12 GiB LEGACY model loads later (subtracts nothing from any v2
-        // grant): the reported budget shrinks by exactly its weights.
-        let wB = 12 * Self.gib
-        #expect(EngineV2KVSizing.liveEngineKVBytesBudget(
-            grantedKVBytesCapacity: grantA,
-            totalResidentWeightBytes: UInt64(wA) + wB,
-            otherEngineKVCapacities: [], physicalBytes: physical)
-            == grantA - Int(wB))
-        // A co-resident v2 engine's construction grant comes off the top the
-        // same way the sizing pass subtracted it.
-        let grantC = Int(4 * Self.gib)
-        #expect(EngineV2KVSizing.liveEngineKVBytesBudget(
-            grantedKVBytesCapacity: grantA,
-            totalResidentWeightBytes: UInt64(wA) + wB,
-            otherEngineKVCapacities: [grantC], physicalBytes: physical)
-            == grantA - Int(wB) - grantC)
-        // Fleet growth past the budget clamps to 0, never negative.
-        #expect(EngineV2KVSizing.liveEngineKVBytesBudget(
-            grantedKVBytesCapacity: grantA,
-            totalResidentWeightBytes: physical,
-            otherEngineKVCapacities: [], physicalBytes: physical) == 0)
-        // The clamp can only ever SHRINK the report: with fleet residency
-        // BELOW construction-time reality the grant still bounds the report.
-        #expect(EngineV2KVSizing.liveEngineKVBytesBudget(
-            grantedKVBytesCapacity: grantA,
-            totalResidentWeightBytes: 0,
-            otherEngineKVCapacities: [], physicalBytes: physical) == grantA)
-    }
-
-    @Test("pure sizing: degenerate inputs clamp to zero, never trap")
-    func pureSizingDegenerateInputs() {
-        // Grants already exceed the budget → 0, not negative.
-        #expect(EngineV2KVSizing.engineKVBytesCapacity(
-            newModelWeightBytes: Int(4 * Self.gib), coResidentWeightBytes: 0,
-            existingEngineKVCapacities: [Int.max, Int.max],
-            physicalBytes: 16 * Self.gib) == 0)
-        // Negative weight/grant inputs are treated as 0.
-        #expect(EngineV2KVSizing.engineKVBytesCapacity(
-            newModelWeightBytes: -1, coResidentWeightBytes: 0,
-            existingEngineKVCapacities: [-5],
-            physicalBytes: 16 * Self.gib)
-            == Int(UnifiedMemoryCap.kvBudgetBytes(
-                physicalBytes: 16 * Self.gib, residentWeightBytes: 0)))
-        // Weights alone exceed the cap → 0 budget.
-        #expect(EngineV2KVSizing.engineKVBytesCapacity(
-            newModelWeightBytes: Int(20 * Self.gib), coResidentWeightBytes: 0,
-            existingEngineKVCapacities: [], physicalBytes: 16 * Self.gib) == 0)
-    }
-
-    @Test("slot factory sizes a second v2 engine against the first slot's weights and ceiling")
-    func slotFactoryUsesFleetResidency() async throws {
-        let loop = try makeWiringLoop(engineV2Enabled: true)
+    @Test("heartbeat reads CURRENT grants: budget max tracks the re-sliced ceiling")
+    func heartbeatTracksReslicedGrants() async throws {
+        let rate = 20_480
+        let loop = try makeWiringLoop()
         let runtime = EngineV2Runtime()
-        await loop.setEngineV2RuntimeForTesting(runtime)
-        let recorder = CapacityRecorder()
-        await loop.setEngineV2SlotHooksForTesting(
-            ProviderLoop.EngineV2SlotHooks(
-                environment: [
-                    "DARKBLOOM_ENGINE_V2": "1",
-                    // The default allowlist is now the exact prod checkpoint ids;
-                    // these wiring fixtures use family-glob test ids, so widen it.
-                    "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*,gpt-oss*",
-                ],
-                eosTokenIds: [2],
-                makeEngine: { _, kvBytesCapacity in
-                    recorder.record(kvBytesCapacity)
-                    return CapacityReportingEngine(kvBytesCapacity: kvBytesCapacity)
-                }))
-
-        // Slot A: 1 GiB of resident weights, empty fleet.
-        let weightsA = Int(1 * Self.gib)
-        let schedulerA = BatchScheduler()
-        await schedulerA._setModelWeightBytesForTest(weightsA)
-        let bridgeA = try #require(await loop.makeEngineV2BridgeForSlotForTesting(
-            modelId: "gemma-4-27b-it",
-            modelType: "gemma4_text",
-            container: makeStubContainer(),
-            tokenizer: TokenizerHandle(WiringStubTokenizer()),
-            scheduler: schedulerA))
-        await loop.installModelSlotForTesting(
-            modelId: "gemma-4-27b-it",
-            scheduler: schedulerA,
-            container: makeStubContainer(),
-            tokenizer: TokenizerHandle(WiringStubTokenizer()),
-            engineV2: bridgeA,
-            modelType: "gemma4_text")
-
-        // Slot B: 2 GiB of weights, loaded WITH A resident.
-        let weightsB = Int(2 * Self.gib)
-        let schedulerB = BatchScheduler()
-        await schedulerB._setModelWeightBytesForTest(weightsB)
-        _ = await loop.makeEngineV2BridgeForSlotForTesting(
-            modelId: "gpt-oss-20b",
-            modelType: "gpt_oss",
-            container: makeStubContainer(),
-            tokenizer: TokenizerHandle(WiringStubTokenizer()),
-            scheduler: schedulerB)
-
-        let granted = recorder.granted
-        #expect(granted.count == 2)
-        // A was sized alone; B's ceiling subtracts A's weights AND A's
-        // construction-fixed grant — the exact fleet-aware derivation
-        // (computed here with the same pure helper on this machine's
-        // physical memory, so the assertion is machine-independent). The
-        // loop's configured memory_reserve_gb (1 GiB in makeWiringLoop)
-        // threads into the derivation too (round-3 PR#499 P2).
-        #expect(granted[0] == EngineV2KVSizing.engineKVBytesCapacity(
-            newModelWeightBytes: weightsA, coResidentWeightBytes: 0,
-            existingEngineKVCapacities: [], configReserveBytes: 1 * Self.gib))
-        #expect(granted[1] == EngineV2KVSizing.engineKVBytesCapacity(
-            newModelWeightBytes: weightsB,
-            coResidentWeightBytes: UInt64(weightsA),
-            existingEngineKVCapacities: [granted[0]],
-            configReserveBytes: 1 * Self.gib))
-        // And the fleet invariant: B's grant never lets the pair exceed the
-        // budget A was granted under.
-        #expect(granted[1] <= max(0, granted[0] - weightsB))
-    }
-
-    @Test("heartbeat budget max shrinks when a second slot's weights register later (round-3 PR#499 P2)")
-    func heartbeatBudgetShrinksWhenSecondSlotLoads() async throws {
-        let loop = try makeWiringLoop(engineV2Enabled: true)
-        let runtime = EngineV2Runtime()
-        await loop.setEngineV2RuntimeForTesting(runtime)
-        let recorder = CapacityRecorder()
-        await loop.setEngineV2SlotHooksForTesting(
-            ProviderLoop.EngineV2SlotHooks(
-                environment: [
-                    "DARKBLOOM_ENGINE_V2": "1",
-                    // The default allowlist is now the exact prod checkpoint ids;
-                    // these wiring fixtures use family-glob test ids, so widen it.
-                    "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*,gpt-oss*",
-                ],
-                eosTokenIds: [2],
-                makeEngine: { _, kvBytesCapacity in
-                    recorder.record(kvBytesCapacity)
-                    // The engine reports its construction grant back in the
-                    // capacity snapshot, exactly like the production engine.
-                    return CapacityReportingEngine(kvBytesCapacity: kvBytesCapacity)
-                }))
-
-        // Slot A: v2-served, 1 GiB of weights, a known per-token KV rate so
-        // the heartbeat derives token budgets (bytes / rate).
-        let rate = 4096
-        let weightsA = Int(1 * Self.gib)
-        let schedulerA = BatchScheduler()
-        await schedulerA._setModelWeightBytesForTest(weightsA)
-        await schedulerA._setKVRatesForTest(kvBytesPerToken: rate, fp16KVBytesPerToken: rate)
-        let bridgeA = try #require(await loop.makeEngineV2BridgeForSlotForTesting(
-            modelId: "gemma-4-27b-it",
-            modelType: "gemma4_text",
-            container: makeStubContainer(),
-            tokenizer: TokenizerHandle(WiringStubTokenizer()),
-            scheduler: schedulerA))
-        await loop.installModelSlotForTesting(
-            modelId: "gemma-4-27b-it",
-            scheduler: schedulerA,
-            container: makeStubContainer(),
-            tokenizer: TokenizerHandle(WiringStubTokenizer()),
-            engineV2: bridgeA,
-            modelType: "gemma4_text")
+        let recorder = GrantRecorder()
+        let (bridgeA, _, sizingA) = try await buildAndInstallSlotA(
+            loop, runtime: runtime, recorder: recorder,
+            engines: { _, grant in WiringScriptedEngine(script: .manual, kvBytesCapacity: grant) })
+        await runtime.register(modelId: "gemma-4-26b-qat-4bit", bridge: bridgeA)
 
         func v2BudgetMax() async throws -> Int64 {
             await loop.updateAggregateCapacity()
             let capacity = try #require(await loop.backendCapacityForTesting())
             let slot = try #require(
-                capacity.slots.first(where: { $0.model == "gemma-4-27b-it" }))
+                capacity.slots.first(where: { $0.model == "gemma-4-26b-qat-4bit" }))
             return slot.activeTokenBudgetMax
         }
 
-        // Alone on the box the heartbeat reports the construction grant.
-        let grant = try #require(recorder.granted.first)
-        let before = try await v2BudgetMax()
-        #expect(before == Int64(grant / rate))
+        // Alone on the box: the heartbeat reports the full-budget grant.
+        let grantA0 = await bridgeA.engineKVBytesCapacity()
+        #expect(try await v2BudgetMax() == Int64(grantA0 / rate))
 
-        // A second slot's weights register LATER — a LEGACY (non-v2) slot,
-        // which subtracts nothing from A's construction-fixed ceiling. The
-        // heartbeat must nonetheless reflect fleet reality: the reported max
-        // shrinks by exactly the newcomer's weights (in tokens), while A's
-        // engine keeps its private grant.
-        let weightsB = Int(2 * Self.gib)
-        let schedulerB = BatchScheduler()
-        await schedulerB._setModelWeightBytesForTest(weightsB)
-        await loop.installModelSlotForTesting(
+        // A second v2 slot loads: A's engine grant is RE-SLICED (shrunk);
+        // the heartbeat must report the CURRENT grant, not the construction
+        // figure.
+        let sizingB = makeSizing(weightsGiB: 12, kvRate: 24_576, maxContext: 131_072)
+        let bridgeB = try await loop.resliceAndBuildEngineV2SlotForTesting(
             modelId: "gpt-oss-20b",
-            scheduler: schedulerB,
+            modelType: "gpt_oss",
             container: makeStubContainer(),
             tokenizer: TokenizerHandle(WiringStubTokenizer()),
-            engineV2: nil,
+            sizing: sizingB
+        )
+        await loop.installModelSlotForTesting(
+            modelId: "gpt-oss-20b",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            engineV2: bridgeB,
+            sizing: sizingB,
             modelType: "gpt_oss")
 
-        let after = try await v2BudgetMax()
-        // weightsB is a whole multiple of the rate, so the integer-division
-        // shrink is exact: wB / rate tokens.
-        #expect(before - after == Int64(weightsB / rate))
-        #expect(after < before)
-        // The clamp is heartbeat-side only: the engine's own snapshot still
-        // carries the construction grant.
-        #expect(await bridgeA.engineKVBytesCapacity() == grant)
+        let grantA1 = await bridgeA.engineKVBytesCapacity()
+        #expect(grantA1 < grantA0)
+        #expect(try await v2BudgetMax() == Int64(grantA1 / rate))
+        // The heartbeat carries BOTH v2 slots (and nothing else).
+        await loop.updateAggregateCapacity()
+        let capacity = try #require(await loop.backendCapacityForTesting())
+        #expect(Set(capacity.slots.map(\.model)) == ["gemma-4-26b-qat-4bit", "gpt-oss-20b"])
+        _ = sizingA
     }
 }
 
@@ -972,16 +830,12 @@ struct EngineV2RequestRoutingTests {
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 2)),
         ]))
         let bridge = makeBridge(engine: engine)
-        // The legacy scheduler here has NO model loaded: if routing fell
-        // through to it, the stream would throw "No model loaded" instead
-        // of producing the scripted content below.
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
-                    "gemma-4-27b-it": .init(
-                        scheduler: BatchScheduler(),
+                    "gemma-4-26b-qat-4bit": .init(
                         tokenizer: TokenizerHandle(WiringStubTokenizer()),
-                        modelType: "gemma4_text",
+                        modelType: "gemma4",
                         engineV2Bridge: bridge)
                 ]
             })
@@ -1007,10 +861,9 @@ struct EngineV2RequestRoutingTests {
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
-                    "gemma-4-27b-it": .init(
-                        scheduler: BatchScheduler(),
+                    "gemma-4-26b-qat-4bit": .init(
                         tokenizer: TokenizerHandle(WiringStubTokenizer()),
-                        modelType: "gemma4_text",
+                        modelType: "gemma4",
                         engineV2Bridge: bridge)
                 ]
             },
@@ -1043,10 +896,9 @@ struct EngineV2RequestRoutingTests {
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
-                    "gemma-4-27b-it": .init(
-                        scheduler: BatchScheduler(),
+                    "gemma-4-26b-qat-4bit": .init(
                         tokenizer: TokenizerHandle(WiringStubTokenizer()),
-                        modelType: "gemma4_text",
+                        modelType: "gemma4",
                         engineV2Bridge: bridge)
                 ]
             },
@@ -1074,15 +926,14 @@ struct EngineV2RequestRoutingTests {
         let providerEngine = MultiModelBatchSchedulerEngine(
             acquire: { modelId in
                 MultiModelBatchSchedulerEngine.AcquiredModel(
-                    scheduler: BatchScheduler(),
                     tokenizer: TokenizerHandle(WiringStubTokenizer()),
                     releaseToken: OneShotRelease(
                         release: { _ in released.increment() }, modelId: modelId),
-                    modelType: "gemma4_text",
+                    modelType: "gemma4",
                     engineV2Bridge: bridge)
             },
             tokenizerProvider: { _ in TokenizerHandle(WiringStubTokenizer()) },
-            availableModels: { ["gemma-4-27b-it"] }
+            availableModels: { ["gemma-4-26b-qat-4bit"] }
         )
 
         let stream = try await providerEngine.streamChatCompletion(request: makeOpenAIRequest())
@@ -1096,19 +947,15 @@ struct EngineV2RequestRoutingTests {
 
     @Test("VLM slot with a bridge: text-only request routes through the bridge")
     func vlmSlotTextRequestRoutesThroughBridge() async throws {
-        // v0.7.2 per-request routing: a VLM slot may carry a v2 bridge built
-        // over its extracted text model. TEXT requests must serve through
-        // the bridge exactly like a text-slot bridge would.
         let engine = WiringScriptedEngine(script: .stream([
             .delta(text: "Hello", tokens: [10], logprobs: nil),
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
         ]))
-        let bridge = makeBridge(engine: engine, modelId: "gemma-4-26b-8bit")
+        let bridge = makeBridge(engine: engine, modelId: "gemma-4-26b-qat-4bit")
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
-                    "gemma-4-26b-8bit": .init(
-                        scheduler: BatchScheduler(),
+                    "gemma-4-26b-qat-4bit": .init(
                         tokenizer: TokenizerHandle(WiringStubTokenizer()),
                         modelType: "gemma4",
                         container: makeStubContainer(),
@@ -1118,7 +965,7 @@ struct EngineV2RequestRoutingTests {
             })
 
         let stream = try await providerEngine.streamChatCompletion(
-            request: makeOpenAIRequest(model: "gemma-4-26b-8bit"))
+            request: makeOpenAIRequest(model: "gemma-4-26b-qat-4bit"))
         let events = try await recordServerStream(stream)
         #expect(events.first == .content("Hello"))
         #expect(events.last == .info(prompt: 5, completion: 1))
@@ -1126,24 +973,74 @@ struct EngineV2RequestRoutingTests {
         #expect(engine.submitted[0].promptTokens == [1, 2, 3, 4, 5])
     }
 
+    @Test("standalone shape: a scheduler-only entry still runs the legacy path")
+    func standaloneSchedulerEntryRunsLegacy() async throws {
+        // The standalone `darkbloom local` server still builds legacy
+        // BatchScheduler slots (its v2 wiring is a separate workstream).
+        // The model-less scheduler proves the request went to the LEGACY
+        // engine: it fails with its "No model loaded" error, which the v2
+        // bridge could never produce.
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "standalone-model": .init(
+                        scheduler: BatchScheduler(),
+                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        modelType: "gemma4_text")
+                ]
+            })
+
+        let stream = try await providerEngine.streamChatCompletion(
+            request: makeOpenAIRequest(model: "standalone-model"))
+        await #expect(throws: (any Error).self) {
+            _ = try await recordServerStream(stream)
+        }
+    }
+
+    @Test("fail-loud backstop: an entry with NO engine at all is a hard internal error")
+    func noEngineEntryIsInternalError() async throws {
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "broken-model": .init(
+                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        modelType: "gemma4")
+                ]
+            })
+
+        do {
+            let stream = try await providerEngine.streamChatCompletion(
+                request: makeOpenAIRequest(model: "broken-model"))
+            _ = try await recordServerStream(stream)
+            Issue.record("expected the no-engine backstop to throw")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            guard case .generationFailed(let message) = error else {
+                Issue.record("expected generationFailed, got \(error)")
+                return
+            }
+            #expect(message.contains("no serving engine"))
+            // 500 — a provider fault, never a silent degrade.
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 500)
+        }
+    }
+
     @Test("VLM slot with a bridge: image-bearing request never reaches the bridge")
     func vlmSlotMediaRequestBypassesBridge() async throws {
         // The media check sits ABOVE the bridge branch (ordering contract in
         // MultiModelBatchSchedulerEngine.streamChatCompletion): an
         // image-bearing request on a bridge-carrying VLM slot must take the
-        // legacy vision path — here it fails inside that path (stub
-        // container / model-less scheduler), which is exactly the proof:
-        // the scripted v2 engine must never see a submission.
+        // media path — here it fails inside that path (stub container /
+        // throwing processor), which is exactly the proof: the scripted v2
+        // engine must never see a TEXT-path submission.
         let engine = WiringScriptedEngine(script: .stream([
             .delta(text: "must-not-appear", tokens: [10], logprobs: nil),
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
         ]))
-        let bridge = makeBridge(engine: engine, modelId: "gemma-4-26b-8bit")
+        let bridge = makeBridge(engine: engine, modelId: "gemma-4-26b-qat-4bit")
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
-                    "gemma-4-26b-8bit": .init(
-                        scheduler: BatchScheduler(),
+                    "gemma-4-26b-qat-4bit": .init(
                         tokenizer: TokenizerHandle(WiringStubTokenizer()),
                         modelType: "gemma4",
                         container: makeStubContainer(),
@@ -1161,7 +1058,7 @@ struct EngineV2RequestRoutingTests {
             + "AAAAAaADAAQAAAABAAAAAQAAAAD5Ip3+AAAADElEQVQIHWP4z8AAAAMBAQBb2/lEAAAA"
             + "AElFTkSuQmCC"
         let mediaRequest = OpenAIChatCompletionRequest(
-            model: "gemma-4-26b-8bit",
+            model: "gemma-4-26b-qat-4bit",
             messages: [
                 OpenAIChatMessage(
                     role: .user,
@@ -1172,38 +1069,21 @@ struct EngineV2RequestRoutingTests {
             ]
         )
 
-        // The vision path errors on the stub fixtures (model-less scheduler /
-        // throwing processor) — either shape proves the routing; what must
-        // NOT happen is a silent success through the bridge.
+        // The vision path errors on the stub fixtures (throwing processor) —
+        // either shape proves the routing; what must NOT happen is a silent
+        // success through the bridge's TEXT path.
         do {
             let stream = try await providerEngine.streamChatCompletion(request: mediaRequest)
             _ = try await recordServerStream(stream)
             Issue.record("media request unexpectedly succeeded on stub fixtures")
         } catch {
-            // expected: legacy vision path surfaced its failure
+            // expected: media path surfaced its failure
         }
+        // The v2 vision seam MAY have attempted a multimodal submission
+        // (production plumbing); what it must never do is serve the request
+        // through the TEXT tokenization path. With the throwing stub
+        // processor nothing was ever submitted at all.
         #expect(engine.submitted.isEmpty)
-    }
-
-    @Test("no bridge: the legacy scheduler path is taken unchanged")
-    func legacyPathUntouchedWithoutBridge() async throws {
-        let providerEngine = MultiModelBatchSchedulerEngine(
-            registryProvider: { @Sendable in
-                [
-                    "gemma-4-27b-it": .init(
-                        scheduler: BatchScheduler(),
-                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
-                        modelType: "gemma4_text")
-                ]
-            })
-
-        // The model-less scheduler proves the request went to the LEGACY
-        // engine: it fails with its "No model loaded" error, which the v2
-        // bridge could never produce.
-        let stream = try await providerEngine.streamChatCompletion(request: makeOpenAIRequest())
-        await #expect(throws: (any Error).self) {
-            _ = try await recordServerStream(stream)
-        }
     }
 
     @Test("cancelling the consumer cancels the engine-minted v2 request id")
@@ -1213,10 +1093,9 @@ struct EngineV2RequestRoutingTests {
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
-                    "gemma-4-27b-it": .init(
-                        scheduler: BatchScheduler(),
+                    "gemma-4-26b-qat-4bit": .init(
                         tokenizer: TokenizerHandle(WiringStubTokenizer()),
-                        modelType: "gemma4_text",
+                        modelType: "gemma4",
                         engineV2Bridge: bridge)
                 ]
             })
@@ -1243,7 +1122,7 @@ struct EngineV2RequestRoutingTests {
     }
 }
 
-// MARK: - Zero-overhead runtime guards (capacity + cancellation)
+// MARK: - Runtime guards (capacity + cancellation)
 
 /// These tests drive the REAL `updateAggregateCapacity` / `unloadModel`
 /// paths, which read MLX GPU counters — so the mlx.metallib must be
@@ -1257,53 +1136,52 @@ struct EngineV2RuntimeGuardTests {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
     }
 
-    @Test("capacity + cancellation never consult the runtime without v2 slots")
-    func flagOffSkipsRuntime() async throws {
+    @Test("capacity + cancellation never consult the runtime without slots")
+    func emptySlotsSkipRuntime() async throws {
         let loop = try makeWiringLoop()
         let runtime = EngineV2Runtime()
         await loop.setEngineV2RuntimeForTesting(runtime)
-        // A legacy-only slot (engineV2: nil) must not flip the guard.
-        await loop.installModelSlotForTesting(
-            modelId: "qwen3-8b",
-            scheduler: BatchScheduler(),
-            container: makeStubContainer(),
-            tokenizer: TokenizerHandle(WiringStubTokenizer())
-        )
 
         #expect(await loop.hasEngineV2SlotsForTesting() == false)
         await loop.updateAggregateCapacity()
-        await loop.handleCancellation(requestId: "req-legacy", receivedFromCoordinator: false)
+        await loop.handleCancellation(requestId: "req-none", receivedFromCoordinator: false)
         #expect(await runtime.consultCount == 0)
     }
 
-    @Test("capacity folds the v2 bridge slot into the heartbeat when a v2 slot exists")
-    func capacityIncludesV2Slot() async throws {
+    @Test("capacity summary is the ONLY slot source; v2 slot folds into the heartbeat")
+    func capacityUsesOnlyTheRuntimeSummary() async throws {
         let loop = try makeWiringLoop()
         let runtime = EngineV2Runtime()
         let engine = WiringScriptedEngine(script: .manual)
         let bridge = makeBridge(engine: engine)
         await loop.setEngineV2RuntimeForTesting(runtime)
-        await runtime.register(modelId: "gemma-4-27b-it", bridge: bridge)
+        await runtime.register(modelId: "gemma-4-26b-qat-4bit", bridge: bridge)
         await loop.installModelSlotForTesting(
-            modelId: "gemma-4-27b-it",
-            scheduler: BatchScheduler(),
+            modelId: "gemma-4-26b-qat-4bit",
             container: makeStubContainer(),
             tokenizer: TokenizerHandle(WiringStubTokenizer()),
             engineV2: bridge,
-            modelType: "gemma4_text"
+            modelType: "gemma4"
         )
 
         #expect(await loop.hasEngineV2SlotsForTesting())
         await loop.updateAggregateCapacity()
         #expect(await runtime.consultCount == 1)
         let capacity = await loop.backendCapacityForTesting()
-        let v2Slot = capacity?.slots.first { $0.model == "gemma-4-27b-it" }
+        let v2Slot = capacity?.slots.first { $0.model == "gemma-4-26b-qat-4bit" }
         #expect(v2Slot != nil)
-        // The bridge slot is AUTHORITATIVE for a v2-served model: the dormant
-        // legacy scheduler must not also report (its extra slot would
-        // advertise the same model's capacity twice and over-admit). Exactly
-        // one heartbeat slot exists — the bridge's.
+        // Exactly one heartbeat slot exists — the bridge's. No legacy fold
+        // can double-report a model's capacity anymore.
         #expect(capacity?.slots.count == 1)
+    }
+
+    @Test("model_load_time_ms rides the slot after recordModelLoadTime")
+    func modelLoadTimeRidesTheSlot() async throws {
+        let engine = WiringScriptedEngine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        await bridge.recordModelLoadTime(ms: 12_345)
+        let slot = await bridge.backendSlotCapacity()
+        #expect(slot.modelLoadTimeMs == 12_345)
     }
 
     @Test("cancellation fans out through the runtime to the owning bridge")
@@ -1313,21 +1191,20 @@ struct EngineV2RuntimeGuardTests {
         let engine = WiringScriptedEngine(script: .manual)
         let bridge = makeBridge(engine: engine)
         await loop.setEngineV2RuntimeForTesting(runtime)
-        await runtime.register(modelId: "gemma-4-27b-it", bridge: bridge)
+        await runtime.register(modelId: "gemma-4-26b-qat-4bit", bridge: bridge)
         await loop.installModelSlotForTesting(
-            modelId: "gemma-4-27b-it",
-            scheduler: BatchScheduler(),
+            modelId: "gemma-4-26b-qat-4bit",
             container: makeStubContainer(),
             tokenizer: TokenizerHandle(WiringStubTokenizer()),
             engineV2: bridge,
-            modelType: "gemma4_text"
+            modelType: "gemma4"
         )
 
         // Submit under the coordinator request-id (held open by the manual
         // script) so the runtime fan-out has an owner to find.
         let stream = await bridge.submit(
             request: ChatCompletionRequest(
-                model: "gemma-4-27b-it",
+                model: "gemma-4-26b-qat-4bit",
                 messages: [ChatMessage(role: "user", content: "hi")]),
             requestId: "req-coord-1")
         let engineId = await bridge._testEngineRequestId(for: "req-coord-1")
@@ -1345,18 +1222,17 @@ struct EngineV2RuntimeGuardTests {
         let engine = WiringScriptedEngine(script: .manual)
         let bridge = makeBridge(engine: engine)
         await loop.setEngineV2RuntimeForTesting(runtime)
-        await runtime.register(modelId: "gemma-4-27b-it", bridge: bridge)
+        await runtime.register(modelId: "gemma-4-26b-qat-4bit", bridge: bridge)
         await loop.installModelSlotForTesting(
-            modelId: "gemma-4-27b-it",
-            scheduler: BatchScheduler(),
+            modelId: "gemma-4-26b-qat-4bit",
             container: makeStubContainer(),
             tokenizer: TokenizerHandle(WiringStubTokenizer()),
             engineV2: bridge,
-            modelType: "gemma4_text"
+            modelType: "gemma4"
         )
 
-        await loop.unloadModel("gemma-4-27b-it")
-        #expect(await runtime.bridge(forModel: "gemma-4-27b-it") == nil)
+        await loop.unloadModel("gemma-4-26b-qat-4bit")
+        #expect(await runtime.bridge(forModel: "gemma-4-26b-qat-4bit") == nil)
         #expect(engine.shutdownCalls == 1)
         #expect(await loop.hasEngineV2SlotsForTesting() == false)
     }

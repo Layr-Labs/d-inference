@@ -606,9 +606,9 @@ struct StartupPreloadNoEvictTests {
     private func installStubSlot(_ loop: ProviderLoop, _ id: String) async {
         await loop.installModelSlotForTesting(
             modelId: id,
-            scheduler: BatchScheduler(maxConcurrentRequests: 2, defaultMaxTokens: 64),
             container: makeNoEvictStubContainer(),
-            tokenizer: TokenizerHandle(NoEvictStubTokenizer())
+            tokenizer: TokenizerHandle(NoEvictStubTokenizer()),
+            engineV2: makeInertStubBridge(modelId: id).bridge
         )
     }
 

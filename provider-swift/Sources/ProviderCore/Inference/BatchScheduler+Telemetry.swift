@@ -53,28 +53,18 @@ extension BatchScheduler {
         return max(1024, min(staticBudget, liveBudget))
     }
 
-    /// MEASURED live KV headroom in bytes right now — `liveKVHeadroomBytes`
-    /// computed from actual MLX usage (`active + cache`, reflecting this model's
-    /// just-loaded weights plus any co-resident model). Unlike ``tokenBudgetMax``
-    /// this applies NO 1024-token floor, so it reports a true zero when the cap is
-    /// already exhausted. Used by the post-load guard to reject a model that
-    /// loaded but has no room to serve (the load gate admits on an ESTIMATE, so a
-    /// model whose real residency exceeds the estimate can land here with no KV).
+    /// MEASURED live KV headroom in bytes right now. Logic lives in the
+    /// scheduler-free `KVHeadroomProbe` (v0.7.5) — this forwards so the
+    /// legacy scheduler and the v2 load path share one probe.
     var measuredLiveKVHeadroomBytes: UInt64 {
-        let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
-        return UnifiedMemoryCap.liveKVHeadroomBytes(
-            mlxUsedBytes: mlxUsed,
-            systemAvailableBytes: SystemMemory.availableBytes() ?? .max)
+        KVHeadroomProbe.measuredLiveKVHeadroomBytes
     }
 
     /// Post-load guard: true iff this freshly-loaded model has at least the
-    /// minimum serveable KV headroom under the cap. When false, the caller must
-    /// unload + clearCache + reject — keeping the model resident would just
-    /// reject every request at the KV-reservation gate (a "loaded but
-    /// unserveable" model). Catches the case where measured residency exceeds the
-    /// load gate's `estimatedMemoryGb` estimate.
+    /// minimum serveable KV headroom under the cap. Forwards to
+    /// `KVHeadroomProbe` (see there for semantics).
     func hasServeableKVHeadroom() -> Bool {
-        UnifiedMemoryCap.loadIsServeable(measuredLiveKVHeadroomBytes: measuredLiveKVHeadroomBytes)
+        KVHeadroomProbe.hasServeableKVHeadroom()
     }
 
     /// Sum of `(promptTokens + maxTokens)` across active bridges. This

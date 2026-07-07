@@ -263,18 +263,18 @@ extension BatchScheduler {
         }
     }
 
-    /// Return model-specific EOS tokens at the scheduler boundary. Most models
-    /// keep the loader-provided set; GPT-OSS/Harmony adds its generation-config
-    /// action stops via `GPTOSSHarmonyTemplateFix`.
+    /// Return model-specific EOS tokens at the scheduler boundary. Logic
+    /// lives in the scheduler-free `ModelEOSPolicy` (v0.7.5) — this forwards
+    /// so the legacy scheduler and the v2 slot builder share one home.
     static func effectiveEOSTokenIds(
         modelId: String,
         modelType: String? = nil,
         base: Set<Int>,
         tokenToId: (String) -> Int?
     ) -> Set<Int> {
-        let context = ChatTemplateFixContext(modelId: modelId, modelType: modelType)
-        return ChatTemplateFixes.extraEOSTokenIds(
-            context: context,
+        ModelEOSPolicy.effectiveEOSTokenIds(
+            modelId: modelId,
+            modelType: modelType,
             base: base,
             tokenToId: tokenToId
         )

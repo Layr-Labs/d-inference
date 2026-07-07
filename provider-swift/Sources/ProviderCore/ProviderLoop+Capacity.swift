@@ -30,6 +30,13 @@ extension ProviderLoop {
                 try? await Task.sleep(for: pollInterval)
                 if Task.isCancelled { break }
                 await me.updateAggregateCapacity()
+                // Wedge self-recovery rides the same tick: the capacity
+                // snapshot above is where the v2 wedge verdict surfaces
+                // (WedgeMonitor sampling in backendSlotCapacity), and this
+                // is what ACTS on a confirmed one — drain → rebuild over
+                // the retained container → swap (ProviderLoop+
+                // EngineV2Liveness).
+                await me.recoverWedgedEngineV2Slots()
                 // Refresh the diagnostics state file on the same cadence so
                 // `status`/`doctor` see current model, stats, and capacity.
                 await me.writeDaemonState()

@@ -288,4 +288,27 @@ extension ProviderLoop {
     /// Test seam: the current aggregate backend capacity snapshot.
     func backendCapacityForTesting() -> BackendCapacity? { state.backendCapacity }
 
+    // MARK: - Wedge self-recovery seams
+
+    /// Test seam: run one liveness pass with an injectable clock, so the
+    /// 120s confirmed-wedge stall and the 120s recovery cooldown can be
+    /// exercised without waiting (the production entry point is the
+    /// capacity-refresh tick).
+    func recoverWedgedEngineV2SlotsForTesting(now: ContinuousClock.Instant) async {
+        await recoverWedgedEngineV2Slots(now: now)
+    }
+
+    /// Test seam: the last recovery-attempt timestamp for a model (cooldown
+    /// anchor assertions).
+    func engineV2LastRecoveryAtForTesting(modelId: String) -> ContinuousClock.Instant? {
+        engineV2LastRecoveryAt[modelId]
+    }
+
+    /// Test seam: pre-seed the cooldown anchor (drives the second-wedge
+    /// branch without a first full recovery).
+    func setEngineV2LastRecoveryAtForTesting(
+        modelId: String, at instant: ContinuousClock.Instant
+    ) {
+        engineV2LastRecoveryAt[modelId] = instant
+    }
 }

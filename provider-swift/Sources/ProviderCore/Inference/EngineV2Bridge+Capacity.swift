@@ -108,7 +108,13 @@ extension EngineV2Bridge {
             kvBytesPerToken > 0 ? Int64(reportedKVBytesCapacity / kvBytesPerToken) : 0
 
         let state: String
-        if wedgeMonitor.wedgeSuspected(now: now) {
+        if recoveryReloading {
+            // Recovery self-restart in flight (`EngineV2Bridge+Liveness`):
+            // report "reloading" for the whole drain→rebuild window — the
+            // legacy `heartbeatSlotState` precedence — so the coordinator
+            // deroutes the model without treating it as crashed-forever.
+            state = "reloading"
+        } else if wedgeMonitor.wedgeSuspected(now: now) {
             // Same truthful-derouting contract as the legacy heartbeat: a
             // wedged slot must not keep advertising healthy.
             state = "crashed"
@@ -181,7 +187,20 @@ extension EngineV2Bridge {
             message: suspected
                 ? "engine_v2: step wedge suspected"
                 : "engine_v2: step wedge recovered"
-        ).withFields([
+        ).withFields(wedgeHealthFields(operation: operation, now: now))
+        emit(event)
+    }
+
+    /// NON-PRIVATE wedge/engine-health field set — the same shape the
+    /// legacy `BatchScheduler.engineHealthFields` emitted (operational
+    /// counters + timestamps only; keys mirrored in the Go/Swift/TS
+    /// telemetry allowlists), tagged `backend=engine_v2`. Shared by the
+    /// step-wedge transition events above and the self-restart events
+    /// (`EngineV2Bridge+Liveness`).
+    func wedgeHealthFields(
+        operation: String, now: ContinuousClock.Instant
+    ) -> [String: AnyCodableValue] {
+        [
             "component": .string("engine"),
             "operation": .string(operation),
             "backend": .string("engine_v2"),
@@ -195,8 +214,7 @@ extension EngineV2Bridge {
             "seconds_since_last_first_token":
                 .double(wedgeMonitor.secondsSinceLastFirstToken(now: now)),
             "num_running": .int(active.count),
-            "wedge_suspected": .bool(suspected),
-        ])
-        emit(event)
+            "wedge_suspected": .bool(wedgeMonitor.wedgeSuspected(now: now)),
+        ]
     }
 }

@@ -274,6 +274,13 @@ public actor ProviderLoop {
     internal var isReslicing: Bool = false
     internal var resliceGateWaiters: [CheckedContinuation<Void, Never>] = []
 
+    /// Wedge self-recovery bookkeeping (`ProviderLoop+EngineV2Liveness`):
+    /// per-model timestamp of the last recovery ATTEMPT (the legacy
+    /// `lastSelfRestartAt` cooldown anchor — a second confirmed wedge
+    /// inside `engineV2RecoveryCooldown` unloads the slot instead of
+    /// thrashing rebuilds).
+    internal var engineV2LastRecoveryAt: [String: ContinuousClock.Instant] = [:]
+
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     internal var inflightTasks: [String: Task<Void, Never>] = [:]
 
@@ -660,6 +667,7 @@ public actor ProviderLoop {
     //   - ProviderLoop+AutoUpdate.swift          background self-update + phase transitions
     //   - ProviderLoop+ModelLoading.swift        ensureModelLoaded/unload + memory admission
     //   - ProviderLoop+EngineV2.swift            ContinuousBatchingV2 slot wiring (flag-gated)
+    //   - ProviderLoop+EngineV2Liveness.swift    wedge self-recovery (drain → rebuild → swap)
     //   - ProviderLoop+Cancellation.swift        cancellation + in-flight drain
     //   - ProviderLoop+AttestationChallenge.swift attestation + APNs code challenge
     //   - ProviderLoop+LocalEndpoint.swift       unified local HTTP endpoint

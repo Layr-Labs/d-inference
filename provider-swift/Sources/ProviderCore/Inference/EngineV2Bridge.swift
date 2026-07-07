@@ -160,6 +160,14 @@ public actor EngineV2Bridge {
     var modelLoadTimeMs: Int64 = 0
     /// Last wedge verdict emitted, for transition-edge telemetry.
     var lastWedgeSuspectedEmitted = false
+    /// True while a wedge-recovery rebuild is in flight for this slot
+    /// (`ProviderLoop+EngineV2Liveness`). The heartbeat then reports
+    /// slot state "reloading" — the legacy `isReloadingForRecovery`
+    /// semantic — so the coordinator deroutes the model for the whole
+    /// window instead of seeing "crashed" flap or a healthy-looking slot.
+    /// Set on the OLD bridge being drained; the recovered slot's fresh
+    /// bridge starts clean.
+    var recoveryReloading = false
 
     public init(
         engine: any CBv2Engine,

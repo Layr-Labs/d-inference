@@ -764,6 +764,92 @@ struct EngineV2ReslicingWiringTests {
         #expect(await runtime.bridge(forModel: "gpt-oss-20b") == nil)
     }
 
+    @Test("regression: a regrow parked on the re-slice gate cannot interleave mid-load")
+    func regrowParkedOnGateCannotInterleaveMidLoad() async throws {
+        // The reviewer-flagged race: the idle monitor's unloadModel →
+        // resliceGrowSurvivors runs from its own task, NOT under the
+        // isLoadingAny load gate. Without the re-slice gate it could run
+        // in the middle of a load's shrink → build → install stretch —
+        // recompute over the survivor ALONE (the newcomer's slot isn't
+        // installed yet) and re-inflate it to the full single-model budget
+        // while the newcomer holds its own grant: Σ(grants) > fleet budget.
+        //
+        // Deterministic shape: hold the gate via the seam (standing in for
+        // an in-flight load), park a regrow behind it, install the
+        // newcomer while the gate is held (as the real load does), then
+        // release. The parked regrow must (a) mutate NOTHING while the
+        // gate is held and (b) recompute over BOTH slots after release.
+        let loop = try makeWiringLoop()
+        let runtime = EngineV2Runtime()
+        let recorder = GrantRecorder()
+        let (bridgeA, engineA, sizingA) = try await buildAndInstallSlotA(
+            loop, runtime: runtime, recorder: recorder,
+            engines: { _, grant in WiringScriptedEngine(script: .manual, kvBytesCapacity: grant) })
+        let updatesBeforeRace = engineA.capacityUpdates.count
+
+        // "Load in flight": the gate is held, A already shrunk to its
+        // two-model share and B's engine built with its own grant — but
+        // B's slot not yet installed (the exact mid-stretch state).
+        await loop.acquireResliceGateForTesting()
+        let sizingB = makeSizing(weightsGiB: 12, kvRate: 24_576, maxContext: 131_072)
+        let fleetBudget = UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: wiringPhysicalBytes,
+            residentWeightBytes: UInt64(sizingA.weightsBytes + sizingB.weightsBytes),
+            configReserveBytes: wiringReserveBytes)
+        let targets = EngineV2KVSizing.resliceGrants(
+            existing: [
+                .init(
+                    modelId: "gemma-4-26b-qat-4bit",
+                    fp16KVBytesPerToken: sizingA.fp16KVBytesPerToken,
+                    maxContextLength: sizingA.maxContextLength)
+            ],
+            newcomer: .init(
+                modelId: "gpt-oss-20b",
+                fp16KVBytesPerToken: sizingB.fp16KVBytesPerToken,
+                maxContextLength: sizingB.maxContextLength),
+            fleetKVBudgetBytes: fleetBudget)
+        let targetA = try #require(targets["gemma-4-26b-qat-4bit"])
+        let targetB = try #require(targets["gpt-oss-20b"])
+        await bridgeA.updateKVBytesCapacity(targetA)  // the load's shrink
+
+        // The idle-unload regrow fires NOW, mid-stretch.
+        let regrow = Task { await loop.resliceGrowSurvivorsForTesting() }
+        // Give it ample time to run if it were NOT parked (without the
+        // gate it completes in microseconds and re-inflates A).
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(
+            engineA.capacityUpdates.count == updatesBeforeRace + 1,
+            "regrow must be parked while the gate is held — no grant mutation")
+        #expect(await bridgeA.engineKVBytesCapacity() == targetA)
+
+        // The load completes its stretch: B's engine + slot installed,
+        // gate released.
+        let engineB = WiringScriptedEngine(script: .manual, kvBytesCapacity: targetB)
+        let bridgeB = EngineV2Bridge(
+            engine: engineB,
+            modelId: "gpt-oss-20b",
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            eosTokenIds: [2])
+        await runtime.register(modelId: "gpt-oss-20b", bridge: bridgeB)
+        await loop.installModelSlotForTesting(
+            modelId: "gpt-oss-20b",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            engineV2: bridgeB,
+            sizing: sizingB,
+            modelType: "gpt_oss")
+        await loop.releaseResliceGateForTesting()
+        await regrow.value
+
+        // The parked regrow recomputed over BOTH slots: fair shares stand
+        // (no full-single-model re-inflation), Σ ≤ budget.
+        let grantA = await bridgeA.engineKVBytesCapacity()
+        let grantB = await bridgeB.engineKVBytesCapacity()
+        #expect(grantA == targetA, "regrow must not re-inflate A past its two-model share")
+        #expect(grantB == targetB)
+        #expect(UInt64(grantA + grantB) <= fleetBudget)
+    }
+
     @Test("heartbeat reads CURRENT grants: budget max tracks the re-sliced ceiling")
     func heartbeatTracksReslicedGrants() async throws {
         let rate = 20_480

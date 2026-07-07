@@ -341,6 +341,13 @@ extension ProviderLoop {
             // pushes get `load_model_status: failed`). There is no legacy
             // fallback: a model that cannot build a v2 engine does not load.
             let slotIsVLM = Self.modelIsVLM(at: modelPath)
+            // The re-slice gate is held across the WHOLE shrink → build →
+            // guard → install-slot sequence: a concurrent idle-timeout
+            // unload's regrow parked on the gate must not run in the gap
+            // between the newcomer's grant being carved out and its slot
+            // appearing in `modelSlots` — it would recompute without the
+            // newcomer and re-inflate survivors past the fleet budget.
+            await acquireResliceGate()
             let engineV2Bridge: EngineV2Bridge
             do {
                 engineV2Bridge = try await resliceAndBuildEngineV2Slot(
@@ -355,12 +362,14 @@ extension ProviderLoop {
             } catch let error as InferenceError {
                 // Already shaped (e.g. the re-slice floor refusal) — record +
                 // rethrow unchanged so loadErrorStatusCode sees the original.
+                releaseResliceGate()
                 MLX.Memory.clearCache()
                 if case .modelLoadFailed(let message) = error {
                     recordModelLoadError(model: modelId, message: message)
                 }
                 throw error
             } catch {
+                releaseResliceGate()
                 MLX.Memory.clearCache()
                 let message =
                     "Model '\(modelId)' loaded but its v2 engine construction failed: \(error) — unloaded"
@@ -384,8 +393,10 @@ extension ProviderLoop {
                 await engineV2Bridge.shutdown()
                 MLX.Memory.clearCache()
                 // The aborted newcomer's grant was carved out of the fleet
-                // budget — grow the survivors back to their shares.
-                await resliceGrowSurvivors()
+                // budget — grow the survivors back to their shares (still
+                // holding the re-slice gate; release only after).
+                await resliceGrowSurvivorsLocked()
+                releaseResliceGate()
                 let message = "Model '\(modelId)' loaded but its engine build left insufficient "
                     + "KV headroom under the memory cap (\(headroomGb) GB free) — unloaded"
                 recordModelLoadError(model: modelId, message: message)
@@ -407,6 +418,8 @@ extension ProviderLoop {
                 modelType: modelInfo.modelType,
                 lastInferenceAt: .now
             )
+            // Newcomer installed — parked regrows now see the full slot set.
+            releaseResliceGate()
 
             syncWarmModelState()
             // Remember the serving set across restarts: the persisted file is

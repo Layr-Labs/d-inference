@@ -122,12 +122,43 @@ extension ProviderLoop {
         return existing
     }
 
+    /// Acquire the KV-grant re-slice gate (see the `isReslicing` doc in
+    /// ProviderLoop.swift): only one grant-mutating section — a load's
+    /// re-slice-through-install or an unload's regrow — runs at a time, so
+    /// a snapshot of current grants can never go stale under a concurrent
+    /// mutation. Internal: `ensureModelLoaded` holds it across the WHOLE
+    /// shrink → build → guard → install-slot sequence — releasing at the
+    /// end of `resliceAndBuildEngineV2Slot` would let a parked regrow run
+    /// in the gap before the newcomer's slot is installed, recompute
+    /// without it, and re-inflate the survivors past the fleet budget.
+    internal func acquireResliceGate() async {
+        while isReslicing {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                resliceGateWaiters.append(cont)
+            }
+        }
+        isReslicing = true
+    }
+
+    internal func releaseResliceGate() {
+        isReslicing = false
+        let waiters = resliceGateWaiters
+        resliceGateWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
     /// Re-slice KV grants for the newcomer + existing slots, shrink
     /// existing engines, and build the newcomer's bridge. On ANY throw —
     /// re-slice floor, extraction failure, engine construction — every
     /// existing engine's grant is RESTORED exactly before the error
     /// propagates, so a failed load never leaves survivors squeezed.
     /// Returns the bridge, already registered with `engineV2Runtime`.
+    /// CALLER HOLDS the re-slice gate (see `acquireResliceGate`), spanning
+    /// through slot installation, so a concurrent idle-timeout unload's
+    /// regrow cannot interleave with the shrink→build→install sequence
+    /// (Σ(grants) ≤ budget holds at every suspension point).
     internal func resliceAndBuildEngineV2Slot(
         modelId: String,
         modelType: String?,
@@ -208,10 +239,21 @@ extension ProviderLoop {
     }
 
     /// Grow the surviving slots back to their re-sliced shares after an
-    /// unload (a lone survivor gets the FULL fleet budget back). Shrink
-    /// targets, if the budget somehow contracted, are applied first so the
-    /// Σ ≤ budget invariant holds throughout.
+    /// unload (a lone survivor gets the FULL fleet budget back). Gated: a
+    /// regrow queued behind an in-flight load's re-slice-through-install
+    /// recomputes AFTER it, over the then-current slots, so the two can
+    /// never interleave.
     internal func resliceGrowSurvivors() async {
+        await acquireResliceGate()
+        defer { releaseResliceGate() }
+        await resliceGrowSurvivorsLocked()
+    }
+
+    /// Regrow body — caller holds the re-slice gate. Shrink targets, if
+    /// the budget somehow contracted, are applied first so the Σ ≤ budget
+    /// invariant holds throughout. Used directly by `ensureModelLoaded`'s
+    /// post-bridge-guard failure path, which already holds the gate.
+    internal func resliceGrowSurvivorsLocked() async {
         let survivors = await existingSlotGrants(excludingModelId: "")
         guard !survivors.isEmpty else { return }
         let fleetBudget = fleetKVBudgetBytes(extraWeightBytes: 0)

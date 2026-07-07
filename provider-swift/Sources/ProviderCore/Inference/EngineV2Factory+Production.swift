@@ -2,8 +2,8 @@
 //
 // Production CBv2 engine construction over an ALREADY-LOADED model.
 //
-// `EngineV2Factory.makeBridgeIfSelected` takes the engine as a closure so
-// selection/fallback logic stays engine-agnostic and unit-testable with a
+// `EngineV2Factory.makeBridge` takes the engine as a closure so the
+// refusal/telemetry logic stays engine-agnostic and unit-testable with a
 // scripted stub. This file supplies the closure's production body: assemble
 // the real `MLXLMCommon.EngineV2` from the model the provider just loaded
 // (no re-download, no second weight copy — the engine retains the same

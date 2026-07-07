@@ -10,11 +10,10 @@
 // (`MultiModelBatchSchedulerEngineError.fromSchedulerMessage` → 429/503),
 // billing extraction, and cancellation therefore work unchanged.
 //
-// Strictly additive: nothing constructs this type unless
-// `EngineV2Factory.makeBridgeIfSelected` picked the v2 engine (env
-// `DARKBLOOM_ENGINE_V2=1` / config `engine_v2` + per-model allowlist —
-// see `EngineV2Config.swift`). Flag off ⇒ this file is dead code and the
-// legacy path is byte-identical.
+// v0.7.5 ONE ENGINE: every model slot serves through this bridge —
+// `EngineV2Factory.makeBridge` (fail-loud, no selection gate; see
+// `EngineV2Config.swift`) constructs it at model load, and a load whose
+// bridge cannot be built fails with a 503 instead of falling back.
 //
 // Companion files:
 //   * `EngineV2Bridge+Translation.swift` — pure ChatRequest → CBv2Request
@@ -24,8 +23,8 @@
 //     `BackendSlotCapacity` mapping + the `engine_v2.step_wedge` signal.
 //   * `EngineV2Runtime.swift`            — process-wide bridge registry the
 //     ProviderLoop capacity/cancellation hooks fan out through.
-//   * `EngineV2Config.swift`             — flag/allowlist selection + the
-//     safe-fallback factory.
+//   * `EngineV2Config.swift`             — the fail-loud factory + the
+//     engine_v2_refusal telemetry.
 
 import Foundation
 import MLXLMCommon

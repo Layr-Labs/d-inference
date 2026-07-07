@@ -260,6 +260,20 @@ public actor ProviderLoop {
     internal var modelsUnloading: Set<String> = []
     internal var unloadingWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
 
+    /// Serializes KV-GRANT mutations: the load-side re-slice
+    /// (`resliceAndBuildEngineV2Slot` — snapshot grants → shrink → build →
+    /// grow/restore) and the unload-side regrow (`resliceGrowSurvivors`).
+    /// Loads are already serialized by `isLoadingAny`, but unloads are NOT
+    /// (the idle monitor calls `unloadModel` from its own task) — without
+    /// this gate an idle-timeout regrow could interleave between a load's
+    /// shrink and its newcomer construction, transiently pushing
+    /// Σ(grants) past the fleet budget or overwriting a restore-on-throw.
+    /// Same waiter idiom as `loadGateWaiters`. Deadlock-free: neither
+    /// gated section calls the other (the eviction-path `unloadModel`
+    /// inside `ensureModelLoaded` runs BEFORE the load's re-slice section).
+    internal var isReslicing: Bool = false
+    internal var resliceGateWaiters: [CheckedContinuation<Void, Never>] = []
+
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     internal var inflightTasks: [String: Task<Void, Never>] = [:]
 

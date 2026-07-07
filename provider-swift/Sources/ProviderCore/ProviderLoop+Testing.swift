@@ -183,9 +183,62 @@ extension ProviderLoop {
     }
 
     /// Test seam: the unload-side re-slice (grow survivors back to their
-    /// fair shares).
+    /// fair shares). Gated exactly like the production idle-unload path.
     func resliceGrowSurvivorsForTesting() async {
         await resliceGrowSurvivors()
+    }
+
+    /// Test seams: hold/release the re-slice gate directly, simulating an
+    /// in-flight load's gated stretch — the race regression test parks a
+    /// regrow behind it and asserts nothing mutates until release.
+    func acquireResliceGateForTesting() async {
+        await acquireResliceGate()
+    }
+
+    func releaseResliceGateForTesting() {
+        releaseResliceGate()
+    }
+
+    /// Test seam: the PRODUCTION-shaped load stretch — the re-slice gate
+    /// held across shrink → build → install-slot, exactly as
+    /// `ensureModelLoaded` holds it. The race regression test drives this
+    /// concurrently with `resliceGrowSurvivorsForTesting` to pin the gate
+    /// semantics (a regrow can never interleave before the newcomer's slot
+    /// is installed).
+    func loadV2SlotForTesting(
+        modelId: String,
+        modelType: String?,
+        container: MLXLMCommon.ModelContainer,
+        tokenizer: TokenizerHandle,
+        sizing: SlotSizingSnapshot
+    ) async throws -> EngineV2Bridge {
+        await acquireResliceGate()
+        let bridge: EngineV2Bridge
+        do {
+            bridge = try await resliceAndBuildEngineV2Slot(
+                modelId: modelId,
+                modelType: modelType,
+                isVLM: false,
+                modelDirectory: nil,
+                container: container,
+                tokenizer: tokenizer,
+                sizing: sizing
+            )
+        } catch {
+            releaseResliceGate()
+            throw error
+        }
+        modelSlots[modelId] = ModelSlot(
+            engineV2: bridge,
+            container: container,
+            tokenizer: tokenizer,
+            sizing: sizing,
+            isVLM: false,
+            modelType: modelType,
+            lastInferenceAt: .now
+        )
+        releaseResliceGate()
+        return bridge
     }
 
     /// Test seam: install a fully-formed v2 model slot so capacity/

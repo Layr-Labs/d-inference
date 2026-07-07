@@ -234,7 +234,9 @@ semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlig
 | `EIGENINFERENCE_QUEUE_BEFORE_SHED`, `_QUEUE_MAX_DEPTH`, `_QUEUE_MAX_WAIT` | Capacity queueing (dedicated pools included) |
 | `EIGENINFERENCE_HEALTH_EJECTION` | Stable-identity ejection kill switch — **`on` in prod**; `off` disables black-hole ejection entirely |
 | `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT`, `_BY_MODEL` | Per-box admission density (default 1.2) |
-| `EIGENINFERENCE_WARM_POOL_*` | Warm-pool controller (active; `OBSERVE_ONLY=false`) |
+| `EIGENINFERENCE_COMBINED_ADMISSION_CAP` | Box-wide Σ(load/qc) admission budget on top of the per-model quality caps (default `false` — dormant; turned on with the open-pool flip) |
+| `EIGENINFERENCE_WARM_POOL_*` | Warm-pool controller (active; `OBSERVE_ONLY=false`). `_ALLOW_BUSY_LOAD_MAX` bounds the busy load a cold box may carry and still be warmable (default `0` = fully idle required; runbook raises to `2` for recovery) |
+| `EIGENINFERENCE_REJECT_MODELS` | Startup seed for the per-model shed list (429 at admission). Mutable at RUNTIME via `GET/PUT /v1/admin/reject-models` (`scripts/admin.sh reject-models get\|set\|clear`) — shed flips no longer need a restart |
 | `EIGENINFERENCE_DEDICATED_MODELS` | Static dedicated-box partition (`gemma-4`) |
 | `EIGENINFERENCE_IPAPI_KEY` | ip-api.com PRO key; unset falls back to the free 45 req/min tier |
 

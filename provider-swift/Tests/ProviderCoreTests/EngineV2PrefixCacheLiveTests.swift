@@ -33,6 +33,14 @@
 // prompts several times and takes minutes; it rides the existing
 // DARKBLOOM_LIVE_MLX_GEMMA opt-in.
 //
+// Funding-gate framing: because gemma's bound dwarfs real prompt lengths,
+// PRODUCTION does not fund its cache at all (PrefixCachePolicy.shouldFund,
+// default threshold 4,096) — the gemma test first pins that unfunded
+// default verdict, then runs the funded scenario explicitly as the
+// operator override (DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS)
+// so the hybrid-window recompute exactness stays exercised on real
+// weights. gpt-oss (bound 1,536) is the funded-by-default case.
+//
 // Gates: DARKBLOOM_LIVE_MLX_TESTS (+ DARKBLOOM_LIVE_MLX_GPTOSS for gpt-oss,
 // DARKBLOOM_LIVE_MLX_GEMMA for gemma); each checkpoint skips cleanly when
 // not in the local HF cache.
@@ -430,22 +438,68 @@ struct EngineV2PrefixCacheLiveTests {
     // MARK: - Tests
 
     @Test(
-        "gpt-oss-20b: turn-2 exactness, hit accounting, batch invariance",
+        "gpt-oss-20b: funded by default; turn-2 exactness, hit accounting, batch invariance",
         .enabled(if:
             LiveInferenceFixtures.liveTestsEnabled
                 && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_GPTOSS"] != nil)
     )
     func gptOssPrefixCache() async throws {
         let live = try await loadGptOss()
+        // Funding gate on the REAL checkpoint's layer kinds: gpt-oss's
+        // adoption bound (12 × 128 = 1,536) is under the 4,096 default, so
+        // production funds its cache. The scenario below is therefore the
+        // default-env path for this model.
+        let bound = PrefixCachePolicy.adoptionBoundTokens(layerKinds: live.layerKinds)
+        #expect(bound == 1536, "gpt-oss-20b adoption bound drifted: \(bound)")
+        #expect(PrefixCachePolicy.shouldFund(adoptionBoundTokens: bound, environment: [:]),
+            "gpt-oss must fund at the default threshold")
         try await runPrefixCacheScenario(live, maxTokens: 24)
     }
 
     @Test(
-        "gemma-4-26b-qat-4bit: turn-2 exactness incl. hybrid-window recompute, hit accounting, batch invariance",
+        "gemma-4-26b-qat-4bit: UNFUNDED by default (adoption bound); funded+hybrid-recompute path via override",
         .enabled(if: LiveInferenceFixtures.gemmaTestsEnabled)
     )
     func gemmaQatPrefixCache() async throws {
         let live = try await loadGemmaQat()
+
+        // DEFAULT-ENV verdict on the REAL checkpoint's layer kinds: the
+        // adoption bound (25 sliding × 1024 = 25,600) dwarfs real prompt
+        // lengths, so production does NOT fund gemma's cache — the full
+        // grant stays with live KV. Pin the whole unfunded composition the
+        // slot factory executes: gate verdict → zero requested budget →
+        // carve passthrough → no cache instance (the slot-factory plumbing
+        // itself — raw grant to the engine, zero bridge budget, no stats
+        // logger — is pinned in EngineV2PrefixCacheWiringTests).
+        let bound = PrefixCachePolicy.adoptionBoundTokens(layerKinds: live.layerKinds)
+        #expect(bound == 25600, "gemma-4-qat adoption bound drifted: \(bound)")
+        #expect(!PrefixCachePolicy.shouldFund(adoptionBoundTokens: bound, environment: [:]),
+            "gemma-4 must NOT fund at the default threshold")
+        let unfundedCarve = PrefixCachePolicy.carve(
+            slotKVBytesCapacity: 24 * Self.gib,
+            requestedBudgetBytes: 0,  // gate said no
+            kvBytesPerToken: 4096)
+        #expect(unfundedCarve.engineKVBytesCapacity == 24 * Self.gib,
+            "unfunded gemma must keep its full grant for live KV")
+        #expect(unfundedCarve.prefixCacheBudgetBytes == 0)
+        #expect(PrefixCachePolicy.makePrefixCache(modelId: live.modelID, budgetBytes: 0) == nil)
+
+        // The config.json-only derivation the slot factory uses for VLM
+        // slots must agree with the loaded model's own layer kinds.
+        if case .found(let directory) = LiveInferenceFixtures.locate(Self.gemmaQatModelID) {
+            #expect(
+                EngineV2VLMTextExtraction.adoptionBoundTokens(modelDirectory: directory) == bound,
+                "config-only adoption bound diverged from the loaded model's")
+        }
+
+        // FUNDED path under the operator override
+        // (DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS=26000): keeps
+        // the hybrid-window requiredRecompute exactness + hit accounting +
+        // batch invariance exercised on real gemma weights.
+        let overrideEnv = ["DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS": "26000"]
+        #expect(PrefixCachePolicy.shouldFund(
+            adoptionBoundTokens: bound, environment: overrideEnv),
+            "the override must make gemma fundable for this scenario")
         try await runPrefixCacheScenario(live, maxTokens: 16)
     }
 }

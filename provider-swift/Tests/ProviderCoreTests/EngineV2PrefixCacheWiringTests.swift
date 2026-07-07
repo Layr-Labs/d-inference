@@ -194,6 +194,48 @@ struct EngineV2PrefixCacheCarveTests {
         #expect(bridge.prefixCacheBudgetBytes == 0)
     }
 
+    @Test("funding gate: threshold 0 (never fund) leaves the full grant with live KV")
+    func fundingThresholdZeroUnfunded() async throws {
+        let loop = try makeLoop()
+        await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
+        let recorder = GrantRecorder()
+        var env = carveEnv()  // master gate ON, 1 GiB budget available
+        env["DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS"] = "0"
+        await loop.setEngineV2SlotHooksForTesting(
+            ProviderLoop.EngineV2SlotHooks(
+                environment: env,
+                eosTokenIds: [2],
+                makeEngine: { _, kv in
+                    recorder.record(kv)
+                    return PrefixScriptedEngine(script: .reportCapacity(kv))
+                }))
+
+        let weights = 1 * gib
+        let scheduler = BatchScheduler()
+        await scheduler._setModelWeightBytesForTest(weights)
+        await scheduler._setKVRatesForTest(kvBytesPerToken: 4096, fp16KVBytesPerToken: 4096)
+        let bridge = try #require(await loop.makeEngineV2BridgeForSlotForTesting(
+            modelId: "gpt-oss-20b",
+            modelType: "gpt_oss",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(PrefixStubTokenizer()),
+            scheduler: scheduler))
+
+        // Unfunded through the SLOT FACTORY: engine handed the raw grant,
+        // no budget on the bridge, claim == engine capacity.
+        #expect(recorder.granted == [rawGrant(weights: weights)])
+        #expect(bridge.prefixCacheBudgetBytes == 0)
+        #expect(await bridge.slotKVBytesClaim() == rawGrant(weights: weights))
+    }
+
+    @Test("factory adoption-bound resolver: unknown model families report 0 (fundable)")
+    func factoryAdoptionBoundUnknownModel() {
+        // Only Gemma4TextModel/GPTOSSModel carry CBv2 layer kinds; anything
+        // else is bound-0 by policy (documented: such models throw
+        // unsupportedModel at engine build before a cache could matter).
+        #expect(EngineV2Factory.adoptionBoundTokens(model: PrefixStubLanguageModel()) == 0)
+    }
+
     @Test("gate on: the engine is handed the grant MINUS the funded budget")
     func carveReducesEngineCapacity() async throws {
         let loop = try makeLoop()

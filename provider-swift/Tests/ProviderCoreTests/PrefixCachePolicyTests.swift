@@ -94,6 +94,70 @@ struct PrefixCachePolicyTests {
         #expect(BatchScheduler.resolveStatsInterval(env: "30") == 30)
     }
 
+    // MARK: - Per-model funding gate (adoption bound)
+
+    /// Layer-kind fixture: `sliding` windowed layers of `window` tokens plus
+    /// `full` full-attention layers (head shape irrelevant to the bound).
+    private func kinds(sliding: Int, window: Int, full: Int) -> [CBv2LayerKind] {
+        (0 ..< sliding).map { _ in
+            CBv2LayerKind(
+                attention: .slidingWindow(window), headDim: 64, kvHeads: 4, queryHeads: 8)
+        } + (0 ..< full).map { _ in
+            CBv2LayerKind(attention: .full, headDim: 64, kvHeads: 4, queryHeads: 8)
+        }
+    }
+
+    @Test("adoptionBoundTokens: windowCount × maxWindow; 0 for pure full attention")
+    func adoptionBound() {
+        // The two production shapes, exactly.
+        #expect(PrefixCachePolicy.adoptionBoundTokens(
+            layerKinds: kinds(sliding: 12, window: 128, full: 12)) == 1536)  // gpt-oss-20b
+        #expect(PrefixCachePolicy.adoptionBoundTokens(
+            layerKinds: kinds(sliding: 25, window: 1024, full: 5)) == 25600)  // gemma-4-26B
+        // Pure full attention ⇒ 0 (every whole-block hit is adoptable).
+        #expect(PrefixCachePolicy.adoptionBoundTokens(
+            layerKinds: kinds(sliding: 0, window: 0, full: 24)) == 0)
+        // Mixed windows: the LARGEST window bounds (mirror of
+        // cbv2RequiredRecompute's maxWindow term).
+        var mixed = kinds(sliding: 2, window: 128, full: 1)
+        mixed[0].attention = .slidingWindow(512)
+        #expect(PrefixCachePolicy.adoptionBoundTokens(layerKinds: mixed) == 2 * 512)
+        #expect(PrefixCachePolicy.adoptionBoundTokens(layerKinds: []) == 0)
+    }
+
+    @Test("maxAdoptionBoundTokens: default 4096 / 0 never funds / override / malformed")
+    func adoptionBoundThreshold() {
+        #expect(PrefixCachePolicy.maxAdoptionBoundTokens(environment: [:]) == 4096)
+        #expect(PrefixCachePolicy.maxAdoptionBoundTokens(
+            environment: ["DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS": "0"]) == 0)
+        #expect(PrefixCachePolicy.maxAdoptionBoundTokens(
+            environment: ["DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS": "30000"]) == 30000)
+        for bad in ["junk", "-5", ""] {
+            #expect(PrefixCachePolicy.maxAdoptionBoundTokens(
+                environment: ["DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS": bad]) == 4096,
+                "\(bad) must fall back to the default")
+        }
+    }
+
+    @Test("shouldFund: gpt-oss funded, gemma unfunded at the default; override + never-fund")
+    func fundingGate() {
+        // Default threshold: gpt-oss (1,536) funds, gemma (25,600) does not.
+        #expect(PrefixCachePolicy.shouldFund(adoptionBoundTokens: 1536, environment: [:]))
+        #expect(!PrefixCachePolicy.shouldFund(adoptionBoundTokens: 25600, environment: [:]))
+        // Boundary: exactly at the cap funds.
+        #expect(PrefixCachePolicy.shouldFund(adoptionBoundTokens: 4096, environment: [:]))
+        #expect(!PrefixCachePolicy.shouldFund(adoptionBoundTokens: 4097, environment: [:]))
+        // Bound 0 / unknown-treated-as-0 (pure full attention) funds.
+        #expect(PrefixCachePolicy.shouldFund(adoptionBoundTokens: 0, environment: [:]))
+        // Override raises the cap: gemma becomes fundable.
+        let raised = ["DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS": "26000"]
+        #expect(PrefixCachePolicy.shouldFund(adoptionBoundTokens: 25600, environment: raised))
+        // 0 ⇒ never fund ANY model, including bound-0 ones.
+        let never = ["DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS": "0"]
+        #expect(!PrefixCachePolicy.shouldFund(adoptionBoundTokens: 0, environment: never))
+        #expect(!PrefixCachePolicy.shouldFund(adoptionBoundTokens: 1536, environment: never))
+    }
+
     // MARK: - Carve
 
     @Test("carve: normal split conserves bytes (engine + prefix == slot)")

@@ -12,6 +12,27 @@
 // the in-process cross-tenant TTFT oracle remains the SEC-035 accepted
 // risk, narrowed by per-request `cacheSalt` scoping).
 //
+// PER-MODEL FUNDING GATE (the adoption bound): the engine only ADOPTS a
+// cached prefix past `windowCount × maxWindow` matched tokens — every
+// stacked sliding-window layer compounds the recompute span
+// (`cbv2RequiredRecompute`; `EngineV2.makeAdoption` declines anything
+// smaller). For hybrid models whose bound dwarfs real prompt lengths
+// (gemma-4-26B: 25 sliding layers × 1024 window = 25,600 tokens, vs a
+// production p90 prompt of ~4k) the cache can never produce a hit, yet
+// its byte budget would still be carved OUT of the engine's live-KV
+// ceiling — on a 36 GB gemma box that is ~4.5 GB of KV (and therefore
+// live concurrency) spent on zero benefit. The cache is therefore funded
+// only when the model's adoption bound is at most
+// `defaultMaxAdoptionBoundTokens` (4,096: gpt-oss-20b's 12 × 128 = 1,536
+// funds; gemma-4's 25,600 does not — its full grant stays with live
+// serving). Pure full-attention models have bound 0 and always fund; an
+// UNKNOWN bound is treated as 0 (fund) for the same reason — only
+// CBv2-adapted families reach engine construction, and the conservative
+// failure mode of a mis-derived bound is a funded-but-useless cache,
+// never lost live KV beyond the configured budget. Operator override:
+// DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS (0 ⇒ never fund any
+// model; absent/malformed ⇒ the 4,096 default).
+//
 // Everything here is pure and unit-testable: environment and physical
 // memory are parameters with production defaults.
 
@@ -35,6 +56,13 @@ enum PrefixCachePolicy {
     /// legacy checkpoint-tier logger: unset/malformed ⇒ default 120s;
     /// `0` ⇒ disabled; positive ⇒ the cadence.
     static let statsIntervalEnvironmentFlag = "DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS"
+
+    /// Funding-gate threshold override (tokens). The cache is funded only
+    /// for models whose adoption bound is at most this. `0` ⇒ never fund;
+    /// absent/malformed/negative ⇒ `defaultMaxAdoptionBoundTokens`. See
+    /// the header for the rationale.
+    static let adoptionBoundEnvironmentFlag =
+        "DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS"
 
     /// Hash-block granularity for the v2 cache. Matches the engine's
     /// `CBv2BlockHasher.defaultBlockSize` (and the legacy block tier's 256).
@@ -96,6 +124,60 @@ enum PrefixCachePolicy {
         }
         guard let n = Int(v), n >= 0 else { return defaultStatsIntervalSecs }
         return n  // 0 ⇒ disabled
+    }
+
+    // MARK: - Per-model funding gate (adoption bound)
+
+    /// Default funding threshold (tokens): models whose adoption bound
+    /// exceeds this never fund a cache. 4,096 sits above gpt-oss-20b's
+    /// bound (1,536) and far below gemma-4's (25,600), and roughly tracks
+    /// the fleet's real prompt lengths (a bound at/under it is reachable
+    /// by production traffic; one above it is not).
+    static let defaultMaxAdoptionBoundTokens = 4096
+
+    /// The model's adoption bound: `windowCount × maxWindow` over its layer
+    /// kinds — the exact bound term of the engine's `cbv2RequiredRecompute`
+    /// (`EngineV2.makeAdoption` declines any hit whose matched prefix does
+    /// not exceed it). 0 for pure full-attention models (every whole-block
+    /// hit is adoptable).
+    static func adoptionBoundTokens(layerKinds: [CBv2LayerKind]) -> Int {
+        var maxWindow = 0
+        var windowCount = 0
+        for kind in layerKinds {
+            if case .slidingWindow(let window) = kind.attention {
+                maxWindow = max(maxWindow, window)
+                windowCount += 1
+            }
+        }
+        // Same overflow posture as the engine's derivation: the product can
+        // only overflow at absurd model shapes; saturate rather than trap.
+        let (bound, overflow) = windowCount.multipliedReportingOverflow(by: maxWindow)
+        return overflow ? Int.max : bound
+    }
+
+    /// Resolved funding threshold: env override (`0` ⇒ never fund; positive
+    /// value ⇒ the threshold), absent/malformed/negative ⇒ the default.
+    static func maxAdoptionBoundTokens(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int {
+        guard let raw = environment[adoptionBoundEnvironmentFlag] else {
+            return defaultMaxAdoptionBoundTokens
+        }
+        guard let n = Int(raw), n >= 0 else { return defaultMaxAdoptionBoundTokens }
+        return n  // 0 ⇒ never fund
+    }
+
+    /// Whether a model with this adoption bound should have its cache
+    /// funded. A threshold of 0 funds NOTHING (including bound-0 models) —
+    /// it is the per-box "cache budget off" switch that leaves the
+    /// `DARKBLOOM_PREFIX_CACHE` master gate (which also governs the legacy
+    /// engine) untouched.
+    static func shouldFund(
+        adoptionBoundTokens bound: Int,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        let cap = maxAdoptionBoundTokens(environment: environment)
+        return cap > 0 && bound <= cap
     }
 
     // MARK: - KV carve

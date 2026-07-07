@@ -174,6 +174,25 @@ enum EngineV2VLMTextExtraction {
         return Extraction(model: skeleton, parityMaxAbsLogitDiff: parityDiff)
     }
 
+    // MARK: - Adoption bound (config-only, no weights)
+
+    /// The checkpoint's prefix-cache adoption bound derived from its
+    /// `text_config` ALONE — the same `cbv2LayerKinds` the extracted text
+    /// model would report, but without running the (parity-gated, forward-
+    /// pass) extraction. Used by the slot factory's per-model funding gate
+    /// (`PrefixCachePolicy.shouldFund`) BEFORE the carve, where only the
+    /// VLM wrapper is loaded. nil when the config is unreadable/undecodable
+    /// — the caller treats that as bound 0 (fund; the extraction inside
+    /// engine construction will throw on the same config moments later, so
+    /// no cache is ever actually built for a broken checkpoint).
+    static func adoptionBoundTokens(modelDirectory: URL) -> Int? {
+        let configURL = modelDirectory.appendingPathComponent("config.json")
+        guard let configData = try? Data(contentsOf: configURL),
+            let textConfig = try? decodeTextConfiguration(configData: configData)
+        else { return nil }
+        return PrefixCachePolicy.adoptionBoundTokens(layerKinds: textConfig.cbv2LayerKinds)
+    }
+
     // MARK: - Steps
 
     /// Decode MLXLLM's `Gemma4TextConfiguration` from the VLM checkpoint's

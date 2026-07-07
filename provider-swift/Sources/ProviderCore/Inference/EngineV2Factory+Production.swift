@@ -73,6 +73,23 @@ extension EngineV2Factory {
     /// conservative and the coordinator sees the true value in heartbeats.
     static let productionMaxConcurrentRequests = 4
 
+    /// The model's prefix-cache adoption bound (`PrefixCachePolicy
+    /// .adoptionBoundTokens` over the model's own `cbv2LayerKinds`), kept
+    /// NEXT TO the authoritative family switch in `makeProductionEngine` so
+    /// the two can never drift. Unknown families return 0 — treated as
+    /// "fund" by the gate (pure-full-attention semantics; such a model
+    /// throws `unsupportedModel` before any cache matters anyway).
+    static func adoptionBoundTokens(model: any LanguageModel) -> Int {
+        switch model {
+        case let gemma as Gemma4TextModel:
+            return PrefixCachePolicy.adoptionBoundTokens(layerKinds: gemma.cbv2LayerKinds)
+        case let gptoss as GPTOSSModel:
+            return PrefixCachePolicy.adoptionBoundTokens(layerKinds: gptoss.cbv2LayerKinds)
+        default:
+            return 0
+        }
+    }
+
     /// Build the real `EngineV2` over a loaded model.
     ///
     /// - Parameters:

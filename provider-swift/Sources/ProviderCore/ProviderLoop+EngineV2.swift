@@ -167,49 +167,19 @@ extension ProviderLoop {
             configReserveBytes: Self.memoryReserveBytes(
                 forGiB: loopConfig.config.provider.memoryReserveGB))
 
-        // THE single carve point (T-041, v0.7.5): split the slot's grant
-        // between the engine's admission ceiling and the RAM-only v2 prefix
-        // cache. Everything downstream reads ENGINE TRUTH — the engine's
-        // private ledger (`AdmissionV2`), the bridge capacity snapshot, and
-        // the heartbeat `activeTokenBudgetMax` all derive from the REDUCED
-        // `kvBytesCapacity` handed to `makeProductionEngine` below — so the
-        // coordinator is never told about bytes the cache will consume, and
-        // cached KV + live-request KV can never jointly exceed the grant.
-        // Live serving wins: the carve shrinks the PREFIX budget (down to 0)
-        // before it would starve the engine below the serviceable floor.
-        let requestedPrefixBudget = PrefixCachePolicy.isEnabled(environment: environment)
-            ? PrefixCachePolicy.budgetBytes(environment: environment)
-            : 0
-        let carve = PrefixCachePolicy.carve(
-            slotKVBytesCapacity: slotKVBytesCapacity,
-            requestedBudgetBytes: requestedPrefixBudget,
-            kvBytesPerToken: kvBytesPerToken)
-        let kvBytesCapacity = carve.engineKVBytesCapacity
-        let prefixCacheBudgetBytes = carve.prefixCacheBudgetBytes
-
-        // Resolve the EOS/stop inputs + engine builder: from the test hooks
-        // when installed, otherwise from the loaded container (production).
+        // Resolve the EOS/stop/model inputs: from the test hooks when
+        // installed, otherwise from the loaded container (production). The
+        // model snapshot is taken BEFORE the carve because the per-model
+        // funding gate below needs the model's layer shape.
         let eosTokenIds: Set<Int>
         let extraEOSTokens: [String]
         let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
-        let makeEngine: () throws -> any CBv2Engine
-        // Funded cache instance (production path only; nil under test hooks
-        // — the scripted engines have no cache seam — and when the carve
-        // returned 0). Built HERE, not inside the closure, so the slot
-        // factory keeps the handle for the periodic stats logger below.
-        let prefixCache = engineV2SlotHooks == nil
-            ? PrefixCachePolicy.makePrefixCache(
-                modelId: modelId, budgetBytes: prefixCacheBudgetBytes)
-            : nil
+        let productionSnapshot: EngineV2ModelSnapshot?
         if let hooks = engineV2SlotHooks {
             eosTokenIds = hooks.eosTokenIds
             extraEOSTokens = hooks.extraEOSTokens
             emitTelemetry = hooks.emitTelemetry
-            let hookBuilder = hooks.makeEngine
-            // Hooks receive the REDUCED (post-carve) capacity — exactly what
-            // the production path hands the engine — so tests can pin the
-            // carve arithmetic without building a real engine.
-            makeEngine = { try hookBuilder(modelId, kvBytesCapacity) }
+            productionSnapshot = nil
         } else {
             // Snapshot the model handle + EOS config out of the container.
             // Handing the module reference to the v2 engine mirrors the
@@ -232,6 +202,77 @@ extension ProviderLoop {
             )
             extraEOSTokens = snapshot.extraEOSTokens
             emitTelemetry = nil  // production: TelemetryClient.shared
+            productionSnapshot = snapshot
+        }
+
+        // Per-model funding gate (see PrefixCachePolicy's header): a hybrid
+        // model whose adoption bound (windowCount × maxWindow) exceeds the
+        // funding threshold can never produce a hit at real prompt lengths,
+        // so its cache is NOT funded and the full grant stays with live KV
+        // (gemma-4: bound 25,600 ⇒ unfunded; gpt-oss: 1,536 ⇒ funded).
+        // Text slots read the bound off the loaded model; VLM slots derive
+        // it from the checkpoint's text_config (config-only — the weight-
+        // sharing extraction runs later, inside engine construction).
+        // Hooks/unknown ⇒ 0 (pure-full-attention semantics ⇒ fundable).
+        let cacheGateEnabled = PrefixCachePolicy.isEnabled(environment: environment)
+        let adoptionBound: Int
+        if cacheGateEnabled, let snapshot = productionSnapshot {
+            if isVLM {
+                adoptionBound = modelDirectory.flatMap {
+                    EngineV2VLMTextExtraction.adoptionBoundTokens(modelDirectory: $0)
+                } ?? 0
+            } else {
+                adoptionBound = EngineV2Factory.adoptionBoundTokens(model: snapshot.model)
+            }
+        } else {
+            adoptionBound = 0
+        }
+        let cacheFunded = cacheGateEnabled
+            && PrefixCachePolicy.shouldFund(
+                adoptionBoundTokens: adoptionBound, environment: environment)
+
+        // THE single carve point (T-041, v0.7.5): split the slot's grant
+        // between the engine's admission ceiling and the RAM-only v2 prefix
+        // cache. Everything downstream reads ENGINE TRUTH — the engine's
+        // private ledger (`AdmissionV2`), the bridge capacity snapshot, and
+        // the heartbeat `activeTokenBudgetMax` all derive from the REDUCED
+        // `kvBytesCapacity` handed to `makeProductionEngine` below — so the
+        // coordinator is never told about bytes the cache will consume, and
+        // cached KV + live-request KV can never jointly exceed the grant.
+        // Live serving wins: the carve shrinks the PREFIX budget (down to 0)
+        // before it would starve the engine below the serviceable floor.
+        let requestedPrefixBudget = cacheFunded
+            ? PrefixCachePolicy.budgetBytes(environment: environment)
+            : 0
+        let carve = PrefixCachePolicy.carve(
+            slotKVBytesCapacity: slotKVBytesCapacity,
+            requestedBudgetBytes: requestedPrefixBudget,
+            kvBytesPerToken: kvBytesPerToken)
+        let kvBytesCapacity = carve.engineKVBytesCapacity
+        let prefixCacheBudgetBytes = carve.prefixCacheBudgetBytes
+
+        // Funded cache instance (production path only; nil under test hooks
+        // — the scripted engines have no cache seam — and when the gate or
+        // carve returned 0). Built HERE, not inside the closure, so the slot
+        // factory keeps the handle for the periodic stats logger below.
+        let prefixCache = productionSnapshot != nil
+            ? PrefixCachePolicy.makePrefixCache(
+                modelId: modelId, budgetBytes: prefixCacheBudgetBytes)
+            : nil
+
+        // Engine builder.
+        let makeEngine: () throws -> any CBv2Engine
+        if let hooks = engineV2SlotHooks {
+            let hookBuilder = hooks.makeEngine
+            // Hooks receive the REDUCED (post-carve) capacity — exactly what
+            // the production path hands the engine — so tests can pin the
+            // carve arithmetic without building a real engine.
+            makeEngine = { try hookBuilder(modelId, kvBytesCapacity) }
+        } else {
+            // Guaranteed by the branch above: production ⇒ snapshot taken.
+            guard let snapshot = productionSnapshot else {
+                return nil
+            }
             let loadedModelDirectory = modelDirectory
             let slotLogger = logger
             makeEngine = {
@@ -315,9 +356,20 @@ extension ProviderLoop {
         if let prefixCache {
             await bridge.startPrefixCacheStatsLogger(cache: prefixCache)
         }
-        let prefixCacheState = prefixCache != nil
-            ? "on, budget \(prefixCacheBudgetBytes) B (RAM-only, salt-scoped — T-041)"
-            : "off"
+        let prefixCacheState: String
+        if prefixCache != nil {
+            prefixCacheState =
+                "on, budget \(prefixCacheBudgetBytes) B (RAM-only, salt-scoped — T-041)"
+        } else if cacheGateEnabled && !cacheFunded {
+            // Name WHY: this model's hybrid window shape makes hits
+            // unreachable at real prompt lengths, so its budget stays with
+            // live KV (see PrefixCachePolicy's funding-gate rationale).
+            prefixCacheState = "unfunded (adoption bound \(adoptionBound) tok, funding cap "
+                + "\(PrefixCachePolicy.maxAdoptionBoundTokens(environment: environment)) "
+                + "— full grant stays with live KV)"
+        } else {
+            prefixCacheState = "off"
+        }
         if isVLM {
             // Distinguish the VLM routing mode in prod logs: text AND image
             // requests serve via v2 (image via CBv2 multimodal prefill, with

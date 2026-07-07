@@ -176,28 +176,41 @@ struct EngineV2PrefixCacheLiveTests {
     // MARK: - Conversation building
 
     /// Deterministic, token-dense filler so turn-1 crosses `minTokens` under
-    /// the model's chat template.
+    /// the model's chat template — WITHOUT overshooting (the first cut
+    /// assumed ≥ 8 tokens/line and overshot gemma's ~26.4k target to 104k
+    /// tokens, blowing the engine's 120s per-request deadline). Probe a
+    /// small batch to measure tokens/line, extrapolate, then top up by the
+    /// measured deficit — converges within ~2% of the target.
     private func turn1UserText(minTokens: Int, tokenize: ([ChatMessage]) throws -> [Int])
         rethrows -> String
     {
-        var lines: [String] = []
-        var text = ""
-        var lineIndex = 0
-        // Start near the target assuming ≥ 8 tokens/line, then top up.
-        while true {
-            let target = lines.isEmpty ? max(32, minTokens / 8) : 64
-            for _ in 0 ..< target {
-                lineIndex += 1
-                lines.append(
-                    "Log entry \(lineIndex): sensor channel \(lineIndex % 17) reported value "
-                        + "\(lineIndex * 37 % 1000) at tick \(lineIndex * 13). Summarize later.")
-            }
-            text = "Here is a maintenance log to remember for later questions.\n"
-                + lines.joined(separator: "\n")
-                + "\nAcknowledge that you memorized the log."
-            let tokens = try tokenize([ChatMessage(role: "user", content: text)])
-            if tokens.count >= minTokens { return text }
+        func line(_ index: Int) -> String {
+            "Log entry \(index): sensor channel \(index % 17) reported value "
+                + "\(index * 37 % 1000) at tick \(index * 13). Summarize later."
         }
+        func render(_ count: Int) -> String {
+            "Here is a maintenance log to remember for later questions.\n"
+                + (1 ... count).map(line).joined(separator: "\n")
+                + "\nAcknowledge that you memorized the log."
+        }
+        func tokenCount(_ count: Int) throws -> Int {
+            try tokenize([ChatMessage(role: "user", content: render(count))]).count
+        }
+        // Probe: 64 lines → per-line token rate (template overhead is inside
+        // the probe measurement, so the extrapolation is a safe floor).
+        let probeLines = 64
+        let probeTokens = try tokenCount(probeLines)
+        let perLine = max(1.0, Double(probeTokens) / Double(probeLines))
+        var lines = max(probeLines, Int(Double(minTokens) / perLine) + 1)
+        // Top up by the measured deficit until the target is crossed
+        // (converges in 1–2 rounds; small slack, never a multiple).
+        for _ in 0 ..< 8 {
+            let tokens = try tokenCount(lines)
+            if tokens >= minTokens { return render(lines) }
+            let deficit = minTokens - tokens
+            lines += max(8, Int(Double(deficit) / perLine * 1.02) + 1)
+        }
+        return render(lines)
     }
 
     private struct Conversation {
@@ -304,8 +317,13 @@ struct EngineV2PrefixCacheLiveTests {
         // blocks that matched − recompute stays > 0 with margin.
         let minTurn1 = bound + 3 * blockSize
         let conversation = try buildConversation(live, minTurn1Tokens: minTurn1)
-        #expect(conversation.sharedPrefixTokens >= conversation.turn1Tokens.count,
-            "turn 2 must extend turn 1's full prompt (template prefix stability)")
+        // The shared prefix must clear the recompute bound in whole blocks —
+        // it may fall a few tokens short of turn 1's FULL render (the
+        // template ends turn 1 with a generation-prompt suffix that the
+        // history rendering replaces), and that is fine: the chain match
+        // works in whole blocks of the shared span.
+        #expect(conversation.sharedPrefixTokens >= minTurn1,
+            "turn 2 must share at least the sized turn-1 prefix")
         // The engine indexes whole blocks of the donated turn-1 sequence;
         // matched covers at least the shared prefix's whole blocks, so the
         // effective hit has this floor.

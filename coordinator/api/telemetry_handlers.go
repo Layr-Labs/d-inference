@@ -121,9 +121,11 @@ var telemetryFieldAllowlist = map[string]struct{}{
 	"reservations":           {},
 	"request_id":             {},
 	"age_seconds":            {},
-	// Vision-through-engine_v2 tag (v0.7.4) — a bare boolean; media/prompt
-	// content NEVER rides telemetry. Mirror of the Swift + TS allowlists.
+	// Media-through-engine_v2 tags (v0.7.4 bool + v0.7.5 kind) — a bare
+	// boolean and a coarse image/video/mixed label; media/prompt content
+	// NEVER rides telemetry. Mirror of the Swift + TS allowlists.
 	"multimodal": {},
+	"media_kind": {},
 	// Console UI context
 	"url":        {},
 	"user_agent": {},

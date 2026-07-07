@@ -619,6 +619,7 @@ const (
 	warmColdDedicated      warmColdReason = "dedicated_excluded"
 	warmColdTooLarge       warmColdReason = "model_too_large"
 	warmColdNoFreeForLoad  warmColdReason = "no_free_for_load"
+	warmColdBusyNoEvict    warmColdReason = "busy_no_evict_headroom"
 )
 
 // warmColdReasonStrings converts a reason tally to a string-keyed map for
@@ -660,7 +661,15 @@ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now 
 	if r.providerHasPendingLoad(p.ID) || r.dispatchLoadCooldownActiveLocked(p.ID, model, now) {
 		return warmPoolCandidate{}, warmColdPendingLoad
 	}
-	if p.pendingCount() != 0 || warmPoolBackendSlotBusyLocked(p) {
+	// Bounded-busy eligibility (postmortem 2026-07-06 layer 7): the historical
+	// gate disqualified a cold candidate on ANY activity, so during a recovery
+	// every box carrying a single request read as ineligible, eligible_cold hit 0,
+	// and the MIN_WARM floor was clamped into a no-op. Eligible when the total
+	// busy load (coordinator-pending + Σ backend running+waiting across ALL slots)
+	// is within AllowBusyLoadMax (EIGENINFERENCE_WARM_POOL_ALLOW_BUSY_LOAD_MAX).
+	// The default 0 preserves the exact historical fully-idle behavior.
+	busyLoad := p.pendingCount() + warmPoolBackendSlotLoadLocked(p)
+	if busyLoad > r.warmPoolAllowBusyLoadMaxLocked() {
 		return warmPoolCandidate{}, warmColdNotIdle
 	}
 	if p.SystemMetrics.ThermalState == "critical" {
@@ -704,6 +713,20 @@ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now 
 	if freeGB < 0 {
 		freeGB = 0
 	}
+	// No-eviction fit for non-idle candidates: a busy box cannot evict idle
+	// co-resident models to make room (the provider only swaps when it has no
+	// in-flight requests), and its reported free_for_load_gb may assume exactly
+	// that eviction. Mirror the dispatch-path rule (freeMemoryAdmits falls through
+	// to the eviction-free `free >= required` check whenever totalPending > 0):
+	// when the bounded-busy gate admitted a non-idle box, the weights must
+	// additionally fit in the CURRENT free memory. Unknown catalog size fails
+	// open, like the gates above. Unreachable at AllowBusyLoadMax=0 (busyLoad is
+	// always 0 there), so the default behavior is unchanged.
+	if busyLoad > 0 {
+		if size := r.catalogSizeGBLocked(model); size > 0 && size > freeGB {
+			return warmPoolCandidate{}, warmColdBusyNoEvict
+		}
+	}
 	thermalPenalty := 0.0
 	switch p.SystemMetrics.ThermalState {
 	case "serious":
@@ -725,6 +748,37 @@ func warmPoolBackendSlotBusyLocked(p *Provider) bool {
 		}
 	}
 	return false
+}
+
+// warmPoolBackendSlotLoadLocked sums the backend-reported in-flight load
+// (NumRunning + NumWaiting) across ALL slots — the Σ term of the bounded-busy
+// candidate gate. Negative heartbeat values are clamped to 0 so a malformed slot
+// cannot mask another slot's real load. Caller must hold p.mu.
+func warmPoolBackendSlotLoadLocked(p *Provider) int {
+	if p.BackendCapacity == nil {
+		return 0
+	}
+	load := 0
+	for _, slot := range p.BackendCapacity.Slots {
+		if slot.NumRunning > 0 {
+			load += slot.NumRunning
+		}
+		if slot.NumWaiting > 0 {
+			load += slot.NumWaiting
+		}
+	}
+	return load
+}
+
+// warmPoolAllowBusyLoadMaxLocked returns the bounded-busy eligibility threshold
+// (WarmPoolConfig.AllowBusyLoadMax), or 0 — the historical fully-idle
+// requirement — when the controller is not configured or the value is invalid.
+// Caller must hold r.mu (the controller pointer and its config are guarded by it).
+func (r *Registry) warmPoolAllowBusyLoadMaxLocked() int {
+	if r.warmPool == nil || r.warmPool.config.AllowBusyLoadMax < 0 {
+		return 0
+	}
+	return r.warmPool.config.AllowBusyLoadMax
 }
 
 func (r *Registry) pendingModelLoadCount(now time.Time) int {

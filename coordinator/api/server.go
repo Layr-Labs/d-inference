@@ -1927,52 +1927,76 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.ddGauge("providers.online", float64(s.registry.OnlineCount()), nil)
-			// APNs code-identity coverage — watch this climb during the grace
-			// window before letting APNS_ENFORCE_AFTER pass.
-			codeAttested, _ := s.registry.CodeAttestationCoverage()
-			s.ddGauge("attestation.code_attested", float64(codeAttested), nil)
-			enforced := 0.0
-			if s.registry.CodeAttestationEnforced() {
-				enforced = 1.0
-			}
-			s.ddGauge("attestation.code_enforced", enforced, nil)
-			for model, count := range s.registry.ModelProviderSnapshot() {
-				s.ddGauge("providers.per_model", float64(count), []string{"model:" + model})
-			}
-			for ver, count := range s.registry.ProviderCountByVersion() {
-				s.ddGauge("providers.per_version", float64(count), []string{"version:" + ver})
-			}
-			// Trust-state cohort gauges — alert when self_signed/untrusted grows.
-			for _, b := range s.registry.ProviderCountByTrustStatus() {
-				s.ddGauge("providers.by_trust_status", float64(b.Count),
-					[]string{"trust_level:" + b.TrustLevel, "status:" + b.Status})
-			}
-			// Stuck-cohort breakdown — distinguishes never-enrolled from
-			// enrolled-but-SecurityInfo-timing-out so we know if the problem is
-			// provider-side enrollment or APNs/MDM delivery.
-			for reason, count := range s.registry.ProviderCountByMDMFailure() {
-				s.ddGauge("providers.by_mdm_failure", float64(count), []string{"reason:" + reason})
-			}
-			if s.minProviderVersion != "" {
-				s.ddGauge("coordinator.min_provider_version_set", 1, []string{"min_version:" + s.minProviderVersion})
-			}
-			if q := s.registry.Queue(); q != nil {
-				s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
-			}
-			// Network utilization — demand/capacity across the warm-serving and
-			// token-budget axes, plus a per-model breakdown.
-			util := s.registry.NetworkUtilizationSnapshot()
-			s.ddGauge("utilization.network", util.Utilization, nil)
-			s.ddGauge("utilization.warm", util.WarmUtilization, nil)
-			s.ddGauge("utilization.token_budget", util.TokenBudgetUtilization, nil)
-			s.ddGauge("utilization.bottleneck", util.BottleneckUtilization, nil)
-			s.ddGauge("capacity.tps", util.CapacityTPS, nil)
-			s.ddGauge("capacity.demand_concurrency", util.DemandConcurrency, nil)
-			s.ddGauge("capacity.serving_capacity", util.ServingCapacity, nil)
-			s.ddGauge("capacity.spill_arrival_rate", util.SpillArrivalRate, nil)
-			for _, m := range util.Models {
-				s.ddGauge("utilization.model", m.Utilization, []string{"model:" + m.Model})
+			s.pushDDGauges()
+		}
+	}
+}
+
+// pushDDGauges pushes one round of point-in-time gauge values to DogStatsD.
+// Split from StartDDGaugeLoop's ticker so tests can exercise the emission
+// directly against a live UDP collector.
+func (s *Server) pushDDGauges() {
+	s.ddGauge("providers.online", float64(s.registry.OnlineCount()), nil)
+	// APNs code-identity coverage — watch this climb during the grace
+	// window before letting APNS_ENFORCE_AFTER pass.
+	codeAttested, _ := s.registry.CodeAttestationCoverage()
+	s.ddGauge("attestation.code_attested", float64(codeAttested), nil)
+	enforced := 0.0
+	if s.registry.CodeAttestationEnforced() {
+		enforced = 1.0
+	}
+	s.ddGauge("attestation.code_enforced", enforced, nil)
+	for model, count := range s.registry.ModelProviderSnapshot() {
+		s.ddGauge("providers.per_model", float64(count), []string{"model:" + model})
+	}
+	for ver, count := range s.registry.ProviderCountByVersion() {
+		s.ddGauge("providers.per_version", float64(count), []string{"version:" + ver})
+	}
+	// Trust-state cohort gauges — alert when self_signed/untrusted grows.
+	for _, b := range s.registry.ProviderCountByTrustStatus() {
+		s.ddGauge("providers.by_trust_status", float64(b.Count),
+			[]string{"trust_level:" + b.TrustLevel, "status:" + b.Status})
+	}
+	// Stuck-cohort breakdown — distinguishes never-enrolled from
+	// enrolled-but-SecurityInfo-timing-out so we know if the problem is
+	// provider-side enrollment or APNs/MDM delivery.
+	for reason, count := range s.registry.ProviderCountByMDMFailure() {
+		s.ddGauge("providers.by_mdm_failure", float64(count), []string{"reason:" + reason})
+	}
+	if s.minProviderVersion != "" {
+		s.ddGauge("coordinator.min_provider_version_set", 1, []string{"min_version:" + s.minProviderVersion})
+	}
+	if q := s.registry.Queue(); q != nil {
+		s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
+	}
+	// Network utilization — demand/capacity across the warm-serving and
+	// token-budget axes, plus a per-model breakdown.
+	util := s.registry.NetworkUtilizationSnapshot()
+	s.ddGauge("utilization.network", util.Utilization, nil)
+	s.ddGauge("utilization.warm", util.WarmUtilization, nil)
+	s.ddGauge("utilization.token_budget", util.TokenBudgetUtilization, nil)
+	s.ddGauge("utilization.bottleneck", util.BottleneckUtilization, nil)
+	s.ddGauge("capacity.tps", util.CapacityTPS, nil)
+	s.ddGauge("capacity.demand_concurrency", util.DemandConcurrency, nil)
+	s.ddGauge("capacity.serving_capacity", util.ServingCapacity, nil)
+	s.ddGauge("capacity.spill_arrival_rate", util.SpillArrivalRate, nil)
+	for _, m := range util.Models {
+		s.ddGauge("utilization.model", m.Utilization, []string{"model:" + m.Model})
+	}
+	// Warm-pool cold-eligibility diagnostics: why the controller can (or cannot)
+	// act. eligible_cold hitting 0 silently clamps every warm target — including
+	// MIN_WARM floors — so the per-(model, reason) disqualifier tallies make "why
+	// is eligible_cold 0" a dashboard instead of a restart-and-grep (postmortem
+	// 2026-07-06 §3.3). Reason values are the warmColdReason strings
+	// (registry/warm_pool_controller.go) — keep them stable, dashboards key on them.
+	if snaps, _ := s.registry.LatestWarmPoolSnapshots(); len(snaps) > 0 {
+		for _, snap := range snaps {
+			modelTag := []string{"model:" + snap.Model}
+			s.ddGauge("warm_pool.eligible_cold", float64(snap.EligibleCold), modelTag)
+			s.ddGauge("warm_pool.cold_ineligible", float64(snap.ColdIneligible), modelTag)
+			for reason, n := range snap.ColdDisqualifiers {
+				s.ddGauge("warm_pool.cold_disqualified", float64(n),
+					[]string{"model:" + snap.Model, "reason:" + reason})
 			}
 		}
 	}

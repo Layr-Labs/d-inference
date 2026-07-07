@@ -2722,6 +2722,15 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 					r.tpsRegistry.RecordSolo(slot.Model, chipFamily, slot.ObservedDecodeTPS)
 				}
 			}
+			// Observed prefill feeds the per-(model, chip) prefill-median ring
+			// (prefill_tps.go) — the prefill-honest input to the TTFT estimate.
+			// Deliberately NOT solo-gated (prefill is per-request compute-bound;
+			// see prefill_tps.go for the full ingest-gating rationale). The value
+			// is post-clamp, so out-of-range garbage (the prefix-cache-hit EWMA
+			// overflow) was already zeroed and never reaches the ring.
+			if slot.ObservedPrefillTPS > 0 {
+				r.tpsRegistry.RecordPrefill(slot.Model, chipFamily, slot.ObservedPrefillTPS)
+			}
 		}
 	}
 	// Credit wall-clock time since the previous heartbeat as uptime, so an

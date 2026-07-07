@@ -242,6 +242,11 @@ semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlig
 | `EIGENINFERENCE_V2_VERSION_FLOOR` | v0.7.5-migration audit: providers at/above this version are engine-v2-only, so a heartbeat `max_concurrency` above the v2 ceiling is clamped + counted on the `provider.v2_concurrency_tripwire` Datadog tripwire (silent-legacy-fallback resurfaced). Default empty = off; set to `0.7.5` with deploy batch B; permanent audit thereafter |
 | `EIGENINFERENCE_V2_MAX_CONCURRENCY_CEILING` | Chat-slot concurrency ceiling for ≥floor providers (default 4 = the v2 engine's box-wide cap) |
 | `EIGENINFERENCE_MODEL_VERSION_FLOORS` | Per-model provider-version routing floors, `pattern=version` CSV (e.g. `gemma-4=0.7.5`; substring match like `_DEDICATED_MODELS`). Floored models route/pre-warm only onto ≥floor providers; empty-version providers fail every floor. Default empty = off; set at ≥70% online-fleet v0.7.5 adoption, retire after convergence |
+| `EIGENINFERENCE_TTFT_PREFILL_MEDIANS` | Prefill-honest TTFT: use the per-(model, chip) median of fleet-observed `observed_prefill_tps` in the TTFT estimate once trusted (default `true`; `false` restores the pure ratio-derived path). Live-read, no restart |
+| `EIGENINFERENCE_TTFT_PREFILL_MIN_SAMPLES` | Prefill samples required before a per-(model, chip) median is trusted by the TTFT estimate (default 5). Live-read |
+| `EIGENINFERENCE_PREFILL_FALLBACK_MODE` | Data-derived prefill fallback anchor for UNMEASURED fleets (`off`\|`shadow`\|`enforce`, default `off`): `shadow` emits `routing.prefill_fallback{would_admit\|would_shed}` without changing routing; `enforce` lifts the static sqrt(bandwidth)×ratio estimate (~280 tok/s) to the fallback anchor when neither a slot measurement nor a trusted median exists |
+| `EIGENINFERENCE_PREFILL_FALLBACK_TPS` | The fallback anchor (default 6500 = measured fleet prefill p50, 2026-06-22 live check) |
+| `EIGENINFERENCE_MAX_PREFILL_TPS` | Prefill sanity ceiling shared by heartbeat ingest zeroing and routing caps (default 20000, above the measured p90 17,707 so real v0.7.5 `observed_prefill_tps` reports survive ingest; the old 5000 would zero the majority of them) |
 | `EIGENINFERENCE_IPAPI_KEY` | ip-api.com PRO key; unset falls back to the free 45 req/min tier |
 
 ## Troubleshooting

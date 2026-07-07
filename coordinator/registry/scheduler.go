@@ -113,9 +113,18 @@ type routingSnapshot struct {
 	// (callers fall back to the kvCacheBytesPerToken default). Used by the
 	// servability predictor to estimate a cold provider's post-load token budget
 	// the same way the provider does, instead of the fixed default.
-	kvBytesPerToken    int64
-	fleetMedianTPS     float64
-	hasBackendCapacity bool // provider reports BackendCapacity; TTFT estimates are reliable
+	kvBytesPerToken int64
+	fleetMedianTPS  float64
+	// prefillMedianTPS / prefillMedianSamples are the per-(model, chip family)
+	// median of fleet-observed prefill EWMAs and its sample count
+	// (TPSRegistry.PrefillMedian, prefill_tps.go). When trusted (>= the
+	// min-sample floor) it replaces the static decode×ratio prefill estimate in
+	// prefillTPSForSnapshot for providers that don't report their own
+	// measurement — the prefill-honest TTFT input. 0/0 when no fleet samples
+	// exist for this (model, chip).
+	prefillMedianTPS     float64
+	prefillMedianSamples int
+	hasBackendCapacity   bool // provider reports BackendCapacity; TTFT estimates are reliable
 
 	// Engine-health (first-token wedge) signals, decoded from the slot's
 	// BackendSlotCapacity (see docs/reports/2026-06-22-cancel-root-cause-and-fix.md
@@ -1141,6 +1150,7 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 	snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 	snap.availableOnDisk = !snap.modelLoaded
 	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
+	snap.prefillMedianTPS, snap.prefillMedianSamples = r.tpsRegistry.PrefillMedian(model, p.Hardware.ChipFamily)
 
 	return snap, true
 }
@@ -1490,17 +1500,20 @@ func resolveEffectiveTPS(snap routingSnapshot) float64 {
 }
 
 // resolvePrefillTPS returns the best available prefill TPS estimate for TTFT.
-// Preference order: measured per-slot observed prefill EWMA → (in
-// PrefillFallbackEnforce mode) the data-derived fleet fallback → snap.prefillTPS
-// (the resolvedPrefillTPS chain: registration benchmark → decode×
-// prefillToDecodeRatio). This mirrors how resolveEffectiveTPS prefers the measured
-// decode rate over the static estimate. The result is clamped to maxPrefillTPS so
-// a single outlier heartbeat cannot collapse the TTFT estimate.
+// Preference order: measured per-slot observed prefill EWMA → the trusted
+// per-(model, chip) fleet prefill median (prefill_tps.go; the prefill-honest
+// transfer of REAL v0.7.5 measurements to boxes that don't report their own) →
+// (in PrefillFallbackEnforce mode) the data-derived fleet fallback anchor →
+// snap.prefillTPS (the resolvedPrefillTPS chain: registration benchmark →
+// decode×prefillToDecodeRatio). This mirrors how resolveEffectiveTPS prefers
+// measured decode rates over static estimates. The result is clamped to
+// maxPrefillTPS so a single outlier heartbeat cannot collapse the TTFT estimate.
 //
-// observedPrefillTPS stays 0 until providers ship the durable measurement fix, so
-// on today's fleet the OFF default returns the legacy sqrt(bandwidth)×ratio value
-// (~280 tok/s) and ENFORCE returns the recalibrated fallback (~6500 tok/s, the
-// measured prefill p50) — see prefill_fallback.go (prefillTPSForSnapshot).
+// Until v0.7.5 providers populate observed_prefill_tps the medians stay empty,
+// so today's fleet sees: OFF default → the legacy sqrt(bandwidth)×ratio value
+// (~280 tok/s); ENFORCE → the recalibrated fallback (~6500 tok/s, the measured
+// prefill p50). As adoption ramps, per-(model, chip) medians take over — see
+// prefill_fallback.go (prefillTPSForSnapshot) for the full resolution order.
 func resolvePrefillTPS(snap routingSnapshot) float64 {
 	return prefillTPSForSnapshot(snap, prefillFallbackMode == PrefillFallbackEnforce)
 }
@@ -2082,6 +2095,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 		snap.availableOnDisk = !snap.modelLoaded
 		snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
+		snap.prefillMedianTPS, snap.prefillMedianSamples = r.tpsRegistry.PrefillMedian(model, p.Hardware.ChipFamily)
 
 		p.mu.Unlock()
 

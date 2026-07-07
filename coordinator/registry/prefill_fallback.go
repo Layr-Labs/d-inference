@@ -134,18 +134,35 @@ func SetMaxPrefillTPS(tps float64) {
 // MaxPrefillTPS returns the configured prefill sanity ceiling (tok/s).
 func MaxPrefillTPS() float64 { return maxPrefillTPS }
 
-// prefillTPSForSnapshot resolves the prefill TPS for a snapshot. The measured
-// per-slot observed prefill EWMA always wins when present (>0). Otherwise, when
-// recalibrate is true and the provider reports BackendCapacity (so its TTFT
-// estimate is actually consulted by the gate), the data-derived fallback lifts the
-// pessimistic sqrt(bandwidth)×ratio static estimate — never lowering it, so a
-// (hypothetical) higher static prefill_tps is preserved. The result is always
-// capped at maxPrefillTPS.
+// prefillTPSForSnapshot resolves the prefill TPS for a snapshot, most- to
+// least-specific:
+//
+//  1. the box's OWN measured per-slot observed prefill EWMA (>0) always wins;
+//  2. the per-(model, chip family) fleet prefill MEDIAN (prefill_tps.go) when
+//     it has >= EIGENINFERENCE_TTFT_PREFILL_MIN_SAMPLES samples and the
+//     medians layer is enabled (EIGENINFERENCE_TTFT_PREFILL_MEDIANS, default
+//     true): a real measurement of THIS model on THIS chip class, transferred
+//     to boxes that don't (yet) report their own. Unlike the anchor below it
+//     REPLACES the static estimate in either direction — a measured median may
+//     honestly be lower than an optimistic static rate;
+//  3. when recalibrate is true and the provider reports BackendCapacity (so
+//     its TTFT estimate is actually consulted by the gate), the data-derived
+//     fleet-wide fallback anchor LIFTS the pessimistic sqrt(bandwidth)×ratio
+//     static estimate — never lowering it, so a (hypothetical) higher static
+//     prefill_tps is preserved;
+//  4. the static snap.prefillTPS chain (registration benchmark →
+//     decode×prefillToDecodeRatio).
+//
+// The result is always capped at maxPrefillTPS.
 func prefillTPSForSnapshot(snap routingSnapshot, recalibrate bool) float64 {
 	tps := snap.prefillTPS
-	if snap.observedPrefillTPS > 0 {
+	switch {
+	case snap.observedPrefillTPS > 0:
 		tps = snap.observedPrefillTPS
-	} else if recalibrate && snap.hasBackendCapacity {
+	case ttftPrefillMediansEnabled() && snap.prefillMedianTPS > 0 &&
+		snap.prefillMedianSamples >= ttftPrefillMinSamples():
+		tps = snap.prefillMedianTPS
+	case recalibrate && snap.hasBackendCapacity:
 		if prefillFallbackTPS > tps {
 			tps = prefillFallbackTPS
 		}

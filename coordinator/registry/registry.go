@@ -1185,6 +1185,17 @@ type Registry struct {
 	// SetDedicatedModels and dedicated_models.go. Guarded by r.mu.
 	dedicatedModels []string
 
+	// modelVersionFloors holds the per-model provider-version routing floors
+	// (pattern → minimum binary version; same substring matching as
+	// dedicatedModels). A model whose resolved build id matches a pattern routes
+	// and pre-warms ONLY onto providers at/above the paired version — the
+	// v0.7.5-migration defense that keeps re-slice-dependent models off binaries
+	// that would silently legacy-serve them. Empty = feature disabled (the
+	// default; retires to empty after fleet convergence). Configured once at
+	// startup from EIGENINFERENCE_MODEL_VERSION_FLOORS; see
+	// model_version_floors.go. Guarded by r.mu.
+	modelVersionFloors []ModelVersionFloor
+
 	// Quality-concurrency admission cap (see concurrency_cap.go). When enabled,
 	// the per-provider concurrency cap for a model is tightened from the flat
 	// fallback to quality_concurrency × overcommit, computed from the provider's
@@ -1375,6 +1386,13 @@ type Registry struct {
 	// restarts. Keyed by the device's Secure Enclave public key. Set once at
 	// startup; nil = no-op. Guarded by r.mu (set + read).
 	onHardUntrust func(seKey string)
+
+	// onV2ClampTrip is an optional hook fired (off the registry locks) whenever
+	// the version-keyed heartbeat sanity clamp corrects a >=v2-floor provider's
+	// reported slot max_concurrency (see v2_capacity_clamp.go). The api layer
+	// wires it to the Datadog silent-legacy-fallback tripwire counter. Set once
+	// at startup; nil = no-op. Guarded by r.mu (set + read).
+	onV2ClampTrip func(providerID, version, model string, reported int)
 }
 
 // pendingModelLoadTTL bounds how long an outstanding (or failed) load_model
@@ -2652,10 +2670,24 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 		return
 	}
 
+	// Version-keyed v2 concurrency clamp FIRST (so the tripwire records the
+	// provider's original report), then the general sanity clamp. A >=v2-floor
+	// provider heartbeating a legacy-scale chat-slot max_concurrency means the
+	// silent-legacy-fallback bug resurfaced: clamp to the v2 ceiling, log at
+	// ERROR, and fire the Datadog tripwire (hook invoked off the locks, below).
+	// Below-floor providers skip this pass entirely and keep today's behavior.
+	// providerVersion takes p.mu briefly (p.Version is set by the api layer
+	// post-registration under p.mu).
+	version := providerVersion(p)
+	v2Trips := clampV2MaxConcurrency(r.logger, id, version, msg.BackendCapacity)
+
 	// Clamp heartbeat-reported capacity and metrics so a malicious provider
 	// can't skew routing by reporting absurd values (e.g. TotalMemoryGB=1e9
 	// would drive gpuUtil to 0 and sidestep health penalties).
 	clampBackendCapacity(r.logger, id, msg.BackendCapacity)
+	// Tripwire counter for any v2-clamped slots — no locks held here (the hook
+	// may do I/O; same contract as the hard-untrust hook).
+	r.fireV2ClampTrips(id, version, v2Trips)
 	if v, changed := clampNonNeg(msg.SystemMetrics.MemoryPressure, 1.0); changed {
 		msg.SystemMetrics.MemoryPressure = v
 	}

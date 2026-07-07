@@ -702,6 +702,12 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.registerDefaultGauges()
 	s.routes()
 
+	// v2 silent-legacy-fallback tripwire: the registry's version-keyed heartbeat
+	// clamp (registry/v2_capacity_clamp.go) reports every corrected slot here so
+	// the Datadog counter fires. Inert until EIGENINFERENCE_V2_VERSION_FLOOR is
+	// set.
+	reg.SetV2ClampTripwireHook(s.emitV2ClampTripwire)
+
 	// Load stored provider records into a lookup table for matching
 	// reconnecting providers to their persisted state.
 	s.storedProviders = reg.LoadStoredProviders()

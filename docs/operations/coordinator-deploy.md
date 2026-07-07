@@ -239,6 +239,9 @@ semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlig
 | `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` | Cold-start solo rates, `build-id=tok/s` CSV (e.g. `gemma-4-26b-qat-4bit=14,gpt-oss-20b=30`); the in-memory TPS registry is restart-wiped |
 | `EIGENINFERENCE_WARM_POOL_*` | Warm-pool controller (active; `OBSERVE_ONLY=false`) |
 | `EIGENINFERENCE_DEDICATED_MODELS` | Static dedicated-box partition (`gemma-4`) |
+| `EIGENINFERENCE_V2_VERSION_FLOOR` | v0.7.5-migration audit: providers at/above this version are engine-v2-only, so a heartbeat `max_concurrency` above the v2 ceiling is clamped + counted on the `provider.v2_concurrency_tripwire` Datadog tripwire (silent-legacy-fallback resurfaced). Default empty = off; set to `0.7.5` with deploy batch B; permanent audit thereafter |
+| `EIGENINFERENCE_V2_MAX_CONCURRENCY_CEILING` | Chat-slot concurrency ceiling for ≥floor providers (default 4 = the v2 engine's box-wide cap) |
+| `EIGENINFERENCE_MODEL_VERSION_FLOORS` | Per-model provider-version routing floors, `pattern=version` CSV (e.g. `gemma-4=0.7.5`; substring match like `_DEDICATED_MODELS`). Floored models route/pre-warm only onto ≥floor providers; empty-version providers fail every floor. Default empty = off; set at ≥70% online-fleet v0.7.5 adoption, retire after convergence |
 | `EIGENINFERENCE_IPAPI_KEY` | ip-api.com PRO key; unset falls back to the free 45 req/min tier |
 
 ## Troubleshooting

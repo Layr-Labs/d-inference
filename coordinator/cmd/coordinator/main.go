@@ -201,6 +201,51 @@ func main() {
 		"decode_floor_tps", cfg.RegistryCfg.WarmPool.DecodeFloorTPS,
 	)
 
+	// Mixed-fleet migration defense (v0.7.5 rollout; registry/v2_capacity_clamp.go
+	// and registry/model_version_floors.go). Both are inert at their defaults:
+	//
+	//   - EIGENINFERENCE_V2_VERSION_FLOOR (version string, default empty = off):
+	//     providers at/above this binary version are engine-v2-only by
+	//     construction, so a heartbeat chat-slot max_concurrency above the v2
+	//     ceiling means the silent-legacy-fallback bug resurfaced — the slot is
+	//     clamped, logged at ERROR, and counted on the
+	//     provider.v2_concurrency_tripwire Datadog tripwire. Below-floor
+	//     providers keep the legacy 24-ceiling clamp exactly.
+	//   - EIGENINFERENCE_V2_MAX_CONCURRENCY_CEILING (int, default 4): the v2
+	//     engine's box-wide concurrency cap (productionMaxConcurrentRequests).
+	//   - EIGENINFERENCE_MODEL_VERSION_FLOORS ("pattern=version" CSV, default
+	//     empty = off): per-model routing floor — a model whose resolved build id
+	//     contains a pattern (case-insensitive substring, same matching as
+	//     EIGENINFERENCE_DEDICATED_MODELS) routes and pre-warms ONLY onto
+	//     providers at/above the paired version; empty-version providers fail
+	//     every floor. During the v0.7.5 migration this keeps gemma off boxes
+	//     that would legacy-serve it; retire the env after fleet convergence
+	//     (gauge adoption on ONLINE boxes, not seen-3d).
+	v2Floor := strings.TrimSpace(os.Getenv("EIGENINFERENCE_V2_VERSION_FLOOR"))
+	v2Ceiling := 4
+	if v := os.Getenv("EIGENINFERENCE_V2_MAX_CONCURRENCY_CEILING"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 1 {
+			v2Ceiling = n
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_V2_MAX_CONCURRENCY_CEILING; keeping default 4", "value", v)
+		}
+	}
+	registry.SetV2ConcurrencyClamp(v2Floor, v2Ceiling)
+	if v2Floor != "" {
+		logger.Warn("v2 heartbeat concurrency clamp ENABLED (EIGENINFERENCE_V2_VERSION_FLOOR)",
+			"version_floor", v2Floor, "ceiling", v2Ceiling)
+	}
+	if v := os.Getenv("EIGENINFERENCE_MODEL_VERSION_FLOORS"); strings.TrimSpace(v) != "" {
+		floors := registry.ParseModelVersionFloors(v)
+		reg.SetModelVersionFloors(floors)
+		if len(floors) > 0 {
+			logger.Warn("per-model provider-version routing floors ENABLED (EIGENINFERENCE_MODEL_VERSION_FLOORS)",
+				"floors", registry.FormatModelVersionFloors(floors))
+		} else {
+			logger.Warn("EIGENINFERENCE_MODEL_VERSION_FLOORS set but no valid entries parsed; floors disabled", "value", v)
+		}
+	}
+
 	reg.ConfigureCacheAffinity(cfg.RegistryCfg.CacheAffinity)
 	cacheAffinityCfg := reg.CacheAffinityConfigSnapshot()
 	logger.Info("cache affinity configured", "ttl", cacheAffinityCfg.TTL.String(), "bonus_ms", cacheAffinityCfg.BonusMs, "enabled", cacheAffinityCfg.BonusMs > 0)

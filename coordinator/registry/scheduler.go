@@ -1031,6 +1031,14 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 	if !r.providerEligibleForTraitsLocked(p, model, traits) {
 		return false
 	}
+	// Per-model provider-version floor (EIGENINFERENCE_MODEL_VERSION_FLOORS):
+	// the model-scoped sibling of the trait floors above — a floored model
+	// (e.g. gemma-4=0.7.5 during the v2 migration) may only route to providers
+	// at/above the paired binary version; empty-version providers fail every
+	// floor. No-op when the env is unset. See model_version_floors.go.
+	if r.providerBelowModelVersionFloorLocked(p, model) {
+		return false
+	}
 	return true
 }
 

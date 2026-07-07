@@ -648,8 +648,14 @@ const (
 	warmColdStaleChallenge warmColdReason = "stale_challenge"
 	warmColdNotServing     warmColdReason = "not_serving_catalog"
 	warmColdDedicated      warmColdReason = "dedicated_excluded"
-	warmColdTooLarge       warmColdReason = "model_too_large"
-	warmColdNoFreeForLoad  warmColdReason = "no_free_for_load"
+	// warmColdBelowVersionFloor: the model carries a per-model provider-version
+	// routing floor (EIGENINFERENCE_MODEL_VERSION_FLOORS) and this provider's
+	// binary is below it (or reports no version). Routing would never send the
+	// model here, so warming it would waste GPU memory and mislead the demand
+	// calc — mirrors the routing gate exactly (model_version_floors.go).
+	warmColdBelowVersionFloor warmColdReason = "below_model_version_floor"
+	warmColdTooLarge          warmColdReason = "model_too_large"
+	warmColdNoFreeForLoad     warmColdReason = "no_free_for_load"
 )
 
 // warmColdReasonStrings converts a reason tally to a string-keyed map for
@@ -712,6 +718,13 @@ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now 
 	// the model is already covered. Mirrors the routing/preflight gate.
 	if r.providerExcludedByDedicatedRuleLocked(p, model) {
 		return warmPoolCandidate{}, warmColdDedicated
+	}
+	// Same never-warm-what-we-won't-route rule for the per-model provider-version
+	// floors: a below-floor (or version-less) box can't be routed the model, so
+	// it must not be warmed for it either. Mirrors the routing gate
+	// (providerPassesRoutingGatesLockedEx → providerBelowModelVersionFloorLocked).
+	if r.providerBelowModelVersionFloorLocked(p, model) {
+		return warmPoolCandidate{}, warmColdBelowVersionFloor
 	}
 	totalMemoryGB := float64(p.Hardware.MemoryGB)
 	gpuActiveGB := 0.0

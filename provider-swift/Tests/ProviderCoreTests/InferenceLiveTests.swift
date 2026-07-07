@@ -348,30 +348,42 @@ struct InferenceLiveTests {
     @Test(
         "standalone server serves two local models through one process",
         .enabled(
-            if: LiveInferenceFixtures.multiModelLiveTestsEnabled,
-            "set DARKBLOOM_LIVE_MLX_TESTS=1 and DARKBLOOM_LIVE_MLX_MULTI_MODEL=1 to run two-model live tests"
+            if: LiveInferenceFixtures.multiModelLiveTestsEnabled
+                && LiveInferenceFixtures.gemmaTestsEnabled,
+            "set DARKBLOOM_LIVE_MLX_TESTS=1, DARKBLOOM_LIVE_MLX_MULTI_MODEL=1 and DARKBLOOM_LIVE_MLX_GEMMA=1 to run the two-model standalone live test (v0.7.5 one-engine: only CBv2-adapted checkpoints can serve, so this uses gpt-oss + gemma-qat — the production pair)"
         )
     )
     func liveStandaloneServerServesTwoModelsThroughOneProcess() async throws {
+        // v0.7.5 one-engine: the standalone server refuses models without a
+        // CBv2 adapter, so this test serves the PRODUCTION pair (gpt-oss +
+        // gemma-qat) — the same checkpoints as EngineV2CoResidencyLiveTests
+        // — and doubles as the standalone co-residency check: two v2 slots,
+        // re-sliced grants, both serving through one process.
+        let gptossID = EngineV2CoResidencyLiveTests.gptossID
+        let gemmaQatID = EngineV2CoResidencyLiveTests.gemmaQatID
         guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
             Issue.record("skipped: \(LiveFixtureSkip.missingMetallib.description)")
             return
         }
-        guard case .found = LiveInferenceFixtures.locate(LiveInferenceFixtures.tinyModelID) else {
-            Issue.record("skipped: \(LiveFixtureSkip.modelNotInCache(LiveInferenceFixtures.tinyModelID).description)")
+        guard case .found = LiveInferenceFixtures.locate(gptossID) else {
+            Issue.record("skipped: \(LiveFixtureSkip.modelNotInCache(gptossID).description)")
             return
         }
-        guard case .found = LiveInferenceFixtures.locate(LiveInferenceFixtures.tinyModelFallbackID) else {
-            Issue.record("skipped: \(LiveFixtureSkip.modelNotInCache(LiveInferenceFixtures.tinyModelFallbackID).description)")
+        guard case .found = LiveInferenceFixtures.locate(gemmaQatID) else {
+            Issue.record("skipped: \(LiveFixtureSkip.modelNotInCache(gemmaQatID).description)")
             return
         }
-        LiveInferenceFixtures.applyMemoryBudget(maxBytes: 16 * 1024 * 1024 * 1024)
+        LiveInferenceFixtures.applyMemoryBudget(maxBytes: 48 * 1024 * 1024 * 1024)
 
         let server = StandaloneServer(
             config: StandaloneServerConfig(maxCachedModels: 2),
             models: [
-                liveModelInfo(id: LiveInferenceFixtures.tinyModelID, quantization: "8bit"),
-                liveModelInfo(id: LiveInferenceFixtures.tinyModelFallbackID, quantization: "4bit"),
+                liveModelInfo(
+                    id: gptossID, quantization: "mxfp4",
+                    modelType: "gpt_oss", estimatedMemoryGb: 13),
+                liveModelInfo(
+                    id: gemmaQatID, quantization: "4bit",
+                    modelType: "gemma4", estimatedMemoryGb: 16),
             ]
         )
         let app = server.makeApplication()
@@ -402,42 +414,62 @@ struct InferenceLiveTests {
                 }
             }
 
-            try await assertChat(model: LiveInferenceFixtures.tinyModelID, prompt: "Reply with one word: first.")
-            try await assertChat(model: LiveInferenceFixtures.tinyModelFallbackID, prompt: "Reply with one word: second.")
-            try await assertChat(model: LiveInferenceFixtures.tinyModelID, prompt: "Reply with one word: again.")
+            try await assertChat(model: gptossID, prompt: "Reply with one word: first.")
+            try await assertChat(model: gemmaQatID, prompt: "Reply with one word: second.")
+            try await assertChat(model: gptossID, prompt: "Reply with one word: again.")
+
+            // Both slots are v2 co-residents: each holds a live engine KV
+            // grant and the two grants never exceed one fleet budget
+            // (Σ(grants) ≤ budget is the §1.1 invariant, here observed
+            // through the standalone server's own slots).
+            let grantA = await server.debugEngineKVGrant(modelId: gptossID)
+            let grantB = await server.debugEngineKVGrant(modelId: gemmaQatID)
+            #expect((grantA ?? 0) > 0)
+            #expect((grantB ?? 0) > 0)
         }
+        await server.stopAndWait()
     }
 
     @Test(
-        "standalone socket disconnect cleans up scheduler reservations",
+        "standalone socket disconnect cleans up slot reservations",
         .enabled(
             if: LiveInferenceFixtures.liveTestsEnabled,
             "set DARKBLOOM_LIVE_MLX_TESTS=1 to run live MLX inference tests"
         )
     )
-    func liveStandaloneSocketDisconnectCleansUpSchedulerReservations() async throws {
+    func liveStandaloneSocketDisconnectCleansUpSlotReservations() async throws {
+        // v0.7.5 one-engine: the standalone server only serves CBv2-adapted
+        // checkpoints, so this uses gpt-oss (the smallest production model)
+        // instead of the retired tiny-qwen fixture.
+        let modelID = EngineV2CoResidencyLiveTests.gptossID
         guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
             Issue.record("skipped: \(LiveFixtureSkip.missingMetallib.description)")
             return
         }
-        guard case .found = LiveInferenceFixtures.locate(LiveInferenceFixtures.tinyModelID) else {
-            Issue.record("skipped: \(LiveFixtureSkip.modelNotInCache(LiveInferenceFixtures.tinyModelID).description)")
+        guard case .found = LiveInferenceFixtures.locate(modelID) else {
+            Issue.record("skipped: \(LiveFixtureSkip.modelNotInCache(modelID).description)")
             return
         }
-        LiveInferenceFixtures.applyMemoryBudget()
+        LiveInferenceFixtures.applyMemoryBudget(maxBytes: 24 * 1024 * 1024 * 1024)
 
         let port = try reserveUnusedTCPPort()
         let server = StandaloneServer(
             config: StandaloneServerConfig(port: port, maxCachedModels: 1),
-            models: [liveModelInfo(id: LiveInferenceFixtures.tinyModelID, quantization: "8bit")]
+            models: [
+                liveModelInfo(
+                    id: modelID, quantization: "mxfp4",
+                    modelType: "gpt_oss", estimatedMemoryGb: 13)
+            ]
         )
         do {
             try await server.start()
             let listening = try await waitForTCPPort(port, timeout: .seconds(10))
             try #require(listening, "standalone server did not listen on port \(port)")
 
-            try await assertStandaloneDisconnectCleanup(server: server, port: port, stream: true)
-            try await assertStandaloneDisconnectCleanup(server: server, port: port, stream: false)
+            try await assertStandaloneDisconnectCleanup(
+                server: server, port: port, modelID: modelID, stream: true)
+            try await assertStandaloneDisconnectCleanup(
+                server: server, port: port, modelID: modelID, stream: false)
         } catch {
             await server.stopAndWait()
             throw error
@@ -668,13 +700,18 @@ struct InferenceLiveTests {
     }
 }
 
-private func liveModelInfo(id: String, quantization: String) -> ModelInfo {
+private func liveModelInfo(
+    id: String,
+    quantization: String,
+    modelType: String = "chat",
+    estimatedMemoryGb: Double = 0.25
+) -> ModelInfo {
     ModelInfo(
         id: id,
-        modelType: "chat",
+        modelType: modelType,
         quantization: quantization,
         sizeBytes: 0,
-        estimatedMemoryGb: 0.25
+        estimatedMemoryGb: estimatedMemoryGb
     )
 }
 
@@ -789,18 +826,19 @@ private func shutdownLiveProviderLoop(
 private func assertStandaloneDisconnectCleanup(
     server: StandaloneServer,
     port: UInt16,
+    modelID: String,
     stream: Bool
 ) async throws {
-    var fd: Int32? = try openRawStandaloneRequest(port: port, stream: stream)
+    var fd: Int32? = try openRawStandaloneRequest(port: port, modelID: modelID, stream: stream)
     defer {
         if let fd { closeSocket(fd) }
     }
 
-    let becameActive = try await waitUntilAsync(timeout: .seconds(90)) {
-        guard let capacity = await server.debugCapacity(modelId: LiveInferenceFixtures.tinyModelID) else {
+    let becameActive = try await waitUntilAsync(timeout: .seconds(180)) {
+        guard let active = await server.debugActiveRequestCount(modelId: modelID) else {
             return false
         }
-        return capacity.activeRequests + capacity.pendingRequests > 0
+        return active > 0
     }
     try #require(becameActive, "standalone \(stream ? "streaming" : "non-streaming") request never became active")
 
@@ -812,33 +850,31 @@ private func assertStandaloneDisconnectCleanup(
     // Streaming requests release on the next chunk write (broken pipe).
     // Non-streaming requests don't release until the handler finishes
     // because Hummingbird only detects the disconnect when it tries to
-    // write the response. That can take generation_time (~5-8s for the
-    // tiny model at max_tokens=256). 30s gives headroom on slow runners.
+    // write the response. That can take generation_time (~13-20s for
+    // gpt-oss at max_tokens=512). 60s gives headroom on slow runners.
     // Tracked as a known limitation of the MLXLMServer adoption; a future
     // middleware can hook NIO channel-inactive into Task cancellation to
     // restore pre-rewrite latency.
-    let cleanupTimeout: Duration = stream ? .seconds(3) : .seconds(30)
+    let cleanupTimeout: Duration = stream ? .seconds(5) : .seconds(60)
     let cleanedUp = try await waitUntilAsync(timeout: cleanupTimeout) {
-        guard let capacity = await server.debugCapacity(modelId: LiveInferenceFixtures.tinyModelID) else {
+        guard let active = await server.debugActiveRequestCount(modelId: modelID) else {
             return false
         }
-        let reservations = await server.debugSchedulerReservationCount(modelId: LiveInferenceFixtures.tinyModelID)
-        return capacity.activeRequests == 0
-            && capacity.pendingRequests == 0
-            && reservations == 0
+        let reservations = await server.debugSlotReservationCount(modelId: modelID)
+        return active == 0 && reservations == 0
     }
 
-    let capacity = await server.debugCapacity(modelId: LiveInferenceFixtures.tinyModelID)
-    let reservations = await server.debugSchedulerReservationCount(modelId: LiveInferenceFixtures.tinyModelID)
+    let active = await server.debugActiveRequestCount(modelId: modelID)
+    let reservations = await server.debugSlotReservationCount(modelId: modelID)
     #expect(
         cleanedUp,
-        "standalone \(stream ? "streaming" : "non-streaming") disconnect left capacity=\(String(describing: capacity)), reservations=\(reservations)"
+        "standalone \(stream ? "streaming" : "non-streaming") disconnect left active=\(String(describing: active)), reservations=\(reservations)"
     )
 }
 
-private func openRawStandaloneRequest(port: UInt16, stream: Bool) throws -> Int32 {
+private func openRawStandaloneRequest(port: UInt16, modelID: String, stream: Bool) throws -> Int32 {
     let request = ChatCompletionRequest(
-        model: LiveInferenceFixtures.tinyModelID,
+        model: modelID,
         messages: [
             ChatMessage(
                 role: "user",

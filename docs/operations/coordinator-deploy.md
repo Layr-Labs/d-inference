@@ -247,6 +247,8 @@ semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlig
 | `EIGENINFERENCE_PREFILL_FALLBACK_MODE` | Data-derived prefill fallback anchor for UNMEASURED fleets (`off`\|`shadow`\|`enforce`, default `off`): `shadow` emits `routing.prefill_fallback{would_admit\|would_shed}` without changing routing; `enforce` lifts the static sqrt(bandwidth)×ratio estimate (~280 tok/s) to the fallback anchor when neither a slot measurement nor a trusted median exists |
 | `EIGENINFERENCE_PREFILL_FALLBACK_TPS` | The fallback anchor (default 6500 = measured fleet prefill p50, 2026-06-22 live check) |
 | `EIGENINFERENCE_MAX_PREFILL_TPS` | Prefill sanity ceiling shared by heartbeat ingest zeroing and routing caps (default 20000, above the measured p90 17,707 so real v0.7.5 `observed_prefill_tps` reports survive ingest; the old 5000 would zero the majority of them) |
+| `EIGENINFERENCE_SATISFICING_BAND` | Utilization band (default `false` = dormant): among candidates predicted to meet the request's TTFT deadline (with margin) and decode floor, select weighted-random by inverse recent serves instead of cheapest-cost — spreads load off the top-10% boxes onto the idle SLO-meeting majority. Canary AFTER gemma re-enable stabilizes; guard: TTFT p90 within ±10% of pre-band baseline. Live-read |
+| `EIGENINFERENCE_SATISFICING_TTFT_MARGIN_MS` | Band TTFT safety margin subtracted from the request deadline (default 1000). Live-read |
 | `EIGENINFERENCE_IPAPI_KEY` | ip-api.com PRO key; unset falls back to the free 45 req/min tier |
 
 ## Troubleshooting

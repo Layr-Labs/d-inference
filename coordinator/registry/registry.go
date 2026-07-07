@@ -1376,6 +1376,11 @@ type Registry struct {
 	cacheAffinity        *cacheAffinityTracker
 	cacheAffinityBonusMs float64
 	warmPool             *warmPoolController
+	// serveCounter is the decaying per-provider recent-serve counter behind
+	// the satisficing band's inverse-recent-serves selection weight
+	// (satisficing_band.go). Fed on every successful reservation (flag-
+	// independent, so weights are warm when the band flips on); own lock.
+	serveCounter *recentServeCounter
 	// loadModelSender is a test seam for SendLoadModel. Nil uses the provider WebSocket.
 	loadModelSender func(providerID, modelID string) error
 
@@ -1460,6 +1465,7 @@ func New(logger *slog.Logger) *Registry {
 		evictStrikes:                   make(map[string]int),
 		cacheAffinity:                  newCacheAffinityTracker(cacheAffinityTTL),
 		cacheAffinityBonusMs:           defaultCacheAffinityBonusMs,
+		serveCounter:                   newRecentServeCounter(),
 		logger:                         logger,
 	}
 }

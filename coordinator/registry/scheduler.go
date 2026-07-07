@@ -376,6 +376,11 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 
 	pr.ProviderID = p.ID
 	p.addPendingLocked(pr)
+	// Feed the satisficing band's recent-serve counter on EVERY successful
+	// reservation (flag-independent): weights are already warm the moment the
+	// band flips on, and recording is selection-neutral while it's off. The
+	// counter has its own leaf lock; see satisficing_band.go.
+	r.serveCounter.record(p.ID)
 	// If this pair's capacity-reject cooldown just EXPIRED, this reservation is
 	// its single half-open probe: claim it here (r.mu write lock is held for the
 	// whole selection+reservation, so concurrent reservations serialize) so the
@@ -749,6 +754,33 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 	pool := scan.pool
 	affinityProviderID := scan.affinityProviderID
 	candidateCount := scan.candidateCount
+
+	// Satisficing utilization band (EIGENINFERENCE_SATISFICING_BAND, default
+	// OFF — this block is dormant and selection below is byte-for-byte
+	// today's). Among candidates predicted to meet the request's SLO with
+	// margin (the band — the same TTFT/decode predicates the hard gates
+	// compute; see satisficing_band.go), pick weighted-random by inverse
+	// recent serves instead of cheapest-cost, so the idle majority of SLO-
+	// meeting boxes absorbs load the fastest tier otherwise monopolizes.
+	// Candidates outside the band never displace the cost path: an empty band
+	// falls through to the exact selection below. Cache affinity keeps its
+	// pin WITHIN the band (prefix-cache TTFT for repeat prefixes; a pinned
+	// consumer's turns are serial, so honoring the pin costs no spread).
+	if satisficingBandEnabled() {
+		if band := satisficingBandMembers(pool, pr); len(band) > 0 {
+			winner := r.pickSatisficingBandLocked(band)
+			if affinityProviderID != "" {
+				for _, c := range band {
+					if c.provider.ID == affinityProviderID {
+						winner = c
+						break
+					}
+				}
+			}
+			r.logRoutingDecision(model, pr, winner, candidateCount)
+			return winner, candidateCount, scan.capacityRejections, scan.tooLargeRejections, scan.visionRejections, scan.ttftRejections, scan.bestTTFTMs, scan.breakerRejected
+		}
+	}
 
 	var best *routingCandidate
 	for _, c := range pool {

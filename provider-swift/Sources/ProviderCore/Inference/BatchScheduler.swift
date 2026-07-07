@@ -242,10 +242,11 @@ public actor BatchScheduler {
 
     /// Pure stats-interval policy (testable). Unset / malformed / negative ⇒
     /// default; `0` ⇒ disabled; a positive value sets the cadence in seconds.
+    /// Delegates to the shared scheduler-free `PrefixCachePolicy` (the v2
+    /// bridge's stats logger uses the same resolver).
     static func resolveStatsInterval(env: String?) -> Int {
-        guard let v = env else { return defaultPrefixCacheStatsIntervalSecs }
-        guard let n = Int(v), n >= 0 else { return defaultPrefixCacheStatsIntervalSecs }
-        return n  // n == 0 ⇒ disabled
+        PrefixCachePolicy.statsIntervalSecs(
+            environment: env.map { ["DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS": $0] } ?? [:])
     }
     /// Bumped on every `loadModel` / `stopCurrentEngine` so stale model
     /// loads can detect they've been superseded.

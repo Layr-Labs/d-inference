@@ -146,12 +146,14 @@ extension EngineV2Bridge {
         active.count
     }
 
-    /// This engine's KV admission ceiling in bytes (construction-fixed).
-    /// Read by the slot factory when sizing a LATER v2 engine so that
-    /// Σ(engine ceilings) stays within the process-wide KV budget — see
-    /// `EngineV2KVSizing.engineKVBytesCapacity` — and by the heartbeat
-    /// (`EngineV2Runtime.capacitySummary`) as the grant input to the live
-    /// budget clamp (`EngineV2KVSizing.liveEngineKVBytesBudget`).
+    /// This engine's KV admission ceiling in bytes (construction-fixed;
+    /// already NET of any prefix-cache budget — `PrefixCachePolicy.carve`).
+    /// The heartbeat (`EngineV2Runtime.capacitySummary`) uses it as the
+    /// grant input to the live budget clamp
+    /// (`EngineV2KVSizing.liveEngineKVBytesBudget`); the slot factory sizes
+    /// LATER engines against `slotKVBytesClaim()` — this figure PLUS the
+    /// cache budget — so Σ(engine ceilings + cache budgets) stays within
+    /// the process-wide KV budget (`EngineV2KVSizing.engineKVBytesCapacity`).
     public func engineKVBytesCapacity() -> Int {
         engine.capacity().kvBytesCapacity
     }

@@ -83,9 +83,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Per-tenant prefix-cache scope (`SHA256(prompt_cache_key)`/`user`, ""
     /// ⇒ unscoped). Threaded into `submitTokenized` so the checkpoint cache is
     /// partitioned per consumer (closes the TB-007 cross-tenant channel). On
-    /// the v2 path the same value maps onto `CBv2Request.cacheSalt` (inert
-    /// today — the production v2 engine is built with `prefixCache: nil`).
+    /// the v2 path the same value maps onto `CBv2Request.cacheSalt` — LIVE
+    /// as of v0.7.5 (the production engine runs `PrefixCacheV2` when
+    /// `PrefixCachePolicy` funds it; see T-041).
     private let cacheScope: String
+    /// Per-request usage-detail signal (v2 engine path only): the bridge
+    /// records the engine's terminal `prefixCacheHitTokens` here so the
+    /// caller's frames loop can splice OpenAI-standard
+    /// `prompt_tokens_details.cached_tokens` into the trailing SSE usage
+    /// chunk. Same out-of-band pattern as `engineV2Logprobs`. Ignored
+    /// (silently) when the model serves via legacy.
+    private let engineV2Usage: EngineV2RequestUsageSignal?
     /// Per-request logprobs plumbing (v2 engine path only; the legacy engine
     /// never emitted logprobs). Non-nil ⇒ the sealed request asked for
     /// logprobs: the v2 translation flips `logprobs`/`top_logprobs` on so
@@ -118,7 +126,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         cacheScope: String = "",
         engineV2Logprobs: EngineV2LogprobsPlumbing? = nil,
         engineV2Sampling: EngineV2SamplingOverrides? = nil,
-        engineV2Vision: EngineV2VisionPlumbing? = nil
+        engineV2Vision: EngineV2VisionPlumbing? = nil,
+        engineV2Usage: EngineV2RequestUsageSignal? = nil
     ) {
         self.registryProvider = registryProvider
         self.ensureLoaded = ensureLoaded
@@ -130,6 +139,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.engineV2Logprobs = engineV2Logprobs
         self.engineV2Sampling = engineV2Sampling
         self.engineV2Vision = engineV2Vision
+        self.engineV2Usage = engineV2Usage
         self.acquire = nil
         self.tokenizerProvider = nil
         self.availableModelsOverride = nil
@@ -180,6 +190,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // nil ⇒ `.production` at the routing site — the --local path gets
         // the same vision-through-v2 behavior as the coordinator path.
         self.engineV2Vision = nil
+        // The --local path serves SSE frames inside the upstream router
+        // (no provider frame decorator), so there is nowhere to splice
+        // cached_tokens — same scoping as `engineV2Logprobs`.
+        self.engineV2Usage = nil
     }
 
     // MARK: - MLXServerEngine
@@ -328,6 +342,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         requestId: visionRequestId,
                         cacheScope: cacheScope,
                         logprobsChannel: engineV2Logprobs?.channel,
+                        // Vision requests are prefix-cache-excluded engine-
+                        // side (hit tokens always 0), but the signal still
+                        // reaches its terminal so the frames loop never
+                        // waits on an unset box.
+                        usageSignal: engineV2Usage,
                         multimodal: prepared.multimodalInput()
                     )
                     // The bridge now owns the request's memory accounting:
@@ -500,10 +519,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 requestId: requestId,
                 // Same per-tenant scope the legacy submit threads into the
                 // checkpoint cache; the bridge maps it to CBv2Request.cacheSalt
-                // (TB-007; inert — production builds the engine with
-                // prefixCache: nil).
+                // (TB-007/T-041 — LIVE as of v0.7.5 when PrefixCachePolicy
+                // funds the cache).
                 cacheScope: cacheScope,
-                logprobsChannel: engineV2Logprobs?.channel
+                logprobsChannel: engineV2Logprobs?.channel,
+                usageSignal: engineV2Usage
             )
             cancelUpstream = { await bridge.cancel(requestId: requestId) }
         } else {

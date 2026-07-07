@@ -146,8 +146,13 @@ extension ProviderLoop {
                 .addingReportingOverflow(UInt64(max(0, slotWeights)))
             coResidentWeightBytes = overflow ? .max : sum
             if let existingBridge = slot.engineV2 {
+                // TOTAL claim (engine ceiling + prefix-cache budget), not
+                // the bare engine capacity: an existing slot's cache budget
+                // was carved out of its engine ceiling, so counting only
+                // the ceiling would re-grant the cache's bytes to this
+                // newcomer (T-041 budget accounting).
                 existingEngineKVCapacities.append(
-                    await existingBridge.engineKVBytesCapacity())
+                    await existingBridge.slotKVBytesClaim())
             }
         }
         // `memory_reserve_gb` (round-3 PR#499 P2): the shared KV gate and the
@@ -155,12 +160,32 @@ extension ProviderLoop {
         // static v2 ceiling must be derived under the same effective cap or a
         // 16/32 GiB box (default 4 GiB reserve > implied reserve) advertises
         // capacity the shared gate rejects post-acceptance.
-        let kvBytesCapacity = EngineV2KVSizing.engineKVBytesCapacity(
+        let slotKVBytesCapacity = EngineV2KVSizing.engineKVBytesCapacity(
             newModelWeightBytes: weightBytes,
             coResidentWeightBytes: coResidentWeightBytes,
             existingEngineKVCapacities: existingEngineKVCapacities,
             configReserveBytes: Self.memoryReserveBytes(
                 forGiB: loopConfig.config.provider.memoryReserveGB))
+
+        // THE single carve point (T-041, v0.7.5): split the slot's grant
+        // between the engine's admission ceiling and the RAM-only v2 prefix
+        // cache. Everything downstream reads ENGINE TRUTH — the engine's
+        // private ledger (`AdmissionV2`), the bridge capacity snapshot, and
+        // the heartbeat `activeTokenBudgetMax` all derive from the REDUCED
+        // `kvBytesCapacity` handed to `makeProductionEngine` below — so the
+        // coordinator is never told about bytes the cache will consume, and
+        // cached KV + live-request KV can never jointly exceed the grant.
+        // Live serving wins: the carve shrinks the PREFIX budget (down to 0)
+        // before it would starve the engine below the serviceable floor.
+        let requestedPrefixBudget = PrefixCachePolicy.isEnabled(environment: environment)
+            ? PrefixCachePolicy.budgetBytes(environment: environment)
+            : 0
+        let carve = PrefixCachePolicy.carve(
+            slotKVBytesCapacity: slotKVBytesCapacity,
+            requestedBudgetBytes: requestedPrefixBudget,
+            kvBytesPerToken: kvBytesPerToken)
+        let kvBytesCapacity = carve.engineKVBytesCapacity
+        let prefixCacheBudgetBytes = carve.prefixCacheBudgetBytes
 
         // Resolve the EOS/stop inputs + engine builder: from the test hooks
         // when installed, otherwise from the loaded container (production).
@@ -168,11 +193,22 @@ extension ProviderLoop {
         let extraEOSTokens: [String]
         let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
         let makeEngine: () throws -> any CBv2Engine
+        // Funded cache instance (production path only; nil under test hooks
+        // — the scripted engines have no cache seam — and when the carve
+        // returned 0). Built HERE, not inside the closure, so the slot
+        // factory keeps the handle for the periodic stats logger below.
+        let prefixCache = engineV2SlotHooks == nil
+            ? PrefixCachePolicy.makePrefixCache(
+                modelId: modelId, budgetBytes: prefixCacheBudgetBytes)
+            : nil
         if let hooks = engineV2SlotHooks {
             eosTokenIds = hooks.eosTokenIds
             extraEOSTokens = hooks.extraEOSTokens
             emitTelemetry = hooks.emitTelemetry
             let hookBuilder = hooks.makeEngine
+            // Hooks receive the REDUCED (post-carve) capacity — exactly what
+            // the production path hands the engine — so tests can pin the
+            // carve arithmetic without building a real engine.
             makeEngine = { try hookBuilder(modelId, kvBytesCapacity) }
         } else {
             // Snapshot the model handle + EOS config out of the container.
@@ -223,7 +259,8 @@ extension ProviderLoop {
                 return try EngineV2Factory.makeProductionEngine(
                     model: servingModel,
                     tokenizer: tokenizer.inner,
-                    kvBytesCapacity: kvBytesCapacity)
+                    kvBytesCapacity: kvBytesCapacity,
+                    prefixCache: prefixCache)
             }
         }
 
@@ -244,6 +281,11 @@ extension ProviderLoop {
                 // gate subtract. nil ⇒ no shared gating/accounting (unit
                 // tests / the standalone path).
                 kvBudget: kvBudget,
+                // The carve's budget (0 when the cache is off). Under test
+                // hooks no cache INSTANCE exists, but the budget bookkeeping
+                // must match production shape so the claim/heartbeat math is
+                // testable with scripted engines.
+                prefixCacheBudgetBytes: prefixCacheBudgetBytes,
                 emitTelemetry: emitTelemetry,
                 makeEngine: makeEngine)
         else {
@@ -267,6 +309,15 @@ extension ProviderLoop {
         // Register before the slot goes live so capacity heartbeats and
         // cancellation fan-out see the bridge from the first request.
         await engineV2Runtime.register(modelId: modelId, bridge: bridge)
+        // Periodic cache stats (v2 analog of the legacy checkpoint-tier
+        // logger; cancelled by `bridge.shutdown()` on unload). Production
+        // path only — under test hooks no cache instance exists.
+        if let prefixCache {
+            await bridge.startPrefixCacheStatsLogger(cache: prefixCache)
+        }
+        let prefixCacheState = prefixCache != nil
+            ? "on, budget \(prefixCacheBudgetBytes) B (RAM-only, salt-scoped — T-041)"
+            : "off"
         if isVLM {
             // Distinguish the VLM routing mode in prod logs: text AND image
             // requests serve via v2 (image via CBv2 multimodal prefill, with
@@ -276,11 +327,13 @@ extension ProviderLoop {
                 "engine_v2: serving \(modelId) via ContinuousBatchingV2 "
                     + "(vlm_text_routing=true: text→v2, image→v2 multimodal prefill "
                     + "(legacy on fallback), video→legacy VLM path; "
+                    + "prefix cache \(prefixCacheState); "
                     + "legacy scheduler retained for fallback)")
         } else {
             logger.info(
                 "engine_v2: serving \(modelId) via ContinuousBatchingV2 "
-                    + "(legacy scheduler retained for fallback)")
+                    + "(prefix cache \(prefixCacheState); "
+                    + "legacy scheduler retained for fallback)")
         }
         return bridge
     }

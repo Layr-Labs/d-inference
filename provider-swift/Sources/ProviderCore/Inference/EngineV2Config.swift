@@ -175,6 +175,7 @@ public enum EngineV2Factory {
         maxConcurrentRequests: Int = 4,
         kvBytesPerToken: Int = 0,
         kvBudget: GlobalKVCacheBudget? = nil,
+        prefixCacheBudgetBytes: Int = 0,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngine: () throws -> any CBv2Engine
     ) -> EngineV2Bridge? {
@@ -197,6 +198,11 @@ public enum EngineV2Factory {
                 maxConcurrentRequests: maxConcurrentRequests,
                 kvBytesPerToken: kvBytesPerToken,
                 kvBudget: kvBudget,
+                // Fleet-sizing bookkeeping only (the cache itself was carved
+                // out of the engine's kvBytesCapacity by the caller): the
+                // bridge exposes it via `slotKVBytesClaim()` so later loads
+                // subtract the cache's bytes too (T-041 budget accounting).
+                prefixCacheBudgetBytes: prefixCacheBudgetBytes,
                 emitTelemetry: emitTelemetry
             )
         } catch {

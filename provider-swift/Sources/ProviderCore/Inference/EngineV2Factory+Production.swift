@@ -80,12 +80,25 @@ extension EngineV2Factory {
     ///     engine serves — weights are shared, never duplicated).
     ///   - tokenizer: the model's tokenizer, for incremental detokenization.
     ///   - kvBytesCapacity: admission ceiling for sequence KV, in bytes
-    ///     (derive from `UnifiedMemoryCap.kvBudgetBytes`).
+    ///     (derive from `UnifiedMemoryCap.kvBudgetBytes`). When a prefix
+    ///     cache is supplied, the caller has ALREADY carved that cache's
+    ///     byte budget out of this figure (`PrefixCachePolicy.carve`) so
+    ///     cached KV + live-request KV can never jointly exceed the slot's
+    ///     grant under the unified-memory cap.
+    ///   - prefixCache: RAM-only v2 prefix cache (`PrefixCachePolicy
+    ///     .makePrefixCache` — gate + budget + carve are the caller's job).
+    ///     Non-nil ⇒ the engine runs with `enablePrefixCache: true`
+    ///     (lookup/adopt on submit, donate on finish, per-request
+    ///     `cacheSalt` tenant scoping live). nil ⇒ no cache, byte-identical
+    ///     to the pre-v0.7.5 engine. Threat model: T-041 (RAM-only on v2 —
+    ///     no on-disk artifact; the in-process cross-tenant TTFT oracle is
+    ///     the SEC-035 accepted risk).
     ///   - maxConcurrentRequests: concurrent-decode row cap.
     static func makeProductionEngine(
         model: any LanguageModel,
         tokenizer: any MLXLMCommon.Tokenizer,
         kvBytesCapacity: Int,
+        prefixCache: PrefixCacheV2? = nil,
         maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests
     ) throws -> any CBv2Engine {
         guard kvBytesCapacity > 0 else {
@@ -136,10 +149,14 @@ extension EngineV2Factory {
             sampler: CBv2DefaultSampler(),
             detokenizerFactory: CBv2TextDetokenizerFactory(tokenizer: tokenizer),
             schedulerConfig: CBv2SchedulerConfig(
-                maxConcurrentRequests: max(1, maxConcurrentRequests)),
-            // TB-007: the v2 prefix cache stays OFF until it has its own
-            // threat-model review (cross-tenant prefix sharing channel).
-            prefixCache: nil
+                maxConcurrentRequests: max(1, maxConcurrentRequests),
+                enablePrefixCache: prefixCache != nil),
+            // TB-007 / T-041 (updated for v0.7.5): the v2 prefix cache is
+            // RAM-only `PrefixCacheV2` with per-request `cacheSalt` tenant
+            // scoping — reviewed under the existing SEC-035 accepted risk
+            // (in-process TTFT oracle; strictly safer than the legacy
+            // on-disk tier). Gate/budget/carve: `PrefixCachePolicy`.
+            prefixCache: prefixCache
         )
     }
 }

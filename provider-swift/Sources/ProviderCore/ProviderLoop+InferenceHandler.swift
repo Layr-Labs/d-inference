@@ -373,6 +373,13 @@ extension ProviderLoop {
                 return true
             }
 
+            // Per-request v2 usage-detail signal (prefixCacheHitTokens):
+            // written by the bridge pump at the engine terminal, read below
+            // when the trailing usage chunk arrives so cached_tokens can be
+            // spliced into it. v2 slots only — legacy never reports it.
+            let v2UsageSignal: EngineV2RequestUsageSignal? =
+                slotEngineV2 != nil ? EngineV2RequestUsageSignal() : nil
+
             // Build a single-model engine view bound to the scheduler we
             // already resolved. This keeps the engine constructor's
             // "model not loaded" path unreachable on this code path while
@@ -394,7 +401,8 @@ extension ProviderLoop {
                     EngineV2LogprobsPlumbing(
                         topLogprobs: logprobsSpec?.topLogprobs, channel: $0)
                 },
-                engineV2Sampling: samplingOverrides
+                engineV2Sampling: samplingOverrides,
+                engineV2Usage: v2UsageSignal
             )
 
             // Force-stream so we get SSE frames even if the original request
@@ -612,6 +620,21 @@ extension ProviderLoop {
                                 )
                                 frameToEmit = Self.injectReasoningTokens(
                                     into: frame, reasoningTokens: reasoningTokens
+                                )
+                            }
+                            // v2 prefix cache (T-041): splice OpenAI-standard
+                            // `prompt_tokens_details.cached_tokens` into the
+                            // trailing usage chunk. The bridge pump recorded
+                            // the signal BEFORE yielding its terminal, which
+                            // happens-before this usage frame was encoded, so
+                            // the read is never racy. Operates on frameToEmit
+                            // (composes with the reasoning splice above);
+                            // absent/zero hits leave the frame untouched.
+                            // Billing is unaffected — the coordinator settles
+                            // from inference_complete, not from this field.
+                            if let hits = v2UsageSignal?.prefixCacheHitTokens, hits > 0 {
+                                frameToEmit = Self.injectCachedTokens(
+                                    into: frameToEmit, cachedTokens: hits
                                 )
                             }
                         }

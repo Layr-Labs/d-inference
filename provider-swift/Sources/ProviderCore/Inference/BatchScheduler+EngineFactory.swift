@@ -321,11 +321,10 @@ extension BatchScheduler {
         weightHash: String?,
         architecture: ModelArchitecture
     ) async -> PrefixCacheBacking? {
-        // Default ON: only an explicit opt-out disables it.
-        let env = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE"]?
-            .trimmingCharacters(in: .whitespaces).lowercased()
-        let disabled = env == "0" || env == "false" || env == "off" || env == "no"
-        guard !disabled else {
+        // Default ON: only an explicit opt-out disables it. Gate semantics
+        // shared with the v2 engine via `PrefixCachePolicy.isEnabled` — one
+        // opt-out (DARKBLOOM_PREFIX_CACHE=0) governs both engines (T-041).
+        guard PrefixCachePolicy.isEnabled() else {
             prefixCacheLogger.info(
                 "DARKBLOOM_PREFIX_CACHE is OFF (explicit opt-out) — prefix cache disabled.")
             return nil

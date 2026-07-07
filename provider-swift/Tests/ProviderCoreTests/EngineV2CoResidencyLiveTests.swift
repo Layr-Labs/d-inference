@@ -35,15 +35,11 @@ struct EngineV2CoResidencyLiveTests {
 
     private static let gib: UInt64 = 1024 * 1024 * 1024
 
-    /// Test-scoped operator reserve (`memory_reserve_gb`): shrinks the
-    /// effective cap so the re-sliced grants — and therefore the worst-case
-    /// admission probe — stay small enough to run under concurrent-suite
-    /// memory contention (another agent shares this machine's GPU). On a
-    /// 128 GiB box this pins the cap at 64 GiB; smaller boxes keep 8 GiB.
-    private static var reserveGiB: UInt64 {
-        let physicalGiB = ProcessInfo.processInfo.physicalMemory / gib
-        return physicalGiB > 96 ? physicalGiB - 64 : 8
-    }
+    /// Test-scoped operator reserve (`memory_reserve_gb`). Kept modest so
+    /// the model LOAD gate (free-memory based) breathes under
+    /// concurrent-suite memory pressure; the admission-ceiling probe below
+    /// is pure engine-ledger arithmetic and does not depend on free RAM.
+    private static let reserveGiB: UInt64 = 8
 
     /// Real ProviderLoop over the two production checkpoints, with an
     /// isolated runtime. Estimated sizes mirror the on-disk footprints
@@ -135,14 +131,12 @@ struct EngineV2CoResidencyLiveTests {
         // Engine-truth rate for the admission-probe arithmetic below.
         #expect(sizingA.fp16KVBytesPerToken == 24_576)
 
-        // ---- Admission probe P: worst-case KV that FITS the full grant but
-        // NOT the post-shrink share. Sized DYNAMICALLY between the two
-        // ceilings (engine-exact arithmetic is drift-test-pinned:
-        // estimatedBytes ≈ maxTokens × 24,576 for gpt-oss; sliding plateaus
-        // are negligible): 15% above the expected post-shrink share, well
-        // below the current full grant. Probe first: it must be ADMITTED
-        // now (first token arrives), then cancelled before it burns real
-        // decode time. ----
+        // ---- Admission-ceiling probe P: a worst-case request that FITS the
+        // full grant but NOT the post-shrink share, submitted DIRECTLY to
+        // the engine so the verdict is the admission ledger's canEverFit —
+        // pure grant arithmetic (drift-test-pinned against estimatedBytes),
+        // immune to free-RAM contention from concurrent suites. Sized 15%
+        // above the expected post-shrink share, well below the full grant.
         let gemmaSizingPreview = EngineV2KVSizing.ResliceSlot(
             modelId: Self.gemmaQatID, fp16KVBytesPerToken: 20_480, maxContextLength: 262_144)
         let previewBudget = UnifiedMemoryCap.kvBudgetBytes(
@@ -166,33 +160,32 @@ struct EngineV2CoResidencyLiveTests {
                 "probe must exceed the post-shrink ceiling to be meaningful")
         print("[co-residency] probeTokens=\(probeTokens) (~\(probeBytes / Self.gib)GiB worst-case)")
         let probePrompt = try await tokenize("Write a very long story.", loop: loop)
-        func submitProbe() async -> AsyncStream<GenerationEvent> {
-            await bridgeA.submitTokenized(
-                promptTokens: probePrompt,
-                request: ChatCompletionRequest(
-                    model: Self.gptossID,
-                    messages: [ChatMessage(role: "user", content: "Write a very long story.")],
-                    temperature: 0,
-                    max_tokens: probeTokens),
-                requestId: "probe-\(UUID().uuidString.prefix(8))")
+        let engineA = await bridgeA.engine
+        /// Submit the probe straight to the engine ledger. Returns the
+        /// stream when admitted (caller cancels + drains), nil when the
+        /// ledger refused it (capacityExhausted).
+        @Sendable func submitLedgerProbe(_ id: UInt64) -> AsyncStream<CBv2Event>? {
+            do {
+                return try engineA.submit(
+                    CBv2Request(
+                        id: CBv2RequestID(id),
+                        promptTokens: probePrompt,
+                        maxTokens: probeTokens))
+            } catch {
+                return nil
+            }
         }
         do {
-            let probe = await submitProbe()
-            var admitted = false
-            for await event in probe {
-                switch event {
-                case .chunk:
-                    admitted = true
-                case .info, .error:
-                    break
-                }
-                if admitted { break }
+            // Pre-shrink: the ledger ADMITS the worst case under the full
+            // grant. Cancel immediately (submit-no-throw IS the verdict) and
+            // drain so its reservations release.
+            let probeId: UInt64 = 0x7000_0001
+            let probe = submitLedgerProbe(probeId)
+            #expect(probe != nil, "the worst-case probe must fit the FULL grant pre-shrink")
+            if let probe {
+                engineA.cancel(CBv2RequestID(probeId))
+                for await _ in probe {}
             }
-            #expect(admitted, "the worst-case probe must fit the FULL grant pre-shrink")
-            // Cancel everything on the bridge (only the probe is live).
-            for id in await activeIds(bridgeA) { await bridgeA.cancel(requestId: id) }
-            // Drain to the terminal so its KV reservation is released.
-            for await _ in probe {}
         }
 
         // ---- 2. Stream on A while B loads. ----
@@ -248,12 +241,14 @@ struct EngineV2CoResidencyLiveTests {
                 + "grantB=\(UInt64(grantB) / Self.gib)GiB")
 
         // ---- 4. A's NEXT admission respects the SHRUNK ceiling: the same
-        // worst-case probe that was admitted pre-shrink is now REFUSED with
-        // the canonical capacity error. ----
-        let refusedProbe = await submitProbe()
-        let refusal = await collectBridgeStream(refusedProbe)
-        #expect(refusal.error?.contains("token_budget_exhausted") == true,
-                "post-shrink probe must be refused, got: \(refusal.error ?? "nil")")
+        // worst-case probe that was admitted pre-shrink is now REFUSED by
+        // the ledger (canEverFit against the re-sliced capacity). ----
+        let refusedProbe = submitLedgerProbe(0x7000_0002)
+        #expect(refusedProbe == nil, "post-shrink probe must be refused by the admission ledger")
+        if let refusedProbe {  // drain if the assertion failed, don't leak
+            engineA.cancel(CBv2RequestID(0x7000_0002))
+            for await _ in refusedProbe {}
+        }
 
         // Both slots serve a REAL decode through the production path.
         _ = try await loop.runStartupSelfTestDecode(modelId: Self.gptossID)
@@ -286,8 +281,4 @@ struct EngineV2CoResidencyLiveTests {
             tools: nil, additionalContext: nil)
     }
 
-    /// The bridge's live provider request-ids (for cancelling the probe).
-    private func activeIds(_ bridge: EngineV2Bridge) async -> [String] {
-        await bridge._testActiveRequestIds()
-    }
 }

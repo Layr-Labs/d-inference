@@ -66,22 +66,28 @@ const (
 )
 
 type routingSnapshot struct {
-	provider           *Provider
-	model              string
-	chipFamily         string // hardware chip family (e.g. "M3"); keys the TTFT calibrator
-	slotState          string
-	hasHeadroom        bool
-	totalPending       int
-	pendingForModel    int
-	pendingMaxTokens   int
-	backendRunning     int
-	backendWaiting     int
-	maxTokensPotential int64
-	decodeTPS          float64
-	prefillTPS         float64
-	systemMetrics      protocol.SystemMetrics
-	gpuMemoryActiveGB  float64
-	totalMemoryGB      float64
+	provider         *Provider
+	model            string
+	chipFamily       string // hardware chip family (e.g. "M3"); keys the TTFT calibrator
+	slotState        string
+	hasHeadroom      bool
+	totalPending     int
+	pendingForModel  int
+	pendingMaxTokens int
+	// pendingMaxTokensAllModels is pendingMaxTokens WITHOUT the model filter:
+	// the token budgets of every coordinator-pending request on this provider,
+	// any model. Feeds the pooled-budget admission check (pooledBudgetAdmits)
+	// so co-resident models cannot double-spend the one shared KV pool inside
+	// the heartbeat gap.
+	pendingMaxTokensAllModels int
+	backendRunning            int
+	backendWaiting            int
+	maxTokensPotential        int64
+	decodeTPS                 float64
+	prefillTPS                float64
+	systemMetrics             protocol.SystemMetrics
+	gpuMemoryActiveGB         float64
+	totalMemoryGB             float64
 	// freeForLoadGB is the provider-reported max additional model-weight (GB) it
 	// can load right now (net of cap/reserve/headroom, idle models reclaimed).
 	// When non-nil it is the authoritative cold-load gate; nil = legacy provider
@@ -97,6 +103,11 @@ type routingSnapshot struct {
 	activeTokenBudgetUsed int64
 	activeTokenBudgetMax  int64
 	queuedTokenBudget     int64
+	// pooledTokenBudget is the provider's reconstructed whole-box token budget
+	// (all budget slots; shared headroom counted once — providerPooledTokenBudget).
+	// Zero value when the provider reports no backend capacity / no budget
+	// slots, which disables the pooled admission check.
+	pooledTokenBudget pooledTokenBudget
 	// kvBytesPerToken is the provider-reported per-token KV-cache cost (bytes)
 	// for THIS model's slot (BackendSlotCapacity.KVBytesPerToken). 0 = unreported
 	// (callers fall back to the kvCacheBytesPerToken default). Used by the
@@ -1068,11 +1079,13 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 	}
 
 	for _, pr := range p.pendingReqs {
+		tokens := pendingTokenBudget(pr)
+		snap.pendingMaxTokensAllModels += tokens
 		if pr.Model != model {
 			continue
 		}
 		snap.pendingForModel++
-		snap.pendingMaxTokens += pendingTokenBudget(pr)
+		snap.pendingMaxTokens += tokens
 	}
 	// Concurrency headroom with the quality-concurrency cap: a slow model whose
 	// quality batch is below the flat fallback (e.g. Gemma at ~14 tok/s solo →
@@ -1091,6 +1104,7 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 		if p.BackendCapacity.TotalMemoryGB > 0 {
 			snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 		}
+		snap.pooledTokenBudget = providerPooledTokenBudget(p.BackendCapacity.Slots)
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model != model {
 				continue
@@ -1173,7 +1187,18 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 		if coordinatorExtra < 0 {
 			coordinatorExtra = 0
 		}
-		return snap.activeTokenBudgetUsed+snap.queuedTokenBudget+coordinatorExtra+requestTokens <= snap.activeTokenBudgetMax
+		if snap.activeTokenBudgetUsed+snap.queuedTokenBudget+coordinatorExtra+requestTokens > snap.activeTokenBudgetMax {
+			return false
+		}
+		// The per-slot max still encodes this model's own context/KV ceiling, but
+		// it is NOT a private budget: co-resident slots share the box's ONE KV
+		// pool (each slot's max = own committed + the SAME shared headroom), so a
+		// burst admitted against model A within the heartbeat gap is invisible to
+		// model B's slot max until the next heartbeat. The request must therefore
+		// also fit the reconstructed whole-box pool with EVERY model's
+		// coordinator-pending tokens charged (see pooled_admission.go). Reduces
+		// exactly to the per-slot check for single-model providers.
+		return pooledBudgetAdmits(snap.pooledTokenBudget, snap.pendingMaxTokensAllModels, requestTokens)
 	}
 
 	if !snap.modelLoaded {
@@ -1994,11 +2019,13 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			hasBackendCapacity: p.BackendCapacity != nil,
 		}
 		for _, pending := range p.pendingReqs {
+			tokens := pendingTokenBudget(pending)
+			snap.pendingMaxTokensAllModels += tokens
 			if pending.Model != model {
 				continue
 			}
 			snap.pendingForModel++
-			snap.pendingMaxTokens += pendingTokenBudget(pending)
+			snap.pendingMaxTokens += tokens
 		}
 		if snap.hasBackendCapacity {
 			snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
@@ -2006,6 +2033,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			if p.BackendCapacity.TotalMemoryGB > 0 {
 				snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 			}
+			snap.pooledTokenBudget = providerPooledTokenBudget(p.BackendCapacity.Slots)
 			for _, slot := range p.BackendCapacity.Slots {
 				if slot.Model != model {
 					continue

@@ -201,6 +201,16 @@ func main() {
 		"decode_floor_tps", cfg.RegistryCfg.WarmPool.DecodeFloorTPS,
 	)
 
+	// Combined (box-wide) admission cap: per-model quality caps are checked
+	// independently, so a box saturated on model A still admits model B. This
+	// adds Σ_slots(load/qc) + 1/qc_model <= overcommit on top of the per-model
+	// caps. Dormant by default — turned on together with the open-pool
+	// (DEDICATED_MODELS="") flip.
+	if os.Getenv("EIGENINFERENCE_COMBINED_ADMISSION_CAP") == "true" {
+		reg.SetCombinedAdmissionCap(true)
+		logger.Warn("combined admission cap ENABLED via EIGENINFERENCE_COMBINED_ADMISSION_CAP (box-wide Σ load/qc budget on top of per-model caps)")
+	}
+
 	reg.ConfigureCacheAffinity(cfg.RegistryCfg.CacheAffinity)
 	cacheAffinityCfg := reg.CacheAffinityConfigSnapshot()
 	logger.Info("cache affinity configured", "ttl", cacheAffinityCfg.TTL.String(), "bonus_ms", cacheAffinityCfg.BonusMs, "enabled", cacheAffinityCfg.BonusMs > 0)

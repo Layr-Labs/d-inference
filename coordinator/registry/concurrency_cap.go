@@ -185,7 +185,137 @@ func (r *Registry) effectiveMaxConcurrencyForModelLocked(p *Provider, model stri
 // p.mu.
 func (r *Registry) hasConcurrencyHeadroomForModelCapLocked(p *Provider, model string, staticDecodeTPS float64) bool {
 	return p.pendingLoadForModelLocked(model) < r.effectiveMaxConcurrencyForModelLocked(p, model, staticDecodeTPS) &&
-		p.pendingCount() < p.maxConcurrency()
+		p.pendingCount() < p.maxConcurrency() &&
+		r.combinedAdmissionHeadroomLocked(p, model, staticDecodeTPS)
+}
+
+// SetCombinedAdmissionCap toggles the box-wide combined admission budget (see
+// combinedAdmissionHeadroomLocked). Called once at startup, from
+// EIGENINFERENCE_COMBINED_ADMISSION_CAP; default false leaves per-model
+// admission byte-identical to the independent per-model caps.
+func (r *Registry) SetCombinedAdmissionCap(enabled bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.combinedAdmissionCap = enabled
+}
+
+// combinedAdmissionEpsilon absorbs float rounding in the Σ(load/qc) budget so a
+// box exactly AT its overcommit budget (e.g. 1.0 + 1/5 vs overcommit 1.2) is not
+// rejected on the last binary digit.
+const combinedAdmissionEpsilon = 1e-9
+
+// combinedSlotLoad is one backend slot's contribution to the combined admission
+// budget: its current load and the quality concurrency of its model on this
+// provider. qc <= 0 marks the slot's quality concurrency unresolvable — the slot
+// is skipped (fails open per-slot) rather than guessed.
+type combinedSlotLoad struct {
+	load int
+	qc   int
+}
+
+// combinedAdmissionAdmits is the pure core of the combined (box-wide) admission
+// cap:
+//
+//	Σ_slots(load_s / qc_s) + 1/qc_candidate <= overcommit
+//
+// Each slot's in-flight load is normalized by that model's quality concurrency,
+// so the sum is the fraction of the box's quality-bounded capacity already
+// committed, on a scale where 1.0 = "every resident model at its own quality
+// batch". Admitting one more request of the candidate model costs 1/qc_candidate.
+// The bound is the candidate model's resolved overcommit — the same allowance the
+// per-model cap grants. An unresolvable candidate qc (<= 0) fails open, matching
+// the per-model cap's trust rules, and a box with ZERO combined load always
+// admits — the same at-least-one floor the per-model cap applies (capped < 1 →
+// 1), so a sub-1/qc overcommit can never starve an idle box.
+func combinedAdmissionAdmits(slots []combinedSlotLoad, candidateQC int, overcommit float64) bool {
+	if candidateQC <= 0 {
+		return true
+	}
+	used := 0.0
+	for _, s := range slots {
+		if s.qc <= 0 || s.load <= 0 {
+			continue
+		}
+		used += float64(s.load) / float64(s.qc)
+	}
+	if used == 0 {
+		return true
+	}
+	return used+1.0/float64(candidateQC) <= overcommit+combinedAdmissionEpsilon
+}
+
+// combinedAdmissionHeadroomLocked applies the box-wide combined admission cap
+// (combinedAdmissionAdmits) to a candidate (provider, model) pair. Per-model
+// caps are checked independently, so a box saturated on model A still admits
+// model B — each model sees only its own slot. This gate sums every resident
+// slot's normalized load so cross-model saturation is visible at admission (the
+// hard edge that lets the pool open before contention-aware scoring lands).
+//
+// Dormant unless BOTH EIGENINFERENCE_COMBINED_ADMISSION_CAP and the quality cap
+// are enabled — the budget is meaningless without the quality-concurrency
+// machinery, and with the flag off behavior is byte-identical to today. The
+// candidate model's qc uses the caller-threaded staticDecodeTPS (the same input
+// the per-model cap consumes, whatever resolver feeds it); co-resident slots use
+// the provider's static single-stream rate (resolvedDecodeTPS — the identical
+// value the per-model capacity feed resolves for those models today; the
+// per-(model, chip) solo resolver refines this input at the same seam when it
+// lands). Never the observed-under-load EWMA — see the file header. The
+// benchmark trust rule mirrors effectiveMaxConcurrencyForModelLocked: with no
+// registration benchmark (p.DecodeTPS <= 0) a non-dedicated candidate is not
+// capped from the bandwidth fallback.
+//
+// Per-slot load is the model-scoped max(coordinator-pending, backend
+// running+waiting) — pendingLoadForModelLocked's semantics — computed inline
+// because that helper's legacy fallback (no reported MaxConcurrency → TOTAL
+// pending count) is per-model-safe but would double-count when summed across
+// slots. Caller holds r.mu and p.mu.
+func (r *Registry) combinedAdmissionHeadroomLocked(p *Provider, model string, staticDecodeTPS float64) bool {
+	if !r.combinedAdmissionCap || !r.qualityCapEnabled {
+		return true
+	}
+	if p.DecodeTPS <= 0 {
+		if _, dedicated := r.dedicatedPatternForLocked(model); !dedicated {
+			return true
+		}
+	}
+	candidateQC := 0
+	if staticDecodeTPS > 0 {
+		candidateQC = qualityConcurrency(staticDecodeTPS, r.qualityCapFloorTPS, effectiveTPSLoadFactor,
+			p.maxConcurrencyForModelLocked(model), r.qualityCapFallback)
+	}
+	var slots []combinedSlotLoad
+	if p.BackendCapacity != nil {
+		slots = make([]combinedSlotLoad, 0, len(p.BackendCapacity.Slots))
+		for _, slot := range p.BackendCapacity.Slots {
+			if slot.Model == "" {
+				continue
+			}
+			load := p.pendingCountForModelLocked(slot.Model)
+			if backendLoad := clampNonNegative(slot.NumRunning) + clampNonNegative(slot.NumWaiting); backendLoad > load {
+				load = backendLoad
+			}
+			slotTPS := resolvedDecodeTPS(p)
+			if slot.Model == model {
+				slotTPS = staticDecodeTPS
+			}
+			qc := 0
+			if slotTPS > 0 {
+				qc = qualityConcurrency(slotTPS, r.qualityCapFloorTPS, effectiveTPSLoadFactor,
+					p.maxConcurrencyForModelLocked(slot.Model), r.qualityCapFallback)
+			}
+			slots = append(slots, combinedSlotLoad{load: load, qc: qc})
+		}
+	}
+	return combinedAdmissionAdmits(slots, candidateQC, r.qualityCapOvercommitForModelLocked(model))
+}
+
+// clampNonNegative floors a heartbeat-reported count at 0 so a malformed slot
+// cannot subtract from the combined load sum.
+func clampNonNegative(v int) int {
+	if v < 0 {
+		return 0
+	}
+	return v
 }
 
 // hasConcurrencyHeadroomForModelCapResolvedLocked is hasConcurrencyHeadroomForModelCapLocked

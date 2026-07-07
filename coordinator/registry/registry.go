@@ -1198,6 +1198,14 @@ type Registry struct {
 	qualityCapFloorTPS   float64
 	qualityCapFallback   int
 
+	// combinedAdmissionCap extends the quality-concurrency cap with a box-wide
+	// budget (see combinedAdmissionHeadroomLocked in concurrency_cap.go): per-model
+	// caps are otherwise checked independently, so a box saturated on model A
+	// still admits model B. Default off (dormant until the open-pool flip); set
+	// once at startup via SetCombinedAdmissionCap from
+	// EIGENINFERENCE_COMBINED_ADMISSION_CAP. Guarded by r.mu.
+	combinedAdmissionCap bool
+
 	// APNs code-identity rollout policy (v0.6.0), guarded by r.mu and evaluated
 	// LIVE at every routing decision so a deadline can flip enforcement on/off
 	// without forcing providers to reconnect.

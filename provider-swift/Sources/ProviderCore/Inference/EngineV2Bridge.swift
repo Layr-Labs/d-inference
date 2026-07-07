@@ -89,8 +89,9 @@ public actor EngineV2Bridge {
     /// engine ledger, the heartbeat budget, and the cache jointly never
     /// exceed the slot's grant. Fleet sizing reads it back via
     /// `slotKVBytesClaim()` — the bytes are claimed even though the engine's
-    /// own capacity no longer shows them (T-041).
-    public let prefixCacheBudgetBytes: Int
+    /// own capacity no longer shows them (T-041). `nonisolated`: immutable
+    /// and Sendable, so heartbeat/test readers need no actor hop.
+    public nonisolated let prefixCacheBudgetBytes: Int
     /// Periodic prefix-cache stats logger (v2 analog of the legacy
     /// checkpoint-tier logger). Started by the slot factory when a funded
     /// cache exists; cancelled in `shutdown()`.

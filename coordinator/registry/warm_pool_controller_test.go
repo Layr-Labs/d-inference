@@ -418,7 +418,13 @@ func TestWarmPoolPressureLoadsBeforeMinWarmFloor(t *testing.T) {
 	}
 }
 
-func TestWarmPoolFleetSnapshotUsesObservedSlotTPS(t *testing.T) {
+// TestWarmPoolFleetSnapshotSplitsSoloAndServiceRates: the snapshot's
+// soloDecodeTPS must come from the quality-cap solo resolver (static solo
+// rate — here the registration benchmark, since no solo samples or seed
+// exist), NOT the under-load slot EWMA, so warm targets use the same quality
+// math as the admission cap. The EWMA still feeds serviceDecodeTPS/prefillTPS,
+// which size E[S] (a request's actually-observed rates).
+func TestWarmPoolFleetSnapshotSplitsSoloAndServiceRates(t *testing.T) {
 	reg := New(testLogger())
 	model := "warm-pool-observed-tps"
 	p := makeSchedulerProvider(t, reg, "warm", model, 23)
@@ -429,8 +435,11 @@ func TestWarmPoolFleetSnapshotUsesObservedSlotTPS(t *testing.T) {
 
 	snap := reg.warmPoolFleetSnapshot(time.Now())[model]
 
-	if snap.soloDecodeTPS != 73 {
-		t.Fatalf("soloDecodeTPS = %v, want observed slot TPS 73", snap.soloDecodeTPS)
+	if snap.soloDecodeTPS != 23 {
+		t.Fatalf("soloDecodeTPS = %v, want static solo rate 23 (observed EWMA must not feed quality concurrency)", snap.soloDecodeTPS)
+	}
+	if snap.serviceDecodeTPS != 73 {
+		t.Fatalf("serviceDecodeTPS = %v, want observed slot TPS 73", snap.serviceDecodeTPS)
 	}
 	if snap.prefillTPS != 1000 {
 		t.Fatalf("prefillTPS = %v, want observed slot prefill TPS 1000", snap.prefillTPS)
@@ -452,7 +461,13 @@ func TestWarmPoolFleetSnapshotFallsBackToStaticTPS(t *testing.T) {
 	}
 }
 
-func TestWarmPoolDiagnosticsReflectObservedTPS(t *testing.T) {
+// TestWarmPoolDiagnosticsSplitObservedAndSoloRates: E[S] (ServiceTime) still
+// reflects the observed load-inclusive rates, while QualityConcurrency
+// deliberately does NOT read the under-load EWMA — it is computed from the
+// same static solo rate as the admission cap (postmortem layer 6: EWMA-fed
+// planning and static-fed admission used to disagree). Static 23 tok/s at
+// floor 15 → quality batch 1, no matter how high the current EWMA reads.
+func TestWarmPoolDiagnosticsSplitObservedAndSoloRates(t *testing.T) {
 	reg := New(testLogger())
 	model := "warm-pool-observed-diagnostics"
 	p := makeSchedulerProvider(t, reg, "warm", model, 23)
@@ -473,11 +488,11 @@ func TestWarmPoolDiagnosticsReflectObservedTPS(t *testing.T) {
 		t.Fatalf("snapshots = %d, want 1", len(snaps))
 	}
 	snap := snaps[0]
-	if snap.QualityConcurrency <= 2 {
-		t.Fatalf("QualityConcurrency = %d, want observed TPS to raise it above stale value 2", snap.QualityConcurrency)
+	if snap.QualityConcurrency != 1 {
+		t.Fatalf("QualityConcurrency = %d, want 1 from the static solo rate 23 (observed EWMA 73 must not inflate the quality batch)", snap.QualityConcurrency)
 	}
 	if snap.ServiceTime >= 10*time.Second {
-		t.Fatalf("ServiceTime = %v, want observed TPS to keep it below stale 12.8s", snap.ServiceTime)
+		t.Fatalf("ServiceTime = %v, want observed rates to keep it below stale 12.8s", snap.ServiceTime)
 	}
 }
 

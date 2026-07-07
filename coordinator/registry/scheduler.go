@@ -1075,12 +1075,14 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 		snap.pendingMaxTokens += pendingTokenBudget(pr)
 	}
 	// Concurrency headroom with the quality-concurrency cap: a slow model whose
-	// quality batch is below the flat fallback (e.g. Gemma at ~23 tok/s solo →
+	// quality batch is below the flat fallback (e.g. Gemma at ~14 tok/s solo →
 	// batch 1-2) stops being admittable once it is at its quality cap, so load
-	// spreads across boxes instead of collapsing a few. Uses the static
-	// single-stream decode rate (snap.decodeTPS = resolvedDecodeTPS), not the
-	// observed-under-load value. No-op (legacy flat cap) when the cap is disabled.
-	snap.hasHeadroom = r.hasConcurrencyHeadroomForModelCapLocked(p, model, snap.decodeTPS)
+	// spreads across boxes instead of collapsing a few. The cap resolves the
+	// model's own static solo rate internally (solo median / seed → provider
+	// benchmark fallback) — NOT snap.decodeTPS, which stays the provider-level
+	// rate for TTFT/cost estimation, and NOT the observed-under-load value.
+	// No-op (legacy flat cap) when the cap is disabled.
+	snap.hasHeadroom = r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, model)
 	snap.hasBackendCapacity = p.BackendCapacity != nil
 
 	if p.BackendCapacity != nil {
@@ -1967,10 +1969,10 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		}
 
 		// Concurrency gate (with the quality-concurrency cap, same as the dispatch
-		// snapshot — uses the static single-stream decode rate so routing and the
-		// shed preflight stay consistent and a slow model's quality cap counts a
-		// saturated box as a capacity rejection here too).
-		if !r.hasConcurrencyHeadroomForModelCapLocked(p, model, resolvedDecodeTPS(p)) {
+		// snapshot — resolves the model's own static solo rate internally so
+		// routing and the shed preflight stay consistent and a slow model's
+		// quality cap counts a saturated box as a capacity rejection here too).
+		if !r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, model) {
 			p.mu.Unlock()
 			capacityRejections++
 			continue

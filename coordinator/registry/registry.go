@@ -2669,9 +2669,20 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	p.BackendCapacity = msg.BackendCapacity
 	if p.BackendCapacity != nil {
 		chipFamily := p.Hardware.ChipFamily
+		// Solo gate: a slot EWMA is additionally recorded as a SOLO sample only
+		// when the whole box is uncontended at heartbeat time (Σ running+waiting
+		// ≤ 1 across ALL slots — the one allowance is the sample-generating
+		// request itself). The unconditional Record keeps its load-inclusive
+		// semantics for TTFT estimation (fleetMedianTPS); the gated RecordSolo
+		// feeds the quality-concurrency cap's per-model static rate
+		// (resolvedSoloModelTPSLocked). See solo_tps.go.
+		soloEligible := soloSampleEligible(p.BackendCapacity)
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.ObservedDecodeTPS > 0 {
 				r.tpsRegistry.Record(slot.Model, chipFamily, slot.ObservedDecodeTPS)
+				if soloEligible {
+					r.tpsRegistry.RecordSolo(slot.Model, chipFamily, slot.ObservedDecodeTPS)
+				}
 			}
 		}
 	}

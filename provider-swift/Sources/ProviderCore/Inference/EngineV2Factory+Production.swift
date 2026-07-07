@@ -20,17 +20,17 @@
 //   * `CBv2DefaultSampler` + `CBv2TextDetokenizerFactory` (real incremental
 //     detokenization with stop-string holdback).
 //
-// Any throw here lands in `makeBridgeIfSelected`'s catch: WARN
-// `engine_health` telemetry (`operation=engine_v2_fallback`) + silent
-// legacy fallback — a provider can never lose serving capacity to a v2
-// construction failure.
+// Any throw here lands in `makeBridge`'s catch (v0.7.5 fail-loud): ERROR
+// `engine_health` telemetry (`operation=engine_v2_refusal`) + rethrow —
+// the load fails with a 503 and the coordinator reroutes. There is no
+// legacy engine to fall back to.
 
 import Foundation
 import MLXLLM
 import MLXLMCommon
 
 /// Failure modes of production v2-engine construction. Each maps to the
-/// factory's safe-fallback path (WARN telemetry + legacy engine).
+/// factory's REFUSAL path (ERROR `engine_v2_refusal` telemetry + throw).
 enum EngineV2ProductionError: Error, CustomStringConvertible {
     /// The loaded module is not a CBv2-adapted family (an unexpected
     /// architecture). Allowlisted Gemma 4 VLM wrappers do NOT land here —
@@ -38,8 +38,8 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
     /// (`EngineV2VLMTextExtraction`) and hands THAT to this factory.
     case unsupportedModel(String)
     /// No KV byte budget is left under the unified-memory cap — an engine
-    /// admitted with a zero ceiling would reject every request, so fall
-    /// back to the legacy scheduler's shared-budget path instead.
+    /// admitted with a zero ceiling would reject every request, so the
+    /// load is refused (503; the coordinator reroutes).
     case noKVHeadroom
 
     var description: String {

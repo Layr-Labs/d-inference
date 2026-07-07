@@ -26,7 +26,7 @@
 //      wrapper allocates but the MLXLLM model does not), and
 //      `update(parameters:verify:[.all])` — missing/extra/mis-shaped keys
 //      all THROW, which the engine factory catches as the standard
-//      `engine_v2_fallback` WARN + legacy path (never silent wrongness);
+//      `engine_v2_refusal` ERROR + load failure (never silent wrongness);
 //   4. run a tiny forward through BOTH the wrapper's text path and the
 //      extracted model and require cross-containment of each side's greedy
 //      argmax in the other side's top-5, plus a bounded max |Δlogit| — a
@@ -51,7 +51,7 @@ import MLXNN
 import MLXVLM
 
 /// Failure modes of VLM text-model extraction. Every case lands in
-/// `EngineV2Factory.makeBridgeIfSelected`'s catch → WARN `engine_v2_fallback`
+/// `EngineV2Factory.makeBridge`'s catch → ERROR `engine_v2_refusal`
 /// telemetry + legacy serving. The messages are operator-facing (they ride
 /// the telemetry `error` field), so they say exactly what to look at.
 enum EngineV2VLMTextExtractionError: Error, CustomStringConvertible {
@@ -150,7 +150,7 @@ enum EngineV2VLMTextExtraction {
         // verify: [.all] — a missing model key, an unused weight key, or a
         // shape mismatch all throw here. That is the design: any drift
         // between the wrapper's parameter tree and the MLXLLM architecture
-        // must fail LOUDLY at load (→ engine_v2_fallback WARN + legacy),
+        // must fail LOUDLY at load (→ engine_v2_refusal ERROR + 503),
         // never produce a silently wrong serving model.
         try skeleton.update(
             parameters: ModuleParameters.unflattened(textWeights), verify: [.all])

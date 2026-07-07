@@ -520,7 +520,7 @@ struct ProviderLoopPrefetchTests {
         try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
         let refs = modelDir.appendingPathComponent("refs", isDirectory: true)
         try FileManager.default.createDirectory(at: refs, withIntermediateDirectories: true)
-        try Data(#"{"model_type":"qwen3"}"#.utf8).write(to: snapshot.appendingPathComponent("config.json"))
+        try Data(#"{"model_type":"gpt_oss"}"#.utf8).write(to: snapshot.appendingPathComponent("config.json"))
         try Data("fake mlx weight bytes".utf8).write(to: snapshot.appendingPathComponent("model.safetensors"))
         try "local".write(to: refs.appendingPathComponent("main"), atomically: true, encoding: .utf8)
         return modelDir
@@ -562,7 +562,7 @@ struct ProviderLoopPrefetchTests {
 
     @Test("verified prefetch advertises the new build and records its weight hash")
     func verifiedPrefetchAdvertisesAndHashes() async throws {
-        let startupModel = ModelInfo(id: "org/startup", sizeBytes: 1, estimatedMemoryGb: 1)
+        let startupModel = ModelInfo(id: "org/startup", modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let newModelID = "org/prefetched-\(UUID().uuidString)"
         let modelDir = try seedSnapshot(modelID: newModelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
@@ -635,7 +635,7 @@ struct ProviderLoopPrefetchTests {
         // advertise a synthetic zero-size ModelInfo (which would be routed with
         // estimatedMemoryGb == 0, bypassing memory sizing) — it advertises nothing
         // and emits no models_update, so the coordinator never routes the build.
-        let startupModel = ModelInfo(id: "org/startup", sizeBytes: 1, estimatedMemoryGb: 1)
+        let startupModel = ModelInfo(id: "org/startup", modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let newModelID = "org/unscannable-\(UUID().uuidString)"
         // Deliberately do NOT seed a snapshot; make sure no stray dir exists.
         let modelDir = ModelDownloader.cacheModelDirectory(for: newModelID)
@@ -672,7 +672,7 @@ struct ProviderLoopPrefetchTests {
 
     @Test("verified prefetch raises the effective slot cap so old+new can be resident together")
     func verifiedPrefetchRaisesEffectiveSlotCap() async throws {
-        let startupModel = ModelInfo(id: "org/startup", sizeBytes: 1, estimatedMemoryGb: 1)
+        let startupModel = ModelInfo(id: "org/startup", modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let newModelID = "org/prefetched-\(UUID().uuidString)"
         let modelDir = try seedSnapshot(modelID: newModelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
@@ -711,7 +711,7 @@ struct ProviderLoopPrefetchTests {
 
     @Test("effective slot cap never exceeds the operator-configured hard cap")
     func effectiveSlotCapHonorsHardCap() async throws {
-        let startupModel = ModelInfo(id: "org/startup", sizeBytes: 1, estimatedMemoryGb: 1)
+        let startupModel = ModelInfo(id: "org/startup", modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let newModelID = "org/prefetched-\(UUID().uuidString)"
         let modelDir = try seedSnapshot(modelID: newModelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
@@ -744,7 +744,7 @@ struct ProviderLoopPrefetchTests {
     @Test("prefetch of an already-advertised+hashed model short-circuits to verified")
     func alreadyHashedShortCircuits() async throws {
         let modelID = "org/already-hashed"
-        let startup = ModelInfo(id: modelID, sizeBytes: 1, estimatedMemoryGb: 1, weightHash: "abc123")
+        let startup = ModelInfo(id: modelID, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1, weightHash: "abc123")
         // Seed config with a known hash so the pre-check sees a recorded hash.
         let loop = try makeLoopWithHashes(models: [startup], hashes: [modelID: "abc123"])
         let client = makeClient()
@@ -820,7 +820,7 @@ struct ProviderLoopPrefetchTests {
         let modelDir = try seedSnapshot(modelID: desiredBuild)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
-        let previousInfo = ModelInfo(id: previousBuild, sizeBytes: 1, estimatedMemoryGb: 1)
+        let previousInfo = ModelInfo(id: previousBuild, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let loop = try makeLoop(models: [previousInfo], maxModelSlots: 3)
         let client = makeClient()
         // Mirror startup advertising into the client store so the hard-swap drop
@@ -906,7 +906,7 @@ struct ProviderLoopPrefetchTests {
         let modelDir = try seedSnapshot(modelID: desiredBuild)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
-        let previousInfo = ModelInfo(id: previousBuild, sizeBytes: 1, estimatedMemoryGb: 1)
+        let previousInfo = ModelInfo(id: previousBuild, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let loop = try makeLoop(models: [previousInfo], maxModelSlots: 3)
         let client = makeClient()
         _ = await client.advertiseModel(previousInfo)
@@ -975,7 +975,7 @@ struct ProviderLoopPrefetchTests {
         let staleDir = try seedSnapshot(modelID: staleDesired)
         defer { try? FileManager.default.removeItem(at: staleDir) }
 
-        let currentInfo = ModelInfo(id: currentBuild, sizeBytes: 1, estimatedMemoryGb: 1)
+        let currentInfo = ModelInfo(id: currentBuild, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let loop = try makeLoop(models: [currentInfo], maxModelSlots: 3)
         let client = makeClient()
         _ = await client.advertiseModel(currentInfo)
@@ -1032,7 +1032,7 @@ struct ProviderLoopPrefetchTests {
         try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
         let refs = modelDir.appendingPathComponent("refs", isDirectory: true)
         try FileManager.default.createDirectory(at: refs, withIntermediateDirectories: true)
-        try Data(#"{"model_type":"qwen3"}"#.utf8).write(to: snapshot.appendingPathComponent("config.json"))
+        try Data(#"{"model_type":"gpt_oss"}"#.utf8).write(to: snapshot.appendingPathComponent("config.json"))
         try "local".write(to: refs.appendingPathComponent("main"), atomically: true, encoding: .utf8)
         return modelDir
     }
@@ -1051,7 +1051,7 @@ struct ProviderLoopPrefetchTests {
         let modelDir = try seedConfigOnlySnapshot(modelID: desiredBuild)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
-        let previousInfo = ModelInfo(id: previousBuild, sizeBytes: 1, estimatedMemoryGb: 1)
+        let previousInfo = ModelInfo(id: previousBuild, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let loop = try makeLoop(models: [previousInfo], maxModelSlots: 3)
         let client = makeClient()
         _ = await client.advertiseModel(previousInfo)

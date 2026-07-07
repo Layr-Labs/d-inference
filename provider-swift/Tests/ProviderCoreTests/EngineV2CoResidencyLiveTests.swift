@@ -35,6 +35,16 @@ struct EngineV2CoResidencyLiveTests {
 
     private static let gib: UInt64 = 1024 * 1024 * 1024
 
+    /// Test-scoped operator reserve (`memory_reserve_gb`): shrinks the
+    /// effective cap so the re-sliced grants — and therefore the worst-case
+    /// admission probe — stay small enough to run under concurrent-suite
+    /// memory contention (another agent shares this machine's GPU). On a
+    /// 128 GiB box this pins the cap at 64 GiB; smaller boxes keep 8 GiB.
+    private static var reserveGiB: UInt64 {
+        let physicalGiB = ProcessInfo.processInfo.physicalMemory / gib
+        return physicalGiB > 96 ? physicalGiB - 64 : 8
+    }
+
     /// Real ProviderLoop over the two production checkpoints, with an
     /// isolated runtime. Estimated sizes mirror the on-disk footprints
     /// (gpt-oss ~12.1 GiB, gemma-qat ~14.9 GiB).
@@ -57,7 +67,7 @@ struct EngineV2CoResidencyLiveTests {
                     sizeBytes: 15 * Self.gib, estimatedMemoryGb: 17.0),
             ],
             config: ProviderConfig(
-                provider: ProviderSettings(name: "coresidency-live", memoryReserveGB: 4),
+                provider: ProviderSettings(name: "coresidency-live", memoryReserveGB: Self.reserveGiB),
                 backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 3),
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
             )
@@ -116,7 +126,7 @@ struct EngineV2CoResidencyLiveTests {
         try await loop.ensureModelLoaded(modelId: Self.gptossID)
         let bridgeA = try #require(await loop.slotBridgeForTesting(modelId: Self.gptossID))
         let sizingA = try #require(await loop.slotSizingForTesting(modelId: Self.gptossID))
-        let reserveBytes: UInt64 = 4 * Self.gib  // memoryReserveGB above
+        let reserveBytes: UInt64 = Self.reserveGiB * Self.gib  // memoryReserveGB above
         let grantA0 = await bridgeA.engineKVBytesCapacity()
         let budgetAlone = UnifiedMemoryCap.kvBudgetBytes(
             residentWeightBytes: UInt64(sizingA.weightsBytes),
@@ -126,11 +136,35 @@ struct EngineV2CoResidencyLiveTests {
         #expect(sizingA.fp16KVBytesPerToken == 24_576)
 
         // ---- Admission probe P: worst-case KV that FITS the full grant but
-        // NOT the post-shrink share. Sized between the two ceilings:
-        // estimatedBytes ≈ maxTokens × 24,576 (gpt-oss sliding plateaus are
-        // negligible). Probe first: it must be ADMITTED now (first token
-        // arrives), then cancelled before it burns real decode time. ----
-        let probeTokens = 2_500_000  // ≈ 61 GiB worst-case KV
+        // NOT the post-shrink share. Sized DYNAMICALLY between the two
+        // ceilings (engine-exact arithmetic is drift-test-pinned:
+        // estimatedBytes ≈ maxTokens × 24,576 for gpt-oss; sliding plateaus
+        // are negligible): 15% above the expected post-shrink share, well
+        // below the current full grant. Probe first: it must be ADMITTED
+        // now (first token arrives), then cancelled before it burns real
+        // decode time. ----
+        let gemmaSizingPreview = EngineV2KVSizing.ResliceSlot(
+            modelId: Self.gemmaQatID, fp16KVBytesPerToken: 20_480, maxContextLength: 262_144)
+        let previewBudget = UnifiedMemoryCap.kvBudgetBytes(
+            residentWeightBytes: UInt64(sizingA.weightsBytes) + 15 * Self.gib,
+            configReserveBytes: reserveBytes)
+        let previewTargets = EngineV2KVSizing.resliceGrants(
+            existing: [
+                .init(
+                    modelId: Self.gptossID,
+                    fp16KVBytesPerToken: sizingA.fp16KVBytesPerToken,
+                    maxContextLength: sizingA.maxContextLength)
+            ],
+            newcomer: gemmaSizingPreview,
+            fleetKVBudgetBytes: previewBudget)
+        let expectedShrunkA = try #require(previewTargets[Self.gptossID])
+        let probeBytes = min(
+            UInt64(Double(expectedShrunkA) * 1.15),
+            UInt64(Double(grantA0) * 0.85))
+        let probeTokens = Int(probeBytes) / sizingA.fp16KVBytesPerToken
+        #expect(probeTokens * sizingA.fp16KVBytesPerToken > expectedShrunkA,
+                "probe must exceed the post-shrink ceiling to be meaningful")
+        print("[co-residency] probeTokens=\(probeTokens) (~\(probeBytes / Self.gib)GiB worst-case)")
         let probePrompt = try await tokenize("Write a very long story.", loop: loop)
         func submitProbe() async -> AsyncStream<GenerationEvent> {
             await bridgeA.submitTokenized(

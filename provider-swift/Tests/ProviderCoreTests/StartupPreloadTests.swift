@@ -280,7 +280,8 @@ struct StartupPreloaderTests {
 private func preloadModelInfo(_ id: String, memoryGb: Double) -> ModelInfo {
     ModelInfo(
         id: id,
-        modelType: "gemma",
+        // Supported family (the v0.7.5 advertise gate drops adapterless types).
+        modelType: "gemma4",
         parameters: nil,
         quantization: "4bit",
         sizeBytes: UInt64(memoryGb * 1_000_000_000),

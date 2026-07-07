@@ -917,6 +917,13 @@ func (r *Registry) OwnedProviderSummary(accountID, model string, traits RequestT
 		// instead of proceeding into a dispatch that can only be rejected.
 		serves := r.providerServesOwnedRoutableModelLocked(p, model) &&
 			r.providerEligibleForTraitsLocked(p, model, traits) &&
+			// Per-model version floor: the dispatch gate applies it to
+			// self-route too (a below-floor binary would MIS-SERVE the model,
+			// owner's box or not — model_version_floors.go), so the preflight
+			// summary must agree or a below-floor owned box reads as
+			// "serves model", queues, and dies as machine_busy instead of
+			// failing fast with the real cause.
+			!r.providerBelowModelVersionFloorLocked(p, model) &&
 			(!requiresVision || r.providerServesVisionModelLocked(p, model, true)) &&
 			p.RuntimeVerified &&
 			r.providerSupportsPrivateTextLocked(p) &&

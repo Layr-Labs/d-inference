@@ -159,3 +159,36 @@ func TestModelVersionFloorWarmPoolCandidacy(t *testing.T) {
 		t.Fatalf("coldDisq = %v, want %q: 1", snap.coldDisq, warmColdBelowVersionFloor)
 	}
 }
+
+// TestModelVersionFloorOwnedSummaryConsistency (review fix): the self-route
+// preflight summary must apply the same per-model version floor as the
+// dispatch gate — otherwise a below-floor OWNED box reads as "serves model",
+// passes the self-route preflight, queues for up to 120s, and dies as
+// machine_busy instead of failing fast with the real cause. Fails without the
+// providerBelowModelVersionFloorLocked check in OwnedProviderSummary.
+func TestModelVersionFloorOwnedSummaryConsistency(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetModelVersionFloors(ParseModelVersionFloors("gemma-4=0.7.5"))
+
+	oldBox := floorProvider(t, reg, "owned-old", "0.7.4")
+	oldBox.mu.Lock()
+	oldBox.AccountID = "acct-1"
+	oldBox.mu.Unlock()
+
+	online, serves := reg.OwnedProviderSummary("acct-1", gemmaBuild, RequestTraits{}, false)
+	if online != 1 || serves != 0 {
+		t.Fatalf("below-floor owned box: OwnedProviderSummary = (online %d, serves %d), want (1, 0) — the summary must mirror the dispatch floor", online, serves)
+	}
+	// The floor is model-scoped: the same box still serves unfloored models.
+	if _, serves := reg.OwnedProviderSummary("acct-1", gptossBuild, RequestTraits{}, false); serves != 1 {
+		t.Fatalf("below-floor owned box: gpt-oss serves = %d, want 1 (only gemma is floored)", serves)
+	}
+
+	newBox := floorProvider(t, reg, "owned-new", "0.7.5")
+	newBox.mu.Lock()
+	newBox.AccountID = "acct-1"
+	newBox.mu.Unlock()
+	if online, serves := reg.OwnedProviderSummary("acct-1", gemmaBuild, RequestTraits{}, false); online != 2 || serves != 1 {
+		t.Fatalf("with a >=floor owned box: OwnedProviderSummary = (online %d, serves %d), want (2, 1)", online, serves)
+	}
+}

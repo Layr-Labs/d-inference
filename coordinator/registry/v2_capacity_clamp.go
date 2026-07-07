@@ -55,8 +55,8 @@ func SetV2ConcurrencyClamp(floor string, ceiling int) {
 	v2MaxConcurrencyCeiling = ceiling
 }
 
-// V2ConcurrencyClampConfig returns the configured (floor, ceiling) pair.
-// Exposed for startup logging.
+// V2ConcurrencyClampConfig returns the configured (floor, ceiling) pair
+// (tests pin the setter's sanitization through it).
 func V2ConcurrencyClampConfig() (string, int) {
 	return v2VersionFloor, v2MaxConcurrencyCeiling
 }

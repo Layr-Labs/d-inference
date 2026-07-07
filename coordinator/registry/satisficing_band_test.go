@@ -52,6 +52,7 @@ func reserveOnce(t *testing.T, reg *Registry, pr *PendingRequest) string {
 // path — the fast box wins EVERY trial (its cost is ~30s below the next
 // candidate, far outside the near-tie window, so there is no randomization).
 func TestSatisficingBandOffSelectionPinned(t *testing.T) {
+	t.Setenv(satisficingBandEnv, "false") // pin the default against ambient operator env
 	reg := New(testLogger())
 	bandFixture(t, reg)
 	for i := 0; i < 50; i++ {
@@ -148,6 +149,7 @@ func TestSatisficingBandWeightsShiftWithRecentServes(t *testing.T) {
 // successful reservation even with the flag OFF, so weights are warm the
 // moment the band is enabled.
 func TestSatisficingBandServeCounterFedOnRealPath(t *testing.T) {
+	t.Setenv(satisficingBandEnv, "false") // recording must be flag-independent
 	reg := New(testLogger())
 	bandFixture(t, reg)
 	winner := reserveOnce(t, reg, bandRequest("feed-1"))

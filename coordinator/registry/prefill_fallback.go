@@ -183,11 +183,17 @@ func recalibratedTTFTMsFromSnapshot(snap routingSnapshot, reqPromptTokens int) f
 
 // estimatedRecalibratedTTFTFromSnapshot mirrors estimatedTTFTFromSnapshot but with
 // the recalibrated prefill fallback forced on. Returns 0 for an invalid estimate
-// (no BackendCapacity, NaN/Inf), matching the live preflight contract.
+// (no BackendCapacity, NaN/Inf), matching the live preflight contract. The #512
+// online calibration is applied exactly like the live path applies it: an
+// enforce flip would gate on calibrate(recalibrated-raw), so the shadow
+// would_admit/would_shed split must compare calibrated-vs-calibrated — without
+// this, a learned ratio < 1 (the norm on the over-predicting legacy chain)
+// makes the shadow under-report the projected recovery.
 func estimatedRecalibratedTTFTFromSnapshot(snap routingSnapshot, reqPromptTokens int) time.Duration {
 	ttftMs := recalibratedTTFTMsFromSnapshot(snap, reqPromptTokens)
 	if ttftMs <= 0 || math.IsNaN(ttftMs) || math.IsInf(ttftMs, 0) {
 		return 0
 	}
+	ttftMs = calibratedTTFTMs(snap, ttftMs)
 	return time.Duration(ttftMs * float64(time.Millisecond))
 }

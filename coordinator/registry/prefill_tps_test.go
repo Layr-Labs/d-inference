@@ -159,6 +159,8 @@ func seedPrefillMedian(reg *Registry, model string, n int, tps float64) {
 // admits it (13,711 / 6,500 ≈ 2.1s). Fails without the median layer in
 // prefillTPSForSnapshot.
 func TestPrefillMedianLongPromptRegression(t *testing.T) {
+	t.Setenv(ttftPrefillMediansEnv, "true") // pin the default against ambient operator env
+	t.Setenv(ttftPrefillMinSamplesEnv, "5")
 	reg := New(testLogger())
 	makeSchedulerProvider(t, reg, "warm-box", gptossBuild, 30)
 	seedPrefillMedian(reg, gptossBuild, 5, 6500)
@@ -186,6 +188,8 @@ func TestPrefillMedianLongPromptRegression(t *testing.T) {
 // TestPrefillMedianMinSampleFloor: below EIGENINFERENCE_TTFT_PREFILL_MIN_SAMPLES
 // the median is not trusted (ratio path → reject); at the floor it is.
 func TestPrefillMedianMinSampleFloor(t *testing.T) {
+	t.Setenv(ttftPrefillMediansEnv, "true")
+	t.Setenv(ttftPrefillMinSamplesEnv, "5")
 	reg := New(testLogger())
 	makeSchedulerProvider(t, reg, "warm-box", gptossBuild, 30)
 
@@ -211,6 +215,8 @@ func TestPrefillMedianMinSampleFloor(t *testing.T) {
 // TestPrefillMedianPreflightConsistency: the capacity preflight's bestTTFT uses
 // the same estimate, so the shed decision and Retry-After agree with dispatch.
 func TestPrefillMedianPreflightConsistency(t *testing.T) {
+	t.Setenv(ttftPrefillMediansEnv, "true")
+	t.Setenv(ttftPrefillMinSamplesEnv, "5")
 	reg := New(testLogger())
 	makeSchedulerProvider(t, reg, "warm-box", gptossBuild, 30)
 
@@ -288,6 +294,8 @@ func TestPrefillTPSForSnapshotResolutionOrder(t *testing.T) {
 // transfer property that routes long prompts to (and admits them on) boxes the
 // static chain would have shed.
 func TestPrefillMedianConvergesAcrossBoxes(t *testing.T) {
+	t.Setenv(ttftPrefillMediansEnv, "true")
+	t.Setenv(ttftPrefillMinSamplesEnv, "5")
 	reg := New(testLogger())
 	seedPrefillMedian(reg, gptossBuild, 5, 6500)
 	for i, decodeTPS := range []float64{20, 30, 90} {

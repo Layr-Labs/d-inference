@@ -15,12 +15,30 @@ extension Start {
         config: ProviderConfig,
         hardware: HardwareInfo
     ) async throws {
-        let advertised = advertisedModels(
+        let selected = advertisedModels(
             from: snapshot.models,
             config: config,
             modelOverrides: model,
             includeDisabled: all
         )
+
+        // v0.7.5 ONE ENGINE, fail loud: the standalone server serves
+        // everything through ContinuousBatchingV2, so a model whose family
+        // has no CBv2 adapter cannot serve at all. Say so per model, and
+        // refuse to start when nothing serveable remains — a silent empty
+        // catalog would 404 every request with no explanation.
+        let (advertised, unsupported) = EngineV2SupportedModels.partition(selected)
+        for dropped in unsupported {
+            printError(
+                "Skipping \(dropped.id): model_type '\(dropped.modelType ?? "unknown")' has no "
+                    + "engine-v2 adapter (v0.7.5 serves everything through engine v2)")
+        }
+        guard !advertised.isEmpty else {
+            printError(
+                "No engine-v2-capable models available to serve. "
+                    + "Download a supported model (gpt-oss / gemma-4 families) and retry.")
+            throw ExitCode.failure
+        }
 
         // Direct/local mode: mint (or reuse) a bearer token so the loopback
         // server isn't open to every local process / hostile webpage. --no-auth
@@ -59,12 +77,9 @@ extension Start {
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
 
-        // Before any engine/model code latches CompiledDecode.isEnabled:
-        // legacy compiled decode is opt-in (config legacy_compiled_decode /
-        // explicit env DARKBLOOM_COMPILED_DECODE — see LegacyCompiledDecodeGate).
-        LegacyCompiledDecodeGate.apply(
-            configEnabled: config.backend.legacyCompiledDecode)
-
+        // NOTE: no LegacyCompiledDecodeGate here anymore — the standalone
+        // server constructs no legacy engine as of v0.7.5 (CBv2 compiled
+        // decode has its own path and needs no process-global latch).
         let server = StandaloneServer(
             config: StandaloneServerConfig(
                 port: port,
@@ -73,7 +88,9 @@ extension Start {
                 authToken: token,
                 kvQuant: config.backend.kvQuant,
                 adaptivePrefill: config.backend.adaptivePrefill,
-                hardware: hardware
+                hardware: hardware,
+                engineV2MaxConcurrent: config.backend.engineV2MaxConcurrent,
+                engineV2MaxConcurrentByModel: config.backend.engineV2MaxConcurrentByModel
             ),
             models: advertised
         )

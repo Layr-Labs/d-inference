@@ -33,9 +33,13 @@ public struct LocalInferenceHTTPConfig: Sendable {
 }
 
 /// The concrete responder stack the local endpoint always uses:
-/// auth (outermost) → CORS → upstream MLXLMServer router.
+/// auth (outermost) → CORS → chat-upload interception (32 MiB body
+/// ceiling for the media-bearing chat routes, see
+/// `LocalChatUploadResponder`) → upstream MLXLMServer router.
 public typealias LocalInferenceApplication =
-    Application<LocalAuthResponder<CORSResponder<RouterResponder<BasicRequestContext>>>>
+    Application<
+        LocalAuthResponder<
+            CORSResponder<LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>
 
 /// Builds the local OpenAI-compatible Hummingbird application from a model
 /// registry expressed as three closures. Shared by `StandaloneServer` and the
@@ -72,7 +76,14 @@ func makeLocalInferenceApplication(
     )
     let service = MLXOpenAIService(engine: engine)
     let router = MLXServerApplication.buildRouter(service: service)
-    let corsResponder = CORSResponder(inner: router.buildResponder())
+    // Chat-completions POSTs are served by the interception responder with
+    // the 32 MiB body ceiling (the upstream router's BasicRequestContext
+    // pins the Hummingbird 2 MiB default, which 413s inline media — see
+    // LocalChatUploadResponder); everything else falls through to the
+    // upstream router unchanged.
+    let uploadResponder = LocalChatUploadResponder(
+        inner: router.buildResponder(), service: service)
+    let corsResponder = CORSResponder(inner: uploadResponder)
     // Auth is the outermost layer so an unauthenticated request is rejected
     // before reaching the engine. Pass-through when no token is configured.
     let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)

@@ -9,7 +9,13 @@
 ///   * Multi-model LRU + idle eviction
 ///   * Memory-headroom gating before a load
 ///   * Reservation counters that block eviction of in-flight models
-///   * `BatchScheduler` construction with the shared `GlobalKVCacheBudget`
+///   * v2 slot construction (v0.7.5 ONE ENGINE): the SAME sizing snapshot →
+///     KV re-slice → `EngineV2SlotFactory.makeProductionBridge` path the
+///     `ProviderLoop` uses, against this server's own shared
+///     `GlobalKVCacheBudget`. There is no legacy `BatchScheduler` here
+///     anymore; a model whose family has no CBv2 adapter is dropped from
+///     the catalog at construction (fail loud, mirrored CLI-side in
+///     `darkbloom start --local`).
 ///
 /// HTTP wiring (Hummingbird application builder + `CORSResponder` +
 /// OpenAI-shaped error envelope) lives in
@@ -19,17 +25,23 @@
 /// Endpoints served by the upstream router include `/health`, `/v1/models`,
 /// `/v1/chat/completions`, `/v1/completions`, `/v1/responses*`, `/tokenize`,
 /// `/detokenize`, `/apply-template`, plus `/metrics` and `/props`.
+///
+/// KV-grant serialization note: unlike the `ProviderLoop` (whose idle
+/// monitor unloads from an independent task and therefore needs the
+/// re-slice gate), EVERY grant mutation here — load-side shrink/build and
+/// evict-side regrow — happens inside the `isLoadingAny` critical section
+/// (eviction only runs from the load path), so the load gate itself is the
+/// re-slice serialization and `Σ(grants) ≤ fleet budget` holds throughout.
 
 import Darwin
 import Foundation
 import Hummingbird
 import MLX
-import MLXLLM
 import MLXLMCommon
 import MLXLMServer
 import os
 
-private enum StandaloneServerError: Error, LocalizedError {
+enum StandaloneServerError: Error, LocalizedError {
     case modelNotFound(String)
     case capacityUnavailable(String)
 
@@ -51,15 +63,22 @@ public struct StandaloneServerConfig: Sendable {
     /// Bearer token required on every inference route (direct/local mode).
     /// nil = no auth (library default / explicit `--no-auth`).
     public let authToken: String?
-    /// When true, enable KV-cache quantization for validated model families
-    /// (Gemma 4 only in v1). Default false keeps the legacy fp16 path.
+    /// Operator `kv_quant` intent. The v2 engine is fp16-only, so this now
+    /// only drives the one-per-load WARN telemetry (config key retires in
+    /// the v0.7.5 env/config cleanup).
     public let kvQuant: Bool
-    /// When true, enable provider-local adaptive cold-prefill chunk sizing.
-    /// Default false keeps the fixed 512-token path.
+    /// RETIRED with the legacy engine (adaptive cold-prefill was a
+    /// `BatchScheduler` feature). Accepted so existing callers keep
+    /// compiling until the v0.7.5 config cleanup deletes the key; ignored.
     public let adaptivePrefill: Bool
-    /// Detected local hardware, used to seed the adaptive cold-prefill ladder.
-    /// nil ⇒ unknown hardware ⇒ generic empirical ladder.
+    /// Detected local hardware. Was the adaptive-prefill ladder seed;
+    /// retained for CLI compatibility, currently unused on the v2 path.
     public let hardware: HardwareInfo?
+    /// Box-wide concurrent-decode cap per v2 engine
+    /// (`[backend] engine_v2_max_concurrent`), clamped to [1, 8].
+    public let engineV2MaxConcurrent: UInt64
+    /// Per-model overrides (`engine_v2_max_concurrent_by_model`).
+    public let engineV2MaxConcurrentByModel: [String: UInt64]
 
     public init(
         port: UInt16 = 8000,
@@ -68,7 +87,9 @@ public struct StandaloneServerConfig: Sendable {
         authToken: String? = nil,
         kvQuant: Bool = false,
         adaptivePrefill: Bool = false,
-        hardware: HardwareInfo? = nil
+        hardware: HardwareInfo? = nil,
+        engineV2MaxConcurrent: UInt64 = 4,
+        engineV2MaxConcurrentByModel: [String: UInt64] = [:]
     ) {
         self.port = port
         self.host = host
@@ -77,6 +98,8 @@ public struct StandaloneServerConfig: Sendable {
         self.kvQuant = kvQuant
         self.adaptivePrefill = adaptivePrefill
         self.hardware = hardware
+        self.engineV2MaxConcurrent = engineV2MaxConcurrent
+        self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
     }
 }
 
@@ -87,29 +110,58 @@ private let standaloneLogger = Logger(
 
 public actor StandaloneServer {
 
-    /// Tracks a loaded model scheduler and when it was last used for LRU eviction.
-    private struct CachedScheduler {
-        let scheduler: BatchScheduler
+    /// One resident model: its v2 bridge (the serving engine), the loaded
+    /// container (retained for the VLM media path — the vision tower shares
+    /// weights with the extracted text model), and the sizing facts the KV
+    /// re-slice needs. Mirrors `ProviderLoop.ModelSlot`.
+    struct CachedSlot {
+        let bridge: EngineV2Bridge
+        let container: MLXLMCommon.ModelContainer
         let tokenizer: TokenizerHandle
         let modelType: String?
+        let isVLM: Bool
+        let sizing: SlotSizingSnapshot
         var lastUsedAt: ContinuousClock.Instant
+    }
+
+    /// Test hooks: scripted engine builder + deterministic machine memory
+    /// for the re-slice budget + injectable telemetry sink. Mirrors
+    /// `ProviderLoop.EngineV2SlotHooks`; nil in production.
+    struct V2TestHooks: Sendable {
+        let physicalMemoryBytes: UInt64?
+        let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
+        let makeEngine: @Sendable (String, Int) throws -> any CBv2Engine
+
+        init(
+            physicalMemoryBytes: UInt64? = nil,
+            emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
+            makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
+        ) {
+            self.physicalMemoryBytes = physicalMemoryBytes
+            self.emitTelemetry = emitTelemetry
+            self.makeEngine = makeEngine
+        }
     }
 
     /// Internal access so the +HTTP extension can read host/port
     /// when constructing the Hummingbird application.
     let config: StandaloneServerConfig
-    private var schedulers: [String: CachedScheduler] = [:]
+    private var slots: [String: CachedSlot] = [:]
     private var modelsLoading: Set<String> = []
     private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     private var isLoadingAny: Bool = false
     private var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
-    private var schedulerReservations: [String: Int] = [:]
+    private var slotReservations: [String: Int] = [:]
     private var evictingModels: Set<String> = []
     private var models: [ModelInfo]
     private var serverTask: Task<Void, Never>?
     private let kvBudget: GlobalKVCacheBudget
     /// Phase 3: global disk accountant (process-wide, shared across models).
+    /// Kept on the v2 path for its crash-sweep of stale on-disk KV from
+    /// older (legacy-engine) versions; the v2 engine itself never persists.
     private let diskAccountant: GlobalDiskAccountant
+    /// Test hooks (see `V2TestHooks`); nil in production.
+    var v2TestHooks: V2TestHooks?
     /// Bind status, set by Hummingbird's onServerRunning (success) or the server
     /// task's catch (failure). `waitUntilBound` reads these — the authoritative
     /// "did WE bind the port" signal, not an HTTP probe a foreign process on the
@@ -122,7 +174,13 @@ public actor StandaloneServer {
         models: [ModelInfo] = []
     ) {
         self.config = config
-        self.models = models
+        // Architecture-derived supported set (v0.7.5 fail-loud): the v2
+        // engine is the ONLY engine, so a model whose family has no CBv2
+        // adapter can never serve — advertising it would invite requests
+        // that always fail. Mirrors `ProviderLoop.init`; the CLI
+        // (`darkbloom start --local`) applies the same filter with an
+        // operator-facing error and refuses to start when nothing remains.
+        self.models = Self.filterSupported(models)
         self.kvBudget = GlobalKVCacheBudget()
         // Phase 3: construct the global disk accountant (one per host).
         let kvRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
@@ -137,16 +195,27 @@ public actor StandaloneServer {
         MLXMemoryGuard.configureOnce()
     }
 
-    static let schedulerMaxConcurrent = 24
-    static let schedulerPendingTimeout: Duration = .seconds(120)
+    /// Drop models without a CBv2 adapter from the served catalog, with a
+    /// WARN naming each so the operator sees why a model on disk is absent
+    /// from `/v1/models`.
+    private static func filterSupported(_ models: [ModelInfo]) -> [ModelInfo] {
+        let (supported, unsupported) = EngineV2SupportedModels.partition(models)
+        if !unsupported.isEmpty {
+            let ids = unsupported.map(\.id).sorted().joined(separator: ", ")
+            standaloneLogger.warning(
+                "Not serving \(unsupported.count) model(s) without a CBv2 adapter (v0.7.5 serves everything through engine v2): \(ids)")
+        }
+        return supported
+    }
+
     /// Internal access so the +HTTP extension can pass the same
     /// default through to ``MultiModelBatchSchedulerEngine``.
-    static let schedulerDefaultMaxTokens = 4096
+    static let slotDefaultMaxTokens = 4096
 
-    /// Map a scheduler-side admission error message to an HTTP status. Used
-    /// by tests and by any custom error-mapping middleware. Retained here
-    /// rather than moved into the upstream library because the keyword set
-    /// is specific to ``BatchScheduler``'s admission errors.
+    /// Map an engine-side admission error message to an HTTP status. Used
+    /// by tests and by any custom error-mapping middleware. The keyword set
+    /// matches the canonical `token_budget_exhausted:` message contract the
+    /// v2 bridge preserves from the legacy scheduler.
     static func schedulerErrorStatus(for message: String) -> HTTPResponse.Status {
         let lowercased = message.lowercased()
         if lowercased.contains("invalid token")
@@ -167,9 +236,10 @@ public actor StandaloneServer {
         return .internalServerError
     }
 
-    /// Update the advertised model list (e.g. after a rescan).
+    /// Update the advertised model list (e.g. after a rescan). Applies the
+    /// same CBv2 supported-set filter as init.
     public func setModels(_ newModels: [ModelInfo]) {
-        self.models = newModels
+        self.models = Self.filterSupported(newModels)
     }
 
     /// Start listening for HTTP connections. The server runs in a child task.
@@ -228,23 +298,87 @@ public actor StandaloneServer {
         serverTask = nil
         task?.cancel()
         _ = await task?.value
-        for cached in schedulers.values {
-            await cached.scheduler.unloadModel()
+        for slot in slots.values {
+            await slot.bridge.shutdown()
         }
         // Return the freed weights to the OS so a later StandaloneServer in the
         // same process (e.g. across tests) sees real free memory.
         MLX.Memory.clearCache()
-        schedulers.removeAll()
-        schedulerReservations.removeAll()
+        slots.removeAll()
+        slotReservations.removeAll()
     }
 
-    func debugCapacity(modelId: String) async -> SchedulerCapacity? {
-        guard let cached = schedulers[modelId] else { return nil }
-        return await cached.scheduler.capacity()
+    // MARK: - Test/debug surface
+
+    /// Bridge-level active request count for a resident model (admitted +
+    /// engine-waiting), or nil when not resident. Live tests use this to
+    /// observe stream lifecycle without reaching into the engine.
+    func debugActiveRequestCount(modelId: String) async -> Int? {
+        guard let slot = slots[modelId] else { return nil }
+        return await slot.bridge.activeRequestCount()
     }
 
-    func debugSchedulerReservationCount(modelId: String) -> Int {
-        schedulerReservations[modelId] ?? 0
+    func debugSlotReservationCount(modelId: String) -> Int {
+        slotReservations[modelId] ?? 0
+    }
+
+    /// The resident slot's engine KV grant in bytes (re-slice assertions).
+    func debugEngineKVGrant(modelId: String) async -> Int? {
+        guard let slot = slots[modelId] else { return nil }
+        return await slot.bridge.engineKVBytesCapacity()
+    }
+
+    /// Install test hooks (scripted engine + deterministic memory).
+    func setV2TestHooksForTesting(_ hooks: V2TestHooks?) {
+        v2TestHooks = hooks
+    }
+
+    /// Install a fully-formed slot, bypassing the load path (unit tests).
+    func installSlotForTesting(
+        modelId: String,
+        bridge: EngineV2Bridge,
+        container: MLXLMCommon.ModelContainer,
+        tokenizer: TokenizerHandle,
+        sizing: SlotSizingSnapshot,
+        modelType: String? = nil,
+        isVLM: Bool = false
+    ) {
+        slots[modelId] = CachedSlot(
+            bridge: bridge,
+            container: container,
+            tokenizer: tokenizer,
+            modelType: modelType,
+            isVLM: isVLM,
+            sizing: sizing,
+            lastUsedAt: .now
+        )
+    }
+
+    /// Drive the real load-time re-slice + bridge build (unit tests: real
+    /// orchestration, scripted engine via `setV2TestHooksForTesting`).
+    func buildSlotForTesting(
+        modelId: String,
+        modelType: String?,
+        container: MLXLMCommon.ModelContainer,
+        tokenizer: TokenizerHandle,
+        sizing: SlotSizingSnapshot,
+        isVLM: Bool = false
+    ) async throws -> EngineV2Bridge {
+        let slot = try await resliceAndBuildSlot(
+            modelId: modelId,
+            modelType: modelType,
+            isVLM: isVLM,
+            modelDirectory: nil,
+            container: container,
+            tokenizer: tokenizer,
+            sizing: sizing)
+        slots[modelId] = slot
+        return slot.bridge
+    }
+
+    /// Drive one LRU idle-eviction pass (unit tests).
+    func evictLRUIdleSlotForTesting() async -> Bool {
+        await evictLRUIdleSlot()
     }
 
     /// Returns the port the server is configured on.
@@ -252,68 +386,197 @@ public actor StandaloneServer {
         config.port
     }
 
-    // MARK: - Registry snapshot consumed by MultiModelBatchSchedulerEngine
-
-    fileprivate func snapshotRegistry() -> [String: MultiModelBatchSchedulerEngine.ModelRegistryEntry] {
-        var registry: [String: MultiModelBatchSchedulerEngine.ModelRegistryEntry] = [:]
-        for (modelId, cached) in schedulers {
-            if evictingModels.contains(modelId) { continue }
-            registry[modelId] = .init(
-                scheduler: cached.scheduler,
-                tokenizer: cached.tokenizer
-            )
-        }
-        return registry
-    }
-
     // MARK: - Model lifecycle (LRU + memory headroom + reservation)
 
-    /// Build + load a scheduler and return it WITHOUT publishing it into
-    /// `schedulers`. The caller runs the post-load KV-headroom guard and only
-    /// publishes (`schedulers[modelId] = …`) if it passes — so a concurrent
-    /// request can never route to a model that's about to be rejected/unloaded.
-    private func buildLoadedScheduler(
-        _ modelId: String, container: MLXLMCommon.ModelContainer
-    ) async -> CachedScheduler {
-        let scheduler = BatchScheduler(
-            maxConcurrentRequests: Self.schedulerMaxConcurrent,
-            pendingTimeout: Self.schedulerPendingTimeout,
-            defaultMaxTokens: Self.schedulerDefaultMaxTokens,
-            kvBudget: kvBudget,
-            diskAccountant: diskAccountant,
-            kvQuantEnabled: config.kvQuant,
-            adaptivePrefillEnabled: config.adaptivePrefill,
-            hardwareInfo: config.hardware
-        )
-        await scheduler.loadModel(container: container, modelId: modelId)
-        let tokenizer: TokenizerHandle = await container.perform { ctx in
-            TokenizerHandle(ctx.tokenizer)
+    /// Effective concurrent-request cap for a v2 engine slot: the
+    /// per-model override when configured, else the box-wide value,
+    /// clamped to [1, 8] — same policy as `ProviderLoop`.
+    private func engineV2MaxConcurrent(forModel modelId: String) -> Int {
+        let raw = config.engineV2MaxConcurrentByModel[modelId]
+            ?? config.engineV2MaxConcurrent
+        return ProviderLoop.clampEngineV2Concurrency(raw)
+    }
+
+    /// Fleet KV budget for a prospective residency set: the unified-memory
+    /// cap minus Σ resident weights (all slots + the newcomer's), with no
+    /// operator reserve (standalone mode has none — the cap-implied reserve
+    /// is what holds memory back, exactly as in `availableMemoryGb`).
+    private func fleetKVBudgetBytes(extraWeightBytes: Int) -> UInt64 {
+        var totalWeights = UInt64(max(0, extraWeightBytes))
+        for (_, slot) in slots {
+            let (sum, overflow) = totalWeights
+                .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
+            totalWeights = overflow ? .max : sum
         }
-        let modelType = models.first(where: { $0.id == modelId })?.modelType
-        return CachedScheduler(
-            scheduler: scheduler,
+        let physical = v2TestHooks?.physicalMemoryBytes
+            ?? ProcessInfo.processInfo.physicalMemory
+        return UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: physical,
+            residentWeightBytes: totalWeights,
+            configReserveBytes: 0)
+    }
+
+    /// One existing slot's re-slice bookkeeping (mirrors the ProviderLoop's
+    /// `ExistingSlotGrant`): sizing inputs, the grant BEFORE this re-slice
+    /// (the restore point), and the bridge whose ceiling gets updated.
+    private struct ExistingSlotGrant {
+        let slot: EngineV2KVSizing.ResliceSlot
+        let previousGrant: Int
+        let bridge: EngineV2Bridge
+    }
+
+    private func existingSlotGrants(excludingModelId: String) async -> [ExistingSlotGrant] {
+        var existing: [ExistingSlotGrant] = []
+        for (modelId, slot) in slots
+        where modelId != excludingModelId && !evictingModels.contains(modelId) {
+            let currentGrant = await slot.bridge.engineKVBytesCapacity()
+            existing.append(
+                ExistingSlotGrant(
+                    slot: EngineV2KVSizing.ResliceSlot(
+                        modelId: modelId,
+                        fp16KVBytesPerToken: slot.sizing.fp16KVBytesPerToken,
+                        maxContextLength: slot.sizing.maxContextLength),
+                    previousGrant: currentGrant,
+                    bridge: slot.bridge))
+        }
+        return existing
+    }
+
+    /// Re-slice KV grants for the newcomer + existing slots, shrink existing
+    /// engines, and build the newcomer's bridge — the SAME shrink-first /
+    /// restore-on-throw / grow-after sequence as
+    /// `ProviderLoop.resliceAndBuildEngineV2Slot`, over the shared pure
+    /// policy (`EngineV2KVSizing.resliceGrants`). Runs inside the
+    /// `isLoadingAny` critical section (see the header note), which is the
+    /// standalone re-slice serialization.
+    private func resliceAndBuildSlot(
+        modelId: String,
+        modelType: String?,
+        isVLM: Bool,
+        modelDirectory: URL?,
+        container: MLXLMCommon.ModelContainer,
+        tokenizer: TokenizerHandle,
+        sizing: SlotSizingSnapshot
+    ) async throws -> CachedSlot {
+        let existing = await existingSlotGrants(excludingModelId: modelId)
+        let newcomer = EngineV2KVSizing.ResliceSlot(
+            modelId: modelId,
+            fp16KVBytesPerToken: sizing.fp16KVBytesPerToken,
+            maxContextLength: sizing.maxContextLength)
+        let fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
+        let targets = EngineV2KVSizing.resliceGrants(
+            existing: existing.map(\.slot),
+            newcomer: newcomer,
+            fleetKVBudgetBytes: fleetBudget)
+
+        // Serviceability floor (fail loud): refuse a load that would leave
+        // ANY slot below the minimum serveable grant.
+        guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets) else {
+            let floorGb = String(
+                format: "%.1f",
+                Double(EngineV2KVSizing.minimumServiceableGrantBytes) / (1024 * 1024 * 1024))
+            EngineV2Factory.emitRefusalTelemetry(
+                modelId: modelId,
+                reason: .resliceFloor,
+                error: nil,
+                emitTelemetry: v2TestHooks?.emitTelemetry)
+            throw StandaloneServerError.capacityUnavailable(
+                "loading '\(modelId)' would re-slice some model's KV grant below "
+                    + "the \(floorGb) GB serviceability floor "
+                    + "(fleet KV budget \(fleetBudget) B across \(existing.count + 1) slots) — refused")
+        }
+
+        // Phase 1 — SHRINKS first, so Σ(ceilings) never exceeds the fleet
+        // budget at any instant.
+        for entry in existing {
+            if let target = targets[entry.slot.modelId], target < entry.previousGrant {
+                await entry.bridge.updateKVBytesCapacity(target)
+            }
+        }
+
+        // Phase 2 — build the newcomer with its grant. Restore-on-throw:
+        // grow every shrunk engine back to its exact previous grant.
+        let bridge: EngineV2Bridge
+        do {
+            bridge = try await EngineV2SlotFactory.makeProductionBridge(
+                modelId: modelId,
+                modelType: modelType,
+                isVLM: isVLM,
+                modelDirectory: modelDirectory,
+                container: container,
+                tokenizer: tokenizer,
+                sizing: sizing,
+                kvBytesCapacity: targets[modelId] ?? 0,
+                maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelId),
+                kvBudget: kvBudget,
+                kvQuantConfigured: config.kvQuant,
+                emitTelemetry: v2TestHooks?.emitTelemetry,
+                makeEngineOverride: v2TestHooks?.makeEngine,
+                logInfo: { standaloneLogger.info("\($0)") })
+        } catch {
+            for entry in existing {
+                await entry.bridge.updateKVBytesCapacity(entry.previousGrant)
+            }
+            throw error
+        }
+
+        // Phase 3 — grow-side targets (self-healing when a previous state
+        // left a slot under-granted).
+        for entry in existing {
+            if let target = targets[entry.slot.modelId], target > entry.previousGrant {
+                await entry.bridge.updateKVBytesCapacity(target)
+            }
+        }
+
+        return CachedSlot(
+            bridge: bridge,
+            container: container,
             tokenizer: tokenizer,
             modelType: modelType,
+            isVLM: isVLM,
+            sizing: sizing,
             lastUsedAt: .now
         )
     }
 
-    private func evictLRUIdleScheduler() async -> Bool {
-        let snapshot = schedulers.map { (key: $0.key, cached: $0.value) }
+    /// Grow the surviving slots back to their re-sliced shares after an
+    /// eviction (a lone survivor gets the FULL fleet budget back). Called
+    /// from the eviction path, i.e. inside `isLoadingAny`.
+    private func resliceGrowSurvivors() async {
+        let survivors = await existingSlotGrants(excludingModelId: "")
+        guard !survivors.isEmpty else { return }
+        let fleetBudget = fleetKVBudgetBytes(extraWeightBytes: 0)
+        let targets = EngineV2KVSizing.resliceGrants(
+            existing: survivors.map(\.slot),
+            newcomer: nil,
+            fleetKVBudgetBytes: fleetBudget)
+        for entry in survivors {
+            if let target = targets[entry.slot.modelId], target < entry.previousGrant {
+                await entry.bridge.updateKVBytesCapacity(target)
+            }
+        }
+        for entry in survivors {
+            if let target = targets[entry.slot.modelId], target > entry.previousGrant {
+                await entry.bridge.updateKVBytesCapacity(target)
+            }
+        }
+    }
+
+    private func evictLRUIdleSlot() async -> Bool {
+        let snapshot = slots.map { (key: $0.key, cached: $0.value) }
         var lruKey: String?
         var lruTime: ContinuousClock.Instant?
 
         for entry in snapshot {
-            guard schedulers[entry.key] != nil,
+            guard slots[entry.key] != nil,
                   !evictingModels.contains(entry.key),
-                  (schedulerReservations[entry.key] ?? 0) == 0 else { continue }
+                  (slotReservations[entry.key] ?? 0) == 0 else { continue }
 
-            let cap = await entry.cached.scheduler.capacity()
-            guard schedulers[entry.key] != nil,
+            let active = await entry.cached.bridge.activeRequestCount()
+            guard slots[entry.key] != nil,
                   !evictingModels.contains(entry.key),
-                  (schedulerReservations[entry.key] ?? 0) == 0,
-                  cap.activeRequests == 0,
-                  cap.pendingRequests == 0 else { continue }
+                  (slotReservations[entry.key] ?? 0) == 0,
+                  active == 0 else { continue }
 
             if lruTime == nil || entry.cached.lastUsedAt < lruTime! {
                 lruKey = entry.key
@@ -322,40 +585,45 @@ public actor StandaloneServer {
         }
 
         guard let evictKey = lruKey,
-              let evicted = schedulers[evictKey],
+              let evicted = slots[evictKey],
               !evictingModels.contains(evictKey),
-              (schedulerReservations[evictKey] ?? 0) == 0 else {
+              (slotReservations[evictKey] ?? 0) == 0 else {
             return false
         }
 
-        let cap = await evicted.scheduler.capacity()
-        guard schedulers[evictKey] != nil,
+        let active = await evicted.bridge.activeRequestCount()
+        guard slots[evictKey]?.bridge === evicted.bridge,
               !evictingModels.contains(evictKey),
-              (schedulerReservations[evictKey] ?? 0) == 0,
-              cap.activeRequests == 0,
-              cap.pendingRequests == 0 else {
+              (slotReservations[evictKey] ?? 0) == 0,
+              active == 0 else {
             return false
         }
 
         evictingModels.insert(evictKey)
         defer { evictingModels.remove(evictKey) }
-        await evicted.scheduler.unloadModel()
-        if schedulers[evictKey]?.scheduler === evicted.scheduler {
-            schedulers.removeValue(forKey: evictKey)
+        // Drain the v2 bridge (running requests finish, new submissions are
+        // rejected by the engine), then release the container reference.
+        await evicted.bridge.shutdown()
+        if slots[evictKey]?.bridge === evicted.bridge {
+            slots.removeValue(forKey: evictKey)
         }
         // Mandatory: freed weights linger in MLX's pool (GPU.cacheMemory), which
         // availableMemoryGb / GlobalKVCacheBudget now count as used — without this
         // the next load's gate and the surviving model's KV budget don't see the
         // freed memory. Mirrors ProviderLoop.unloadModel.
         MLX.Memory.clearCache()
+        // Re-slice GROW the survivors: with this model's weights gone the
+        // fleet KV budget rises, and the remaining engines take their new
+        // fair shares (a lone survivor gets the FULL budget back).
+        await resliceGrowSurvivors()
         standaloneLogger.info("Evicted LRU model: \(evictKey)")
         return true
     }
 
     private func evictIfNeededForLoad() async throws {
-        guard schedulers.count >= config.maxCachedModels else { return }
+        guard slots.count >= config.maxCachedModels else { return }
 
-        guard await evictLRUIdleScheduler() else {
+        guard await evictLRUIdleSlot() else {
             throw StandaloneServerError.capacityUnavailable(
                 "All \(config.maxCachedModels) cached model slot(s) are active; try again when a request finishes"
             )
@@ -366,7 +634,7 @@ public actor StandaloneServer {
         guard requiredGb.isFinite, requiredGb > 0 else { return }
 
         while await availableMemoryGb() < requiredGb {
-            guard await evictLRUIdleScheduler() else {
+            guard await evictLRUIdleSlot() else {
                 throw StandaloneServerError.capacityUnavailable(
                     String(format: "Insufficient memory headroom to load model (needs %.1f GB available)", requiredGb)
                 )
@@ -393,24 +661,24 @@ public actor StandaloneServer {
             outstandingReservationBytes: outstanding)
     }
 
-    /// Touch the cached scheduler's last-used timestamp on access.
-    private func touchScheduler(_ modelId: String) {
-        schedulers[modelId]?.lastUsedAt = .now
+    /// Touch the cached slot's last-used timestamp on access.
+    private func touchSlot(_ modelId: String) {
+        slots[modelId]?.lastUsedAt = .now
     }
 
-    func reserveScheduler(_ modelId: String) {
-        schedulerReservations[modelId, default: 0] += 1
-        touchScheduler(modelId)
+    func reserveSlot(_ modelId: String) {
+        slotReservations[modelId, default: 0] += 1
+        touchSlot(modelId)
     }
 
-    func releaseScheduler(_ modelId: String) {
-        guard let count = schedulerReservations[modelId] else { return }
+    func releaseSlot(_ modelId: String) {
+        guard let count = slotReservations[modelId] else { return }
         if count <= 1 {
-            schedulerReservations.removeValue(forKey: modelId)
+            slotReservations.removeValue(forKey: modelId)
         } else {
-            schedulerReservations[modelId] = count - 1
+            slotReservations[modelId] = count - 1
         }
-        touchScheduler(modelId)
+        touchSlot(modelId)
     }
 
     /// I1: atomic `ensureLoaded + lookup + reserve`. All three steps
@@ -424,10 +692,10 @@ public actor StandaloneServer {
     /// Note: `ensureModelLoaded` can suspend and re-enter the actor
     /// (it awaits `loadContainer` etc.), so between an `await` and
     /// resumption another inflight method *could* call
-    /// `evictLRUIdleScheduler`. The reservation guard inside the
-    /// evictor (`schedulerReservations[key] == 0`) is what makes this
+    /// `evictLRUIdleSlot`. The reservation guard inside the
+    /// evictor (`slotReservations[key] == 0`) is what makes this
     /// safe once we've bumped the count. We therefore lookup the
-    /// scheduler *after* taking the reservation, then drop the
+    /// slot *after* taking the reservation, then drop the
     /// reservation if the lookup somehow fails so a partial-acquire
     /// doesn't pin a missing model forever.
     func acquireModel(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
@@ -435,41 +703,47 @@ public actor StandaloneServer {
             try await ensureModelLoaded(modelId)
         } catch StandaloneServerError.modelNotFound {
             // Unknown model id → 404 via mapInferenceErrorToStatus.
-            // StandaloneServerError is fileprivate so CORSResponder
-            // can't catch it; translate to the typed engine error.
+            // StandaloneServerError never crosses the HTTP layer;
+            // translate to the typed engine error.
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
-        } catch StandaloneServerError.capacityUnavailable {
-            // Cache full / memory-headroom failure → 503 via
-            // mapInferenceErrorToStatus (`.queueFull` maps to 503
-            // already, which signals "transient, retry with backoff").
-            throw MultiModelBatchSchedulerEngineError.queueFull(
-                "standalone capacity unavailable for \(modelId)"
+        } catch let StandaloneServerError.capacityUnavailable(message) {
+            // Cache full / memory-headroom / re-slice-floor / engine
+            // refusal → 503 via mapInferenceErrorToStatus
+            // (`.tokenBudgetExhausted` maps to 503, signalling
+            // "transient, retry with backoff" so local clients back off
+            // exactly like coordinator ones).
+            throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
+                "token_budget_exhausted: \(message)"
             )
         }
-        reserveScheduler(modelId)
-        guard let cached = schedulers[modelId], !evictingModels.contains(modelId) else {
+        reserveSlot(modelId)
+        guard let slot = slots[modelId], !evictingModels.contains(modelId) else {
             // Roll the reservation back; the model is gone (evicted
             // mid-load) and we cannot honor the acquisition.
-            releaseScheduler(modelId)
+            releaseSlot(modelId)
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
         }
         let releaseClosure: @Sendable (String) async -> Void = { [weak self] mid in
-            await self?.releaseScheduler(mid)
+            await self?.releaseSlot(mid)
         }
         let token = OneShotRelease(
             release: releaseClosure,
             modelId: modelId
         )
-        // ContinuousBatchingV2 is deliberately NOT wired here: standalone
-        // (`--local`-only) mode builds its own slots outside ProviderLoop and
-        // always serves the legacy engine, regardless of DARKBLOOM_ENGINE_V2
-        // / engine_v2. The unified local endpoint (ProviderLoop+LocalEndpoint)
-        // does route through the v2 bridge when the slot carries one.
+        // ONE ENGINE (v0.7.5): the entry carries the slot's v2 bridge — the
+        // same serving path as ProviderLoop slots. No legacy scheduler is
+        // constructed anywhere on this server.
         return MultiModelBatchSchedulerEngine.AcquiredModel(
-            scheduler: cached.scheduler,
-            tokenizer: cached.tokenizer,
+            tokenizer: slot.tokenizer,
             releaseToken: token,
-            modelType: cached.modelType
+            modelType: slot.modelType,
+            container: slot.container,
+            isVLM: slot.isVLM,
+            engineV2Bridge: slot.bridge,
+            visionGate: VisionMemoryGate(
+                kvBudget: kvBudget,
+                fp16KVBytesPerToken: slot.sizing.fp16KVBytesPerToken,
+                contextLength: slot.sizing.maxContextLength)
         )
     }
 
@@ -479,16 +753,16 @@ public actor StandaloneServer {
     /// access is read-only and finishes synchronously inside the
     /// upstream handler, so eviction races are not a concern.
     func resolveTokenizer(_ modelId: String?) async throws -> TokenizerHandle {
-        if let modelId, let cached = schedulers[modelId] {
-            return cached.tokenizer
+        if let modelId, let slot = slots[modelId] {
+            return slot.tokenizer
         }
-        if let modelId, schedulers[modelId] == nil {
+        if let modelId, slots[modelId] == nil {
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
         }
-        if let firstKey = schedulers.keys.sorted().first,
-           let cached = schedulers[firstKey]
+        if let firstKey = slots.keys.sorted().first,
+           let slot = slots[firstKey]
         {
-            return cached.tokenizer
+            return slot.tokenizer
         }
         throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization
     }
@@ -499,7 +773,7 @@ public actor StandaloneServer {
     /// returns (P2 #3): the discovery endpoint reports the advertised
     /// catalog via `advertisedModelIds()`.
     func loadedModelIds() -> [String] {
-        schedulers.keys.filter { !evictingModels.contains($0) }.sorted()
+        slots.keys.filter { !evictingModels.contains($0) }.sorted()
     }
 
     /// Sorted list of model ids the provider advertises in
@@ -517,12 +791,12 @@ public actor StandaloneServer {
     }
 
     /// Lazy-load a model if it isn't already resident. Serializes loads and
-    /// applies LRU + memory-headroom eviction. Identical contract to the
-    /// pre-MLXLMServer implementation.
+    /// applies LRU + memory-headroom eviction, then builds the v2 slot
+    /// through the shared sizing → re-slice → bridge path.
     func ensureModelLoaded(_ modelId: String) async throws {
         try Task.checkCancellation()
-        if schedulers[modelId] != nil, !evictingModels.contains(modelId) {
-            touchScheduler(modelId)
+        if slots[modelId] != nil, !evictingModels.contains(modelId) {
+            touchSlot(modelId)
             return
         }
 
@@ -531,8 +805,8 @@ public actor StandaloneServer {
                 loadingWaiters[modelId, default: []].append(cont)
             }
             try Task.checkCancellation()
-            if schedulers[modelId] != nil, !evictingModels.contains(modelId) {
-                touchScheduler(modelId)
+            if slots[modelId] != nil, !evictingModels.contains(modelId) {
+                touchSlot(modelId)
                 return
             }
             try await ensureModelLoaded(modelId)
@@ -540,6 +814,15 @@ public actor StandaloneServer {
         }
 
         guard let modelInfo = models.first(where: { $0.id == modelId }) else {
+            throw StandaloneServerError.modelNotFound(modelId)
+        }
+
+        // Loud insurance behind the init/setModels filter: a model without
+        // a CBv2 adapter must never reach engine construction (v0.7.5
+        // fail-loud — there is no legacy engine to degrade onto).
+        guard EngineV2SupportedModels.isSupported(modelType: modelInfo.modelType) else {
+            standaloneLogger.error(
+                "Model '\(modelId)' (model_type \(modelInfo.modelType ?? "unknown")) has no CBv2 adapter — refusing to load")
             throw StandaloneServerError.modelNotFound(modelId)
         }
 
@@ -554,8 +837,8 @@ public actor StandaloneServer {
                 loadGateWaiters.append(cont)
             }
             try Task.checkCancellation()
-            if schedulers[modelId] != nil, !evictingModels.contains(modelId) {
-                touchScheduler(modelId)
+            if slots[modelId] != nil, !evictingModels.contains(modelId) {
+                touchSlot(modelId)
                 return
             }
         }
@@ -573,45 +856,98 @@ public actor StandaloneServer {
                     headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
             )
             try Task.checkCancellation()
-            let container = try await LLMModelFactory.shared.loadContainer(
-                from: modelPath,
-                using: LocalTokenizerLoader()
-            )
+            // Hard-fail without Metal: CPU inference is not acceptable, and
+            // with no legacy engine left this is a load failure, not a log
+            // line (mirrors ProviderLoop.ensureModelLoaded).
+            _ = try GPUEnforcement.requireMetal()
+            let slotIsVLM = ProviderLoop.modelIsVLM(at: modelPath)
+            let container = try await ModelContainerLoading.loadContainer(from: modelPath)
             try Task.checkCancellation()
-            // Build + load the scheduler WITHOUT publishing it, so a concurrent
-            // request can't route to a model the guard is about to reject.
-            let cached = await buildLoadedScheduler(modelId, container: container)
+
+            // Scheduler-free sizing snapshot: weight bytes + the engine-truth
+            // fp16 KV rate + context window — everything the re-slice and
+            // bridge need.
+            let sizing = await SlotSizingSnapshot.build(
+                container: container,
+                modelPath: modelPath,
+                fallbackDefaultMaxTokens: Self.slotDefaultMaxTokens)
+            let tokenizer: TokenizerHandle = await container.perform { ctx in
+                TokenizerHandle(ctx.tokenizer)
+            }
             if Task.isCancelled {
-                await cached.scheduler.unloadModel()
                 MLX.Memory.clearCache()
                 throw CancellationError()
             }
             // Trim the cold-load buffer pool BEFORE measuring: a fresh load leaves
             // transient buffers in MLX cacheMemory (no forward pass has trimmed
             // them yet), which would otherwise inflate "used" and false-reject a
-            // serveable model. Mirrors evictUntilAvailable / fastAdmissionReject's
-            // clearCache-then-measure self-heal.
+            // serveable model. Mirrors ProviderLoop's clearCache-then-measure.
             MLX.Memory.clearCache()
             // Post-load measured-headroom guard (mirrors ProviderLoop): the load
             // gate admitted on an estimate; now that weights are resident, reject
             // a model with no serveable KV headroom under the cap rather than
             // publish a "loaded but every request rejected" model. Serialized by
             // isLoadingAny, so the MLX measurement reflects this load.
-            if !(await cached.scheduler.hasServeableKVHeadroom()) {
+            if !KVHeadroomProbe.hasServeableKVHeadroom() {
                 let headroomGb = String(
                     format: "%.1f",
-                    Double(await cached.scheduler.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
+                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
                 let minGb = String(
                     format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
-                await cached.scheduler.unloadModel()
                 MLX.Memory.clearCache()
                 throw StandaloneServerError.capacityUnavailable(
                     "Model '\(modelId)' loaded but has insufficient KV headroom under the memory cap "
                     + "(\(headroomGb) GB free, need \(minGb) GB to serve) — unloaded")
             }
-            // Guard passed — NOW publish the slot.
-            schedulers[modelId] = cached
-            standaloneLogger.info("Lazy-loaded model: \(modelId)")
+
+            // ONE ENGINE: re-slice co-resident KV grants and build this
+            // model's CBv2 engine + bridge with the newcomer's grant.
+            // THROWS on any construction failure — refusal telemetry has
+            // already fired, existing grants are already restored — and the
+            // catch below surfaces it as a 503-shaped capacity error.
+            let cached: CachedSlot
+            do {
+                cached = try await resliceAndBuildSlot(
+                    modelId: modelId,
+                    modelType: modelInfo.modelType,
+                    isVLM: slotIsVLM,
+                    modelDirectory: modelPath,
+                    container: container,
+                    tokenizer: tokenizer,
+                    sizing: sizing)
+            } catch let error as StandaloneServerError {
+                MLX.Memory.clearCache()
+                throw error
+            } catch {
+                MLX.Memory.clearCache()
+                throw StandaloneServerError.capacityUnavailable(
+                    "Model '\(modelId)' loaded but its v2 engine construction failed: \(error) — unloaded")
+            }
+
+            // Post-BRIDGE measured-headroom re-guard (mirrors ProviderLoop):
+            // the engine build (and, for VLM slots, the text-model
+            // extraction + parity probe) can retain additional load-time
+            // memory beyond the weights. Re-measure so a box whose full
+            // load-time footprint leaves no serveable KV tears down instead
+            // of publishing a model whose every request the KV gate rejects.
+            MLX.Memory.clearCache()
+            if !KVHeadroomProbe.hasServeableKVHeadroom() {
+                let headroomGb = String(
+                    format: "%.1f",
+                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
+                await cached.bridge.shutdown()
+                MLX.Memory.clearCache()
+                // The aborted newcomer's grant was carved out of the fleet
+                // budget — grow the survivors back to their shares.
+                await resliceGrowSurvivors()
+                throw StandaloneServerError.capacityUnavailable(
+                    "Model '\(modelId)' loaded but its engine build left insufficient "
+                    + "KV headroom under the memory cap (\(headroomGb) GB free) — unloaded")
+            }
+
+            // Guards passed — NOW publish the slot.
+            slots[modelId] = cached
+            standaloneLogger.info("Lazy-loaded model: \(modelId) (engine_v2)")
 
             modelsLoading.remove(modelId)
             isLoadingAny = false
@@ -622,6 +958,8 @@ public actor StandaloneServer {
         } catch {
             modelsLoading.remove(modelId)
             isLoadingAny = false
+            // Release pool buffers a failed load left behind.
+            MLX.Memory.clearCache()
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
                 waiter.resume(throwing: error)
             }
@@ -638,4 +976,3 @@ public actor StandaloneServer {
         }
     }
 }
-

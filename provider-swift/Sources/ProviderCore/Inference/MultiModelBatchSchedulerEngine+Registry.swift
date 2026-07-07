@@ -9,11 +9,12 @@
 // references.
 //
 // v0.7.5 ONE-ENGINE shape: `engineV2Bridge` is the serving engine for
-// every ProviderLoop-owned slot (text + image requests); `scheduler`
-// is OPTIONAL and only populated by the standalone `darkbloom local`
-// server, which still builds its own legacy `BatchScheduler` slots (its
-// v2 wiring is a separate workstream — see StandaloneServer.swift). A
-// TEXT request that reaches an entry with NEITHER is a hard internal
+// EVERY production entry — ProviderLoop slots AND the standalone
+// `darkbloom start --local` server's slots. `scheduler` is a dead leg:
+// nothing constructs one anymore; the field (and the legacy submit
+// branch that reads it) is kept compiling only until the v0.7.5
+// legacy-deletion pass removes `BatchScheduler` wholesale. A TEXT
+// request that reaches an entry with NEITHER engine is a hard internal
 // error. `visionGate` replaces the scheduler-owned vision reservation
 // surface for the legacy VLM media path.
 
@@ -26,8 +27,8 @@ public extension MultiModelBatchSchedulerEngine {
     /// `registryProvider` closure each time the engine needs to route
     /// a request.
     struct ModelRegistryEntry: Sendable {
-        /// Legacy scheduler — STANDALONE SERVER ONLY (see header). nil for
-        /// every ProviderLoop slot as of v0.7.5.
+        /// Legacy scheduler — DEAD LEG (see header): no production caller
+        /// populates it as of v0.7.5; removed with the legacy-deletion pass.
         public let scheduler: BatchScheduler?
         /// Tokenizer wrapper for token-utility endpoints
         /// (`/tokenize`, `/detokenize`, `/apply-template`).
@@ -78,7 +79,8 @@ public extension MultiModelBatchSchedulerEngine {
     /// `ensureLoaded + reserve` paths (`StandaloneServer`,
     /// `ProviderLoop+LocalEndpoint`).
     struct AcquiredModel: Sendable {
-        /// Legacy scheduler — STANDALONE SERVER ONLY (see header).
+        /// Legacy scheduler — DEAD LEG (see header): no production caller
+        /// populates it as of v0.7.5; removed with the legacy-deletion pass.
         public let scheduler: BatchScheduler?
         public let tokenizer: TokenizerHandle
         public let releaseToken: OneShotRelease

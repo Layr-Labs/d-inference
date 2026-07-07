@@ -1,15 +1,21 @@
+import Foundation
 import Hummingbird
 import HummingbirdTesting
 import Logging
+import MLXLMCommon
+import MLXNN
+import NIOCore
 import NIOEmbedded
 import Testing
 @testable import ProviderCore
 
-// The standalone server now delegates routing / decoding / SSE formatting
+// The standalone server delegates routing / decoding / SSE formatting
 // to the upstream `MLXLMServer` library. These tests verify the Darkbloom
-// policy layer (lazy load wiring, scheduler error mapping, LRU
-// reservation accounting) still behaves correctly, plus a smoke test
-// that the upstream router is reachable.
+// policy layer — lazy-load wiring, error mapping, LRU reservation
+// accounting, and (v0.7.5 one-engine) the v2 slot construction: the
+// supported-set catalog gate, the KV re-slice across slots, the
+// engineV2-populated `AcquiredModel` entries, and the 32 MiB chat-route
+// body ceiling — plus a smoke test that the upstream router is reachable.
 
 @Test func standaloneServerHealthEndpointUsesUpstreamRouter() async throws {
     let app = standaloneTestServer().makeApplication()
@@ -44,13 +50,15 @@ import Testing
     // whether any model is currently resident. The pre-MLXLMServer
     // implementation reported the catalog here; the rewrite briefly
     // regressed to "currently-loaded" semantics and this test
-    // pins the restored behaviour.
+    // pins the restored behaviour. (v0.7.5: the fixture must be a
+    // CBv2-supported family or the catalog gate drops it — that gate
+    // has its own test below.)
     let model = ModelInfo(
-        id: "mlx-community/Qwen2.5-7B-4bit",
-        modelType: "qwen2",
+        id: "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
+        modelType: "gemma4",
         quantization: "4bit",
-        sizeBytes: 4_000_000_000,
-        estimatedMemoryGb: 4.5
+        sizeBytes: 15_000_000_000,
+        estimatedMemoryGb: 16.0
     )
     // Bind the server to a local so its lifetime extends across the
     // `app.test(...)` call — the engine's `availableModels` closure
@@ -67,8 +75,8 @@ import Testing
             #expect(body.contains(#""object":"list""#))
             // P2 #3: the advertised catalog must be returned even
             // though no model is resident at startup.
-            #expect(body.contains(#""id":"mlx-community\/Qwen2.5-7B-4bit""#)
-                || body.contains(#""id":"mlx-community/Qwen2.5-7B-4bit""#),
+            #expect(body.contains(#""id":"mlx-community\/gemma-4-26B-A4B-it-qat-4bit""#)
+                || body.contains(#""id":"mlx-community/gemma-4-26B-A4B-it-qat-4bit""#),
                 "advertised model id must appear in /v1/models response (P2 #3), got: \(body)")
         }
     }
@@ -264,4 +272,337 @@ private func standaloneTestServer(models: [ModelInfo] = []) -> StandaloneServer 
     StandaloneServer(
         models: models
     )
+}
+
+// MARK: - v0.7.5 one-engine: supported-set catalog gate (fail loud)
+
+@Test func standaloneServerDropsModelsWithoutCBv2AdapterFromCatalog() async throws {
+    // A qwen2 checkpoint has no CBv2 adapter: it must be dropped from the
+    // served catalog at construction (WARN'd server-side; the CLI
+    // additionally prints a per-model error and refuses to start when
+    // nothing remains). A request for the dropped id then gets a clear
+    // 404 — never a silent legacy serve (there is no legacy engine).
+    let unsupported = ModelInfo(
+        id: "mlx-community/Qwen2.5-7B-4bit",
+        modelType: "qwen2",
+        quantization: "4bit",
+        sizeBytes: 4_000_000_000,
+        estimatedMemoryGb: 4.5
+    )
+    let supported = ModelInfo(
+        id: "gemma-4-26b-qat-4bit",
+        modelType: "gemma4",
+        quantization: "4bit",
+        sizeBytes: 15_000_000_000,
+        estimatedMemoryGb: 16.0
+    )
+    let server = StandaloneServer(models: [unsupported, supported])
+    #expect(await server.advertisedModelIds() == ["gemma-4-26b-qat-4bit"])
+
+    // setModels applies the same filter (rescan path).
+    await server.setModels([unsupported])
+    #expect(await server.advertisedModelIds() == [])
+
+    // Request-time: the dropped id surfaces as a clear 404 envelope.
+    await server.setModels([unsupported, supported])
+    let app = server.makeApplication()
+    try await app.test(.router) { client in
+        try await client.execute(
+            uri: "/v1/chat/completions",
+            method: .post,
+            headers: [.contentType: "application/json"],
+            body: ByteBuffer(string: #"{"model":"mlx-community/Qwen2.5-7B-4bit","messages":[{"role":"user","content":"hi"}],"stream":false}"#)
+        ) { response in
+            #expect(response.status == .notFound,
+                "a model without a CBv2 adapter must 404, got \(response.status)")
+            let body = String(buffer: response.body)
+            #expect(body.contains(#""error""#))
+        }
+    }
+    _ = server
+}
+
+// MARK: - v0.7.5 one-engine: 32 MiB chat-route body ceiling
+
+@Test func standaloneServerAcceptsChatBodiesPastTheOldTwoMiBLimit() async throws {
+    // Regression for the known 413 backlog item: the upstream router's
+    // BasicRequestContext pins Hummingbird's 2 MiB decode default, which
+    // 413'd inline media at ~1.5 MB of source bytes. The chat routes are
+    // now served by LocalChatUploadResponder with a 32 MiB ceiling: a
+    // 3 MiB request must get PAST the body limit and reach the engine —
+    // observable as the engine's 404 for an unknown model id, not a 413.
+    let app = standaloneTestServer().makeApplication()
+    let padding = String(repeating: "a", count: 3 * 1024 * 1024)
+    let body = #"{"model":"mlx-test","messages":[{"role":"user","content":""# + padding
+        + #""}],"stream":false}"#
+
+    try await app.test(.router) { client in
+        try await client.execute(
+            uri: "/v1/chat/completions",
+            method: .post,
+            headers: [.contentType: "application/json"],
+            body: ByteBuffer(string: body)
+        ) { response in
+            #expect(response.status == .notFound,
+                "a 3 MiB chat body must clear the raised upload ceiling and reach the engine (404 unknown model), got \(response.status)")
+        }
+        // The streaming variant takes the SSE branch of the interception
+        // responder; its pre-stream throw must surface identically.
+        let streamingBody = body.replacingOccurrences(
+            of: #""stream":false"#, with: #""stream":true"#)
+        try await client.execute(
+            uri: "/v1/chat/completions",
+            method: .post,
+            headers: [.contentType: "application/json"],
+            body: ByteBuffer(string: streamingBody)
+        ) { response in
+            #expect(response.status == .notFound)
+        }
+    }
+}
+
+@Test func standaloneServerRejectsChatBodiesOverThirtyTwoMiB() async throws {
+    let app = standaloneTestServer().makeApplication()
+    // One byte over the ceiling: collected under the 32 MiB limit → 413
+    // with an OpenAI-shaped envelope naming the real limit.
+    let oversized = ByteBuffer(repeating: UInt8(ascii: "x"),
+                               count: localInferenceMaxUploadBytes + 1)
+
+    try await app.test(.router) { client in
+        try await client.execute(
+            uri: "/v1/chat/completions",
+            method: .post,
+            headers: [.contentType: "application/json"],
+            body: oversized
+        ) { response in
+            #expect(response.status == .contentTooLarge,
+                "a body over 32 MiB must 413, got \(response.status)")
+            let body = String(buffer: response.body)
+            #expect(body.contains(#""error""#))
+            #expect(body.contains("32 MiB"))
+        }
+    }
+}
+
+@Test func standaloneNonChatRoutesKeepTheUpstreamDecodePath() async throws {
+    // The interception is scoped to the chat-completions POSTs; other
+    // routes still decode inside the upstream router (2 MiB default).
+    // /tokenize with a small body proves the pass-through still routes.
+    let app = standaloneTestServer().makeApplication()
+    try await app.test(.router) { client in
+        try await client.execute(
+            uri: "/tokenize",
+            method: .post,
+            headers: [.contentType: "application/json"],
+            body: ByteBuffer(string: #"{"prompt":"hello"}"#)
+        ) { response in
+            // No model loaded → the engine's tokenizer resolution fails —
+            // what matters here is that the route was SERVED by the
+            // upstream router (any mapped engine error, never a 413/route
+            // miss).
+            #expect(response.status != .notImplemented)
+            #expect(response.status != .contentTooLarge)
+        }
+    }
+}
+
+// MARK: - v0.7.5 one-engine: v2 slot construction + KV re-slice
+
+private final class StandaloneStubLanguageModel: Module, LanguageModel {
+    func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
+        .tokens(input.text)
+    }
+    func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }
+}
+
+private struct StandaloneStubProcessorError: Error {}
+
+private struct StandaloneStubProcessor: UserInputProcessor {
+    func prepare(input: UserInput) async throws -> LMInput {
+        throw StandaloneStubProcessorError()
+    }
+}
+
+private func makeStandaloneStubContainer() -> ModelContainer {
+    ModelContainer(
+        context: ModelContext(
+            configuration: ModelConfiguration(id: "test/standalone-stub-model"),
+            model: StandaloneStubLanguageModel(),
+            processor: StandaloneStubProcessor(),
+            tokenizer: StubBridgeTokenizer()
+        ))
+}
+
+private let standaloneGiB: UInt64 = 1024 * 1024 * 1024
+private let standalonePhysicalBytes: UInt64 = 64 * standaloneGiB
+
+private func standaloneSizing(
+    weightsGiB: UInt64, kvRate: Int = 20_480, maxContext: Int = 131_072
+) -> SlotSizingSnapshot {
+    SlotSizingSnapshot(
+        weightsBytes: Int(weightsGiB * standaloneGiB),
+        fp16KVBytesPerToken: kvRate,
+        maxContextLength: maxContext,
+        defaultMaxTokens: StandaloneServer.slotDefaultMaxTokens)
+}
+
+/// Thread-safe recorder of the grants the scripted engine builder saw.
+private final class StandaloneGrantRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _entries: [(modelId: String, grant: Int, engine: InertStubEngine)] = []
+    var entries: [(modelId: String, grant: Int, engine: InertStubEngine)] {
+        lock.withLock { _entries }
+    }
+    func record(modelId: String, grant: Int, engine: InertStubEngine) {
+        lock.withLock { _entries.append((modelId, grant, engine)) }
+    }
+}
+
+@Test func standaloneAcquireReturnsV2EntryWithNoScheduler() async throws {
+    let server = standaloneTestServer(models: [
+        ModelInfo(
+            id: "gemma-4-26b-qat-4bit", modelType: "gemma4", quantization: "4bit",
+            sizeBytes: 1, estimatedMemoryGb: 1)
+    ])
+    let recorder = StandaloneGrantRecorder()
+    await server.setV2TestHooksForTesting(
+        StandaloneServer.V2TestHooks(
+            physicalMemoryBytes: standalonePhysicalBytes,
+            makeEngine: { modelId, grant in
+                let engine = InertStubEngine(kvBytesCapacity: grant)
+                recorder.record(modelId: modelId, grant: grant, engine: engine)
+                return engine
+            }))
+
+    let bridge = try await server.buildSlotForTesting(
+        modelId: "gemma-4-26b-qat-4bit",
+        modelType: "gemma4",
+        container: makeStandaloneStubContainer(),
+        tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+        sizing: standaloneSizing(weightsGiB: 15))
+
+    // acquireModel returns the v2-shaped entry: bridge populated, NO
+    // legacy scheduler constructed anywhere on this server.
+    let acquired = try await server.acquireModel("gemma-4-26b-qat-4bit")
+    #expect(acquired.engineV2Bridge === bridge)
+    #expect(acquired.scheduler == nil)
+    #expect(acquired.modelType == "gemma4")
+    #expect(acquired.visionGate != nil)
+    #expect(await server.debugSlotReservationCount(modelId: "gemma-4-26b-qat-4bit") == 1)
+    await acquired.releaseToken.fire()
+    #expect(await server.debugSlotReservationCount(modelId: "gemma-4-26b-qat-4bit") == 0)
+
+    // A single-model box got the FULL fleet budget (never a static split).
+    let expected = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: standalonePhysicalBytes,
+        residentWeightBytes: UInt64(standaloneSizing(weightsGiB: 15).weightsBytes),
+        configReserveBytes: 0)
+    #expect(recorder.entries.map(\.grant) == [Int(expected)])
+}
+
+@Test func standaloneSecondLoadReslicesAndEvictionRegrows() async throws {
+    let server = standaloneTestServer()
+    let recorder = StandaloneGrantRecorder()
+    await server.setV2TestHooksForTesting(
+        StandaloneServer.V2TestHooks(
+            physicalMemoryBytes: standalonePhysicalBytes,
+            makeEngine: { modelId, grant in
+                let engine = InertStubEngine(kvBytesCapacity: grant)
+                recorder.record(modelId: modelId, grant: grant, engine: engine)
+                return engine
+            }))
+
+    // Slot A alone: full budget.
+    let sizingA = standaloneSizing(weightsGiB: 15, kvRate: 20_480)
+    _ = try await server.buildSlotForTesting(
+        modelId: "gemma-4-26b-qat-4bit", modelType: "gemma4",
+        container: makeStandaloneStubContainer(),
+        tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+        sizing: sizingA)
+    let grantA0 = try #require(await server.debugEngineKVGrant(modelId: "gemma-4-26b-qat-4bit"))
+
+    // Slot B loads: A shrinks to its fair share, Σ ≤ the fleet budget,
+    // exactly the shared pure policy's targets.
+    let sizingB = standaloneSizing(weightsGiB: 12, kvRate: 24_576)
+    _ = try await server.buildSlotForTesting(
+        modelId: "gpt-oss-20b", modelType: "gpt_oss",
+        container: makeStandaloneStubContainer(),
+        tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+        sizing: sizingB)
+
+    let fleetBudget = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: standalonePhysicalBytes,
+        residentWeightBytes: UInt64(sizingA.weightsBytes + sizingB.weightsBytes),
+        configReserveBytes: 0)
+    let targets = EngineV2KVSizing.resliceGrants(
+        existing: [
+            .init(
+                modelId: "gemma-4-26b-qat-4bit",
+                fp16KVBytesPerToken: sizingA.fp16KVBytesPerToken,
+                maxContextLength: sizingA.maxContextLength)
+        ],
+        newcomer: .init(
+            modelId: "gpt-oss-20b",
+            fp16KVBytesPerToken: sizingB.fp16KVBytesPerToken,
+            maxContextLength: sizingB.maxContextLength),
+        fleetKVBudgetBytes: fleetBudget)
+    let grantA1 = try #require(await server.debugEngineKVGrant(modelId: "gemma-4-26b-qat-4bit"))
+    let grantB = try #require(await server.debugEngineKVGrant(modelId: "gpt-oss-20b"))
+    #expect(grantA1 == targets["gemma-4-26b-qat-4bit"])
+    #expect(grantB == targets["gpt-oss-20b"])
+    #expect(grantA1 < grantA0)
+    #expect(UInt64(grantA1 + grantB) <= fleetBudget)
+
+    // Evict the LRU idle slot (A — loaded first): B regrows to the FULL
+    // budget under its own weights, and A's engine was drained.
+    let evicted = await server.evictLRUIdleSlotForTesting()
+    #expect(evicted)
+    #expect(await server.debugEngineKVGrant(modelId: "gemma-4-26b-qat-4bit") == nil)
+    #expect(recorder.entries[0].engine.shutdownCalls == 1)
+    let fullB = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: standalonePhysicalBytes,
+        residentWeightBytes: UInt64(sizingB.weightsBytes),
+        configReserveBytes: 0)
+    #expect(await server.debugEngineKVGrant(modelId: "gpt-oss-20b") == Int(fullB))
+}
+
+@Test func standaloneConstructionFailureRestoresGrantsAndMapsTo503Shape() async throws {
+    struct BuildFailure: Error {}
+    let server = standaloneTestServer()
+    let recorder = StandaloneGrantRecorder()
+    await server.setV2TestHooksForTesting(
+        StandaloneServer.V2TestHooks(
+            physicalMemoryBytes: standalonePhysicalBytes,
+            makeEngine: { modelId, grant in
+                let engine = InertStubEngine(kvBytesCapacity: grant)
+                recorder.record(modelId: modelId, grant: grant, engine: engine)
+                return engine
+            }))
+    let sizingA = standaloneSizing(weightsGiB: 15)
+    _ = try await server.buildSlotForTesting(
+        modelId: "gemma-4-26b-qat-4bit", modelType: "gemma4",
+        container: makeStandaloneStubContainer(),
+        tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+        sizing: sizingA)
+    let grantA0 = try #require(await server.debugEngineKVGrant(modelId: "gemma-4-26b-qat-4bit"))
+
+    // B's engine construction fails: A must be restored to its EXACT
+    // prior grant (shrink → restore trail on the engine).
+    await server.setV2TestHooksForTesting(
+        StandaloneServer.V2TestHooks(
+            physicalMemoryBytes: standalonePhysicalBytes,
+            makeEngine: { _, _ in throw BuildFailure() }))
+    await #expect(throws: BuildFailure.self) {
+        _ = try await server.buildSlotForTesting(
+            modelId: "gpt-oss-20b", modelType: "gpt_oss",
+            container: makeStandaloneStubContainer(),
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+            sizing: standaloneSizing(weightsGiB: 12, kvRate: 24_576))
+    }
+    #expect(await server.debugEngineKVGrant(modelId: "gemma-4-26b-qat-4bit") == grantA0)
+    let updates = recorder.entries[0].engine.capacityUpdates
+    #expect(updates.count == 2)
+    #expect((updates.first ?? 0) < grantA0)
+    #expect(updates.last == grantA0)
+    #expect(await server.debugEngineKVGrant(modelId: "gpt-oss-20b") == nil)
 }

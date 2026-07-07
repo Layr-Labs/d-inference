@@ -16,9 +16,9 @@
 //     survivors back; a slice below the serviceability floor REFUSES the
 //     load.
 //   * Request routing (`MultiModelBatchSchedulerEngine`): both production
-//     inits route text through the bridge; a scheduler-only entry (the
-//     standalone server shape) still runs legacy; an entry with NO engine
-//     at all is a hard internal error.
+//     inits route text through the bridge; a scheduler-only entry (a DEAD
+//     leg as of v0.7.5 — kept until the legacy-deletion pass) still runs
+//     legacy; an entry with NO engine at all is a hard internal error.
 //   * Heartbeat/cancellation: the runtime summary is the ONLY slot source;
 //     grants are read live (post-re-slice), never construction-time.
 
@@ -1059,10 +1059,12 @@ struct EngineV2RequestRoutingTests {
         #expect(engine.submitted[0].promptTokens == [1, 2, 3, 4, 5])
     }
 
-    @Test("standalone shape: a scheduler-only entry still runs the legacy path")
+    @Test("deletion-pass pending: a scheduler-only entry still runs the legacy leg")
     func standaloneSchedulerEntryRunsLegacy() async throws {
-        // The standalone `darkbloom local` server still builds legacy
-        // BatchScheduler slots (its v2 wiring is a separate workstream).
+        // No production caller builds scheduler-only entries anymore (the
+        // standalone server constructs v2 slots as of v0.7.5) — this pins
+        // the DEAD legacy leg's behavior only until the legacy-deletion
+        // pass removes `ModelRegistryEntry.scheduler` and this branch.
         // The model-less scheduler proves the request went to the LEGACY
         // engine: it fails with its "No model loaded" error, which the v2
         // bridge could never produce.

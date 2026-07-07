@@ -55,7 +55,7 @@ extension StandaloneServer {
         // would make them give up.
         makeLocalInferenceApplication(
             config: LocalInferenceHTTPConfig(host: config.host, port: config.port, authToken: config.authToken),
-            defaultMaxTokens: Self.schedulerDefaultMaxTokens,
+            defaultMaxTokens: Self.slotDefaultMaxTokens,
             acquire: { [weak self] modelId in
                 guard let self else {
                     throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)

@@ -478,19 +478,20 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
         let requestId = "req-\(UUID().uuidString.prefix(12))"
 
-        // ONE ENGINE (v0.7.5): a ProviderLoop slot ALWAYS carries a v2
-        // bridge — the tokenized prompt submits through it. The bridge
-        // yields the identical `AsyncStream<GenerationEvent>` shape, so
-        // everything downstream — tool-call parsing, SSE framing,
-        // error→status mapping, billing extraction — is engine-agnostic.
+        // ONE ENGINE (v0.7.5): every production slot — ProviderLoop AND
+        // the standalone server — carries a v2 bridge; the tokenized
+        // prompt submits through it. The bridge yields the identical
+        // `AsyncStream<GenerationEvent>` shape, so everything downstream —
+        // tool-call parsing, SSE framing, error→status mapping, billing
+        // extraction — is engine-agnostic.
         //
-        // The legacy `scheduler.submitTokenized` branch remains ONLY for
-        // the standalone `darkbloom local` server, which still constructs
-        // its own `BatchScheduler` slots (separate workstream; see
-        // MultiModelBatchSchedulerEngine+Registry.swift). A TEXT request
-        // that reaches an entry with NEITHER engine is a hard internal
-        // error (500) — structurally unreachable, kept as loud insurance
-        // per the fail-loud contract.
+        // The legacy `scheduler.submitTokenized` branch is now DEAD in
+        // production (no caller constructs a scheduler entry anymore); it
+        // is kept compiling only until the v0.7.5 legacy-deletion pass
+        // removes `BatchScheduler` wholesale. A TEXT request that reaches
+        // an entry with NEITHER engine is a hard internal error (500) —
+        // structurally unreachable, kept as loud insurance per the
+        // fail-loud contract.
         let upstream: AsyncStream<GenerationEvent>
         let cancelUpstream: @Sendable () async -> Void
         if let bridge = engineV2Bridge {

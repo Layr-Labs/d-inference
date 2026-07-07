@@ -235,7 +235,14 @@ type Server struct {
 	// keep Gemma shed while allowing gpt-oss traffic with TTFT_HARD_REJECT=false).
 	// Exclusive self-route bypasses this because it never falls back to the public
 	// fleet and is useful for owner debugging. nil/empty = none.
-	rejectModels map[string]bool
+	//
+	// Seeded from EIGENINFERENCE_REJECT_MODELS at startup and mutable at RUNTIME
+	// via GET/PUT /v1/admin/reject-models (admin_reject_models.go) so a shed flip
+	// no longer costs a coordinator restart (each restart wipes in-memory
+	// calibrator/TPS/breaker state). Guarded by rejectModelsMu: the set is read on
+	// the per-request admission path and replaced wholesale by the admin endpoint.
+	rejectModelsMu sync.RWMutex
+	rejectModels   map[string]bool
 
 	// minDecodeTPS is the per-request sustained-decode floor (tokens/sec) passed
 	// to the scheduler as PendingRequest.MinDecodeTPS. When > 0 the router prefers
@@ -1034,13 +1041,20 @@ func (s *Server) SetTTFTHardReject(enabled bool) {
 }
 
 // SetRejectModels sets the requested/resolved model IDs to 429 at public
-// admission. Call before serving starts.
+// admission. Safe for concurrent use: startup seeds it from
+// EIGENINFERENCE_REJECT_MODELS and the admin endpoint (PUT
+// /v1/admin/reject-models) replaces it at runtime.
 func (s *Server) SetRejectModels(models map[string]bool) {
-	if len(models) == 0 {
-		s.rejectModels = nil
-		return
-	}
-	copy := make(map[string]bool, len(models))
+	s.ReplaceRejectModels(models)
+}
+
+// ReplaceRejectModels atomically replaces the reject set (full replacement —
+// an empty/nil set sheds nothing) and returns the previous and installed sets
+// as sorted lists, so callers can log the exact old -> new transition even
+// under concurrent replacements. Entries mapped to false, blank, or
+// whitespace-only are dropped.
+func (s *Server) ReplaceRejectModels(models map[string]bool) (previous, current []string) {
+	normalized := make(map[string]bool, len(models))
 	for model, reject := range models {
 		if !reject {
 			continue
@@ -1049,16 +1063,39 @@ func (s *Server) SetRejectModels(models map[string]bool) {
 		if model == "" {
 			continue
 		}
-		copy[model] = true
+		normalized[model] = true
 	}
-	if len(copy) == 0 {
-		s.rejectModels = nil
-		return
+	if len(normalized) == 0 {
+		normalized = nil
 	}
-	s.rejectModels = copy
+	s.rejectModelsMu.Lock()
+	prev := s.rejectModels
+	s.rejectModels = normalized
+	s.rejectModelsMu.Unlock()
+	return sortedModelSet(prev), sortedModelSet(normalized)
+}
+
+// RejectModels returns the current reject set as a sorted list. Never nil (an
+// empty set yields an empty slice) so JSON consumers always see an array.
+func (s *Server) RejectModels() []string {
+	s.rejectModelsMu.RLock()
+	defer s.rejectModelsMu.RUnlock()
+	return sortedModelSet(s.rejectModels)
+}
+
+// sortedModelSet flattens a model set to a sorted, never-nil slice.
+func sortedModelSet(models map[string]bool) []string {
+	out := make([]string, 0, len(models))
+	for model := range models {
+		out = append(out, model)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (s *Server) modelShed(resolved, requested string) bool {
+	s.rejectModelsMu.RLock()
+	defer s.rejectModelsMu.RUnlock()
 	if len(s.rejectModels) == 0 {
 		return false
 	}
@@ -1882,6 +1919,14 @@ func (s *Server) routes() {
 	// (admin key OR Privy admin). Registered before the /v1/ catch-all. Note:
 	// /readyz stays unauthenticated. See drain.go (DAR-327 Phase 1).
 	s.mux.HandleFunc("POST /v1/admin/drain", s.requireAuth(s.handleAdminDrain))
+
+	// Runtime shed list (admin only) — read/replace the per-model reject set
+	// (seeded from EIGENINFERENCE_REJECT_MODELS at startup) without a coordinator
+	// restart. Same auth pattern as /v1/admin/drain: requireAuth parses a Privy
+	// admin JWT / accepts the admin key as a pseudo-account, and the handlers
+	// authorize via isAdminAuthorized. See admin_reject_models.go.
+	s.mux.HandleFunc("GET /v1/admin/reject-models", s.requireAuth(s.handleAdminGetRejectModels))
+	s.mux.HandleFunc("PUT /v1/admin/reject-models", s.requireAuth(s.handleAdminPutRejectModels))
 
 	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
 	// Browse as JSON or stream a CSV/NDJSON download for offline analysis.

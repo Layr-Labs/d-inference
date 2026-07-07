@@ -28,6 +28,18 @@ extension ProviderLoop {
     /// capacity-timeout = 503, invalid role = 400, model not found =
     /// 404).
     static func mapInferenceErrorToStatus(_ error: Error) -> UInt16 {
+        // Task cancellation is the CALLER going away (consumer cancel /
+        // coordinator disconnect propagated via handleCancellation's
+        // task.cancel()), never a provider fault: 499 (client closed
+        // request), matching the mid-stream cancel terminal's wire shape.
+        // The coordinator-path pre-stream catch special-cases this before
+        // mapping (canonical "request cancelled" + the cancellations stat);
+        // this entry is defense-in-depth for every other mapper call site
+        // (the standalone --local HTTP path) so a cancel can never surface
+        // as a 500 provider error anywhere.
+        if error is CancellationError {
+            return 499
+        }
         if let svcErr = error as? MLXOpenAIServiceError {
             switch svcErr {
             case .invalidResponseFormatOutput:
@@ -57,6 +69,14 @@ extension ProviderLoop {
             case .mediaUnsupportedByModel:
                 // Client fault: media sent to a non-VLM model. Fails
                 // identically on retry, so 400 (not a 5xx/retry signal).
+                return 400
+            case .multimodalRejected:
+                // v2 engine rejected the vision submission at submit time
+                // (bad spans / embedding mismatch / block over the per-step
+                // budget / non-multimodal model or backend). Deterministic
+                // for this request/engine pairing — 400, never a retry
+                // signal. (Provider-side construction failures never get
+                // here; they fall back to the legacy VLM path instead.)
                 return 400
             case .generationFailed:
                 return 500

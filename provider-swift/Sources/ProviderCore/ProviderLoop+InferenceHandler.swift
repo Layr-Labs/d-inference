@@ -433,6 +433,29 @@ extension ProviderLoop {
                     request: streamingRequest
                 )
             } catch {
+                // A cancel that lands while the stream is STARTING — the
+                // consumer cancelled during prompt templating or the v0.7.4
+                // vision-feature construction (`handleCancellation` cancels
+                // this detached task, and the vision seam rethrows
+                // CancellationError instead of falling back to legacy) — is
+                // not a provider fault. Report it exactly like the
+                // established "cancelled with nothing delivered" terminal
+                // below (499 + "request cancelled", cancellations-before-
+                // output stat), never a mapped 500 .inferenceError, which
+                // would count as a provider error and trip the
+                // (provider, model) 5xx routing cooldown for a client's own
+                // cancel.
+                if error is CancellationError || token.isCancelled {
+                    log.info("[\(requestId)] Request cancelled while starting the stream")
+                    providerStats.incrementCancellationsBeforeOutput()
+                    send.send(.inferenceError(
+                        requestId: requestId,
+                        error: "request cancelled",
+                        statusCode: 499,
+                        errorReason: nil
+                    ))
+                    return
+                }
                 log.error("[\(requestId)] Failed to start stream: \(error)")
                 let statusCode = Self.mapInferenceErrorToStatus(error)
                 // Classify HERE, where the real `Error` (and its rich

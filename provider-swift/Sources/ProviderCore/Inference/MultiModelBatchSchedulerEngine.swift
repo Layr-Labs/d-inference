@@ -101,6 +101,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// (silently) when the model serves via legacy, which never honored
     /// either knob.
     private let engineV2Sampling: EngineV2SamplingOverrides?
+    /// v0.7.4 vision-through-v2 seam: the preparer that turns an image
+    /// request into a `CBv2MultimodalInput` submission plus the sink for the
+    /// fallback WARN. nil ⇒ `.production` (the real `EngineV2VisionPrefill`
+    /// + `TelemetryClient.shared`); unit tests inject a scripted preparer so
+    /// the routing is exercisable without model weights.
+    private let engineV2Vision: EngineV2VisionPlumbing?
 
     public init(
         registryProvider: @escaping @Sendable () async -> Registry,
@@ -111,7 +117,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         reasoningEffort: String? = nil,
         cacheScope: String = "",
         engineV2Logprobs: EngineV2LogprobsPlumbing? = nil,
-        engineV2Sampling: EngineV2SamplingOverrides? = nil
+        engineV2Sampling: EngineV2SamplingOverrides? = nil,
+        engineV2Vision: EngineV2VisionPlumbing? = nil
     ) {
         self.registryProvider = registryProvider
         self.ensureLoaded = ensureLoaded
@@ -122,6 +129,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.cacheScope = cacheScope
         self.engineV2Logprobs = engineV2Logprobs
         self.engineV2Sampling = engineV2Sampling
+        self.engineV2Vision = engineV2Vision
         self.acquire = nil
         self.tokenizerProvider = nil
         self.availableModelsOverride = nil
@@ -169,6 +177,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // (the upstream request shape omits them — see the KNOWN DEVIATION on
         // `translate(...)`).
         self.engineV2Sampling = nil
+        // nil ⇒ `.production` at the routing site — the --local path gets
+        // the same vision-through-v2 behavior as the coordinator path.
+        self.engineV2Vision = nil
     }
 
     // MARK: - MLXServerEngine
@@ -223,14 +234,18 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         }
 
         // Multimodal (image/video) requests can't flow through the token-only
-        // batched engine. For VLM models, serve them via the container's
+        // batched TEXT paths. For VLM models they are handled here: on a
+        // v2-bridged slot, image requests prefill through the engine with
+        // precomputed vision-tower embeddings (v0.7.4, below); video requests
+        // and every non-bridged/fallback case serve via the container's
         // non-batched prepare/generate vision path.
         //
         // ORDERING CONTRACT (v0.7.2 VLM text routing): this media check MUST
-        // stay ABOVE the engineV2Bridge branch below. A VLM slot may carry a
-        // v2 bridge built over its extracted text model — text-only requests
-        // route through that bridge, but image/video requests must keep this
-        // legacy vision path (the extracted text model cannot embed pixels).
+        // stay ABOVE the engineV2Bridge TEXT branch below. A VLM slot may
+        // carry a v2 bridge built over its extracted text model — text-only
+        // requests route through that bridge directly, but media requests
+        // must pass through THIS branch first (the text tokenization below
+        // silently discards image parts; media must never reach it).
         if isVLM, let container, VLMRequestInference.hasMedia(request) {
             // Decode + validate inline media SYNCHRONOUSLY, before returning the
             // stream. A MediaError (oversized/malformed/non-`data:` payload) thrown
@@ -279,6 +294,75 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 await releaseBox.fire()
                 throw error
             }
+
+            // VISION → ENGINE V2 (v0.7.4): image-only requests on a slot
+            // whose bridge serves the extracted text model prefill through
+            // the v2 engine — the wrapper's vision tower + projector run
+            // once up front (`EngineV2VisionPrefill`, under container
+            // isolation) and the resulting per-image embeddings ride
+            // `CBv2Request.multimodal`, spliced at the placeholder spans by
+            // the engine's multimodal-prefill path (bidirectional span
+            // masks, chunk snapping). Video requests keep the legacy
+            // wrapper path (`hasVideo` — the v2 seam is images-only,
+            // deliberately not half-supported; see that helper). ANY
+            // construction failure falls through to the unchanged legacy
+            // path below — WARN telemetry, never a dropped request.
+            if let bridge = engineV2Bridge, !VLMRequestInference.hasVideo(request) {
+                let plumbing = engineV2Vision ?? .production
+                do {
+                    let prepared = try await plumbing.prepare(container, request)
+                    let visionRequestId = "req-\(UUID().uuidString.prefix(12))"
+                    // No provider-side tool parsing on this path — matching
+                    // the legacy vision path exactly: the VLM processor's
+                    // chat templating never renders tool specs, so the model
+                    // is never prompted into tool-call syntax on either
+                    // vision path.
+                    let upstream = await bridge.submitTokenized(
+                        promptTokens: prepared.promptTokens,
+                        request: Self.translate(
+                            openAIRequest: request, defaultMaxTokens: defaultMaxTokens,
+                            logprobs: engineV2Logprobs != nil ? true : nil,
+                            topLogprobs: engineV2Logprobs?.topLogprobs,
+                            logitBias: engineV2Sampling?.logitBias,
+                            seed: engineV2Sampling?.seed),
+                        requestId: visionRequestId,
+                        cacheScope: cacheScope,
+                        logprobsChannel: engineV2Logprobs?.channel,
+                        multimodal: prepared.multimodalInput()
+                    )
+                    // The bridge now owns the request's memory accounting:
+                    // its shared-budget gate reserved prompt (incl. the
+                    // image soft tokens) + max_tokens at the fp16 rate, and
+                    // the decode-phase peak this vision reservation covered
+                    // (CIImage rasters, tower activations) is behind us —
+                    // the embeddings were eval'ed inside `prepare`. Holding
+                    // both would double-charge the KV span for the whole
+                    // stream, so release the vision reservation here.
+                    await scheduler.releaseVisionRequest(requestId: mediaReqId)
+                    return makeEventStream(
+                        upstream: upstream,
+                        cancelUpstream: { await bridge.cancel(requestId: visionRequestId) },
+                        toolHandler: nil,
+                        releaseBox: releaseBox
+                    )
+                } catch is CancellationError {
+                    // The CALLER went away mid-construction — that is not a
+                    // v2 failure, so don't burn a fallback WARN or re-serve
+                    // the whole request through the legacy path. Release and
+                    // propagate like every other pre-stream throw above.
+                    await scheduler.releaseVisionRequest(requestId: mediaReqId)
+                    await releaseBox.fire()
+                    throw CancellationError()
+                } catch {
+                    // Legacy fallback (the vision reservation is still held;
+                    // the legacy stream below releases it on every exit).
+                    // WARN so the fallback rate is observable in prod.
+                    plumbing.emitTelemetry(
+                        EngineV2VisionPrefill.fallbackTelemetryEvent(
+                            modelId: modelId, error: error))
+                }
+            }
+
             let vlmStream = VLMRequestInference.stream(
                 container: container, request: request, defaultMaxTokens: defaultMaxTokens)
             // Capture the scheduler so the stream task can release the media
@@ -439,7 +523,27 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             cancelUpstream = { await scheduler.cancel(requestId: requestId) }
         }
 
-        return AsyncThrowingStream { continuation in
+        return makeEventStream(
+            upstream: upstream,
+            cancelUpstream: cancelUpstream,
+            toolHandler: toolHandler,
+            releaseBox: releaseBox
+        )
+    }
+
+    /// Translate an engine `GenerationEvent` stream into the upstream
+    /// `MLXServerGenerationEvent` shape, with tool-call parsing, usage/info
+    /// framing, structured-error promotion, and release-on-every-exit.
+    /// Shared by the batched/v2 TEXT path and the v0.7.4 vision-through-v2
+    /// path (which passes `toolHandler: nil` — see the routing comment) so
+    /// the downstream SSE/billing contract is identical for both.
+    private func makeEventStream(
+        upstream: AsyncStream<GenerationEvent>,
+        cancelUpstream: @escaping @Sendable () async -> Void,
+        toolHandler: BatchedToolStreamHandler?,
+        releaseBox: OneShotRelease
+    ) -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        AsyncThrowingStream { continuation in
             let task = Task {
                 var promptTokenCount = 0
                 var completionTokens = 0

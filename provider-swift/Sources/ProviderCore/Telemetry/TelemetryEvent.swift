@@ -262,6 +262,9 @@ public enum TelemetryFieldFilter {
         "streak_seconds", "reservation_count", "reserved_bytes",
         "mlx_cache_bytes", "system_available_bytes", "reservations",
         "request_id", "age_seconds",
+        // Vision-through-engine_v2 tag (v0.7.4) — a bare boolean; media/
+        // prompt content NEVER rides telemetry. Mirror in Go + TS allowlists.
+        "multimodal",
     ]
 
     /// Filter a dictionary to only the keys the coordinator accepts.

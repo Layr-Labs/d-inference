@@ -77,10 +77,10 @@ extension ProviderLoop {
     /// hooks. Instead of gating the whole slot out (which kept 100% of prod
     /// Gemma traffic on legacy), an allowlisted VLM slot builds the engine
     /// over `EngineV2VLMTextExtraction`'s weight-sharing MLXLLM text model:
-    /// TEXT requests then serve through v2 while image/video requests keep
-    /// the legacy VLM path (per-request routing in
-    /// `MultiModelBatchSchedulerEngine.streamChatCompletion`, which peels
-    /// media off to the vision path BEFORE the bridge branch).
+    /// TEXT requests then serve through v2, and (v0.7.4) IMAGE requests do
+    /// too via CBv2 multimodal prefill — only VIDEO requests (and image
+    /// span-construction failures) keep the legacy VLM path (per-request
+    /// routing in `MultiModelBatchSchedulerEngine.streamChatCompletion`).
     ///
     /// On success the bridge is registered with `engineV2Runtime` BEFORE the
     /// caller installs the slot, so a request routed the instant the slot
@@ -268,12 +268,14 @@ extension ProviderLoop {
         // cancellation fan-out see the bridge from the first request.
         await engineV2Runtime.register(modelId: modelId, bridge: bridge)
         if isVLM {
-            // Distinguish the VLM text-routing mode in prod logs: text
-            // requests serve via v2 over the extracted text model, image/
-            // video requests keep the legacy VLM path.
+            // Distinguish the VLM routing mode in prod logs: text AND image
+            // requests serve via v2 (image via CBv2 multimodal prefill, with
+            // legacy fallback on span-construction failure); video requests
+            // keep the legacy VLM path.
             logger.info(
                 "engine_v2: serving \(modelId) via ContinuousBatchingV2 "
-                    + "(vlm_text_routing=true: text→v2, image/video→legacy VLM path; "
+                    + "(vlm_text_routing=true: text→v2, image→v2 multimodal prefill "
+                    + "(legacy on fallback), video→legacy VLM path; "
                     + "legacy scheduler retained for fallback)")
         } else {
             logger.info(

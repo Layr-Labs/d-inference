@@ -73,15 +73,22 @@ public enum EngineV2MediaKind: String, Sendable {
 
 /// Construction failures of the v2 media-prefill submission. Every case is
 /// caught by the scheduler engine and REFUSED loudly (ERROR telemetry + a
-/// retriable 503; the coordinator reroutes). Messages are operator-facing —
-/// they ride the telemetry `error` field and the client-facing rejection
-/// message, and must never embed prompt or media content.
+/// retriable 503; the coordinator reroutes) — except `noProcessedMedia`,
+/// which is a deterministic request shape mapped to a 400 client fault (see
+/// its doc). Messages are operator-facing — they ride the telemetry `error`
+/// field and the client-facing rejection message, and must never embed
+/// prompt or media content.
 enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
     /// The slot's loaded module is not the MLXVLM Gemma4 wrapper (the only
     /// VLM this seam supports — mirrors the v0.7.2 extraction gate).
     case notGemmaVLM(String)
     /// The processor produced neither image nor video pixels for a media
-    /// request.
+    /// request — every media part sits on a non-user role, which
+    /// `buildUserInput` drops (identically on the legacy path). This shape
+    /// is deterministic for the request on EVERY provider, so the routing
+    /// engine maps this one case to a 400 client fault instead of a
+    /// retriable refusal (failover would burn retries on an identical
+    /// outcome).
     case noProcessedMedia
     /// The tower/projector seam returned zero feature arrays for media the
     /// processor did produce pixels for.
@@ -403,13 +410,18 @@ public enum EngineV2VisionPrefill {
 
     /// Coarse media shape of `request` (image / video / mixed), for
     /// telemetry tagging on paths where the processor never ran (refusals
-    /// can fire before `prepare` produced anything). Callers only invoke
-    /// this for requests that already passed `hasMedia`, so "no media
-    /// parts" cannot occur (it would report `.image`).
+    /// can fire before `prepare` produced anything). Scans USER messages
+    /// only — the media the processor actually consumes
+    /// (`buildUserInput` drops media parts on non-user roles), so refusal
+    /// tags match the success path's `lmInput`-derived kind. Callers only
+    /// invoke this for requests that already passed `hasMedia`; a request
+    /// whose media all sits on non-user roles reports `.image` here but
+    /// never reaches refusal telemetry (it maps to the deterministic
+    /// `noProcessedMedia` 400 instead).
     static func mediaKind(of request: OpenAIChatCompletionRequest) -> EngineV2MediaKind {
         var hasImage = false
         var hasVideo = false
-        for message in request.messages {
+        for message in request.messages where message.role == .user {
             guard case .parts(let parts) = message.content else { continue }
             for part in parts {
                 switch part {

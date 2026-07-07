@@ -478,6 +478,28 @@ struct MediaKindClassificationTests {
         #expect(VLMRequestInference.hasVideo(mixed))
         #expect(EngineV2VisionPrefill.mediaKind(of: mixed) == .mixed)
     }
+
+    @Test("mediaKind ignores non-user-role media (mirrors buildUserInput)")
+    func nonUserRolesIgnored() {
+        // A video part on an assistant message is dropped by buildUserInput,
+        // so the kind must reflect the user-message media only — keeping
+        // refusal tags consistent with the success path's lmInput-derived
+        // kind.
+        let request = OpenAIChatCompletionRequest(
+            model: "test/vlm-stub",
+            messages: [
+                OpenAIChatMessage(
+                    role: .assistant,
+                    content: .parts([.videoURL("data:video/mp4;base64,AAAA")])),
+                OpenAIChatMessage(
+                    role: .user,
+                    content: .parts([.text("what is this?"), .imageURL(tinyPNGDataURI)])),
+            ],
+            temperature: 0,
+            maxTokens: 8
+        )
+        #expect(EngineV2VisionPrefill.mediaKind(of: request) == .image)
+    }
 }
 
 // MARK: - Bridge multimodal passthrough
@@ -741,6 +763,83 @@ struct EngineV2VisionRoutingTests {
             telemetry.events.allSatisfy {
                 $0.fields?["operation"]?.description != "engine_v2_vision_refusal"
             })
+    }
+
+    @Test("noProcessedMedia (media on non-user roles only) maps to 400, not a refusal")
+    func noProcessedMediaMapsTo400() async throws {
+        // Without this mapping the shape would 503 → the coordinator's
+        // failover would burn retries on a request that fails identically
+        // on every provider (buildUserInput drops non-user media
+        // everywhere).
+        let engine = VisionScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine)
+        let telemetry = VisionTelemetrySink()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _ in throw EngineV2VisionPrefillError.noProcessedMedia },
+            emitTelemetry: telemetry.callback()
+        )
+        let router = makeRoutingEngine(
+            scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
+            bridge: bridge, plumbing: plumbing)
+
+        do {
+            _ = try await collectContent(
+                try await router.streamChatCompletion(request: imageRequest()))
+            Issue.record("expected multimodalRejected throw")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            guard case .multimodalRejected(let message) = error else {
+                Issue.record("expected .multimodalRejected, got \(error)")
+                return
+            }
+            #expect(message.hasPrefix("multimodal_rejected:"))
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
+        } catch {
+            Issue.record("expected MultiModelBatchSchedulerEngineError, got \(error)")
+        }
+        #expect(engine.submitted.isEmpty)
+        // A deterministic client shape is not a v2 refusal — no ERROR event.
+        #expect(
+            telemetry.events.allSatisfy {
+                $0.fields?["operation"]?.description != "engine_v2_vision_refusal"
+            })
+    }
+
+    @Test("refusal on a video request tags media_kind video")
+    func refusalTagsVideoKind() async throws {
+        struct PrepFailure: Error {}
+        let engine = VisionScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine)
+        let telemetry = VisionTelemetrySink()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _ in throw PrepFailure() },
+            emitTelemetry: telemetry.callback()
+        )
+        let router = makeRoutingEngine(
+            scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
+            bridge: bridge, plumbing: plumbing)
+
+        // Real tinyMP4 so validateMedia passes and the preparer is reached.
+        let request = imageRequest(parts: [
+            .text("what happens in this clip?"), .videoURL(tinyMP4DataURI),
+        ])
+        do {
+            _ = try await collectContent(
+                try await router.streamChatCompletion(request: request))
+            Issue.record("expected requestRejected throw")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            guard case .requestRejected(let message) = error else {
+                Issue.record("expected .requestRejected, got \(error)")
+                return
+            }
+            #expect(message.contains("media=video"))
+        } catch {
+            Issue.record("expected MultiModelBatchSchedulerEngineError, got \(error)")
+        }
+        let refusals = telemetry.events.filter {
+            $0.fields?["operation"]?.description == "engine_v2_vision_refusal"
+        }
+        #expect(refusals.count == 1)
+        #expect(refusals.first?.fields?["media_kind"]?.description == "video")
     }
 
     @Test("non-bridged slot keeps the legacy path; the preparer is never invoked")

@@ -310,9 +310,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // coordinator's pre-content failover reroutes invisibly. The
             // legacy wrapper path below is NOT reachable for media on a
             // v2-bridged slot anymore (v0.7.4's silent fallback is gone).
-            // Two throws keep their old meaning: `CancellationError` (the
-            // caller went away — propagate, no refusal) and `MediaError`
-            // (deterministic input fault — keeps its 4xx mapping).
+            // Three throws are NOT refusals: `CancellationError` (the
+            // caller went away — propagate, 499), `MediaError`
+            // (deterministic input fault — keeps its 4xx mapping), and
+            // `noProcessedMedia` (media on non-user roles only — a
+            // deterministic 400; rerouting would fail identically
+            // everywhere).
             if let bridge = engineV2Bridge {
                 let plumbing = engineV2Vision ?? .production
                 do {
@@ -369,6 +372,18 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     await scheduler.releaseVisionRequest(requestId: mediaReqId)
                     await releaseBox.fire()
                     throw mediaError
+                } catch EngineV2VisionPrefillError.noProcessedMedia {
+                    // Every media part sits on a non-user role, so the
+                    // processor had nothing to consume (`buildUserInput`
+                    // drops non-user media — identically on the legacy
+                    // path). Deterministic for this request on EVERY
+                    // provider: a 400 client fault, not a refusal — no
+                    // ERROR telemetry, no failover burn.
+                    await scheduler.releaseVisionRequest(requestId: mediaReqId)
+                    await releaseBox.fire()
+                    throw MultiModelBatchSchedulerEngineError.multimodalRejected(
+                        "multimodal_rejected: media parts must be attached to user "
+                            + "messages; none of this request's media was consumable")
                 } catch {
                     // REFUSAL: v2 media-prefill construction failed on this
                     // provider. ERROR telemetry (media-kind tagged) + 503 —

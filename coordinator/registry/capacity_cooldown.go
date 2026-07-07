@@ -167,11 +167,22 @@ func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped boo
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := time.Now()
+
+	// Gray-box trackers ride the SAME classified entry point but have their own
+	// kill switches, independent of the cooldown threshold: the budget clamp
+	// stops admission believing the pair's stale heartbeat budget immediately
+	// (budget_clamp.go), and the rate window accumulates the reject side of the
+	// capacity-503 rate (capacity_rate.go — accepts deliberately do NOT reset
+	// it, unlike the strike streak below).
+	clampKey := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
+	r.recordBudgetClampLocked(clampKey, now)
+	r.recordCapacityRateRejectLocked(clampKey, now)
+
 	cfg := r.capacityCooldownCfg
 	if cfg.Threshold <= 0 {
 		return false // disabled via EIGENINFERENCE_CAPACITY_COOLDOWN_THRESHOLD=0
 	}
-	now := time.Now()
 
 	// Opportunistic sweep (mirrors error_cooldown.go): session provider ids are
 	// per-connection UUIDs that never get re-keyed — bound the maps by dropping
@@ -277,28 +288,57 @@ func (r *Registry) claimCapacityProbeLocked(providerID, modelID string, now time
 // can flow from an ejected node, and lifting the quarantine early on it would
 // defeat the cooldown — recovery goes through the half-open success probe.
 func (r *Registry) RecordCapacityAccept(providerID, modelID string) {
+	r.RecordCapacityAcceptOutcome(providerID, modelID, true)
+}
+
+// RecordCapacityAcceptOutcome is RecordCapacityAccept with explicit control
+// over the capacity-503 RATE window's denominator (capacity_rate.go).
+// countRateOutcome=true records ONE served-dispatch outcome; the api layer
+// sets it true exactly once per served request — at the commit point (first
+// content chunk), or at clean completion on paths that never committed content
+// — and false for the redundant completion-time accept after a commit, so a
+// request that both commits and completes cleanly cannot double-count and
+// dilute the reject rate. The cooldown/streak/clamp accept semantics below are
+// identical for both values (belt-and-braces accepts stay harmless there).
+func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, countRateOutcome bool) {
 	if providerID == "" || modelID == "" {
 		return
 	}
 	// Fast path: this runs once per served request, and for a healthy pair all
 	// the maps are empty — check under the read lock so the serving hot path
-	// does not serialize on r.mu write acquisition.
+	// does not serialize on r.mu write acquisition. A rate-outcome accept only
+	// needs the write lock when the pair has rejects in its rate window
+	// (recordCapacityRateAcceptLocked is what builds the denominator, and a
+	// zero-reject pair's rate is 0 regardless — capacityRatePenaltyLocked
+	// fast-exits on rejects==0 — so skipping the append loses nothing).
 	r.mu.RLock()
 	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 	_, hasStrikes := r.capacityRejectStrikes[key]
 	_, hasCooldown := r.capacityCooldowns[key]
 	_, hasTrips := r.capacityCooldownTrips[key]
+	_, hasClamp := r.budgetClamps[key]
+	hasRateRejects := len(r.capacityRateRejects[key]) > 0
 	_, hasNodeStreak := r.healthEjectionCapacityStreaks[key.ProviderID]
 	capacityTripped := r.healthEjectionLastTripCapacity[key.ProviderID]
 	r.mu.RUnlock()
-	if !hasStrikes && !hasCooldown && !hasTrips && !hasNodeStreak && !capacityTripped {
+	if !hasStrikes && !hasCooldown && !hasTrips && !hasClamp && !hasRateRejects && !hasNodeStreak && !capacityTripped {
 		return
 	}
 	r.mu.Lock()
+	now := time.Now()
 	key = capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 	delete(r.capacityRejectStrikes, key)
 	delete(r.capacityCooldowns, key)
 	delete(r.capacityCooldownTrips, key)
+	// Gray-box trackers: the accept is PROOF for the clamp's release condition
+	// (b) — never an instant release, which still needs a strictly-fresher
+	// heartbeat with meaningful headroom — and ONE served outcome for the rate
+	// window (which deliberately has NO reset semantics: the accept/reject mix
+	// IS the signal).
+	r.noteBudgetClampAcceptLocked(key)
+	if countRateOutcome {
+		r.recordCapacityRateAcceptLocked(key, now)
+	}
 	delete(r.healthEjectionCapacityStreaks, key.ProviderID)
 	if r.healthEjectionLastTripCapacity[key.ProviderID] {
 		delete(r.healthEjectionTrips, key.ProviderID)

@@ -1318,6 +1318,26 @@ type Registry struct {
 	capacityCooldowns     map[capacityRejectKey]*capacityCooldownEntry // cooldown expiry + half-open probe claim per (provider, model)
 	capacityCooldownTrips map[capacityRejectKey]int                    // trip count per (provider, model) (exponential backoff)
 
+	// budgetClamps implements the gray-box budget clamp (budget_clamp.go):
+	// after a capacity-shaped 503, admission stops believing the pair's
+	// stale-optimistic heartbeat budget and treats the slot as FULL until the
+	// provider proves recovery (fresh heartbeat with headroom + an accept) or
+	// the clamp TTL fail-opens. Keyed by stable fault identity; migrated on
+	// rebind; NOT cleared on Disconnect. Guarded by r.mu.
+	budgetClampCfg budgetClampConfig
+	budgetClamps   map[capacityRejectKey]*budgetClampEntry
+
+	// capacityRateRejects / capacityRateAccepts implement the capacity-503
+	// rate penalty (capacity_rate.go): sliding windows of capacity rejects and
+	// served dispatches per (stable identity, model). Unlike every breaker
+	// above there is NO accept-triggered reset — the rate is exactly the
+	// gray-box signal the zero-interleaved-accepts discriminators are blind
+	// to. Keyed by stable fault identity; migrated on rebind; NOT cleared on
+	// Disconnect. Guarded by r.mu.
+	capacityRateCfg     capacityRateConfig
+	capacityRateRejects map[capacityRejectKey][]time.Time
+	capacityRateAccepts map[capacityRejectKey][]time.Time
+
 	// Stable-identity health ejection (health_ejection.go). Keyed by a STABLE
 	// identity (serial/SE-key/account), NOT the session UUID, and DELIBERATELY
 	// NOT deleted on Disconnect — so a zombie that fails ~every request while
@@ -1432,6 +1452,11 @@ func New(logger *slog.Logger) *Registry {
 		capacityRejectStrikes:          make(map[capacityRejectKey][]time.Time),
 		capacityCooldowns:              make(map[capacityRejectKey]*capacityCooldownEntry),
 		capacityCooldownTrips:          make(map[capacityRejectKey]int),
+		budgetClampCfg:                 loadBudgetClampConfig(),
+		budgetClamps:                   make(map[capacityRejectKey]*budgetClampEntry),
+		capacityRateCfg:                loadCapacityRateConfig(),
+		capacityRateRejects:            make(map[capacityRejectKey][]time.Time),
+		capacityRateAccepts:            make(map[capacityRejectKey][]time.Time),
 		healthEjectionWindows:          make(map[string]*providerHealthWindow),
 		healthEjectionUntil:            make(map[string]time.Time),
 		healthEjectionTrips:            make(map[string]int),

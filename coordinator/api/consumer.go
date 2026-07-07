@@ -336,8 +336,12 @@ func (s *Server) noteInferenceSuccess(pr *registry.PendingRequest) {
 	// A clean completion is an ACCEPT for the capacity-reject cooldown: clear
 	// the pair's reject streak, any active capacity cooldown, and the re-trip
 	// backoff. Belt-and-braces with the commit-time accept (commitFirstContent)
-	// and the only accept signal on paths that never stream content.
-	s.registry.RecordCapacityAccept(pr.ProviderID, pr.Model)
+	// and the only accept signal on paths that never stream content. For the
+	// capacity-503 RATE window (capacity_rate.go) one served request must
+	// count exactly ONE outcome, so this completion-time accept only counts
+	// there when no commit-time accept already did (ContentCommittedSafe is
+	// stamped immediately before every commit-time RecordCapacityAccept).
+	s.registry.RecordCapacityAcceptOutcome(pr.ProviderID, pr.Model, !pr.ContentCommittedSafe())
 	// A clean completion proves the node is healthy — close its node-health
 	// breaker (and reset the exponential backoff) if it had tripped.
 	if _, closed := s.registry.RecordProviderOutcome(pr.ProviderID, true, 200, ""); closed {

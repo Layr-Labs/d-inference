@@ -1523,6 +1523,23 @@ threats:
       As of 2026-06, the cache is ON BY DEFAULT (operator decision); it was
       previously opt-in. Default-on makes this channel the baseline exposure for
       every provider unless explicitly disabled.
+      As of v0.7.5 the serving engine is CBv2 and the prefix cache on that path
+      is the engine's PrefixCacheV2 (mlx-swift-lm ContinuousBatchingV2) — RAM-ONLY,
+      no on-disk persistence of KV, hashes, or metadata. Leak #2 (plaintext
+      on-disk tokenPrefixHash / GCM-AAD metadata) therefore does not exist on
+      the v2 path: no disk artifact is ever written, so there is nothing for a
+      disk observer to test a guessed prefix against (the on-disk description
+      above remains accurate for the legacy engine only, until its deletion).
+      Leak #1 (the cross-tenant TTFT timing oracle) is unchanged in kind on v2
+      — an in-process co-tenant can still distinguish hit from miss by
+      first-token latency — and remains the SEC-035 accepted risk. New on the
+      v2 path: per-request cacheSalt scoping (absent in legacy) is live — the
+      consumer-supplied prompt_cache_key/user scope is hashed to a per-tenant
+      salt (ChatCompletionRequest.cacheScope → CBv2Request.cacheSalt) folded
+      into the first block hash, so entries donated under different scopes can
+      never resolve each other; a consumer who sets a scope opts their
+      prefixes out of cross-tenant reuse (and out of the oracle for those
+      prefixes) without needing the operator-level kill switch.
     adversaries: [ADV-002]
     affected_assets: [A-001]
     affected_files:
@@ -1530,6 +1547,9 @@ threats:
       - provider-swift/Sources/ProviderCore/KVCache/EncryptedPrefixCachePersistence.swift
       - provider-swift/Sources/ProviderCore/KVCache/PrefixCacheManager.swift
       - provider-swift/Sources/ProviderCore/KVCache/EncryptedKVStore.swift
+      - provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift
+      - provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift
+      - libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefixCacheV2.swift
     mitigations:
       - description: >
           AES-256-GCM encryption at rest (per-file DEK wrapped by an SE-derived KEK)
@@ -1539,14 +1559,33 @@ threats:
       - description: >
           Opt-out switch: DARKBLOOM_PREFIX_CACHE=0 (also false/off/no) fully disables
           the cache (engine runs with prefixCache: nil → no sharing, no exposure).
-          Untrusted multi-tenant deployments MUST set this.
+          Untrusted multi-tenant deployments MUST set this. As of v0.7.5 the same
+          switch governs the v2 PrefixCacheV2 (shared gate helper:
+          PrefixCachePolicy.isEnabled) — one opt-out covers both engines.
+        status: implemented
+      - description: >
+          v2 path is RAM-only by construction (PrefixCacheV2 holds donated KV in
+          process memory under an LRU byte budget; no persistence tier is wired) —
+          eliminates leak #2 entirely on v2: no on-disk artifact, no at-rest
+          encryption obligation, no metadata for a disk observer.
+        status: implemented
+      - description: >
+          Per-request cacheSalt tenant scoping on v2 (prompt_cache_key/user →
+          scope hash → CBv2Request.cacheSalt): entries donated under different
+          salts can never resolve each other, so scoped consumers are excluded
+          from cross-tenant reuse. Consumer-initiated (unscoped requests still
+          share the unsalted namespace), so it narrows — not closes — leak #1.
         status: implemented
       - description: >
           ACCEPTED RISK (SEC-035): default-on accepts the cross-tenant timing/
           sharing channel as the baseline for trusted / single-tenant deployments,
           per an explicit operator decision. Requires a per-deployment threat-model
           sign-off before serving multi-tenant traffic. Status is "open" because
-          this is a documented accepted risk, not a code mitigation.
+          this is a documented accepted risk, not a code mitigation. The v0.7.5
+          v2 posture is strictly safer than the legacy cache this sign-off
+          covered (RAM-only — no disk artifact at all — plus salt scoping);
+          the residual in-process TTFT oracle is the same channel legacy runs
+          with today, so the existing sign-off extends to v2 unweakened.
         status: open
       - description: >
           Per-deployment gating by trust level (e.g. force-off for shared/untrusted
@@ -1556,15 +1595,24 @@ threats:
       - description: >
           HMAC the on-disk tokenPrefixHash with a per-install secret so a disk
           observer cannot recompute it from a guessed prefix (mitigates leak #2).
+          LEGACY PATH ONLY / N/A on v2: the v2 cache is RAM-only and writes no
+          on-disk hash to protect; this obligation dies with the legacy engine's
+          deletion and must be re-opened only if a v2 persistence tier (SSD KV)
+          is ever added.
         status: open
     open_findings: [SEC-035]
     severity: medium
     detection_hint: >
-      Any change to the DARKBLOOM_PREFIX_CACHE default/gating in
-      BatchScheduler.makePrefixCacheBackingIfEnabled, to prefix sharing across
-      consumers, or to what the plaintext file metadata exposes (tokenPrefixHash,
-      tokenCount) must be reviewed against this cross-tenant channel. Making the
-      cache default-on (done 2026-06) or removing the opt-out raises this exposure.
+      Any change to the DARKBLOOM_PREFIX_CACHE default/gating or budget policy in
+      PrefixCachePolicy (the shared gate helper both engines consult), to the v2
+      cache construction/activation in EngineV2Factory.makeProductionEngine
+      (prefixCache/enablePrefixCache), to the cacheSalt scoping plumbing
+      (cacheScope → CBv2Request.cacheSalt), or — legacy path, until deletion — to
+      BatchScheduler.makePrefixCacheBackingIfEnabled or what the plaintext file
+      metadata exposes (tokenPrefixHash, tokenCount) must be reviewed against
+      this cross-tenant channel. Adding ANY persistence tier to PrefixCacheV2
+      re-opens leak #2 and its HMAC obligation. Removing the opt-out raises this
+      exposure.
 
   # ── TB-008: Coordinator → Payments ───────────────────────────
 

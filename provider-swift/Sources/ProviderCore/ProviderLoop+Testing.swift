@@ -217,6 +217,17 @@ extension ProviderLoop {
         modelSlots.removeValue(forKey: modelId)
     }
 
+    /// Test seam: a loaded slot's sizing snapshot (live co-residency tests
+    /// recompute the fleet KV budget from real slot weights).
+    func slotSizingForTesting(modelId: String) -> SlotSizingSnapshot? {
+        modelSlots[modelId]?.sizing
+    }
+
+    /// Test seam: the live bridge for a loaded slot.
+    func slotBridgeForTesting(modelId: String) -> EngineV2Bridge? {
+        modelSlots[modelId]?.engineV2
+    }
+
     /// Test seam: whether any live slot carries a v2 bridge (the capacity/
     /// cancellation zero-overhead guard).
     func hasEngineV2SlotsForTesting() -> Bool { hasEngineV2Slots }

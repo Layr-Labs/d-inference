@@ -887,6 +887,9 @@ public actor EngineV2Bridge {
     /// Number of live pump tasks (shutdown-tracking assertions).
     func _testLivePumpCount() -> Int { pumpTasks.count }
 
+    /// Live provider request-ids (live co-residency test cancels by id).
+    func _testActiveRequestIds() -> [String] { Array(active.keys) }
+
     /// Snapshot of internal counters for unit assertions.
     func _testCounters() -> (active: Int, admits: Int, firstTokens: Int) {
         (active.count, wedgeMonitor.admits, wedgeMonitor.firstTokens)

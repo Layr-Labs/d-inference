@@ -35,12 +35,12 @@ enum EngineV2Translation {
     ///   engine matches them against held-back detokenized text.
     /// * `cacheScope` is the provider's per-tenant prefix-cache scope
     ///   (`SHA256(prompt_cache_key)`/`SHA256(user)`, "" ⇒ unscoped). It
-    ///   maps onto `CBv2Request.cacheSalt` (TB-007): a non-empty scope
-    ///   REPLACES the cache-level salt in the first block hash so tenants
-    ///   can never share cached KV; "" maps to nil (cache-level salt
-    ///   fallback — byte-identical hashes to the pre-salt behavior).
-    ///   Forward plumbing only today: the production v2 engine is built
-    ///   with `prefixCache: nil`.
+    ///   maps onto `CBv2Request.cacheSalt` (TB-007/T-041): a non-empty
+    ///   scope REPLACES the cache-level salt in the first block hash so
+    ///   tenants can never share cached KV; "" maps to nil (cache-level
+    ///   salt fallback — byte-identical hashes to the pre-salt behavior).
+    ///   LIVE as of v0.7.5: the production engine runs `PrefixCacheV2`
+    ///   whenever `PrefixCachePolicy` funds it.
     /// * `multimodal` (v0.7.4) carries the precomputed vision-prefill spans
     ///   + embeddings for image requests (`EngineV2VisionPrefill`); nil for
     ///   text requests keeps the engine's text path byte-identical.

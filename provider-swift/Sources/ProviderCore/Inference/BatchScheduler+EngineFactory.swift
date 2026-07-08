@@ -301,18 +301,19 @@ extension BatchScheduler {
         let modelKey: String
     }
 
-    /// Build the shared encrypted-cache backing. The prefix cache is ON BY
-    /// DEFAULT; an operator opts OUT via `DARKBLOOM_PREFIX_CACHE=0` (also
-    /// `false`/`off`/`no`). Returns nil (cache stays off) when explicitly
-    /// disabled, the model architecture is incomplete, or the persisted KEK is
-    /// unavailable (no Secure Enclave / entitlement) — in the last case we refuse
-    /// rather than use an ephemeral key that wouldn't survive restart.
+    /// Build the shared encrypted-cache backing. As of v0.7.5 the prefix
+    /// cache is DORMANT BY DEFAULT (resident RAM belongs to live serving —
+    /// see `PrefixCachePolicy`'s header); a box opts IN with
+    /// `DARKBLOOM_PREFIX_CACHE=1`. Returns nil (cache stays off) when not
+    /// opted in, the model architecture is incomplete, or the persisted KEK
+    /// is unavailable (no Secure Enclave / entitlement) — in the last case we
+    /// refuse rather than use an ephemeral key that wouldn't survive restart.
     ///
     /// SECURITY (TB-007): the prefix cache shares KV prefixes across consumers
     /// and the hit/miss TTFT difference is a cross-tenant timing side channel
-    /// that encryption-at-rest does NOT mitigate. It is now default-on per an
-    /// explicit operator decision; deployments that must not expose this channel
-    /// (untrusted multi-tenant) set `DARKBLOOM_PREFIX_CACHE=0`. The cache is bound
+    /// that encryption-at-rest does NOT mitigate — the dormant default keeps
+    /// that channel closed unless a deployment explicitly opts in (SEC-035
+    /// then applies to the opted-in box). The cache is bound
     /// to the WEIGHT identity (`weightHash`) when known, not just the mutable
     /// model id — a re-download under the same id with different weights must not
     /// serve stale KV. Falls back to modelId when no weight hash is available.
@@ -321,20 +322,19 @@ extension BatchScheduler {
         weightHash: String?,
         architecture: ModelArchitecture
     ) async -> PrefixCacheBacking? {
-        // Default ON: only an explicit opt-out disables it.
-        let env = ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_CACHE"]?
-            .trimmingCharacters(in: .whitespaces).lowercased()
-        let disabled = env == "0" || env == "false" || env == "off" || env == "no"
-        guard !disabled else {
+        // OPT-IN (v0.7.5): gate semantics shared with the v2 engine via
+        // `PrefixCachePolicy.isEnabled` — one flag governs both engines
+        // (T-041); absent ⇒ dormant.
+        guard PrefixCachePolicy.isEnabled() else {
             prefixCacheLogger.info(
-                "DARKBLOOM_PREFIX_CACHE is OFF (explicit opt-out) — prefix cache disabled.")
+                "prefix cache DORMANT (default; opt in with DARKBLOOM_PREFIX_CACHE=1).")
             return nil
         }
 
         // `.notice` not `.warning`: os.Logger maps warning()->OSLogType.error,
         // so this routine banner showed as type=Error in log reports.
         prefixCacheLogger.notice(
-            "Prefix cache is ON (default; opt out with DARKBLOOM_PREFIX_CACHE=0) — TB-007: cross-tenant sharing / TTFT side-channel; encrypted-at-rest only."
+            "Prefix cache is ON (explicit DARKBLOOM_PREFIX_CACHE opt-in) — TB-007: cross-tenant sharing / TTFT side-channel; encrypted-at-rest only."
         )
 
         guard let numLayers = architecture.numLayers,

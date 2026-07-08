@@ -100,13 +100,23 @@ public actor EngineV2Runtime {
     public func capacitySummary(fleetKV: FleetKVContext? = nil) async -> CapacitySummary {
         consultCount += 1
         guard !bridges.isEmpty else { return .empty }
-        // Snapshot every bridge's construction grant first: bridge i's clamp
-        // subtracts the OTHER bridges' grants, so all grants must be read
-        // before any slot is built.
+        // Snapshot every bridge's construction grant + prefix-cache budget
+        // first: bridge i's clamp subtracts the OTHER bridges' figures, so
+        // all must be read before any slot is built.
+        //
+        // Prefix-cache accounting (T-041): a bridge's engine grant was
+        // REDUCED by its cache budget at construction, but the cache's bytes
+        // are still claimed under the fleet KV budget. The clamp therefore
+        // subtracts each OTHER slot's TOTAL claim (grant + cache budget) AND
+        // this bridge's OWN cache budget — so the reported max keeps the
+        // reduction as fleet reality changes, and the coordinator is never
+        // told about bytes any prefix cache will consume.
         var grants: [String: Int] = [:]
+        var prefixBudgets: [String: Int] = [:]
         if fleetKV != nil {
             for (modelId, bridge) in bridges {
                 grants[modelId] = await bridge.engineKVBytesCapacity()
+                prefixBudgets[modelId] = bridge.prefixCacheBudgetBytes
             }
         }
         var slots: [BackendSlotCapacity] = []
@@ -115,11 +125,19 @@ public actor EngineV2Runtime {
             guard let bridge = bridges[modelId] else { continue }
             var clamp: Int?
             if let fleetKV, let grant = grants[modelId] {
-                let otherGrants = grants.filter { $0.key != modelId }.map(\.value)
+                var otherClaims = grants.filter { $0.key != modelId }.map {
+                    $0.value + (prefixBudgets[$0.key] ?? 0)
+                }
+                // Own cache budget: carved out of the fleet budget but not
+                // visible in the engine's own (already-reduced) grant, so it
+                // rides the subtraction list like a co-resident claim.
+                if let ownPrefix = prefixBudgets[modelId], ownPrefix > 0 {
+                    otherClaims.append(ownPrefix)
+                }
                 clamp = EngineV2KVSizing.liveEngineKVBytesBudget(
                     grantedKVBytesCapacity: grant,
                     totalResidentWeightBytes: fleetKV.totalResidentWeightBytes,
-                    otherEngineKVCapacities: otherGrants,
+                    otherEngineKVCapacities: otherClaims,
                     configReserveBytes: fleetKV.configReserveBytes,
                     physicalBytes: fleetKV.physicalBytes)
             }

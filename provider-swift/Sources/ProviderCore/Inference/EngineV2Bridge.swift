@@ -82,6 +82,19 @@ public actor EngineV2Bridge {
     /// model-LOAD gate and the legacy live-KV gate subtract. nil in unit
     /// tests ⇒ no shared gating/accounting.
     let kvBudget: GlobalKVCacheBudget?
+    /// Byte budget carved out of this slot's KV grant for the RAM-only v2
+    /// prefix cache (`PrefixCachePolicy.carve`; 0 ⇒ cache off). The engine's
+    /// `kvBytesCapacity` was REDUCED by this amount at construction, so the
+    /// engine ledger, the heartbeat budget, and the cache jointly never
+    /// exceed the slot's grant. Fleet sizing reads it back via
+    /// `slotKVBytesClaim()` — the bytes are claimed even though the engine's
+    /// own capacity no longer shows them (T-041). `nonisolated`: immutable
+    /// and Sendable, so heartbeat/test readers need no actor hop.
+    public nonisolated let prefixCacheBudgetBytes: Int
+    /// Periodic prefix-cache stats logger (v2 analog of the legacy
+    /// checkpoint-tier logger). Started by the slot factory when a funded
+    /// cache exists; cancelled in `shutdown()`.
+    var prefixCacheStatsTask: Task<Void, Never>?
     /// Injectable telemetry sink (tests); nil ⇒ `TelemetryClient.shared`.
     let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
 
@@ -179,6 +192,7 @@ public actor EngineV2Bridge {
         maxConcurrentRequests: Int = 4,
         kvBytesPerToken: Int = 0,
         kvBudget: GlobalKVCacheBudget? = nil,
+        prefixCacheBudgetBytes: Int = 0,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
         self.engine = engine
@@ -194,6 +208,7 @@ public actor EngineV2Bridge {
         self.maxConcurrentRequests = maxConcurrentRequests
         self.kvBytesPerToken = kvBytesPerToken
         self.kvBudget = kvBudget
+        self.prefixCacheBudgetBytes = max(0, prefixCacheBudgetBytes)
         self.emitTelemetry = emitTelemetry
     }
 
@@ -245,11 +260,16 @@ public actor EngineV2Bridge {
     /// `cacheScope` is the per-tenant prefix-cache scope
     /// (`SHA256(prompt_cache_key)`/`SHA256(user)`, "" ⇒ unscoped) — the
     /// same value the legacy `BatchScheduler.submitTokenized(cacheScope:)`
-    /// receives. It maps onto `CBv2Request.cacheSalt` (TB-007): non-empty
-    /// scopes can never share cached KV across tenants; "" maps to nil
-    /// (cache-level salt fallback). Inert in production today — the v2
-    /// prefix cache is constructed OFF (`prefixCache: nil` in
-    /// `EngineV2Factory.makeProductionEngine`).
+    /// receives. It maps onto `CBv2Request.cacheSalt` (TB-007/T-041):
+    /// non-empty scopes can never share cached KV across tenants; "" maps
+    /// to nil (cache-level salt fallback). LIVE as of v0.7.5 — the
+    /// production engine runs with `PrefixCacheV2` when
+    /// `PrefixCachePolicy` funds it.
+    ///
+    /// `usageSignal`, when non-nil, receives the engine's terminal usage
+    /// detail (`prefixCacheHitTokens`) so the coordinator frames loop can
+    /// splice `prompt_tokens_details.cached_tokens` into the trailing SSE
+    /// usage chunk (same out-of-band pattern as `logprobsChannel`).
     ///
     /// `logprobsChannel`, when non-nil, receives OpenAI-shaped logprob
     /// entries for every engine delta that carries them (requires
@@ -268,6 +288,7 @@ public actor EngineV2Bridge {
         requestId: String? = nil,
         cacheScope: String = "",
         logprobsChannel: EngineV2LogprobsChannel? = nil,
+        usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil
     ) async -> AsyncStream<GenerationEvent> {
         // Validate the caller-supplied id before it becomes a dictionary key /
@@ -407,7 +428,8 @@ public actor EngineV2Bridge {
         runPump(
             id: id, events: events, continuation: continuation,
             holdsSharedReservation: sharedKVReserved,
-            logprobsChannel: logprobsChannel
+            logprobsChannel: logprobsChannel,
+            usageSignal: usageSignal
         )
 
         let bridge = self
@@ -432,15 +454,26 @@ public actor EngineV2Bridge {
 
     // MARK: - Runtime KV re-slicing / slot bookkeeping
 
-    /// Update the engine's KV admission ceiling (multi-model co-residency
-    /// re-slicing). Fans out to the engine (`AdmissionV2` + backend +
-    /// capacity gauges — see `EngineV2.updateKVBytesCapacity`): shrink
-    /// leaves in-flight reservations untouched and fails new admissions
-    /// until the pool drains; grow admits immediately. The engine's
-    /// `capacity()` snapshot reflects the new ceiling right away, so
-    /// heartbeats and later re-slices read the CURRENT grant.
+    /// Update this SLOT's total KV claim (multi-model co-residency
+    /// re-slicing). `bytes` is the slot's re-sliced TOTAL grant; the
+    /// construction-fixed prefix-cache budget (T-041) is netted out here —
+    /// one translation point for every reslice caller — and the ENGINE's
+    /// admission ceiling absorbs the whole delta. Fans out to the engine
+    /// (`AdmissionV2` + backend + capacity gauges — see
+    /// `EngineV2.updateKVBytesCapacity`): shrink leaves in-flight
+    /// reservations untouched and fails new admissions until the pool
+    /// drains; grow admits immediately. The engine's `capacity()` snapshot
+    /// reflects the new ceiling right away, so heartbeats and later
+    /// re-slices (which read `slotKVBytesClaim()` — engine + cache budget)
+    /// see the CURRENT grant. A dormant cache (budget 0 — the fleet
+    /// default) makes this the identity mapping.
+    ///
+    /// Callers never hand a total below the cache budget: load-time
+    /// re-slices refuse such targets at the serviceability floor
+    /// (`resliceMeetsServiceabilityFloor(_:fixedCarveBytes:)`), so the
+    /// `max(0, …)` clamp is defensive only.
     public func updateKVBytesCapacity(_ bytes: Int) {
-        engine.updateKVBytesCapacity(bytes)
+        engine.updateKVBytesCapacity(max(0, bytes - prefixCacheBudgetBytes))
     }
 
     /// Record the slot's cold-start load time for heartbeat reporting
@@ -469,6 +502,8 @@ public actor EngineV2Bridge {
     /// can't keep a pump (and its KV reservation) alive past shutdown, then
     /// await the engine drain.
     public func shutdown() async {
+        prefixCacheStatsTask?.cancel()
+        prefixCacheStatsTask = nil
         let live = pumpTasks
         pumpTasks.removeAll()
         for task in live.values { task.cancel() }
@@ -482,14 +517,16 @@ public actor EngineV2Bridge {
         events: AsyncStream<CBv2Event>,
         continuation: AsyncStream<GenerationEvent>.Continuation,
         holdsSharedReservation: Bool,
-        logprobsChannel: EngineV2LogprobsChannel? = nil
+        logprobsChannel: EngineV2LogprobsChannel? = nil,
+        usageSignal: EngineV2RequestUsageSignal? = nil
     ) {
         let bridge = self
         let task = Task {
             await bridge.pump(
                 id: id, events: events, continuation: continuation,
                 holdsSharedReservation: holdsSharedReservation,
-                logprobsChannel: logprobsChannel
+                logprobsChannel: logprobsChannel,
+                usageSignal: usageSignal
             )
             await bridge.clearPumpTask(id: id)
         }
@@ -507,7 +544,8 @@ public actor EngineV2Bridge {
         events: AsyncStream<CBv2Event>,
         continuation: AsyncStream<GenerationEvent>.Continuation,
         holdsSharedReservation: Bool,
-        logprobsChannel: EngineV2LogprobsChannel? = nil
+        logprobsChannel: EngineV2LogprobsChannel? = nil,
+        usageSignal: EngineV2RequestUsageSignal? = nil
     ) async {
         // NOTE: the shared-budget KV reservation is taken in `submitTokenized`
         // (the pre-engine admission gate), NOT here — the pump only RELEASES
@@ -548,6 +586,15 @@ public actor EngineV2Bridge {
                 }
             case .finished(let reason, let usage):
                 sawTerminal = true
+                // Out-of-band usage detail (logprobs-channel pattern): the
+                // engine's `prefixCacheHitTokens` has no seat in the shared
+                // `GenerationEvent.info` shape, so the frames loop reads it
+                // from this per-request signal and splices
+                // `usage.prompt_tokens_details.cached_tokens` into the
+                // trailing SSE usage chunk. Recorded BEFORE the terminal
+                // events are yielded, so it is set by the time any
+                // downstream consumer sees the usage frame.
+                usageSignal?.record(prefixCacheHitTokens: usage.prefixCacheHitTokens)
                 finishAndEmit(
                     id: id, reason: reason, usage: usage,
                     sawFirstToken: sawFirstToken, continuation: continuation

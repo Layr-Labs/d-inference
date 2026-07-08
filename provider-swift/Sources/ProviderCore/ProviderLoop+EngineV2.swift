@@ -87,6 +87,11 @@ extension ProviderLoop {
     /// additionally overrides the machine memory the re-slice budget is
     /// computed from, so grant arithmetic is deterministic in tests.
     struct EngineV2SlotHooks: Sendable {
+        /// Environment the prefix-cache gate/budget/carve policy reads
+        /// (`DARKBLOOM_PREFIX_CACHE*`). Defaults to EMPTY — the dormant
+        /// fleet default — so grant-arithmetic tests are hermetic; carve
+        /// tests inject an opted-in environment explicitly.
+        let environment: [String: String]
         let eosTokenIds: Set<Int>
         let extraEOSTokens: [String]
         let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
@@ -94,18 +99,21 @@ extension ProviderLoop {
         /// real physical memory).
         let physicalMemoryBytes: UInt64?
         /// Scripted engine builder: (modelId, kvBytesCapacity) — the second
-        /// argument is the RE-SLICED grant the production path would hand
-        /// `makeProductionEngine`, exposed so tests can assert the
-        /// multi-slot grant derivation without building a real engine.
+        /// argument is the RE-SLICED, POST-CARVE admission ceiling the
+        /// production path would hand `makeProductionEngine`, exposed so
+        /// tests can assert the multi-slot grant + carve derivation without
+        /// building a real engine.
         let makeEngine: @Sendable (String, Int) throws -> any CBv2Engine
 
         init(
+            environment: [String: String] = [:],
             eosTokenIds: Set<Int> = [],
             extraEOSTokens: [String] = [],
             emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
             physicalMemoryBytes: UInt64? = nil,
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
         ) {
+            self.environment = environment
             self.eosTokenIds = eosTokenIds
             self.extraEOSTokens = extraEOSTokens
             self.emitTelemetry = emitTelemetry
@@ -148,12 +156,17 @@ extension ProviderLoop {
     /// Existing v2 slots eligible for re-slicing: live (not mid-unload)
     /// slots other than `excludingModelId` (a same-id slot present during a
     /// reload is excluded so its weights/grant are not double-counted).
-    /// Reads each engine's CURRENT grant (post-any-earlier-resize).
+    /// Reads each slot's CURRENT TOTAL claim (post-any-earlier-resize):
+    /// engine admission ceiling PLUS the slot's fixed prefix-cache budget
+    /// (`slotKVBytesClaim`, T-041) — counting only the engine ceiling would
+    /// re-grant the cache's bytes to a newcomer. Grants flowing back down
+    /// (`updateKVBytesCapacity`) are totals too; the bridge nets out its
+    /// own cache budget before touching the engine.
     private func existingSlotGrants(excludingModelId: String) async -> [ExistingSlotGrant] {
         var existing: [ExistingSlotGrant] = []
         for (slotModelId, slot) in modelSlots
         where slotModelId != excludingModelId && !modelsUnloading.contains(slotModelId) {
-            let currentGrant = await slot.engineV2.engineKVBytesCapacity()
+            let currentGrant = await slot.engineV2.slotKVBytesClaim()
             existing.append(
                 ExistingSlotGrant(
                     slot: EngineV2KVSizing.ResliceSlot(
@@ -229,7 +242,19 @@ extension ProviderLoop {
         // slot below the minimum serveable grant is refused outright —
         // thrashing every co-resident model below serviceability serves
         // no one. ERROR telemetry + 503 (the coordinator reroutes).
-        guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets) else {
+        // Existing slots' prefix-cache budgets are construction-FIXED
+        // (T-041): the floor applies to what would remain for their
+        // ENGINE (target − cache budget), never to the raw total. The
+        // newcomer needs only the plain floor — its carve is elastic
+        // (`PrefixCachePolicy.carve` shrinks the cache before the engine).
+        var fixedCarveBytes: [String: Int] = [:]
+        for entry in existing where entry.bridge.prefixCacheBudgetBytes > 0 {
+            fixedCarveBytes[entry.slot.modelId] = entry.bridge.prefixCacheBudgetBytes
+        }
+        guard
+            EngineV2KVSizing.resliceMeetsServiceabilityFloor(
+                targets, fixedCarveBytes: fixedCarveBytes)
+        else {
             let floorGb = String(
                 format: "%.1f",
                 Double(EngineV2KVSizing.minimumServiceableGrantBytes) / (1024 * 1024 * 1024))
@@ -381,13 +406,32 @@ extension ProviderLoop {
         let maxConcurrent = engineV2MaxConcurrent(forModel: modelId)
 
         // Assembly is shared with the standalone server via
-        // `EngineV2SlotFactory` (one construction path, no drift). The test
-        // hooks, when installed, replace the container-derived EOS snapshot
-        // and the production engine builder so unit tests can drive the
-        // wiring with a scripted `CBv2Engine` — no weights, no container
-        // reads.
+        // `EngineV2SlotFactory` (one construction path, no drift) —
+        // including THE single prefix-cache carve point (T-041, v0.7.5):
+        // the slot's re-slice grant is split between the engine's admission
+        // ceiling and the RAM-only v2 prefix cache INSIDE the factory
+        // (order: re-slice grant → funding-gated carve (dormant ⇒
+        // passthrough) → engine construction), so everything downstream
+        // reads engine truth and the coordinator is never told about bytes
+        // the cache will consume. The test hooks, when installed, replace
+        // the container-derived EOS snapshot and the production engine
+        // builder so unit tests can drive the wiring with a scripted
+        // `CBv2Engine` — no weights, no container reads; the hooks path
+        // runs the SAME carve policy (hooks' environment, adoption bound 0)
+        // and hands the builder the REDUCED capacity, and the bridge the
+        // budget bookkeeping, so the claim/heartbeat math is testable
+        // without a real engine (no cache INSTANCE exists under hooks).
         let bridge: EngineV2Bridge
         if let hooks = engineV2SlotHooks {
+            let carve = EngineV2SlotFactory.resolvePrefixCarve(
+                modelId: modelId,
+                isVLM: isVLM,
+                modelDirectory: modelDirectory,
+                model: nil,
+                slotKVBytesCapacity: kvBytesCapacity,
+                kvBytesPerToken: sizing.fp16KVBytesPerToken,
+                environment: hooks.environment
+            ).carve
             let hookBuilder = hooks.makeEngine
             bridge = try EngineV2Factory.makeBridge(
                 modelId: modelId,
@@ -398,8 +442,9 @@ extension ProviderLoop {
                 maxConcurrentRequests: maxConcurrent,
                 kvBytesPerToken: sizing.fp16KVBytesPerToken,
                 kvBudget: kvBudget,
+                prefixCacheBudgetBytes: carve.prefixCacheBudgetBytes,
                 emitTelemetry: hooks.emitTelemetry,
-                makeEngine: { try hookBuilder(modelId, kvBytesCapacity) })
+                makeEngine: { try hookBuilder(modelId, carve.engineKVBytesCapacity) })
             // WARN once (per load) that kv_quant is ignored on the v2 path
             // (fp16 caches are what the engine builds).
             if loopConfig.config.backend.kvQuant {
@@ -425,6 +470,8 @@ extension ProviderLoop {
 
         // Register before the slot goes live so capacity heartbeats and
         // cancellation fan-out see the bridge from the first request.
+        // (Prefix-cache construction, budget carve, stats logger, and the
+        // cache-state log line all live inside the shared slot factory.)
         await engineV2Runtime.register(modelId: modelId, bridge: bridge)
         if isVLM {
             logger.info(

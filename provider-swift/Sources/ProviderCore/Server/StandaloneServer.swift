@@ -429,7 +429,10 @@ public actor StandaloneServer {
         var existing: [ExistingSlotGrant] = []
         for (modelId, slot) in slots
         where modelId != excludingModelId && !evictingModels.contains(modelId) {
-            let currentGrant = await slot.bridge.engineKVBytesCapacity()
+            // TOTAL claim (engine ceiling + prefix-cache budget, T-041):
+            // grants flowing back down through `updateKVBytesCapacity` are
+            // totals too — the bridge nets out its own cache budget.
+            let currentGrant = await slot.bridge.slotKVBytesClaim()
             existing.append(
                 ExistingSlotGrant(
                     slot: EngineV2KVSizing.ResliceSlot(
@@ -470,8 +473,18 @@ public actor StandaloneServer {
             fleetKVBudgetBytes: fleetBudget)
 
         // Serviceability floor (fail loud): refuse a load that would leave
-        // ANY slot below the minimum serveable grant.
-        guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets) else {
+        // ANY slot below the minimum serveable grant. Existing slots'
+        // prefix-cache budgets are construction-fixed (T-041), so the
+        // floor applies to their would-be ENGINE share (target − budget);
+        // the newcomer's carve is elastic (plain floor suffices).
+        var fixedCarveBytes: [String: Int] = [:]
+        for entry in existing where entry.bridge.prefixCacheBudgetBytes > 0 {
+            fixedCarveBytes[entry.slot.modelId] = entry.bridge.prefixCacheBudgetBytes
+        }
+        guard
+            EngineV2KVSizing.resliceMeetsServiceabilityFloor(
+                targets, fixedCarveBytes: fixedCarveBytes)
+        else {
             let floorGb = String(
                 format: "%.1f",
                 Double(EngineV2KVSizing.minimumServiceableGrantBytes) / (1024 * 1024 * 1024))

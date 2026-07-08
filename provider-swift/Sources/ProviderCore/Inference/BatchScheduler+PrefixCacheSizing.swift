@@ -86,11 +86,10 @@ extension BatchScheduler {
     /// wins; a non-finite or out-of-Int-range value is REJECTED back to the
     /// physicalMemory/8 default rather than crashing (Int(Double) traps on
     /// inf/NaN/overflow, and this is read even when the cache is off).
+    /// Delegates to the shared scheduler-free `PrefixCachePolicy` so the v2
+    /// engine's budget derivation can never drift from the legacy one.
     static func resolveMemoryBudget(envGB: Double?, physicalMemory: Int) -> Int {
-        if let gb = envGB, gb > 0, gb.isFinite, gb < gbToBytesCeiling {
-            return Int(gb * 1_073_741_824)
-        }
-        return max(1, physicalMemory / 8)
+        PrefixCachePolicy.resolveMemoryBudget(envGB: envGB, physicalMemory: physicalMemory)
     }
 
     /// Largest GB value that won't overflow Int when multiplied by 2^30.

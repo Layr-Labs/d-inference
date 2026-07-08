@@ -156,10 +156,15 @@ extension ProviderLoop {
         // bridge stays registered in the runtime for exactly that reason).
         await bridge.beginRecoveryReload()
 
-        // The recovered engine keeps the slot's CURRENT grant — recovery
-        // is not a re-slice; co-resident slots' grants are untouched and
-        // Σ(grants) ≤ fleet budget is preserved by construction.
-        let grant = await bridge.engineKVBytesCapacity()
+        // The recovered engine keeps the slot's CURRENT TOTAL grant
+        // (engine ceiling + prefix-cache budget, `slotKVBytesClaim` —
+        // T-041) — recovery is not a re-slice; co-resident slots' grants
+        // are untouched and Σ(claims) ≤ fleet budget is preserved by
+        // construction. The factory re-runs the SAME deterministic carve
+        // over this total (same model, same environment ⇒ same split), so
+        // the rebuilt slot reproduces grant + carve; the cache itself
+        // restarts empty (its KV died with the wedged engine).
+        let grant = await bridge.slotKVBytesClaim()
 
         // Drain: cancel the bridge's pump tasks (in-flight requests get
         // their teardown terminal + shared-KV release) and drain the

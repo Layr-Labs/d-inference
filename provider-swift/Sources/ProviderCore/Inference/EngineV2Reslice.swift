@@ -151,7 +151,22 @@ extension EngineV2KVSizing {
     }
 
     /// True iff every grant clears the serviceability floor.
-    static func resliceMeetsServiceabilityFloor(_ grants: [String: Int]) -> Bool {
-        grants.values.allSatisfy { UInt64(max(0, $0)) >= minimumServiceableGrantBytes }
+    ///
+    /// `fixedCarveBytes` (T-041 composition): an EXISTING slot's prefix-
+    /// cache budget is construction-fixed and carved out of its total
+    /// claim, so the floor must hold for what would remain for its ENGINE
+    /// (`grant − carve`) — a total that only covers the cache would leave
+    /// the slot rejecting every request. Slots absent from the map (the
+    /// newcomer, uncarved slots) are floored on the raw grant; the
+    /// newcomer's own carve is elastic (`PrefixCachePolicy.carve` shrinks
+    /// the cache budget before the engine share).
+    static func resliceMeetsServiceabilityFloor(
+        _ grants: [String: Int],
+        fixedCarveBytes: [String: Int] = [:]
+    ) -> Bool {
+        grants.allSatisfy { modelId, grant in
+            let engineShare = grant - (fixedCarveBytes[modelId] ?? 0)
+            return UInt64(max(0, engineShare)) >= minimumServiceableGrantBytes
+        }
     }
 }

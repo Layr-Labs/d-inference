@@ -198,6 +198,44 @@ extension ProviderLoop {
         return "data: \(json)\n\n"
     }
 
+    /// Inject `usage.prompt_tokens_details.cached_tokens` into a final SSE
+    /// chunk that already carries a `usage` block — the OpenAI-standard
+    /// surface for prompt-cache accounting, fed by the v2 engine's
+    /// `prefixCacheHitTokens` (T-041; v2 path only — the legacy engine
+    /// never reported per-request cache hits).
+    ///
+    /// Same generic-JSON-splice contract as `injectReasoningTokens` (the
+    /// upstream `OpenAIUsage` has no details field to re-encode through):
+    /// merge-not-clobber into any existing `prompt_tokens_details`, every
+    /// other field untouched, and on any parse/encode failure return the
+    /// original frame unchanged. Frames without a `usage` object (content
+    /// deltas, role preambles, `[DONE]`) pass through untouched, so calling
+    /// this on a non-usage frame is harmless.
+    internal static func injectCachedTokens(
+        into frame: String, cachedTokens: Int
+    ) -> String {
+        guard cachedTokens > 0,
+              let payload = joinedDataPayload(frame),
+              let bytes = payload.data(using: .utf8),
+              var obj = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+              var usage = obj["usage"] as? [String: Any]
+        else {
+            return frame
+        }
+        var details = usage["prompt_tokens_details"] as? [String: Any] ?? [:]
+        details["cached_tokens"] = cachedTokens
+        usage["prompt_tokens_details"] = details
+        obj["usage"] = usage
+        guard let out = try? JSONSerialization.data(
+                withJSONObject: obj, options: [.sortedKeys, .withoutEscapingSlashes]
+              ),
+              let json = String(data: out, encoding: .utf8)
+        else {
+            return frame
+        }
+        return "data: \(json)\n\n"
+    }
+
     /// Splice OpenAI-standard streaming logprobs
     /// (`choices[0].logprobs = {"content": [...]}`) into a content-bearing
     /// SSE chunk. v2-engine path only — the legacy engine never emitted

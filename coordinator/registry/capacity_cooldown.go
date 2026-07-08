@@ -161,17 +161,98 @@ type capacityRejectKey struct {
 // While a cooldown is ACTIVE, strikes are still recorded (in-flight stragglers
 // dispatched before the trip land here) but never extend or re-arm it —
 // otherwise stragglers could push recovery out indefinitely.
+//
+// This is the DERATING entry point: a genuine capacity/token-budget 503 feeds
+// all three trackers, including the gray-box capacity-503 rate window
+// (capacity_rate.go). A benign cold "model not loaded" lazy-load miss must go
+// to RecordCapacityRejectLifecycle instead so it does NOT derate the rate, and
+// a provably request-deterministic reject (oversized prompt — identical
+// fleet-wide) must go to RecordCapacityRejectRequestShape so it arms NO
+// gray-box state at all.
 func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped bool) {
+	return r.recordCapacityReject(providerID, modelID, true, true)
+}
+
+// RecordCapacityRejectLifecycle records a BENIGN lifecycle capacity miss — a
+// cold "model not loaded" lazy-load 404 on first touch, or the identical miss
+// after the 1h idle-unload (the normal fleet re-warm cycle). It feeds ONLY the
+// black-hole cooldown: a box that 404s FOREVER with zero accepts is still a
+// black hole, caught by the zero-interleaved-accepts discriminator.
+//
+// It arms NEITHER gray-box tracker. Not the rate window (no accept-reset, so
+// counting normal reload misses would accumulate a false reject rate) — and
+// not the budget clamp either: the lifecycle classification takes PRECEDENCE
+// over whatever the budget snapshot says. A provider that idle-unloaded the
+// model AFTER its last heartbeat still SHOWS the slot budget in the stale
+// snapshot, so keying the exemption on snapshot budgetless-ness (arming a
+// "budgetless" entry) would arm a REAL gating clamp from a routine re-warm
+// 404 — and with the clamp blocking dispatch, no accept could land to prove
+// release, stranding the pair until TTL. A cold miss is a statement about
+// model residency, never about token-budget honesty, so it must not touch the
+// clamp regardless of the snapshot. The api layer routes cold "not loaded"/
+// "no model loaded" rejections here; genuine capacity/token-budget 503s go to
+// RecordCapacityReject and feed everything.
+func (r *Registry) RecordCapacityRejectLifecycle(providerID, modelID string) (tripped bool) {
+	return r.recordCapacityReject(providerID, modelID, false, false)
+}
+
+// RecordCapacityRejectRequestShape records a capacity-vocabulary rejection the
+// api layer has PROVEN request-deterministic — a "batch token budget" reject
+// from a provider whose reported budget is not below the model context, so the
+// binding term was the model context and every provider rejects the same
+// prompt identically (classifyRejection: rejectionDeterministicUnservable).
+// Such a reject indicts the REQUEST, not the provider: it must arm NEITHER the
+// one-shot budget clamp NOR the no-reset rate window, or a single oversized
+// prompt would clamp/derate a healthy pair (and, for the clamp, block the very
+// dispatches whose accepts prove release).
+//
+// It still counts a cooldown STRIKE, deliberately: isCapacityRejectStrike
+// includes "batch token budget" because a box misreporting a huge budget
+// rejects NORMAL prompts with exactly this string — and such a box classifies
+// as request-deterministic here too (its advertised budget >= context IS the
+// lie). The cooldown's zero-interleaved-accepts discriminator is what makes
+// that safe for healthy pairs (threshold 5 in 60s with NO accept; any accept
+// resets the streak), a safety the clamp and rate window by design lack.
+func (r *Registry) RecordCapacityRejectRequestShape(providerID, modelID string) (tripped bool) {
+	return r.recordCapacityReject(providerID, modelID, false, false)
+}
+
+// recordCapacityReject is the shared implementation. deratePair gates the
+// gray-box capacity-503 rate window (true only for genuine capacity rejects);
+// armClamp gates the budget clamp (false only for request-deterministic
+// rejects, which indict the request rather than the provider). The cooldown
+// strike is fed on all paths.
+func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair, armClamp bool) (tripped bool) {
 	if providerID == "" || modelID == "" {
 		return false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := time.Now()
+
+	// Gray-box trackers ride the SAME classified entry point but have their own
+	// kill switches, independent of the cooldown threshold: the budget clamp
+	// stops admission believing the pair's stale heartbeat budget immediately
+	// (budget_clamp.go), and the rate window accumulates the reject side of the
+	// capacity-503 rate (capacity_rate.go — accepts deliberately do NOT reset
+	// it, unlike the strike streak below). The rate window is fed ONLY for a
+	// derating reject: a cold-load lifecycle miss (deratePair=false) is warm-up,
+	// not capacity dishonesty, and must not accumulate a rate the window can
+	// never reset off. The clamp is armed only when the reject indicts the
+	// PROVIDER (armClamp=false for request-deterministic rejects — an oversized
+	// prompt says nothing about the pair's budget honesty).
+	clampKey := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
+	if armClamp {
+		r.recordBudgetClampLocked(clampKey, r.providerReportsTokenBudgetLocked(providerID, modelID), now)
+	}
+	if deratePair {
+		r.recordCapacityRateRejectLocked(clampKey, now)
+	}
+
 	cfg := r.capacityCooldownCfg
 	if cfg.Threshold <= 0 {
 		return false // disabled via EIGENINFERENCE_CAPACITY_COOLDOWN_THRESHOLD=0
 	}
-	now := time.Now()
 
 	// Opportunistic sweep (mirrors error_cooldown.go): session provider ids are
 	// per-connection UUIDs that never get re-keyed — bound the maps by dropping
@@ -276,35 +357,81 @@ func (r *Registry) claimCapacityProbeLocked(providerID, modelID string, now time
 // is also left untouched: ejection doesn't cancel in-flight work, so content
 // can flow from an ejected node, and lifting the quarantine early on it would
 // defeat the cooldown — recovery goes through the half-open success probe.
-func (r *Registry) RecordCapacityAccept(providerID, modelID string) {
+// It returns whether a capacity-503 RATE outcome was actually recorded for
+// this accept (see RecordCapacityAcceptOutcome) so commit-time callers can
+// stamp the request (MarkRateOutcomeCounted) and the completion-time accept
+// can decide whether the request still owes its one rate outcome.
+func (r *Registry) RecordCapacityAccept(providerID, modelID string) (rateOutcomeRecorded bool) {
+	return r.RecordCapacityAcceptOutcome(providerID, modelID, true)
+}
+
+// RecordCapacityAcceptOutcome is RecordCapacityAccept with explicit control
+// over the capacity-503 RATE window's denominator (capacity_rate.go).
+// countRateOutcome=true OFFERS one served-dispatch outcome; whether it was
+// actually RECORDED is the return value — the rate window only stores accepts
+// while the pair has a reject in-window (recordCapacityRateAcceptLocked), so a
+// commit that lands before any reject is an offer that records nothing. The
+// api layer offers at the commit point (first content chunk) and stamps the
+// request when the offer recorded (MarkRateOutcomeCounted); the completion-
+// time accept re-offers ONLY when the commit-time offer did not record
+// (!RateOutcomeCountedSafe) — so a long stream that committed pre-reject and
+// completed during the reject window still enters the denominator exactly
+// once, and a request whose commit already recorded cannot double-count and
+// dilute the reject rate. The cooldown/streak/clamp accept semantics below
+// are identical for both values (belt-and-braces accepts stay harmless there).
+func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, countRateOutcome bool) (rateOutcomeRecorded bool) {
 	if providerID == "" || modelID == "" {
-		return
+		return false
 	}
 	// Fast path: this runs once per served request, and for a healthy pair all
 	// the maps are empty — check under the read lock so the serving hot path
-	// does not serialize on r.mu write acquisition.
+	// does not serialize on r.mu write acquisition. A rate-outcome accept only
+	// needs the write lock when the pair has rejects in its rate window
+	// (recordCapacityRateAcceptLocked is what builds the denominator, and a
+	// zero-reject pair's rate is 0 regardless — capacityRatePenaltyLocked
+	// fast-exits on rejects==0 — so skipping the append loses nothing).
 	r.mu.RLock()
 	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 	_, hasStrikes := r.capacityRejectStrikes[key]
 	_, hasCooldown := r.capacityCooldowns[key]
 	_, hasTrips := r.capacityCooldownTrips[key]
+	_, hasClamp := r.budgetClamps[key]
+	hasRateRejects := len(r.capacityRateRejects[key]) > 0
 	_, hasNodeStreak := r.healthEjectionCapacityStreaks[key.ProviderID]
 	capacityTripped := r.healthEjectionLastTripCapacity[key.ProviderID]
 	r.mu.RUnlock()
-	if !hasStrikes && !hasCooldown && !hasTrips && !hasNodeStreak && !capacityTripped {
-		return
+	if !hasStrikes && !hasCooldown && !hasTrips && !hasClamp && !hasRateRejects && !hasNodeStreak && !capacityTripped {
+		// Nothing recorded: with no reject in the rate window the accept
+		// would not be stored anyway (see recordCapacityRateAcceptLocked).
+		return false
 	}
 	r.mu.Lock()
+	now := time.Now()
 	key = capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 	delete(r.capacityRejectStrikes, key)
 	delete(r.capacityCooldowns, key)
 	delete(r.capacityCooldownTrips, key)
+	// Gray-box trackers: the accept is PROOF for the clamp's release condition
+	// (b) — never an instant release, which still needs a strictly-fresher
+	// heartbeat with meaningful headroom — and ONE served outcome for the rate
+	// window (which deliberately has NO reset semantics: the accept/reject mix
+	// IS the signal). Then drop the entry if it is now inactive (this accept
+	// completed the release proof, the TTL lapsed, or it was armed budgetless):
+	// a lingering inactive entry would keep every later accept for the pair off
+	// the read-lock fast path above and would re-block the identity's next
+	// budgetless reconnect window.
+	r.noteBudgetClampAcceptLocked(key)
+	r.dropInactiveBudgetClampLocked(providerID, modelID, now)
+	if countRateOutcome {
+		rateOutcomeRecorded = r.recordCapacityRateAcceptLocked(key, now)
+	}
 	delete(r.healthEjectionCapacityStreaks, key.ProviderID)
 	if r.healthEjectionLastTripCapacity[key.ProviderID] {
 		delete(r.healthEjectionTrips, key.ProviderID)
 		delete(r.healthEjectionLastTripCapacity, key.ProviderID)
 	}
 	r.mu.Unlock()
+	return rateOutcomeRecorded
 }
 
 // CapacityCooldownActive reports whether the (provider, model) pair is

@@ -116,6 +116,16 @@ type routingSnapshot struct {
 	// Zero value when the provider reports no backend capacity / no budget
 	// slots, which disables the pooled admission check.
 	pooledTokenBudget pooledTokenBudget
+	// budgetClamped means the gray-box budget clamp (budget_clamp.go) is
+	// active for this (provider, model) pair: a capacity-shaped 503 proved the
+	// provider's LIVE admission gate is rejecting, so the heartbeat budget
+	// above is stale-optimistic and admission must treat the slot as FULL
+	// (freeMemoryAdmits rejects; providerBudgetFits reports zero live
+	// headroom). The budget fields themselves stay RAW — cost/backlog math,
+	// the structural servability ceiling (snapshotStructuralBudget), and
+	// telemetry keep reading the provider-reported truth. Only set when the
+	// slot reports a token budget (activeTokenBudgetMax > 0).
+	budgetClamped bool
 	// kvBytesPerToken is the provider-reported per-token KV-cache cost (bytes)
 	// for THIS model's slot (BackendSlotCapacity.KVBytesPerToken). 0 = unreported
 	// (callers fall back to the kvCacheBytesPerToken default). Used by the
@@ -147,6 +157,10 @@ type routingCandidate struct {
 	effectiveQueue int
 	breakdown      costBreakdown
 	effectiveTPS   float64 // Phase 4 load-scaled TPS used in this candidate's cost
+	// capacityRejectRate is the pair's windowed capacity-503 rate
+	// (capacity_rate.go), captured at candidate build so the winning
+	// RoutingDecision can expose it. 0 when no rejects are in the window.
+	capacityRejectRate float64
 }
 
 // candidateRejection enumerates why a provider that passed structural
@@ -211,7 +225,12 @@ type costBreakdown struct {
 	BacklogMs float64
 	ThisReqMs float64
 	HealthMs  float64
-	TTFTMs    float64 // calibrated TTFT estimate for this candidate (gate/ceiling input)
+	// CapacityRateMs is the gray-box capacity-503 rate penalty
+	// (capacity_rate.go): rate × EIGENINFERENCE_CAPACITY_RATE_PENALTY_MS once
+	// the pair's windowed reject rate clears the threshold with a minimum
+	// sample. 0 for healthy pairs, so the cost is byte-for-byte unchanged.
+	CapacityRateMs float64
+	TTFTMs         float64 // calibrated TTFT estimate for this candidate (gate/ceiling input)
 	// RawTTFTMs is the pre-calibration ttftMsFromSnapshot value. The calibrator
 	// learns against it (see ttft_calibration.go) so the feedback loop converges
 	// on the absolute actual/predicted ratio instead of compounding.
@@ -223,18 +242,27 @@ type costBreakdown struct {
 // selection. Returned by ReserveProviderEx so callers can emit metrics
 // and structured logs without reaching into registry internals.
 type RoutingDecision struct {
-	ProviderID         string  // winning provider, empty if no selection
-	Model              string  // requested model
-	CostMs             float64 // total cost of the winning candidate
-	StateMs            float64 // slot-state penalty contribution
-	QueueMs            float64 // pendingForModel × queueDepthPenaltyMs
-	PendingMs          float64 // totalPending × totalPendingPenaltyMs
-	BacklogMs          float64 // tokens-ahead / decodeTPS contribution
-	ThisReqMs          float64 // this request's prefill+decode contribution
-	HealthMs           float64 // memory/CPU/thermal/GPU-util contribution
-	EffectiveQueue     int     // max(pendingForModel, backendRunning+backendWaiting)
-	CandidateCount     int     // total candidates that passed all gates
-	CapacityRejections int     // candidates rejected by the free-memory admission gate (transient: full)
+	ProviderID string  // winning provider, empty if no selection
+	Model      string  // requested model
+	CostMs     float64 // total cost of the winning candidate
+	StateMs    float64 // slot-state penalty contribution
+	QueueMs    float64 // pendingForModel × queueDepthPenaltyMs
+	PendingMs  float64 // totalPending × totalPendingPenaltyMs
+	BacklogMs  float64 // tokens-ahead / decodeTPS contribution
+	ThisReqMs  float64 // this request's prefill+decode contribution
+	HealthMs   float64 // memory/CPU/thermal/GPU-util contribution
+	// CapacityRateMs is the gray-box capacity-503 rate penalty added to the
+	// winner's cost (capacity_rate.go); 0 for healthy pairs. In-memory
+	// observability only — not persisted (inference_routes has no column and
+	// the schema is not altered for it).
+	CapacityRateMs float64
+	// CapacityRejectRate is the winner's windowed capacity-503 rate at
+	// selection time (rejects / (rejects + accepts)); 0 when no rejects are in
+	// the window. Same persistence note as CapacityRateMs.
+	CapacityRejectRate float64
+	EffectiveQueue     int // max(pendingForModel, backendRunning+backendWaiting)
+	CandidateCount     int // total candidates that passed all gates
+	CapacityRejections int // candidates rejected by the free-memory admission gate (transient: full)
 	// ModelTooLargeRejections counts providers that serve the model but whose
 	// total memory can never fit it (permanent). Kept separate from
 	// CapacityRejections so callers don't emit a 429/"over capacity, retry"
@@ -408,6 +436,8 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		BacklogMs:               bd.BacklogMs,
 		ThisReqMs:               bd.ThisReqMs,
 		HealthMs:                bd.HealthMs,
+		CapacityRateMs:          bd.CapacityRateMs,
+		CapacityRejectRate:      selected.capacityRejectRate,
 		EffectiveQueue:          selected.effectiveQueue,
 		CandidateCount:          candidateCount,
 		CapacityRejections:      capacityRejections,
@@ -1133,6 +1163,20 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 	snap.availableOnDisk = !snap.modelLoaded
 	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
 
+	// Gray-box budget clamp (budget_clamp.go): when a capacity-503 has proven
+	// the pair's live gate is rejecting, admission must not believe the
+	// stale-optimistic heartbeat budget. Evaluated for budgetless snapshots
+	// too — a reconnected session has no BackendCapacity until its first
+	// heartbeat, and a clamp armed on a budget-reporting pair must keep
+	// holding through that window instead of shedding onto the legacy memory
+	// path (never-budget-reporting legacy pairs stay exempt inside the check).
+	// p.LastHeartbeat is when the CURRENT BackendCapacity was delivered
+	// (Heartbeat stamps both in one critical section), which is what the
+	// release-freshness check compares against the clamp time. p.mu and r.mu
+	// are both held here (see lock discipline above).
+	rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
+	snap.budgetClamped = r.budgetClampActiveLocked(p.ID, model, p.LastHeartbeat, rawRemaining, snap.activeTokenBudgetMax > 0, now)
+
 	return snap, true
 }
 
@@ -1176,6 +1220,18 @@ func reportedFreeForLoadAdmits(catalogSizeGB float64, freeForLoadGB *float64) (a
 // Providers that report a token budget use budget-based admission;
 // legacy providers fall back to memory-based estimation.
 func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) bool {
+	// Gray-box budget clamp: a capacity-503 proved the provider's live gate
+	// rejects while the heartbeat budget below still advertises headroom
+	// (stale-optimistic). While the clamp holds, the slot is FULL — no
+	// request fits — until the provider proves recovery (fresh heartbeat with
+	// headroom + an accept) or the clamp TTL fail-opens. Checked BEFORE the
+	// budget branch: a clamped budget-reporting pair whose current session
+	// has no budget snapshot yet (reconnect before the first heartbeat) must
+	// reject here, not fall through to the legacy memory path below. See
+	// budget_clamp.go.
+	if snap.budgetClamped {
+		return false
+	}
 	requestTokens := int64(reqPromptTokens) + int64(reqMaxTokens)
 	if snap.activeTokenBudgetMax > 0 {
 		// Include coordinator-side pending tokens not yet reflected in the
@@ -1426,7 +1482,14 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	}
 	thisReqMs += longPromptPenalty(reqPrompt, ttftBlockMs)
 	healthMs := healthPenaltyMs(snap.systemMetrics, snap.gpuMemoryActiveGB, snap.totalMemoryGB)
-	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs
+	// Gray-box capacity-503 rate penalty (capacity_rate.go): a pair rejecting
+	// a material fraction of dispatches with capacity 503s — while serving the
+	// rest, so no zero-accepts breaker can see it — sinks in cost ranking
+	// proportionally to its windowed reject rate. A soft derater, never an
+	// ejection: the candidate stays in the pool, so a degraded-but-only fleet
+	// still serves, and the penalty decays as outcomes age out of the window.
+	capacityRateMs, capacityRejectRate := r.capacityRatePenaltyLocked(snap.provider.ID, snap.model, time.Now())
+	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs + capacityRateMs
 
 	// Estimated time-to-first-token for this candidate. Used for the
 	// OpenRouter TTFT ceiling: public routes only select providers whose
@@ -1443,21 +1506,23 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	ttftMs := calibratedTTFTMs(snap, rawTTFTMs)
 
 	return &routingCandidate{
-		provider:       snap.provider,
-		snapshot:       snap,
-		costMs:         cost,
-		effectiveQueue: effectiveQueue,
-		effectiveTPS:   effectiveTPS,
+		provider:           snap.provider,
+		snapshot:           snap,
+		costMs:             cost,
+		effectiveQueue:     effectiveQueue,
+		effectiveTPS:       effectiveTPS,
+		capacityRejectRate: capacityRejectRate,
 		breakdown: costBreakdown{
-			StateMs:   statePenalty,
-			QueueMs:   queueMs,
-			PendingMs: pendingMs,
-			BacklogMs: backlogMs,
-			ThisReqMs: thisReqMs,
-			HealthMs:  healthMs,
-			TTFTMs:    ttftMs,
-			RawTTFTMs: rawTTFTMs,
-			Total:     cost,
+			StateMs:        statePenalty,
+			QueueMs:        queueMs,
+			PendingMs:      pendingMs,
+			BacklogMs:      backlogMs,
+			ThisReqMs:      thisReqMs,
+			HealthMs:       healthMs,
+			CapacityRateMs: capacityRateMs,
+			TTFTMs:         ttftMs,
+			RawTTFTMs:      rawTTFTMs,
+			Total:          cost,
 		},
 	}, rejectNone, true
 }
@@ -2102,6 +2167,12 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 		snap.availableOnDisk = !snap.modelLoaded
 		snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
+
+		// Gray-box budget clamp — same evaluation as snapshotProviderLockedEx
+		// (including the budgetless-snapshot hold for reconnecting sessions)
+		// so the preflight cannot report capacity that routing then refuses.
+		rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
+		snap.budgetClamped = r.budgetClampActiveLocked(p.ID, model, p.LastHeartbeat, rawRemaining, snap.activeTokenBudgetMax > 0, now)
 
 		p.mu.Unlock()
 

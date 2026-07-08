@@ -294,6 +294,39 @@ func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 		}
 	}
 
+	// Gray-box budget clamp: the entry with the LATER clamp time wins whole
+	// (its clampedAt anchors both the TTL and the release-freshness check, and
+	// its acceptedSince belongs to that clamp window).
+	for k, entry := range r.budgetClamps {
+		if k.ProviderID == oldKey {
+			nk := k
+			nk.ProviderID = newKey
+			if cur, ok := r.budgetClamps[nk]; !ok || entry.clampedAt.After(cur.clampedAt) {
+				r.budgetClamps[nk] = entry
+			}
+			delete(r.budgetClamps, k)
+		}
+	}
+
+	// Capacity-503 rate windows: union the outcome slices (window pruning
+	// re-normalizes them on the next record / read), like the strike slices.
+	for k, outcomes := range r.capacityRateRejects {
+		if k.ProviderID == oldKey {
+			nk := k
+			nk.ProviderID = newKey
+			r.capacityRateRejects[nk] = append(r.capacityRateRejects[nk], outcomes...)
+			delete(r.capacityRateRejects, k)
+		}
+	}
+	for k, outcomes := range r.capacityRateAccepts {
+		if k.ProviderID == oldKey {
+			nk := k
+			nk.ProviderID = newKey
+			r.capacityRateAccepts[nk] = append(r.capacityRateAccepts[nk], outcomes...)
+			delete(r.capacityRateAccepts, k)
+		}
+	}
+
 	// Stable-identity health ejection.
 	if w, ok := r.healthEjectionWindows[oldKey]; ok {
 		if dst, exists := r.healthEjectionWindows[newKey]; exists {

@@ -215,6 +215,15 @@ type PendingRequest struct {
 	// timingMu (written in the dispatch/handler goroutine, read in the provider
 	// read-loop goroutine).
 	contentCommitted bool
+	// rateOutcomeCounted marks that this request's ONE capacity-503 rate
+	// outcome (capacity_rate.go denominator) was recorded by the commit-time
+	// accept — RecordCapacityAccept returned rateOutcomeRecorded=true. The
+	// completion-time accept (noteInferenceSuccess) re-offers the outcome only
+	// when this is false, so a stream that committed BEFORE the pair's first
+	// windowed reject but was still serving during it still counts, and a
+	// commit-recorded request cannot double-count. Guarded by timingMu like
+	// contentCommitted (same writer/reader goroutines).
+	rateOutcomeCounted bool
 }
 
 // MarkFirstChunkArrived stamps Timing.FirstChunkAt to now exactly once, under
@@ -299,6 +308,32 @@ func (pr *PendingRequest) ContentCommittedSafe() bool {
 	pr.timingMu.Lock()
 	defer pr.timingMu.Unlock()
 	return pr.contentCommitted
+}
+
+// MarkRateOutcomeCounted records that the commit-time capacity accept stored
+// this request's one capacity-503 rate outcome (see the rateOutcomeCounted
+// field). Called in the dispatch/handler goroutine right after
+// RecordCapacityAccept returns rateOutcomeRecorded=true.
+func (pr *PendingRequest) MarkRateOutcomeCounted() {
+	if pr == nil {
+		return
+	}
+	pr.timingMu.Lock()
+	pr.rateOutcomeCounted = true
+	pr.timingMu.Unlock()
+}
+
+// RateOutcomeCountedSafe reports whether the commit-time accept already stored
+// this request's rate outcome, read under timingMu. The completion-time accept
+// (noteInferenceSuccess) uses it to decide whether the request still owes its
+// one denominator entry.
+func (pr *PendingRequest) RateOutcomeCountedSafe() bool {
+	if pr == nil {
+		return false
+	}
+	pr.timingMu.Lock()
+	defer pr.timingMu.Unlock()
+	return pr.rateOutcomeCounted
 }
 
 type TokenAdmission struct {
@@ -1318,6 +1353,26 @@ type Registry struct {
 	capacityCooldowns     map[capacityRejectKey]*capacityCooldownEntry // cooldown expiry + half-open probe claim per (provider, model)
 	capacityCooldownTrips map[capacityRejectKey]int                    // trip count per (provider, model) (exponential backoff)
 
+	// budgetClamps implements the gray-box budget clamp (budget_clamp.go):
+	// after a capacity-shaped 503, admission stops believing the pair's
+	// stale-optimistic heartbeat budget and treats the slot as FULL until the
+	// provider proves recovery (fresh heartbeat with headroom + an accept) or
+	// the clamp TTL fail-opens. Keyed by stable fault identity; migrated on
+	// rebind; NOT cleared on Disconnect. Guarded by r.mu.
+	budgetClampCfg budgetClampConfig
+	budgetClamps   map[capacityRejectKey]*budgetClampEntry
+
+	// capacityRateRejects / capacityRateAccepts implement the capacity-503
+	// rate penalty (capacity_rate.go): sliding windows of capacity rejects and
+	// served dispatches per (stable identity, model). Unlike every breaker
+	// above there is NO accept-triggered reset — the rate is exactly the
+	// gray-box signal the zero-interleaved-accepts discriminators are blind
+	// to. Keyed by stable fault identity; migrated on rebind; NOT cleared on
+	// Disconnect. Guarded by r.mu.
+	capacityRateCfg     capacityRateConfig
+	capacityRateRejects map[capacityRejectKey][]time.Time
+	capacityRateAccepts map[capacityRejectKey][]time.Time
+
 	// Stable-identity health ejection (health_ejection.go). Keyed by a STABLE
 	// identity (serial/SE-key/account), NOT the session UUID, and DELIBERATELY
 	// NOT deleted on Disconnect — so a zombie that fails ~every request while
@@ -1432,6 +1487,11 @@ func New(logger *slog.Logger) *Registry {
 		capacityRejectStrikes:          make(map[capacityRejectKey][]time.Time),
 		capacityCooldowns:              make(map[capacityRejectKey]*capacityCooldownEntry),
 		capacityCooldownTrips:          make(map[capacityRejectKey]int),
+		budgetClampCfg:                 loadBudgetClampConfig(),
+		budgetClamps:                   make(map[capacityRejectKey]*budgetClampEntry),
+		capacityRateCfg:                loadCapacityRateConfig(),
+		capacityRateRejects:            make(map[capacityRejectKey][]time.Time),
+		capacityRateAccepts:            make(map[capacityRejectKey][]time.Time),
 		healthEjectionWindows:          make(map[string]*providerHealthWindow),
 		healthEjectionUntil:            make(map[string]time.Time),
 		healthEjectionTrips:            make(map[string]int),
@@ -2735,6 +2795,15 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 		}
 	}
 	p.mu.Unlock()
+
+	// This heartbeat may be the release proof for a budget clamp
+	// (budget_clamp.go): drop any clamp entry this heartbeat's snapshot proves
+	// inactive so a released pair returns to the accept fast path and cannot
+	// be re-blocked by a lingering entry on its next reconnect. The sweep
+	// evaluates the heartbeat's OWN stamped time and report (not a re-read of
+	// the provider), so a racing disconnect cannot void the release proof.
+	// Cheap no-op probe when the provider has no clamp state.
+	r.releaseBudgetClampsOnHeartbeat(id, now, msg.BackendCapacity)
 
 	r.PersistProviderThrottled(p)
 	// Persist accumulated uptime (throttled) so it survives restarts/reconnects;

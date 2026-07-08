@@ -176,7 +176,7 @@ func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped boo
 	// capacity-503 rate (capacity_rate.go — accepts deliberately do NOT reset
 	// it, unlike the strike streak below).
 	clampKey := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
-	r.recordBudgetClampLocked(clampKey, now)
+	r.recordBudgetClampLocked(clampKey, r.providerReportsTokenBudgetLocked(providerID, modelID), now)
 	r.recordCapacityRateRejectLocked(clampKey, now)
 
 	cfg := r.capacityCooldownCfg
@@ -287,22 +287,31 @@ func (r *Registry) claimCapacityProbeLocked(providerID, modelID string, now time
 // is also left untouched: ejection doesn't cancel in-flight work, so content
 // can flow from an ejected node, and lifting the quarantine early on it would
 // defeat the cooldown — recovery goes through the half-open success probe.
-func (r *Registry) RecordCapacityAccept(providerID, modelID string) {
-	r.RecordCapacityAcceptOutcome(providerID, modelID, true)
+// It returns whether a capacity-503 RATE outcome was actually recorded for
+// this accept (see RecordCapacityAcceptOutcome) so commit-time callers can
+// stamp the request (MarkRateOutcomeCounted) and the completion-time accept
+// can decide whether the request still owes its one rate outcome.
+func (r *Registry) RecordCapacityAccept(providerID, modelID string) (rateOutcomeRecorded bool) {
+	return r.RecordCapacityAcceptOutcome(providerID, modelID, true)
 }
 
 // RecordCapacityAcceptOutcome is RecordCapacityAccept with explicit control
 // over the capacity-503 RATE window's denominator (capacity_rate.go).
-// countRateOutcome=true records ONE served-dispatch outcome; the api layer
-// sets it true exactly once per served request — at the commit point (first
-// content chunk), or at clean completion on paths that never committed content
-// — and false for the redundant completion-time accept after a commit, so a
-// request that both commits and completes cleanly cannot double-count and
-// dilute the reject rate. The cooldown/streak/clamp accept semantics below are
-// identical for both values (belt-and-braces accepts stay harmless there).
-func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, countRateOutcome bool) {
+// countRateOutcome=true OFFERS one served-dispatch outcome; whether it was
+// actually RECORDED is the return value — the rate window only stores accepts
+// while the pair has a reject in-window (recordCapacityRateAcceptLocked), so a
+// commit that lands before any reject is an offer that records nothing. The
+// api layer offers at the commit point (first content chunk) and stamps the
+// request when the offer recorded (MarkRateOutcomeCounted); the completion-
+// time accept re-offers ONLY when the commit-time offer did not record
+// (!RateOutcomeCountedSafe) — so a long stream that committed pre-reject and
+// completed during the reject window still enters the denominator exactly
+// once, and a request whose commit already recorded cannot double-count and
+// dilute the reject rate. The cooldown/streak/clamp accept semantics below
+// are identical for both values (belt-and-braces accepts stay harmless there).
+func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, countRateOutcome bool) (rateOutcomeRecorded bool) {
 	if providerID == "" || modelID == "" {
-		return
+		return false
 	}
 	// Fast path: this runs once per served request, and for a healthy pair all
 	// the maps are empty — check under the read lock so the serving hot path
@@ -322,7 +331,9 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 	capacityTripped := r.healthEjectionLastTripCapacity[key.ProviderID]
 	r.mu.RUnlock()
 	if !hasStrikes && !hasCooldown && !hasTrips && !hasClamp && !hasRateRejects && !hasNodeStreak && !capacityTripped {
-		return
+		// Nothing recorded: with no reject in the rate window the accept
+		// would not be stored anyway (see recordCapacityRateAcceptLocked).
+		return false
 	}
 	r.mu.Lock()
 	now := time.Now()
@@ -337,7 +348,7 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 	// IS the signal).
 	r.noteBudgetClampAcceptLocked(key)
 	if countRateOutcome {
-		r.recordCapacityRateAcceptLocked(key, now)
+		rateOutcomeRecorded = r.recordCapacityRateAcceptLocked(key, now)
 	}
 	delete(r.healthEjectionCapacityStreaks, key.ProviderID)
 	if r.healthEjectionLastTripCapacity[key.ProviderID] {
@@ -345,6 +356,7 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 		delete(r.healthEjectionLastTripCapacity, key.ProviderID)
 	}
 	r.mu.Unlock()
+	return rateOutcomeRecorded
 }
 
 // CapacityCooldownActive reports whether the (provider, model) pair is

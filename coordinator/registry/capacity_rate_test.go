@@ -266,3 +266,56 @@ func TestCapacityRateNeverClosesRouting(t *testing.T) {
 		t.Fatal("penalty must be visible on the decision")
 	}
 }
+
+// A stream that commits BEFORE the pair's first windowed reject must still
+// enter the rate denominator when it is serving THROUGH the rejects: the
+// commit-time offer records nothing (accepts only store while a reject is
+// in-window), so the completion-time accept — keyed on the RECORDED outcome
+// (RateOutcomeCountedSafe), not on ContentCommittedSafe — re-offers it. Codex
+// review of #523: without this, a healthy pair serving long streams looked
+// like a 100%-reject gray box after a few later 503s.
+func TestCapacityRatePreRejectCommitCountsAtCompletion(t *testing.T) {
+	r := New(testLogger())
+	const model = "gemma-4-26b-qat-4bit"
+	p := makeTokenBudgetProvider(t, r, "pre-reject-commit", model, 100, grayBoxBudgetUsed, grayBoxBudgetMax, 100)
+
+	// Long stream commits first content while the pair is healthy: the offer
+	// must report NOT recorded (nothing in the reject window yet).
+	if recorded := r.RecordCapacityAccept(p.ID, model); recorded {
+		t.Fatal("commit-time accept with an empty reject window must not record a rate outcome")
+	}
+
+	// The box goes gray while the stream is still serving: 8 capacity-503s.
+	for i := 0; i < capacityRateMinSample; i++ {
+		r.RecordCapacityReject(p.ID, model)
+	}
+
+	// Completion: the api layer re-offers because the commit-time offer did
+	// not record (this is the noteInferenceSuccess wiring:
+	// countRateOutcome = !RateOutcomeCountedSafe → true here).
+	if recorded := r.RecordCapacityAcceptOutcome(p.ID, model, true); !recorded {
+		t.Fatal("completion-time re-offer during the reject window must record the request's one outcome")
+	}
+
+	rate, samples := r.CapacityRejectRate(p.ID, model)
+	if samples != capacityRateMinSample+1 {
+		t.Fatalf("samples = %d, want %d (8 rejects + the served stream)", samples, capacityRateMinSample+1)
+	}
+	wantRate := float64(capacityRateMinSample) / float64(capacityRateMinSample+1)
+	if rate != wantRate {
+		t.Fatalf("rate = %v, want %v — the served stream must be in the denominator", rate, wantRate)
+	}
+
+	// And the double-count guard: a request that commits DURING the reject
+	// window records at commit (offer returns true), so its completion-time
+	// call passes countRateOutcome=false and adds nothing.
+	if recorded := r.RecordCapacityAccept(p.ID, model); !recorded {
+		t.Fatal("commit-time accept with rejects in-window must record")
+	}
+	if recorded := r.RecordCapacityAcceptOutcome(p.ID, model, false); recorded {
+		t.Fatal("completion after a recorded commit must not record a second outcome")
+	}
+	if _, samples := r.CapacityRejectRate(p.ID, model); samples != capacityRateMinSample+2 {
+		t.Fatalf("samples = %d, want %d — one request must count exactly once", samples, capacityRateMinSample+2)
+	}
+}

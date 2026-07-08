@@ -32,11 +32,17 @@ import (
 // still serves. Outcomes age out of the window naturally, so the penalty
 // decays on its own once the 503s stop.
 //
-// One served request counts as ONE accept outcome: the api layer records the
-// accept for this window at the commit point (first content chunk — or, on
-// paths that never commit content, at clean completion) and passes
-// countRateOutcome=false for the redundant completion-time accept
-// (RecordCapacityAcceptOutcome), so the denominator is per-dispatch honest.
+// One served request counts as ONE accept outcome: the api layer OFFERS the
+// accept at the commit point (first content chunk) and stamps the request when
+// the offer actually recorded (accepts are only stored while a reject is in
+// the window — see recordCapacityRateAcceptLocked); at clean completion it
+// re-offers only when the commit-time offer did not record
+// (!RateOutcomeCountedSafe), which covers both paths that never commit content
+// AND streams that committed BEFORE the pair's first windowed reject but were
+// still serving during it — without the re-offer those served requests would
+// vanish from the denominator and a few later rejects would overstate a
+// healthy pair's rate. Commit-recorded XOR completion-recorded, so the
+// denominator is per-dispatch honest.
 // Rejects are recorded once per failed dispatch attempt by
 // RecordCapacityReject.
 //
@@ -96,20 +102,23 @@ func (r *Registry) recordCapacityRateRejectLocked(key capacityRejectKey, now tim
 // RecordCapacityAccept's healthy-pair read-lock fast path intact (a served
 // request on a never-rejecting pair never takes the write lock for this).
 // Once the reject side has fully decayed, the pair's slices are dropped
-// instead — state returns to empty and the fast path is restored. Caller
-// holds the r.mu write lock (called from RecordCapacityAccept with
-// countRateOutcome=true).
-func (r *Registry) recordCapacityRateAcceptLocked(key capacityRejectKey, now time.Time) {
+// instead — state returns to empty and the fast path is restored. Returns
+// whether the accept was actually stored, so the api layer can stamp the
+// request (MarkRateOutcomeCounted) and let its completion re-offer when the
+// commit-time offer recorded nothing. Caller holds the r.mu write lock
+// (called from RecordCapacityAccept with countRateOutcome=true).
+func (r *Registry) recordCapacityRateAcceptLocked(key capacityRejectKey, now time.Time) (recorded bool) {
 	if r.capacityRateCfg.PenaltyMs <= 0 {
-		return
+		return false
 	}
 	if countInWindow(r.capacityRateRejects[key], now) == 0 {
 		delete(r.capacityRateRejects, key)
 		delete(r.capacityRateAccepts, key)
-		return
+		return false
 	}
 	sweepCapacityRateMapLocked(r.capacityRateAccepts, now)
 	r.capacityRateAccepts[key] = appendWindowedOutcome(r.capacityRateAccepts[key], now)
+	return true
 }
 
 // appendWindowedOutcome slides the window (keeps only in-window timestamps)

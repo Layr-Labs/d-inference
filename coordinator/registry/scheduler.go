@@ -1150,15 +1150,17 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 
 	// Gray-box budget clamp (budget_clamp.go): when a capacity-503 has proven
 	// the pair's live gate is rejecting, admission must not believe the
-	// stale-optimistic heartbeat budget. Only budget-reporting slots are
-	// clamped; p.LastHeartbeat is when the CURRENT BackendCapacity was
-	// delivered (Heartbeat stamps both in one critical section), which is what
-	// the release-freshness check compares against the clamp time. p.mu and
-	// r.mu are both held here (see lock discipline above).
-	if snap.activeTokenBudgetMax > 0 {
-		rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
-		snap.budgetClamped = r.budgetClampActiveLocked(p.ID, model, p.LastHeartbeat, rawRemaining, now)
-	}
+	// stale-optimistic heartbeat budget. Evaluated for budgetless snapshots
+	// too — a reconnected session has no BackendCapacity until its first
+	// heartbeat, and a clamp armed on a budget-reporting pair must keep
+	// holding through that window instead of shedding onto the legacy memory
+	// path (never-budget-reporting legacy pairs stay exempt inside the check).
+	// p.LastHeartbeat is when the CURRENT BackendCapacity was delivered
+	// (Heartbeat stamps both in one critical section), which is what the
+	// release-freshness check compares against the clamp time. p.mu and r.mu
+	// are both held here (see lock discipline above).
+	rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
+	snap.budgetClamped = r.budgetClampActiveLocked(p.ID, model, p.LastHeartbeat, rawRemaining, snap.activeTokenBudgetMax > 0, now)
 
 	return snap, true
 }
@@ -1203,16 +1205,19 @@ func reportedFreeForLoadAdmits(catalogSizeGB float64, freeForLoadGB *float64) (a
 // Providers that report a token budget use budget-based admission;
 // legacy providers fall back to memory-based estimation.
 func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) bool {
+	// Gray-box budget clamp: a capacity-503 proved the provider's live gate
+	// rejects while the heartbeat budget below still advertises headroom
+	// (stale-optimistic). While the clamp holds, the slot is FULL — no
+	// request fits — until the provider proves recovery (fresh heartbeat with
+	// headroom + an accept) or the clamp TTL fail-opens. Checked BEFORE the
+	// budget branch: a clamped budget-reporting pair whose current session
+	// has no budget snapshot yet (reconnect before the first heartbeat) must
+	// reject here, not fall through to the legacy memory path below. See
+	// budget_clamp.go.
+	if snap.budgetClamped {
+		return false
+	}
 	if snap.activeTokenBudgetMax > 0 {
-		// Gray-box budget clamp: a capacity-503 proved the provider's live
-		// gate rejects while the heartbeat budget below still advertises
-		// headroom (stale-optimistic). While the clamp holds, the slot is
-		// FULL — no request fits — until the provider proves recovery (fresh
-		// heartbeat with headroom + an accept) or the clamp TTL fail-opens.
-		// See budget_clamp.go.
-		if snap.budgetClamped {
-			return false
-		}
 		requestTokens := int64(reqPromptTokens) + int64(reqMaxTokens)
 		// Include coordinator-side pending tokens not yet reflected in the
 		// provider's heartbeat. Avoid double-counting active/queued backend
@@ -2094,11 +2099,10 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
 
 		// Gray-box budget clamp — same evaluation as snapshotProviderLockedEx
+		// (including the budgetless-snapshot hold for reconnecting sessions)
 		// so the preflight cannot report capacity that routing then refuses.
-		if snap.activeTokenBudgetMax > 0 {
-			rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
-			snap.budgetClamped = r.budgetClampActiveLocked(p.ID, model, p.LastHeartbeat, rawRemaining, now)
-		}
+		rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
+		snap.budgetClamped = r.budgetClampActiveLocked(p.ID, model, p.LastHeartbeat, rawRemaining, snap.activeTokenBudgetMax > 0, now)
 
 		p.mu.Unlock()
 

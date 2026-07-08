@@ -338,10 +338,16 @@ func (s *Server) noteInferenceSuccess(pr *registry.PendingRequest) {
 	// backoff. Belt-and-braces with the commit-time accept (commitFirstContent)
 	// and the only accept signal on paths that never stream content. For the
 	// capacity-503 RATE window (capacity_rate.go) one served request must
-	// count exactly ONE outcome, so this completion-time accept only counts
-	// there when no commit-time accept already did (ContentCommittedSafe is
-	// stamped immediately before every commit-time RecordCapacityAccept).
-	s.registry.RecordCapacityAcceptOutcome(pr.ProviderID, pr.Model, !pr.ContentCommittedSafe())
+	// count exactly ONE outcome, so this completion-time accept re-offers the
+	// outcome only when the commit-time accept did not actually RECORD one
+	// (RateOutcomeCountedSafe — stamped from RecordCapacityAccept's return at
+	// every commit site). Keying on the recorded outcome rather than on
+	// ContentCommittedSafe covers the stream that committed BEFORE the pair's
+	// first windowed reject (nothing recorded then — accepts only store while
+	// a reject is in-window) but was still serving during the rejects: it
+	// enters the denominator here instead of vanishing and letting a few
+	// later 503s overstate a healthy pair's reject rate.
+	s.registry.RecordCapacityAcceptOutcome(pr.ProviderID, pr.Model, !pr.RateOutcomeCountedSafe())
 	// A clean completion proves the node is healthy — close its node-health
 	// breaker (and reset the exponential backoff) if it had tripped.
 	if _, closed := s.registry.RecordProviderOutcome(pr.ProviderID, true, 200, ""); closed {
@@ -3751,7 +3757,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			// generic path has no preamble filter, so this is the first chunk of
 			// ANY kind rather than strictly first content — fine as an accept
 			// signal: a black hole capacity-rejects, it never emits a chunk.)
-			s.registry.RecordCapacityAccept(provider.ID, pr.Model)
+			if s.registry.RecordCapacityAccept(provider.ID, pr.Model) {
+				pr.MarkRateOutcomeCounted()
+			}
 			committed = true
 		} else {
 			select {
@@ -3824,7 +3832,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				// capacity-cooldown ACCEPT at first content for the same reason.
 				pr.MarkFirstContentArrived()
 				pr.MarkContentCommitted()
-				s.registry.RecordCapacityAccept(provider.ID, pr.Model)
+				if s.registry.RecordCapacityAccept(provider.ID, pr.Model) {
+					pr.MarkRateOutcomeCounted()
+				}
 				committed = true
 			} else {
 				select {

@@ -118,13 +118,26 @@ type budgetClampEntry struct {
 	// acceptedSince records release condition (b): an accept landed for the
 	// pair after clampedAt.
 	acceptedSince bool
+	// budgetReported records whether the pair was REPORTING a token budget
+	// when the clamp armed (sticky across re-arms). It is what keeps the clamp
+	// holding through a budgetless window — a reconnected session has
+	// BackendCapacity == nil until its first heartbeat, and without this flag
+	// the snapshot's activeTokenBudgetMax == 0 would route the pair down the
+	// legacy memory-admission path and shed the clamp exactly when it must
+	// hold (a stable identity cannot drop a clamp by reconnecting). Pairs that
+	// NEVER reported a budget (legacy providers) keep budgetReported == false
+	// and keep their documented exemption: a single 503 cannot gate them.
+	budgetReported bool
 }
 
 // recordBudgetClampLocked arms (or re-arms) the pair's budget clamp on a
 // capacity-shaped rejection. A re-reject is fresh evidence: the clamp window
-// restarts and the accept proof resets. Caller holds the r.mu write lock
-// (called from RecordCapacityReject).
-func (r *Registry) recordBudgetClampLocked(key capacityRejectKey, now time.Time) {
+// restarts and the accept proof resets. budgetReported says whether the pair
+// currently reports a token budget; it is STICKY across re-arms (a re-reject
+// during a reconnect's budgetless window must not downgrade the identity's
+// demonstrated budget reporting). Caller holds the r.mu write lock (called
+// from RecordCapacityReject).
+func (r *Registry) recordBudgetClampLocked(key capacityRejectKey, budgetReported bool, now time.Time) {
 	if !r.budgetClampCfg.Enabled {
 		return
 	}
@@ -138,7 +151,35 @@ func (r *Registry) recordBudgetClampLocked(key capacityRejectKey, now time.Time)
 			}
 		}
 	}
-	r.budgetClamps[key] = &budgetClampEntry{clampedAt: now}
+	if prev, ok := r.budgetClamps[key]; ok {
+		budgetReported = budgetReported || prev.budgetReported
+	}
+	r.budgetClamps[key] = &budgetClampEntry{clampedAt: now, budgetReported: budgetReported}
+}
+
+// providerReportsTokenBudgetLocked reports whether the provider's CURRENT
+// backend snapshot carries a token budget for the model (the arming-time input
+// to budgetClampEntry.budgetReported). A missing provider (the reject often
+// races the disconnect that caused it) or a missing/budgetless slot reads
+// false — the sticky-or in recordBudgetClampLocked keeps an identity's
+// demonstrated reporting from being downgraded by such a race. Caller holds
+// r.mu (either mode); takes p.mu internally (r.mu → p.mu lock order).
+func (r *Registry) providerReportsTokenBudgetLocked(providerID, modelID string) bool {
+	p := r.providers[providerID]
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.BackendCapacity == nil {
+		return false
+	}
+	for _, slot := range p.BackendCapacity.Slots {
+		if slot.Model == modelID {
+			return slot.ActiveTokenBudgetMax > 0
+		}
+	}
+	return false
 }
 
 // noteBudgetClampAcceptLocked records release condition (b): the pair accepted
@@ -159,12 +200,20 @@ func (r *Registry) noteBudgetClampAcceptLocked(key capacityRejectKey) {
 // heartbeatAt is when the provider's CURRENT BackendCapacity was delivered
 // (p.LastHeartbeat — Heartbeat overwrites BackendCapacity and stamps
 // LastHeartbeat in the same critical section). rawBudgetRemaining is the
-// pair's live raw headroom from that snapshot (max - used - queued, unclamped).
-// The clamp holds while:
+// pair's live raw headroom from that snapshot (max - used - queued, unclamped)
+// and budgetReported says whether the snapshot carries a budget for the pair
+// at all (activeTokenBudgetMax > 0). The clamp holds while:
 //   - the entry exists and is inside its TTL (fail-open bound), and
 //   - release has not been proven: acceptedSince (condition b) AND a heartbeat
 //     strictly after the clamp showing meaningful headroom (condition a).
-func (r *Registry) budgetClampActiveLocked(providerID, modelID string, heartbeatAt time.Time, rawBudgetRemaining int64, now time.Time) bool {
+//
+// A budgetless snapshot (reconnect before the first heartbeat, or the model's
+// slot missing from the current capacity report) can never satisfy condition
+// (a), so a pair clamped while budget-reporting KEEPS holding through it —
+// reconnecting must not shed the clamp onto the legacy memory-admission path
+// (the stable fault key exists precisely so it can't). Pairs armed while
+// budgetless (entry.budgetReported == false: legacy providers) never hold.
+func (r *Registry) budgetClampActiveLocked(providerID, modelID string, heartbeatAt time.Time, rawBudgetRemaining int64, budgetReported bool, now time.Time) bool {
 	if !r.budgetClampCfg.Enabled {
 		return false
 	}
@@ -174,6 +223,11 @@ func (r *Registry) budgetClampActiveLocked(providerID, modelID string, heartbeat
 	}
 	if !now.Before(e.clampedAt.Add(r.budgetClampCfg.TTL)) {
 		return false // TTL lapsed: fail open (a re-reject re-arms)
+	}
+	if !budgetReported {
+		// No live budget snapshot to judge release against: hold iff the pair
+		// was budget-reporting when clamped (legacy pairs stay exempt).
+		return e.budgetReported
 	}
 	released := e.acceptedSince &&
 		heartbeatAt.After(e.clampedAt) &&
@@ -194,14 +248,16 @@ func (r *Registry) BudgetClampActive(providerID, modelID string) bool {
 	p.mu.Lock()
 	heartbeatAt := p.LastHeartbeat
 	var rawRemaining int64
+	var budgetReported bool
 	if p.BackendCapacity != nil {
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model == modelID {
 				rawRemaining = slot.ActiveTokenBudgetMax - slot.ActiveTokenBudgetUsed - slot.QueuedTokenBudget
+				budgetReported = slot.ActiveTokenBudgetMax > 0
 				break
 			}
 		}
 	}
 	p.mu.Unlock()
-	return r.budgetClampActiveLocked(providerID, modelID, heartbeatAt, rawRemaining, time.Now())
+	return r.budgetClampActiveLocked(providerID, modelID, heartbeatAt, rawRemaining, budgetReported, time.Now())
 }

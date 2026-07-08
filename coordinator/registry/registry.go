@@ -215,6 +215,15 @@ type PendingRequest struct {
 	// timingMu (written in the dispatch/handler goroutine, read in the provider
 	// read-loop goroutine).
 	contentCommitted bool
+	// rateOutcomeCounted marks that this request's ONE capacity-503 rate
+	// outcome (capacity_rate.go denominator) was recorded by the commit-time
+	// accept — RecordCapacityAccept returned rateOutcomeRecorded=true. The
+	// completion-time accept (noteInferenceSuccess) re-offers the outcome only
+	// when this is false, so a stream that committed BEFORE the pair's first
+	// windowed reject but was still serving during it still counts, and a
+	// commit-recorded request cannot double-count. Guarded by timingMu like
+	// contentCommitted (same writer/reader goroutines).
+	rateOutcomeCounted bool
 }
 
 // MarkFirstChunkArrived stamps Timing.FirstChunkAt to now exactly once, under
@@ -299,6 +308,32 @@ func (pr *PendingRequest) ContentCommittedSafe() bool {
 	pr.timingMu.Lock()
 	defer pr.timingMu.Unlock()
 	return pr.contentCommitted
+}
+
+// MarkRateOutcomeCounted records that the commit-time capacity accept stored
+// this request's one capacity-503 rate outcome (see the rateOutcomeCounted
+// field). Called in the dispatch/handler goroutine right after
+// RecordCapacityAccept returns rateOutcomeRecorded=true.
+func (pr *PendingRequest) MarkRateOutcomeCounted() {
+	if pr == nil {
+		return
+	}
+	pr.timingMu.Lock()
+	pr.rateOutcomeCounted = true
+	pr.timingMu.Unlock()
+}
+
+// RateOutcomeCountedSafe reports whether the commit-time accept already stored
+// this request's rate outcome, read under timingMu. The completion-time accept
+// (noteInferenceSuccess) uses it to decide whether the request still owes its
+// one denominator entry.
+func (pr *PendingRequest) RateOutcomeCountedSafe() bool {
+	if pr == nil {
+		return false
+	}
+	pr.timingMu.Lock()
+	defer pr.timingMu.Unlock()
+	return pr.rateOutcomeCounted
 }
 
 type TokenAdmission struct {

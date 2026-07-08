@@ -419,7 +419,13 @@ func (d *dispatchState) commitFirstContent(pr *registry.PendingRequest, chunk st
 	// legitimately sheds concurrent dispatches — waiting for the completion
 	// accept (noteInferenceSuccess) would let transient fullness masquerade as
 	// the zero-accepts black-hole signature. See registry/capacity_cooldown.go.
-	d.s.registry.RecordCapacityAccept(pr.ProviderID, pr.Model)
+	// The return says whether the pair's capacity-503 RATE window actually
+	// stored this accept (only while a reject is in-window) — stamp it so the
+	// completion-time accept knows whether the request still owes its one
+	// denominator outcome (noteInferenceSuccess).
+	if d.s.registry.RecordCapacityAccept(pr.ProviderID, pr.Model) {
+		pr.MarkRateOutcomeCounted()
+	}
 }
 
 // successRoutingOutcome builds a success outcome for the committed attempt.

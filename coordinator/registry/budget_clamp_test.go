@@ -531,3 +531,52 @@ func TestGrayBoxSelectionShareDropsWithFix(t *testing.T) {
 		}
 	})
 }
+
+// A clamped identity that reconnects has NO BackendCapacity until its first
+// heartbeat. The clamp must keep holding through that budgetless window — the
+// snapshot falling back to the legacy memory-admission path would shed the
+// clamp at the exact moment the stable fault key exists to prevent it (Codex
+// review of #523). Release then works normally once the first post-clamp
+// budget heartbeat + an accept land.
+func TestBudgetClampHoldsAcrossReconnectBeforeFirstHeartbeat(t *testing.T) {
+	r := New(testLogger())
+	const model, serial = "gemma-4-26b-qat-4bit", "SER-CLAMP-HB"
+
+	p1 := attestSchedulerProvider(t, r, "clamp-hb-sess-1", model, serial, 100)
+	p1.mu.Lock()
+	p1.BackendCapacity.Slots[0].ActiveTokenBudgetUsed = grayBoxBudgetUsed
+	p1.BackendCapacity.Slots[0].ActiveTokenBudgetMax = grayBoxBudgetMax
+	p1.mu.Unlock()
+
+	r.RecordCapacityReject(p1.ID, model)
+	if !r.BudgetClampActive(p1.ID, model) {
+		t.Fatal("setup: clamp must be active")
+	}
+	r.Disconnect("clamp-hb-sess-1")
+
+	// Reconnect: registration completes, attestation binds the same stable
+	// identity, but the first heartbeat has NOT arrived — BackendCapacity nil.
+	p2 := attestSchedulerProvider(t, r, "clamp-hb-sess-2", model, serial, 100)
+	p2.mu.Lock()
+	p2.BackendCapacity = nil
+	p2.mu.Unlock()
+
+	if !r.BudgetClampActive(p2.ID, model) {
+		t.Fatal("clamp must hold through the reconnected session's budgetless pre-heartbeat window")
+	}
+	if sel, _ := reserveOnce(r, model, "reconnect-pre-heartbeat"); sel != nil {
+		t.Fatal("budgetless reconnect window shed the clamp — admission fell back to the legacy memory path")
+	}
+
+	// Release proof through the new session: accept + first post-clamp budget
+	// heartbeat with meaningful headroom.
+	r.RecordCapacityAccept(p2.ID, model)
+	time.Sleep(2 * time.Millisecond)
+	sendBudgetHeartbeat(r, p2.ID, model, grayBoxBudgetUsed, grayBoxBudgetMax)
+	if r.BudgetClampActive(p2.ID, model) {
+		t.Fatal("release proof through the reconnected session must lift the clamp")
+	}
+	if sel, _ := reserveOnce(r, model, "post-release"); sel == nil {
+		t.Fatal("released pair must admit again")
+	}
+}

@@ -696,6 +696,60 @@ struct SSDPrefixCacheReservationTests {
         #expect(cache.bytesInUse == 0)
     }
 
+    @Test("corrupt tail block: reservation + accounting shrink to the SHORTENED run")
+    func shortenedRunShrinksReservation() async throws {
+        let dir = tempDir("res-shortened")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let budget = makeBudget()
+        let clock = ClockBox(10_000)
+        let kek = SymmetricKey(size: .bits256)
+        let cache = await makeStagedCache(
+            dir: dir, kek: kek, clock: clock, kvBudget: budget)
+        defer { cache.close() }
+
+        // Identify the LAST chain block's file via the production name
+        // derivation (chain hash -> HMAC tag under K_lookup) and corrupt it,
+        // so stage() reads 7 good blocks and then hits the auth failure.
+        let tokens = Array(0 ..< tokenCount)
+        let hasher = CBv2BlockHasher(blockSize: fixtureBlockSize, modelName: "test-model")
+        let chain = hasher.chainHashes(tokens: tokens)
+        let keys = SSDLookupKeys(kek: kek)
+        let fileURL: (Int) -> URL = { i in
+            SSDBlockStore.fileURL(
+                root: dir,
+                tag16Hex: SSDLookupKeys.hex(
+                    keys.tag16(chainHash: chain[i], cacheSalt: "")))
+        }
+        let lastURL = fileURL(chain.count - 1)
+        var bytes = try Data(contentsOf: lastURL)
+        bytes[bytes.count - 10] ^= 0xFF
+        try bytes.write(to: lastURL)
+
+        // Expected staged bytes = the surviving 7 blocks' file sizes.
+        var expectedBytes = 0
+        for i in 0 ..< chain.count - 1 {
+            expectedBytes += try Data(contentsOf: fileURL(i)).count
+        }
+
+        let prompt = tokens + [7]
+        #expect(await cache.stage(requestID: "req-short", promptTokens: prompt, cacheScope: ""))
+        #expect(cache.stats().corruptDropped == 1)
+        // Regression (Codex, v0.7.5 SSD review): the reservation and the
+        // staging accounting must reflect the SHORTENED run — they used to
+        // stay at the original 8-block figure, falsely consuming shared KV
+        // headroom until this request's release.
+        #expect(await budget.outstandingReservedBytes() == UInt64(expectedBytes))
+        #expect(cache.bytesInUse == expectedBytes)
+
+        // The shortened run adopts and the balanced release drains fully.
+        let hit = try #require(
+            cache.lookup(tokens: prompt, layerKinds: fixtureLayerKinds, cacheSalt: nil))
+        #expect(hit.matched == (chain.count - 1) * fixtureBlockSize)
+        cache.endAdoption(tokens: prompt, matched: hit.matched, cacheSalt: nil)
+        #expect(await waitForZeroOutstanding(budget), "endAdoption must release the reservation")
+        #expect(cache.bytesInUse == 0)
+    }
+
     @Test("backstop path (lookup never ran): completeStaging releases")
     func backstopReleases() async throws {
         let dir = tempDir("res-backstop")

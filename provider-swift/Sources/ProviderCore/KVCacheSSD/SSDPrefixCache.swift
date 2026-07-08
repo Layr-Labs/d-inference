@@ -592,6 +592,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         // while it still clears the benefit floor.
         var k = index.longestRun(tags16: tags16)
         var runBytes = 0
+        var runSizes: [Int] = []
         while k > 0 {
             let matched = k * config.blockSize
             let effective = matched - min(config.adoptionBoundTokens, matched)
@@ -601,6 +602,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 k = min(k - 1, index.longestRun(tags16: tags16))
                 continue
             }
+            runSizes = sizes
             runBytes = sizes.reduce(0, +)
             if runBytes <= config.maxStageBytes,
                 SSDPrefixCachePolicy.estimatedStageMillis(bytes: runBytes) <= config.maxStageMillis
@@ -673,6 +675,25 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         }
         blockPayloads = Array(blockPayloads.prefix(usableBlocks))
 
+        // A corrupt block SHORTENED the run: the reservation and the staging
+        // accounting must track the bytes actually staged, not the original
+        // run — the difference would otherwise falsely consume shared KV
+        // headroom until this request's release. Reconcile by re-reserving
+        // the smaller amount (release + reserve; a raced refusal means real
+        // memory pressure ⇒ silent recompute, exactly as if the shortened
+        // run had been probed first).
+        var stagedRunBytes = runBytes
+        if usableBlocks < k {
+            stagedRunBytes = runSizes.prefix(usableBlocks).reduce(0, +)
+            if let kvBudget, stagedRunBytes != runBytes {
+                await kvBudget.release(requestID: reservationKey)
+                guard stagedRunBytes > 0,
+                    await kvBudget.reserveBytes(
+                        requestID: reservationKey, bytes: UInt64(stagedRunBytes))
+                else { return false }
+            }
+        }
+
         // Rebuild per-layer arrays: per (layer × tensor), one MLXArray per
         // block chunk, concatenated along the token axis (graph op), then
         // ONE eval — the staged bytes become real device arrays here,
@@ -703,9 +724,10 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 return true
             }
             stagedEntries[usedTag] = StagedEntry(
-                matched: matched, prefix: prefix, deviceBytes: runBytes, firstTicket: requestID)
+                matched: matched, prefix: prefix, deviceBytes: stagedRunBytes,
+                firstTicket: requestID)
             tickets[requestID] = usedTag
-            statsBox.add(stages: 1, stagedBytesDelta: runBytes)
+            statsBox.add(stages: 1, stagedBytesDelta: stagedRunBytes)
             return true
         }
         guard inserted else {

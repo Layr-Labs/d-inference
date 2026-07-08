@@ -1672,17 +1672,22 @@ threats:
         status: implemented
       - description: >
           ACCEPTED RISK (SEC-035): accepts the cross-tenant timing/sharing channel
-          for deployments that ENABLE the cache, per an explicit operator decision.
-          Requires a per-deployment threat-model sign-off before serving
+          for deployments running a prefix cache, per an explicit operator
+          decision. Requires a per-deployment threat-model sign-off before serving
           multi-tenant traffic with the cache on. Status is "open" because this is
-          a documented accepted risk, not a code mitigation. Scope narrowed at
-          v0.7.5: the fleet default is DORMANT, so the acceptance now covers only
-          explicitly opted-in boxes — strictly less baseline exposure than the
-          2026-06 default-on posture this sign-off originally covered — and the
-          opted-in v2 posture is itself strictly safer than the legacy cache
-          (RAM-only, no disk artifact at all, plus salt scoping); the residual
-          in-process TTFT oracle is the same channel legacy ran with, so the
-          existing sign-off extends unweakened.
+          a documented accepted risk, not a code mitigation. Scope at v0.7.5:
+          the SSD tier is DEFAULT-ON, so the acceptance again covers the fleet
+          baseline (as it did under the 2026-06 default-on legacy posture) —
+          but the covered channel is strictly narrower than legacy: leak #2 is
+          CLOSED (HMAC-keyed names, vs legacy's plaintext tokenPrefixHash),
+          the at-rest window is TTL/LRU-bounded, salt scoping gives consumers
+          a per-request opt-out, per-donation gating caches only adoptable
+          long prefixes, and the kill switches (DARKBLOOM_PREFIX_CACHE=0 /
+          _SSD=0) survive restarts. The residual in-process TTFT oracle is
+          the same channel legacy ran with — durability extends it across
+          restarts within the 15-minute TTL, as accepted in the description —
+          so the existing sign-off extends to the SSD tier explicitly. The
+          resident RAM tier stays opt-in (dormant on the default fleet).
         status: open
       - description: >
           Per-deployment gating by trust level (e.g. force-off for shared/untrusted

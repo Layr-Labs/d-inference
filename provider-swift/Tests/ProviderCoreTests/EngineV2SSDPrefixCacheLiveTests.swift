@@ -74,7 +74,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
         }
         let gptoss = try #require(
             snapshot.model as? GPTOSSModel, "gpt-oss checkpoint must load as GPTOSSModel")
-        let eos = BatchScheduler.effectiveEOSTokenIds(
+        let eos = ModelEOSPolicy.effectiveEOSTokenIds(
             modelId: "gpt-oss-20b",
             modelType: "gpt_oss",
             base: snapshot.eosTokenIds,

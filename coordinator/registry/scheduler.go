@@ -1176,8 +1176,8 @@ func reportedFreeForLoadAdmits(catalogSizeGB float64, freeForLoadGB *float64) (a
 // Providers that report a token budget use budget-based admission;
 // legacy providers fall back to memory-based estimation.
 func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) bool {
+	requestTokens := int64(reqPromptTokens) + int64(reqMaxTokens)
 	if snap.activeTokenBudgetMax > 0 {
-		requestTokens := int64(reqPromptTokens) + int64(reqMaxTokens)
 		// Include coordinator-side pending tokens not yet reflected in the
 		// provider's heartbeat. Avoid double-counting active/queued backend
 		// budgets that are still present in the coordinator pending set until
@@ -1200,6 +1200,19 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 		// bytes/token (see pooled_admission.go). Reduces exactly to the per-slot
 		// check for single-model providers.
 		return pooledBudgetAdmits(snap, requestTokens)
+	}
+
+	// Cold-slot pooled gate: this model reports no budget slot (not loaded
+	// here), but when ANY resident slot reports a token budget the box still
+	// has its ONE shared KV pool, and this request lands in it after the
+	// load — so in-gap pending on a resident model must not be double-spendable
+	// by a cold request that skips the budget branch above. The reconstructed
+	// pool charges all-models coordinator pending plus this request; a cold
+	// model has no reported KV rate (snap.kvBytesPerToken == 0), so the check
+	// runs in token units. No-op for legacy providers with no budget slots at
+	// all (pool.total == 0).
+	if !pooledBudgetAdmits(snap, requestTokens) {
+		return false
 	}
 
 	if !snap.modelLoaded {

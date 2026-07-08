@@ -346,6 +346,88 @@ func TestPooledAdmissionByteDoubleSpendRealPath(t *testing.T) {
 	}
 }
 
+// TestFreeMemoryAdmitsColdModelChargesPool is the cold-slot pooled-gate
+// regression (pure-function form): the target model reports NO budget slot
+// (activeTokenBudgetMax == 0, not loaded here), so it skips the budget branch
+// entirely — but a resident co-model's slot reports the shared pool, and the
+// in-gap pending burst has already consumed it. The cold request must be
+// charged against the pool too, or it double-spends the same KV the resident
+// pending will occupy. Fails without the cold-path pooledBudgetAdmits call.
+func TestFreeMemoryAdmitsColdModelChargesPool(t *testing.T) {
+	slots := []protocol.BackendSlotCapacity{
+		{Model: "resident", ActiveTokenBudgetMax: 10_000},
+	}
+	mkSnap := func(pendingAllModels int) routingSnapshot {
+		return routingSnapshot{
+			// Snapshot for a COLD model: no slot, no budget, model not loaded.
+			pendingMaxTokensAllModels: pendingAllModels,
+			pooledTokenBudget:         providerPooledTokenBudget(slots),
+		}
+	}
+	if freeMemoryAdmits(mkSnap(10_000), 100, 1_900) {
+		t.Fatal("cold request admitted into a pool fully pending to a resident model (cold path skipped the pooled gate)")
+	}
+	// Control: with 4k of the 10k pool pending, the 2k cold request fits.
+	if !freeMemoryAdmits(mkSnap(4_000), 100, 1_900) {
+		t.Fatal("cold request rejected although the pool has 6k of headroom")
+	}
+}
+
+// TestPooledAdmissionColdModelDoubleSpendRealPath mirrors
+// TestPooledAdmissionCoResidencyDoubleSpend with the target model COLD: gemma
+// is advertised but has no backend slot, so its requests take the
+// non-budget admission path. An in-gap burst to the resident gpt-oss slot
+// consumes the whole shared pool; the cold gemma request must still be
+// rejected. Fails without the cold-path pooled gate in freeMemoryAdmits.
+func TestPooledAdmissionColdModelDoubleSpendRealPath(t *testing.T) {
+	reg := New(testLogger())
+	p := makeSchedulerProvider(t, reg, "shared-box", gptossBuild, 93)
+	addAdvertisedModel(p, gemmaBuild) // advertised, NOT loaded: no gemma slot
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 10_000
+	p.mu.Unlock()
+
+	// Burst the resident model: five requests × 2k tokens = the whole pool.
+	for i := 0; i < 5; i++ {
+		pr := &PendingRequest{
+			RequestID:             fmt.Sprintf("burst-%d", i),
+			Model:                 gptossBuild,
+			EstimatedPromptTokens: 100,
+			RequestedMaxTokens:    1_900,
+		}
+		if got := reg.ReserveProvider(gptossBuild, pr); got == nil {
+			t.Fatalf("burst request %d rejected; 5×2k must fit the 10k pool", i)
+		}
+	}
+	// Cold gemma within the same gap: no slot to check, but the pool is fully
+	// pending to gpt-oss — the post-load KV for this request does not exist.
+	if got := reg.ReserveProvider(gemmaBuild, &PendingRequest{
+		RequestID: "victim", Model: gemmaBuild, EstimatedPromptTokens: 100, RequestedMaxTokens: 1_900,
+	}); got != nil {
+		t.Fatalf("cold gemma admitted during the heartbeat gap — pool double-spend via the budget-less path (provider %q)", got.ID)
+	}
+
+	// Control: on a fresh box with only 4k pending, the cold request admits.
+	reg2 := New(testLogger())
+	p2 := makeSchedulerProvider(t, reg2, "shared-box-2", gptossBuild, 93)
+	addAdvertisedModel(p2, gemmaBuild)
+	p2.mu.Lock()
+	p2.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 10_000
+	p2.mu.Unlock()
+	for i := 0; i < 2; i++ {
+		if got := reg2.ReserveProvider(gptossBuild, &PendingRequest{
+			RequestID: fmt.Sprintf("light-%d", i), Model: gptossBuild, EstimatedPromptTokens: 100, RequestedMaxTokens: 1_900,
+		}); got == nil {
+			t.Fatalf("light burst request %d rejected", i)
+		}
+	}
+	if got := reg2.ReserveProvider(gemmaBuild, &PendingRequest{
+		RequestID: "fits", Model: gemmaBuild, EstimatedPromptTokens: 100, RequestedMaxTokens: 1_900,
+	}); got == nil {
+		t.Fatal("cold gemma rejected although the pool has 6k of headroom (cold pooled gate over-rejecting)")
+	}
+}
+
 // TestFreeMemoryAdmitsLegacyProviderUnchanged: providers that report no token
 // budget (ActiveTokenBudgetMax == 0) never reach the budget branch — the
 // legacy memory-estimation path is untouched by the pooled fields.

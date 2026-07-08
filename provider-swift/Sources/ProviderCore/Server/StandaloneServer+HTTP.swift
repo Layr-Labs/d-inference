@@ -147,7 +147,7 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 ),
                 message: error.localizedDescription
             )
-        } catch let error as VLMRequestInference.MediaError {
+        } catch let error as MediaIngest.MediaError {
             // Local HTTP (`darkbloom start --local`) must give the same
             // status contract as the coordinator WebSocket path: an
             // oversized/malformed/non-`data:` inline-media payload is a client

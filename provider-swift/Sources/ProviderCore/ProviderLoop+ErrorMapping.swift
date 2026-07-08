@@ -88,9 +88,9 @@ extension ProviderLoop {
         // VLM inline-media decode errors. All but the temp-file write are
         // client faults (a malformed/oversized/non-`data:` payload the caller
         // controls) → 400. `videoWriteFailed` is a provider-side IO failure
-        // → 500. These propagate up from `VLMRequestInference.stream`'s
+        // → 500. These propagate up from `MediaIngest.stream`'s
         // `continuation.finish(throwing:)` through the engine wrapper.
-        if let mediaErr = error as? VLMRequestInference.MediaError {
+        if let mediaErr = error as? MediaIngest.MediaError {
             switch mediaErr {
             case .malformedDataURI,
                 .base64DecodeFailed,

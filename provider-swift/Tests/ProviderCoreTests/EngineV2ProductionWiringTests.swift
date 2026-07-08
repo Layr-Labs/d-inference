@@ -1138,7 +1138,7 @@ struct EngineV2RequestRoutingTests {
             })
 
         // A real, round-trip-verified 1x1 PNG so hasMedia + media validation
-        // both engage (same fixture as VLMRequestInferenceTests).
+        // both engage (same fixture as MediaIngestTests).
         let tinyPNG =
             "data:image/png;base64,"
             + "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAAXNSR0IArs4c6QAAAERl"

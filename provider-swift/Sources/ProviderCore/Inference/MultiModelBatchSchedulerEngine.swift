@@ -263,7 +263,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // requests route through that bridge directly, but media requests
         // must pass through THIS branch first (the text tokenization below
         // silently discards image parts; media must never reach it).
-        if isVLM, let container, VLMRequestInference.hasMedia(request) {
+        if isVLM, let container, MediaIngest.hasMedia(request) {
             // Decode + validate inline media SYNCHRONOUSLY, before returning the
             // stream. A MediaError (oversized/malformed/non-`data:` payload) thrown
             // here propagates through this `async throws` to the caller — so both
@@ -285,7 +285,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // if it won't fit we reject with a retryable error instead of OOMing.
             // Released on every exit.
             let mediaReqId = "vlm-\(UUID().uuidString.prefix(12))"
-            let projectedBytes = VLMRequestInference.projectedDecodeBytes(request)
+            let projectedBytes = MediaIngest.projectedDecodeBytes(request)
             // Scheduler-free vision gate (v0.7.5): the per-slot
             // `VisionMemoryGate` carries the slot's fp16 KV rate + context
             // window and reserves against the same shared budget the old
@@ -299,7 +299,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // vision path bypasses the batched KV reservation, so charging only the
             // output tokens would under-count the prompt + vision tokens that also
             // occupy KV.
-            let kvTokens = VLMRequestInference.projectedKVTokens(
+            let kvTokens = MediaIngest.projectedKVTokens(
                 request, defaultMaxTokens: defaultMaxTokens,
                 contextLength: mediaGate.contextLength)
             let mediaReserved = await mediaGate.reserve(
@@ -313,7 +313,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     + "(media decode ~\(mib) MiB + generation KV) — retry after capacity frees")
             }
             do {
-                try await VLMRequestInference.validateMedia(request)
+                try await MediaIngest.validateMedia(request)
             } catch {
                 await mediaGate.release(requestId: mediaReqId)
                 await releaseBox.fire()
@@ -393,7 +393,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     await mediaGate.release(requestId: mediaReqId)
                     await releaseBox.fire()
                     throw CancellationError()
-                } catch let mediaError as VLMRequestInference.MediaError {
+                } catch let mediaError as MediaIngest.MediaError {
                     // Deterministic input fault (malformed/oversized media —
                     // the same class `validateMedia` rejects above). Fails
                     // identically on any provider, so it keeps its existing
@@ -433,37 +433,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 }
             }
 
-            // LEGACY wrapper path — reachable ONLY for VLM slots WITHOUT a
-            // v2 bridge (scheduled for deletion with the legacy engine).
-            let vlmStream = VLMRequestInference.stream(
-                container: container, request: request, defaultMaxTokens: defaultMaxTokens)
-            // Capture the gate so the stream task can release the media
-            // reservation; `VisionMemoryGate` is a Sendable value.
-            let mediaReleaseGate = mediaGate
-            return AsyncThrowingStream { continuation in
-                let task = Task {
-                    do {
-                        for try await event in vlmStream {
-                            if Task.isCancelled { break }
-                            continuation.yield(event)
-                        }
-                        await mediaReleaseGate.release(requestId: mediaReqId)
-                        await releaseBox.fire()
-                        continuation.finish()
-                    } catch {
-                        await mediaReleaseGate.release(requestId: mediaReqId)
-                        await releaseBox.fire()
-                        continuation.finish(throwing: error)
-                    }
-                }
-                continuation.onTermination = { @Sendable _ in
-                    task.cancel()
-                    Task {
-                        await mediaReleaseGate.release(requestId: mediaReqId)
-                        await releaseBox.fire()
-                    }
-                }
-            }
+            // ONE ENGINE (v0.7.5): media can only serve through a v2 bridge.
+            // A media request reaching a slot with NO bridge is a wiring bug
+            // — the same fail-loud backstop as the text path's, never a
+            // silent legacy serve (the legacy wrapper stream died with the
+            // legacy engine).
+            await mediaGate.release(requestId: mediaReqId)
+            await releaseBox.fire()
+            throw MultiModelBatchSchedulerEngineError.generationFailed(
+                "internal error: model '\(modelId)' has no serving engine for media (no v2 bridge)")
         }
 
         // If we reach here with media still present, the resolved model is NOT
@@ -472,7 +450,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // The batched text path below silently discards image/video parts, so
         // letting media fall through would answer a vision question from text
         // alone — a wrong, confusing result. Fail closed with a 4xx instead.
-        if VLMRequestInference.hasMedia(request) {
+        if MediaIngest.hasMedia(request) {
             await releaseBox.fire()
             throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(modelId)
         }

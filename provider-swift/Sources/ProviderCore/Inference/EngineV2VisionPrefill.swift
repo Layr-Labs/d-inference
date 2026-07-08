@@ -15,7 +15,7 @@
 // file builds that submission on the provider side:
 //
 //   1. decode media EXACTLY as the legacy path does
-//      (`VLMRequestInference.buildUserInput` — same caps, same errors;
+//      (`MediaIngest.buildUserInput` — same caps, same errors;
 //      inline videos materialize to temp files for AVFoundation and are
 //      removed before this construction returns);
 //   2. run the SAME `Gemma4Processor.prepare` the legacy path runs (same
@@ -224,7 +224,7 @@ public enum EngineV2VisionPrefill {
             // path.
             var tempFiles: [URL] = []
             defer { for url in tempFiles { try? FileManager.default.removeItem(at: url) } }
-            let userInput = try await VLMRequestInference.buildUserInput(
+            let userInput = try await MediaIngest.buildUserInput(
                 from: request, tempFiles: &tempFiles)
             let lmInput = try await ctx.processor.prepare(input: userInput)
             guard lmInput.image != nil || lmInput.video != nil else {

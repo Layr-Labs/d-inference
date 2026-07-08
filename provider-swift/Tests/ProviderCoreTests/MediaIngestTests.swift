@@ -57,7 +57,7 @@ private func expectInvalidURL(
         try body()
         Issue.record(
             "expected MediaError.invalidURL(\(expectedURI)) but no error was thrown")
-    } catch let error as VLMRequestInference.MediaError {
+    } catch let error as MediaIngest.MediaError {
         guard case .invalidURL(let uri) = error else {
             Issue.record("expected .invalidURL, got \(error)")
             return
@@ -72,7 +72,7 @@ private func expectInvalidURL(
 
 @Test("dataFromDataURI decodes a base64 image payload")
 func vlmDataFromDataURIBase64() throws {
-    let data = try VLMRequestInference.dataFromDataURI(tinyPNGDataURI)
+    let data = try MediaIngest.dataFromDataURI(tinyPNGDataURI)
     // PNG magic number: 89 50 4E 47 0D 0A 1A 0A
     let magic: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
     #expect(Array(data.prefix(8)) == magic)
@@ -81,7 +81,7 @@ func vlmDataFromDataURIBase64() throws {
 @Test("dataFromDataURI decodes a percent-encoded (non-base64) payload")
 func vlmDataFromDataURIPercentEncoded() throws {
     let uri = "data:text/plain,hello%20world"
-    let data = try VLMRequestInference.dataFromDataURI(uri)
+    let data = try MediaIngest.dataFromDataURI(uri)
     #expect(String(data: data, encoding: .utf8) == "hello world")
 }
 
@@ -90,21 +90,21 @@ func vlmDataFromDataURIStripsWhitespace() throws {
     // Inject newlines/spaces the way some clients line-wrap base64.
     let wrapped = "data:image/png;base64," + tinyPNGBase64.prefix(40) + "\n  "
         + tinyPNGBase64.dropFirst(40)
-    let data = try VLMRequestInference.dataFromDataURI(String(wrapped))
+    let data = try MediaIngest.dataFromDataURI(String(wrapped))
     #expect(data.prefix(4) == Data([0x89, 0x50, 0x4E, 0x47]))
 }
 
 @Test("dataFromDataURI throws on a malformed data: URI (no comma)")
 func vlmDataFromDataURIMalformedThrows() {
-    #expect(throws: VLMRequestInference.MediaError.self) {
-        _ = try VLMRequestInference.dataFromDataURI("data:image/png;base64")
+    #expect(throws: MediaIngest.MediaError.self) {
+        _ = try MediaIngest.dataFromDataURI("data:image/png;base64")
     }
 }
 
 @Test("dataFromDataURI throws on undecodable base64")
 func vlmDataFromDataURIBadBase64Throws() {
-    #expect(throws: VLMRequestInference.MediaError.self) {
-        _ = try VLMRequestInference.dataFromDataURI("data:image/png;base64,!!!not base64!!!")
+    #expect(throws: MediaIngest.MediaError.self) {
+        _ = try MediaIngest.dataFromDataURI("data:image/png;base64,!!!not base64!!!")
     }
 }
 
@@ -112,7 +112,7 @@ func vlmDataFromDataURIBadBase64Throws() {
 
 @Test("decodeImage decodes a base64 data: URI into a CIImage")
 func vlmDecodeImageDataURI() throws {
-    let image = try VLMRequestInference.decodeImage(tinyPNGDataURI)
+    let image = try MediaIngest.decodeImage(tinyPNGDataURI)
     guard case .ciImage(let ci) = image else {
         Issue.record("expected .ciImage, got \(image)")
         return
@@ -130,14 +130,14 @@ func vlmDecodeImageDataURI() throws {
 @Test("decodeImage rejects an http:// URI with invalidURL (no SSRF)")
 func vlmDecodeImageHTTPRejected() {
     expectInvalidURL("https://example.com/cat.png") {
-        _ = try VLMRequestInference.decodeImage("https://example.com/cat.png")
+        _ = try MediaIngest.decodeImage("https://example.com/cat.png")
     }
 }
 
 @Test("decodeImage rejects a file:// URI with invalidURL (no local-file read)")
 func vlmDecodeImageFileRejected() {
     expectInvalidURL("file:///etc/passwd") {
-        _ = try VLMRequestInference.decodeImage("file:///etc/passwd")
+        _ = try MediaIngest.decodeImage("file:///etc/passwd")
     }
 }
 
@@ -145,8 +145,8 @@ func vlmDecodeImageFileRejected() {
 func vlmDecodeImageGarbageThrows() {
     // Valid base64 but not a decodable image.
     let garbage = "data:image/png;base64," + Data("not an image".utf8).base64EncodedString()
-    #expect(throws: VLMRequestInference.MediaError.self) {
-        _ = try VLMRequestInference.decodeImage(garbage)
+    #expect(throws: MediaIngest.MediaError.self) {
+        _ = try MediaIngest.decodeImage(garbage)
     }
 }
 
@@ -156,7 +156,7 @@ func vlmDecodeImageGarbageThrows() {
 func vlmDecodeVideoDataURIWritesTempFile() async throws {
     var tempFiles: [URL] = []
     // A real, probeable 64x64 video passes the limits and is written + tracked.
-    let (video, _) = try await VLMRequestInference.decodeVideo(
+    let (video, _) = try await MediaIngest.decodeVideo(
         tinyMP4DataURI, tempFiles: &tempFiles)
     guard case .url(let url) = video else {
         Issue.record("expected .url, got \(video)")
@@ -177,7 +177,7 @@ func vlmDecodeVideoUnreadableMetadataRejected() async {
     var tempFiles: [URL] = []
     let uri = "data:video/mp4;base64,\(Data("not a real video".utf8).base64EncodedString())"
     await expectMediaTooLarge {
-        _ = try await VLMRequestInference.decodeVideo(uri, tempFiles: &tempFiles)
+        _ = try await MediaIngest.decodeVideo(uri, tempFiles: &tempFiles)
     }
     #expect(tempFiles.isEmpty)  // rejected -> temp file cleaned up, not tracked
 }
@@ -186,7 +186,7 @@ func vlmDecodeVideoUnreadableMetadataRejected() async {
 func vlmDecodeVideoHTTPRejected() async {
     var tempFiles: [URL] = []
     await expectInvalidURLAsync("https://example.com/clip.mp4") {
-        _ = try await VLMRequestInference.decodeVideo(
+        _ = try await MediaIngest.decodeVideo(
             "https://example.com/clip.mp4", tempFiles: &tempFiles)
     }
     // A rejected URI must not have spawned a temp file.
@@ -197,7 +197,7 @@ func vlmDecodeVideoHTTPRejected() async {
 func vlmDecodeVideoFileRejected() async {
     var tempFiles: [URL] = []
     await expectInvalidURLAsync("file:///etc/passwd") {
-        _ = try await VLMRequestInference.decodeVideo(
+        _ = try await MediaIngest.decodeVideo(
             "file:///etc/passwd", tempFiles: &tempFiles)
     }
     #expect(tempFiles.isEmpty)
@@ -217,7 +217,7 @@ func vlmHasMediaImage() {
                     .imageURL(tinyPNGDataURI),
                 ]))
         ])
-    #expect(VLMRequestInference.hasMedia(request))
+    #expect(MediaIngest.hasMedia(request))
 }
 
 @Test("hasMedia is true when a message carries a video_url part")
@@ -229,7 +229,7 @@ func vlmHasMediaVideo() {
                 role: .user,
                 content: .parts([.videoURL("https://example.com/clip.mp4")]))
         ])
-    #expect(VLMRequestInference.hasMedia(request))
+    #expect(MediaIngest.hasMedia(request))
 }
 
 @Test("hasMedia is false for a plain text request")
@@ -237,7 +237,7 @@ func vlmHasMediaTextFalse() {
     let request = OpenAIChatCompletionRequest(
         model: "vlm",
         messages: [.init(role: .user, content: .text("hello"))])
-    #expect(!VLMRequestInference.hasMedia(request))
+    #expect(!MediaIngest.hasMedia(request))
 }
 
 @Test("hasMedia is false for parts that are text-only")
@@ -247,7 +247,7 @@ func vlmHasMediaTextPartsFalse() {
         messages: [
             .init(role: .user, content: .parts([.text("hi"), .text(" there")]))
         ])
-    #expect(!VLMRequestInference.hasMedia(request))
+    #expect(!MediaIngest.hasMedia(request))
 }
 
 // MARK: - buildUserInput
@@ -267,7 +267,7 @@ func vlmBuildUserInputTextAndImage() async throws {
                 ])),
         ])
 
-    let userInput = try await VLMRequestInference.buildUserInput(from: request)
+    let userInput = try await MediaIngest.buildUserInput(from: request)
 
     // UserInput aggregates media across all chat messages.
     #expect(userInput.images.count == 1)
@@ -294,7 +294,7 @@ func vlmBuildUserInputTextOnly() async throws {
         model: "vlm",
         messages: [.init(role: .user, content: .text("just text"))])
 
-    let userInput = try await VLMRequestInference.buildUserInput(from: request)
+    let userInput = try await MediaIngest.buildUserInput(from: request)
     #expect(userInput.images.isEmpty)
     #expect(userInput.videos.isEmpty)
     guard case .chat(let messages) = userInput.prompt else {
@@ -313,12 +313,12 @@ func vlmBuildUserInputTextOnly() async throws {
 //   - the provider-side temp-file write failure → 500
 //   - media sent to a non-VLM model → 400
 // They also guard the propagation premise behind FIX F: these exact error
-// values are what `VLMRequestInference.stream` / the engine throw upward, and
+// values are what `MediaIngest.stream` / the engine throw upward, and
 // `mapInferenceErrorToStatus` is what ProviderLoop calls on them.
 
 @Test("client-fault MediaError cases map to HTTP 400")
 func vlmMediaErrorMapsTo400() {
-    let clientFaults: [VLMRequestInference.MediaError] = [
+    let clientFaults: [MediaIngest.MediaError] = [
         .invalidURL("file:///etc/passwd"),
         .malformedDataURI("missing ','"),
         .base64DecodeFailed,
@@ -335,7 +335,7 @@ func vlmMediaErrorMapsTo400() {
 
 @Test("videoWriteFailed (provider IO fault) maps to HTTP 500")
 func vlmVideoWriteFailedMapsTo500() {
-    let err = VLMRequestInference.MediaError.videoWriteFailed("disk full")
+    let err = MediaIngest.MediaError.videoWriteFailed("disk full")
     #expect(ProviderLoop.mapInferenceErrorToStatus(err) == 500)
 }
 
@@ -350,7 +350,7 @@ func vlmMediaErrorLocalizedDescription() {
     // FIX B: conforming to LocalizedError means the human-readable message
     // (not the generic Cocoa "operation couldn't be completed") reaches the
     // client via error.localizedDescription.
-    let err = VLMRequestInference.MediaError.invalidURL("file:///etc/passwd")
+    let err = MediaIngest.MediaError.invalidURL("file:///etc/passwd")
     #expect(err.localizedDescription == "media must be sent as an inline base64 data: URI (e.g. \"data:image/jpeg;base64,…\") on this end-to-end-encrypted endpoint; remote http(s):// and file:// URLs are rejected. Got: file:///etc/passwd")
     #expect(!err.localizedDescription.contains("couldn’t be completed"))
 }
@@ -363,7 +363,7 @@ private func expectMediaTooLarge(_ body: () async throws -> Void) async {
     do {
         try await body()
         Issue.record("expected MediaError.mediaTooLarge but no error was thrown")
-    } catch let error as VLMRequestInference.MediaError {
+    } catch let error as MediaIngest.MediaError {
         guard case .mediaTooLarge = error else {
             Issue.record("expected .mediaTooLarge, got \(error)")
             return
@@ -380,7 +380,7 @@ private func expectInvalidURLAsync(
     do {
         try await body()
         Issue.record("expected MediaError.invalidURL(\(expectedURI)) but nothing was thrown")
-    } catch let error as VLMRequestInference.MediaError {
+    } catch let error as MediaIngest.MediaError {
         guard case .invalidURL(let uri) = error else {
             Issue.record("expected .invalidURL, got \(error)")
             return
@@ -398,13 +398,13 @@ func vlmDecodeImageRejectsOverPixelCap() async {
     // hardware a real 40000x40000 bomb (256 Mpx–1.6 Gpx) takes this same branch
     // — measured peak 1.78 GB at 16000^2 on the real path before this fix.
     await expectMediaTooLarge {
-        _ = try VLMRequestInference.decodeImage(tinyPNGDataURI, maxImagePixels: 0)
+        _ = try MediaIngest.decodeImage(tinyPNGDataURI, maxImagePixels: 0)
     }
 }
 
 @Test("decodeImage accepts an image within the per-image cap (no regression)")
 func vlmDecodeImageWithinPixelCapPasses() throws {
-    let image = try VLMRequestInference.decodeImage(tinyPNGDataURI, maxImagePixels: 100)
+    let image = try MediaIngest.decodeImage(tinyPNGDataURI, maxImagePixels: 100)
     guard case .ciImage = image else {
         Issue.record("expected a decoded .ciImage")
         return
@@ -413,10 +413,10 @@ func vlmDecodeImageWithinPixelCapPasses() throws {
 
 @Test("imagePixelCount reads dimensions from the header (no raster decode)")
 func vlmImagePixelCountReadsHeader() throws {
-    let data = try VLMRequestInference.dataFromDataURI(tinyPNGDataURI)
-    #expect(VLMRequestInference.imagePixelCount(data) == 1)  // 1x1
+    let data = try MediaIngest.dataFromDataURI(tinyPNGDataURI)
+    #expect(MediaIngest.imagePixelCount(data) == 1)  // 1x1
     // Non-image bytes can't be sized -> nil (decodeImage then fails closed).
-    #expect(VLMRequestInference.imagePixelCount(Data("not an image".utf8)) == nil)
+    #expect(MediaIngest.imagePixelCount(Data("not an image".utf8)) == nil)
 }
 
 @Test("dataFromDataURI rejects a payload over the decoded-byte cap")
@@ -424,7 +424,7 @@ func vlmDataFromDataURIRejectsOverByteCap() async {
     // 0-byte cap: any non-empty payload is over-cap, rejected from the base64
     // length before the decoded buffer is ever allocated.
     await expectMediaTooLarge {
-        _ = try VLMRequestInference.dataFromDataURI(tinyPNGDataURI, maxMediaDecodedBytes: 0)
+        _ = try MediaIngest.dataFromDataURI(tinyPNGDataURI, maxMediaDecodedBytes: 0)
     }
 }
 
@@ -443,7 +443,7 @@ func vlmBuildUserInputRejectsAggregatePixels() async {
                 ]))
         ])
     await expectMediaTooLarge {
-        _ = try await VLMRequestInference.buildUserInput(from: request, maxRequestImagePixels: 1)
+        _ = try await MediaIngest.buildUserInput(from: request, maxRequestImagePixels: 1)
     }
 }
 
@@ -456,23 +456,23 @@ func vlmBuildUserInputWithinAggregatePasses() async throws {
                 role: .user,
                 content: .parts([.imageURL(tinyPNGDataURI), .imageURL(tinyPNGDataURI)]))
         ])
-    _ = try await VLMRequestInference.buildUserInput(from: request, maxRequestImagePixels: 10)
+    _ = try await MediaIngest.buildUserInput(from: request, maxRequestImagePixels: 10)
 }
 
 @Test("resolveMaxPixels honors a valid env override and falls back otherwise")
 func vlmResolveMaxPixels() {
     let key = "DARKBLOOM_MAX_IMAGE_MEGAPIXELS"
     #expect(
-        VLMRequestInference.resolveMaxPixels(
+        MediaIngest.resolveMaxPixels(
             env: key, defaultMegapixels: 100, environment: [key: "8"]) == 8_000_000)
     #expect(
-        VLMRequestInference.resolveMaxPixels(
+        MediaIngest.resolveMaxPixels(
             env: key, defaultMegapixels: 100, environment: [:]) == 100_000_000)
     #expect(
-        VLMRequestInference.resolveMaxPixels(
+        MediaIngest.resolveMaxPixels(
             env: key, defaultMegapixels: 100, environment: [key: "-1"]) == 100_000_000)
     #expect(
-        VLMRequestInference.resolveMaxPixels(
+        MediaIngest.resolveMaxPixels(
             env: key, defaultMegapixels: 100, environment: [key: "abc"]) == 100_000_000)
 }
 
@@ -484,17 +484,17 @@ func vlmResolveMaxPixelsClampsHuge() {
     // provider at static init. The fix saturates to Int.max.
     let key = "DARKBLOOM_MAX_IMAGE_MEGAPIXELS"
     #expect(
-        VLMRequestInference.resolveMaxPixels(
+        MediaIngest.resolveMaxPixels(
             env: key, defaultMegapixels: 100, environment: [key: "1e308"]) == Int.max)
     // A value whose ×1e6 lands exactly at the 2^63 boundary also saturates,
     // not traps.
-    let boundaryMP = String(VLMRequestInference.intMaxAsDouble / 1_000_000)
+    let boundaryMP = String(MediaIngest.intMaxAsDouble / 1_000_000)
     #expect(
-        VLMRequestInference.resolveMaxPixels(
+        MediaIngest.resolveMaxPixels(
             env: key, defaultMegapixels: 100, environment: [key: boundaryMP]) == Int.max)
     // A normal large-but-representable value still scales correctly.
     #expect(
-        VLMRequestInference.resolveMaxPixels(
+        MediaIngest.resolveMaxPixels(
             env: key, defaultMegapixels: 100, environment: [key: "1000"]) == 1_000_000_000)
 }
 
@@ -502,13 +502,13 @@ func vlmResolveMaxPixelsClampsHuge() {
 func vlmResolveMaxBytes() {
     let key = "DARKBLOOM_MAX_MEDIA_MIB"
     #expect(
-        VLMRequestInference.resolveMaxBytes(
+        MediaIngest.resolveMaxBytes(
             env: key, defaultMiB: 25, environment: [key: "4"]) == 4 * 1024 * 1024)
     #expect(
-        VLMRequestInference.resolveMaxBytes(
+        MediaIngest.resolveMaxBytes(
             env: key, defaultMiB: 25, environment: [:]) == 25 * 1024 * 1024)
     #expect(
-        VLMRequestInference.resolveMaxBytes(
+        MediaIngest.resolveMaxBytes(
             env: key, defaultMiB: 25, environment: [key: "0"]) == 25 * 1024 * 1024)
 }
 
@@ -519,38 +519,38 @@ func vlmResolveMaxBytesClampsOverflow() {
     let key = "DARKBLOOM_MAX_MEDIA_MIB"
     let hugeMiB = String(Int.max)
     #expect(
-        VLMRequestInference.resolveMaxBytes(
+        MediaIngest.resolveMaxBytes(
             env: key, defaultMiB: 25, environment: [key: hugeMiB]) == Int.max)
     // Just past the overflow threshold (Int.max / 1 MiB + 1) also saturates.
     let overThreshold = String((Int.max / (1024 * 1024)) + 1)
     #expect(
-        VLMRequestInference.resolveMaxBytes(
+        MediaIngest.resolveMaxBytes(
             env: key, defaultMiB: 25, environment: [key: overThreshold]) == Int.max)
 }
 
 @Test("secondsString renders extreme/non-finite durations without trapping on Int(_:)")
 func vlmSecondsStringNeverTraps() {
     // Whole numbers print cleanly (the common "600s" case).
-    #expect(VLMRequestInference.secondsString(600) == "600")
-    #expect(VLMRequestInference.secondsString(0) == "0")
+    #expect(MediaIngest.secondsString(600) == "600")
+    #expect(MediaIngest.secondsString(0) == "0")
     // Fractional values keep one decimal.
-    #expect(VLMRequestInference.secondsString(12.5) == "12.5")
+    #expect(MediaIngest.secondsString(12.5) == "12.5")
     // A duration far beyond Int.max seconds (untrusted video metadata) must NOT
     // trap — it would if formatted via `Int(duration.seconds)`. Just assert it
     // produces some non-empty string without crashing.
-    #expect(!VLMRequestInference.secondsString(1e300).isEmpty)
-    #expect(!VLMRequestInference.secondsString(Double.infinity).isEmpty)
-    #expect(!VLMRequestInference.secondsString(Double.nan).isEmpty)
+    #expect(!MediaIngest.secondsString(1e300).isEmpty)
+    #expect(!MediaIngest.secondsString(Double.infinity).isEmpty)
+    #expect(!MediaIngest.secondsString(Double.nan).isEmpty)
 }
 
 @Test("media-limit defaults are the documented values")
 func vlmMediaLimitDefaults() {
-    #expect(VLMRequestInference.maxImagePixels == 100_000_000)
-    #expect(VLMRequestInference.maxRequestImagePixels == 384_000_000)
-    #expect(VLMRequestInference.maxMediaDecodedBytes == 25 * 1024 * 1024)
-    #expect(VLMRequestInference.maxVideoDurationSeconds == 600)
-    #expect(VLMRequestInference.maxVideosPerRequest == 8)
-    #expect(VLMRequestInference.maxRequestVideoFramePixels == 384_000_000)
+    #expect(MediaIngest.maxImagePixels == 100_000_000)
+    #expect(MediaIngest.maxRequestImagePixels == 384_000_000)
+    #expect(MediaIngest.maxMediaDecodedBytes == 25 * 1024 * 1024)
+    #expect(MediaIngest.maxVideoDurationSeconds == 600)
+    #expect(MediaIngest.maxVideosPerRequest == 8)
+    #expect(MediaIngest.maxRequestVideoFramePixels == 384_000_000)
 }
 
 /// Build a real PNG of the given dimensions (uniform gray) via ImageIO — to
@@ -575,7 +575,7 @@ func vlmDataFromDataURIRejectsOverByteCapPercentEncoded() async {
     // The non-base64 (percent-encoded) branch enforces the cap after decode.
     let uri = "data:text/plain," + String(repeating: "x", count: 64)
     await expectMediaTooLarge {
-        _ = try VLMRequestInference.dataFromDataURI(uri, maxMediaDecodedBytes: 8)
+        _ = try MediaIngest.dataFromDataURI(uri, maxMediaDecodedBytes: 8)
     }
 }
 
@@ -583,7 +583,7 @@ func vlmDataFromDataURIRejectsOverByteCapPercentEncoded() async {
 func vlmDecodeVideoRejectsOverByteCap() async {
     var tempFiles: [URL] = []
     await expectMediaTooLarge {
-        _ = try await VLMRequestInference.decodeVideo(
+        _ = try await MediaIngest.decodeVideo(
             tinyMP4DataURI, tempFiles: &tempFiles, maxMediaDecodedBytes: 0)
     }
     #expect(tempFiles.isEmpty)  // rejected before any temp file is written
@@ -595,7 +595,7 @@ func vlmDecodeVideoRejectsOverFrameCap() async {
     // from track metadata (naturalSize) without decoding frames.
     var tempFiles: [URL] = []
     await expectMediaTooLarge {
-        _ = try await VLMRequestInference.decodeVideo(
+        _ = try await MediaIngest.decodeVideo(
             tinyMP4DataURI, tempFiles: &tempFiles, maxFramePixels: 1000)
     }
     #expect(tempFiles.isEmpty)  // rejected -> temp file cleaned up, not tracked
@@ -604,7 +604,7 @@ func vlmDecodeVideoRejectsOverFrameCap() async {
 @Test("decodeVideo accepts a video within the per-frame cap (no regression)")
 func vlmDecodeVideoWithinFrameCapPasses() async throws {
     var tempFiles: [URL] = []
-    let (video, _) = try await VLMRequestInference.decodeVideo(
+    let (video, _) = try await MediaIngest.decodeVideo(
         tinyMP4DataURI, tempFiles: &tempFiles, maxFramePixels: 10_000)
     guard case .url(let url) = video else {
         Issue.record("expected .url, got \(video)")
@@ -617,10 +617,10 @@ func vlmDecodeVideoWithinFrameCapPasses() async throws {
 @Test("imagePixelCount + decodeImage reject a real multi-pixel image over the cap")
 func vlmDecodeImageRealMultiPixelRejected() async throws {
     let uri = makePNGDataURI(width: 200, height: 150)  // 30000 px, ~120 KB raster
-    let data = try VLMRequestInference.dataFromDataURI(uri)
-    #expect(VLMRequestInference.imagePixelCount(data) == 30_000)
+    let data = try MediaIngest.dataFromDataURI(uri)
+    #expect(MediaIngest.imagePixelCount(data) == 30_000)
     await expectMediaTooLarge {
-        _ = try VLMRequestInference.decodeImage(uri, maxImagePixels: 1_000)
+        _ = try MediaIngest.decodeImage(uri, maxImagePixels: 1_000)
     }
 }
 
@@ -641,7 +641,7 @@ func vlmBuildUserInputRejectsVideoCount() async {
                 ]))
         ])
     await expectMediaTooLarge {
-        _ = try await VLMRequestInference.buildUserInput(
+        _ = try await MediaIngest.buildUserInput(
             from: request, tempFiles: &tempFiles, maxVideosPerRequest: 2)
     }
     for u in tempFiles { try? FileManager.default.removeItem(at: u) }
@@ -655,43 +655,10 @@ func vlmBuildUserInputRejectsVideoFramePixels() async {
         model: "vlm",
         messages: [.init(role: .user, content: .parts([.videoURL(tinyMP4DataURI)]))])
     await expectMediaTooLarge {
-        _ = try await VLMRequestInference.buildUserInput(
+        _ = try await MediaIngest.buildUserInput(
             from: request, tempFiles: &tempFiles, maxRequestVideoFramePixels: 1)
     }
     for u in tempFiles { try? FileManager.default.removeItem(at: u) }
 }
 
-// Sampling-penalty wiring: the VLM path must forward repetition, presence, AND
-// frequency penalties into the engine (previously only repetition was wired, so
-// presence/frequency silently had no effect on image/video requests).
-@Test("generateParameters forwards repetition, presence, and frequency penalties")
-func testGenerateParametersForwardsAllPenalties() {
-    let request = OpenAIChatCompletionRequest(
-        model: "gemma-4-26b",
-        messages: [.init(role: .user, content: .text("describe"))],
-        temperature: 0.8,
-        maxTokens: 64,
-        presencePenalty: 0.5,
-        frequencyPenalty: 0.7,
-        repetitionPenalty: 1.3
-    )
-    let p = VLMRequestInference.generateParameters(for: request, defaultMaxTokens: 100)
-    #expect(p.maxTokens == 64)
-    #expect(p.temperature == 0.8)
-    #expect(p.repetitionPenalty == 1.3)
-    #expect(p.presencePenalty == 0.5)
-    #expect(p.frequencyPenalty == 0.7)
-}
 
-@Test("generateParameters leaves penalties unset and applies default max tokens")
-func testGenerateParametersDefaults() {
-    let request = OpenAIChatCompletionRequest(
-        model: "gemma-4-26b",
-        messages: [.init(role: .user, content: .text("describe"))]
-    )
-    let p = VLMRequestInference.generateParameters(for: request, defaultMaxTokens: 100)
-    #expect(p.maxTokens == 100)
-    #expect(p.repetitionPenalty == nil)
-    #expect(p.presencePenalty == nil)
-    #expect(p.frequencyPenalty == nil)
-}

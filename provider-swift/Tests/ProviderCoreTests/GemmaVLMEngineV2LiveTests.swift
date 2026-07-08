@@ -46,7 +46,7 @@ import Testing
 @testable import ProviderCore
 
 // A real, round-trip-verified 1x1 PNG (red pixel) — same fixture as
-// VLMRequestInferenceTests. The Gemma4 processor upsizes it to the minimum
+// MediaIngestTests. The Gemma4 processor upsizes it to the minimum
 // patch grid, so it exercises the full vision tower cheaply.
 private let interleaveTinyPNGDataURI =
     "data:image/png;base64,"

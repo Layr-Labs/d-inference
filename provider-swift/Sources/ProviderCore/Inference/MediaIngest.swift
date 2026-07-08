@@ -1,19 +1,21 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Non-batched vision-language inference path.
+// Media ingest for multimodal (image/video) requests.
 //
-// The continuous-batching engine (`BatchScheduler` / `BatchedEngine`)
-// carries only `[Int]` token arrays, so it cannot represent image/video
-// pixels. Multimodal requests for a VLM model are served here instead:
-// we build a `UserInput` carrying the decoded media, `prepare` it into an
-// `LMInput`, and stream `container.generate(...)`. This mirrors exactly
-// the prepare → generate path proven by `Sources/vlm-smoke/main.swift`.
+// Everything between an OpenAI request's inline `data:` media parts and a
+// model-ready `UserInput`: decode (CIImage / AVFoundation temp files),
+// decompression-bomb caps (per-image + per-request pixels, byte/second/
+// count limits), up-front validation (`validateMedia` — throws the 4xx
+// before any stream starts), memory projections for the vision gate
+// (`projectedDecodeBytes` / `projectedKVTokens`), and media classification
+// (`hasMedia` / `hasVideo`).
 //
-// Text-only requests never reach this file — they stay on the batched
-// engine. Routing lives in
-// `MultiModelBatchSchedulerEngine.streamChatCompletion`, which calls
-// `VLMRequestInference.hasMedia` and, when true for a VLM model,
-// delegates to `VLMRequestInference.stream`.
+// Extracted from the legacy `VLMRequestInference` when its non-batched
+// prepare→generate stream path died with the legacy engine (v0.7.5
+// one-engine). Consumers: `EngineV2VisionPrefill.buildUserInput` (the v2
+// media prefill), `MultiModelBatchSchedulerEngine.streamChatCompletion`
+// (routing + vision-gate reservations), and the error mappers (MediaError
+// → 4xx).
 
 import AVFoundation
 import CoreImage
@@ -22,11 +24,9 @@ import ImageIO
 import MLXLMCommon
 import MLXLMServer
 
-/// Namespace for the non-batched VLM (image/video) inference path.
-///
-/// Pure functions + one streaming entry point; holds no state. The
-/// container is owned by `ProviderLoop`'s `ModelSlot` and passed in.
-public enum VLMRequestInference {
+/// Namespace for media ingest: decode, caps, validation, projections.
+/// Pure functions; holds no state.
+public enum MediaIngest {
 
     /// Errors surfaced while decoding inline media from a request. These
     /// finish the stream via `continuation.finish(throwing:)` so the
@@ -106,15 +106,10 @@ public enum VLMRequestInference {
         return false
     }
 
-    /// Build the engine sampling parameters from an OpenAI request. Forwards all
-    /// sampling penalties — repetition, presence, and frequency — so they take
-    /// effect on image/video (VLM) requests, matching the text/batched engine.
-    /// The penalty processors apply only for non-identity values (repetition ≠ 1,
-    /// presence/frequency ≠ 0); identities are no-ops.
     /// The max output-token bound this request will actually generate with —
     /// the consumer's `max_tokens` if set, else the model's default. The KV
-    /// reservation for the vision path sizes the generation cache from this, so
-    /// it must match what `generateParameters` feeds the generator exactly.
+    /// reservation for the vision path sizes the generation cache from this,
+    /// matching what the engine's translation feeds the generator.
     static func resolveMaxOutputTokens(
         for request: OpenAIChatCompletionRequest, defaultMaxTokens: Int
     ) -> Int {
@@ -199,45 +194,20 @@ public enum VLMRequestInference {
         return overflow ? Int.max : total
     }
 
-    static func generateParameters(
-        for request: OpenAIChatCompletionRequest, defaultMaxTokens: Int
-    ) -> GenerateParameters {
-        GenerateParameters(
-            maxTokens: resolveMaxOutputTokens(for: request, defaultMaxTokens: defaultMaxTokens),
-            temperature: request.temperature ?? 0,
-            topP: request.topP ?? 1.0,
-            topK: request.topK ?? 0,
-            repetitionPenalty: request.repetitionPenalty,
-            presencePenalty: request.presencePenalty,
-            frequencyPenalty: request.frequencyPenalty
-        )
-    }
+    // MARK: - Up-front validation
 
-    // MARK: - Streaming
-
-    /// Stream a multimodal completion through the container's
-    /// `prepare`/`generate` vision path.
-    ///
-    /// Emits the same `MLXServerGenerationEvent` shape as the batched
-    /// engine so the surrounding HTTP/SSE plumbing is identical:
-    /// `.content` chunks during generation, then a final `.info` carrying
-    /// token counts and timing. Inline-video temp files are removed when
-    /// the stream ends (normal completion, error, or cancellation).
     /// Validate all inline media for a request UP FRONT, throwing `MediaError`
     /// synchronously on any oversized/malformed/non-`data:` payload (or video-cap
     /// violation). Callers MUST call this (and propagate the throw) BEFORE
     /// returning a streaming response, so the correct 4xx is surfaced instead of
-    /// a 200 SSE body that only errors mid-iteration — `stream` builds its own
-    /// `UserInput` inside the generation task (UserInput isn't Sendable, so it
-    /// can't cross the task boundary), which is why validation is a separate
-    /// pass here rather than handing the decoded input through.
+    /// a 200 SSE body that only errors mid-iteration.
     ///
-    /// This runs the same decode path as `stream` (`buildUserInput`) purely for
-    /// its throwing side-effects and discards the result; any inline-video temp
-    /// file it writes is removed before returning. The decode work is bounded by
-    /// the very caps it enforces (≤ per-image / aggregate pixels, ≤ byte cap), so
-    /// the up-front pass can't itself be a DoS, and the eventual rebuild inside
-    /// `stream` re-validates identically.
+    /// This runs the decode path (`buildUserInput`) purely for its throwing
+    /// side-effects and discards the result; any inline-video temp file it
+    /// writes is removed before returning. The decode work is bounded by the
+    /// very caps it enforces (≤ per-image / aggregate pixels, ≤ byte cap), so
+    /// the up-front pass can't itself be a DoS, and the eventual rebuild in
+    /// the v2 media prefill re-validates identically.
     public static func validateMedia(
         _ request: OpenAIChatCompletionRequest,
         maxImagePixels: Int = Self.maxImagePixels,
@@ -252,106 +222,6 @@ public enum VLMRequestInference {
             maxRequestImagePixels: maxRequestImagePixels,
             maxVideosPerRequest: maxVideosPerRequest,
             maxRequestVideoFramePixels: maxRequestVideoFramePixels)
-    }
-
-    public static func stream(
-        container: ModelContainer,
-        request: OpenAIChatCompletionRequest,
-        defaultMaxTokens: Int
-    ) -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                // Inline `data:` videos are materialized to temp files for
-                // AVFoundation; track them so we can clean up on exit. Media was
-                // already validated up front by `validateMedia` (so an oversized
-                // payload surfaced its 4xx before this stream was returned); the
-                // rebuild here re-runs the same decode to produce the UserInput
-                // (which isn't Sendable and so can't cross the task boundary).
-                var tempFiles: [URL] = []
-                defer {
-                    for url in tempFiles {
-                        try? FileManager.default.removeItem(at: url)
-                    }
-                }
-
-                let userInput: UserInput
-                do {
-                    userInput = try await buildUserInput(from: request, tempFiles: &tempFiles)
-                } catch {
-                    continuation.finish(throwing: error)
-                    return
-                }
-
-                do {
-                    // Capture the prompt-clock origin BEFORE `prepare` so the
-                    // reported `promptTime` includes media decode / resize /
-                    // tokenization, matching the batched + server engines
-                    // (which start their clock before any prep work). Capturing
-                    // it after `prepare` would undercount prompt latency.
-                    let startedAt = Date()
-                    let lmInput = try await container.prepare(input: userInput)
-
-                    let params = generateParameters(
-                        for: request, defaultMaxTokens: defaultMaxTokens)
-
-                    let genStream = try await container.generate(
-                        input: lmInput, parameters: params)
-
-                    var promptTokens = 0
-                    var completionTokens = 0
-                    var firstTokenAt: Date?
-                    var lastTokenAt: Date?
-                    // Default to "stop"; overwritten from the engine's
-                    // GenerateCompletionInfo so we report the real finish
-                    // reason (e.g. "length" when maxTokens is hit) instead of
-                    // a hardcoded value.
-                    var stopReason = "stop"
-
-                    for await gen in genStream {
-                        if Task.isCancelled {
-                            continuation.finish()
-                            return
-                        }
-                        switch gen {
-                        case .chunk(let text):
-                            if firstTokenAt == nil { firstTokenAt = Date() }
-                            lastTokenAt = Date()
-                            if !text.isEmpty {
-                                continuation.yield(.content(text))
-                            }
-                        case .info(let info):
-                            promptTokens = info.promptTokenCount
-                            completionTokens = info.generationTokenCount
-                            stopReason = openAIFinishReason(info.stopReason)
-                        case .toolCall(let toolCall):
-                            continuation.yield(.toolCall(toolCall))
-                        }
-                    }
-
-                    let promptTime = (firstTokenAt ?? startedAt)
-                        .timeIntervalSince(startedAt)
-                    let generationTime = (lastTokenAt ?? firstTokenAt ?? startedAt)
-                        .timeIntervalSince(firstTokenAt ?? startedAt)
-                    continuation.yield(
-                        .info(
-                            ServerGenerationInfo(
-                                promptTokens: promptTokens,
-                                completionTokens: completionTokens,
-                                promptTime: max(0, promptTime),
-                                generationTime: max(0, generationTime),
-                                stopReason: stopReason
-                            )
-                        )
-                    )
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { @Sendable _ in
-                task.cancel()
-            }
-        }
     }
 
     // MARK: - UserInput construction
@@ -927,20 +797,4 @@ public enum VLMRequestInference {
         return data
     }
 
-    // MARK: - Stop-reason mapping
-
-    /// Map a `GenerateStopReason` to the OpenAI `finish_reason` string.
-    ///
-    /// MLXLMServer ships an equivalent `GenerateStopReason.openAIFinishReason`
-    /// but it is `internal` to that module, so we mirror its mapping here to
-    /// keep the same wire contract as the batched + server engines: `.length`
-    /// ⇒ `"length"`, everything else (`.stop`, `.cancelled`) ⇒ `"stop"`.
-    static func openAIFinishReason(_ reason: GenerateStopReason) -> String {
-        switch reason {
-        case .length:
-            return "length"
-        case .stop, .cancelled:
-            return "stop"
-        }
-    }
 }

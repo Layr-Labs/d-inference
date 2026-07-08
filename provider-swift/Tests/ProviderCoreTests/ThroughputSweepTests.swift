@@ -201,10 +201,10 @@ struct ThroughputSweepTilingTests {
 
 @Suite("scheduler prefill benchmark helpers")
 struct SchedulerPrefillBenchmarkTests {
-    @Test("strategy parser accepts fixed chunks and adaptive")
-    func strategyParser() {
-        let parsed = SchedulerPrefillBenchmark.parseStrategies("fixed:256, fixed:512, adaptive, bad, fixed:0")
-        #expect(parsed == [.fixed(256), .fixed(512), .adaptive])
-        #expect(parsed.map(\.label) == ["fixed:256", "fixed:512", "adaptive"])
+    @Test("the one-engine harness reports the cbv2 strategy label")
+    func strategyLabel() {
+        // The legacy fixed-chunk/adaptive strategy machinery died with the
+        // legacy engine; CBv2 chunks prefill engine-internally.
+        #expect(SchedulerPrefillBenchmark.strategyLabel == "cbv2")
     }
 }

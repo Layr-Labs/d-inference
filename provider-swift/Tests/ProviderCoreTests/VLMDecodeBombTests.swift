@@ -149,7 +149,7 @@ private func expectMediaTooLarge(
     do {
         try await body()
         Issue.record("expected MediaError.mediaTooLarge but no error was thrown")
-    } catch let error as VLMRequestInference.MediaError {
+    } catch let error as MediaIngest.MediaError {
         guard case .mediaTooLarge = error else {
             Issue.record("expected .mediaTooLarge, got \(error)")
             return
@@ -175,7 +175,7 @@ func vlmBombGeneratorProducesHeaderReadableTinyPNG() throws {
 
     // ImageIO reads the declared dimensions from the header WITHOUT decoding the
     // raster — this is the exact mechanism the provider's guard relies on.
-    #expect(VLMRequestInference.imagePixelCount(data) == 4_000_000)
+    #expect(MediaIngest.imagePixelCount(data) == 4_000_000)
 }
 
 // MARK: - The bomb is rejected before the raster is allocated
@@ -188,7 +188,7 @@ func vlmDecodeImageRejectsRealBomb() async {
     // 40000² / 1.6 Gpx bomb at ~0 RSS — see the measurement table above.)
     let uri = PNGBomb.dataURI(width: 2000, height: 2000)
     await expectMediaTooLarge {
-        _ = try VLMRequestInference.decodeImage(uri, maxImagePixels: 1_000_000)
+        _ = try MediaIngest.decodeImage(uri, maxImagePixels: 1_000_000)
     }
 }
 
@@ -198,7 +198,7 @@ func vlmDecodeImageAcceptsBombWithinCap() throws {
     // normally — proving the reject is about size, not a malformed-file false
     // positive. 2000x2000 = 4 Mpx, decodes to ~16 MB (CI-affordable).
     let uri = PNGBomb.dataURI(width: 2000, height: 2000)
-    let image = try VLMRequestInference.decodeImage(uri, maxImagePixels: 8_000_000)
+    let image = try MediaIngest.decodeImage(uri, maxImagePixels: 8_000_000)
     guard case .ciImage(let ci) = image else {
         Issue.record("expected a decoded .ciImage")
         return
@@ -220,7 +220,7 @@ func vlmBuildUserInputRejectsAggregateBombBeforeDecode() async {
             .init(role: .user, content: .parts([.imageURL(uri), .imageURL(uri)]))
         ])
     await expectMediaTooLarge {
-        _ = try await VLMRequestInference.buildUserInput(
+        _ = try await MediaIngest.buildUserInput(
             from: request, maxImagePixels: 8_000_000, maxRequestImagePixels: 5_000_000)
     }
 }
@@ -239,7 +239,7 @@ func vlmValidateMediaThrowsUpFront() async {
         model: "vlm",
         messages: [.init(role: .user, content: .parts([.imageURL(uri)]))])
     await expectMediaTooLarge {
-        try await VLMRequestInference.validateMedia(request, maxImagePixels: 1_000_000)
+        try await MediaIngest.validateMedia(request, maxImagePixels: 1_000_000)
     }
 }
 
@@ -252,5 +252,5 @@ func vlmValidateMediaAcceptsWithinCap() async throws {
         messages: [.init(role: .user, content: .parts([
             .text("describe"), .imageURL(PNGBomb.dataURI(width: 64, height: 64)),
         ]))])
-    try await VLMRequestInference.validateMedia(request)
+    try await MediaIngest.validateMedia(request)
 }

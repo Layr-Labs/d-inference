@@ -32,7 +32,7 @@ import Testing
 @testable import ProviderCore
 
 // A real, round-trip-verified 1x1 PNG (red pixel) — same fixture as
-// VLMRequestInferenceTests; passes `validateMedia`'s real decode.
+// MediaIngestTests; passes `validateMedia`'s real decode.
 private let tinyPNGDataURI =
     "data:image/png;base64,"
     + "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAAXNSR0IArs4c6QAAAERl"
@@ -41,7 +41,7 @@ private let tinyPNGDataURI =
     + "AElFTkSuQmCC"
 
 // A real, round-trip-verified 64x64 H.264 mp4 (3 solid-gray frames) — same
-// fixture as VLMRequestInferenceTests; passes `validateMedia`'s real
+// fixture as MediaIngestTests; passes `validateMedia`'s real
 // AVFoundation metadata probe, so video-bearing requests reach the v2
 // routing branch in these tests.
 private let tinyMP4DataURI =
@@ -459,23 +459,23 @@ struct EngineV2VisionSpanCarvingTests {
 
 // MARK: - Media-kind classification
 
-@Suite("VLMRequestInference.hasVideo + EngineV2VisionPrefill.mediaKind")
+@Suite("MediaIngest.hasVideo + EngineV2VisionPrefill.mediaKind")
 struct MediaKindClassificationTests {
     @Test("image-only request has no video and classifies as .image")
     func imageOnly() {
-        #expect(!VLMRequestInference.hasVideo(imageRequest()))
+        #expect(!MediaIngest.hasVideo(imageRequest()))
         #expect(EngineV2VisionPrefill.mediaKind(of: imageRequest()) == .image)
     }
 
     @Test("video part is detected; video/mixed classify correctly")
     func videoDetected() {
         let video = imageRequest(parts: [.videoURL("data:video/mp4;base64,AAAA")])
-        #expect(VLMRequestInference.hasVideo(video))
+        #expect(MediaIngest.hasVideo(video))
         #expect(EngineV2VisionPrefill.mediaKind(of: video) == .video)
         let mixed = imageRequest(parts: [
             .imageURL(tinyPNGDataURI), .videoURL("data:video/mp4;base64,AAAA"),
         ])
-        #expect(VLMRequestInference.hasVideo(mixed))
+        #expect(MediaIngest.hasVideo(mixed))
         #expect(EngineV2VisionPrefill.mediaKind(of: mixed) == .mixed)
     }
 
@@ -740,7 +740,7 @@ struct EngineV2VisionRoutingTests {
         let telemetry = VisionTelemetrySink()
         let plumbing = EngineV2VisionPlumbing(
             prepare: { _, _ in
-                throw VLMRequestInference.MediaError.mediaTooLarge("test-cap")
+                throw MediaIngest.MediaError.mediaTooLarge("test-cap")
             },
             emitTelemetry: telemetry.callback()
         )
@@ -752,7 +752,7 @@ struct EngineV2VisionRoutingTests {
             _ = try await collectContent(
                 try await router.streamChatCompletion(request: imageRequest()))
             Issue.record("expected MediaError throw")
-        } catch let error as VLMRequestInference.MediaError {
+        } catch let error as MediaIngest.MediaError {
             #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
         } catch {
             Issue.record("expected MediaError, got \(error)")
@@ -933,7 +933,7 @@ struct EngineV2VisionRoutingTests {
             _ = try await collectContent(
                 try await router.streamChatCompletion(request: request))
             Issue.record("expected MediaError throw")
-        } catch let error as VLMRequestInference.MediaError {
+        } catch let error as MediaIngest.MediaError {
             #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
         } catch {
             Issue.record("expected MediaError, got \(error)")

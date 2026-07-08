@@ -11,7 +11,7 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 @Test func projectedDecodeBytesIsZeroForTextOnlyRequest() {
     let req = OpenAIChatCompletionRequest(
         model: "m", messages: [.init(role: .user, content: .text("hello, no media"))])
-    #expect(VLMRequestInference.projectedDecodeBytes(req) == 0)
+    #expect(MediaIngest.projectedDecodeBytes(req) == 0)
 }
 
 @Test func projectedDecodeBytesScalesWithDeclaredPixels() {
@@ -19,8 +19,8 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     let uri = PNGBomb.dataURI(width: 1000, height: 1000)
     let req = OpenAIChatCompletionRequest(
         model: "m", messages: [.init(role: .user, content: .parts([.imageURL(uri)]))])
-    let expected = UInt64(1000 * 1000) * 4 * UInt64(VLMRequestInference.decodeOverheadFactor)
-    #expect(VLMRequestInference.projectedDecodeBytes(req) == expected)
+    let expected = UInt64(1000 * 1000) * 4 * UInt64(MediaIngest.decodeOverheadFactor)
+    #expect(MediaIngest.projectedDecodeBytes(req) == expected)
 }
 
 @Test func projectedDecodeBytesSumsAcrossImages() {
@@ -31,8 +31,8 @@ private let gib: UInt64 = 1024 * 1024 * 1024
         messages: [.init(role: .user, content: .parts([
             .text("describe both"), .imageURL(uri), .imageURL(uri)]))])
     let perImage = UInt64(800 * 600)
-    let expected = perImage * 2 * 4 * UInt64(VLMRequestInference.decodeOverheadFactor)
-    #expect(VLMRequestInference.projectedDecodeBytes(req) == expected)
+    let expected = perImage * 2 * 4 * UInt64(MediaIngest.decodeOverheadFactor)
+    #expect(MediaIngest.projectedDecodeBytes(req) == expected)
 }
 
 @Test func projectedDecodeBytesUsesPerImageCapWhenHeaderUnreadable() {
@@ -41,9 +41,9 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     let uri = "data:image/png;base64,QUJD"  // "ABC" — not a valid PNG
     let req = OpenAIChatCompletionRequest(
         model: "m", messages: [.init(role: .user, content: .parts([.imageURL(uri)]))])
-    let capPixels = UInt64(VLMRequestInference.maxImagePixels)
-    let expected = capPixels * 4 * UInt64(VLMRequestInference.decodeOverheadFactor)
-    #expect(VLMRequestInference.projectedDecodeBytes(req) == expected)
+    let capPixels = UInt64(MediaIngest.maxImagePixels)
+    let expected = capPixels * 4 * UInt64(MediaIngest.decodeOverheadFactor)
+    #expect(MediaIngest.projectedDecodeBytes(req) == expected)
 }
 
 @Test func projectedDecodeBytesClampsImageSumToAggregateCap() {
@@ -51,15 +51,15 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     // aggregate clamp the sum would blow past the request-wide image ceiling
     // validateMedia enforces. The projection must clamp to maxRequestImagePixels.
     let uri = "data:image/png;base64,QUJD"  // unreadable -> per-image cap each
-    let perImageCap = VLMRequestInference.maxImagePixels
-    let aggCap = VLMRequestInference.maxRequestImagePixels
+    let perImageCap = MediaIngest.maxImagePixels
+    let aggCap = MediaIngest.maxRequestImagePixels
     // Enough images that the raw sum exceeds the aggregate cap.
     let count = (aggCap / perImageCap) + 3
     let parts: [OpenAIContentPart] = (0..<count).map { _ in .imageURL(uri) }
     let req = OpenAIChatCompletionRequest(
         model: "m", messages: [.init(role: .user, content: .parts(parts))])
-    let expected = UInt64(aggCap) * 4 * UInt64(VLMRequestInference.decodeOverheadFactor)
-    #expect(VLMRequestInference.projectedDecodeBytes(req) == expected)
+    let expected = UInt64(aggCap) * 4 * UInt64(MediaIngest.decodeOverheadFactor)
+    #expect(MediaIngest.projectedDecodeBytes(req) == expected)
 }
 
 @Test func projectedDecodeBytesChargesVideoAggregateOncePerRequest() {
@@ -73,11 +73,11 @@ private let gib: UInt64 = 1024 * 1024 * 1024
         let parts: [OpenAIContentPart] = (0..<n).map { _ in .videoURL(videoURI) }
         let req = OpenAIChatCompletionRequest(
             model: "m", messages: [.init(role: .user, content: .parts(parts))])
-        return VLMRequestInference.projectedDecodeBytes(req)
+        return MediaIngest.projectedDecodeBytes(req)
     }
     let expectedAggregate =
-        UInt64(VLMRequestInference.maxRequestVideoFramePixels) * 4
-        * UInt64(VLMRequestInference.decodeOverheadFactor)
+        UInt64(MediaIngest.maxRequestVideoFramePixels) * 4
+        * UInt64(MediaIngest.decodeOverheadFactor)
     #expect(projForVideos(1) == expectedAggregate)
     #expect(projForVideos(3) == expectedAggregate)  // NOT 3x — aggregate, charged once
     #expect(projForVideos(8) == expectedAggregate)
@@ -124,12 +124,12 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     // Consumer-set max_tokens wins.
     let withMax = OpenAIChatCompletionRequest(
         model: "m", messages: [.init(role: .user, content: .text("hi"))], maxTokens: 321)
-    #expect(VLMRequestInference.resolveMaxOutputTokens(for: withMax, defaultMaxTokens: 1024) == 321)
+    #expect(MediaIngest.resolveMaxOutputTokens(for: withMax, defaultMaxTokens: 1024) == 321)
     // Omitted max_tokens falls back to the model default — the SAME value the
     // generator uses, so the KV reservation matches actual generation.
     let noMax = OpenAIChatCompletionRequest(
         model: "m", messages: [.init(role: .user, content: .text("hi"))])
-    #expect(VLMRequestInference.resolveMaxOutputTokens(for: noMax, defaultMaxTokens: 1024) == 1024)
+    #expect(MediaIngest.resolveMaxOutputTokens(for: noMax, defaultMaxTokens: 1024) == 1024)
 }
 
 // MARK: - projectedKVTokens (full KV span: prompt + vision + output)
@@ -143,10 +143,10 @@ private let gib: UInt64 = 1024 * 1024 * 1024
         model: "m",
         messages: [.init(role: .user, content: .parts([.text("hi"), .imageURL(uri)]))],
         maxTokens: 100)
-    let tokens = VLMRequestInference.projectedKVTokens(
+    let tokens = MediaIngest.projectedKVTokens(
         req, defaultMaxTokens: 1024, contextLength: 0)
     // >= vision tokens for the image + the 100 output tokens.
-    #expect(tokens >= VLMRequestInference.visionTokensPerImage + 100)
+    #expect(tokens >= MediaIngest.visionTokensPerImage + 100)
     // And strictly greater than output-only (the old, buggy sizing).
     #expect(tokens > 100)
 }
@@ -163,16 +163,16 @@ private let gib: UInt64 = 1024 * 1024 * 1024
         messages: [.init(role: .user, content: .parts([.text("describe"), .videoURL(videoURI)]))],
         maxTokens: 25)
     // contextLength 0 = "unknown" → no clamp, so the full per-frame span shows.
-    let tokens = VLMRequestInference.projectedKVTokens(
+    let tokens = MediaIngest.projectedKVTokens(
         req, defaultMaxTokens: 1024, contextLength: 0)
     // The per-video charge scales with every sampled frame (32 × per-frame).
     #expect(
-        VLMRequestInference.visionTokensPerVideo
-            == VLMRequestInference.maxVideoFramesSampled * VLMRequestInference.visionTokensPerImage)
+        MediaIngest.visionTokensPerVideo
+            == MediaIngest.maxVideoFramesSampled * MediaIngest.visionTokensPerImage)
     // KV span covers every sampled frame's soft tokens + the 25 output tokens…
-    #expect(tokens >= VLMRequestInference.visionTokensPerVideo + 25)
+    #expect(tokens >= MediaIngest.visionTokensPerVideo + 25)
     // …and strictly out-reserves a single-frame charge (the under-reservation bug).
-    #expect(tokens > VLMRequestInference.visionTokensPerImage + 25)
+    #expect(tokens > MediaIngest.visionTokensPerImage + 25)
 }
 
 @Test func projectedKVTokensClampsPromptPlusVisionToContext() {
@@ -184,7 +184,7 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     let req = OpenAIChatCompletionRequest(
         model: "m", messages: [.init(role: .user, content: .parts(parts))], maxTokens: 50)
     let ctx = 4096
-    let tokens = VLMRequestInference.projectedKVTokens(
+    let tokens = MediaIngest.projectedKVTokens(
         req, defaultMaxTokens: 1024, contextLength: ctx)
     // 64 × 1024 vision tokens = 65536 >> 4096 ctx → clamped to ctx, + 50 output.
     #expect(tokens == ctx + 50)
@@ -196,9 +196,9 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     let req = OpenAIChatCompletionRequest(
         model: "m", messages: [.init(role: .user, content: .text("hello there"))],
         maxTokens: 10)
-    let tokens = VLMRequestInference.projectedKVTokens(
+    let tokens = MediaIngest.projectedKVTokens(
         req, defaultMaxTokens: 1024, contextLength: 0)
     // "hello there" = 11 utf8 bytes / 3 = 3 text tokens, + 10 output = 13.
-    #expect(tokens == 11 / VLMRequestInference.textCharsPerToken + 10)
-    #expect(tokens < VLMRequestInference.visionTokensPerImage)  // no vision charge
+    #expect(tokens == 11 / MediaIngest.textCharsPerToken + 10)
+    #expect(tokens < MediaIngest.visionTokensPerImage)  // no vision charge
 }

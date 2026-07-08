@@ -21,7 +21,7 @@
 //       greedy determinism (same clip + prompt twice ⇒ identical);
 //       embedding steering (an all-red clip vs an all-blue clip with the
 //       same prompt produce different completions). The LEGACY reference —
-//       the still-present `VLMRequestInference.stream` wrapper path — is
+//       the still-present `MediaIngest.stream` wrapper path — is
 //       forced by handing the harness `bridge: nil` for that one request
 //       (a slot without a v2 bridge is the only remaining legacy-media
 //       route after the v0.7.5 fail-loud change), and its greedy output for

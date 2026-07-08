@@ -236,13 +236,13 @@ private struct ThrowingResponder<E: Error>: HTTPResponder {
 }
 
 @Test func corsResponderMapsVLMMediaErrorTo400OnLocalPath() async throws {
-    // Regression: the coordinator WebSocket path maps VLMRequestInference.MediaError
+    // Regression: the coordinator WebSocket path maps MediaIngest.MediaError
     // to a 400 (ProviderLoop.mapInferenceErrorToStatus), but the local HTTP path's
     // CORSResponder previously caught only MultiModelBatchSchedulerEngineError /
     // MLXOpenAIServiceError, so a MediaError from the VLM media-cap escaped as the
     // framework's generic 500. CORSResponder now catches it too. Drive the
     // responder directly with a stub that throws the oversize-media error.
-    let mediaErr = VLMRequestInference.MediaError.mediaTooLarge(
+    let mediaErr = MediaIngest.MediaError.mediaTooLarge(
         "image is 1600000000 px; per-image cap is 100000000 px")
     let responder = CORSResponder(inner: ThrowingResponder(error: mediaErr))
 
@@ -262,7 +262,7 @@ private struct ThrowingResponder<E: Error>: HTTPResponder {
         "CORS allow-origin must be set on the rendered error response")
     // Client-fault video write IO failure stays a 500.
     let writeFail = CORSResponder(
-        inner: ThrowingResponder(error: VLMRequestInference.MediaError.videoWriteFailed("disk full")))
+        inner: ThrowingResponder(error: MediaIngest.MediaError.videoWriteFailed("disk full")))
     let writeResp = try await writeFail.respond(to: request, context: context)
     #expect(writeResp.status == .internalServerError,
         "provider-side videoWriteFailed must stay a 500")

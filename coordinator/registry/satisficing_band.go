@@ -33,8 +33,14 @@ import (
 //     BackendCapacity have no reliable TTFT estimate and are excluded from
 //     the band when a deadline exists (they stay selectable via the
 //     cheapest-cost fallback, exactly as today). Requests without a deadline
-//     (pr.MaxTTFTMs <= 0, e.g. soft-gate mode or queue drains) satisfy the
-//     TTFT criterion vacuously.
+//     (pr.MaxTTFTMs <= 0 — soft-gate mode, the production default, and queue
+//     drains) have no TTFT criterion to predict against, so the band is
+//     restricted to WARM (weights-resident) candidates instead: without that,
+//     a cold box passing the decode floor would weighted-randomly beat a warm
+//     one and force an avoidable 15–60s model load the deadline branch would
+//     have priced in via the slot-state penalty. Cold candidates stay
+//     selectable via the cheapest-cost fallback, where statePenalty already
+//     makes them a last resort.
 //   - predicted decode: projectedPerRequestDecodeTPS(snapshot) >=
 //     pr.MinDecodeTPS — the same projection the decode-floor quality
 //     preference uses. Vacuous when no floor is stamped.
@@ -108,6 +114,17 @@ func candidateInSatisficingBand(c *routingCandidate, pr *PendingRequest, marginM
 		if c.breakdown.TTFTMs > pr.MaxTTFTMs-marginMs {
 			return false
 		}
+	} else if !c.snapshot.modelLoaded {
+		// No deadline (soft TTFT mode — the production default — or a queue
+		// drain): there is no TTFT criterion to predict against, so the band
+		// must not treat a COLD candidate as "satisfying" — a cold pick forces
+		// a 15–60s model load the deadline branch above would have priced in
+		// via the slot-state penalty inside breakdown.TTFTMs. Restrict the
+		// band to WARM (weights-resident) candidates; cold boxes stay
+		// reachable via the cheapest-cost fallback, whose statePenalty already
+		// makes them a last resort — exactly today's behavior. Growing warm
+		// capacity is the warm-pool controller's job, not the band's.
+		return false
 	}
 	if pr.MinDecodeTPS > 0 && projectedPerRequestDecodeTPS(c.snapshot) < pr.MinDecodeTPS {
 		return false
@@ -148,6 +165,13 @@ func (r *Registry) pickSatisficingBandLocked(band []*routingCandidate) *routingC
 		weights[i] = w
 		total += w
 	}
+	// math/rand on purpose: this is load-spreading jitter among candidates that
+	// ALL already passed every security/trust/admission gate — not a security
+	// boundary — matching the near-tie randomization in
+	// selectBestCandidateScanLocked (scheduler.go, rand.Intn). An adversary who
+	// could predict the stream gains nothing (they cannot steer a request to a
+	// provider the gates would not have admitted), and crypto/rand would add a
+	// syscall per selection on the routing hot path.
 	x := rand.Float64() * total
 	for i, c := range band {
 		x -= weights[i]

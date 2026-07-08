@@ -118,6 +118,40 @@ func TestSatisficingBandNonMembersOnlyWhenBandEmpty(t *testing.T) {
 	}
 }
 
+// TestSatisficingBandExcludesColdWhenNoDeadline (review fix): with the default
+// soft TTFT mode, public requests carry MaxTTFTMs == 0, so the band has no TTFT
+// criterion — without the warm-only restriction, a COLD (slotState "unknown")
+// candidate passing the decode floor enters the band and weighted-randomly
+// beats the warm provider, forcing avoidable 15–60s model loads. The cold box
+// stays reachable via the cheapest-cost fallback only (where statePenalty makes
+// it a last resort). Fails without the modelLoaded check in
+// candidateInSatisficingBand (the cold box wins ~half of the trials).
+func TestSatisficingBandExcludesColdWhenNoDeadline(t *testing.T) {
+	t.Setenv(satisficingBandEnv, "true")
+	reg := New(testLogger())
+	makeSchedulerProvider(t, reg, "warm-box", gptossBuild, 20)
+	cold := makeSchedulerProvider(t, reg, "cold-box", gptossBuild, 100)
+	// Make the fast box COLD for gpt-oss: advertises it, no backend slot.
+	cold.mu.Lock()
+	cold.BackendCapacity.Slots = nil
+	cold.mu.Unlock()
+
+	for i := 0; i < 100; i++ {
+		pr := &PendingRequest{
+			RequestID:             fmt.Sprintf("no-deadline-%d", i),
+			Model:                 gptossBuild,
+			EstimatedPromptTokens: 500,
+			RequestedMaxTokens:    2000,
+			// Soft TTFT mode: no per-request deadline stamped.
+			MaxTTFTMs:    0,
+			MinDecodeTPS: 15,
+		}
+		if id := reserveOnce(t, reg, pr); id != "warm-box" {
+			t.Fatalf("trial %d: selected %s, want warm-box — a cold candidate must not enter the band when no deadline exists", i, id)
+		}
+	}
+}
+
 // TestSatisficingBandWeightsShiftWithRecentServes: weight = 1/(1+recentServes).
 // A provider seeded with ~9 recent serves (weight ≈ 0.1) is picked ~10× less
 // often than never-served peers (weight 1). Expected share 0.1/2.1 ≈ 4.8% of

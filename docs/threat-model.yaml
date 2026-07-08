@@ -1503,7 +1503,7 @@ threats:
   - id: T-041
     trust_boundary: TB-007
     stride: Information_Disclosure
-    title: Cross-tenant prefix-cache sharing + TTFT timing oracle (default-on)
+    title: Cross-tenant prefix-cache sharing + TTFT timing oracle (dormant by default as of v0.7.5; opt-in)
     description: >
       The encrypted prefix KV cache (DARKBLOOM_PREFIX_CACHE) is shared across all
       consumers on a provider — the provider cannot see tenant identity, so a KV
@@ -1540,6 +1540,18 @@ threats:
       never resolve each other; a consumer who sets a scope opts their
       prefixes out of cross-tenant reuse (and out of the oracle for those
       prefixes) without needing the operator-level kill switch.
+      SHIP DECISION for v0.7.5: the cache ships DORMANT BY DEFAULT — resident
+      RAM is reserved for live serving, so DARKBLOOM_PREFIX_CACHE reverts to
+      OPT-IN (=1 enables; absent/0/anything else keeps it off, on BOTH
+      engines via the shared PrefixCachePolicy gate). The baseline fleet
+      exposure of this channel is therefore ZERO on v0.7.5; the exposure
+      exists only on boxes an operator explicitly opts in, where the posture
+      is exactly as described above (still RAM-only on v2, salt-scoped,
+      SEC-035 for the residual oracle). The planned successor — an encrypted
+      SSD offload tier (write-behind donation, read-through adoption,
+      HMAC-keyed prefix hashes) that caches without occupying serving RAM —
+      MUST be reviewed under this finding before it ships (it reintroduces
+      an at-rest artifact, i.e. the leak #2 class).
     adversaries: [ADV-002]
     affected_assets: [A-001]
     affected_files:
@@ -1557,11 +1569,13 @@ threats:
           sharing or TTFT timing channel.
         status: implemented
       - description: >
-          Opt-out switch: DARKBLOOM_PREFIX_CACHE=0 (also false/off/no) fully disables
-          the cache (engine runs with prefixCache: nil → no sharing, no exposure).
-          Untrusted multi-tenant deployments MUST set this. As of v0.7.5 the same
-          switch governs the v2 PrefixCacheV2 (shared gate helper:
-          PrefixCachePolicy.isEnabled) — one opt-out covers both engines.
+          DORMANT BY DEFAULT (v0.7.5): DARKBLOOM_PREFIX_CACHE is an OPT-IN gate —
+          only an explicit affirmative (=1/true/yes/on) enables the cache; absent,
+          0, or any unrecognized value keeps it off (fail-safe direction is OFF, so
+          a typo can never opt a box in). One shared gate
+          (PrefixCachePolicy.isEnabled) governs both engines, so the default fleet
+          carries NO resident prefix cache and no exposure from this channel.
+          Untrusted multi-tenant deployments simply stay at the default.
         status: implemented
       - description: >
           v2 path is RAM-only by construction (PrefixCacheV2 holds donated KV in
@@ -1577,15 +1591,18 @@ threats:
           share the unsalted namespace), so it narrows — not closes — leak #1.
         status: implemented
       - description: >
-          ACCEPTED RISK (SEC-035): default-on accepts the cross-tenant timing/
-          sharing channel as the baseline for trusted / single-tenant deployments,
-          per an explicit operator decision. Requires a per-deployment threat-model
-          sign-off before serving multi-tenant traffic. Status is "open" because
-          this is a documented accepted risk, not a code mitigation. The v0.7.5
-          v2 posture is strictly safer than the legacy cache this sign-off
-          covered (RAM-only — no disk artifact at all — plus salt scoping);
-          the residual in-process TTFT oracle is the same channel legacy runs
-          with today, so the existing sign-off extends to v2 unweakened.
+          ACCEPTED RISK (SEC-035): accepts the cross-tenant timing/sharing channel
+          for deployments that ENABLE the cache, per an explicit operator decision.
+          Requires a per-deployment threat-model sign-off before serving
+          multi-tenant traffic with the cache on. Status is "open" because this is
+          a documented accepted risk, not a code mitigation. Scope narrowed at
+          v0.7.5: the fleet default is DORMANT, so the acceptance now covers only
+          explicitly opted-in boxes — strictly less baseline exposure than the
+          2026-06 default-on posture this sign-off originally covered — and the
+          opted-in v2 posture is itself strictly safer than the legacy cache
+          (RAM-only, no disk artifact at all, plus salt scoping); the residual
+          in-process TTFT oracle is the same channel legacy ran with, so the
+          existing sign-off extends unweakened.
         status: open
       - description: >
           Per-deployment gating by trust level (e.g. force-off for shared/untrusted
@@ -1610,9 +1627,11 @@ threats:
       (cacheScope → CBv2Request.cacheSalt), or — legacy path, until deletion — to
       BatchScheduler.makePrefixCacheBackingIfEnabled or what the plaintext file
       metadata exposes (tokenPrefixHash, tokenCount) must be reviewed against
-      this cross-tenant channel. Adding ANY persistence tier to PrefixCacheV2
-      re-opens leak #2 and its HMAC obligation. Removing the opt-out raises this
-      exposure.
+      this cross-tenant channel. Flipping the v0.7.5 DORMANT default back to
+      enabled-by-default re-raises the fleet baseline exposure and needs a fresh
+      SEC-035 sign-off. The encrypted SSD offload tier (the planned successor)
+      and ANY other persistence added to PrefixCacheV2 re-opens leak #2 and its
+      HMAC obligation and must be reviewed under this finding before shipping.
 
   # ── TB-008: Coordinator → Payments ───────────────────────────
 

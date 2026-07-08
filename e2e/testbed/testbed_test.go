@@ -97,6 +97,14 @@ func TestDefaultConfigs(t *testing.T) {
 	assert.Equal(t, "org/custom-model", DefaultTestModelID())
 	t.Setenv("DARKBLOOM_TESTBED_MODEL", "")
 
+	// Secondary (multi-model) fixture: gemma-4-26B QAT by default,
+	// overridable via DARKBLOOM_TESTBED_MODEL_B.
+	t.Setenv("DARKBLOOM_TESTBED_MODEL_B", "")
+	assert.Equal(t, "mlx-community/gemma-4-26B-A4B-it-qat-4bit", SecondaryTestModelID())
+	t.Setenv("DARKBLOOM_TESTBED_MODEL_B", "org/custom-model-b")
+	assert.Equal(t, "org/custom-model-b", SecondaryTestModelID())
+	t.Setenv("DARKBLOOM_TESTBED_MODEL_B", "")
+
 	sc := DefaultSuiteConfig()
 	assert.Equal(t, 1, len(sc.ModelSpecs))
 	assert.Equal(t, DefaultTestModelID(), sc.ModelSpecs[0].ModelID)

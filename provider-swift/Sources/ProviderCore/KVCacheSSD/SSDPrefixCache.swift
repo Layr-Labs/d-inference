@@ -498,7 +498,13 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             lock.withLock {
                 for i in newBlockIndices { inFlightWrites.remove(tags16[i]) }
             }
-            statsBox.add(donationsDropped: newBlockIndices.count)
+            // Attribute to the write cap (same accounting as the consumer's
+            // per-block tryConsume drop) so `rateLimited` stats stay
+            // truthful now that this pre-check intercepts most
+            // cap-exhausted donations.
+            statsBox.add(
+                donationsDropped: newBlockIndices.count,
+                writeRateLimited: newBlockIndices.count)
             return
         }
 

@@ -19,18 +19,6 @@ extension ProviderLoop {
     // MARK: - Main Run Loop
 
     public func run() async throws {
-        // FIRST, before any engine/model code can latch the library's
-        // `CompiledDecode.isEnabled` static: force the legacy engine's
-        // compiled decode OFF unless the operator opted in via config
-        // (`legacy_compiled_decode = true`) or set the env var explicitly
-        // (which always wins). Keeps release behavior identical to prod
-        // v0.6.30 — see `LegacyCompiledDecodeGate`.
-        if LegacyCompiledDecodeGate.apply(
-            configEnabled: loopConfig.config.backend.legacyCompiledDecode)
-        {
-            logger.info("Legacy compiled decode disabled (legacy_compiled_decode=false, env unset)")
-        }
-
         // v0.7.5 one-engine: the v2 selection knobs are retired — warn
         // operators still setting them so nobody believes a kill switch
         // exists that doesn't. Selection is unconditional; rollback is
@@ -332,8 +320,6 @@ extension ProviderLoop {
             await cancelAllInflight()
         }
         await coordinator.shutdown()
-        // Phase 3: shutdown the global disk accountant.
-        await diskAccountant.shutdown()
         while !modelSlots.isEmpty {
             if let unloading = modelsUnloading.first {
                 await waitForModelUnload(unloading)

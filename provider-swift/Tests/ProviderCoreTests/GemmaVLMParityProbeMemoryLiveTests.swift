@@ -62,8 +62,12 @@ struct GemmaVLMParityProbeMemoryLiveTests {
         let modelID: String
         let directory: URL
         let container: ModelContainer
-        let scheduler: BatchScheduler
         let model: any LanguageModel
+        /// Scheduler-free sizing snapshot (v0.7.5 one-engine): the fp16 KV
+        /// rate + weight bytes production feeds the load gate, the re-slice,
+        /// and `makeEngineV2BridgeForSlot` (the legacy `BatchScheduler`
+        /// surfaces this test used to read are deleted).
+        let sizing: SlotSizingSnapshot
     }
 
     private func loadFirstCachedVLMSlot() async throws -> LoadedVLMSlot {
@@ -85,12 +89,14 @@ struct GemmaVLMParityProbeMemoryLiveTests {
 
         let container = try await VLMModelFactory.shared.loadContainer(
             from: directory, using: LocalTokenizerLoader())
-        let scheduler = BatchScheduler(
-            maxConcurrentRequests: 4,
-            pendingTimeout: .seconds(300),
-            defaultMaxTokens: 256
-        )
-        await scheduler.loadModel(container: container, modelId: modelID)
+        // Same post-load sizing pass production runs (ProviderLoop+
+        // ModelLoading): weight walk + engine-truth fp16 KV rate. Pure
+        // reads — nothing here may allocate MLX state, so it cannot
+        // perturb the growth baselines below.
+        let sizing = await SlotSizingSnapshot.build(
+            container: container,
+            modelPath: directory,
+            fallbackDefaultMaxTokens: 256)
         let snapshot = await container.perform { ctx in
             EngineV2ModelSnapshot(
                 model: ctx.model,
@@ -101,8 +107,8 @@ struct GemmaVLMParityProbeMemoryLiveTests {
             modelID: modelID,
             directory: directory,
             container: container,
-            scheduler: scheduler,
-            model: snapshot.model
+            model: snapshot.model,
+            sizing: sizing
         )
     }
 
@@ -116,13 +122,12 @@ struct GemmaVLMParityProbeMemoryLiveTests {
     )
     func parityProbeMemoryHygieneAndBudgetAdmission() async throws {
         let slot = try await loadFirstCachedVLMSlot()
-        do {
-            try await runBody(slot)
-        } catch {
-            await slot.scheduler.unloadModel()
-            throw error
-        }
-        await slot.scheduler.unloadModel()
+        // No unload hop anymore: the multi-GB residency dies with `slot` at
+        // scope exit (the container is the only retainer); trim the probe's
+        // pool garbage on every exit path so the next serialized live suite
+        // starts from a clean pool.
+        defer { MLX.Memory.clearCache() }
+        try await runBody(slot)
     }
 
     private func runBody(_ slot: LoadedVLMSlot) async throws {
@@ -198,7 +203,7 @@ struct GemmaVLMParityProbeMemoryLiveTests {
         //    (2 KiB prompt + 4096 max tokens at the slot's fp16 KV rate) —
         //    pre-fix this is exactly the reservation that failed 100% of the
         //    time from the first request.
-        let fp16Rate = await slot.scheduler.fp16KVBytesPerToken
+        let fp16Rate = slot.sizing.fp16KVBytesPerToken
         let totalBytes: UInt64 = 64 * 1024 * 1024 * 1024
         let budget = GlobalKVCacheBudget(
             memorySnapshot: {
@@ -228,23 +233,24 @@ struct GemmaVLMParityProbeMemoryLiveTests {
         #expect(await budget.reservationIDsForTesting().isEmpty)
 
         // 4. CAPACITY CONSISTENCY: the v2 static ceiling is sized from the
-        //    SCHEDULER's weight figure (the exact input production
-        //    makeEngineV2BridgeForSlot passes — ProviderLoop+EngineV2), NOT
-        //    from live MLX usage, so this genuinely catches the
-        //    over-advertising shape: if extraction/probe retained any
-        //    non-weight state, the weights-derived ceiling would exceed the
-        //    gate's live headroom by exactly that retained amount. With the
-        //    fused cache deleted, the divergence must fit inside the same
-        //    2 GiB retained-state bar as step 1 (rope tables, compiled-graph
-        //    constants), and can never be negative beyond rounding (live use
-        //    cannot be below the resident weights).
+        //    SIZING SNAPSHOT's weight figure (the exact input production
+        //    makeEngineV2BridgeForSlot passes — ProviderLoop+EngineV2 reads
+        //    `sizing.weightsBytes`), NOT from live MLX usage, so this
+        //    genuinely catches the over-advertising shape: if
+        //    extraction/probe retained any non-weight state, the
+        //    weights-derived ceiling would exceed the gate's live headroom
+        //    by exactly that retained amount. With the fused cache deleted,
+        //    the divergence must fit inside the same 2 GiB retained-state
+        //    bar as step 1 (rope tables, compiled-graph constants), and can
+        //    never be negative beyond rounding (live use cannot be below
+        //    the resident weights).
         MLX.Stream().synchronize()
         MLX.Memory.clearCache()
-        let schedulerWeightBytes = await slot.scheduler.modelWeightBytes
+        let snapshotWeightBytes = slot.sizing.weightsBytes
         let mlxUsedNow =
             UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
         let ceiling = EngineV2KVSizing.engineKVBytesCapacity(
-            newModelWeightBytes: schedulerWeightBytes,
+            newModelWeightBytes: snapshotWeightBytes,
             coResidentWeightBytes: 0,
             existingEngineKVCapacities: [],
             physicalBytes: totalBytes)
@@ -269,7 +275,7 @@ struct GemmaVLMParityProbeMemoryLiveTests {
             retainedOverhead >= -(64 * 1024 * 1024),
             Comment(
                 rawValue: "shared-gate headroom exceeds the weights-derived ceiling — "
-                    + "live MLX usage measured below the scheduler's resident weights, "
+                    + "live MLX usage measured below the snapshot's resident weights, "
                     + "which means the weight figure itself is inflated"))
     }
 }

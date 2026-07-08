@@ -4,7 +4,10 @@
 // production Gemma 4 checkpoint (`gemma-4-26b-qat-4bit`). Self-contained
 // harness — deliberately independent of `GemmaVLMVisionEngineV2LiveTests`
 // (same precedent that file set vs the 0.7.3 suites; nothing here touches
-// it). Stages:
+// it). Slots are built through `LiveInferenceFixtures.loadBridge` — the
+// production `EngineV2SlotFactory.makeProductionBridge` construction
+// (weight-sharing text extraction + parity gate), i.e. the ONE engine
+// every slot serves with since v0.7.5. Stages:
 //
 //   (a) CONSTRUCTION INTROSPECTION — `EngineV2VisionPrefill.prepare` on a
 //       real 4-distinct-frame clip: one span per sampled frame, spans ==
@@ -14,26 +17,28 @@
 //       proves the interleaved pairing (one 280-token image span + N small
 //       video spans in prompt order).
 //
-//   (b) VIDEO THROUGH V2 + PARITY REFERENCE — a real video request routed
-//       through the production seam (`MultiModelBatchSchedulerEngine
+//   (b) VIDEO THROUGH V2 — a real video request routed through the
+//       production seam (`MultiModelBatchSchedulerEngine
 //       .streamChatCompletion`) on a v2-bridged slot. Asserted: the request
 //       took the v2 path (bridge admit count grew, zero refusal ERRORs);
 //       greedy determinism (same clip + prompt twice ⇒ identical);
 //       embedding steering (an all-red clip vs an all-blue clip with the
-//       same prompt produce different completions). The LEGACY reference —
-//       the still-present `MediaIngest.stream` wrapper path — is
-//       forced by handing the harness `bridge: nil` for that one request
-//       (a slot without a v2 bridge is the only remaining legacy-media
-//       route after the v0.7.5 fail-loud change), and its greedy output for
-//       the SAME request is LOGGED and asserted only qualitatively:
-//       token-exactness is NOT required, mirroring the v0.7.2 parity-gate
-//       reasoning — the extracted model implements the checkpoint's
-//       declared `rope_type: "proportional"` correctly while the wrapper
-//       deviates (plus bf16 kernel-order noise flips near-tie MoE expert
-//       picks), so wrapper-vs-extracted divergence is expected and
-//       documented, not a regression. TTFT for the v2 video request is
-//       measured and logged (informational — the vision tower now runs
+//       same prompt produce different completions); a mixed image+video
+//       request serves end-to-end; and an interleaved video request leaves
+//       a v2 text decode byte-identical. TTFT for the v2 video request is
+//       measured and logged (informational — the vision tower runs
 //       pre-submit).
+//
+//       DELETED with the legacy engine (v0.7.5 one-engine): the wrapper
+//       parity reference. Media on a slot WITHOUT a v2 bridge no longer
+//       serves at all — `MultiModelBatchSchedulerEngine` throws the
+//       fail-loud "no serving engine for media (no v2 bridge)" internal
+//       error (pinned by the non-live routing tests) — so there is no
+//       legacy output to log. (Token-exact wrapper parity was never
+//       asserted anyway: the extracted model implements the checkpoint's
+//       declared `rope_type: "proportional"` correctly while the wrapper
+//       deviated, plus bf16 kernel-order noise — see
+//       EngineV2VLMTextExtraction.)
 //
 //   (c) 32-FRAME SAMPLING CAP — a 40-second, 40-frame clip: the processor
 //       samples uniformly and caps at 32; construction must carve ≤ 32
@@ -46,7 +51,7 @@
 // checked in) and passed inline as base64 `data:` URIs, exactly like a
 // real E2E-encrypted request.
 //
-// Teardown here is structured (unload/shutdown awaited on every exit path)
+// Teardown here is structured (bridge shutdown awaited on every exit path)
 // so this suite never overlaps residency with other serialized live runs.
 //
 // Gated like the other multi-GB Gemma tests: DARKBLOOM_LIVE_MLX_TESTS +
@@ -186,121 +191,64 @@ struct GemmaVLMVideoEngineV2LiveTests {
 
     // MARK: - Harness (mirrors GemmaVLMVisionEngineV2LiveTests' slot shape)
 
-    private struct LoadedVLMSlot {
+    /// One loaded v2 VLM slot: the PRODUCTION bridge, the retained VLM
+    /// container the vision tower runs in, and the tokenizer for the
+    /// registry entry.
+    private struct LoadedV2VLMSlot {
         let modelID: String
-        let directory: URL
+        let bridge: EngineV2Bridge
         let container: ModelContainer
-        let scheduler: BatchScheduler
         let tokenizer: TokenizerHandle
-        let model: any LanguageModel
-        let eosTokenIds: Set<Int>
     }
 
-    /// Load the checkpoint EXACTLY the way the provider does for a VLM slot:
-    /// `VLMModelFactory` + `BatchScheduler.loadModel` (the legacy engine the
-    /// slot retains in this worktree — the parity reference for stage (b)).
-    private func loadVLMSlot(modelID: String, budgetBytes: Int) async throws -> LoadedVLMSlot {
-        guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
-            throw LiveFixtureSkip.missingMetallib
-        }
-        guard case .found(let directory) = LiveInferenceFixtures.locate(modelID) else {
-            throw LiveFixtureSkip.modelNotInCache(modelID)
-        }
-        LiveInferenceFixtures.applyMemoryBudget(maxBytes: budgetBytes)
-
-        let container = try await VLMModelFactory.shared.loadContainer(
-            from: directory, using: LocalTokenizerLoader())
-        let scheduler = BatchScheduler(
+    /// Structured slot lifecycle: load through the shared fixture (the
+    /// exact production construction) and AWAIT `bridge.shutdown()` + pool
+    /// trim on every exit path.
+    private func withV2VLMSlot(
+        modelID: String, budgetBytes: Int,
+        _ body: (LoadedV2VLMSlot) async throws -> Void
+    ) async throws {
+        let loaded = try await LiveInferenceFixtures.loadBridge(
+            modelID: modelID,
             maxConcurrentRequests: 4,
-            pendingTimeout: .seconds(300),
-            defaultMaxTokens: 256
-        )
-        await scheduler.loadModel(container: container, modelId: modelID)
-
-        let snapshot = await container.perform { ctx in
-            EngineV2ModelSnapshot(
-                model: ctx.model,
-                eosTokenIds: ctx.configuration.eosTokenIds,
-                extraEOSTokens: ctx.configuration.extraEOSTokens.sorted())
-        }
-        let tokenizer: TokenizerHandle = await container.perform { ctx in
+            memoryBudgetBytes: budgetBytes,
+            defaultMaxTokens: 256)
+        let tokenizer: TokenizerHandle = await loaded.container.perform { ctx in
             TokenizerHandle(ctx.tokenizer)
         }
-        return LoadedVLMSlot(
+        let slot = LoadedV2VLMSlot(
             modelID: modelID,
-            directory: directory,
-            container: container,
-            scheduler: scheduler,
-            tokenizer: tokenizer,
-            model: snapshot.model,
-            eosTokenIds: snapshot.eosTokenIds
-        )
-    }
-
-    private func withVLMSlot(
-        modelID: String, budgetBytes: Int,
-        _ body: (LoadedVLMSlot) async throws -> Void
-    ) async throws {
-        let slot = try await loadVLMSlot(modelID: modelID, budgetBytes: budgetBytes)
+            bridge: loaded.bridge,
+            container: loaded.container,
+            tokenizer: tokenizer)
         do {
             try await body(slot)
         } catch {
-            await slot.scheduler.unloadModel()
+            await loaded.bridge.shutdown()
             MLX.Memory.clearCache()
             throw error
         }
-        await slot.scheduler.unloadModel()
+        await loaded.bridge.shutdown()
         MLX.Memory.clearCache()
-    }
-
-    private func withBridge(
-        slot: LoadedVLMSlot,
-        _ body: (EngineV2Bridge) async throws -> Void
-    ) async throws {
-        let extraction = try EngineV2VLMTextExtraction.extractTextModel(
-            from: slot.model, modelDirectory: slot.directory)
-        let engine = try EngineV2Factory.makeProductionEngine(
-            model: extraction.model,
-            tokenizer: slot.tokenizer.inner,
-            kvBytesCapacity: 4 * 1024 * 1024 * 1024
-        )
-        let bridge = EngineV2Bridge(
-            engine: engine,
-            modelId: slot.modelID,
-            tokenizer: slot.tokenizer,
-            eosTokenIds: slot.eosTokenIds
-        )
-        do {
-            try await body(bridge)
-        } catch {
-            await bridge.shutdown()
-            throw error
-        }
-        await bridge.shutdown()
     }
 
     /// Drive one OpenAI-shaped request through the production routing seam
     /// over the slot's registry entry, join the streamed content, and
-    /// report the time to first content chunk. `bridge: nil` forces the
-    /// LEGACY wrapper path for that request (post-v0.7.5, the only way
-    /// media reaches legacy is a slot without a v2 bridge — which is
-    /// exactly what nil models).
+    /// report the time to first content chunk.
     private func streamText(
-        slot: LoadedVLMSlot,
-        bridge: EngineV2Bridge?,
+        slot: LoadedV2VLMSlot,
         userContent: OpenAIMessageContent,
         maxTokens: Int,
         visionPlumbing: EngineV2VisionPlumbing? = nil
     ) async throws -> (content: String, ttft: TimeInterval) {
         let modelID = slot.modelID
-        let scheduler = slot.scheduler
+        let bridge = slot.bridge
         let tokenizer = slot.tokenizer
         let container = slot.container
         let engine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
                     modelID: .init(
-                        scheduler: scheduler,
                         tokenizer: tokenizer,
                         modelType: "gemma4",
                         container: container,
@@ -333,8 +281,7 @@ struct GemmaVLMVideoEngineV2LiveTests {
     /// Stream a media request through v2 and REQUIRE it took the v2 path:
     /// zero refusal ERRORs and a bridge admit for this request.
     private func streamMediaThroughV2(
-        slot: LoadedVLMSlot,
-        bridge: EngineV2Bridge,
+        slot: LoadedV2VLMSlot,
         userContent: OpenAIMessageContent,
         maxTokens: Int,
         stage: String
@@ -346,11 +293,11 @@ struct GemmaVLMVideoEngineV2LiveTests {
             },
             emitTelemetry: { recorder.append($0) }
         )
-        let admitsBefore = await bridge._testCounters().admits
+        let admitsBefore = await slot.bridge._testCounters().admits
         let result = try await streamText(
-            slot: slot, bridge: bridge, userContent: userContent,
+            slot: slot, userContent: userContent,
             maxTokens: maxTokens, visionPlumbing: plumbing)
-        let admitsAfter = await bridge._testCounters().admits
+        let admitsAfter = await slot.bridge._testCounters().admits
         #expect(
             recorder.events.isEmpty,
             Comment(
@@ -367,7 +314,7 @@ struct GemmaVLMVideoEngineV2LiveTests {
     /// `EngineV2VisionPrefill.prepare` for one request, for construction
     /// introspection (span/embedding counts, lengths, media kind).
     private func prepareSubmission(
-        slot: LoadedVLMSlot, userContent: OpenAIMessageContent
+        slot: LoadedV2VLMSlot, userContent: OpenAIMessageContent
     ) async throws -> EngineV2VisionPrefill.PreparedSubmission {
         try await EngineV2VisionPrefill.prepare(
             container: slot.container,
@@ -379,10 +326,10 @@ struct GemmaVLMVideoEngineV2LiveTests {
             ))
     }
 
-    // MARK: - (a)+(b): construction, v2 serve, determinism, steering, parity, TTFT
+    // MARK: - (a)+(b): construction, v2 serve, determinism, steering, TTFT
 
     @Test(
-        "qat-4bit: video through v2 — construction, steering, determinism, legacy parity, TTFT",
+        "qat-4bit: video through v2 — construction, steering, determinism, TTFT",
         .enabled(if: LiveInferenceFixtures.gemmaTestsEnabled)
     )
     func qat4bitVideoThroughV2() async throws {
@@ -399,7 +346,7 @@ struct GemmaVLMVideoEngineV2LiveTests {
             "[gemma-vlm-video-v2] fixtures: rainbow=\(rainbowClip.count)B "
                 + "red=\(redClip.count)B blue=\(blueClip.count)B")
 
-        try await withVLMSlot(
+        try await withV2VLMSlot(
             modelID: Self.qat4bitModelID, budgetBytes: 48 * 1024 * 1024 * 1024
         ) { slot in
             // (a) CONSTRUCTION INTROSPECTION — video-only.
@@ -455,111 +402,91 @@ struct GemmaVLMVideoEngineV2LiveTests {
                 "[gemma-vlm-video-v2] mixed construction: image span \(imageSpans[0].length) "
                     + "tokens + \(videoSpans.count) frame spans")
 
-            try await withBridge(slot: slot) { bridge in
-                let colorPrompt =
-                    "What is the dominant color in this video? Answer with one word."
+            let colorPrompt =
+                "What is the dominant color in this video? Answer with one word."
 
-                // (b) VIDEO THROUGH V2 + TTFT.
-                let (redContent, redTTFT) = try await streamMediaThroughV2(
-                    slot: slot, bridge: bridge,
-                    userContent: .parts([
-                        .text(colorPrompt), .videoURL(dataURI(forMP4: redClip)),
-                    ]),
-                    maxTokens: 16, stage: "red")
-                #expect(!redContent.isEmpty, "v2 video request produced no content")
-                print(
-                    "[gemma-vlm-video-v2] red: v2=\(redContent.debugDescription) "
-                        + String(format: "ttft=%.2fs", redTTFT))
+            // (b) VIDEO THROUGH V2 + TTFT.
+            let (redContent, redTTFT) = try await streamMediaThroughV2(
+                slot: slot,
+                userContent: .parts([
+                    .text(colorPrompt), .videoURL(dataURI(forMP4: redClip)),
+                ]),
+                maxTokens: 16, stage: "red")
+            #expect(!redContent.isEmpty, "v2 video request produced no content")
+            print(
+                "[gemma-vlm-video-v2] red: v2=\(redContent.debugDescription) "
+                    + String(format: "ttft=%.2fs", redTTFT))
 
-                // Greedy determinism: identical input ⇒ identical output.
-                let (redAgain, redAgainTTFT) = try await streamMediaThroughV2(
-                    slot: slot, bridge: bridge,
-                    userContent: .parts([
-                        .text(colorPrompt), .videoURL(dataURI(forMP4: redClip)),
-                    ]),
-                    maxTokens: 16, stage: "red2")
-                #expect(
-                    redAgain == redContent,
-                    Comment(
-                        rawValue: "v2 video greedy decode is non-deterministic: "
-                            + "\(redContent.debugDescription) vs \(redAgain.debugDescription)"))
-                print(
-                    "[gemma-vlm-video-v2] red2: "
-                        + String(format: "ttft=%.2fs (warm tower/weights)", redAgainTTFT))
+            // Greedy determinism: identical input ⇒ identical output.
+            let (redAgain, redAgainTTFT) = try await streamMediaThroughV2(
+                slot: slot,
+                userContent: .parts([
+                    .text(colorPrompt), .videoURL(dataURI(forMP4: redClip)),
+                ]),
+                maxTokens: 16, stage: "red2")
+            #expect(
+                redAgain == redContent,
+                Comment(
+                    rawValue: "v2 video greedy decode is non-deterministic: "
+                        + "\(redContent.debugDescription) vs \(redAgain.debugDescription)"))
+            print(
+                "[gemma-vlm-video-v2] red2: "
+                    + String(format: "ttft=%.2fs (warm tower/weights)", redAgainTTFT))
 
-                // Embedding steering: different pixels, same prompt ⇒ the
-                // completions must differ (if spans/embeddings were dropped
-                // both would collapse to the same text-only answer).
-                let (blueContent, _) = try await streamMediaThroughV2(
-                    slot: slot, bridge: bridge,
-                    userContent: .parts([
-                        .text(colorPrompt), .videoURL(dataURI(forMP4: blueClip)),
-                    ]),
-                    maxTokens: 16, stage: "blue")
-                #expect(!blueContent.isEmpty, "v2 video request (blue) produced no content")
-                #expect(
-                    blueContent != redContent,
-                    Comment(
-                        rawValue: "red and blue clips produced IDENTICAL v2 completions "
-                            + "(\(redContent.debugDescription)) — video embeddings are not "
-                            + "reaching the model"))
+            // Embedding steering: different pixels, same prompt ⇒ the
+            // completions must differ (if spans/embeddings were dropped
+            // both would collapse to the same text-only answer).
+            let (blueContent, _) = try await streamMediaThroughV2(
+                slot: slot,
+                userContent: .parts([
+                    .text(colorPrompt), .videoURL(dataURI(forMP4: blueClip)),
+                ]),
+                maxTokens: 16, stage: "blue")
+            #expect(!blueContent.isEmpty, "v2 video request (blue) produced no content")
+            #expect(
+                blueContent != redContent,
+                Comment(
+                    rawValue: "red and blue clips produced IDENTICAL v2 completions "
+                        + "(\(redContent.debugDescription)) — video embeddings are not "
+                        + "reaching the model"))
 
-                // Legacy parity reference: the SAME red-clip request through
-                // the still-present legacy wrapper path (bridge: nil).
-                // Logged; asserted only qualitatively (see the file header
-                // for the RoPE/bf16 reasoning).
-                let (legacyRed, legacyTTFT) = try await streamText(
-                    slot: slot, bridge: nil,
-                    userContent: .parts([
-                        .text(colorPrompt), .videoURL(dataURI(forMP4: redClip)),
-                    ]),
-                    maxTokens: 16)
-                #expect(!legacyRed.isEmpty, "legacy video reference produced no content")
-                print(
-                    "[gemma-vlm-video-v2] red parity: v2=\(redContent.debugDescription) "
-                        + "legacy=\(legacyRed.debugDescription) "
-                        + (redContent == legacyRed
-                            ? "(token-exact)" : "(diverged — expected, RoPE)")
-                        + String(format: " legacyTTFT=%.2fs", legacyTTFT))
+            // Mixed image+video serves end-to-end through v2 too.
+            let (mixedContent, mixedTTFT) = try await streamMediaThroughV2(
+                slot: slot,
+                userContent: .parts([
+                    .text(
+                        "Is the image the same color as the video? Answer yes or no."),
+                    .imageURL(videoSuiteRedPNGDataURI),
+                    .videoURL(dataURI(forMP4: blueClip)),
+                ]),
+                maxTokens: 16, stage: "mixed")
+            #expect(!mixedContent.isEmpty, "v2 mixed request produced no content")
+            print(
+                "[gemma-vlm-video-v2] mixed: v2=\(mixedContent.debugDescription) "
+                    + String(format: "ttft=%.2fs", mixedTTFT))
 
-                // Mixed image+video serves end-to-end through v2 too.
-                let (mixedContent, mixedTTFT) = try await streamMediaThroughV2(
-                    slot: slot, bridge: bridge,
-                    userContent: .parts([
-                        .text(
-                            "Is the image the same color as the video? Answer yes or no."),
-                        .imageURL(videoSuiteRedPNGDataURI),
-                        .videoURL(dataURI(forMP4: blueClip)),
-                    ]),
-                    maxTokens: 16, stage: "mixed")
-                #expect(!mixedContent.isEmpty, "v2 mixed request produced no content")
-                print(
-                    "[gemma-vlm-video-v2] mixed: v2=\(mixedContent.debugDescription) "
-                        + String(format: "ttft=%.2fs", mixedTTFT))
-
-                // Interleave hygiene: a video request must leave no residue
-                // in the engine's caches for subsequent text decodes.
-                let (textA, _) = try await streamText(
-                    slot: slot, bridge: bridge,
-                    userContent: .text("Count from one to five as digits separated by commas."),
-                    maxTokens: 32)
-                _ = try await streamMediaThroughV2(
-                    slot: slot, bridge: bridge,
-                    userContent: .parts([
-                        .text(colorPrompt), .videoURL(dataURI(forMP4: redClip)),
-                    ]),
-                    maxTokens: 16, stage: "interleave")
-                let (textB, _) = try await streamText(
-                    slot: slot, bridge: bridge,
-                    userContent: .text("Count from one to five as digits separated by commas."),
-                    maxTokens: 32)
-                #expect(
-                    textA == textB,
-                    Comment(
-                        rawValue: "v2 text decode changed after an interleaved v2 video "
-                            + "request: before=\(textA.debugDescription) "
-                            + "after=\(textB.debugDescription)"))
-            }
+            // Interleave hygiene: a video request must leave no residue
+            // in the engine's caches for subsequent text decodes.
+            let (textA, _) = try await streamText(
+                slot: slot,
+                userContent: .text("Count from one to five as digits separated by commas."),
+                maxTokens: 32)
+            _ = try await streamMediaThroughV2(
+                slot: slot,
+                userContent: .parts([
+                    .text(colorPrompt), .videoURL(dataURI(forMP4: redClip)),
+                ]),
+                maxTokens: 16, stage: "interleave")
+            let (textB, _) = try await streamText(
+                slot: slot,
+                userContent: .text("Count from one to five as digits separated by commas."),
+                maxTokens: 32)
+            #expect(
+                textA == textB,
+                Comment(
+                    rawValue: "v2 text decode changed after an interleaved v2 video "
+                        + "request: before=\(textA.debugDescription) "
+                        + "after=\(textB.debugDescription)"))
         }
     }
 
@@ -580,7 +507,7 @@ struct GemmaVLMVideoEngineV2LiveTests {
         let longClip = try await makeSolidColorClip(colors: colors, fps: 1)
         print("[gemma-vlm-video-v2] 40s fixture: \(longClip.count)B")
 
-        try await withVLMSlot(
+        try await withV2VLMSlot(
             modelID: Self.qat4bitModelID, budgetBytes: 48 * 1024 * 1024 * 1024
         ) { slot in
             let prepared = try await prepareSubmission(
@@ -601,19 +528,17 @@ struct GemmaVLMVideoEngineV2LiveTests {
                 "[gemma-vlm-video-v2] cap construction: \(prepared.spans.count) frame spans, "
                     + "prompt \(prepared.promptTokens.count) tokens")
 
-            try await withBridge(slot: slot) { bridge in
-                let (content, ttft) = try await streamMediaThroughV2(
-                    slot: slot, bridge: bridge,
-                    userContent: .parts([
-                        .text("How many colors appear? Answer with one word."),
-                        .videoURL(dataURI(forMP4: longClip)),
-                    ]),
-                    maxTokens: 16, stage: "cap")
-                #expect(!content.isEmpty, "32-frame v2 video request produced no content")
-                print(
-                    "[gemma-vlm-video-v2] cap: v2=\(content.debugDescription) "
-                        + String(format: "ttft=%.2fs", ttft))
-            }
+            let (content, ttft) = try await streamMediaThroughV2(
+                slot: slot,
+                userContent: .parts([
+                    .text("How many colors appear? Answer with one word."),
+                    .videoURL(dataURI(forMP4: longClip)),
+                ]),
+                maxTokens: 16, stage: "cap")
+            #expect(!content.isEmpty, "32-frame v2 video request produced no content")
+            print(
+                "[gemma-vlm-video-v2] cap: v2=\(content.debugDescription) "
+                    + String(format: "ttft=%.2fs", ttft))
         }
     }
 }

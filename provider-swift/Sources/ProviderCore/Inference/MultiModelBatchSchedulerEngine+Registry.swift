@@ -10,13 +10,10 @@
 //
 // v0.7.5 ONE-ENGINE shape: `engineV2Bridge` is the serving engine for
 // EVERY production entry — ProviderLoop slots AND the standalone
-// `darkbloom start --local` server's slots. `scheduler` is a dead leg:
-// nothing constructs one anymore; the field (and the legacy submit
-// branch that reads it) is kept compiling only until the v0.7.5
-// legacy-deletion pass removes `BatchScheduler` wholesale. A TEXT
-// request that reaches an entry with NEITHER engine is a hard internal
-// error. `visionGate` replaces the scheduler-owned vision reservation
-// surface for the legacy VLM media path.
+// `darkbloom start --local` server's slots. A request that reaches an
+// entry with NO bridge is a hard internal error (fail-loud insurance).
+// `visionGate` owns the media path's memory reservations (media-decode
+// RAM + generation KV against the shared budget).
 
 import Foundation
 import MLXLMCommon
@@ -27,9 +24,6 @@ public extension MultiModelBatchSchedulerEngine {
     /// `registryProvider` closure each time the engine needs to route
     /// a request.
     struct ModelRegistryEntry: Sendable {
-        /// Legacy scheduler — DEAD LEG (see header): no production caller
-        /// populates it as of v0.7.5; removed with the legacy-deletion pass.
-        public let scheduler: BatchScheduler?
         /// Tokenizer wrapper for token-utility endpoints
         /// (`/tokenize`, `/detokenize`, `/apply-template`).
         public let tokenizer: TokenizerHandle
@@ -52,13 +46,12 @@ public extension MultiModelBatchSchedulerEngine {
         public let visionGate: VisionMemoryGate?
 
         public init(
-            scheduler: BatchScheduler? = nil, tokenizer: TokenizerHandle,
+            tokenizer: TokenizerHandle,
             modelType: String? = nil,
             container: ModelContainer? = nil, isVLM: Bool = false,
             engineV2Bridge: EngineV2Bridge? = nil,
             visionGate: VisionMemoryGate? = nil
         ) {
-            self.scheduler = scheduler
             self.tokenizer = tokenizer
             self.modelType = modelType
             self.container = container
@@ -79,9 +72,7 @@ public extension MultiModelBatchSchedulerEngine {
     /// `ensureLoaded + reserve` paths (`StandaloneServer`,
     /// `ProviderLoop+LocalEndpoint`).
     struct AcquiredModel: Sendable {
-        /// Legacy scheduler — DEAD LEG (see header): no production caller
-        /// populates it as of v0.7.5; removed with the legacy-deletion pass.
-        public let scheduler: BatchScheduler?
+
         public let tokenizer: TokenizerHandle
         public let releaseToken: OneShotRelease
         /// The `model_type` from config.json.
@@ -99,8 +90,7 @@ public extension MultiModelBatchSchedulerEngine {
         public let visionGate: VisionMemoryGate?
 
         public init(
-            scheduler: BatchScheduler? = nil,
-            tokenizer: TokenizerHandle,
+                        tokenizer: TokenizerHandle,
             releaseToken: OneShotRelease,
             modelType: String? = nil,
             container: ModelContainer? = nil,
@@ -108,7 +98,6 @@ public extension MultiModelBatchSchedulerEngine {
             engineV2Bridge: EngineV2Bridge? = nil,
             visionGate: VisionMemoryGate? = nil
         ) {
-            self.scheduler = scheduler
             self.tokenizer = tokenizer
             self.releaseToken = releaseToken
             self.modelType = modelType

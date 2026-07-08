@@ -120,8 +120,9 @@ struct EngineV2PrefixCacheLiveTests {
         }
         let gptoss = try #require(
             snapshot.model as? GPTOSSModel, "gpt-oss checkpoint must load as GPTOSSModel")
-        // Same EOS augmentation the slot factory applies (Harmony stops).
-        let eos = BatchScheduler.effectiveEOSTokenIds(
+        // Same EOS augmentation the slot factory applies (Harmony stops) —
+        // from the scheduler-free policy home (v0.7.5 one-engine).
+        let eos = ModelEOSPolicy.effectiveEOSTokenIds(
             modelId: "gpt-oss-20b",
             modelType: "gpt_oss",
             base: snapshot.eosTokenIds,

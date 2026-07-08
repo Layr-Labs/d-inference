@@ -162,7 +162,6 @@ public actor ProviderLoop {
     internal let cancellationRegistry: InferenceCancellationRegistry
     internal let kvBudget: GlobalKVCacheBudget
     /// Phase 3: global disk accountant (process-wide, shared across models).
-    internal let diskAccountant: GlobalDiskAccountant
     internal let powerAssertion: InferencePowerAssertion
     internal let preloadTaskStarted: (@Sendable (String) -> Void)?
     internal let beforeModelLoad: (@Sendable (String) async -> Void)?
@@ -524,14 +523,10 @@ public actor ProviderLoop {
         // loaded. No-op when the configured reserve is ≤ the cap's implied reserve.
         self.kvBudget = GlobalKVCacheBudget(
             configReserveBytes: Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB))
-        // Phase 3: construct the global disk accountant (one per host).
-        let kvRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("darkbloom/kv", isDirectory: true)
-            ?? FileManager.default.temporaryDirectory.appendingPathComponent("darkbloom/kv")
-        self.diskAccountant = GlobalDiskAccountant(
-            kvRoot: kvRoot,
-            configuredCeiling: BatchScheduler.prefixCacheGlobalDiskCeiling(),
-            sweepOnInit: true)  // wipe stale KV from a prior crash before any load
+        // The on-disk KV tier is RETIRED (v0.7.5; the v2 prefix cache is
+        // RAM-only — T-041). Sweep the legacy directory so crashes never
+        // strand ciphertext and ≤0.7.4 upgrades shed the old footprint.
+        LegacyKVCacheSweeper.sweep()
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad

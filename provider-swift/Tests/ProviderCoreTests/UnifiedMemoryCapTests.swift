@@ -335,10 +335,10 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 // MARK: - Post-load guard decision (measured headroom vs minimum serveable KV)
 
 @Test func postLoadGuardRejectsWhenMeasuredHeadroomBelowMinimum() {
-    // The post-load guard (BatchScheduler.hasServeableKVHeadroom) is exactly
+    // The post-load guard (KVHeadroomProbe.hasServeableKVHeadroom) is exactly
     // `measuredLiveKVHeadroomBytes >= minimumLoadKVBytes`, where the measured
     // headroom is liveKVHeadroomBytes(real MLX usage). Pin that boundary here
-    // (the BatchScheduler accessor reads real MLX globals, not injectable).
+    // (the KVHeadroomProbe accessor reads real MLX globals, not injectable).
     let phys = 64 * gib                       // cap 57.6
     let activation = 3 * gib
     // Estimate said the model fit, but MEASURED residency turned out larger:
@@ -357,7 +357,7 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(measuredOkHeadroom >= UnifiedMemoryCap.minimumLoadKVBytes,
         "a model with real serveable KV must pass the post-load guard")
 
-    // The guard's actual decision function (what BatchScheduler.hasServeableKV
+    // The guard's actual decision function (what KVHeadroomProbe.hasServeableKV
     // Headroom delegates to): reject below the minimum, admit at/above it.
     #expect(!UnifiedMemoryCap.loadIsServeable(measuredLiveKVHeadroomBytes: measuredOverHeadroom))
     #expect(UnifiedMemoryCap.loadIsServeable(measuredLiveKVHeadroomBytes: measuredOkHeadroom))

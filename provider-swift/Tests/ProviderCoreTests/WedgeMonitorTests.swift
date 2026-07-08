@@ -156,28 +156,4 @@ struct WedgeMonitorTests {
         // Once B/C/D actually stall ≥10s (B@9 → 10.5s) it IS a wedge.
         #expect(m.wedgeSuspected(now: base.advanced(by: .seconds(19.5))) == true)
     }
-
-    /// B3 regression: a wedge callback from a bridge whose load was superseded by
-    /// a reset (which bumps `generationEpoch` + resets the monitor) must be
-    /// ignored, so a stale in-flight request can't corrupt the fresh model's
-    /// counters. Exercises the epoch guard on `BatchScheduler.recordWedge*`.
-    @Test func staleEpochWedgeCallbackIgnoredAfterReset() async {
-        let s = BatchScheduler()
-        let epoch0 = await s.generationEpoch
-        await s.recordWedgeAdmit(epoch: epoch0)
-        #expect(await s.wedgeMonitor.admits == 1)
-
-        // A reload (unloadModel → stopCurrentEngine) bumps the epoch + resets.
-        await s.unloadModel()
-        #expect(await s.wedgeMonitor.admits == 0)
-
-        // Stale callback at the OLD epoch is dropped — fresh monitor untouched.
-        await s.recordWedgeAdmit(epoch: epoch0)
-        #expect(await s.wedgeMonitor.admits == 0)
-
-        // A current-epoch callback still records normally.
-        let epoch1 = await s.generationEpoch
-        await s.recordWedgeAdmit(epoch: epoch1)
-        #expect(await s.wedgeMonitor.admits == 1)
-    }
 }

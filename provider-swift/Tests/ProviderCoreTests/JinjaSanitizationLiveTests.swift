@@ -48,9 +48,9 @@ struct JinjaSanitizationLiveTests {
         .enabled(if: LiveInferenceFixtures.liveTestsEnabled)
     )
     func nullBearingToolRequestInfers() async throws {
-        let loaded: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
+        let loaded: LiveInferenceFixtures.LoadedBridge
         do {
-            loaded = try await LiveInferenceFixtures.loadScheduler(
+            loaded = try await LiveInferenceFixtures.loadBridge(
                 modelID: gptOssModelID,
                 maxConcurrentRequests: 1,
                 memoryBudgetBytes: 24 * 1024 * 1024 * 1024
@@ -59,8 +59,13 @@ struct JinjaSanitizationLiveTests {
             withKnownIssue("skipped: \(skip)") { Issue.record("\(skip)") }
             return
         }
-        let scheduler = loaded.scheduler
-        defer { Task { await scheduler.unloadModel() } }
+        let bridge = loaded.bridge
+        defer {
+            Task {
+                await bridge.shutdown()
+                MLX.Memory.clearCache()
+            }
+        }
         let tokenizer: TokenizerHandle = await loaded.container.perform { ctx in
             TokenizerHandle(ctx.tokenizer)
         }
@@ -68,7 +73,9 @@ struct JinjaSanitizationLiveTests {
         // Wire the engine exactly as ProviderLoop does.
         let engine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
-                [gptOssModelID: .init(scheduler: scheduler, tokenizer: tokenizer, modelType: "gpt_oss")]
+                [gptOssModelID: .init(
+                    tokenizer: tokenizer, modelType: "gpt_oss",
+                    engineV2Bridge: bridge)]
             },
             ensureLoaded: { _ in },
             reserveModel: { _ in },

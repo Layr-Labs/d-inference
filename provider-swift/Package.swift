@@ -13,8 +13,6 @@ let package = Package(
         .executable(name: "darkbloom", targets: ["darkbloom"]),
         .executable(name: "darkbloom-enclave", targets: ["DarkbloomEnclaveCLI"]),
         .executable(name: "darkbloom-publish", targets: ["darkbloom-publish"]),
-        .executable(name: "kv-quant-gate", targets: ["kv-quant-gate"]),
-        .executable(name: "kv-attn-selftest", targets: ["kv-attn-selftest"]),
     ],
     dependencies: [
         .package(path: "../libs/mlx-swift"),
@@ -98,13 +96,10 @@ let package = Package(
         // ----------------------------------------------------------------
         // ProviderBenchmark: LIGHTWEIGHT benchmark runners that the shipped
         // `darkbloom benchmark` command needs — ModelBenchmark (prefill/decode
-        // latency), ThroughputSweep (+ report), and DecodeBandwidthModel. This
-        // is the ONLY benchmark target the installed `darkbloom` binary links,
-        // so it deliberately carries NO KV-quant cache code and NO fatalError
-        // protocol-conformance stubs. The heavy KV-quant gate/eval/cache code
-        // lives in ProviderBenchmarkKVQuant, which `darkbloom` does NOT depend
-        // on. The engine-facing types shared with the live scheduler
-        // (KVQuantCandidateMode, KVQuantPolicy) live in ProviderCore.
+        // latency), ThroughputSweep (+ report), and DecodeBandwidthModel.
+        // Engines are constructed through the production
+        // EngineV2Factory.makeProductionEngine, so the perf gate measures
+        // exactly what serving slots run.
         // ----------------------------------------------------------------
         .target(
             name: "ProviderBenchmark",
@@ -115,30 +110,6 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
             ],
             path: "Sources/ProviderBenchmark"
-        ),
-
-        // ----------------------------------------------------------------
-        // ProviderBenchmarkKVQuant: KV-quant gate/perf/quality runners plus
-        // the standalone benchmark KV caches — INCLUDING the fatalError
-        // protocol-conformance stubs (ProtocolSafeQuantizedKVCache, the
-        // V-only / BFloat16 caches). Linked ONLY by the KV-quant research
-        // tools (kv-quant-gate, kv-attn-selftest) and their tests, never by
-        // the shipped `darkbloom` binary, so installed providers never link
-        // benchmark-only fatalError stubs. The engine-facing types shared with
-        // the live scheduler (KVQuantCandidateMode, KVQuantPolicy) live in
-        // ProviderCore, not here.
-        // ----------------------------------------------------------------
-        .target(
-            name: "ProviderBenchmarkKVQuant",
-            dependencies: [
-                "ProviderCore",
-                "ProviderCoreFoundation",
-                .product(name: "MLX", package: "mlx-swift"),
-                .product(name: "MLXNN", package: "mlx-swift"),
-                .product(name: "MLXLLM", package: "mlx-swift-lm"),
-                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-            ],
-            path: "Sources/ProviderBenchmarkKVQuant"
         ),
 
         // ----------------------------------------------------------------
@@ -158,20 +129,6 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/darkbloom"
-        ),
-
-        // ----------------------------------------------------------------
-        // kv-se-harness: TEST-ONLY standalone executable validating the
-        // Secure-Enclave-wrapped KEK + Keychain round-trip on real SE
-        // hardware (the one path `swift test` can't reach — it needs a
-        // code-signed binary with a keychain-access-groups entitlement).
-        // Built + ad-hoc-signed by hand on a dev Mac; NOT a product, NOT
-        // shipped. See docs/ssd-kv-cache-design.md.
-        // ----------------------------------------------------------------
-        .executableTarget(
-            name: "kv-se-harness",
-            dependencies: ["ProviderCore"],
-            path: "Sources/kv-se-harness"
         ),
 
         // ----------------------------------------------------------------
@@ -208,29 +165,6 @@ let package = Package(
             path: "Sources/darkbloom-publish"
         ),
 
-        .executableTarget(
-            name: "kv-quant-gate",
-            dependencies: [
-                "ProviderCore",
-                "ProviderBenchmarkKVQuant",
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-            ],
-            path: "Sources/kv-quant-gate"
-        ),
-
-        .executableTarget(
-            name: "kv-attn-selftest",
-            dependencies: [
-                "ProviderCore",
-                "ProviderBenchmarkKVQuant",
-                .product(name: "MLX", package: "mlx-swift"),
-                .product(name: "MLXFast", package: "mlx-swift"),
-                .product(name: "MLXRandom", package: "mlx-swift"),
-                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-            ],
-            path: "Sources/kv-attn-selftest"
-        ),
-
         // ----------------------------------------------------------------
         // Tests — protocol round-trip, hardware detection, crypto interop
         // (incl. NaCl-box golden vectors generated by Go), security posture,
@@ -242,7 +176,6 @@ let package = Package(
             dependencies: [
                 "ProviderCore",
                 "ProviderBenchmark",
-                "ProviderBenchmarkKVQuant",
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
             ],

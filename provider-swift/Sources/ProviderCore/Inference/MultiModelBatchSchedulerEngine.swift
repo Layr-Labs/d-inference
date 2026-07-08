@@ -214,7 +214,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // reserve) and is retained only for ProviderLoop where
         // `requestToModel[id] = modelId` pins the slot before load and
         // closes the same race at the caller side.
-        let scheduler: BatchScheduler?
         let tokenizer: TokenizerHandle
         let modelType: String?
         let releaseBox: OneShotRelease
@@ -225,7 +224,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let modelId = request.model
         if let acquire {
             let acquired = try await acquire(modelId)
-            scheduler = acquired.scheduler
             tokenizer = acquired.tokenizer
             modelType = acquired.modelType
             releaseBox = acquired.releaseToken
@@ -239,7 +237,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             guard let entry = registry[modelId] else {
                 throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
             }
-            scheduler = entry.scheduler
             tokenizer = entry.tokenizer
             modelType = entry.modelType
             await reserveModel(modelId)
@@ -490,9 +487,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             throw error
         }
 
-        let maxTokens = request.maxTokens ?? defaultMaxTokens
-        let temperature = request.temperature ?? 0.0
-
         // Resolve tool call format before submitting so a bad
         // `tool_call_parser` value does not leave an orphaned request.
         let toolHandler: BatchedToolStreamHandler?
@@ -522,15 +516,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // prompt submits through it. The bridge yields the identical
         // `AsyncStream<GenerationEvent>` shape, so everything downstream —
         // tool-call parsing, SSE framing, error→status mapping, billing
-        // extraction — is engine-agnostic.
-        //
-        // The legacy `scheduler.submitTokenized` branch is now DEAD in
-        // production (no caller constructs a scheduler entry anymore); it
-        // is kept compiling only until the v0.7.5 legacy-deletion pass
-        // removes `BatchScheduler` wholesale. A TEXT request that reaches
-        // an entry with NEITHER engine is a hard internal error (500) —
+        // extraction — is engine-agnostic. A TEXT request that reaches an
+        // entry with NO bridge is a hard internal error (500) —
         // structurally unreachable, kept as loud insurance per the
-        // fail-loud contract.
+        // fail-loud contract (the legacy scheduler is deleted).
         let upstream: AsyncStream<GenerationEvent>
         let cancelUpstream: @Sendable () async -> Void
         if let bridge = engineV2Bridge {
@@ -559,21 +548,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 usageSignal: engineV2Usage
             )
             cancelUpstream = { await bridge.cancel(requestId: requestId) }
-        } else if let scheduler {
-            upstream = await scheduler.submitTokenized(
-                promptTokens: promptTokens,
-                maxTokens: maxTokens,
-                temperature: temperature,
-                topP: request.topP,
-                topK: request.topK,
-                requestId: requestId,
-                cacheScope: cacheScope,
-                // Keep tool-bearing requests off the greedy text-only B=1 fast path:
-                // it cannot reproduce the engine's raw-text tool-call contract. No
-                // tools ⇒ fast path may apply (subject to the scheduler's gates).
-                allowFastPath: toolHandler == nil
-            )
-            cancelUpstream = { await scheduler.cancel(requestId: requestId) }
         } else {
             // Fail-loud backstop: no engine at all on the entry. This can
             // only mean a wiring bug — surface it as a 500 provider fault,

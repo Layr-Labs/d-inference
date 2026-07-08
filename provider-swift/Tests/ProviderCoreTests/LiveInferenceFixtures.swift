@@ -202,18 +202,32 @@ enum LiveInferenceFixtures {
 
     // MARK: Loading
 
-    /// Load a model into a fresh `BatchScheduler` and return both. Caller
-    /// is responsible for `await scheduler.unloadModel()` when finished
-    /// (use `defer` in the test).
+    /// Everything `loadBridge` returns: the PRODUCTION v2 bridge (built
+    /// through `EngineV2SlotFactory.makeProductionBridge` — the one-engine
+    /// construction every serving slot uses), the retained container, the
+    /// checkpoint directory, and the sizing snapshot. Caller is responsible
+    /// for `await bridge.shutdown()` + `MLX.Memory.clearCache()` when
+    /// finished (use `defer` in the test).
+    struct LoadedBridge {
+        let bridge: EngineV2Bridge
+        let container: ModelContainer
+        let modelDirectory: URL
+        let sizing: SlotSizingSnapshot
+    }
+
+    /// Load a model and build its production v2 bridge (VLM-aware — the
+    /// same `ModelContainerLoading` + weight-sharing text extraction the
+    /// serve path uses).
     ///
     /// - Throws: `LiveFixtureSkip` if the model isn't on disk, or if the
     ///   metallib isn't available.
-    static func loadScheduler(
+    static func loadBridge(
         modelID: String,
+        modelType: String? = nil,
         maxConcurrentRequests: Int = 4,
         memoryBudgetBytes: Int? = nil,
-        pendingTimeout: Duration = .seconds(60)
-    ) async throws -> (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL) {
+        defaultMaxTokens: Int = 256
+    ) async throws -> LoadedBridge {
         guard ensureMetallibColocated() != nil else {
             throw LiveFixtureSkip.missingMetallib
         }
@@ -228,19 +242,52 @@ enum LiveInferenceFixtures {
 
         applyMemoryBudget(maxBytes: memoryBudgetBytes ?? 12 * 1024 * 1024 * 1024)
 
-        let container = try await LLMModelFactory.shared.loadContainer(
-            from: directory,
-            using: LocalTokenizerLoader()
-        )
-
-        let scheduler = BatchScheduler(
+        let container = try await ModelContainerLoading.loadContainer(from: directory)
+        var sizing = try await SlotSizingSnapshot.build(
+            container: container,
+            modelPath: directory,
+            fallbackDefaultMaxTokens: defaultMaxTokens)
+        if sizing.defaultMaxTokens > defaultMaxTokens {
+            sizing = SlotSizingSnapshot(
+                weightsBytes: sizing.weightsBytes,
+                fp16KVBytesPerToken: sizing.fp16KVBytesPerToken,
+                maxContextLength: sizing.maxContextLength,
+                defaultMaxTokens: defaultMaxTokens)
+        }
+        // Single-slot grant: the full fleet budget for this model's weights
+        // (the same figure a lone serving slot is granted).
+        let grant = Int(min(
+            UnifiedMemoryCap.kvBudgetBytes(
+                physicalBytes: ProcessInfo.processInfo.physicalMemory,
+                residentWeightBytes: UInt64(max(0, sizing.weightsBytes)),
+                configReserveBytes: 0),
+            UInt64(Int.max)))
+        let isVLM = ProviderLoop.modelIsVLM(at: directory)
+        let bridge = try await EngineV2SlotFactory.makeProductionBridge(
+            modelId: modelID,
+            modelType: modelType ?? modelTypeFromConfig(directory: directory),
+            isVLM: isVLM,
+            modelDirectory: directory,
+            container: container,
+            tokenizer: await container.perform { ctx in TokenizerHandle(ctx.tokenizer) },
+            sizing: sizing,
+            kvBytesCapacity: grant,
             maxConcurrentRequests: maxConcurrentRequests,
-            pendingTimeout: pendingTimeout,
-            defaultMaxTokens: 256
-        )
-        await scheduler.loadModel(container: container, modelId: modelID)
+            kvBudget: nil,
+            kvQuantConfigured: false,
+            environment: [:])  // prefix cache dormant — hermetic tests
 
-        return (scheduler, container, directory)
+        return LoadedBridge(
+            bridge: bridge, container: container, modelDirectory: directory, sizing: sizing)
+    }
+
+    /// `model_type` from the checkpoint's config.json (nil when absent).
+    static func modelTypeFromConfig(directory: URL) -> String? {
+        let url = directory.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: url),
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return obj["model_type"] as? String
     }
 }
 
@@ -279,8 +326,8 @@ enum LiveFixtureSkip: Error, CustomStringConvertible {
 
 // MARK: - Generation collection
 
-/// Collect events from `BatchScheduler.submit(...)` into a structured
-/// result so test assertions can be expressed simply.
+/// Collect events from `EngineV2Bridge.submitTokenized(...)` into a
+/// structured result so test assertions can be expressed simply.
 struct CollectedGeneration {
     var chunks: [String] = []
     var info: (promptTokens: Int, completionTokens: Int, tokensPerSecond: Double)?
@@ -291,21 +338,21 @@ struct CollectedGeneration {
     var didFinish: Bool { info != nil || error != nil }
 }
 
-/// Submit a request to a scheduler and collect the full event stream into a
-/// structured result.
+/// Submit pre-tokenized prompt tokens to a v2 bridge and collect the full
+/// event stream into a structured result. (Chat templating lives with the
+/// caller — exactly like the production request path, where
+/// `MultiModelBatchSchedulerEngine` templates before `submitTokenized`.)
 ///
-/// Implemented as a free function (not an actor extension) so the scheduler
-/// is not held while we iterate. If we held the actor across the
-/// `for await event in stream` loop, no other request could be admitted,
-/// `cancel(requestId:)` couldn't run, and `requestCompleted` would be
-/// queued behind us -- the concurrent and cancellation tests would all
-/// deadlock or stall.
+/// Implemented as a free function (not an actor extension) so the bridge
+/// is not held while we iterate.
 func collect(
-    from scheduler: BatchScheduler,
+    from bridge: EngineV2Bridge,
+    promptTokens: [Int],
     request: ChatCompletionRequest,
     requestId: String? = nil
 ) async -> CollectedGeneration {
-    let stream = await scheduler.submit(request: request, requestId: requestId)
+    let stream = await bridge.submitTokenized(
+        promptTokens: promptTokens, request: request, requestId: requestId)
     var collected = CollectedGeneration()
     for await event in stream {
         switch event {

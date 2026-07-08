@@ -65,16 +65,16 @@ struct PrefixCachePolicyTests {
         #expect(PrefixCachePolicy.budgetBytes(environment: [:], physicalMemory: 4) == 1)
     }
 
-    @Test("legacy resolveMemoryBudget delegates to the shared policy (no drift)")
-    func legacyDelegation() {
-        for (envGB, physical) in [(nil, 64 * Self.gib), (2.0, 64 * Self.gib), (-3.0, 8 * Self.gib)]
-            as [(Double?, Int)]
-        {
-            #expect(
-                BatchScheduler.resolveMemoryBudget(envGB: envGB, physicalMemory: physical)
-                    == PrefixCachePolicy.resolveMemoryBudget(
-                        envGB: envGB, physicalMemory: physical))
-        }
+    @Test("resolveMemoryBudget: valid env override wins; unset/invalid falls back to physical/8")
+    func resolveMemoryBudgetPolicy() {
+        // The Double?-based entry point (what `budgetBytes` rides) applies the
+        // same policy: nil ⇒ physical/8, positive ⇒ GB→bytes, invalid ⇒ default.
+        #expect(PrefixCachePolicy.resolveMemoryBudget(envGB: nil, physicalMemory: 64 * Self.gib)
+            == 8 * Self.gib)
+        #expect(PrefixCachePolicy.resolveMemoryBudget(envGB: 2.0, physicalMemory: 64 * Self.gib)
+            == 2 * Self.gib)
+        #expect(PrefixCachePolicy.resolveMemoryBudget(envGB: -3.0, physicalMemory: 8 * Self.gib)
+            == Self.gib)
     }
 
     // MARK: - Stats cadence
@@ -90,10 +90,6 @@ struct PrefixCachePolicyTests {
             #expect(PrefixCachePolicy.statsIntervalSecs(
                 environment: ["DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS": bad]) == 120)
         }
-        // The legacy resolver rides the same policy.
-        #expect(BatchScheduler.resolveStatsInterval(env: nil) == 120)
-        #expect(BatchScheduler.resolveStatsInterval(env: "0") == 0)
-        #expect(BatchScheduler.resolveStatsInterval(env: "30") == 30)
     }
 
     // MARK: - Per-model funding gate (adoption bound)

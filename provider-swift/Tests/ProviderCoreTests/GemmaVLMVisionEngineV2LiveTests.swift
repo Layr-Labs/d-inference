@@ -2,38 +2,40 @@
 //
 // Live (weight-gated) validation of v0.7.4 VISION-THROUGH-ENGINE_V2 on the
 // EXACT checkpoints production serves (gemma-4-26b-qat-4bit /
-// gemma-4-26b-8bit). Self-contained harness — deliberately independent of
-// `GemmaVLMEngineV2LiveTests` (that file is owned by the concurrent 0.7.3
-// hotfix; nothing here touches it). Stages:
+// gemma-4-26b-8bit), updated for the v0.7.5 ONE-ENGINE release: the legacy
+// `BatchScheduler` (and its wrapper vision stream) is deleted, so every
+// slot serves through the production `EngineV2Bridge` built by
+// `EngineV2SlotFactory.makeProductionBridge` — which is exactly what the
+// `LiveInferenceFixtures.loadBridge` harness constructs here. Stages:
 //
 //   (a) VISION THROUGH V2 — a real image request routed through the v2
 //       engine: `EngineV2VisionPrefill` runs the wrapper's vision tower +
 //       projector and the engine splices the embeddings at the placeholder
 //       spans (CBv2 multimodal prefill). Asserted:
 //         * the request actually took the v2 path (bridge admit count grew,
-//           zero fallback WARNs recorded);
+//           zero refusal ERRORs recorded);
 //         * greedy determinism (same image + prompt twice ⇒ identical);
 //         * the embeddings STEER the output (a red image and a blue image
 //           with the same prompt produce different completions — if spans/
 //           embeddings were dropped, both would collapse to the same
-//           text-only answer);
-//         * comparison against the legacy wrapper path's greedy output for
-//           the same input is LOGGED, and asserted only qualitatively:
-//           token-exactness is NOT required, mirroring the v0.7.2
-//           parity-gate reasoning — the extracted model implements the
-//           checkpoint's declared `rope_type: "proportional"` correctly
-//           while the wrapper deviates (plus bf16 kernel-order noise flips
-//           near-tie MoE expert picks), so wrapper-vs-extracted divergence
-//           is expected and documented, not a regression.
+//           text-only answer).
 //
-//   (b) INTERLEAVE HYGIENE — text(v2) / legacy-vision / text(v2) and
-//       text(v2) / vision(v2) / text(v2): neither a legacy wrapper vision
-//       request (forced by omitting the bridge for that one request) nor a
-//       vision-through-v2 request may perturb a v2 text decode (span masks
-//       / spliced embeddings must leave no residue in the engine's caches
-//       — the Qwen3.5-mrope-class regression pattern).
+//   (b) INTERLEAVE HYGIENE — text(v2) / vision(v2) / text(v2): a
+//       vision-through-v2 request may not perturb a v2 text decode (span
+//       masks / spliced embeddings must leave no residue in the engine's
+//       caches — the Qwen3.5-mrope-class regression pattern).
 //
-// Teardown here is structured (unload/shutdown awaited on every exit path)
+// DELETED with the legacy engine (v0.7.5): the wrapper-path greedy
+// comparison and the text/legacy-vision/text interleave. Media on a slot
+// WITHOUT a v2 bridge no longer serves at all — it throws the fail-loud
+// "no serving engine for media (no v2 bridge)" internal error, pinned by
+// the non-live routing tests — so there is no legacy output to compare
+// against. (Wrapper-vs-extracted token-exactness was never asserted anyway:
+// the extracted model implements the checkpoint's declared `rope_type:
+// "proportional"` correctly while the wrapper deviates, plus bf16
+// kernel-order noise — see EngineV2VLMTextExtraction.)
+//
+// Teardown here is structured (bridge shutdown awaited on every exit path)
 // so this suite never overlaps residency with other serialized live runs.
 //
 // Gated like the other multi-GB Gemma tests: DARKBLOOM_LIVE_MLX_TESTS +
@@ -62,8 +64,8 @@ private let visionSolidBluePNGDataURI =
     + "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mMQ0bhDEmIY"
     + "1TCqYfhqAAAUJBgQCtUO5gAAAABJRU5ErkJggg=="
 
-/// Thread-safe recorder for the vision plumbing's fallback WARNs.
-private final class VisionLiveFallbackRecorder: @unchecked Sendable {
+/// Thread-safe recorder for the vision plumbing's refusal ERRORs.
+private final class VisionLiveRefusalRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var _events: [TelemetryEvent] = []
     var events: [TelemetryEvent] { lock.withLock { _events } }
@@ -78,130 +80,69 @@ struct GemmaVLMVisionEngineV2LiveTests {
     static let qat4bitModelID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
     static let eightBitModelID = LiveInferenceFixtures.gemmaModelID  // ...-8bit
 
-    // MARK: - Harness (self-contained; mirrors the provider's VLM slot shape)
+    // MARK: - Harness (the provider's one-engine VLM slot shape)
 
-    private struct LoadedVLMSlot {
+    /// One loaded v2 VLM slot: the PRODUCTION bridge (built through
+    /// `EngineV2SlotFactory.makeProductionBridge`, weight-sharing text
+    /// extraction + parity gate included), the retained VLM container the
+    /// vision tower runs in, and the tokenizer for the registry entry.
+    private struct LoadedV2VLMSlot {
         let modelID: String
-        let directory: URL
+        let bridge: EngineV2Bridge
         let container: ModelContainer
-        let scheduler: BatchScheduler
         let tokenizer: TokenizerHandle
-        let model: any LanguageModel
-        let eosTokenIds: Set<Int>
     }
 
-    /// Load a checkpoint EXACTLY the way the provider does for a VLM slot:
-    /// `VLMModelFactory` + `BatchScheduler.loadModel` (the legacy engine the
-    /// slot retains for fallback + video requests).
-    private func loadVLMSlot(modelID: String, budgetBytes: Int) async throws -> LoadedVLMSlot {
-        guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
-            throw LiveFixtureSkip.missingMetallib
-        }
-        guard case .found(let directory) = LiveInferenceFixtures.locate(modelID) else {
-            throw LiveFixtureSkip.modelNotInCache(modelID)
-        }
-        LiveInferenceFixtures.applyMemoryBudget(maxBytes: budgetBytes)
-
-        let container = try await VLMModelFactory.shared.loadContainer(
-            from: directory, using: LocalTokenizerLoader())
-        let scheduler = BatchScheduler(
+    /// Structured slot lifecycle: load through the shared fixture (the
+    /// exact production construction), and AWAIT `bridge.shutdown()` +
+    /// pool trim on every exit path so the multi-GB residency never
+    /// overlaps the next serialized test's load.
+    private func withV2VLMSlot(
+        modelID: String, budgetBytes: Int,
+        _ body: (LoadedV2VLMSlot) async throws -> Void
+    ) async throws {
+        let loaded = try await LiveInferenceFixtures.loadBridge(
+            modelID: modelID,
             maxConcurrentRequests: 4,
-            pendingTimeout: .seconds(300),
-            defaultMaxTokens: 256
-        )
-        await scheduler.loadModel(container: container, modelId: modelID)
-
-        let snapshot = await container.perform { ctx in
-            EngineV2ModelSnapshot(
-                model: ctx.model,
-                eosTokenIds: ctx.configuration.eosTokenIds,
-                extraEOSTokens: ctx.configuration.extraEOSTokens.sorted())
-        }
-        let tokenizer: TokenizerHandle = await container.perform { ctx in
+            memoryBudgetBytes: budgetBytes,
+            defaultMaxTokens: 256)
+        let tokenizer: TokenizerHandle = await loaded.container.perform { ctx in
             TokenizerHandle(ctx.tokenizer)
         }
-        return LoadedVLMSlot(
+        let slot = LoadedV2VLMSlot(
             modelID: modelID,
-            directory: directory,
-            container: container,
-            scheduler: scheduler,
-            tokenizer: tokenizer,
-            model: snapshot.model,
-            eosTokenIds: snapshot.eosTokenIds
-        )
-    }
-
-    /// Structured slot lifecycle: the multi-GB residency is AWAITED out of
-    /// memory on every exit path before the next serialized test loads.
-    private func withVLMSlot(
-        modelID: String, budgetBytes: Int,
-        _ body: (LoadedVLMSlot) async throws -> Void
-    ) async throws {
-        let slot = try await loadVLMSlot(modelID: modelID, budgetBytes: budgetBytes)
+            bridge: loaded.bridge,
+            container: loaded.container,
+            tokenizer: tokenizer)
         do {
             try await body(slot)
         } catch {
-            await slot.scheduler.unloadModel()
+            await loaded.bridge.shutdown()
             MLX.Memory.clearCache()
             throw error
         }
-        await slot.scheduler.unloadModel()
+        await loaded.bridge.shutdown()
         MLX.Memory.clearCache()
-    }
-
-    /// Structured bridge lifecycle: `shutdown()` (engine drain + pump
-    /// teardown) awaited on every exit path.
-    private func withBridge(
-        slot: LoadedVLMSlot,
-        _ body: (EngineV2Bridge) async throws -> Void
-    ) async throws {
-        // Weight-sharing extraction with the production parity gate ON —
-        // the same construction `ProviderLoop.makeEngineV2BridgeForSlot`
-        // performs for an allowlisted VLM slot.
-        let extraction = try EngineV2VLMTextExtraction.extractTextModel(
-            from: slot.model, modelDirectory: slot.directory)
-        let engine = try EngineV2Factory.makeProductionEngine(
-            model: extraction.model,
-            tokenizer: slot.tokenizer.inner,
-            kvBytesCapacity: 4 * 1024 * 1024 * 1024
-        )
-        let bridge = EngineV2Bridge(
-            engine: engine,
-            modelId: slot.modelID,
-            tokenizer: slot.tokenizer,
-            eosTokenIds: slot.eosTokenIds
-        )
-        do {
-            try await body(bridge)
-        } catch {
-            await bridge.shutdown()
-            throw error
-        }
-        await bridge.shutdown()
     }
 
     /// Drive one OpenAI-shaped request through the production routing seam
     /// (`MultiModelBatchSchedulerEngine.streamChatCompletion`) over the
-    /// slot's registry entry and join the streamed content. `bridge: nil`
-    /// forces the legacy wrapper path for that request.
+    /// slot's registry entry and join the streamed content.
     private func streamText(
-        slot: LoadedVLMSlot,
-        bridge: EngineV2Bridge?,
+        slot: LoadedV2VLMSlot,
         userContent: OpenAIMessageContent,
         maxTokens: Int,
         visionPlumbing: EngineV2VisionPlumbing? = nil
     ) async throws -> String {
-        // Destructure the Sendable pieces — `LoadedVLMSlot.model` (the raw
-        // module handle) must not cross into the @Sendable registry closure.
+        // Destructure the Sendable pieces for the @Sendable registry closure.
         let modelID = slot.modelID
-        let scheduler = slot.scheduler
+        let bridge = slot.bridge
         let tokenizer = slot.tokenizer
         let container = slot.container
         let engine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
                     modelID: .init(
-                        scheduler: scheduler,
                         tokenizer: tokenizer,
                         modelType: "gemma4",
                         container: container,
@@ -228,30 +169,29 @@ struct GemmaVLMVisionEngineV2LiveTests {
     }
 
     /// Stream a vision request through v2 and REQUIRE it took the v2 path:
-    /// zero fallback WARNs and a bridge admit for this request.
+    /// zero refusal ERRORs and a bridge admit for this request.
     private func streamVisionThroughV2(
-        slot: LoadedVLMSlot,
-        bridge: EngineV2Bridge,
+        slot: LoadedV2VLMSlot,
         userContent: OpenAIMessageContent,
         maxTokens: Int,
         stage: String
     ) async throws -> String {
-        let recorder = VisionLiveFallbackRecorder()
+        let recorder = VisionLiveRefusalRecorder()
         let plumbing = EngineV2VisionPlumbing(
             prepare: { container, request in
                 try await EngineV2VisionPrefill.prepare(container: container, request: request)
             },
             emitTelemetry: { recorder.append($0) }
         )
-        let admitsBefore = await bridge._testCounters().admits
+        let admitsBefore = await slot.bridge._testCounters().admits
         let content = try await streamText(
-            slot: slot, bridge: bridge, userContent: userContent,
+            slot: slot, userContent: userContent,
             maxTokens: maxTokens, visionPlumbing: plumbing)
-        let admitsAfter = await bridge._testCounters().admits
+        let admitsAfter = await slot.bridge._testCounters().admits
         #expect(
             recorder.events.isEmpty,
             Comment(
-                rawValue: "[\(stage)] vision request fell back to legacy: "
+                rawValue: "[\(stage)] vision request was refused: "
                     + "\(recorder.events.map(\.message))"))
         #expect(
             admitsAfter == admitsBefore + 1,
@@ -264,104 +204,81 @@ struct GemmaVLMVisionEngineV2LiveTests {
     // MARK: - qat-4bit: vision through v2 + interleave hygiene
 
     @Test(
-        "qat-4bit: vision through v2 — steering, determinism, legacy comparison, interleave",
+        "qat-4bit: vision through v2 — steering, determinism, interleave",
         .enabled(if: LiveInferenceFixtures.gemmaTestsEnabled)
     )
     func qat4bitVisionThroughV2() async throws {
-        try await withVLMSlot(
+        try await withV2VLMSlot(
             modelID: Self.qat4bitModelID, budgetBytes: 48 * 1024 * 1024 * 1024
         ) { slot in
-            try await withBridge(slot: slot) { bridge in
-                let textPrompt = OpenAIMessageContent.text(
-                    "Count from one to five as digits separated by commas.")
-                let colorPrompt = "What color is this image? Answer with one word."
+            let textPrompt = OpenAIMessageContent.text(
+                "Count from one to five as digits separated by commas.")
+            let colorPrompt = "What color is this image? Answer with one word."
 
-                // v2 text baseline for the interleave assertions.
-                let v2Text = try await streamText(
-                    slot: slot, bridge: bridge, userContent: textPrompt, maxTokens: 32)
-                #expect(!v2Text.isEmpty, "v2 text baseline produced no content")
+            // v2 text baseline for the interleave assertions.
+            let v2Text = try await streamText(
+                slot: slot, userContent: textPrompt, maxTokens: 32)
+            #expect(!v2Text.isEmpty, "v2 text baseline produced no content")
 
-                // (a) VISION THROUGH V2: real embeddings at real spans.
-                let redContent = try await streamVisionThroughV2(
-                    slot: slot, bridge: bridge,
-                    userContent: .parts([
-                        .text(colorPrompt), .imageURL(visionSolidRedPNGDataURI),
-                    ]),
-                    maxTokens: 16, stage: "red")
-                #expect(!redContent.isEmpty, "v2 vision request produced no content")
+            // (a) VISION THROUGH V2: real embeddings at real spans.
+            let redContent = try await streamVisionThroughV2(
+                slot: slot,
+                userContent: .parts([
+                    .text(colorPrompt), .imageURL(visionSolidRedPNGDataURI),
+                ]),
+                maxTokens: 16, stage: "red")
+            #expect(!redContent.isEmpty, "v2 vision request produced no content")
 
-                // Greedy determinism: identical input ⇒ identical output.
-                let redContentAgain = try await streamVisionThroughV2(
-                    slot: slot, bridge: bridge,
-                    userContent: .parts([
-                        .text(colorPrompt), .imageURL(visionSolidRedPNGDataURI),
-                    ]),
-                    maxTokens: 16, stage: "red2")
-                #expect(
-                    redContentAgain == redContent,
-                    Comment(
-                        rawValue: "v2 vision greedy decode is non-deterministic: "
-                            + "\(redContent.debugDescription) vs \(redContentAgain.debugDescription)"))
+            // Greedy determinism: identical input ⇒ identical output.
+            let redContentAgain = try await streamVisionThroughV2(
+                slot: slot,
+                userContent: .parts([
+                    .text(colorPrompt), .imageURL(visionSolidRedPNGDataURI),
+                ]),
+                maxTokens: 16, stage: "red2")
+            #expect(
+                redContentAgain == redContent,
+                Comment(
+                    rawValue: "v2 vision greedy decode is non-deterministic: "
+                        + "\(redContent.debugDescription) vs \(redContentAgain.debugDescription)"))
 
-                // Embedding steering: different pixels, same prompt ⇒ the
-                // completions must differ.
-                let blueContent = try await streamVisionThroughV2(
-                    slot: slot, bridge: bridge,
-                    userContent: .parts([
-                        .text(colorPrompt), .imageURL(visionSolidBluePNGDataURI),
-                    ]),
-                    maxTokens: 16, stage: "blue")
-                #expect(!blueContent.isEmpty, "v2 vision request (blue) produced no content")
-                #expect(
-                    blueContent != redContent,
-                    Comment(
-                        rawValue: "red and blue images produced IDENTICAL v2 completions "
-                            + "(\(redContent.debugDescription)) — vision embeddings are not "
-                            + "reaching the model"))
+            // Embedding steering: different pixels, same prompt ⇒ the
+            // completions must differ.
+            let blueContent = try await streamVisionThroughV2(
+                slot: slot,
+                userContent: .parts([
+                    .text(colorPrompt), .imageURL(visionSolidBluePNGDataURI),
+                ]),
+                maxTokens: 16, stage: "blue")
+            #expect(!blueContent.isEmpty, "v2 vision request (blue) produced no content")
+            #expect(
+                blueContent != redContent,
+                Comment(
+                    rawValue: "red and blue images produced IDENTICAL v2 completions "
+                        + "(\(redContent.debugDescription)) — vision embeddings are not "
+                        + "reaching the model"))
+            print(
+                "[gemma-vlm-vision-v2] red: v2=\(redContent.debugDescription) "
+                    + "blue: v2=\(blueContent.debugDescription)")
 
-                // Legacy-vs-v2 for the same input: logged; asserted only
-                // qualitatively (see the file header for the RoPE reasoning).
-                let legacyRedContent = try await streamText(
-                    slot: slot, bridge: nil,
-                    userContent: .parts([
-                        .text(colorPrompt), .imageURL(visionSolidRedPNGDataURI),
-                    ]),
-                    maxTokens: 16)
-                print(
-                    "[gemma-vlm-vision-v2] red: v2=\(redContent.debugDescription) "
-                        + "legacy=\(legacyRedContent.debugDescription) "
-                        + (redContent == legacyRedContent
-                            ? "(token-exact)" : "(diverged — expected, RoPE)"))
-                print("[gemma-vlm-vision-v2] blue: v2=\(blueContent.debugDescription)")
-                #expect(!legacyRedContent.isEmpty, "legacy vision reference produced no content")
-
-                // (b) INTERLEAVE HYGIENE. The legacy vision request above
-                // already ran between v2 decodes; assert the v2 text decode
-                // is unchanged after BOTH interleave kinds.
-                let v2TextAfterLegacyVision = try await streamText(
-                    slot: slot, bridge: bridge, userContent: textPrompt, maxTokens: 32)
-                #expect(
-                    v2TextAfterLegacyVision == v2Text,
-                    Comment(
-                        rawValue: "v2 text decode changed after an interleaved legacy vision "
-                            + "request: before=\(v2Text.debugDescription) "
-                            + "after=\(v2TextAfterLegacyVision.debugDescription)"))
-
-                _ = try await streamVisionThroughV2(
-                    slot: slot, bridge: bridge,
-                    userContent: .parts([
-                        .text(colorPrompt), .imageURL(visionSolidRedPNGDataURI),
-                    ]),
-                    maxTokens: 16, stage: "interleave")
-                let v2TextAfterV2Vision = try await streamText(
-                    slot: slot, bridge: bridge, userContent: textPrompt, maxTokens: 32)
-                #expect(
-                    v2TextAfterV2Vision == v2Text,
-                    Comment(
-                        rawValue: "v2 text decode changed after an interleaved v2 vision "
-                            + "request: before=\(v2Text.debugDescription) "
-                            + "after=\(v2TextAfterV2Vision.debugDescription)"))
-            }
+            // (b) INTERLEAVE HYGIENE: one more vision-through-v2 request
+            // directly before the text re-decode (the red/red2/blue
+            // requests above already interleaved the baseline); the v2
+            // text output must be byte-identical to the baseline.
+            _ = try await streamVisionThroughV2(
+                slot: slot,
+                userContent: .parts([
+                    .text(colorPrompt), .imageURL(visionSolidRedPNGDataURI),
+                ]),
+                maxTokens: 16, stage: "interleave")
+            let v2TextAfterV2Vision = try await streamText(
+                slot: slot, userContent: textPrompt, maxTokens: 32)
+            #expect(
+                v2TextAfterV2Vision == v2Text,
+                Comment(
+                    rawValue: "v2 text decode changed after an interleaved v2 vision "
+                        + "request: before=\(v2Text.debugDescription) "
+                        + "after=\(v2TextAfterV2Vision.debugDescription)"))
         }
     }
 
@@ -372,20 +289,18 @@ struct GemmaVLMVisionEngineV2LiveTests {
         .enabled(if: LiveInferenceFixtures.gemmaTestsEnabled)
     )
     func eightBitVisionThroughV2() async throws {
-        try await withVLMSlot(
+        try await withV2VLMSlot(
             modelID: Self.eightBitModelID, budgetBytes: 64 * 1024 * 1024 * 1024
         ) { slot in
-            try await withBridge(slot: slot) { bridge in
-                let redContent = try await streamVisionThroughV2(
-                    slot: slot, bridge: bridge,
-                    userContent: .parts([
-                        .text("What color is this image? Answer with one word."),
-                        .imageURL(visionSolidRedPNGDataURI),
-                    ]),
-                    maxTokens: 16, stage: "8bit.red")
-                #expect(!redContent.isEmpty, "v2 vision request produced no content")
-                print("[gemma-vlm-vision-v2] 8bit red: v2=\(redContent.debugDescription)")
-            }
+            let redContent = try await streamVisionThroughV2(
+                slot: slot,
+                userContent: .parts([
+                    .text("What color is this image? Answer with one word."),
+                    .imageURL(visionSolidRedPNGDataURI),
+                ]),
+                maxTokens: 16, stage: "8bit.red")
+            #expect(!redContent.isEmpty, "v2 vision request produced no content")
+            print("[gemma-vlm-vision-v2] 8bit red: v2=\(redContent.debugDescription)")
         }
     }
 }

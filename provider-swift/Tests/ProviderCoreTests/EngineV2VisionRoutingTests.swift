@@ -2,9 +2,8 @@
 //
 // Media-through-engine_v2 unit tests (v0.7.4 vision + v0.7.5 video/fail-
 // loud) — live-isolated style: a scripted in-process `CBv2Engine`, a real
-// (unloaded) `BatchScheduler`, a real `ModelContainer` over stub
-// model/processor/tokenizer, and an injected `EngineV2VisionPlumbing`
-// preparer. No model weights, no network.
+// `ModelContainer` over stub model/processor/tokenizer, and an injected
+// `EngineV2VisionPlumbing` preparer. No model weights, no network.
 //
 //   * Span carving: per-image and per-video-frame spans out of synthetic
 //     tokenized prompts (1 image, 2 images, adjacent images,
@@ -18,7 +17,7 @@
 //     construction failure REFUSES loudly (`engine_v2_vision_refusal`
 //     ERROR + `.requestRejected` → 503, never a legacy fallback);
 //     `MediaError` out of construction keeps its deterministic 4xx;
-//     non-bridged slots keep the legacy path.
+//     non-bridged slots fail LOUD (no legacy path remains).
 //   * Error mapping: submit-time `CBv2MultimodalError` → the canonical
 //     `multimodal_rejected:` message → `.multimodalRejected` → HTTP 400.
 
@@ -195,23 +194,26 @@ private func makeBridge(
     )
 }
 
-/// Build the routing engine over one VLM slot entry.
+/// Build the routing engine over one VLM slot entry. `visionGate` is the
+/// per-slot media memory gate; nil (the default for most routing tests)
+/// degrades to "always proceed" — reservation tests pass a gate over a
+/// real `GlobalKVCacheBudget`.
 private func makeRoutingEngine(
-    scheduler: BatchScheduler,
     container: ModelContainer?,
     bridge: EngineV2Bridge?,
-    plumbing: EngineV2VisionPlumbing?
+    plumbing: EngineV2VisionPlumbing?,
+    visionGate: VisionMemoryGate? = nil
 ) -> MultiModelBatchSchedulerEngine {
     MultiModelBatchSchedulerEngine(
         registryProvider: { @Sendable in
             [
                 "test/vlm-stub": .init(
-                    scheduler: scheduler,
                     tokenizer: TokenizerHandle(VisionStubTokenizer()),
                     modelType: "gemma4",
                     container: container,
                     isVLM: true,
-                    engineV2Bridge: bridge)
+                    engineV2Bridge: bridge,
+                    visionGate: visionGate)
             ]
         },
         defaultMaxTokens: 64,
@@ -243,12 +245,17 @@ private func collectContent(
     return content
 }
 
-private func makeUnloadedScheduler() -> BatchScheduler {
-    BatchScheduler(
-        maxConcurrentRequests: 4,
-        pendingTimeout: .seconds(30),
-        defaultMaxTokens: 64
-    )
+/// One media memory gate over a real 64 GiB `GlobalKVCacheBudget`, for the
+/// tests that assert reserve/release accounting on the media path (the
+/// budget-less routing tests pass no gate at all).
+private func makeBudgetedVisionGate() -> (gate: VisionMemoryGate, budget: GlobalKVCacheBudget) {
+    let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+        GlobalKVCacheBudget.MemorySnapshot(
+            total: 64 * 1024 * 1024 * 1024, active: 0, cache: 0, systemAvailable: .max)
+    }
+    let gate = VisionMemoryGate(
+        kvBudget: budget, fp16KVBytesPerToken: 1024, contextLength: 4096)
+    return (gate, budget)
 }
 
 // MARK: - Span carving
@@ -616,7 +623,7 @@ struct EngineV2VisionRoutingTests {
             emitTelemetry: { _ in }
         )
         let router = makeRoutingEngine(
-            scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
+            container: makeStubContainer(),
             bridge: bridge, plumbing: plumbing)
 
         let content = try await collectContent(
@@ -631,22 +638,13 @@ struct EngineV2VisionRoutingTests {
 
     @Test("v2 success path releases the vision memory reservation exactly once")
     func visionReservationReleasedOnV2Path() async throws {
-        // Real GlobalKVCacheBudget on the scheduler so reserveVisionRequest/
-        // releaseVisionRequest are NOT no-ops (the other routing tests run
-        // budget-less): after the v2 stream completes, no reservation may
+        // Real GlobalKVCacheBudget behind the slot's VisionMemoryGate so the
+        // media reservation is NOT a no-op (the other routing tests run
+        // gate-less): after the v2 stream completes, no reservation may
         // remain outstanding — a leak here would shrink admission headroom
         // one image request at a time. (The bridge itself runs without a
         // budget, so any outstanding bytes belong to the vision reservation.)
-        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
-            GlobalKVCacheBudget.MemorySnapshot(
-                total: 64 * 1024 * 1024 * 1024, active: 0, cache: 0, systemAvailable: .max)
-        }
-        let scheduler = BatchScheduler(
-            maxConcurrentRequests: 4,
-            pendingTimeout: .seconds(30),
-            defaultMaxTokens: 64,
-            kvBudget: budget
-        )
+        let (gate, budget) = makeBudgetedVisionGate()
         let engine = VisionScriptedEngine(
             script: .stream([
                 .delta(text: "ok", tokens: [10], logprobs: nil),
@@ -659,8 +657,8 @@ struct EngineV2VisionRoutingTests {
             emitTelemetry: { _ in }
         )
         let router = makeRoutingEngine(
-            scheduler: scheduler, container: makeStubContainer(),
-            bridge: bridge, plumbing: plumbing)
+            container: makeStubContainer(),
+            bridge: bridge, plumbing: plumbing, visionGate: gate)
 
         let content = try await collectContent(
             try await router.streamChatCompletion(request: imageRequest()))
@@ -671,19 +669,10 @@ struct EngineV2VisionRoutingTests {
     @Test("construction failure REFUSES loudly: ERROR telemetry + 503, no legacy fallback")
     func constructionFailureRefusesLoudly() async throws {
         struct PrepFailure: Error {}
-        // Real budget so the vision reservation is NOT a no-op: the refusal
-        // path must release it (a leak would shrink admission headroom one
-        // refused request at a time).
-        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
-            GlobalKVCacheBudget.MemorySnapshot(
-                total: 64 * 1024 * 1024 * 1024, active: 0, cache: 0, systemAvailable: .max)
-        }
-        let scheduler = BatchScheduler(
-            maxConcurrentRequests: 4,
-            pendingTimeout: .seconds(30),
-            defaultMaxTokens: 64,
-            kvBudget: budget
-        )
+        // Real budget behind the slot's gate so the vision reservation is
+        // NOT a no-op: the refusal path must release it (a leak would shrink
+        // admission headroom one refused request at a time).
+        let (gate, budget) = makeBudgetedVisionGate()
         let engine = VisionScriptedEngine(script: .stream([]))
         let bridge = makeBridge(engine: engine)
         let telemetry = VisionTelemetrySink()
@@ -692,12 +681,12 @@ struct EngineV2VisionRoutingTests {
             emitTelemetry: telemetry.callback()
         )
         let router = makeRoutingEngine(
-            scheduler: scheduler, container: makeStubContainer(),
-            bridge: bridge, plumbing: plumbing)
+            container: makeStubContainer(),
+            bridge: bridge, plumbing: plumbing, visionGate: gate)
 
-        // The stub container's processor throws VisionStubProcessorError on
-        // the legacy path — seeing `.requestRejected` instead is the proof
-        // the request was REFUSED, not re-served through legacy.
+        // The stub container's processor would throw VisionStubProcessorError
+        // if any fallback ever consulted it — seeing `.requestRejected`
+        // instead is the proof the request was REFUSED, never re-served.
         do {
             _ = try await collectContent(
                 try await router.streamChatCompletion(request: imageRequest()))
@@ -745,7 +734,7 @@ struct EngineV2VisionRoutingTests {
             emitTelemetry: telemetry.callback()
         )
         let router = makeRoutingEngine(
-            scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
+            container: makeStubContainer(),
             bridge: bridge, plumbing: plumbing)
 
         do {
@@ -779,7 +768,7 @@ struct EngineV2VisionRoutingTests {
             emitTelemetry: telemetry.callback()
         )
         let router = makeRoutingEngine(
-            scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
+            container: makeStubContainer(),
             bridge: bridge, plumbing: plumbing)
 
         do {
@@ -815,7 +804,7 @@ struct EngineV2VisionRoutingTests {
             emitTelemetry: telemetry.callback()
         )
         let router = makeRoutingEngine(
-            scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
+            container: makeStubContainer(),
             bridge: bridge, plumbing: plumbing)
 
         // Real tinyMP4 so validateMedia passes and the preparer is reached.
@@ -858,7 +847,7 @@ struct EngineV2VisionRoutingTests {
             emitTelemetry: { _ in }
         )
         let router = makeRoutingEngine(
-            scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
+            container: makeStubContainer(),
             bridge: nil, plumbing: plumbing)
         do {
             _ = try await collectContent(
@@ -893,7 +882,7 @@ struct EngineV2VisionRoutingTests {
             emitTelemetry: { _ in }
         )
         let router = makeRoutingEngine(
-            scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
+            container: makeStubContainer(),
             bridge: bridge, plumbing: plumbing)
 
         // The real tinyMP4 passes `validateMedia`'s AVFoundation probe, so
@@ -933,7 +922,7 @@ struct EngineV2VisionRoutingTests {
             emitTelemetry: { _ in }
         )
         let router = makeRoutingEngine(
-            scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
+            container: makeStubContainer(),
             bridge: bridge, plumbing: plumbing)
         // The garbage inline video dies in `validateMedia` (a 400-class
         // MediaError) BEFORE the v2 attempt — the preparer must not fire
@@ -971,7 +960,7 @@ struct EngineV2VisionRoutingTests {
             emitTelemetry: { _ in }
         )
         let router = makeRoutingEngine(
-            scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
+            container: makeStubContainer(),
             bridge: bridge, plumbing: plumbing)
         let request = OpenAIChatCompletionRequest(
             model: "test/vlm-stub",
@@ -998,16 +987,7 @@ struct EngineV2VisionRoutingTests {
         // .inferenceError (which would count as a provider fault and trip
         // the (provider, model) 5xx routing cooldown for a client's own
         // cancel).
-        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
-            GlobalKVCacheBudget.MemorySnapshot(
-                total: 64 * 1024 * 1024 * 1024, active: 0, cache: 0, systemAvailable: .max)
-        }
-        let scheduler = BatchScheduler(
-            maxConcurrentRequests: 4,
-            pendingTimeout: .seconds(30),
-            defaultMaxTokens: 64,
-            kvBudget: budget
-        )
+        let (gate, budget) = makeBudgetedVisionGate()
         let engine = VisionScriptedEngine(script: .stream([]))
         let bridge = makeBridge(engine: engine)
         let telemetry = VisionTelemetrySink()
@@ -1021,12 +1001,12 @@ struct EngineV2VisionRoutingTests {
             registryProvider: { @Sendable in
                 [
                     "test/vlm-stub": .init(
-                        scheduler: scheduler,
                         tokenizer: TokenizerHandle(VisionStubTokenizer()),
                         modelType: "gemma4",
                         container: container,
                         isVLM: true,
-                        engineV2Bridge: bridge)
+                        engineV2Bridge: bridge,
+                        visionGate: gate)
                 ]
             },
             releaseModel: { @Sendable _ in releaseCount.increment() },
@@ -1070,7 +1050,7 @@ struct EngineV2VisionRoutingTests {
             emitTelemetry: { _ in }
         )
         let router = makeRoutingEngine(
-            scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
+            container: makeStubContainer(),
             bridge: bridge, plumbing: plumbing)
 
         do {

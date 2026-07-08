@@ -4,8 +4,8 @@
 // text-model extraction, on the EXACT checkpoints production serves
 // (gemma-4-26b-qat-4bit / gemma-4-26b-8bit — both ship a vision tower, so
 // the provider loads them through VLMModelFactory exactly like
-// `ProviderLoop.loadModelContainer`). Three stages, mirroring the prod
-// serving paths:
+// `ProviderLoop.loadModelContainer`). Two stages, mirroring the prod
+// serving path (updated for the v0.7.5 ONE-ENGINE release):
 //
 //   (a) EXTRACTION + PARITY — extract the CBv2-adapted MLXLLM
 //       `Gemma4TextModel` over the wrapper's weight arrays; the extraction
@@ -15,21 +15,21 @@
 //       |Δlogit| bounded — see EngineV2VLMTextExtraction for why token-exact
 //       WRAPPER parity is structurally unattainable).
 //
-//   (b) V2 == LEGACY GREEDY — the SAME tokenized prompt through the REAL
-//       `EngineV2` over the extracted model (via `EngineV2Bridge` +
-//       `MultiModelBatchSchedulerEngine`, the production seam) must produce
-//       the same greedy completion as the legacy `BatchScheduler` over the
-//       SAME extracted module instance (the engine-repo v2==legacy invariant,
-//       here on prod weights); the wrapper's own legacy output is logged for
-//       reference.
+//   (b) V2 SERVE — the extracted model must serve a text request through
+//       the REAL production seam (`EngineV2Bridge` +
+//       `MultiModelBatchSchedulerEngine.streamChatCompletion`, the exact
+//       engine construction the slot factory performs after its own
+//       extraction): non-empty greedy output, byte-identical across two
+//       identical submissions.
 //
-//   (c) INTERLEAVE HYGIENE — a legacy VISION request (real image through the
-//       wrapper's prepare/generate path) sandwiched between two identical v2
-//       text decodes must not perturb the v2 output (the Qwen3.5-mrope
-//       regression pattern from StartupSelfTestDecodeLiveTests: shared
-//       module state corrupting the "other" path). The extracted model is a
-//       separate module instance sharing only immutable weight arrays, so
-//       this must hold structurally.
+// DELETED with the legacy engine (v0.7.5 one-engine): the "v2 == legacy
+// greedy" stage (its reference — a legacy `BatchScheduler` run over the
+// same extracted module — no longer exists; the engine-repo v2-vs-legacy
+// invariant it verified died with the legacy engine) and the legacy-vision
+// interleave stage (media on a slot without a v2 bridge now throws the
+// fail-loud "no serving engine for media" error instead of serving via the
+// wrapper; vision-through-v2 interleave hygiene is pinned by
+// GemmaVLMVisionEngineV2LiveTests).
 //
 // Gated like the other multi-GB Gemma tests: DARKBLOOM_LIVE_MLX_TESTS +
 // DARKBLOOM_LIVE_MLX_GEMMA, and each checkpoint is skipped cleanly when not
@@ -45,16 +45,6 @@ import Testing
 
 @testable import ProviderCore
 
-// A real, round-trip-verified 1x1 PNG (red pixel) — same fixture as
-// MediaIngestTests. The Gemma4 processor upsizes it to the minimum
-// patch grid, so it exercises the full vision tower cheaply.
-private let interleaveTinyPNGDataURI =
-    "data:image/png;base64,"
-    + "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAAXNSR0IArs4c6QAAAERl"
-    + "WElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAAB"
-    + "AAAAAaADAAQAAAABAAAAAQAAAAD5Ip3+AAAADElEQVQIHWP4z8AAAAMBAQBb2/lEAAAA"
-    + "AElFTkSuQmCC"
-
 @Suite("Gemma 4 VLM engine_v2 extraction (live)", .serialized)
 struct GemmaVLMEngineV2LiveTests {
 
@@ -69,15 +59,17 @@ struct GemmaVLMEngineV2LiveTests {
         let modelID: String
         let directory: URL
         let container: ModelContainer
-        let scheduler: BatchScheduler
         let tokenizer: TokenizerHandle
         let model: any LanguageModel
         let eosTokenIds: Set<Int>
     }
 
     /// Load a checkpoint EXACTLY the way the provider does for a VLM slot:
-    /// `VLMModelFactory` + `BatchScheduler.loadModel` (the legacy engine the
-    /// slot retains for fallback + vision requests).
+    /// `VLMModelFactory` (the container the vision tower lives in). Loaded
+    /// BY HAND rather than through `LiveInferenceFixtures.loadBridge`
+    /// because stage (a) must run the extraction ITSELF, on the raw wrapper
+    /// handle, with clean before/after memory readings — the fixture's
+    /// production bridge would run the extraction internally first.
     private func loadVLMSlot(modelID: String, budgetBytes: Int) async throws -> LoadedVLMSlot {
         guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
             throw LiveFixtureSkip.missingMetallib
@@ -92,13 +84,6 @@ struct GemmaVLMEngineV2LiveTests {
 
         let container = try await VLMModelFactory.shared.loadContainer(
             from: directory, using: LocalTokenizerLoader())
-        let scheduler = BatchScheduler(
-            maxConcurrentRequests: 4,
-            pendingTimeout: .seconds(300),
-            defaultMaxTokens: 256
-        )
-        await scheduler.loadModel(container: container, modelId: modelID)
-
         let snapshot = await container.perform { ctx in
             EngineV2ModelSnapshot(
                 model: ctx.model,
@@ -112,18 +97,17 @@ struct GemmaVLMEngineV2LiveTests {
             modelID: modelID,
             directory: directory,
             container: container,
-            scheduler: scheduler,
             tokenizer: tokenizer,
             model: snapshot.model,
             eosTokenIds: snapshot.eosTokenIds
         )
     }
 
-    /// Load a VLM slot, run `body`, and AWAIT the scheduler unload on every
-    /// exit path (success or throw). A `defer { Task { … } }` teardown is
-    /// unstructured — the test returns while the multi-GB unload (and its
-    /// `clearCache`) races the NEXT test's load, which can double-resident
-    /// two checkpoints and OOM the suite. Structured teardown serializes it.
+    /// Load a VLM slot, run `body`, and trim the MLX pool on every exit
+    /// path. The multi-GB residency itself dies with `slot` (the container
+    /// is the only retainer — the legacy scheduler that used to co-own it
+    /// is deleted); the pool trim keeps the NEXT serialized test's load
+    /// from stacking on this one's buffer garbage.
     private func withLoadedVLMSlot(
         modelID: String, budgetBytes: Int,
         _ body: (LoadedVLMSlot) async throws -> Void
@@ -132,10 +116,10 @@ struct GemmaVLMEngineV2LiveTests {
         do {
             try await body(slot)
         } catch {
-            await slot.scheduler.unloadModel()
+            MLX.Memory.clearCache()
             throw error
         }
-        await slot.scheduler.unloadModel()
+        MLX.Memory.clearCache()
     }
 
     /// Stage (a): weight-sharing extraction + the load-time parity gate.
@@ -150,7 +134,7 @@ struct GemmaVLMEngineV2LiveTests {
     ///   * PARITY GATE — extract again with the gate ON (production default)
     ///     and require it to pass and report a bounded max |Δlogit|. Both
     ///     extractions share the same wrapper arrays, so this is not a second
-    ///     copy either; the returned model is the one stages (b)/(c) use.
+    ///     copy either; the returned model is the one stage (b) serves.
     private func runExtractionStage(
         _ slot: LoadedVLMSlot
     ) throws -> EngineV2VLMTextExtraction.Extraction {
@@ -170,8 +154,8 @@ struct GemmaVLMEngineV2LiveTests {
                     + "(> 1.5 GiB) — weights or a module cache were duplicated "
                     + "instead of shared"))
 
-        // Parity gate (production default env). Returns the model stages
-        // (b)/(c) run on.
+        // Parity gate (production default env). Returns the model stage
+        // (b) runs on.
         let extraction = try EngineV2VLMTextExtraction.extractTextModel(
             from: slot.model, modelDirectory: slot.directory)
         let diff = try #require(
@@ -182,29 +166,28 @@ struct GemmaVLMEngineV2LiveTests {
         return extraction
     }
 
-    /// Drive one OpenAI-shaped request through the production routing seam
-    /// (`MultiModelBatchSchedulerEngine.streamChatCompletion`) over an
-    /// arbitrary registry entry and join the streamed content.
+    /// Drive one OpenAI-shaped text request through the production routing
+    /// seam (`MultiModelBatchSchedulerEngine.streamChatCompletion`) over
+    /// the slot's one-engine registry entry and join the streamed content.
     private func streamText(
-        modelID: String,
-        scheduler: BatchScheduler,
-        tokenizer: TokenizerHandle,
-        container: ModelContainer?,
-        isVLM: Bool,
-        modelType: String,
-        bridge: EngineV2Bridge?,
+        slot: LoadedVLMSlot,
+        bridge: EngineV2Bridge,
         userContent: OpenAIMessageContent,
         maxTokens: Int
     ) async throws -> String {
+        // Destructure the Sendable pieces — `LoadedVLMSlot.model` (the raw
+        // module handle) must not cross into the @Sendable registry closure.
+        let modelID = slot.modelID
+        let tokenizer = slot.tokenizer
+        let container = slot.container
         let engine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
                     modelID: .init(
-                        scheduler: scheduler,
                         tokenizer: tokenizer,
-                        modelType: modelType,
+                        modelType: "gemma4",
                         container: container,
-                        isVLM: isVLM,
+                        isVLM: true,
                         engineV2Bridge: bridge)
                 ]
             },
@@ -225,62 +208,10 @@ struct GemmaVLMEngineV2LiveTests {
         return content
     }
 
-    /// Convenience: stream over the loaded VLM slot's own entry (the shape
-    /// the provider registers for a Gemma 4 slot).
-    private func streamText(
-        slot: LoadedVLMSlot,
-        bridge: EngineV2Bridge?,
-        userContent: OpenAIMessageContent,
-        maxTokens: Int
-    ) async throws -> String {
-        try await streamText(
-            modelID: slot.modelID,
-            scheduler: slot.scheduler,
-            tokenizer: slot.tokenizer,
-            container: slot.container,
-            isVLM: true,
-            modelType: "gemma4",
-            bridge: bridge,
-            userContent: userContent,
-            maxTokens: maxTokens)
-    }
-
-    /// Build a LEGACY `BatchScheduler` over the EXTRACTED text model via a
-    /// synthetic text-only container — the reference for the token-exact
-    /// engine-equivalence check in stage (b): the real EngineV2 and the
-    /// legacy BatchedEngine, run over the SAME module instance, must agree
-    /// exactly on greedy decode (the engine-repo v2-vs-legacy invariant,
-    /// verified here on prod weights through the provider's own seams).
-    private func makeExtractedTextScheduler(
-        slot: LoadedVLMSlot, extracted: Gemma4TextModel
-    ) async -> BatchScheduler {
-        struct NeverCalledProcessor: UserInputProcessor {
-            struct NotSupported: Error {}
-            func prepare(input: UserInput) async throws -> LMInput { throw NotSupported() }
-        }
-        // Thread the slot's EOS set into the config so the legacy scheduler
-        // stops at the SAME turn-end token the v2 bridge does — otherwise the
-        // token-exact comparison trips on stop config, not on decode.
-        let context = ModelContext(
-            configuration: ModelConfiguration(
-                directory: slot.directory, eosTokenIds: slot.eosTokenIds),
-            model: extracted,
-            processor: NeverCalledProcessor(),
-            tokenizer: slot.tokenizer.inner
-        )
-        let container = ModelContainer(context: context)
-        let scheduler = BatchScheduler(
-            maxConcurrentRequests: 4,
-            pendingTimeout: .seconds(300),
-            defaultMaxTokens: 256
-        )
-        await scheduler.loadModel(container: container, modelId: slot.modelID + "#extracted-text")
-        return scheduler
-    }
-
     /// Build the REAL production v2 engine + bridge over the extracted text
-    /// model (same constructor path as `EngineV2Factory.makeProductionEngine`
-    /// from the slot factory).
+    /// model — the same construction `EngineV2SlotFactory.makeProductionBridge`
+    /// performs right after ITS extraction, so stage (b) serves through the
+    /// exact one-engine seam production uses.
     private func makeBridge(
         slot: LoadedVLMSlot, extracted: Gemma4TextModel
     ) throws -> EngineV2Bridge {
@@ -297,140 +228,76 @@ struct GemmaVLMEngineV2LiveTests {
         )
     }
 
-    // MARK: - qat-4bit: full pipeline (extraction, v2==legacy, interleave)
-
-    @Test(
-        "qat-4bit: extraction parity, v2==legacy greedy, vision interleave hygiene",
-        .enabled(if: LiveInferenceFixtures.gemmaTestsEnabled)
-    )
-    func qat4bitFullPipeline() async throws {
-        try await withLoadedVLMSlot(
-            modelID: Self.qat4bitModelID, budgetBytes: 48 * 1024 * 1024 * 1024
-        ) { slot in
-            try await runQat4bitFullPipeline(slot)
+    /// Structured bridge lifecycle: `shutdown()` (engine drain + pump
+    /// teardown) awaited on every exit path.
+    private func withBridge(
+        slot: LoadedVLMSlot, extracted: Gemma4TextModel,
+        _ body: (EngineV2Bridge) async throws -> Void
+    ) async throws {
+        let bridge = try makeBridge(slot: slot, extracted: extracted)
+        do {
+            try await body(bridge)
+        } catch {
+            await bridge.shutdown()
+            throw error
         }
+        await bridge.shutdown()
     }
 
-    private func runQat4bitFullPipeline(_ slot: LoadedVLMSlot) async throws {
+    /// Stages (a)+(b) for one checkpoint: measured extraction + parity
+    /// gate, then greedy serve determinism through the production seam.
+    private func runExtractionAndV2Serve(_ slot: LoadedVLMSlot) async throws {
         // (a) extraction + load-time parity gate + weight-sharing invariant.
         let extraction = try runExtractionStage(slot)
 
-        // (b) engine equivalence, token-exact: the REAL EngineV2 over the
-        //     extracted model must reproduce the legacy BatchedEngine over
-        //     the SAME extracted module instance exactly on greedy decode.
-        //     The wrapper's legacy path is compared qualitatively only —
-        //     token-exact wrapper parity is structurally unattainable (bf16
-        //     kernel-order noise flips near-tie MoE expert picks, and the
-        //     wrapper mis-implements the checkpoint's `rope_type:
-        //     "proportional"`; see EngineV2VLMTextExtraction).
-        let prompt = OpenAIMessageContent.text(
-            "Count from one to five as digits separated by commas.")
-        let wrapperLegacyText = try await streamText(
-            slot: slot, bridge: nil, userContent: prompt, maxTokens: 32)
-        #expect(!wrapperLegacyText.isEmpty, "wrapper legacy text path produced no content")
+        // (b) v2 serve: the extracted model, behind the real EngineV2
+        //     bridge, must produce non-empty greedy output through the
+        //     production routing seam — and byte-identical output for two
+        //     identical submissions (greedy decode is deterministic).
+        try await withBridge(slot: slot, extracted: extraction.model) { bridge in
+            let prompt = OpenAIMessageContent.text(
+                "Count from one to five as digits separated by commas.")
+            let v2Text = try await streamText(
+                slot: slot, bridge: bridge, userContent: prompt, maxTokens: 32)
+            #expect(!v2Text.isEmpty, "v2 text serve over the extracted model produced no content")
 
-        let textRefScheduler = await makeExtractedTextScheduler(
-            slot: slot, extracted: extraction.model)
-        let legacyExtractedText = try await streamText(
-            modelID: slot.modelID,
-            scheduler: textRefScheduler,
-            tokenizer: slot.tokenizer,
-            container: nil,
-            isVLM: false,
-            modelType: "gemma4_text",
-            bridge: nil,
-            userContent: prompt,
-            maxTokens: 32)
-        #expect(!legacyExtractedText.isEmpty, "extracted-model legacy path produced no content")
-
-        let bridge = try makeBridge(slot: slot, extracted: extraction.model)
-        let v2Text = try await streamText(
-            slot: slot, bridge: bridge, userContent: prompt, maxTokens: 32)
-        print("[gemma-vlm-v2] wrapperLegacy=\(wrapperLegacyText.debugDescription)")
-        print("[gemma-vlm-v2] legacyExtracted=\(legacyExtractedText.debugDescription)")
-        print("[gemma-vlm-v2] v2=\(v2Text.debugDescription)")
-        #expect(
-            v2Text == legacyExtractedText,
-            Comment(
-                rawValue: "v2 greedy diverged from legacy greedy on the SAME extracted model: "
-                    + "v2=\(v2Text.debugDescription) "
-                    + "legacy=\(legacyExtractedText.debugDescription)"))
-        await textRefScheduler.unloadModel()
-
-        // (c) interleave hygiene: legacy VISION request between two identical
-        //     v2 text decodes; the v2 output must be unchanged and the vision
-        //     request must stream real content through the wrapper.
-        let visionContent = try await streamText(
-            slot: slot, bridge: bridge,
-            userContent: .parts([
-                .text("What color is this image? Answer with one word."),
-                .imageURL(interleaveTinyPNGDataURI),
-            ]),
-            maxTokens: 16)
-        #expect(!visionContent.isEmpty, "vision request through the legacy path produced no content")
-
-        let v2TextAfterVision = try await streamText(
-            slot: slot, bridge: bridge, userContent: prompt, maxTokens: 32)
-        #expect(
-            v2TextAfterVision == v2Text,
-            Comment(
-                rawValue: "v2 text decode changed after an interleaved vision request: "
-                    + "before=\(v2Text.debugDescription) after=\(v2TextAfterVision.debugDescription)"))
-
-        await bridge.shutdown()
-    }
-
-    // MARK: - 8bit: extraction parity + v2==legacy greedy
-
-    @Test(
-        "8bit: extraction parity and v2==legacy greedy",
-        .enabled(if: LiveInferenceFixtures.gemmaTestsEnabled)
-    )
-    func eightBitExtractionAndGreedyParity() async throws {
-        try await withLoadedVLMSlot(
-            modelID: Self.eightBitModelID, budgetBytes: 64 * 1024 * 1024 * 1024
-        ) { slot in
-            try await runEightBitExtractionAndGreedyParity(slot)
+            let v2TextAgain = try await streamText(
+                slot: slot, bridge: bridge, userContent: prompt, maxTokens: 32)
+            print("[gemma-vlm-v2] v2=\(v2Text.debugDescription)")
+            #expect(
+                v2TextAgain == v2Text,
+                Comment(
+                    rawValue: "v2 greedy decode over the extracted model is "
+                        + "non-deterministic: \(v2Text.debugDescription) vs "
+                        + "\(v2TextAgain.debugDescription)"))
         }
     }
 
-    private func runEightBitExtractionAndGreedyParity(_ slot: LoadedVLMSlot) async throws {
-        let extraction = try runExtractionStage(slot)
+    // MARK: - qat-4bit: extraction parity + v2 serve
 
-        let prompt = OpenAIMessageContent.text(
-            "Count from one to five as digits separated by commas.")
-        let wrapperLegacyText = try await streamText(
-            slot: slot, bridge: nil, userContent: prompt, maxTokens: 32)
-        #expect(!wrapperLegacyText.isEmpty, "wrapper legacy text path produced no content")
+    @Test(
+        "qat-4bit: extraction parity and v2 serve determinism",
+        .enabled(if: LiveInferenceFixtures.gemmaTestsEnabled)
+    )
+    func qat4bitExtractionAndV2Serve() async throws {
+        try await withLoadedVLMSlot(
+            modelID: Self.qat4bitModelID, budgetBytes: 48 * 1024 * 1024 * 1024
+        ) { slot in
+            try await runExtractionAndV2Serve(slot)
+        }
+    }
 
-        let textRefScheduler = await makeExtractedTextScheduler(
-            slot: slot, extracted: extraction.model)
-        let legacyExtractedText = try await streamText(
-            modelID: slot.modelID,
-            scheduler: textRefScheduler,
-            tokenizer: slot.tokenizer,
-            container: nil,
-            isVLM: false,
-            modelType: "gemma4_text",
-            bridge: nil,
-            userContent: prompt,
-            maxTokens: 32)
-        #expect(!legacyExtractedText.isEmpty, "extracted-model legacy path produced no content")
+    // MARK: - 8bit: extraction parity + v2 serve
 
-        let bridge = try makeBridge(slot: slot, extracted: extraction.model)
-        let v2Text = try await streamText(
-            slot: slot, bridge: bridge, userContent: prompt, maxTokens: 32)
-        print("[gemma-vlm-v2] wrapperLegacy=\(wrapperLegacyText.debugDescription)")
-        print("[gemma-vlm-v2] legacyExtracted=\(legacyExtractedText.debugDescription)")
-        print("[gemma-vlm-v2] v2=\(v2Text.debugDescription)")
-        #expect(
-            v2Text == legacyExtractedText,
-            Comment(
-                rawValue: "v2 greedy diverged from legacy greedy on the SAME extracted model: "
-                    + "v2=\(v2Text.debugDescription) "
-                    + "legacy=\(legacyExtractedText.debugDescription)"))
-        await textRefScheduler.unloadModel()
-
-        await bridge.shutdown()
+    @Test(
+        "8bit: extraction parity and v2 serve determinism",
+        .enabled(if: LiveInferenceFixtures.gemmaTestsEnabled)
+    )
+    func eightBitExtractionAndV2Serve() async throws {
+        try await withLoadedVLMSlot(
+            modelID: Self.eightBitModelID, budgetBytes: 64 * 1024 * 1024 * 1024
+        ) { slot in
+            try await runExtractionAndV2Serve(slot)
+        }
     }
 }

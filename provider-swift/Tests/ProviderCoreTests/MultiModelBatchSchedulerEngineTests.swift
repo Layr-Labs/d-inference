@@ -4,11 +4,11 @@ import Testing
 @testable import ProviderCore
 
 // Unit tests for the `MLXServerEngine` adapter that bridges the
-// multi-model `BatchScheduler` registry to the upstream MLXLMServer
-// runtime. We can't easily construct a real `BatchScheduler` without
-// loading a model, so these tests focus on the dispatch + translation
-// + lifecycle hooks that don't require a live engine. End-to-end
-// generation is covered by the live test suites.
+// multi-model slot registry (one `EngineV2Bridge` per entry as of the
+// v0.7.5 one-engine shape) to the upstream MLXLMServer runtime. These
+// tests focus on the dispatch + translation + lifecycle hooks that
+// don't require a live engine. End-to-end generation is covered by the
+// live test suites.
 
 @Test("availableModels reports the registry keys sorted")
 func multiModelEngineReportsRegistry() async throws {
@@ -21,10 +21,8 @@ func multiModelEngineReportsRegistry() async throws {
 
 @Test("availableModels returns sorted ids")
 func multiModelEngineReturnsSortedIDs() async throws {
-    // We can't construct a real BatchScheduler synchronously, so we
-    // can't put real entries into the registry. Verify the empty path
-    // first; the sort property is documented and tested via end-to-end
-    // live tests where real schedulers are present.
+    // Verify the empty path; the sort property is documented and tested
+    // via end-to-end live tests where real engine slots are present.
     let engine = MultiModelBatchSchedulerEngine(
         registryProvider: { @Sendable in [:] }
     )
@@ -89,7 +87,7 @@ func multiModelEngineTokenizeWithoutModelThrows() async throws {
     }
 }
 
-@Test("translate maps OpenAI fields onto the legacy ChatCompletionRequest")
+@Test("translate maps OpenAI fields onto the internal ChatCompletionRequest")
 func multiModelEngineTranslatesRequestFields() {
     let request = OpenAIChatCompletionRequest(
         model: "mlx-community/Qwen3-0.6B",
@@ -189,14 +187,14 @@ func multiModelEngineTranslateOverlaysSamplingFields() {
     #expect(sampling.seed == 1234)
 }
 
-// MARK: - Scheduler error mapping (P2 #6)
+// MARK: - Engine error mapping (P2 #6)
 //
 // Pins the `MultiModelBatchSchedulerEngineError.fromSchedulerMessage`
-// translator that converts `BatchScheduler` `.error(message)` payloads
-// into typed errors so `ProviderLoop.mapInferenceErrorToStatus` can
-// return 429/503 instead of collapsing every admission failure into
-// 500. The string prefixes here MUST stay in sync with the messages
-// emitted by `BatchScheduler.submit` and the planner.
+// translator that converts engine `.error(message)` payloads into typed
+// errors so `ProviderLoop.mapInferenceErrorToStatus` can return 429/503
+// instead of collapsing every admission failure into 500. The string
+// prefixes here MUST stay in sync with the `token_budget_exhausted:`
+// message contract `EngineV2Bridge` and `EngineV2Translation` emit.
 
 @Test("fromSchedulerMessage maps 'queue full' to .queueFull (429)")
 func fromSchedulerMessageMapsQueueFull() {
@@ -279,7 +277,7 @@ func invalidToolPayloadMapsToBadRequest() {
 
 @Test("GPT-OSS Harmony EOS includes return and call tokens")
 func gptOssHarmonyEOSIncludesCallAndReturnTokens() {
-    let ids = BatchScheduler.effectiveEOSTokenIds(
+    let ids = ModelEOSPolicy.effectiveEOSTokenIds(
         modelId: "mlx-community/gpt-oss-20b-MXFP4-Q8",
         base: []
     ) { token in
@@ -296,7 +294,7 @@ func gptOssHarmonyEOSIncludesCallAndReturnTokens() {
 
 @Test("Harmony EOS can be detected from model_type for aliased GPT-OSS models")
 func harmonyEOSUsesModelTypeForAliasedModels() {
-    let ids = BatchScheduler.effectiveEOSTokenIds(
+    let ids = ModelEOSPolicy.effectiveEOSTokenIds(
         modelId: "local-alias",
         modelType: "gpt_oss",
         base: []
@@ -314,7 +312,7 @@ func harmonyEOSUsesModelTypeForAliasedModels() {
 
 @Test("non-Harmony EOS set is unchanged")
 func nonHarmonyEOSIsUnchanged() {
-    let ids = BatchScheduler.effectiveEOSTokenIds(
+    let ids = ModelEOSPolicy.effectiveEOSTokenIds(
         modelId: "mlx-community/Qwen3-0.6B",
         base: [151645]
     ) { _ in 200012 }

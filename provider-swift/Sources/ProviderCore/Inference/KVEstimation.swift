@@ -186,9 +186,6 @@ public enum KVEstimation {
     ///   `globalHeadDim` / `numGlobalKvHeads`.
     /// - **Standard models** (Llama, Qwen, Mistral, Gemma 2): all layers
     ///   are uniform; degenerates to `cachedLayers * kvHeads * headDim * 4`.
-    /// - **KV quantization** (Gemma 4 v1): full-attention layer bytes are
-    ///   scaled by the scheme's effective bytes-vs-fp16 ratio; sliding-window
-    ///   layers stay fp16.
     static func computeKVBytesPerToken(
         numLayers: Int,
         kvHeads: Int,
@@ -197,8 +194,7 @@ public enum KVEstimation {
         globalHeadDim: Int?,
         numGlobalKvHeads: Int?,
         slidingWindowPattern: Int?,
-        layerTypes: [String]?,
-        quantScheme: KVQuantEngineScheme? = nil
+        layerTypes: [String]?
     ) -> Int {
         let bytesPerElement = 2  // float16
         let kvTensors = 2        // K + V
@@ -225,8 +221,7 @@ public enum KVEstimation {
                 numGlobalKvHeads: numGlobalKvHeads,
                 hasHybridDims: hasHybridDims,
                 bytesPerElement: bytesPerElement,
-                kvTensors: kvTensors,
-                quantScheme: quantScheme
+                kvTensors: kvTensors
             )
         }
 
@@ -234,13 +229,11 @@ public enum KVEstimation {
         // larger dimension across all cached layers.
         if let ghd = globalHeadDim, ghd > headDim {
             let maxKvHeads = max(kvHeads, numGlobalKvHeads ?? kvHeads)
-            let fp16Bytes = cachedLayers * maxKvHeads * ghd * kvTensors * bytesPerElement
-            return quantBytes(fp16Bytes, quantScheme: quantScheme)
+            return cachedLayers * maxKvHeads * ghd * kvTensors * bytesPerElement
         }
 
         // Uniform full-attention (Llama, Qwen, Mistral, Gemma 2).
-        let fp16Bytes = cachedLayers * kvHeads * headDim * kvTensors * bytesPerElement
-        return quantBytes(fp16Bytes, quantScheme: quantScheme)
+        return cachedLayers * kvHeads * headDim * kvTensors * bytesPerElement
     }
 
     // MARK: - Internal helpers
@@ -282,7 +275,7 @@ public enum KVEstimation {
     /// overestimates by up to 2x for models like GPT-OSS 20B (50% sliding)
     /// and Gemma 4 (similar hybrid layout).
     ///
-    /// When `quantScheme` is provided, full-attention layer bytes are scaled
+    /// v0.7.5: KV caches are fp16-only (KV-quant died with the legacy
     /// by the scheme's effective bytes-vs-fp16 ratio; sliding and recurrent
     /// layers stay fp16.
     private static func totalHybridBytesPerToken(
@@ -294,8 +287,7 @@ public enum KVEstimation {
         numGlobalKvHeads: Int?,
         hasHybridDims: Bool,
         bytesPerElement: Int,
-        kvTensors: Int,
-        quantScheme: KVQuantEngineScheme?
+        kvTensors: Int
     ) -> Int {
         var totalBytesPerToken = 0
         for i in 0..<cachedLayers {
@@ -323,17 +315,13 @@ public enum KVEstimation {
             }
 
             let fp16LayerBytes = layerKvHeads * layerHeadDim * kvTensors * bytesPerElement
-            totalBytesPerToken += quantBytes(fp16LayerBytes, quantScheme: quantScheme)
+            totalBytesPerToken += fp16LayerBytes
         }
         return totalBytesPerToken
     }
 
     /// Apply a KV-quantization byte-reduction ratio to an fp16 byte count.
     /// Returns the original bytes when no scheme is supplied.
-    private static func quantBytes(_ fp16Bytes: Int, quantScheme: KVQuantEngineScheme?) -> Int {
-        guard let quantScheme else { return fp16Bytes }
-        return Int((Double(fp16Bytes) * quantScheme.bytesRatioVsFP16).rounded())
-    }
 
     private static let slidingLayerTypes: Set<String> = [
         "sliding_attention",
@@ -350,13 +338,9 @@ extension KVEstimation {
     /// when config-derived numbers are implausibly small (which would
     /// otherwise inflate the token budget and OOM the GPU).
     ///
-    /// When `quantScheme` is non-nil, full-attention layers are charged at
-    /// the scheme's effective byte ratio so admission grants the reduced
-    /// memory footprint.
     public static func resolvedKVBytesPerToken(
         architecture: ModelArchitecture,
-        weightBytes: Int,
-        quantScheme: KVQuantEngineScheme? = nil
+        weightBytes: Int
     ) -> Int {
         let estimatedKV: Int
         if let layers = architecture.numLayers,
@@ -371,8 +355,7 @@ extension KVEstimation {
                 globalHeadDim: architecture.globalHeadDim,
                 numGlobalKvHeads: architecture.numGlobalKvHeads,
                 slidingWindowPattern: architecture.slidingWindowPattern,
-                layerTypes: architecture.layerTypes,
-                quantScheme: quantScheme
+                layerTypes: architecture.layerTypes
             )
         } else {
             estimatedKV = max(weightBytes / 25_000, 100_000)

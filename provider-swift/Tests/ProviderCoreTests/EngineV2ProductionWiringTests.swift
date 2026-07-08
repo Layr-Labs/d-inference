@@ -16,9 +16,9 @@
 //     survivors back; a slice below the serviceability floor REFUSES the
 //     load.
 //   * Request routing (`MultiModelBatchSchedulerEngine`): both production
-//     inits route text through the bridge; a scheduler-only entry (a DEAD
-//     leg as of v0.7.5 — kept until the legacy-deletion pass) still runs
-//     legacy; an entry with NO engine at all is a hard internal error.
+//     inits route text through the bridge; an entry with NO bridge is a
+//     hard internal error (the fail-loud backstop — the legacy engine is
+//     deleted).
 //   * Heartbeat/cancellation: the runtime summary is the ONLY slot source;
 //     grants are read live (post-re-slice), never construction-time.
 
@@ -1057,32 +1057,6 @@ struct EngineV2RequestRoutingTests {
         #expect(events.last == .info(prompt: 5, completion: 1))
         #expect(engine.submitted.count == 1)
         #expect(engine.submitted[0].promptTokens == [1, 2, 3, 4, 5])
-    }
-
-    @Test("deletion-pass pending: a scheduler-only entry still runs the legacy leg")
-    func standaloneSchedulerEntryRunsLegacy() async throws {
-        // No production caller builds scheduler-only entries anymore (the
-        // standalone server constructs v2 slots as of v0.7.5) — this pins
-        // the DEAD legacy leg's behavior only until the legacy-deletion
-        // pass removes `ModelRegistryEntry.scheduler` and this branch.
-        // The model-less scheduler proves the request went to the LEGACY
-        // engine: it fails with its "No model loaded" error, which the v2
-        // bridge could never produce.
-        let providerEngine = MultiModelBatchSchedulerEngine(
-            registryProvider: { @Sendable in
-                [
-                    "standalone-model": .init(
-                        scheduler: BatchScheduler(),
-                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
-                        modelType: "gemma4_text")
-                ]
-            })
-
-        let stream = try await providerEngine.streamChatCompletion(
-            request: makeOpenAIRequest(model: "standalone-model"))
-        await #expect(throws: (any Error).self) {
-            _ = try await recordServerStream(stream)
-        }
     }
 
     @Test("fail-loud backstop: an entry with NO engine at all is a hard internal error")

@@ -4,7 +4,7 @@
 /// libsodium NaCl box, and the real HTTP clients used by `EnrollmentService`,
 /// `ModelCatalogClient`, `TelemetryClient`, and `UpdateBanner`. The only thing
 /// faked here is the inference engine output -- inside the WebSocket handler
-/// loop we yield canned chunks instead of going through `BatchScheduler`,
+/// loop we yield canned chunks instead of going through the inference engine,
 /// since that path requires MLX + a real model on disk.
 ///
 /// Skipped in CI release builds (see `.github/workflows/release-swift.yml`):

@@ -509,7 +509,7 @@ private final class StandaloneGrantRecorder: @unchecked Sendable {
     }
 }
 
-@Test func standaloneAcquireReturnsV2EntryWithNoScheduler() async throws {
+@Test func standaloneAcquireReturnsV2Entry() async throws {
     let server = standaloneTestServer(models: [
         ModelInfo(
             id: "gemma-4-26b-qat-4bit", modelType: "gemma4", quantization: "4bit",
@@ -532,11 +532,11 @@ private final class StandaloneGrantRecorder: @unchecked Sendable {
         tokenizer: TokenizerHandle(StubBridgeTokenizer()),
         sizing: standaloneSizing(weightsGiB: 15))
 
-    // acquireModel returns the v2-shaped entry: bridge populated, NO
-    // legacy scheduler constructed anywhere on this server.
+    // acquireModel returns the v2-shaped entry: bridge populated (the
+    // legacy scheduler is gone from the AcquiredModel type entirely —
+    // the bridge is the only serving engine).
     let acquired = try await server.acquireModel("gemma-4-26b-qat-4bit")
     #expect(acquired.engineV2Bridge === bridge)
-    #expect(acquired.scheduler == nil)
     #expect(acquired.modelType == "gemma4")
     #expect(acquired.visionGate != nil)
     #expect(await server.debugSlotReservationCount(modelId: "gemma-4-26b-qat-4bit") == 1)

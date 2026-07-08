@@ -159,7 +159,6 @@ public actor StandaloneServer {
     /// Phase 3: global disk accountant (process-wide, shared across models).
     /// Kept on the v2 path for its crash-sweep of stale on-disk KV from
     /// older (legacy-engine) versions; the v2 engine itself never persists.
-    private let diskAccountant: GlobalDiskAccountant
     /// Test hooks (see `V2TestHooks`); nil in production.
     var v2TestHooks: V2TestHooks?
     /// Bind status, set by Hummingbird's onServerRunning (success) or the server
@@ -182,14 +181,9 @@ public actor StandaloneServer {
         // operator-facing error and refuses to start when nothing remains.
         self.models = Self.filterSupported(models)
         self.kvBudget = GlobalKVCacheBudget()
-        // Phase 3: construct the global disk accountant (one per host).
-        let kvRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("darkbloom/kv", isDirectory: true)
-            ?? FileManager.default.temporaryDirectory.appendingPathComponent("darkbloom/kv")
-        self.diskAccountant = GlobalDiskAccountant(
-            kvRoot: kvRoot,
-            configuredCeiling: BatchScheduler.prefixCacheGlobalDiskCeiling(),
-            sweepOnInit: true)  // wipe stale KV from a prior crash before any load
+        // The on-disk KV tier is RETIRED (v0.7.5; RAM-only v2 prefix
+        // cache — T-041). Sweep the legacy directory at startup.
+        LegacyKVCacheSweeper.sweep()
         // Pin the MLX memory ceiling before any model weights load on this path
         // (the coordinator path does this in ProviderLoop.startMemoryProtection).
         MLXMemoryGuard.configureOnce()
@@ -288,7 +282,6 @@ public actor StandaloneServer {
         serverTask?.cancel()
         serverTask = nil
         // Phase 3: shutdown the global disk accountant.
-        Task { await diskAccountant.shutdown() }
     }
 
     /// Test helper: wait for the Hummingbird service task to finish after

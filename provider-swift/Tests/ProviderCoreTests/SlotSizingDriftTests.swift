@@ -7,9 +7,9 @@
 //     TRUTH: the long-context marginal rate of `AdmissionV2.estimatedBytes`
 //     over the model's own `cbv2LayerKinds`. Sizes engine grants, shared-
 //     budget reservations, and heartbeat token budgets.
-//   * `BatchScheduler.resolvedKVBytesPerToken(architecture:weightBytes:)` —
-//     the config.json PARSE (`KVEstimation`), kept as the pre-load
-//     estimate for the memory load gate.
+//   * `KVEstimation.resolvedKVBytesPerToken(architecture:weightBytes:)` —
+//     the config.json PARSE, kept as the pre-load estimate for the
+//     memory load gate.
 //
 // If these ever drift for a production family, load-gate admission and
 // engine grants disagree — the exact class of bug the sizing snapshot
@@ -112,7 +112,7 @@ struct SlotSizingDriftTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let architecture = KVEstimation.parseModelArchitecture(
             at: dir.appendingPathComponent("config.json"))
-        let configRate = BatchScheduler.resolvedKVBytesPerToken(
+        let configRate = KVEstimation.resolvedKVBytesPerToken(
             architecture: architecture, weightBytes: 12 * 1024 * 1024 * 1024)
 
         // 12 full layers × 2(K+V) × 8 kvHeads × 64 headDim × 2(fp16).
@@ -132,7 +132,7 @@ struct SlotSizingDriftTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let architecture = KVEstimation.parseModelArchitecture(
             at: dir.appendingPathComponent("config.json"))
-        let configRate = BatchScheduler.resolvedKVBytesPerToken(
+        let configRate = KVEstimation.resolvedKVBytesPerToken(
             architecture: architecture, weightBytes: 15 * 1024 * 1024 * 1024)
 
         // 5 full layers × 2(K+V) × 2 global kvHeads × 512 globalHeadDim × 2.
@@ -203,7 +203,7 @@ struct SlotSizingDriftTests {
 
             // Config parse from the SAME real file.
             let architecture = KVEstimation.parseModelArchitecture(at: configURL)
-            let configRate = BatchScheduler.resolvedKVBytesPerToken(
+            let configRate = KVEstimation.resolvedKVBytesPerToken(
                 architecture: architecture, weightBytes: 12 * 1024 * 1024 * 1024)
 
             #expect(engineRate == checkpoint.expectRate, "\(checkpoint.id)")

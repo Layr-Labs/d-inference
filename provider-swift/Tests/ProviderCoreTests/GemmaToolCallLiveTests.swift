@@ -137,9 +137,9 @@ struct GemmaToolCallLiveTests {
         .enabled(if: LiveInferenceFixtures.gemmaTestsEnabled)
     )
     func realModelEmitsCleanToolCall() async throws {
-        let loaded: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
+        let loaded: LiveInferenceFixtures.LoadedBridge
         do {
-            loaded = try await LiveInferenceFixtures.loadScheduler(
+            loaded = try await LiveInferenceFixtures.loadBridge(
                 modelID: LiveInferenceFixtures.gemmaModelID,
                 maxConcurrentRequests: 2,
                 memoryBudgetBytes: 64 * 1024 * 1024 * 1024
@@ -148,8 +148,13 @@ struct GemmaToolCallLiveTests {
             Issue.record("skipping: \(skip)")
             return
         }
-        let scheduler = loaded.scheduler
-        defer { Task { await scheduler.unloadModel() } }
+        let bridge = loaded.bridge
+        defer {
+            Task {
+                await bridge.shutdown()
+                MLX.Memory.clearCache()
+            }
+        }
 
         let dicts = conversation().map { $0.templateMessageDict() }
         let promptTokens: [Int] = try await loaded.container.perform { ctx in
@@ -158,8 +163,16 @@ struct GemmaToolCallLiveTests {
         }
 
         var text = ""
-        let stream = await scheduler.submitTokenized(
-            promptTokens: promptTokens, maxTokens: 96, temperature: 0.0)
+        // The bridge derives maxTokens/temperature from the request; the
+        // prompt itself is the pre-templated token array above.
+        let stream = await bridge.submitTokenized(
+            promptTokens: promptTokens,
+            request: ChatCompletionRequest(
+                model: LiveInferenceFixtures.gemmaModelID,
+                messages: [ChatMessage(role: "user", content: "Print the contents of hello.txt")],
+                temperature: 0.0,
+                max_tokens: 96
+            ))
         for await event in stream {
             switch event {
             case .chunk(let t): text += t

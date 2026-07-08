@@ -1,18 +1,20 @@
 // InferenceLiveTests -- end-to-end live MLX inference against models in
 // the local HuggingFace cache.
 //
+// v0.7.5 one-engine: every model slot serves through the CBv2
+// `EngineV2Bridge` (the legacy BatchScheduler engine is deleted), and only
+// CBv2-adapted families (gpt-oss, gemma4) can serve. The tiny-Qwen
+// scheduler tests that used to live here died with the legacy engine;
+// what remains targets the production checkpoints.
+//
 // Gating
 // ------
 // These tests load real model weights, run real generations on the GPU,
 // and take seconds to minutes. They are **opt-in** via env vars:
 //
 //   DARKBLOOM_LIVE_MLX_TESTS=1   required for any test in this file
-//   DARKBLOOM_LIVE_MLX_GEMMA=1        required additionally for the 27 GB Gemma test
+//   DARKBLOOM_LIVE_MLX_GEMMA=1        required additionally for the multi-GB Gemma tests
 //   DARKBLOOM_LIVE_MLX_MULTI_MODEL=1  required additionally for tests needing two local models
-//
-// The CI runner (`macos-26-xlarge` in `.github/workflows/release-swift.yml`)
-// sets only the first env var; it does not have Gemma cached. Local laptops
-// with the model on disk can run the Gemma case manually.
 //
 // They also require an `mlx.metallib` to exist somewhere under
 // `provider-swift/.build/`. `LiveInferenceFixtures.ensureMetallibColocated()`
@@ -26,22 +28,23 @@
 //   cd provider-swift
 //   DARKBLOOM_LIVE_MLX_TESTS=1 swift test --filter InferenceLiveTests
 //
-// Adding the Gemma case:
+// Adding the Gemma cases:
 //   DARKBLOOM_LIVE_MLX_TESTS=1 \
 //     DARKBLOOM_LIVE_MLX_GEMMA=1 \
 //     swift test --filter InferenceLiveTests
 //
-// Adding the two-model cases:
+// Adding the two-model standalone case:
 //   DARKBLOOM_LIVE_MLX_TESTS=1 \
 //     DARKBLOOM_LIVE_MLX_MULTI_MODEL=1 \
+//     DARKBLOOM_LIVE_MLX_GEMMA=1 \
 //     swift test --filter InferenceLiveTests
 //
 // Cleanup
 // -------
-// Each test `defer`s `await scheduler.unloadModel()` so the next test
-// starts with a fresh GPU. Memory budget is set up-front via
-// `MLX.GPU.set(memoryLimit:)` to keep a runaway test from consuming all
-// of unified RAM.
+// Bridge-based tests `defer` `await bridge.shutdown()` +
+// `MLX.Memory.clearCache()`; server-based tests stop the standalone server.
+// Memory budget is set up-front via `MLX.GPU.set(memoryLimit:)` so a
+// runaway test can't consume all of unified RAM.
 
 import Foundation
 import Darwin
@@ -61,289 +64,7 @@ import Testing
 @Suite("live MLX inference", .serialized)
 struct InferenceLiveTests {
 
-    // MARK: 1. Tiny model, end-to-end
-
-    @Test(
-        "tiny model loads and produces non-empty output",
-        .enabled(
-            if: LiveInferenceFixtures.liveTestsEnabled,
-            "set DARKBLOOM_LIVE_MLX_TESTS=1 to run live MLX inference tests"
-        )
-    )
-    func liveInferenceLoadsTinyModelAndProducesNonEmptyOutput() async throws {
-        let loaded: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
-        do {
-            loaded = try await LiveInferenceFixtures.loadScheduler(
-                modelID: LiveInferenceFixtures.tinyModelID
-            )
-        } catch let skip as LiveFixtureSkip {
-            Issue.record("skipped: \(skip.description)")
-            return
-        }
-        let scheduler = loaded.scheduler
-        defer {
-            // Synchronous defer can't await; spawn an unstructured cleanup
-            // task. The next test's first action is a fresh load, which
-            // serializes naturally with the cleanup.
-            Task { await scheduler.unloadModel() }
-        }
-
-        let request = ChatCompletionRequest(
-            model: LiveInferenceFixtures.tinyModelID,
-            messages: [
-                ChatMessage(role: "user", content: "Reply with the single word 'hello'."),
-            ],
-            temperature: 0.0,
-            max_tokens: 16
-        )
-
-        let result = await collect(from: scheduler, request: request)
-
-        #expect(!result.didError, "unexpected error: \(result.error ?? "")")
-        #expect(!result.chunks.isEmpty, "no .chunk events received")
-        #expect(!result.fullText.isEmpty, "concatenated text is empty")
-        #expect(result.info != nil, "no .info event received")
-        if let info = result.info {
-            #expect(info.completionTokens > 0, "completionTokens should be > 0")
-            #expect(info.completionTokens <= 16, "completionTokens should be <= max_tokens")
-            #expect(info.promptTokens > 0, "promptTokens should be > 0 for a non-empty prompt")
-        }
-    }
-
-    // MARK: 2. Cancellation
-
-    @Test(
-        "cancellation stops generation quickly",
-        .enabled(
-            if: LiveInferenceFixtures.liveTestsEnabled,
-            "set DARKBLOOM_LIVE_MLX_TESTS=1 to run live MLX inference tests"
-        )
-    )
-    func liveInferenceCancellationStopsGenerationQuickly() async throws {
-        let loaded: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
-        do {
-            loaded = try await LiveInferenceFixtures.loadScheduler(
-                modelID: LiveInferenceFixtures.tinyModelID
-            )
-        } catch let skip as LiveFixtureSkip {
-            Issue.record("skipped: \(skip.description)")
-            return
-        }
-        let scheduler = loaded.scheduler
-        defer { Task { await scheduler.unloadModel() } }
-
-        // Ask for a long generation so we can cancel mid-stream.
-        let request = ChatCompletionRequest(
-            model: LiveInferenceFixtures.tinyModelID,
-            messages: [
-                ChatMessage(
-                    role: "user",
-                    content: "Write a long, detailed story about a robot exploring Mars. Take your time."
-                ),
-            ],
-            temperature: 0.7,
-            max_tokens: 200
-        )
-
-        let requestID = "cancel-test-\(UUID().uuidString)"
-        let stream = await scheduler.submit(request: request, requestId: requestID)
-
-        let cancelDelayMs = 200
-        let postCancelBudgetMs = 1500
-
-        let collectorStart = ContinuousClock.now
-        let collector = Task { () -> CollectedGeneration in
-            var collected = CollectedGeneration()
-            for await event in stream {
-                switch event {
-                case .chunk(let text):
-                    collected.chunks.append(text)
-                case .info(let prompt, let completion, let tps, _):
-                    collected.info = (prompt, completion, tps)
-                case .error(let message):
-                    collected.error = message
-                }
-            }
-            return collected
-        }
-
-        try await Task.sleep(for: .milliseconds(cancelDelayMs))
-        let cancelInstant = ContinuousClock.now
-        await scheduler.cancel(requestId: requestID)
-
-        // Bound how long we're willing to wait after the cancel.
-        let timeoutTask = Task {
-            try await Task.sleep(for: .milliseconds(postCancelBudgetMs))
-            collector.cancel()
-        }
-
-        let result = await collector.value
-        timeoutTask.cancel()
-        let endInstant = ContinuousClock.now
-        let totalElapsed = endInstant - collectorStart
-        let postCancelElapsed = endInstant - cancelInstant
-
-        // The stream may yield either an error ("Request cancelled") or
-        // simply finish without an info event -- depends on whether the
-        // generation task picked up Task.isCancelled before yielding the
-        // info chunk. Both are valid "we stopped" signals; what matters is
-        // that we stopped fast and short of `max_tokens`.
-        let stoppedFast = postCancelElapsed < .milliseconds(postCancelBudgetMs)
-        #expect(
-            stoppedFast,
-            "stream did not finish within \(postCancelBudgetMs) ms after cancel (post-cancel elapsed: \(postCancelElapsed); total: \(totalElapsed))"
-        )
-
-        if let info = result.info {
-            #expect(
-                info.completionTokens < 200,
-                "expected fewer than 200 completion tokens after cancel, got \(info.completionTokens)"
-            )
-        }
-
-        let cap = await scheduler.capacity()
-        #expect(cap.activeRequests == 0, "scheduler still reports \(cap.activeRequests) active requests")
-        #expect(cap.pendingRequests == 0, "scheduler still reports \(cap.pendingRequests) pending requests")
-    }
-
-    // MARK: 3. Concurrent requests
-
-    @Test(
-        "concurrent requests share a single model",
-        .enabled(
-            if: LiveInferenceFixtures.liveTestsEnabled,
-            "set DARKBLOOM_LIVE_MLX_TESTS=1 to run live MLX inference tests"
-        )
-    )
-    func liveInferenceConcurrentRequestsShareModel() async throws {
-        let loaded: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
-        do {
-            loaded = try await LiveInferenceFixtures.loadScheduler(
-                modelID: LiveInferenceFixtures.tinyModelID,
-                maxConcurrentRequests: 4
-            )
-        } catch let skip as LiveFixtureSkip {
-            Issue.record("skipped: \(skip.description)")
-            return
-        }
-        let scheduler = loaded.scheduler
-        defer { Task { await scheduler.unloadModel() } }
-
-        let prompts = [
-            "Reply with the single word 'one'.",
-            "Reply with the single word 'two'.",
-            "Reply with the single word 'three'.",
-        ]
-
-        let results = await withTaskGroup(of: (Int, CollectedGeneration).self) { group in
-            for (idx, prompt) in prompts.enumerated() {
-                group.addTask {
-                    let req = ChatCompletionRequest(
-                        model: LiveInferenceFixtures.tinyModelID,
-                        messages: [ChatMessage(role: "user", content: prompt)],
-                        temperature: 0.0,
-                        max_tokens: 16
-                    )
-                    let result = await collect(
-                        from: scheduler,
-                        request: req,
-                        requestId: "concurrent-\(idx)"
-                    )
-                    return (idx, result)
-                }
-            }
-            var out = [(Int, CollectedGeneration)]()
-            for await pair in group { out.append(pair) }
-            return out
-        }
-
-        #expect(results.count == prompts.count, "expected \(prompts.count) results, got \(results.count)")
-        for (idx, result) in results {
-            #expect(!result.didError, "request \(idx) errored: \(result.error ?? "")")
-            #expect(!result.fullText.isEmpty, "request \(idx) produced empty text")
-            #expect(result.info != nil, "request \(idx) missing .info event")
-            if let info = result.info {
-                #expect(info.completionTokens > 0, "request \(idx) had zero completion tokens")
-            }
-        }
-
-        // Allow the scheduler a moment to run its post-completion bookkeeping
-        // (the generation task posts `requestCompleted` back to the actor).
-        try await Task.sleep(for: .milliseconds(100))
-        let cap = await scheduler.capacity()
-        #expect(cap.activeRequests == 0, "expected 0 active requests, got \(cap.activeRequests)")
-        #expect(cap.pendingRequests == 0, "expected 0 pending requests, got \(cap.pendingRequests)")
-    }
-
-    // MARK: 4. Multi-model residency
-
-    @Test(
-        "two different model schedulers generate while both resident",
-        .enabled(
-            if: LiveInferenceFixtures.multiModelLiveTestsEnabled,
-            "set DARKBLOOM_LIVE_MLX_TESTS=1 and DARKBLOOM_LIVE_MLX_MULTI_MODEL=1 to run two-model live tests"
-        )
-    )
-    func liveInferenceTwoDifferentModelsGenerateWhileResident() async throws {
-        let primary: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
-        let secondary: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
-        do {
-            primary = try await LiveInferenceFixtures.loadScheduler(
-                modelID: LiveInferenceFixtures.tinyModelID,
-                maxConcurrentRequests: 2,
-                memoryBudgetBytes: 16 * 1024 * 1024 * 1024
-            )
-            secondary = try await LiveInferenceFixtures.loadScheduler(
-                modelID: LiveInferenceFixtures.tinyModelFallbackID,
-                maxConcurrentRequests: 2,
-                memoryBudgetBytes: 16 * 1024 * 1024 * 1024
-            )
-        } catch let skip as LiveFixtureSkip {
-            Issue.record("skipped: \(skip.description)")
-            return
-        }
-        defer {
-            Task { await primary.scheduler.unloadModel() }
-            Task { await secondary.scheduler.unloadModel() }
-        }
-
-        async let primaryResult = collect(
-            from: primary.scheduler,
-            request: ChatCompletionRequest(
-                model: LiveInferenceFixtures.tinyModelID,
-                messages: [ChatMessage(role: "user", content: "Reply with one short word: alpha.")],
-                temperature: 0.0,
-                max_tokens: 12
-            ),
-            requestId: "multi-primary-\(UUID().uuidString)"
-        )
-        async let secondaryResult = collect(
-            from: secondary.scheduler,
-            request: ChatCompletionRequest(
-                model: LiveInferenceFixtures.tinyModelFallbackID,
-                messages: [ChatMessage(role: "user", content: "Reply with one short word: beta.")],
-                temperature: 0.0,
-                max_tokens: 12
-            ),
-            requestId: "multi-secondary-\(UUID().uuidString)"
-        )
-
-        let results = await [primaryResult, secondaryResult]
-        for (index, result) in results.enumerated() {
-            #expect(!result.didError, "model \(index) errored: \(result.error ?? "")")
-            #expect(!result.fullText.isEmpty, "model \(index) produced empty text")
-            #expect(result.info != nil, "model \(index) did not emit usage info")
-        }
-
-        let primaryCapacity = await primary.scheduler.capacity()
-        let secondaryCapacity = await secondary.scheduler.capacity()
-        #expect(primaryCapacity.model == LiveInferenceFixtures.tinyModelID)
-        #expect(secondaryCapacity.model == LiveInferenceFixtures.tinyModelFallbackID)
-        #expect(primaryCapacity.activeRequests == 0)
-        #expect(secondaryCapacity.activeRequests == 0)
-        #expect(primaryCapacity.pendingRequests == 0)
-        #expect(secondaryCapacity.pendingRequests == 0)
-    }
+    // MARK: 1. Standalone server
 
     @Test(
         "standalone server serves two local models through one process",
@@ -477,87 +198,7 @@ struct InferenceLiveTests {
         await server.stopAndWait()
     }
 
-    @Test(
-        "provider loop coalesces duplicate live load_model requests",
-        .enabled(
-            if: LiveInferenceFixtures.liveTestsEnabled,
-            "set DARKBLOOM_LIVE_MLX_TESTS=1 to run live MLX inference tests"
-        )
-    )
-    func liveProviderLoopCoalescesDuplicateLoadModelRequests() async throws {
-        guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
-            Issue.record("skipped: \(LiveFixtureSkip.missingMetallib.description)")
-            return
-        }
-        guard case .found = LiveInferenceFixtures.locate(LiveInferenceFixtures.tinyModelID) else {
-            Issue.record("skipped: \(LiveFixtureSkip.modelNotInCache(LiveInferenceFixtures.tinyModelID).description)")
-            return
-        }
-        LiveInferenceFixtures.applyMemoryBudget()
-
-        let mock = MockCoordinator()
-        let baseURL = try await mock.start()
-        let config = liveProviderLoopConfig(
-            coordinatorURL: baseURL.mockProviderWebSocketURL(),
-            models: [liveModelInfo(id: LiveInferenceFixtures.tinyModelID, quantization: "8bit")]
-        )
-        let loadGate = LiveLoadModelGate()
-        let loop = try ProviderLoop(
-            config: config,
-            purgeLegacyFiles: false,
-            attestationSigner: nil,
-            preloadTaskStarted: { modelId in
-                loadGate.recordPreloadTaskStarted(modelId)
-            },
-            beforeModelLoad: { modelId in
-                await loadGate.waitBeforeLoading(modelId)
-            }
-        )
-        // Keep the live loop's loaded-model persistence (and its startup
-        // preload plan) off the developer machine's real
-        // ~/.darkbloom/loaded-models.json.
-        await loop.setLoadedModelsFileForTesting(
-            FileManager.default.temporaryDirectory
-                .appendingPathComponent("darkbloom-live-loaded-models-\(UUID().uuidString).json"))
-        let loopTask = Task { try await loop.run() }
-
-        do {
-            let register = try await mock.awaitFirstRegister(timeout: .seconds(10))
-            try #require(register != nil)
-
-            try await mock.pushLoadModel(modelId: LiveInferenceFixtures.tinyModelID)
-            let reachedLoadGate = try await waitUntil(timeout: .seconds(10)) {
-                loadGate.loadReached(for: LiveInferenceFixtures.tinyModelID)
-            }
-            try #require(reachedLoadGate, "provider did not reach the real model-load gate")
-
-            try await mock.pushLoadModel(modelId: LiveInferenceFixtures.tinyModelID)
-            let startedSnapshot = try await mock.waitForSnapshot(timeout: .seconds(10)) { snapshot in
-                let statuses = snapshot.loadModelStatuses.filter { $0.modelId == LiveInferenceFixtures.tinyModelID }
-                return statuses.filter { $0.status == .started }.count == 2
-            }
-            try #require(startedSnapshot != nil)
-            loadGate.release()
-
-            let statusSnapshot = try await mock.waitForSnapshot(timeout: .seconds(90)) { snapshot in
-                let statuses = snapshot.loadModelStatuses.filter { $0.modelId == LiveInferenceFixtures.tinyModelID }
-                return statuses.filter { $0.status == .started }.count == 2
-                    && statuses.filter { $0.status == .succeeded }.count == 2
-            }
-            let snapshot = try #require(statusSnapshot)
-            let statuses = snapshot.loadModelStatuses.filter { $0.modelId == LiveInferenceFixtures.tinyModelID }
-            #expect(statuses.count == 4, "expected exactly two started and two succeeded statuses, got \(statuses)")
-            #expect(statuses.map(\.status) == [.started, .started, .succeeded, .succeeded])
-            #expect(statuses.allSatisfy { $0.error == nil })
-            #expect(loadGate.preloadTaskStartCount(for: LiveInferenceFixtures.tinyModelID) == 1)
-        } catch {
-            await shutdownLiveProviderLoop(loopTask, mock: mock, loadGate: loadGate)
-            throw error
-        }
-        await shutdownLiveProviderLoop(loopTask, mock: mock, loadGate: loadGate)
-    }
-
-    // MARK: 6. Gemma 26B
+    // MARK: 2. Gemma 26B
 
     @Test(
         "Gemma 26B produces plausible arithmetic answer",
@@ -567,31 +208,44 @@ struct InferenceLiveTests {
         )
     )
     func liveInferenceWithGemmaProducesPlausibleOutput() async throws {
-        let loaded: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
+        let loaded: LiveInferenceFixtures.LoadedBridge
         do {
             // Larger memory budget for the 27 GB MoE.
-            LiveInferenceFixtures.applyMemoryBudget(maxBytes: 64 * 1024 * 1024 * 1024)
-            loaded = try await LiveInferenceFixtures.loadScheduler(
+            loaded = try await LiveInferenceFixtures.loadBridge(
                 modelID: LiveInferenceFixtures.gemmaModelID,
-                maxConcurrentRequests: 1
+                maxConcurrentRequests: 1,
+                memoryBudgetBytes: 64 * 1024 * 1024 * 1024
             )
         } catch let skip as LiveFixtureSkip {
             Issue.record("skipped: \(skip.description)")
             return
         }
-        let scheduler = loaded.scheduler
-        defer { Task { await scheduler.unloadModel() } }
+        let bridge = loaded.bridge
+        defer {
+            Task {
+                await bridge.shutdown()
+                MLX.Memory.clearCache()
+            }
+        }
+
+        // Template + tokenize the prompt ourselves — exactly like the
+        // production `MultiModelBatchSchedulerEngine` does before
+        // `bridge.submitTokenized`.
+        let prompt = "What is 7 * 8? Reply with just the number."
+        let messages: [[String: any Sendable]] = [["role": "user", "content": prompt]]
+        let promptTokens: [Int] = try await loaded.container.perform { ctx in
+            try ctx.tokenizer.applyChatTemplate(
+                messages: messages, tools: nil, additionalContext: nil)
+        }
 
         let request = ChatCompletionRequest(
             model: LiveInferenceFixtures.gemmaModelID,
-            messages: [
-                ChatMessage(role: "user", content: "What is 7 * 8? Reply with just the number."),
-            ],
+            messages: [ChatMessage(role: "user", content: prompt)],
             temperature: 0.0,
             max_tokens: 32
         )
 
-        let result = await collect(from: scheduler, request: request)
+        let result = await collect(from: bridge, promptTokens: promptTokens, request: request)
 
         #expect(!result.didError, "unexpected error: \(result.error ?? "")")
         #expect(result.info != nil, "no .info event received")
@@ -601,7 +255,7 @@ struct InferenceLiveTests {
         )
     }
 
-    // MARK: 7. Chat-template fidelity (Phase 0)
+    // MARK: 3. Chat-template fidelity (Phase 0)
 
     @Test(
         "tokenizer chat template embeds system + user content in order",
@@ -611,7 +265,7 @@ struct InferenceLiveTests {
         )
     )
     func liveInferenceTokenizerChatTemplateMatchesExpected() async throws {
-        // The fidelity check doesn't need the scheduler -- it operates on
+        // The fidelity check doesn't need a serving engine -- it operates on
         // the model's UserInputProcessor directly. But it does need the
         // metallib (mlx-swift-lm pulls in MLX initialization on tokenizer
         // load) and a real model on disk.
@@ -715,85 +369,6 @@ private func liveModelInfo(
     )
 }
 
-private func liveProviderLoopConfig(coordinatorURL: String, models: [ModelInfo]) -> ProviderLoopConfig {
-    ProviderLoopConfig(
-        coordinatorURL: coordinatorURL,
-        hardware: HardwareInfo(
-            machineModel: "Mac16,5",
-            chipName: "Apple M4 Max",
-            chipFamily: .m4,
-            chipTier: .max,
-            memoryGb: 128,
-            memoryAvailableGb: 124,
-            cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
-            gpuCores: 40,
-            memoryBandwidthGbs: 546
-        ),
-        models: models,
-        config: ProviderConfig(
-            provider: ProviderSettings(name: "darkbloom-live-test", memoryReserveGB: 1),
-            backend: BackendSettings(
-                continuousBatching: true,
-                idleTimeoutMins: 0,
-                maxModelSlots: UInt64(max(1, models.count))
-            ),
-            coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
-        )
-    )
-}
-
-private final class LiveLoadModelGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var reachedModels = Set<String>()
-    private var released = false
-    private var preloadStarts: [String: Int] = [:]
-
-    func recordPreloadTaskStarted(_ modelId: String) {
-        lock.lock()
-        preloadStarts[modelId, default: 0] += 1
-        lock.unlock()
-    }
-
-    func waitBeforeLoading(_ modelId: String) async {
-        markLoadReached(modelId)
-
-        while !Task.isCancelled {
-            if isReleased() { return }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
-    private func markLoadReached(_ modelId: String) {
-        lock.lock()
-        reachedModels.insert(modelId)
-        lock.unlock()
-    }
-
-    private func isReleased() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return released
-    }
-
-    func loadReached(for modelId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return reachedModels.contains(modelId)
-    }
-
-    func release() {
-        lock.lock()
-        released = true
-        lock.unlock()
-    }
-
-    func preloadTaskStartCount(for modelId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return preloadStarts[modelId] ?? 0
-    }
-}
-
 private func waitUntil(timeout: Duration, predicate: () -> Bool) async throws -> Bool {
     let deadline = ContinuousClock.now.advanced(by: timeout)
     while ContinuousClock.now < deadline {
@@ -810,17 +385,6 @@ private func waitUntilAsync(timeout: Duration, predicate: () async -> Bool) asyn
         try await Task.sleep(for: .milliseconds(25))
     }
     return await predicate()
-}
-
-private func shutdownLiveProviderLoop(
-    _ loopTask: Task<Void, any Error>,
-    mock: MockCoordinator,
-    loadGate: LiveLoadModelGate
-) async {
-    loadGate.release()
-    loopTask.cancel()
-    _ = try? await loopTask.value
-    await mock.shutdown()
 }
 
 private func assertStandaloneDisconnectCleanup(

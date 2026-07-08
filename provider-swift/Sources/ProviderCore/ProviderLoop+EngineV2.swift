@@ -385,10 +385,10 @@ extension ProviderLoop {
     /// VLM slots: every production Gemma 4 checkpoint ships a vision tower,
     /// so the loaded module is MLXVLM's wrapper — which has no CBv2 hooks.
     /// The engine is built over `EngineV2VLMTextExtraction`'s weight-sharing
-    /// MLXLLM text model: TEXT requests serve through v2, IMAGE requests
-    /// prefill through v2 via `EngineV2VisionPrefill`, and (in this branch
-    /// state) VIDEO requests still run the legacy VLM container path — see
-    /// `MultiModelBatchSchedulerEngine.streamChatCompletion`.
+    /// MLXLLM text model: TEXT requests serve through v2, and ALL media —
+    /// image, video, mixed — prefills through v2 via `EngineV2VisionPrefill`
+    /// (v0.7.5; media construction failures REFUSE loudly, 503 — see
+    /// `MultiModelBatchSchedulerEngine.streamChatCompletion`).
     ///
     /// On success the bridge is registered with `engineV2Runtime` BEFORE the
     /// caller installs the slot, so a request routed the instant the slot
@@ -476,8 +476,8 @@ extension ProviderLoop {
         if isVLM {
             logger.info(
                 "engine_v2: serving \(modelId) via ContinuousBatchingV2 "
-                    + "(vlm routing: text→v2, image→v2 multimodal prefill, "
-                    + "video→legacy VLM container path)")
+                    + "(vlm routing: text→v2, media→v2 multimodal prefill "
+                    + "(image+video, fail-loud))")
         } else {
             logger.info("engine_v2: serving \(modelId) via ContinuousBatchingV2")
         }

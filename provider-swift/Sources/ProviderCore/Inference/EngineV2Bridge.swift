@@ -276,12 +276,15 @@ public actor EngineV2Bridge {
     /// `request.logprobs == true` so the translated sampling params ask
     /// the engine to capture them).
     ///
-    /// `multimodal` (v0.7.4) is the precomputed vision-prefill input for an
-    /// image request (`EngineV2VisionPrefill.PreparedSubmission
-    /// .multimodalInput()` — spans over `promptTokens`' placeholder runs,
-    /// embeddings already evaluated). nil ⇒ text request, byte-identical to
-    /// the pre-multimodal path. Submit-time `CBv2MultimodalError` rejections
-    /// surface as `multimodal_rejected: …` stream errors (→ 400).
+    /// `multimodal` (v0.7.4; video since v0.7.5) is the precomputed
+    /// media-prefill input for an image/video request
+    /// (`EngineV2VisionPrefill.PreparedSubmission.multimodalInput()` —
+    /// spans over `promptTokens`' placeholder runs, embeddings already
+    /// evaluated). nil ⇒ text request, byte-identical to the pre-multimodal
+    /// path. Submit-time `CBv2MultimodalError` rejections surface as
+    /// `multimodal_rejected: …` stream errors (→ 400). `mediaKind`
+    /// (image/video/mixed) tags the engagement telemetry only — it never
+    /// affects submission behavior.
     public func submitTokenized(
         promptTokens: [Int],
         request: ChatCompletionRequest,
@@ -289,7 +292,8 @@ public actor EngineV2Bridge {
         cacheScope: String = "",
         logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
-        multimodal: CBv2MultimodalInput? = nil
+        multimodal: CBv2MultimodalInput? = nil,
+        mediaKind: EngineV2MediaKind? = nil
     ) async -> AsyncStream<GenerationEvent> {
         // Validate the caller-supplied id before it becomes a dictionary key /
         // cancel-correlation handle: a nil / empty / over-long / non-printable
@@ -417,12 +421,13 @@ public actor EngineV2Bridge {
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(now: .now)
 
-        // Vision-through-v2 engagement signal (v0.7.4): one INFO per image
-        // request the engine ACCEPTED, tagged `multimodal=true` on the
-        // existing engine_v2 fields so prod adoption is observable next to
-        // the `engine_v2_vision_fallback` WARNs. Allowlisted fields only.
+        // Media-through-v2 engagement signal (v0.7.4; media-kind tagged
+        // since v0.7.5): one INFO per media request the engine ACCEPTED,
+        // tagged `multimodal=true` + `media_kind` on the existing engine_v2
+        // fields so prod adoption per media shape is observable next to the
+        // `engine_v2_vision_refusal` ERRORs. Allowlisted fields only.
         if multimodal != nil {
-            emitVisionSubmitTelemetry(requestId: id)
+            emitVisionSubmitTelemetry(requestId: id, mediaKind: mediaKind)
         }
 
         runPump(
@@ -797,26 +802,31 @@ public actor EngineV2Bridge {
         }
     }
 
-    /// Vision-through-v2 engagement (v0.7.4): INFO per engine-accepted image
-    /// request. PRIVACY: allowlisted operational fields only — the request's
-    /// media/prompt content never rides telemetry; `multimodal` is a bare
-    /// boolean tag.
-    private func emitVisionSubmitTelemetry(requestId: String) {
+    /// Media-through-v2 engagement (v0.7.4; media-kind tagged since
+    /// v0.7.5): INFO per engine-accepted image/video request. PRIVACY:
+    /// allowlisted operational fields only — the request's media/prompt
+    /// content never rides telemetry; `multimodal` is a bare boolean tag
+    /// and `media_kind` is one of image/video/mixed.
+    private func emitVisionSubmitTelemetry(requestId: String, mediaKind: EngineV2MediaKind?) {
         var event = TelemetryEvent(
             source: .provider,
             severity: .info,
             kind: .engineHealth,
-            message: "engine_v2: vision request served via ContinuousBatchingV2"
+            message: "engine_v2: media request served via ContinuousBatchingV2"
         )
         // Filter-at-source, matching the other engine_health builders —
         // every key is allowlisted already; the filter enforces it stays so.
-        event.fields = TelemetryFieldFilter.filter([
+        var fields: [String: AnyCodableValue] = [
             "component": .string("engine"),
             "operation": .string("engine_v2_vision"),
             "backend": .string("engine_v2"),
             "model": .string(modelId),
             "multimodal": .bool(true),
-        ])
+        ]
+        if let mediaKind {
+            fields["media_kind"] = .string(mediaKind.rawValue)
+        }
+        event.fields = TelemetryFieldFilter.filter(fields)
         event.requestId = requestId
         emit(event)
     }

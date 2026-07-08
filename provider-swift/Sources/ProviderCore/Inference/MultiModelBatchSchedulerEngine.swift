@@ -252,9 +252,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
         // Multimodal (image/video) requests can't flow through the token-only
         // batched TEXT paths. For VLM models they are handled here: on a
-        // v2-bridged slot, image requests prefill through the engine with
-        // precomputed vision-tower embeddings (v0.7.4, below); video requests
-        // and every non-bridged/fallback case serve via the container's
+        // v2-bridged slot, image AND video requests prefill through the
+        // engine with precomputed vision-tower embeddings (v0.7.5, below);
+        // only slots WITHOUT a v2 bridge serve media via the container's
         // non-batched prepare/generate vision path.
         //
         // ORDERING CONTRACT (v0.7.2 VLM text routing): this media check MUST
@@ -320,19 +320,28 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 throw error
             }
 
-            // VISION → ENGINE V2 (v0.7.4): image-only requests on a slot
-            // whose bridge serves the extracted text model prefill through
-            // the v2 engine — the wrapper's vision tower + projector run
-            // once up front (`EngineV2VisionPrefill`, under container
-            // isolation) and the resulting per-image embeddings ride
-            // `CBv2Request.multimodal`, spliced at the placeholder spans by
-            // the engine's multimodal-prefill path (bidirectional span
-            // masks, chunk snapping). Video requests keep the legacy
-            // wrapper path (`hasVideo` — the v2 seam is images-only,
-            // deliberately not half-supported; see that helper). ANY
-            // construction failure falls through to the unchanged legacy
-            // path below — WARN telemetry, never a dropped request.
-            if let bridge = engineV2Bridge, !VLMRequestInference.hasVideo(request) {
+            // MEDIA → ENGINE V2 (v0.7.5): image, video, and mixed requests
+            // on a slot whose bridge serves the extracted text model prefill
+            // through the v2 engine — the wrapper's vision tower + projector
+            // run once up front (`EngineV2VisionPrefill`, under container
+            // isolation) and the resulting per-image / per-video-frame
+            // embeddings ride `CBv2Request.multimodal`, spliced at the
+            // placeholder spans by the engine's multimodal-prefill path
+            // (bidirectional span masks, chunk snapping).
+            //
+            // FAIL LOUD (v0.7.5): a construction failure is REFUSED — ERROR
+            // `engine_v2_vision_refusal` telemetry (tagged with the media
+            // kind) + a retriable 503 (`.requestRejected`) so the
+            // coordinator's pre-content failover reroutes invisibly. The
+            // legacy wrapper path below is NOT reachable for media on a
+            // v2-bridged slot anymore (v0.7.4's silent fallback is gone).
+            // Three throws are NOT refusals: `CancellationError` (the
+            // caller went away — propagate, 499), `MediaError`
+            // (deterministic input fault — keeps its 4xx mapping), and
+            // `noProcessedMedia` (media on non-user roles only — a
+            // deterministic 400; rerouting would fail identically
+            // everywhere).
+            if let bridge = engineV2Bridge {
                 let plumbing = engineV2Vision ?? .production
                 do {
                     let prepared = try await plumbing.prepare(container, request)
@@ -353,21 +362,23 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         requestId: visionRequestId,
                         cacheScope: cacheScope,
                         logprobsChannel: engineV2Logprobs?.channel,
-                        // Vision requests are prefix-cache-excluded engine-
+                        // Media requests are prefix-cache-excluded engine-
                         // side (hit tokens always 0), but the signal still
                         // reaches its terminal so the frames loop never
                         // waits on an unset box.
                         usageSignal: engineV2Usage,
-                        multimodal: prepared.multimodalInput()
+                        multimodal: prepared.multimodalInput(),
+                        mediaKind: prepared.mediaKind
                     )
                     // The bridge now owns the request's memory accounting:
                     // its shared-budget gate reserved prompt (incl. the
-                    // image soft tokens) + max_tokens at the fp16 rate, and
-                    // the decode-phase peak this vision reservation covered
-                    // (CIImage rasters, tower activations) is behind us —
-                    // the embeddings were eval'ed inside `prepare`. Holding
-                    // both would double-charge the KV span for the whole
-                    // stream, so release the vision reservation here.
+                    // image/video soft tokens) + max_tokens at the fp16
+                    // rate, and the decode-phase peak this vision
+                    // reservation covered (CIImage rasters, tower
+                    // activations) is behind us — the embeddings were
+                    // eval'ed inside `prepare`. Holding both would
+                    // double-charge the KV span for the whole stream, so
+                    // release the vision reservation here.
                     await mediaGate.release(requestId: mediaReqId)
                     return makeEventStream(
                         upstream: upstream,
@@ -377,22 +388,53 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     )
                 } catch is CancellationError {
                     // The CALLER went away mid-construction — that is not a
-                    // v2 failure, so don't burn a fallback WARN or re-serve
-                    // the whole request through the legacy path. Release and
+                    // v2 failure, so don't burn a refusal ERROR. Release and
                     // propagate like every other pre-stream throw above.
                     await mediaGate.release(requestId: mediaReqId)
                     await releaseBox.fire()
                     throw CancellationError()
+                } catch let mediaError as VLMRequestInference.MediaError {
+                    // Deterministic input fault (malformed/oversized media —
+                    // the same class `validateMedia` rejects above). Fails
+                    // identically on any provider, so it keeps its existing
+                    // 4xx mapping (500 for the temp-file write case) instead
+                    // of becoming a misleading retriable refusal.
+                    await mediaGate.release(requestId: mediaReqId)
+                    await releaseBox.fire()
+                    throw mediaError
+                } catch EngineV2VisionPrefillError.noProcessedMedia {
+                    // Every media part sits on a non-user role, so the
+                    // processor had nothing to consume (`buildUserInput`
+                    // drops non-user media — identically on the legacy
+                    // path). Deterministic for this request on EVERY
+                    // provider: a 400 client fault, not a refusal — no
+                    // ERROR telemetry, no failover burn.
+                    await mediaGate.release(requestId: mediaReqId)
+                    await releaseBox.fire()
+                    throw MultiModelBatchSchedulerEngineError.multimodalRejected(
+                        "multimodal_rejected: media parts must be attached to user "
+                            + "messages; none of this request's media was consumable")
                 } catch {
-                    // Legacy fallback (the vision reservation is still held;
-                    // the legacy stream below releases it on every exit).
-                    // WARN so the fallback rate is observable in prod.
+                    // REFUSAL: v2 media-prefill construction failed on this
+                    // provider. ERROR telemetry (media-kind tagged) + 503 —
+                    // the request was never started, so the coordinator's
+                    // pre-content failover retries it invisibly elsewhere.
+                    await mediaGate.release(requestId: mediaReqId)
+                    await releaseBox.fire()
+                    let mediaKind = EngineV2VisionPrefill.mediaKind(of: request)
                     plumbing.emitTelemetry(
-                        EngineV2VisionPrefill.fallbackTelemetryEvent(
-                            modelId: modelId, error: error))
+                        EngineV2VisionPrefill.refusalTelemetryEvent(
+                            modelId: modelId, mediaKind: mediaKind, error: error))
+                    throw MultiModelBatchSchedulerEngineError.requestRejected(
+                        "engine_v2 media prefill construction failed "
+                            + "(media=\(mediaKind.rawValue)): "
+                            + EngineV2VisionPrefill.refusalDetail(for: error)
+                            + " — request not started; retry on another provider")
                 }
             }
 
+            // LEGACY wrapper path — reachable ONLY for VLM slots WITHOUT a
+            // v2 bridge (scheduled for deletion with the legacy engine).
             let vlmStream = VLMRequestInference.stream(
                 container: container, request: request, defaultMaxTokens: defaultMaxTokens)
             // Capture the gate so the stream task can release the media

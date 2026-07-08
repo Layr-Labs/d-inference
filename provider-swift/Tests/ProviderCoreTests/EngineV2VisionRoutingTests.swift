@@ -1,20 +1,24 @@
 // Copyright © 2026 Eigen Labs.
 //
-// v0.7.4 vision-through-engine_v2 unit tests — live-isolated style: a
-// scripted in-process `CBv2Engine`, a real (unloaded) `BatchScheduler`, a
-// real `ModelContainer` over stub model/processor/tokenizer, and an
-// injected `EngineV2VisionPlumbing` preparer. No model weights, no network.
+// Media-through-engine_v2 unit tests (v0.7.4 vision + v0.7.5 video/fail-
+// loud) — live-isolated style: a scripted in-process `CBv2Engine`, a real
+// (unloaded) `BatchScheduler`, a real `ModelContainer` over stub
+// model/processor/tokenizer, and an injected `EngineV2VisionPlumbing`
+// preparer. No model weights, no network.
 //
-//   * Span carving: per-image spans out of synthetic tokenized prompts
-//     (1 image, 2 images, adjacent images, image-at-start) + every
-//     mismatch rejection.
-//   * Routing: an image request on a v2-bridged VLM slot reaches the
-//     engine as a `CBv2Request` with the prepared prompt tokens, the
+//   * Span carving: per-image and per-video-frame spans out of synthetic
+//     tokenized prompts (1 image, 2 images, adjacent images,
+//     image-at-start, video-only, mixed interleave, cross-kind adjacency)
+//     + every mismatch rejection, including the video frame-count/
+//     span-count assertion in both directions.
+//   * Routing: image AND video requests on a v2-bridged VLM slot reach
+//     the engine as a `CBv2Request` with the prepared prompt tokens, the
 //     carved spans, and an embeddings closure returning the precomputed
 //     arrays; text requests on the same slot stay `multimodal == nil`;
-//     construction failure falls back to the legacy VLM path with a WARN;
-//     non-bridged slots and video-bearing requests never invoke the
-//     preparer.
+//     construction failure REFUSES loudly (`engine_v2_vision_refusal`
+//     ERROR + `.requestRejected` → 503, never a legacy fallback);
+//     `MediaError` out of construction keeps its deterministic 4xx;
+//     non-bridged slots keep the legacy path.
 //   * Error mapping: submit-time `CBv2MultimodalError` → the canonical
 //     `multimodal_rejected:` message → `.multimodalRejected` → HTTP 400.
 
@@ -35,6 +39,24 @@ private let tinyPNGDataURI =
     + "WElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAAB"
     + "AAAAAaADAAQAAAABAAAAAQAAAAD5Ip3+AAAADElEQVQIHWP4z8AAAAMBAQBb2/lEAAAA"
     + "AElFTkSuQmCC"
+
+// A real, round-trip-verified 64x64 H.264 mp4 (3 solid-gray frames) — same
+// fixture as VLMRequestInferenceTests; passes `validateMedia`'s real
+// AVFoundation metadata probe, so video-bearing requests reach the v2
+// routing branch in these tests.
+private let tinyMP4DataURI =
+    "data:video/mp4;base64,"
+    + "AAAAHGZ0eXBtcDQyAAAAAWlzb21tcDQxbXA0MgAAAAFtZGF0AAAAAAAAAK4AAAA7BgUyR1ZK3FxMQz+U78URPNFDqAEAAAMAAQMAAAMAAQIAAeYACwAAAwAA"
+    + "AwAAAwAUDAOJJAEN/////4AAAAAxJbggH4AuSqwRNmYXSACJwyG5akafRwrPDoFqVCtjHBP+QvRWhyAAGk1PzfAEsEedgAAAABEh4QhfAoAvQrFXFN4ACQ7CtgA"
+    + "AABEBqIGK/1jQw/VufW+ACvdnuAAAAvFtb292AAAAbG12aGQAAAAA5lOws+ZTsLMAAAJYAAACWAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAA"
+    + "AAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAACfXRyYWsAAABcdGtoZAAAAAHmU7Cz5lOwswAAAAEAAAAAAAACWAAAAAAAAAAA"
+    + "AAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAQAAAAEAAAAAAACRlZHRzAAAAHGVsc3QAAAAAAAAAAQAAAlgAAADIAAEAAAAAAfV"
+    + "tZGlhAAAAIG1kaGQAAAAA5lOws+ZTsLMAAAJYAAACWFXEAAAAAAAxaGRscgAAAAAAAAAAdmlkZQAAAAAAAAAAAAAAAENvcmUgTWVkaWEgVmlkZW8AAAABnG1pbm"
+    + "YAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAVxzdGJsAAAAoXN0c2QAAAAAAAAAAQAAAJFhdmMxAAAAAA"
+    + "AAAAEAAAAAAAAAAAAAAAAAAAAAAEAAQABIAAAASAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGP//AAAAJ2F2Y0MBZAAL/+EADCdkAA"
+    + "usVlDDeBBhFAEABCjuPLD9+PgAAAAACmZpZWwBAAAAAApjaHJtAAAAAAAYc3R0cwAAAAAAAAABAAAAAwAAAMgAAAAoY3R0cwAAAAAAAAADAAAAAQAAAMgAAAABAA"
+    + "ABkAAAAAEAAAAAAAAAFHN0c3MAAAAAAAAAAQAAAAEAAAAPc2R0cAAAAAAgEBgAAAAcc3RzYwAAAAAAAAABAAAAAQAAAAMAAAABAAAAIHN0c3oAAAAAAAAAAAAAAA"
+    + "MAAAB0AAAAFQAAABUAAAAUc3RjbwAAAAAAAAABAAAALA=="
 
 // MARK: - Scripted engine / stubs
 
@@ -146,14 +168,17 @@ private final class PrepareCallCounter: @unchecked Sendable {
 
 /// One synthetic prepared submission: prompt `[7, 7, P, P, P, 8]` with a
 /// single 3-token image span at offset 2 and one matching embedding.
-private func makePreparedSubmission() -> (
+private func makePreparedSubmission(
+    mediaKind: EngineV2MediaKind = .image
+) -> (
     submission: EngineV2VisionPrefill.PreparedSubmission, embedding: MLXArray
 ) {
     let embedding = MLXArray(Array(0 ..< 12).map(Float.init)).reshaped([3, 4])
     let submission = EngineV2VisionPrefill.PreparedSubmission(
         promptTokens: [7, 7, 990, 990, 990, 8],
         spans: [CBv2ImageSpan(tokenOffset: 2, length: 3)],
-        embeddings: [embedding]
+        embeddings: [embedding],
+        mediaKind: mediaKind
     )
     return (submission, embedding)
 }
@@ -230,21 +255,28 @@ private func makeUnloadedScheduler() -> BatchScheduler {
 
 @Suite("EngineV2VisionPrefill span carving")
 struct EngineV2VisionSpanCarvingTests {
-    let p = 990  // placeholder id
+    let p = 990  // image placeholder id
+    let v = 991  // video placeholder id
+
+    /// Image-only convenience over the generalized two-kind carve.
+    private func carveImages(tokens: [Int], spanLengths: [Int]) throws -> [CBv2ImageSpan] {
+        try EngineV2VisionPrefill.carveSpans(
+            tokens: tokens, imagePlaceholderId: p, imageSpanLengths: spanLengths,
+            videoPlaceholderId: nil, videoSpanLengths: []
+        ).map(\.span)
+    }
 
     @Test("single image mid-prompt")
     func singleImage() throws {
         let tokens = [1, 5, 6, p, p, p, p, 9]
-        let spans = try EngineV2VisionPrefill.carveSpans(
-            tokens: tokens, placeholderId: p, spanLengths: [4])
+        let spans = try carveImages(tokens: tokens, spanLengths: [4])
         #expect(spans == [CBv2ImageSpan(tokenOffset: 3, length: 4)])
     }
 
     @Test("two images separated by text/delimiters")
     func twoImages() throws {
         let tokens = [1, p, p, 42, 43, p, p, 9]
-        let spans = try EngineV2VisionPrefill.carveSpans(
-            tokens: tokens, placeholderId: p, spanLengths: [2, 2])
+        let spans = try carveImages(tokens: tokens, spanLengths: [2, 2])
         #expect(spans == [
             CBv2ImageSpan(tokenOffset: 1, length: 2),
             CBv2ImageSpan(tokenOffset: 5, length: 2),
@@ -257,8 +289,7 @@ struct EngineV2VisionSpanCarvingTests {
         // the engine coalesces the two spans back into one bidirectional
         // block (the wrapper's contiguous-run semantics).
         let tokens = [1, p, p, p, p, p, 9]
-        let spans = try EngineV2VisionPrefill.carveSpans(
-            tokens: tokens, placeholderId: p, spanLengths: [2, 3])
+        let spans = try carveImages(tokens: tokens, spanLengths: [2, 3])
         #expect(spans == [
             CBv2ImageSpan(tokenOffset: 1, length: 2),
             CBv2ImageSpan(tokenOffset: 3, length: 3),
@@ -268,61 +299,206 @@ struct EngineV2VisionSpanCarvingTests {
     @Test("image at prompt start")
     func imageAtStart() throws {
         let tokens = [p, p, p, 4, 5]
-        let spans = try EngineV2VisionPrefill.carveSpans(
-            tokens: tokens, placeholderId: p, spanLengths: [3])
+        let spans = try carveImages(tokens: tokens, spanLengths: [3])
         #expect(spans == [CBv2ImageSpan(tokenOffset: 0, length: 3)])
     }
 
     @Test("missing placeholder run throws")
     func missingRun() {
         #expect(throws: EngineV2VisionPrefillError.self) {
-            try EngineV2VisionPrefill.carveSpans(
-                tokens: [1, 2, 3], placeholderId: p, spanLengths: [2])
+            try carveImages(tokens: [1, 2, 3], spanLengths: [2])
         }
     }
 
     @Test("run shorter than the image's soft-token count throws")
     func runTooShort() {
         #expect(throws: EngineV2VisionPrefillError.self) {
-            try EngineV2VisionPrefill.carveSpans(
-                tokens: [1, p, p, 4], placeholderId: p, spanLengths: [3])
+            try carveImages(tokens: [1, p, p, 4], spanLengths: [3])
         }
     }
 
     @Test("leftover placeholders after pairing throw")
     func trailingPlaceholders() {
         #expect(throws: EngineV2VisionPrefillError.self) {
-            try EngineV2VisionPrefill.carveSpans(
-                tokens: [1, p, p, 4, p, 9], placeholderId: p, spanLengths: [2])
+            try carveImages(tokens: [1, p, p, 4, p, 9], spanLengths: [2])
         }
     }
 
     @Test("non-positive feature length throws")
     func invalidLength() {
         #expect(throws: EngineV2VisionPrefillError.self) {
-            try EngineV2VisionPrefill.carveSpans(
-                tokens: [p], placeholderId: p, spanLengths: [0])
+            try carveImages(tokens: [p], spanLengths: [0])
         }
+    }
+
+    // MARK: video + mixed (v0.7.5)
+
+    @Test("video-only: one span per frame block, timestamps/text between")
+    func videoOnlyPerFrame() throws {
+        // Two frame blocks (3 soft tokens each), separated by the timestamp
+        // text tokens the processor emits between per-frame blocks — the
+        // engine never coalesces across frames because of them.
+        let tokens = [1, 60, v, v, v, 61, 60, v, v, v, 61, 9]
+        let carved = try EngineV2VisionPrefill.carveSpans(
+            tokens: tokens, imagePlaceholderId: nil, imageSpanLengths: [],
+            videoPlaceholderId: v, videoSpanLengths: [3, 3])
+        #expect(carved == [
+            EngineV2VisionPrefill.CarvedSpan(
+                kind: .video, span: CBv2ImageSpan(tokenOffset: 2, length: 3)),
+            EngineV2VisionPrefill.CarvedSpan(
+                kind: .video, span: CBv2ImageSpan(tokenOffset: 7, length: 3)),
+        ])
+    }
+
+    @Test("mixed image+video preserves prompt-order interleave")
+    func mixedInterleave() throws {
+        // image, frame, frame, image — spans must come out ascending with
+        // per-kind features consumed in prompt order.
+        let tokens = [1, p, p, 5, v, v, v, 6, v, v, v, 7, p, p, p, 9]
+        let carved = try EngineV2VisionPrefill.carveSpans(
+            tokens: tokens, imagePlaceholderId: p, imageSpanLengths: [2, 3],
+            videoPlaceholderId: v, videoSpanLengths: [3, 3])
+        #expect(carved == [
+            EngineV2VisionPrefill.CarvedSpan(
+                kind: .image, span: CBv2ImageSpan(tokenOffset: 1, length: 2)),
+            EngineV2VisionPrefill.CarvedSpan(
+                kind: .video, span: CBv2ImageSpan(tokenOffset: 4, length: 3)),
+            EngineV2VisionPrefill.CarvedSpan(
+                kind: .video, span: CBv2ImageSpan(tokenOffset: 8, length: 3)),
+            EngineV2VisionPrefill.CarvedSpan(
+                kind: .image, span: CBv2ImageSpan(tokenOffset: 12, length: 3)),
+        ])
+    }
+
+    @Test("cross-kind adjacency: image run directly followed by a frame run")
+    func crossKindAdjacency() throws {
+        let tokens = [p, p, v, v, v, 9]
+        let carved = try EngineV2VisionPrefill.carveSpans(
+            tokens: tokens, imagePlaceholderId: p, imageSpanLengths: [2],
+            videoPlaceholderId: v, videoSpanLengths: [3])
+        #expect(carved == [
+            EngineV2VisionPrefill.CarvedSpan(
+                kind: .image, span: CBv2ImageSpan(tokenOffset: 0, length: 2)),
+            EngineV2VisionPrefill.CarvedSpan(
+                kind: .video, span: CBv2ImageSpan(tokenOffset: 2, length: 3)),
+        ])
+    }
+
+    @Test("fewer video runs than frames throws (frame-count assertion)")
+    func fewerRunsThanFrames() {
+        // Tower returned 2 frames, prompt has only 1 frame block.
+        do {
+            _ = try EngineV2VisionPrefill.carveSpans(
+                tokens: [1, v, v, v, 9], imagePlaceholderId: nil, imageSpanLengths: [],
+                videoPlaceholderId: v, videoSpanLengths: [3, 3])
+            Issue.record("expected placeholderRunMissing throw")
+        } catch let error as EngineV2VisionPrefillError {
+            guard case .placeholderRunMissing(let kind, let index) = error else {
+                Issue.record("expected .placeholderRunMissing, got \(error)")
+                return
+            }
+            #expect(kind == .video)
+            #expect(index == 1)
+        } catch {
+            Issue.record("expected EngineV2VisionPrefillError, got \(error)")
+        }
+    }
+
+    @Test("more video runs than frames throws (frame-count assertion)")
+    func moreRunsThanFrames() {
+        // Tower returned 1 frame, prompt has 2 frame blocks.
+        do {
+            _ = try EngineV2VisionPrefill.carveSpans(
+                tokens: [1, v, v, v, 5, v, v, v, 9], imagePlaceholderId: nil,
+                imageSpanLengths: [],
+                videoPlaceholderId: v, videoSpanLengths: [3])
+            Issue.record("expected unexpectedTrailingPlaceholders throw")
+        } catch let error as EngineV2VisionPrefillError {
+            guard case .unexpectedTrailingPlaceholders(let kind, let count) = error else {
+                Issue.record("expected .unexpectedTrailingPlaceholders, got \(error)")
+                return
+            }
+            #expect(kind == .video)
+            #expect(count == 3)
+        } catch {
+            Issue.record("expected EngineV2VisionPrefillError, got \(error)")
+        }
+    }
+
+    @Test("video frame run shorter than its soft-token count throws")
+    func videoRunTooShort() {
+        #expect(throws: EngineV2VisionPrefillError.self) {
+            _ = try EngineV2VisionPrefill.carveSpans(
+                tokens: [1, v, v, 5], imagePlaceholderId: nil, imageSpanLengths: [],
+                videoPlaceholderId: v, videoSpanLengths: [3])
+        }
+    }
+
+    @Test("image and video sharing one placeholder id throws")
+    func conflictingIds() {
+        #expect(throws: EngineV2VisionPrefillError.self) {
+            _ = try EngineV2VisionPrefill.carveSpans(
+                tokens: [p, p], imagePlaceholderId: p, imageSpanLengths: [2],
+                videoPlaceholderId: p, videoSpanLengths: [2])
+        }
+    }
+
+    @Test("a disabled kind's id is an ordinary token (mirrors the processor)")
+    func disabledKindIgnored() throws {
+        // No video features ⇒ the video id is not watched: a stray 991 in
+        // the prompt stays an ordinary token, exactly as the wrapper would
+        // embed it (the processor only expands placeholders it produced
+        // pixels for).
+        let tokens = [1, p, p, 4, v, 9]
+        let carved = try EngineV2VisionPrefill.carveSpans(
+            tokens: tokens, imagePlaceholderId: p, imageSpanLengths: [2],
+            videoPlaceholderId: nil, videoSpanLengths: [])
+        #expect(carved.map(\.span) == [CBv2ImageSpan(tokenOffset: 1, length: 2)])
     }
 }
 
-// MARK: - hasVideo gate
+// MARK: - Media-kind classification
 
-@Suite("VLMRequestInference.hasVideo")
-struct HasVideoGateTests {
-    @Test("image-only request has no video")
+@Suite("VLMRequestInference.hasVideo + EngineV2VisionPrefill.mediaKind")
+struct MediaKindClassificationTests {
+    @Test("image-only request has no video and classifies as .image")
     func imageOnly() {
         #expect(!VLMRequestInference.hasVideo(imageRequest()))
+        #expect(EngineV2VisionPrefill.mediaKind(of: imageRequest()) == .image)
     }
 
-    @Test("video part is detected, including mixed with images")
+    @Test("video part is detected; video/mixed classify correctly")
     func videoDetected() {
         let video = imageRequest(parts: [.videoURL("data:video/mp4;base64,AAAA")])
         #expect(VLMRequestInference.hasVideo(video))
+        #expect(EngineV2VisionPrefill.mediaKind(of: video) == .video)
         let mixed = imageRequest(parts: [
             .imageURL(tinyPNGDataURI), .videoURL("data:video/mp4;base64,AAAA"),
         ])
         #expect(VLMRequestInference.hasVideo(mixed))
+        #expect(EngineV2VisionPrefill.mediaKind(of: mixed) == .mixed)
+    }
+
+    @Test("mediaKind ignores non-user-role media (mirrors buildUserInput)")
+    func nonUserRolesIgnored() {
+        // A video part on an assistant message is dropped by buildUserInput,
+        // so the kind must reflect the user-message media only — keeping
+        // refusal tags consistent with the success path's lmInput-derived
+        // kind.
+        let request = OpenAIChatCompletionRequest(
+            model: "test/vlm-stub",
+            messages: [
+                OpenAIChatMessage(
+                    role: .assistant,
+                    content: .parts([.videoURL("data:video/mp4;base64,AAAA")])),
+                OpenAIChatMessage(
+                    role: .user,
+                    content: .parts([.text("what is this?"), .imageURL(tinyPNGDataURI)])),
+            ],
+            temperature: 0,
+            maxTokens: 8
+        )
+        #expect(EngineV2VisionPrefill.mediaKind(of: request) == .image)
     }
 }
 
@@ -357,7 +533,8 @@ struct EngineV2BridgeMultimodalTests {
             promptTokens: prepared.promptTokens,
             request: request,
             requestId: "req-vision-1",
-            multimodal: prepared.multimodalInput()
+            multimodal: prepared.multimodalInput(),
+            mediaKind: .video
         )
         var text = ""
         for await event in stream {
@@ -374,12 +551,14 @@ struct EngineV2BridgeMultimodalTests {
         #expect(arrays[0].shape == embedding.shape)
         #expect(arrays[0].asArray(Float.self) == embedding.asArray(Float.self))
 
-        // Engagement telemetry: INFO, engine_v2_vision, multimodal=true.
+        // Engagement telemetry: INFO, engine_v2_vision, multimodal=true,
+        // media_kind riding the caller-supplied tag.
         let visionEvents = telemetry.events.filter {
             $0.fields?["operation"]?.description == "engine_v2_vision"
         }
         #expect(visionEvents.count == 1)
         #expect(visionEvents.first?.fields?["multimodal"]?.description == "true")
+        #expect(visionEvents.first?.fields?["media_kind"]?.description == "video")
         #expect(visionEvents.first?.fields?["backend"]?.description == "engine_v2")
         #expect(visionEvents.first?.requestId == "req-vision-1")
     }
@@ -489,8 +668,144 @@ struct EngineV2VisionRoutingTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
-    @Test("construction failure falls back to the legacy VLM path with a WARN")
-    func constructionFailureFallsBackToLegacy() async throws {
+    @Test("construction failure REFUSES loudly: ERROR telemetry + 503, no legacy fallback")
+    func constructionFailureRefusesLoudly() async throws {
+        struct PrepFailure: Error {}
+        // Real budget so the vision reservation is NOT a no-op: the refusal
+        // path must release it (a leak would shrink admission headroom one
+        // refused request at a time).
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            GlobalKVCacheBudget.MemorySnapshot(
+                total: 64 * 1024 * 1024 * 1024, active: 0, cache: 0, systemAvailable: .max)
+        }
+        let scheduler = BatchScheduler(
+            maxConcurrentRequests: 4,
+            pendingTimeout: .seconds(30),
+            defaultMaxTokens: 64,
+            kvBudget: budget
+        )
+        let engine = VisionScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine)
+        let telemetry = VisionTelemetrySink()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _ in throw PrepFailure() },
+            emitTelemetry: telemetry.callback()
+        )
+        let router = makeRoutingEngine(
+            scheduler: scheduler, container: makeStubContainer(),
+            bridge: bridge, plumbing: plumbing)
+
+        // The stub container's processor throws VisionStubProcessorError on
+        // the legacy path — seeing `.requestRejected` instead is the proof
+        // the request was REFUSED, not re-served through legacy.
+        do {
+            _ = try await collectContent(
+                try await router.streamChatCompletion(request: imageRequest()))
+            Issue.record("expected requestRejected throw")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            guard case .requestRejected(let message) = error else {
+                Issue.record("expected .requestRejected, got \(error)")
+                return
+            }
+            #expect(message.contains("media=image"))
+            // Retriable 503 → the coordinator's pre-content failover
+            // reroutes to another provider.
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 503)
+        } catch {
+            Issue.record("expected MultiModelBatchSchedulerEngineError, got \(error)")
+        }
+        #expect(engine.submitted.isEmpty, "the engine must never see a failed construction")
+        #expect(await budget.outstandingReservedBytes() == 0)
+
+        let refusals = telemetry.events.filter {
+            $0.fields?["operation"]?.description == "engine_v2_vision_refusal"
+        }
+        #expect(refusals.count == 1)
+        #expect(refusals.first?.severity == .error)
+        #expect(refusals.first?.fields?["multimodal"]?.description == "true")
+        #expect(refusals.first?.fields?["media_kind"]?.description == "image")
+        #expect(
+            refusals.first?.fields?["error_class"]?.description.contains("PrepFailure") == true)
+        // No fallback WARN exists anymore.
+        #expect(
+            telemetry.events.allSatisfy {
+                $0.fields?["operation"]?.description != "engine_v2_vision_fallback"
+            })
+    }
+
+    @Test("MediaError out of construction keeps its deterministic 4xx (not a refusal)")
+    func mediaErrorFromConstructionKeeps4xx() async throws {
+        let engine = VisionScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine)
+        let telemetry = VisionTelemetrySink()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _ in
+                throw VLMRequestInference.MediaError.mediaTooLarge("test-cap")
+            },
+            emitTelemetry: telemetry.callback()
+        )
+        let router = makeRoutingEngine(
+            scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
+            bridge: bridge, plumbing: plumbing)
+
+        do {
+            _ = try await collectContent(
+                try await router.streamChatCompletion(request: imageRequest()))
+            Issue.record("expected MediaError throw")
+        } catch let error as VLMRequestInference.MediaError {
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
+        } catch {
+            Issue.record("expected MediaError, got \(error)")
+        }
+        #expect(engine.submitted.isEmpty)
+        // A client input fault is not a v2 refusal — no ERROR event.
+        #expect(
+            telemetry.events.allSatisfy {
+                $0.fields?["operation"]?.description != "engine_v2_vision_refusal"
+            })
+    }
+
+    @Test("noProcessedMedia (media on non-user roles only) maps to 400, not a refusal")
+    func noProcessedMediaMapsTo400() async throws {
+        // Without this mapping the shape would 503 → the coordinator's
+        // failover would burn retries on a request that fails identically
+        // on every provider (buildUserInput drops non-user media
+        // everywhere).
+        let engine = VisionScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine)
+        let telemetry = VisionTelemetrySink()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _ in throw EngineV2VisionPrefillError.noProcessedMedia },
+            emitTelemetry: telemetry.callback()
+        )
+        let router = makeRoutingEngine(
+            scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
+            bridge: bridge, plumbing: plumbing)
+
+        do {
+            _ = try await collectContent(
+                try await router.streamChatCompletion(request: imageRequest()))
+            Issue.record("expected multimodalRejected throw")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            guard case .multimodalRejected(let message) = error else {
+                Issue.record("expected .multimodalRejected, got \(error)")
+                return
+            }
+            #expect(message.hasPrefix("multimodal_rejected:"))
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
+        } catch {
+            Issue.record("expected MultiModelBatchSchedulerEngineError, got \(error)")
+        }
+        #expect(engine.submitted.isEmpty)
+        // A deterministic client shape is not a v2 refusal — no ERROR event.
+        #expect(
+            telemetry.events.allSatisfy {
+                $0.fields?["operation"]?.description != "engine_v2_vision_refusal"
+            })
+    }
+
+    @Test("refusal on a video request tags media_kind video")
+    func refusalTagsVideoKind() async throws {
         struct PrepFailure: Error {}
         let engine = VisionScriptedEngine(script: .stream([]))
         let bridge = makeBridge(engine: engine)
@@ -503,24 +818,28 @@ struct EngineV2VisionRoutingTests {
             scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
             bridge: bridge, plumbing: plumbing)
 
-        // The stub container's processor throws on the legacy path — that
-        // recognizable error IS the proof the request fell through to the
-        // legacy VLM stream instead of being dropped or dying on the v2
-        // attempt.
-        await #expect(throws: VisionStubProcessorError.self) {
+        // Real tinyMP4 so validateMedia passes and the preparer is reached.
+        let request = imageRequest(parts: [
+            .text("what happens in this clip?"), .videoURL(tinyMP4DataURI),
+        ])
+        do {
             _ = try await collectContent(
-                try await router.streamChatCompletion(request: imageRequest()))
+                try await router.streamChatCompletion(request: request))
+            Issue.record("expected requestRejected throw")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            guard case .requestRejected(let message) = error else {
+                Issue.record("expected .requestRejected, got \(error)")
+                return
+            }
+            #expect(message.contains("media=video"))
+        } catch {
+            Issue.record("expected MultiModelBatchSchedulerEngineError, got \(error)")
         }
-        #expect(engine.submitted.isEmpty, "the engine must never see a failed construction")
-
-        let fallbacks = telemetry.events.filter {
-            $0.fields?["operation"]?.description == "engine_v2_vision_fallback"
+        let refusals = telemetry.events.filter {
+            $0.fields?["operation"]?.description == "engine_v2_vision_refusal"
         }
-        #expect(fallbacks.count == 1)
-        #expect(fallbacks.first?.severity == .warn)
-        #expect(fallbacks.first?.fields?["multimodal"]?.description == "true")
-        #expect(
-            fallbacks.first?.fields?["error_class"]?.description.contains("PrepFailure") == true)
+        #expect(refusals.count == 1)
+        #expect(refusals.first?.fields?["media_kind"]?.description == "video")
     }
 
     @Test("non-bridged slot keeps the legacy path; the preparer is never invoked")
@@ -543,8 +862,54 @@ struct EngineV2VisionRoutingTests {
         #expect(counter.count == 0)
     }
 
-    @Test("video-bearing request never reaches the v2 preparer")
-    func videoStaysOffV2() async throws {
+    @Test("video request on a bridged slot routes through v2 with media_kind tagged")
+    func videoRoutesThroughV2() async throws {
+        let engine = VisionScriptedEngine(
+            script: .stream([
+                .delta(text: "A gray clip.", tokens: [10, 11], logprobs: nil),
+                .finished(reason: .stop, usage: CBv2Usage(promptTokens: 6, completionTokens: 2)),
+            ]))
+        let telemetry = VisionTelemetrySink()
+        let bridge = makeBridge(engine: engine, telemetry: telemetry)
+        let (prepared, _) = makePreparedSubmission(mediaKind: .video)
+        let counter = PrepareCallCounter()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _ in
+                counter.increment()
+                return prepared
+            },
+            emitTelemetry: { _ in }
+        )
+        let router = makeRoutingEngine(
+            scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
+            bridge: bridge, plumbing: plumbing)
+
+        // The real tinyMP4 passes `validateMedia`'s AVFoundation probe, so
+        // the request reaches the v2 branch (v0.7.4 gated video to legacy
+        // here; v0.7.5 routes it through the engine).
+        let request = imageRequest(parts: [
+            .text("what happens in this clip?"), .videoURL(tinyMP4DataURI),
+        ])
+        let content = try await collectContent(
+            try await router.streamChatCompletion(request: request))
+        #expect(content == "A gray clip.")
+        #expect(counter.count == 1)
+
+        let submitted = try #require(engine.submitted.first)
+        #expect(submitted.promptTokens == prepared.promptTokens)
+        #expect(try #require(submitted.multimodal).spans == prepared.spans)
+
+        // The routing site threads the prepared submission's media kind
+        // into the bridge's engagement INFO.
+        let visionEvents = telemetry.events.filter {
+            $0.fields?["operation"]?.description == "engine_v2_vision"
+        }
+        #expect(visionEvents.count == 1)
+        #expect(visionEvents.first?.fields?["media_kind"]?.description == "video")
+    }
+
+    @Test("garbage inline video still dies in validateMedia (4xx) before the preparer")
+    func garbageVideoRejectedBeforePreparer() async throws {
         let engine = VisionScriptedEngine(script: .stream([]))
         let bridge = makeBridge(engine: engine)
         let counter = PrepareCallCounter()
@@ -559,15 +924,19 @@ struct EngineV2VisionRoutingTests {
             scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
             bridge: bridge, plumbing: plumbing)
         // The garbage inline video dies in `validateMedia` (a 400-class
-        // MediaError) — BEFORE the v2 attempt; and even a valid video would
-        // be gated off v2 by `hasVideo`. Either way the preparer must not
-        // fire and the engine must stay untouched.
+        // MediaError) BEFORE the v2 attempt — the preparer must not fire
+        // and the engine must stay untouched.
         let request = imageRequest(parts: [
             .imageURL(tinyPNGDataURI), .videoURL("data:video/mp4;base64,AAAA"),
         ])
-        await #expect(throws: (any Error).self) {
+        do {
             _ = try await collectContent(
                 try await router.streamChatCompletion(request: request))
+            Issue.record("expected MediaError throw")
+        } catch let error as VLMRequestInference.MediaError {
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
+        } catch {
+            Issue.record("expected MediaError, got \(error)")
         }
         #expect(counter.count == 0)
         #expect(engine.submitted.isEmpty)
@@ -606,14 +975,14 @@ struct EngineV2VisionRoutingTests {
         #expect(submitted.multimodal == nil)
     }
 
-    @Test("cancel during vision construction propagates as cancellation (499), not fallback or 500")
+    @Test("cancel during vision construction propagates as cancellation (499), not refusal or 500")
     func cancelDuringVisionConstructionPropagatesCancellation() async throws {
         // The consumer cancelled while the vision features were being built
         // (handleCancellation cancels the request task; the preparer's
         // container/tokenizer work observes it as CancellationError). The
-        // routing seam must NOT burn a fallback WARN or re-serve through
-        // legacy — it releases and rethrows — and the handler-side mapping
-        // must report the canonical cancellation (499), never a 500
+        // routing seam must NOT burn a refusal ERROR or reject the request
+        // — it releases and rethrows — and the handler-side mapping must
+        // report the canonical cancellation (499), never a 500
         // .inferenceError (which would count as a provider fault and trip
         // the (provider, model) 5xx routing cooldown for a client's own
         // cancel).
@@ -666,12 +1035,12 @@ struct EngineV2VisionRoutingTests {
             Issue.record("expected CancellationError, got \(error)")
         }
 
-        // No fallback WARN (this was not a v2 failure), engine untouched
+        // No refusal ERROR (this was not a v2 failure), engine untouched
         // (never submitted), model reservation released exactly once, and
         // the vision memory reservation fully released.
         #expect(
             telemetry.events.allSatisfy {
-                $0.fields?["operation"]?.description != "engine_v2_vision_fallback"
+                $0.fields?["operation"]?.description != "engine_v2_vision_refusal"
             })
         #expect(engine.submitted.isEmpty)
         #expect(releaseCount.count == 1)

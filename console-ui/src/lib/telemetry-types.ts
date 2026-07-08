@@ -125,6 +125,8 @@ export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([
   "reservations",
   "request_id",
   "age_seconds",
-  // Vision-through-engine_v2 tag (mirror of Go + Swift allowlists).
+  // Media-through-engine_v2 tags: bool + image/video/mixed kind (mirror of
+  // Go + Swift allowlists).
   "multimodal",
+  "media_kind",
 ]);

@@ -272,7 +272,12 @@ func TestIntegration_MultipleRequestsAccounting(t *testing.T) {
 func TestIntegration_E2EEncryptionCorrectness(t *testing.T) {
 	s := startSuite(t)
 
-	resp := postChatCompletions(t, s, "What is 2+2? Answer with just the number.", false, 20)
+	// 256 tokens, not 20: the CBv2 default fixture (gpt-oss-20b) is a
+	// reasoning model — a 20-token cap is consumed entirely by the Harmony
+	// analysis channel and `content` stays empty before the final channel
+	// starts. This test asserts on the decrypted CONTENT, so give the
+	// model room to finish reasoning and answer.
+	resp := postChatCompletions(t, s, "What is 2+2? Answer with just the number.", false, 256)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 

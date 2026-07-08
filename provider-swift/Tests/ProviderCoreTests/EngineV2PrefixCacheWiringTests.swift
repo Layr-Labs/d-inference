@@ -145,13 +145,20 @@ private let gib = 1_073_741_824
 /// The cache is DORMANT by default as of v0.7.5, so funded-path tests must
 /// opt in explicitly — the helper's default `prefixCache: "1"` models an
 /// opted-in box; pass nil to leave the flag ABSENT (the fleet default).
-private func carveEnv(prefixCache: String? = "1", maxGB: String? = "1") -> [String: String] {
+private func carveEnv(
+    prefixCache: String? = "1", maxGB: String? = "1", ssdTier: String? = "0"
+) -> [String: String] {
     var env = [
         "DARKBLOOM_ENGINE_V2": "1",
         "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*,gpt-oss*",
     ]
     if let prefixCache { env["DARKBLOOM_PREFIX_CACHE"] = prefixCache }
     if let maxGB { env["DARKBLOOM_PREFIX_CACHE_MAX_GB"] = maxGB }
+    // v0.7.5 SSD offload: the SSD tier is default-ON and WINS over the RAM
+    // opt-in (no tier composition), so the RAM-carve tests here must kill
+    // it explicitly to reach the `.ram` mode they exercise. Pass nil to
+    // model a box with the SSD tier at its default.
+    if let ssdTier { env["DARKBLOOM_PREFIX_CACHE_SSD"] = ssdTier }
     return env
 }
 
@@ -181,7 +188,7 @@ struct EngineV2PrefixCacheCarveTests {
         let recorder = GrantRecorder()
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
-                environment: carveEnv(prefixCache: nil),  // flag ABSENT
+                environment: carveEnv(prefixCache: nil, ssdTier: nil),  // both flags ABSENT (true fleet default; SSD tier default-on, but hooks build no production cache instance)
                 eosTokenIds: [2],
                 makeEngine: { _, kv in
                     recorder.record(kv)

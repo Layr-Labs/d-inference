@@ -722,8 +722,17 @@ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now 
 	// additionally fit in the CURRENT free memory. Unknown catalog size fails
 	// open, like the gates above. Unreachable at AllowBusyLoadMax=0 (busyLoad is
 	// always 0 there), so the default behavior is unchanged.
+	//
+	// The catalog size is decimal GB (on-disk, TotalSizeBytes/1e9) while freeGB is
+	// GiB (the provider reports total/active memory as bytes/2^30). Compare on the
+	// provider's padded-GiB load basis (coldLoadCatalogGBToMemGiB: ×1.2 memory
+	// overhead, then decimal-GB→GiB) so this mirrors the provider's own
+	// ModelLoadAdmission gate exactly — otherwise a near-threshold model whose RAW
+	// size fits freeGB but whose PADDED footprint does not is admitted here and
+	// then rejected at load_model (failed warm + pending-load cooldown, Codex
+	// #390), instead of selecting a truly loadable box.
 	if busyLoad > 0 {
-		if size := r.catalogSizeGBLocked(model); size > 0 && size > freeGB {
+		if size := r.catalogSizeGBLocked(model); size > 0 && size*coldLoadCatalogGBToMemGiB > freeGB {
 			return warmPoolCandidate{}, warmColdBusyNoEvict
 		}
 	}

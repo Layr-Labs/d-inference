@@ -3346,6 +3346,43 @@ func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
 	}
 }
 
+// RejectQueuedRequestsForShedModels fails the queued waiters for models the
+// operator just added to the reject set (PUT /v1/admin/reject-models), so a
+// runtime shed takes effect on requests ALREADY waiting in the queue rather than
+// only future admission — otherwise up to a full queue window of requests
+// (queued by queue-before-shed / cold-dispatch before the flip) would still
+// dispatch to a model pulled out of rotation mid-incident. Unlike
+// RejectUnservableQueuedRequests this makes NO capacity check: the operator's
+// shed is authoritative, so a served-model verdict must not preserve the
+// waiters. Exclusive self-route waiters (SelfRouteOnly) are preserved by
+// FailQueuedRequestsForModel because they bypass the shed at admission (an
+// owner's own machine is never shed); prefer-owner and public waiters are failed
+// — passing a nil eligibility map preserves NO prefer waiter, mirroring the
+// shed's admission exemption (only self-route bypasses). Callers pass the
+// RESOLVED queue-key model ids that modelShed matched. Returns the total number
+// of queued requests failed.
+func (r *Registry) RejectQueuedRequestsForShedModels(models []string) int {
+	queue := r.Queue()
+	if queue == nil {
+		return 0
+	}
+	total := 0
+	for _, model := range models {
+		if queue.QueueSize(model) == 0 {
+			continue
+		}
+		failed := queue.FailQueuedRequestsForModel(model, nil)
+		if failed > 0 {
+			total += failed
+			r.logger.Warn("failed queued requests for shed model",
+				"model_id", model,
+				"rejected", failed,
+			)
+		}
+	}
+	return total
+}
+
 func cumulativeDelta(previous, current int64) int64 {
 	if current <= 0 {
 		return 0

@@ -160,6 +160,47 @@ func TestWarmPoolBusyGateNoEvictionFit(t *testing.T) {
 	}
 }
 
+// TestWarmPoolBusyGateNoEvictUsesPaddedGiB is the finding-2 regression: the
+// busy no-evict fit must compare the model's PADDED-GiB load footprint
+// (catalog decimal GB × coldLoadCatalogGBToMemGiB, the provider's own
+// ModelLoadAdmission basis) against freeGB (reported in GiB), NOT the raw
+// decimal-GB catalog size. A 30 GB model needs ~33.5 GiB loaded, so a busy box
+// with 32 GiB free must be vetoed (a raw 30>32 check wrongly admits it, and the
+// provider then rejects load_model → failed warm + pending-load cooldown). A box
+// with 34 GiB free clears the padded 33.5 GiB and stays eligible.
+func TestWarmPoolBusyGateNoEvictUsesPaddedGiB(t *testing.T) {
+	model := "busy-gate-padded"
+	catalog := []CatalogEntry{{ID: model, SizeGB: 30, MinRAMGB: 36}}
+
+	// freeForLoadGB is nil so the reported free-for-load gate (which already uses
+	// the padded basis) is skipped and the no-evict fit is what decides.
+	build := func(t *testing.T, totalGB, activeGB float64) (*Registry, *Provider) {
+		reg := New(testLogger())
+		configureBusyGate(reg, 2)
+		reg.SetModelCatalog(catalog)
+		p := makeWarmPoolColdProvider(t, reg, "box", model, 80, totalGB, activeGB)
+		p.mu.Lock()
+		p.BackendCapacity.Slots[0].NumRunning = 1 // busy => no-evict fit applies
+		p.BackendCapacity.FreeForLoadGB = nil
+		p.mu.Unlock()
+		return reg, p
+	}
+
+	// freeGB = 40 - 8 = 32 GiB: sits BETWEEN the raw size (30) and the padded
+	// footprint (30 × ~1.1176 ≈ 33.5). The raw check admitted this; the padded
+	// check correctly vetoes it.
+	reg, p := build(t, 40, 8)
+	if got := warmCandidateReason(reg, p, model); got != warmColdBusyNoEvict {
+		t.Fatalf("busy box with 32 GiB free (< 33.5 GiB padded) reason = %q, want %q", got, warmColdBusyNoEvict)
+	}
+
+	// freeGB = 40 - 6 = 34 GiB: clears the padded 33.5 GiB footprint => eligible.
+	reg, p = build(t, 40, 6)
+	if got := warmCandidateReason(reg, p, model); got != warmColdEligible {
+		t.Fatalf("busy box with 34 GiB free (> 33.5 GiB padded) reason = %q, want eligible", got)
+	}
+}
+
 // TestWarmColdReasonStringsStable pins every warmColdReason string: they are
 // exported as Datadog gauge tags (warm_pool.cold_disqualified reason:<...>) and
 // appear in warm_pool_tick logs — dashboards key on them, so a rename is a

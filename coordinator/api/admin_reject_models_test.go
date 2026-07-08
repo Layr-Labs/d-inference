@@ -257,6 +257,104 @@ func TestAdminRejectModelsValidation(t *testing.T) {
 	}
 }
 
+// TestAdminRejectModelsRequiresModelsKey is the finding-3 regression: clearing
+// the shed list is an EXPLICIT operation ({"models":[]}), so a body with a
+// missing, null, or typoed "models" key must be a 400 that leaves the live set
+// untouched — never a silent clear that re-enables a model pulled from rotation
+// during an incident.
+func TestAdminRejectModelsRequiresModelsKey(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{"empty object clears nothing (400)", `{}`, http.StatusBadRequest},
+		{"null models clears nothing (400)", `{"models":null}`, http.StatusBadRequest},
+		{"typoed key clears nothing (400)", `{"model":["x"]}`, http.StatusBadRequest},
+		{"explicit empty list clears (200)", `{"models":[]}`, http.StatusOK},
+		{"explicit list replaces (200)", `{"models":["replacement"]}`, http.StatusOK},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, srv := setupAdminRejectModels(t)
+			sentinel := "incident-shed-model"
+			srv.SetRejectModels(map[string]bool{sentinel: true})
+
+			status, body := rejectModelsCall(t, ts, http.MethodPut, "admin-secret", tc.body)
+			if status != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", status, tc.wantStatus, body)
+			}
+			got := srv.RejectModels()
+			if tc.wantStatus == http.StatusBadRequest {
+				if !strings.Contains(body, "models") {
+					t.Fatalf("400 body = %s, want it to name the missing field", body)
+				}
+				// The set the operator installed during the incident must survive
+				// the malformed request — a silent clear here is the footgun.
+				if len(got) != 1 || got[0] != sentinel {
+					t.Fatalf("reject set after 400 = %v, want [%s] untouched", got, sentinel)
+				}
+			} else if len(got) != 0 && got[0] == sentinel {
+				t.Fatalf("reject set after successful PUT still holds sentinel: %v", got)
+			}
+		})
+	}
+}
+
+// TestAdminRejectModelsFailsQueuedWaiters is the finding-4 regression: adding a
+// model to the shed at runtime must fail its ALREADY-queued public waiters, not
+// just future admission — otherwise up to a full queue window of requests keeps
+// dispatching to a model the operator just pulled from rotation. Exclusive
+// self-route waiters are preserved (they bypass the shed).
+func TestAdminRejectModelsFailsQueuedWaiters(t *testing.T) {
+	ts, srv := setupAdminRejectModels(t)
+	queue := srv.registry.Queue()
+
+	shedModel := "queued-shed-model"
+	keepModel := "queued-keep-model"
+
+	// A public waiter and a self-route waiter for the model about to be shed, plus
+	// a public waiter for an unrelated model that must NOT be touched.
+	publicShed := &registry.QueuedRequest{RequestID: "pub-shed", Model: shedModel, Pending: &registry.PendingRequest{RequestID: "pub-shed", Model: shedModel}}
+	selfRouteShed := &registry.QueuedRequest{RequestID: "self-shed", Model: shedModel, Pending: &registry.PendingRequest{RequestID: "self-shed", Model: shedModel, SelfRouteOnly: true}}
+	publicKeep := &registry.QueuedRequest{RequestID: "pub-keep", Model: keepModel, Pending: &registry.PendingRequest{RequestID: "pub-keep", Model: keepModel}}
+	for _, q := range []*registry.QueuedRequest{publicShed, selfRouteShed, publicKeep} {
+		if err := queue.Enqueue(q); err != nil {
+			t.Fatalf("enqueue %s: %v", q.RequestID, err)
+		}
+	}
+
+	// Shed only shedModel via the real admin HTTP path.
+	status, body := rejectModelsCall(t, ts, http.MethodPut, "admin-secret", `{"models":["`+shedModel+`"]}`)
+	if status != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200; body = %s", status, body)
+	}
+
+	// The public waiter for the shed model was failed (nil on ResponseCh).
+	select {
+	case p := <-publicShed.ResponseCh:
+		if p != nil {
+			t.Fatalf("public shed waiter got provider %v, want nil (failed)", p)
+		}
+	default:
+		t.Fatal("public shed waiter was not failed on shed")
+	}
+
+	// The self-route waiter for the shed model is preserved (bypasses the shed).
+	select {
+	case <-selfRouteShed.ResponseCh:
+		t.Fatal("self-route waiter was failed on shed, want preserved")
+	default:
+	}
+
+	// The waiter for an unrelated model is untouched.
+	select {
+	case <-publicKeep.ResponseCh:
+		t.Fatal("unrelated-model waiter was failed on shed")
+	default:
+	}
+}
+
 // TestValidateRejectModelName covers the invalid-UTF-8 leg directly: it is
 // unreachable through the HTTP path (encoding/json coerces invalid bytes to
 // U+FFFD during decode) but guards non-JSON callers such as the

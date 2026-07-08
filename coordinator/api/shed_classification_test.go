@@ -115,6 +115,58 @@ func TestShedReKey429WhenProviderExistsWithoutDedicated(t *testing.T) {
 	}
 }
 
+// TestShedStructurallyUnservableStays503 is the finding-1 regression: a
+// NON-dedicated model whose only provider is STRUCTURALLY unroutable for a
+// public request (private-only, or runtime-unverified) must stay on the 503
+// model_unavailable path, NOT flip to a 429 the client would retry forever. The
+// provider is online, trusted, and advertises the model — so the bare
+// HasProviderForModel is true and the pre-fix code 429'd — but no freeing slot
+// can ever make a private-only / unverified box serve a public request, so the
+// re-key must key on structural CAPABILITY (HasCapableProviderForModel), not
+// mere existence.
+func TestShedStructurallyUnservableStays503(t *testing.T) {
+	cases := []struct {
+		name    string
+		breakIt func(p *registry.Provider)
+	}{
+		{"private_only", func(p *registry.Provider) { p.PrivateOnly = true }},
+		{"runtime_unverified", func(p *registry.Provider) { p.RuntimeVerified = false }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, reg, _ := setupShedClassification(t)
+			t.Setenv(envColdDispatch, "false")
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			model := "structurally-unservable"
+			conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{
+				{ID: model, ModelType: "chat", Quantization: "4bit"},
+			}, testPublicKeyB64())
+			defer conn.Close(websocket.StatusNormalClosure, "done")
+			p := markOnlyProviderRoutable(t, reg)
+
+			// Apply the structural break AFTER marking routable so the ONLY
+			// disqualifier is the one under test.
+			p.Mu().Lock()
+			tc.breakIt(p)
+			p.Mu().Unlock()
+
+			status, body, _, err := chatRequestWithHeaders(ctx, ts.URL, model)
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			if status != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503 (structurally unservable, not a retryable 429); body = %s", status, body)
+			}
+			if !strings.Contains(body, "model_unavailable") {
+				t.Fatalf("body = %s, want model_unavailable", body)
+			}
+		})
+	}
+}
+
 // TestShedReKeyDedicatedTaggedButNotClassifying verifies the DEDICATED-set
 // behavior is preserved under re-key: a dedicated-family model whose only
 // provider is a mixed (non-dedicated) box still sheds 429 + Retry-After

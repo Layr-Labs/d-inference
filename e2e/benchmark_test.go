@@ -160,7 +160,7 @@ func TestMain(m *testing.M) {
 func TestBenchmark_SingleProviderStreaming(t *testing.T) {
 	runBenchmark(t, "1-provider-streaming",
 		testbed.SuiteConfig{
-			ModelSpecs:    []testbed.ModelSpec{{ModelID: "mlx-community/Qwen3.5-0.8B-MLX-4bit", NumProviders: 1}},
+			ModelSpecs:    []testbed.ModelSpec{{ModelID: testbed.DefaultTestModelID(), NumProviders: 1}},
 			NumUsers:      1,
 			QueueCapacity: 100,
 			QueueTimeout:  120 * time.Second,
@@ -179,7 +179,7 @@ func TestBenchmark_SingleProviderStreaming(t *testing.T) {
 func TestBenchmark_SingleProviderNonStreaming(t *testing.T) {
 	runBenchmark(t, "1-provider-non-streaming",
 		testbed.SuiteConfig{
-			ModelSpecs:    []testbed.ModelSpec{{ModelID: "mlx-community/Qwen3.5-0.8B-MLX-4bit", NumProviders: 1}},
+			ModelSpecs:    []testbed.ModelSpec{{ModelID: testbed.DefaultTestModelID(), NumProviders: 1}},
 			NumUsers:      1,
 			QueueCapacity: 100,
 			QueueTimeout:  120 * time.Second,
@@ -199,7 +199,7 @@ func TestBenchmark_MultiModelMultiProvider(t *testing.T) {
 	runBenchmark(t, "7-provider-multi-model",
 		testbed.SuiteConfig{
 			ModelSpecs: []testbed.ModelSpec{
-				{ModelID: "mlx-community/Qwen3.5-0.8B-MLX-4bit", NumProviders: 4},
+				{ModelID: testbed.DefaultTestModelID(), NumProviders: 4},
 				{ModelID: "mlx-community/gemma-3-270m-4bit", NumProviders: 3},
 			},
 			NumUsers:      5,
@@ -220,7 +220,7 @@ func TestBenchmark_MultiModelMultiProvider(t *testing.T) {
 func TestBenchmark_HighConcurrency(t *testing.T) {
 	runBenchmark(t, "3-provider-high-concurrency",
 		testbed.SuiteConfig{
-			ModelSpecs:    []testbed.ModelSpec{{ModelID: "mlx-community/Qwen3.5-0.8B-MLX-4bit", NumProviders: 3}},
+			ModelSpecs:    []testbed.ModelSpec{{ModelID: testbed.DefaultTestModelID(), NumProviders: 3}},
 			NumUsers:      10,
 			QueueCapacity: 200,
 			QueueTimeout:  120 * time.Second,
@@ -239,7 +239,7 @@ func TestBenchmark_HighConcurrency(t *testing.T) {
 func TestBenchmark_QueueSaturation(t *testing.T) {
 	runBenchmark(t, "1-provider-queue-saturation",
 		testbed.SuiteConfig{
-			ModelSpecs:    []testbed.ModelSpec{{ModelID: "mlx-community/Qwen3.5-0.8B-MLX-4bit", NumProviders: 1}},
+			ModelSpecs:    []testbed.ModelSpec{{ModelID: testbed.DefaultTestModelID(), NumProviders: 1}},
 			NumUsers:      10,
 			QueueCapacity: 200,
 			QueueTimeout:  120 * time.Second,
@@ -258,7 +258,7 @@ func TestBenchmark_QueueSaturation(t *testing.T) {
 func TestBenchmark_ManyUsers(t *testing.T) {
 	runBenchmark(t, "3-provider-20-users",
 		testbed.SuiteConfig{
-			ModelSpecs:    []testbed.ModelSpec{{ModelID: "mlx-community/Qwen3.5-0.8B-MLX-4bit", NumProviders: 3}},
+			ModelSpecs:    []testbed.ModelSpec{{ModelID: testbed.DefaultTestModelID(), NumProviders: 3}},
 			NumUsers:      20,
 			QueueCapacity: 200,
 			QueueTimeout:  120 * time.Second,
@@ -279,7 +279,7 @@ func TestBenchmark_SingleModelScaling(t *testing.T) {
 		t.Run(fmt.Sprintf("%d-providers", numProviders), func(t *testing.T) {
 			runBenchmark(t, fmt.Sprintf("%d-provider-scaling", numProviders),
 				testbed.SuiteConfig{
-					ModelSpecs:    []testbed.ModelSpec{{ModelID: "mlx-community/Qwen3.5-0.8B-MLX-4bit", NumProviders: numProviders}},
+					ModelSpecs:    []testbed.ModelSpec{{ModelID: testbed.DefaultTestModelID(), NumProviders: numProviders}},
 					NumUsers:      5,
 					QueueCapacity: 200,
 					QueueTimeout:  120 * time.Second,
@@ -300,7 +300,7 @@ func TestBenchmark_SingleModelScaling(t *testing.T) {
 func TestBenchmark_HeavyLoad_100Concurrent_10KB(t *testing.T) {
 	runBenchmark(t, "3-provider-heavy-100conc-10kb",
 		testbed.SuiteConfig{
-			ModelSpecs:    []testbed.ModelSpec{{ModelID: "mlx-community/Qwen3.5-0.8B-MLX-4bit", NumProviders: 3}},
+			ModelSpecs:    []testbed.ModelSpec{{ModelID: testbed.DefaultTestModelID(), NumProviders: 3}},
 			NumUsers:      20,
 			QueueCapacity: 200,
 			QueueTimeout:  120 * time.Second,

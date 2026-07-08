@@ -638,8 +638,10 @@ func TestIntegration_FullNetworkSingleSwiftProviderMultiModelRouting(t *testing.
 		t.Skip("set DARKBLOOM_FULL_NETWORK_SMOKE=1 to run the full coordinator + real Swift provider multi-model smoke")
 	}
 
-	modelA := envOr("DARKBLOOM_FULL_NETWORK_MODEL_A", "mlx-community/Qwen3-0.6B-8bit")
-	modelB := envOr("DARKBLOOM_FULL_NETWORK_MODEL_B", "mlx-community/Qwen2.5-0.5B-Instruct-4bit")
+	// v0.7.5 one-engine: only CBv2-adapted checkpoints can serve, so the
+	// full-network smoke defaults to the production pair.
+	modelA := envOr("DARKBLOOM_FULL_NETWORK_MODEL_A", "mlx-community/gpt-oss-20b-MXFP4-Q8")
+	modelB := envOr("DARKBLOOM_FULL_NETWORK_MODEL_B", "mlx-community/gemma-4-26B-A4B-it-qat-4bit")
 	require.NotEqual(t, modelA, modelB, "full-network smoke requires two distinct model IDs")
 
 	ctx := context.Background()

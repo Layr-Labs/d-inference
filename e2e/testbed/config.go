@@ -1,6 +1,25 @@
 package testbed
 
-import "time"
+import (
+	"os"
+	"time"
+)
+
+// DefaultTestModelID is the checkpoint the testbed serves by default.
+//
+// v0.7.5 ONE-ENGINE: the provider serves exclusively through
+// ContinuousBatchingV2 and never advertises models without a CBv2 adapter,
+// so the old tiny-Qwen fixture (no adapter) became unservable BY DESIGN.
+// gpt-oss-20b is the smallest CBv2-supported production checkpoint
+// (~12 GB weights — the runner needs it in the HF cache). Override with
+// DARKBLOOM_TESTBED_MODEL for machines that cache a different supported
+// checkpoint.
+func DefaultTestModelID() string {
+	if m := os.Getenv("DARKBLOOM_TESTBED_MODEL"); m != "" {
+		return m
+	}
+	return "mlx-community/gpt-oss-20b-MXFP4-Q8"
+}
 
 type ModelSpec struct {
 	// ModelID is the single-model shorthand. ModelIDs takes precedence when set.
@@ -21,8 +40,10 @@ func (ms ModelSpec) IDs() []string {
 }
 
 var KnownModelSizes = map[string]string{
-	"mlx-community/Qwen3.5-0.8B-MLX-4bit": "0.5 GB",
-	"mlx-community/gemma-3-270m-4bit":     "0.2 GB",
+	"mlx-community/gpt-oss-20b-MXFP4-Q8":        "12.1 GB",
+	"mlx-community/gemma-4-26B-A4B-it-qat-4bit": "14.5 GB",
+	"mlx-community/Qwen3.5-0.8B-MLX-4bit":       "0.5 GB",
+	"mlx-community/gemma-3-270m-4bit":           "0.2 GB",
 }
 
 type TrustLevel string
@@ -114,7 +135,7 @@ type SuiteConfig struct {
 
 func DefaultSuiteConfig() SuiteConfig {
 	return SuiteConfig{
-		ModelSpecs:    []ModelSpec{{ModelID: "mlx-community/Qwen3.5-0.8B-MLX-4bit", NumProviders: 1}},
+		ModelSpecs:    []ModelSpec{{ModelID: DefaultTestModelID(), NumProviders: 1}},
 		NumUsers:      1,
 		QueueCapacity: 100,
 		QueueTimeout:  120 * time.Second,
@@ -151,5 +172,5 @@ func (sc SuiteConfig) PrimaryModelID() string {
 			return ids[0]
 		}
 	}
-	return "mlx-community/Qwen3.5-0.8B-MLX-4bit"
+	return DefaultTestModelID()
 }

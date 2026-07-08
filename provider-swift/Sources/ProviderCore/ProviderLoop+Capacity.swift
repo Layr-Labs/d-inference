@@ -20,28 +20,41 @@ extension ProviderLoop {
     internal func startCapacityRefreshMonitor() {
         capacityRefreshTask?.cancel()
         let heartbeatInterval = max(1, loopConfig.config.coordinator.heartbeatIntervalSecs)
-        let pollInterval = Duration.seconds(Int64(max(1, heartbeatInterval / 2)))
+        let pollIntervalNs = UInt64(max(1, heartbeatInterval / 2)) * 1_000_000_000
         let me = self
         capacityRefreshTask = Task {
             // Write once immediately so `status`/`doctor` have a fresh file soon
             // after the daemon starts, before the first poll interval elapses.
             await me.writeDaemonState()
             while !Task.isCancelled {
-                try? await Task.sleep(for: pollInterval)
+                // `Task.sleep(nanoseconds:)` — NOT the Duration/Clock
+                // overload. Under -O (Swift 6.3, macOS 26) the generic
+                // `Task.sleep(for:tolerance:clock:)` inlined into this loop
+                // aborted the process ~2 s after startup with the task
+                // allocator's "freed pointer was not the last allocation"
+                // (swift_task_dealloc LIFO violation) — reproduced 100% in
+                // the E2E harness from the v0.7.5 integration head and
+                // absent in debug builds. The non-generic nanoseconds
+                // overload takes a different codegen path and is stable.
+                // See the v0.7.5 integration report; revisit on a toolchain
+                // bump.
+                try? await Task.sleep(nanoseconds: pollIntervalNs)
                 if Task.isCancelled { break }
-                await me.updateAggregateCapacity()
-                // Wedge self-recovery rides the same tick: the capacity
-                // snapshot above is where the v2 wedge verdict surfaces
-                // (WedgeMonitor sampling in backendSlotCapacity), and this
-                // is what ACTS on a confirmed one — drain → rebuild over
-                // the retained container → swap (ProviderLoop+
-                // EngineV2Liveness).
-                await me.recoverWedgedEngineV2Slots()
-                // Refresh the diagnostics state file on the same cadence so
-                // `status`/`doctor` see current model, stats, and capacity.
-                await me.writeDaemonState()
+                // One actor hop per tick: capacity snapshot, wedge
+                // self-recovery (ProviderLoop+EngineV2Liveness — the
+                // capacity snapshot is where the v2 wedge verdict
+                // surfaces and this is what ACTS on a confirmed one),
+                // then the diagnostics state file for `status`/`doctor`.
+                await me.capacityRefreshTick()
             }
         }
+    }
+
+    /// One capacity-monitor tick, isolated on the loop actor.
+    internal func capacityRefreshTick() async {
+        await updateAggregateCapacity()
+        await recoverWedgedEngineV2Slots()
+        writeDaemonState()
     }
 
     internal func updateAggregateCapacity() async {

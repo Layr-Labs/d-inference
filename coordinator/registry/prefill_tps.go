@@ -29,12 +29,17 @@ import "github.com/eigeninference/d-inference/coordinator/env"
 //     measured p90 so REAL measurements survive ingest), and the provider-side
 //     fix samples cold prefills only — so samples reaching RecordPrefill are
 //     already sanity-bounded.
-//   - Residual contamination (an idle box re-reporting one EWMA every
-//     heartbeat, mild under-load smear) is absorbed by the same defenses the
-//     decode rings rely on: per-(model, chip) keying makes same-chip samples
-//     roughly exchangeable, the median is rank-robust, the min-sample floor
-//     delays trust, and the #512 online TTFT calibrator remains downstream as
-//     the corrector for any residual bias.
+//   - Re-reports are deduplicated at the heartbeat ingest, not here: the slot
+//     EWMA is persistent and resent every 30s, so Heartbeat records a sample
+//     only when the reported value CHANGED since the connection's last recorded
+//     one (Provider.lastRecordedPrefillTPS) — otherwise one idle box's single
+//     cold-prefill measurement would satisfy the min-sample floor below after
+//     five ticks of the same value. Residual contamination (mild under-load
+//     smear) is absorbed by the same defenses the decode rings rely on:
+//     per-(model, chip) keying makes same-chip samples roughly exchangeable,
+//     the median is rank-robust, the min-sample floor delays trust, and the
+//     #512 online TTFT calibrator remains downstream as the corrector for any
+//     residual bias.
 //
 // Two knobs, both live-read (no restart, mirroring decodeFloorUseFleetMedian):
 //
@@ -80,9 +85,10 @@ func ttftPrefillMinSamples() int {
 // RecordPrefill adds an observed prefill TPS sample for the given model and
 // chip family. Called from heartbeat processing when a provider reports
 // slot.ObservedPrefillTPS > 0 (post-clamp, so out-of-range garbage was already
-// zeroed and never reaches the ring). Mirrors Record's unconditional,
-// load-inclusive ingest — see the file comment for why prefill samples are not
-// solo-gated.
+// zeroed and never reaches the ring) AND the value changed since the
+// connection's last recorded sample (the heartbeat-side re-report dedup —
+// Provider.lastRecordedPrefillTPS). Load-inclusive like Record — see the file
+// comment for why prefill samples are not solo-gated.
 func (r *TPSRegistry) RecordPrefill(model, chipFamily string, tps float64) {
 	if tps <= 0 || model == "" {
 		return

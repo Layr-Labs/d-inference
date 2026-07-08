@@ -107,6 +107,66 @@ func TestPrefillRecordingThroughHeartbeat(t *testing.T) {
 	}
 }
 
+// TestPrefillHeartbeatDedupsResentEWMA (review fix): the per-slot prefill EWMA
+// is PERSISTENT provider state resent on every 30s heartbeat, so an idle box
+// re-reporting one cold-prefill measurement must count as ONE sample — not one
+// per tick, which would satisfy EIGENINFERENCE_TTFT_PREFILL_MIN_SAMPLES=5 with
+// a single real observation after five idle ticks. Only a CHANGED value (a new
+// measurement folded into the EWMA) records; per-model tracking keeps
+// co-resident slots independent. Fails without the lastRecordedPrefillTPS gate
+// in Heartbeat (the resent value records 5 samples).
+func TestPrefillHeartbeatDedupsResentEWMA(t *testing.T) {
+	reg := New(testLogger())
+	makeSchedulerProvider(t, reg, "box", gptossBuild, 30)
+
+	hb := func(slots []protocol.BackendSlotCapacity) {
+		reg.Heartbeat("box", &protocol.HeartbeatMessage{
+			Type:   protocol.TypeHeartbeat,
+			Status: "serving",
+			BackendCapacity: &protocol.BackendCapacity{
+				TotalMemoryGB: 64,
+				Slots:         slots,
+			},
+		})
+	}
+
+	// Five idle ticks resending the SAME EWMA = one measurement, one sample.
+	for i := 0; i < 5; i++ {
+		hb([]protocol.BackendSlotCapacity{
+			{Model: gptossBuild, State: "idle", ObservedPrefillTPS: 6500},
+		})
+	}
+	if _, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3"); n != 1 {
+		t.Fatalf("prefill samples after 5 identical heartbeats = %d, want 1 (a resent EWMA is not a new observation)", n)
+	}
+
+	// A changed value IS a new observation — recorded. And a change BACK to a
+	// previously seen value is also new (the gate compares against the last
+	// recorded value, not a history).
+	hb([]protocol.BackendSlotCapacity{
+		{Model: gptossBuild, State: "running", ObservedPrefillTPS: 7000},
+	})
+	hb([]protocol.BackendSlotCapacity{
+		{Model: gptossBuild, State: "running", ObservedPrefillTPS: 6500},
+	})
+	if _, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3"); n != 3 {
+		t.Fatalf("prefill samples after two genuine changes = %d, want 3", n)
+	}
+
+	// Per-model independence: a co-resident slot reporting the same NUMBER for a
+	// different model is that model's first observation.
+	hb([]protocol.BackendSlotCapacity{
+		{Model: gptossBuild, State: "running", ObservedPrefillTPS: 6500},
+		{Model: gemmaBuild, State: "running", ObservedPrefillTPS: 6500},
+	})
+	if _, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3"); n != 3 {
+		t.Fatalf("gpt-oss samples after unchanged resend = %d, want 3", n)
+	}
+	if _, n := reg.tpsRegistry.PrefillMedian(gemmaBuild, "M3"); n != 1 {
+		t.Fatalf("gemma samples = %d, want 1 (per-model tracking)", n)
+	}
+}
+
 // TestPrefillIngestZeroedUnderOldCeiling documents the ceiling interaction the
 // absorbed #453 change fixes: with the ceiling back at the legacy 5000, a REAL
 // p50-scale measurement (6500) is zeroed at ingest and the median ring starves.

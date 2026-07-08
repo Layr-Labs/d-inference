@@ -451,6 +451,21 @@ type Provider struct {
 	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
 	BackendCapacity *protocol.BackendCapacity
 
+	// lastRecordedPrefillTPS tracks, per model, the last observed_prefill_tps
+	// value this connection fed into the fleet prefill-median ring
+	// (tpsRegistry.RecordPrefill). Providers resend a PERSISTENT per-slot EWMA
+	// on every 30s heartbeat, so without this gate one cold-prefill measurement
+	// re-recorded five times would satisfy the ring's min-sample trust floor
+	// (EIGENINFERENCE_TTFT_PREFILL_MIN_SAMPLES) with a single real observation.
+	// A sample is recorded only when the reported value CHANGES — the honest
+	// "a new measurement folded into the EWMA" signal available on the wire
+	// (per-slot first-token counters advance on prefix-cache hits too, which
+	// the provider deliberately does not sample, so they over-count). Lazily
+	// allocated; per-connection like BackendCapacity (a reconnect records one
+	// fresh sample — bounded, and the ring's FIFO + median absorb it). Guarded
+	// by p.mu.
+	lastRecordedPrefillTPS map[string]float64
+
 	// Reputation tracking
 	Reputation Reputation
 
@@ -2773,8 +2788,18 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 			// Deliberately NOT solo-gated (prefill is per-request compute-bound;
 			// see prefill_tps.go for the full ingest-gating rationale). The value
 			// is post-clamp, so out-of-range garbage (the prefix-cache-hit EWMA
-			// overflow) was already zeroed and never reaches the ring.
-			if slot.ObservedPrefillTPS > 0 {
+			// overflow) was already zeroed and never reaches the ring. Gated on
+			// the value CHANGING since this connection's last recorded sample:
+			// the slot EWMA is persistent and resent every heartbeat, so an
+			// unchanged value is a re-report of an already-counted measurement,
+			// not a new observation — recording it would let one measurement
+			// satisfy the ring's min-sample floor after five idle ticks (see
+			// lastRecordedPrefillTPS).
+			if slot.ObservedPrefillTPS > 0 && p.lastRecordedPrefillTPS[slot.Model] != slot.ObservedPrefillTPS {
+				if p.lastRecordedPrefillTPS == nil {
+					p.lastRecordedPrefillTPS = make(map[string]float64)
+				}
+				p.lastRecordedPrefillTPS[slot.Model] = slot.ObservedPrefillTPS
 				r.tpsRegistry.RecordPrefill(slot.Model, chipFamily, slot.ObservedPrefillTPS)
 			}
 		}

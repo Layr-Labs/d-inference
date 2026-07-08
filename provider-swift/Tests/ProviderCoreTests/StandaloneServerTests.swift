@@ -384,6 +384,57 @@ private func standaloneTestServer(models: [ModelInfo] = []) -> StandaloneServer 
     }
 }
 
+@Test func standaloneMalformedChatBodyStillMapsTo400() async throws {
+    // Regression (independent review P2): the interception responder
+    // decodes the body itself, and a raw DecodingError would escape the
+    // CORS/error layers as a body-less 500 — the stock Hummingbird decode
+    // converts every DecodingError into a 400. Pin the 400.
+    let app = standaloneTestServer().makeApplication()
+    try await app.test(.router) { client in
+        // Type mismatch: "model" must be a string.
+        try await client.execute(
+            uri: "/v1/chat/completions",
+            method: .post,
+            headers: [.contentType: "application/json"],
+            body: ByteBuffer(string: #"{"model":42,"messages":[]}"#)
+        ) { response in
+            #expect(response.status == .badRequest,
+                "malformed chat JSON must map to 400 like the stock decode path, got \(response.status)")
+        }
+        // Truncated / non-JSON body.
+        try await client.execute(
+            uri: "/v1/chat/completions",
+            method: .post,
+            headers: [.contentType: "application/json"],
+            body: ByteBuffer(string: #"{"model":"m","mess"#)
+        ) { response in
+            #expect(response.status == .badRequest)
+        }
+    }
+}
+
+@Test func standaloneBatchChatRouteGetsTheRaisedCeilingToo() async throws {
+    // The batch route decodes [OpenAIChatCompletionRequest] — the same
+    // media-capable payload type — so it rides the same 32 MiB ceiling.
+    let app = standaloneTestServer().makeApplication()
+    let padding = String(repeating: "b", count: 3 * 1024 * 1024)
+    let body = #"[{"model":"mlx-test","messages":[{"role":"user","content":""# + padding
+        + #""}],"stream":false}]"#
+    try await app.test(.router) { client in
+        try await client.execute(
+            uri: "/v1/chat/completions/batch",
+            method: .post,
+            headers: [.contentType: "application/json"],
+            body: ByteBuffer(string: body)
+        ) { response in
+            // Past the old 2 MiB limit and into the engine: the unknown
+            // model id 404s (a 413 would mean the ceiling never applied).
+            #expect(response.status == .notFound,
+                "a 3 MiB batch body must clear the raised ceiling, got \(response.status)")
+        }
+    }
+}
+
 @Test func standaloneNonChatRoutesKeepTheUpstreamDecodePath() async throws {
     // The interception is scoped to the chat-completions POSTs; other
     // routes still decode inside the upstream router (2 MiB default).
@@ -564,6 +615,36 @@ private final class StandaloneGrantRecorder: @unchecked Sendable {
         residentWeightBytes: UInt64(sizingB.weightsBytes),
         configReserveBytes: 0)
     #expect(await server.debugEngineKVGrant(modelId: "gpt-oss-20b") == Int(fullB))
+}
+
+@Test func standaloneEngineV2MaxConcurrentReachesTheBridge() async throws {
+    // §1.9: engine_v2_max_concurrent (+ per-model override) must govern
+    // standalone engines exactly as it does ProviderLoop ones — clamped
+    // to [1, 8] and visible on the bridge's capacity snapshot.
+    let server = StandaloneServer(
+        config: StandaloneServerConfig(
+            engineV2MaxConcurrent: 6,
+            engineV2MaxConcurrentByModel: ["gpt-oss-20b": 2]))
+    await server.setV2TestHooksForTesting(
+        StandaloneServer.V2TestHooks(
+            physicalMemoryBytes: standalonePhysicalBytes,
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+
+    let gptoss = try await server.buildSlotForTesting(
+        modelId: "gpt-oss-20b", modelType: "gpt_oss",
+        container: makeStandaloneStubContainer(),
+        tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+        sizing: standaloneSizing(weightsGiB: 12, kvRate: 24_576))
+    #expect(await gptoss.backendSlotCapacity().maxConcurrency == 2,
+        "per-model engine_v2_max_concurrent_by_model override must win")
+
+    let gemma = try await server.buildSlotForTesting(
+        modelId: "gemma-4-26b-qat-4bit", modelType: "gemma4",
+        container: makeStandaloneStubContainer(),
+        tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+        sizing: standaloneSizing(weightsGiB: 15))
+    #expect(await gemma.backendSlotCapacity().maxConcurrency == 6,
+        "the box-wide engine_v2_max_concurrent must cover everything else")
 }
 
 @Test func standaloneConstructionFailureRestoresGrantsAndMapsTo503Shape() async throws {

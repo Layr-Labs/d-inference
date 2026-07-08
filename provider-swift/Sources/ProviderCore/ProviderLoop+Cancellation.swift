@@ -94,7 +94,15 @@ extension ProviderLoop {
         if !requestToModel.isEmpty {
             powerAssertion.releaseAll()
         }
-        requestToModel.removeAll()
+        // Preserve wedge-recovery pins: they are NOT inflight requests —
+        // they keep the idle monitor and the eviction filters off a slot
+        // whose engine is mid-rebuild (ProviderLoop+EngineV2Liveness), and
+        // the recovery removes its own pin when it finishes. A
+        // disconnect-driven mass cancel must not strip that protection.
+        // (Pins never hold a power assertion, so releaseAll is unaffected.)
+        requestToModel = requestToModel.filter {
+            $0.key.hasPrefix(Self.engineV2RecoveryPinPrefix)
+        }
         syncWarmModelState()
     }
 

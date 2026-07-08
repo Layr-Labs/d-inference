@@ -24,10 +24,11 @@
 // byte-for-byte; error throws propagate to `CORSResponder`'s catch, the
 // same status-mapping layer upstream-raised errors hit.
 //
-// Scope: `/v1/chat/completions` + `/chat/completions` POSTs only — the
-// routes that carry inline media. Every other route keeps the upstream
-// 2 MiB decode ceiling (completions/responses/tokenize bodies are text
-// and sit far below it).
+// Scope: the chat-completions POSTs (`/v1/chat/completions`,
+// `/chat/completions`, `/v1/chat/completions/batch`) — the routes whose
+// payload type carries inline media. Every other route keeps the
+// upstream 2 MiB decode ceiling (completions/responses/tokenize bodies
+// are text and sit far below it).
 
 import Foundation
 import Hummingbird
@@ -63,8 +64,17 @@ where Inner.Context == BasicRequestContext {
         path == "/v1/chat/completions" || path == "/chat/completions"
     }
 
+    static func isChatCompletionsBatchPath(_ path: String) -> Bool {
+        path == "/v1/chat/completions/batch"
+    }
+
     public func respond(to request: Request, context: Context) async throws -> Response {
-        guard request.method == .post, Self.isChatCompletionsPath(request.uri.path) else {
+        guard request.method == .post else {
+            return try await inner.respond(to: request, context: context)
+        }
+        let path = request.uri.path
+        let isBatch = Self.isChatCompletionsBatchPath(path)
+        guard isBatch || Self.isChatCompletionsPath(path) else {
             return try await inner.respond(to: request, context: context)
         }
 
@@ -81,17 +91,26 @@ where Inner.Context == BasicRequestContext {
             )
         }
 
-        // Mirror Hummingbird's default `requestDecoder` configuration
-        // (RequestContext extension: JSONDecoder + .iso8601 dates) so a
-        // request that decoded on the stock path decodes identically here.
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        // A DecodingError propagates exactly as it would from the upstream
-        // handler's `request.decode` — same nesting level, same catch
-        // layers above us — so malformed-body behavior is unchanged.
-        let chatRequest = try decoder.decode(
-            OpenAIChatCompletionRequest.self, from: Data(buffer: buffer))
+        if isBatch {
+            let requests: [OpenAIChatCompletionRequest]
+            switch decodeBody([OpenAIChatCompletionRequest].self, from: buffer) {
+            case .success(let decoded): requests = decoded
+            case .failure(let badRequest): return badRequest
+            }
+            // Mirror of the upstream batch handler: sequential
+            // createChatCompletion calls, one JSON array response.
+            var responses: [OpenAIChatCompletionResponse] = []
+            for chatRequest in requests {
+                responses.append(try await service.createChatCompletion(request: chatRequest))
+            }
+            return try Self.jsonResponse(responses)
+        }
 
+        let chatRequest: OpenAIChatCompletionRequest
+        switch decodeBody(OpenAIChatCompletionRequest.self, from: buffer) {
+        case .success(let decoded): chatRequest = decoded
+        case .failure(let badRequest): return badRequest
+        }
         // Same service entry points as the upstream handler; pre-stream
         // throws (unknown model, admission refusal) travel to
         // `CORSResponder`'s status mapping unchanged.
@@ -100,6 +119,59 @@ where Inner.Context == BasicRequestContext {
             return Self.sseResponse(frames)
         }
         return try Self.jsonResponse(try await service.createChatCompletion(request: chatRequest))
+    }
+
+    /// Decode with Hummingbird's default `requestDecoder` configuration
+    /// (RequestContext extension: JSONDecoder + .iso8601 dates) so a request
+    /// that decoded on the stock path decodes identically here — and mirror
+    /// the stock path's ERROR mapping too: Hummingbird's
+    /// `request.decode(as:context:)` converts every `DecodingError` into a
+    /// 400 Bad Request via an `HTTPError` the ROUTER responder renders.
+    /// This responder sits OUTSIDE the router, so a thrown error would
+    /// escape the CORS/error layers as a body-less 500 — a decode failure
+    /// is therefore RENDERED here (OpenAI-shaped 400 envelope), never
+    /// thrown.
+    /// A decode either yields the value or the already-rendered 400.
+    enum DecodeOutcome<T> {
+        case success(T)
+        case failure(Response)
+    }
+
+    private func decodeBody<T: Decodable>(
+        _ type: T.Type, from buffer: ByteBuffer
+    ) -> DecodeOutcome<T> {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        do {
+            return .success(try decoder.decode(T.self, from: Data(buffer: buffer)))
+        } catch let error as DecodingError {
+            return .failure(
+                CORSResponder<Inner>.openAIErrorResponse(
+                    status: .badRequest,
+                    message: Self.badRequestMessage(for: error)))
+        } catch {
+            return .failure(
+                CORSResponder<Inner>.openAIErrorResponse(
+                    status: .badRequest,
+                    message: "request body failed to decode: \(error)"))
+        }
+    }
+
+    /// Human-readable 400 detail for a JSON decode failure — the same
+    /// classification Hummingbird's stock decode produces.
+    static func badRequestMessage(for error: DecodingError) -> String {
+        switch error {
+        case .dataCorrupted(let context):
+            return "The given data was not valid input: \(context.debugDescription)"
+        case .keyNotFound(let key, _):
+            return "Coding key `\(key.stringValue)` not found."
+        case .typeMismatch(_, let context):
+            return "Type mismatch: \(context.debugDescription)"
+        case .valueNotFound(_, let context):
+            return "Value not found: \(context.debugDescription)"
+        @unknown default:
+            return "Request body failed to decode."
+        }
     }
 
     // MARK: - Response framing (byte-for-byte mirrors of the upstream

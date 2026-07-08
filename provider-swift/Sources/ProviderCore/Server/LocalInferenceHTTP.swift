@@ -2,7 +2,7 @@
 //
 // Both serve modes expose the SAME Hummingbird application — the only
 // difference is WHERE the loaded models come from:
-//   * `darkbloom start --local`            → StandaloneServer's own scheduler cache
+//   * `darkbloom start --local`            → StandaloneServer's own v2 slot cache
 //   * `darkbloom start --local-endpoint`   → the live ProviderLoop's modelSlots
 //     (unified mode: serve the public fleet AND a local endpoint off ONE shared
 //     set of loaded models, so weights load once and local + coordinator

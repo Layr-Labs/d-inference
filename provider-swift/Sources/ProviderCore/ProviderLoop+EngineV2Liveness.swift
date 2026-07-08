@@ -55,6 +55,12 @@ extension ProviderLoop {
     /// window unloads the slot instead of rebuilding again.
     internal static let engineV2RecoveryCooldown: Duration = .seconds(120)
 
+    /// Key prefix for the synthetic `requestToModel` pin a recovery holds
+    /// (see below). Namespaced so cancellation paths can recognize pins:
+    /// they are NOT inflight requests and must survive a mass cancel
+    /// (`cancelAllInflight` preserves entries with this prefix).
+    internal static let engineV2RecoveryPinPrefix = "engine-v2-recovery:"
+
     /// One liveness pass over every live v2 slot. Called from the
     /// capacity-refresh tick; `now` is injectable so tests can drive the
     /// 120s thresholds without waiting.
@@ -110,7 +116,7 @@ extension ProviderLoop {
         // Pin the slot as in-flight for the whole recovery so the idle
         // monitor and every eviction filter (they all key off
         // `requestToModel`) leave it alone mid-swap.
-        let pinId = "engine-v2-recovery:\(modelId)"
+        let pinId = Self.engineV2RecoveryPinPrefix + modelId
         requestToModel[pinId] = modelId
         defer { requestToModel.removeValue(forKey: pinId) }
 
@@ -175,8 +181,11 @@ extension ProviderLoop {
                 // unload/retirement or shutdown). Abort the swap: retire
                 // our runtime registration and drain the never-served
                 // fresh bridge; whoever removed the slot owns the rest.
-                releaseResliceGate()
+                // Unregister BEFORE releasing the gate — registrations only
+                // happen under the gate, so this ordering can never strip a
+                // successor load's fresh registration by model id.
                 await engineV2Runtime.unregister(modelId: modelId)
+                releaseResliceGate()
                 await newBridge.shutdown()
                 logger.warning(
                     "engine_v2 liveness: \(modelId) was unloaded mid-recovery — rebuilt engine discarded")

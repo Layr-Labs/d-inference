@@ -44,7 +44,7 @@ public extension MultiModelBatchSchedulerEngine {
         /// content are routed to the media path.
         public let isVLM: Bool
         /// ContinuousBatchingV2 bridge — the serving engine. Non-nil for
-        /// every ProviderLoop slot; nil only on the standalone legacy path.
+        /// EVERY production entry (ProviderLoop and standalone slots).
         public let engineV2Bridge: EngineV2Bridge?
         /// Memory gate for the legacy VLM media path (media-decode RAM +
         /// generation KV against the shared budget). nil ⇒ gating disabled

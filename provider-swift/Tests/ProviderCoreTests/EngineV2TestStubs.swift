@@ -17,9 +17,15 @@ final class InertStubEngine: CBv2Engine, @unchecked Sendable {
     private var _kvBytesCapacity: Int
     private var _capacityUpdates: [Int] = []
     private var _shutdownCalls = 0
+    /// Called synchronously INSIDE each `updateKVBytesCapacity`, i.e. at the
+    /// exact instant the grant mutation lands — unwind-ordering tests use it
+    /// to observe whether the failed newcomer's weights are still resident
+    /// when a survivor's grant is restored.
+    private let onUpdate: @Sendable (Int) -> Void
 
-    init(kvBytesCapacity: Int = 0) {
+    init(kvBytesCapacity: Int = 0, onUpdate: @escaping @Sendable (Int) -> Void = { _ in }) {
         self._kvBytesCapacity = kvBytesCapacity
+        self.onUpdate = onUpdate
     }
 
     var capacityUpdates: [Int] { lock.withLock { _capacityUpdates } }
@@ -43,6 +49,7 @@ final class InertStubEngine: CBv2Engine, @unchecked Sendable {
             _kvBytesCapacity = max(0, bytes)
             _capacityUpdates.append(max(0, bytes))
         }
+        onUpdate(max(0, bytes))
     }
     func shutdown() async {
         lock.withLock { _shutdownCalls += 1 }

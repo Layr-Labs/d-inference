@@ -129,9 +129,16 @@ enum EngineV2SlotFactory {
         environment: [String: String]
     ) -> String {
         if let ssdCache {
+            // Saturating sum: an operator-set
+            // DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS near Int.max
+            // must not trap while FORMATTING this load-time log line (the
+            // actual staging/donation gates already saturate — mirror them).
+            let (floor, floorOverflow) = ssdCache.config.adoptionBoundTokens
+                .addingReportingOverflow(ssdCache.config.minEffectiveTokens)
+            let floorDesc = floorOverflow ? "Int.max (saturated)" : "\(floor)"
             return "on (tier=ssd: encrypted offload, HMAC-keyed names, "
                 + "15-min sliding TTL, NO memory carve, per-donation gate "
-                + "> \(ssdCache.config.adoptionBoundTokens + ssdCache.config.minEffectiveTokens) tok — T-041)"
+                + "> \(floorDesc) tok — T-041)"
         }
         if decision.carve.prefixCacheBudgetBytes > 0 {
             return "on, budget \(decision.carve.prefixCacheBudgetBytes) B "

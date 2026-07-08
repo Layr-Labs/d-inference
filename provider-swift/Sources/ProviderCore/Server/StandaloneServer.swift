@@ -351,16 +351,62 @@ public actor StandaloneServer {
         sizing: SlotSizingSnapshot,
         isVLM: Bool = false
     ) async throws -> EngineV2Bridge {
-        let slot = try await resliceAndBuildSlot(
+        // Convenience shape: box the container the way loadModel does (the
+        // caller also holds its own reference, so unwind-ordering assertions
+        // use the box variant below instead).
+        let newcomer = EngineV2NewcomerBox(container)
+        let bridge = try await resliceAndBuildSlot(
             modelId: modelId,
             modelType: modelType,
             isVLM: isVLM,
             modelDirectory: nil,
-            container: container,
+            newcomer: newcomer,
             tokenizer: tokenizer,
             sizing: sizing)
-        slots[modelId] = slot
-        return slot.bridge
+        guard let installContainer = newcomer.container else {
+            throw StandaloneServerError.capacityUnavailable(
+                "internal: newcomer container missing at install for '\(modelId)'")
+        }
+        slots[modelId] = CachedSlot(
+            bridge: bridge,
+            container: installContainer,
+            tokenizer: tokenizer,
+            modelType: modelType,
+            isVLM: isVLM,
+            sizing: sizing,
+            lastUsedAt: .now)
+        return bridge
+    }
+
+    /// Box variant: the caller hands over container OWNERSHIP, so the
+    /// unwind-ordering regression test can observe (via a weak reference)
+    /// that a failed build releases the newcomer's weights BEFORE survivor
+    /// grants are restored.
+    func resliceAndBuildSlotForTesting(
+        modelId: String,
+        modelType: String?,
+        isVLM: Bool = false,
+        modelDirectory: URL? = nil,
+        newcomer: EngineV2NewcomerBox,
+        tokenizer: TokenizerHandle,
+        sizing: SlotSizingSnapshot
+    ) async throws -> EngineV2Bridge {
+        try await resliceAndBuildSlot(
+            modelId: modelId,
+            modelType: modelType,
+            isVLM: isVLM,
+            modelDirectory: modelDirectory,
+            newcomer: newcomer,
+            tokenizer: tokenizer,
+            sizing: sizing)
+    }
+
+    /// Test seam: the post-bridge-guard failure unwind (retire bridge →
+    /// release newcomer weights → regrow survivors, in that order).
+    func unwindBuiltSlotAndRegrowForTesting(
+        bridge: EngineV2Bridge, newcomer: EngineV2NewcomerBox
+    ) async {
+        await unwindBuiltSlotAndRegrow(bridge: bridge, newcomer: newcomer)
     }
 
     /// Drive one LRU idle-eviction pass (unit tests).
@@ -436,24 +482,26 @@ public actor StandaloneServer {
     /// engines, and build the newcomer's bridge — the same shrink-first /
     /// restore-on-throw / grow-after sequence as
     /// `ProviderLoop.resliceAndBuildEngineV2Slot`, over the shared pure
-    /// policy (`EngineV2KVSizing.resliceGrants`). DELIBERATE divergence
-    /// from the loop's unwind: the failed newcomer's container is released
-    /// by the caller's frame unwinding (followed by `clearCache`), not via
-    /// an ownership box — survivor grants can be restored a beat before the
-    /// weights die. Local-only surface, no coordinator heartbeats, so the
-    /// transient Σ(grants) > true-budget window over-advertises nothing;
-    /// the shared KV gate still bounds real reservations. Runs inside the
-    /// `isLoadingAny` critical section (see the header note), which is the
-    /// standalone re-slice serialization.
+    /// policy (`EngineV2KVSizing.resliceGrants`). Unwind ordering MIRRORS the
+    /// loop (Codex review): on a construction throw the failed newcomer's
+    /// weights are dropped through the `EngineV2NewcomerBox` (release →
+    /// `clearCache`) BEFORE survivor grants are restored. Even locally this
+    /// matters — a request for an already-loaded model can re-enter the
+    /// actor while this load holds `isLoadingAny`, and a survivor whose grant
+    /// was restored while the failed weights were still resident would accept
+    /// work against capacity that assumes those weights are already gone.
+    /// Runs inside the `isLoadingAny` critical section (the standalone
+    /// re-slice serialization). Returns the built bridge; the caller installs
+    /// the `CachedSlot` only after its post-bridge headroom guard passes.
     private func resliceAndBuildSlot(
         modelId: String,
         modelType: String?,
         isVLM: Bool,
         modelDirectory: URL?,
-        container: MLXLMCommon.ModelContainer,
+        newcomer newcomerBox: EngineV2NewcomerBox,
         tokenizer: TokenizerHandle,
         sizing: SlotSizingSnapshot
-    ) async throws -> CachedSlot {
+    ) async throws -> EngineV2Bridge {
         let existing = await existingSlotGrants(excludingModelId: modelId)
         let newcomer = EngineV2KVSizing.ResliceSlot(
             modelId: modelId,
@@ -486,6 +534,12 @@ public actor StandaloneServer {
                 reason: .resliceFloor,
                 error: nil,
                 emitTelemetry: v2TestHooks?.emitTelemetry)
+            // Pre-shrink refusal: no grants were mutated, but drop the
+            // newcomer's weights promptly (mirrors ProviderLoop) so live
+            // residency reflects the refusal before the caller's error
+            // handling runs.
+            newcomerBox.release()
+            MLX.Memory.clearCache()
             throw StandaloneServerError.capacityUnavailable(
                 "loading '\(modelId)' would re-slice some model's KV grant below "
                     + "the \(floorGb) GB serviceability floor "
@@ -502,6 +556,10 @@ public actor StandaloneServer {
 
         // Phase 2 — build the newcomer with its grant. Restore-on-throw:
         // grow every shrunk engine back to its exact previous grant.
+        // `newcomer.borrow()` is evaluated inline (covered by the outer
+        // `try`) so the container reference lives only for the duration of
+        // the build call — by the time the catch runs, the box holds the
+        // last strong reference and `release()` frees the weights.
         let bridge: EngineV2Bridge
         do {
             bridge = try await EngineV2SlotFactory.makeProductionBridge(
@@ -509,7 +567,7 @@ public actor StandaloneServer {
                 modelType: modelType,
                 isVLM: isVLM,
                 modelDirectory: modelDirectory,
-                container: container,
+                container: newcomerBox.borrow(),
                 tokenizer: tokenizer,
                 sizing: sizing,
                 kvBytesCapacity: targets[modelId] ?? 0,
@@ -521,6 +579,14 @@ public actor StandaloneServer {
                 logInfo: { standaloneLogger.info("\($0)") },
                 logWarning: { standaloneLogger.warning("\($0)") })
         } catch {
+            // Restore-on-throw in the Codex-review order: (1) release the
+            // newcomer's weights, (2) clearCache so the pool returns their
+            // buffers, (3) restore every shrunk engine to its previous grant.
+            // Restoring before the weights are gone would let Σ(grants)
+            // exceed the true fleet budget while the failed container was
+            // still resident.
+            newcomerBox.release()
+            MLX.Memory.clearCache()
             for entry in existing {
                 await entry.bridge.updateKVBytesCapacity(entry.previousGrant)
             }
@@ -535,15 +601,21 @@ public actor StandaloneServer {
             }
         }
 
-        return CachedSlot(
-            bridge: bridge,
-            container: container,
-            tokenizer: tokenizer,
-            modelType: modelType,
-            isVLM: isVLM,
-            sizing: sizing,
-            lastUsedAt: .now
-        )
+        return bridge
+    }
+
+    /// Post-bridge-guard failure unwind (mirrors
+    /// `ProviderLoop.unwindBuiltSlotAndRegrow`): retire the built bridge,
+    /// RELEASE the aborted newcomer's weights, and only then regrow the
+    /// survivors — in that order, so the regrow's fleet budget reflects true
+    /// residency and Σ(grants) never exceeds it. Caller holds `isLoadingAny`.
+    private func unwindBuiltSlotAndRegrow(
+        bridge: EngineV2Bridge, newcomer: EngineV2NewcomerBox
+    ) async {
+        await bridge.shutdown()
+        newcomer.release()
+        MLX.Memory.clearCache()
+        await resliceGrowSurvivors()
     }
 
     /// Grow the surviving slots back to their re-sliced shares after an
@@ -868,20 +940,28 @@ public actor StandaloneServer {
             // line (mirrors ProviderLoop.ensureModelLoaded).
             _ = try GPUEnforcement.requireMetal()
             let slotIsVLM = ProviderLoop.modelIsVLM(at: modelPath)
-            let container = try await ModelContainerLoading.loadContainer(from: modelPath)
+            // Ownership box (Codex-review unwind ordering): every later
+            // access to the loading container goes through this box so
+            // failure paths can drop the LAST strong reference to the weights
+            // BEFORE survivor grants are restored/regrown. Never bind
+            // `borrow()` to a long-lived local — that would keep the weights
+            // alive past `release()`.
+            let newcomer = EngineV2NewcomerBox(
+                try await ModelContainerLoading.loadContainer(from: modelPath))
             try Task.checkCancellation()
 
             // Scheduler-free sizing snapshot: weight bytes + the engine-truth
             // fp16 KV rate + context window — everything the re-slice and
             // bridge need.
-            let sizing = await SlotSizingSnapshot.build(
-                container: container,
+            let sizing = try await SlotSizingSnapshot.build(
+                container: newcomer.borrow(),
                 modelPath: modelPath,
                 fallbackDefaultMaxTokens: Self.slotDefaultMaxTokens)
-            let tokenizer: TokenizerHandle = await container.perform { ctx in
+            let tokenizer: TokenizerHandle = try await newcomer.borrow().perform { ctx in
                 TokenizerHandle(ctx.tokenizer)
             }
             if Task.isCancelled {
+                newcomer.release()
                 MLX.Memory.clearCache()
                 throw CancellationError()
             }
@@ -901,6 +981,9 @@ public actor StandaloneServer {
                     Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
                 let minGb = String(
                     format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
+                // Pre-shrink failure: no grants were mutated, so ordering is
+                // moot — but drop the weights promptly all the same.
+                newcomer.release()
                 MLX.Memory.clearCache()
                 throw StandaloneServerError.capacityUnavailable(
                     "Model '\(modelId)' loaded but has insufficient KV headroom under the memory cap "
@@ -910,16 +993,18 @@ public actor StandaloneServer {
             // ONE ENGINE: re-slice co-resident KV grants and build this
             // model's CBv2 engine + bridge with the newcomer's grant.
             // THROWS on any construction failure — refusal telemetry has
-            // already fired, existing grants are already restored — and the
-            // catch below surfaces it as a 503-shaped capacity error.
-            let cached: CachedSlot
+            // already fired, and the newcomer's weights are already released
+            // + existing grants restored inside the catch (unwind ordering)
+            // — the catch below just surfaces it as a 503-shaped capacity
+            // error.
+            let bridge: EngineV2Bridge
             do {
-                cached = try await resliceAndBuildSlot(
+                bridge = try await resliceAndBuildSlot(
                     modelId: modelId,
                     modelType: modelInfo.modelType,
                     isVLM: slotIsVLM,
                     modelDirectory: modelPath,
-                    container: container,
+                    newcomer: newcomer,
                     tokenizer: tokenizer,
                     sizing: sizing)
             } catch let error as StandaloneServerError {
@@ -942,18 +1027,32 @@ public actor StandaloneServer {
                 let headroomGb = String(
                     format: "%.1f",
                     Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
-                await cached.bridge.shutdown()
-                MLX.Memory.clearCache()
-                // The aborted newcomer's grant was carved out of the fleet
-                // budget — grow the survivors back to their shares.
-                await resliceGrowSurvivors()
+                // Retire the bridge, release the newcomer's weights, THEN
+                // regrow survivors — in that order (Codex review): regrowing
+                // while the aborted newcomer's weights are still resident
+                // would let Σ(grants) exceed the true fleet budget.
+                await unwindBuiltSlotAndRegrow(bridge: bridge, newcomer: newcomer)
                 throw StandaloneServerError.capacityUnavailable(
                     "Model '\(modelId)' loaded but its engine build left insufficient "
                     + "KV headroom under the memory cap (\(headroomGb) GB free) — unloaded")
             }
 
             // Guards passed — NOW publish the slot.
-            slots[modelId] = cached
+            guard let installContainer = newcomer.container else {
+                // Unreachable (the box is drained only on failure paths) —
+                // defensive so a wiring bug can never publish a slot with no
+                // container.
+                throw StandaloneServerError.capacityUnavailable(
+                    "internal: newcomer container missing at install for '\(modelId)'")
+            }
+            slots[modelId] = CachedSlot(
+                bridge: bridge,
+                container: installContainer,
+                tokenizer: tokenizer,
+                modelType: modelInfo.modelType,
+                isVLM: slotIsVLM,
+                sizing: sizing,
+                lastUsedAt: .now)
             standaloneLogger.info("Lazy-loaded model: \(modelId) (engine_v2)")
 
             modelsLoading.remove(modelId)

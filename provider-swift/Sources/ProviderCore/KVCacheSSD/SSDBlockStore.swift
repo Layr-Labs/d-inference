@@ -511,16 +511,25 @@ enum SSDBlockStore {
         return Data(bytes: &le, count: 4)
     }
 
+    // Decode little-endian fields BYTEWISE. `Data.subdata(in:)` / `Data`'s
+    // backing storage carries no alignment guarantee, so the previous
+    // `UnsafeRawBufferPointer.load(as: UInt16/UInt32)` could trap on a
+    // misaligned pointer while scanning/reading an otherwise-valid on-disk
+    // DBK2 entry (a cache miss must never crash the provider). Byte shifts
+    // are alignment-agnostic and pin the on-disk endianness explicitly.
     private static func readUInt16LE(_ data: Data, at offset: Int) -> UInt16 {
-        data.subdata(in: offset..<(offset + 2)).withUnsafeBytes {
-            UInt16(littleEndian: $0.load(as: UInt16.self))
-        }
+        let b = data.subdata(in: offset..<(offset + 2))
+        let base = b.startIndex
+        return UInt16(b[base]) | (UInt16(b[base + 1]) << 8)
     }
 
     private static func readUInt32LE(_ data: Data, at offset: Int) -> UInt32 {
-        data.subdata(in: offset..<(offset + 4)).withUnsafeBytes {
-            UInt32(littleEndian: $0.load(as: UInt32.self))
-        }
+        let b = data.subdata(in: offset..<(offset + 4))
+        let base = b.startIndex
+        return UInt32(b[base])
+            | (UInt32(b[base + 1]) << 8)
+            | (UInt32(b[base + 2]) << 16)
+            | (UInt32(b[base + 3]) << 24)
     }
 
     private static func randomBytes(_ n: Int) -> Data {

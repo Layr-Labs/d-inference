@@ -136,22 +136,33 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         let matched: Int
         let prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?]
         let deviceBytes: Int
-        /// Requests that staged (or attached to) this entry and have not
-        /// yet been released (endAdoption pops one per balanced hit; the
-        /// bridge backstop closes stragglers).
+        /// Requests attached to this entry that have not yet been balanced
+        /// (endAdoption drops one per balanced hit; the bridge backstop
+        /// closes stragglers). PURE residency accounting — the shared-KV
+        /// reservation is per-ENTRY (`reservationKey`), not per-ticket, so
+        /// dropping an arbitrary ticket here can never strand another
+        /// request's reservation.
         var openTickets: Set<String>
         /// Lookup hits not yet balanced by endAdoption — the entry's
         /// arrays stay parked while an adoption is in flight.
         var pinsInUse = 0
+        /// The ONE shared-KV-budget reservation covering this entry's
+        /// `deviceBytes` (the CREATING request's key). Attaching requests
+        /// release their redundant provisional reservation; this one is
+        /// released exactly once, when the entry itself is retired. Holding
+        /// it for the whole residency window is what closes the T-041
+        /// orphan: while the staged arrays are resident, they stay reserved.
+        let reservationKey: String
 
         init(
             matched: Int, prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?],
-            deviceBytes: Int, firstTicket: String
+            deviceBytes: Int, firstTicket: String, reservationKey: String
         ) {
             self.matched = matched
             self.prefix = prefix
             self.deviceBytes = deviceBytes
             self.openTickets = [firstTicket]
+            self.reservationKey = reservationKey
         }
     }
 
@@ -251,7 +262,12 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         lock.withLock {
             guard !closed else { return }
             closed = true
-            releaseKeys = tickets.keys.map { Self.reservationKey(forRequestID: $0) }
+            // Release the PER-ENTRY reservations (each resident entry holds
+            // exactly one, keyed by its creator). Attaching requests already
+            // released their redundant provisional reservation at attach
+            // time; any request still mid-`stage()` releases its own on the
+            // `closed`-guarded false return.
+            releaseKeys = stagedEntries.values.map(\.reservationKey)
             let stagedBytes = stagedEntries.values.reduce(0) { $0 + $1.deviceBytes }
             statsBox.add(stagedBytesDelta: -stagedBytes)
             tickets.removeAll()
@@ -341,13 +357,16 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         lock.withLock {
             guard let staged = stagedEntries[tag16] else { return }
             staged.pinsInUse = max(0, staged.pinsInUse - 1)
-            // Balance ONE staging ticket per balanced hit (tickets are
-            // symmetric: each reserved the same staged byte count).
+            // Drop ONE residency ticket per balanced hit. Tickets no longer
+            // map 1:1 to reservations (the entry carries a single per-entry
+            // reservation), so popping an arbitrary one is pure attached-
+            // request accounting — it can't release a still-pinned
+            // concurrent request's budget. The entry's reservation is
+            // released only when the entry itself retires (below).
             if let ticket = staged.openTickets.popFirst() {
                 tickets.removeValue(forKey: ticket)
-                releaseKey = Self.reservationKey(forRequestID: ticket)
             }
-            removeStagedEntryIfDoneLocked(tag16)
+            releaseKey = removeStagedEntryIfDoneLocked(tag16)
         }
         if let releaseKey, let kvBudget {
             Task { await kvBudget.release(requestID: releaseKey) }
@@ -642,7 +661,11 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         guard k > 0 else { return false }
 
         // Concurrent same-prefix request: attach to the existing staged
-        // entry (one entry, per-request reservation + ticket).
+        // entry (ONE entry, ONE per-entry reservation, one residency ticket
+        // per attached request). The provisional reservation below is only
+        // the memory-pressure gate for the case where THIS request has to
+        // build the entry — on attach it is redundant with the entry's own
+        // reservation and released immediately.
         let terminalTag = tags16[k - 1]
         let reservationKey = Self.reservationKey(forRequestID: requestID)
         if let kvBudget {
@@ -657,7 +680,13 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             tickets[requestID] = terminalTag
             return true
         }
-        if attached { return true }
+        if attached {
+            // Redundant with the entry's per-entry reservation — release it
+            // so a shared entry is charged to the shared KV budget exactly
+            // once, no matter how many requests attach.
+            await releaseReservation(reservationKey)
+            return true
+        }
 
         // Read + decrypt + verify blocks 1..k off the engine threads.
         var blockPayloads: [(metadata: SSDBlockMetadata, chunks: [Data])] = []
@@ -738,29 +767,42 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             return false
         }
 
-        let inserted = lock.withLock { () -> Bool in
-            guard !closed else { return false }
+        // Post-build resolution: another concurrent request may have won the
+        // race and created the entry while we were reading off-thread, in
+        // which case we ATTACH (and release our now-redundant provisional
+        // reservation); otherwise we CREATE and our reservation becomes the
+        // entry's per-entry reservation.
+        enum StageResolution { case created, attached, failed }
+        let resolution: StageResolution = lock.withLock {
+            guard !closed else { return .failed }
             if let existing = stagedEntries[terminalTag], existing.matched == matched {
                 existing.openTickets.insert(requestID)
                 tickets[requestID] = terminalTag
-                return true
+                return .attached
             }
             let usedTag = tags16[usableBlocks - 1]
             if let existing = stagedEntries[usedTag], existing.matched == matched {
                 existing.openTickets.insert(requestID)
                 tickets[requestID] = usedTag
-                return true
+                return .attached
             }
             stagedEntries[usedTag] = StagedEntry(
                 matched: matched, prefix: prefix, deviceBytes: stagedRunBytes,
-                firstTicket: requestID)
+                firstTicket: requestID, reservationKey: reservationKey)
             tickets[requestID] = usedTag
             statsBox.add(stages: 1, stagedBytesDelta: stagedRunBytes)
-            return true
+            return .created
         }
-        guard inserted else {
+        switch resolution {
+        case .failed:
             await releaseReservation(reservationKey)
             return false
+        case .attached:
+            // Redundant with the winner's per-entry reservation.
+            await releaseReservation(reservationKey)
+            return true
+        case .created:
+            break  // reservation is now owned by the staged entry
         }
         // Sliding TTL: bump index recency AND file mtimes so warmth
         // survives a restart (the scan seeds lastAccess from mtime).
@@ -783,10 +825,13 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         var releaseKey: String?
         lock.withLock {
             guard let tag = tickets.removeValue(forKey: requestID) else { return }
-            releaseKey = Self.reservationKey(forRequestID: requestID)
             guard let staged = stagedEntries[tag] else { return }
             staged.openTickets.remove(requestID)
-            removeStagedEntryIfDoneLocked(tag)
+            // Only the entry's own (per-entry) reservation is released, and
+            // only when this was the last user — a request terminating while
+            // a concurrent same-prefix request still pins the shared entry
+            // leaves the reservation in place (residency stays covered).
+            releaseKey = removeStagedEntryIfDoneLocked(tag)
         }
         if let releaseKey, let kvBudget {
             Task { await kvBudget.release(requestID: releaseKey) }
@@ -905,13 +950,18 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         await kvBudget.release(requestID: key)
     }
 
-    /// Must be called with `lock` held.
-    private func removeStagedEntryIfDoneLocked(_ tag16: Data) {
+    /// Must be called with `lock` held. Returns the retired entry's
+    /// per-entry reservation key (which the caller releases AFTER unlocking,
+    /// since the budget is an actor) when the entry was actually removed —
+    /// nil when the entry is still in use and stays resident+reserved.
+    @discardableResult
+    private func removeStagedEntryIfDoneLocked(_ tag16: Data) -> String? {
         guard let staged = stagedEntries[tag16],
             staged.openTickets.isEmpty, staged.pinsInUse <= 0
-        else { return }
+        else { return nil }
         stagedEntries.removeValue(forKey: tag16)
         statsBox.add(stagedBytesDelta: -staged.deviceBytes)
+        return staged.reservationKey
     }
 
     /// Same cacheability rule as `PrefixCacheV2`: full-attention AND

@@ -687,3 +687,124 @@ private final class StandaloneGrantRecorder: @unchecked Sendable {
     #expect(updates.last == grantA0)
     #expect(await server.debugEngineKVGrant(modelId: "gpt-oss-20b") == nil)
 }
+
+/// Lock-guarded weak holder so @Sendable probes can ask "is B's container
+/// still alive?" at grant-update time.
+private final class StandaloneWeakContainerRef: @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var _value: AnyObject?
+    init(_ value: AnyObject) { self._value = value }
+    var isAlive: Bool { lock.withLock { _value != nil } }
+}
+
+/// Thread-safe trail of (grantBytes, newcomerAliveAtThatInstant).
+private final class StandaloneAlivenessTrail: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _entries: [(bytes: Int, newcomerAlive: Bool)] = []
+    func record(bytes: Int, alive: Bool) { lock.withLock { _entries.append((bytes, alive)) }
+    }
+    var entries: [(bytes: Int, newcomerAlive: Bool)] { lock.withLock { _entries } }
+}
+
+@Test func standaloneConstructionFailureReleasesWeightsBeforeRestoringGrants() async throws {
+    // Regression (Codex, v0.7.5 review — StandaloneServer unwind ordering):
+    // when `darkbloom start --local` shrinks co-resident slots and the v2
+    // bridge construction then throws, the failed newcomer's weights must
+    // stop being resident BEFORE the survivors' grants are restored — the
+    // same ordering ProviderLoop enforces via EngineV2NewcomerBox. Pre-fix,
+    // the standalone catch restored grants while the newcomer container was
+    // still strongly held by the load path, so a request re-entering the
+    // actor for an already-loaded model could be admitted against capacity
+    // that assumed the failed weights were gone.
+    struct BuildFailure: Error {}
+    let server = standaloneTestServer()
+
+    let sizingA = standaloneSizing(weightsGiB: 15, kvRate: 20_480)
+    let sizingB = standaloneSizing(weightsGiB: 12, kvRate: 24_576)
+    let grantA0 = Int(UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: standalonePhysicalBytes,
+        residentWeightBytes: UInt64(sizingA.weightsBytes),
+        configReserveBytes: 0))
+
+    // B's container: the ONLY strong reference lives in the box; the test
+    // keeps a weak observer (the scoped `do` drops the local strong ref).
+    let weakB: StandaloneWeakContainerRef
+    let box: EngineV2NewcomerBox
+    do {
+        let containerB = makeStandaloneStubContainer()
+        weakB = StandaloneWeakContainerRef(containerB)
+        box = EngineV2NewcomerBox(containerB)
+    }
+    #expect(weakB.isAlive)
+
+    // Install survivor A holding the full single-model budget, with a probe
+    // engine that records B's aliveness at each grant mutation.
+    let trail = StandaloneAlivenessTrail()
+    let engineA = InertStubEngine(
+        kvBytesCapacity: grantA0,
+        onUpdate: { bytes in trail.record(bytes: bytes, alive: weakB.isAlive) })
+    let bridgeA = EngineV2Bridge(
+        engine: engineA,
+        modelId: "gemma-4-26b-qat-4bit",
+        tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+        eosTokenIds: [])
+    await server.installSlotForTesting(
+        modelId: "gemma-4-26b-qat-4bit",
+        bridge: bridgeA,
+        container: makeStandaloneStubContainer(),
+        tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+        sizing: sizingA,
+        modelType: "gemma4")
+
+    // The newcomer's engine build fails AFTER A was shrunk.
+    await server.setV2TestHooksForTesting(
+        StandaloneServer.V2TestHooks(
+            physicalMemoryBytes: standalonePhysicalBytes,
+            makeEngine: { _, _ in throw BuildFailure() }))
+
+    await #expect(throws: BuildFailure.self) {
+        _ = try await server.resliceAndBuildSlotForTesting(
+            modelId: "gpt-oss-20b",
+            modelType: "gpt_oss",
+            newcomer: box,
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+            sizing: sizingB)
+    }
+
+    // Expected two-model shrink target (same pure policy).
+    let bothBudget = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: standalonePhysicalBytes,
+        residentWeightBytes: UInt64(sizingA.weightsBytes + sizingB.weightsBytes),
+        configReserveBytes: 0)
+    let targets = EngineV2KVSizing.resliceGrants(
+        existing: [
+            .init(
+                modelId: "gemma-4-26b-qat-4bit",
+                fp16KVBytesPerToken: sizingA.fp16KVBytesPerToken,
+                maxContextLength: sizingA.maxContextLength)
+        ],
+        newcomer: .init(
+            modelId: "gpt-oss-20b",
+            fp16KVBytesPerToken: sizingB.fp16KVBytesPerToken,
+            maxContextLength: sizingB.maxContextLength),
+        fleetKVBudgetBytes: bothBudget)
+    let shrinkTarget = try #require(targets["gemma-4-26b-qat-4bit"])
+
+    // Trail: [shrink (B resident — inherent to loading), restore].
+    let entries = trail.entries
+    #expect(entries.count == 2)
+    #expect(entries.first?.bytes == shrinkTarget)
+    #expect(entries.first?.newcomerAlive == true)
+    // THE ORDERING UNDER TEST: at the instant A's grant is restored, B's
+    // weights are no longer resident.
+    #expect(entries.last?.bytes == grantA0)
+    #expect(
+        entries.last?.newcomerAlive == false,
+        "survivor grants must be restored only AFTER the failed newcomer's weights are released")
+
+    // End state: box drained, A exactly restored, B never installed.
+    #expect(box.container == nil)
+    #expect(!weakB.isAlive)
+    #expect(await server.debugEngineKVGrant(modelId: "gemma-4-26b-qat-4bit") == grantA0)
+    #expect(await server.debugEngineKVGrant(modelId: "gpt-oss-20b") == nil)
+}

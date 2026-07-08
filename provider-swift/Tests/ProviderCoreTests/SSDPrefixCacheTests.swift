@@ -195,6 +195,39 @@ struct SSDBlockStoreTests {
         }
     }
 
+    @Test("header length fields decode correctly across sizes (unaligned-safe byte decode)")
+    func headerLengthFieldsDecode() throws {
+        // Regression (Codex, v0.7.5 SSD review — SSDBlockStore DBK2 header
+        // parsing): the wrapped-DEK / metadata / chunk-length fields are
+        // parsed from sliced `Data` with no alignment guarantee. The decode
+        // must be alignment-agnostic AND correct for values that exercise
+        // every byte of the little-endian u16/u32 fields (including the high
+        // bytes, i.e. lengths > 0xFFFF). A per-byte decoder that dropped a
+        // byte, or an unaligned `load(as:)` that trapped, would fail here.
+        let dir = tempDir("store-lenfields")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        // Chunk sizes chosen to make chunkPlaintextSize / ciphertext-length
+        // fields span 1-, 2-, and 3-byte magnitudes (255, 65_537, 200_003).
+        let sizeMatrix: [[Int]] = [
+            [1, 255],
+            [65_537, 4],
+            [200_003, 200_004],
+        ]
+        for (n, sizes) in sizeMatrix.enumerated() {
+            let chunks = sizes.map { Data((0 ..< $0).map { UInt8($0 % 251) }) }
+            let metadata = fixtureMetadata(sizes: sizes)
+            let hex = String(format: "%032x", n) // valid 32-hex tag16
+            let url = SSDBlockStore.fileURL(root: dir, tag16Hex: hex)
+            try SSDBlockStore.write(to: url, metadata: metadata, chunks: chunks, kekKey: kek)
+
+            let (readMeta, readChunks) = try SSDBlockStore.read(from: url, kekKey: kek)
+            #expect(readMeta == metadata, "metadata length field mis-decoded for sizes \(sizes)")
+            #expect(readChunks == chunks, "chunk length field mis-decoded for sizes \(sizes)")
+            #expect(try SSDBlockStore.readMetadataOnly(from: url) == metadata)
+        }
+    }
+
     @Test("AAD binding: tampering body or metadata bytes breaks authentication")
     func tamperFailsClosed() throws {
         let dir = tempDir("tamper")
@@ -894,6 +927,62 @@ struct SSDPrefixCacheReservationTests {
         #expect(cache.bytesInUse == 0)
         // On-disk files SURVIVE close — durable warmth is the feature.
         #expect(!dbk2Files(under: dir).isEmpty)
+    }
+
+    @Test("two same-prefix requests share ONE entry reservation — no double-charge, no orphaned residency")
+    func sharedEntryReservedExactlyOnce() async throws {
+        // Regression (Codex, v0.7.5 SSD review — SSDPrefixCache staging
+        // ticket accounting): when two concurrent same-prefix requests
+        // attach to a single staged entry, the shared KV budget must be
+        // charged for that entry's bytes EXACTLY ONCE, and the reservation
+        // must persist for the whole residency window. Pre-fix, each
+        // attached request took its own per-request reservation (double
+        // charge), and `endAdoption` popped an ARBITRARY staging ticket —
+        // so one request's adoption could release a still-pinned peer's
+        // reservation, leaving the resident staged MLX arrays with NO
+        // GlobalKVCacheBudget reservation (an over-admission hole under the
+        // memory cap).
+        let dir = tempDir("res-shared")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let budget = makeBudget()
+        let clock = ClockBox(10_000)
+        let cache = await makeStagedCache(
+            dir: dir, kek: SymmetricKey(size: .bits256), clock: clock, kvBudget: budget)
+        defer { cache.close() }
+
+        let prompt = Array(0 ..< tokenCount) + [1]
+        // A creates the staged entry; B attaches to the SAME entry.
+        #expect(await cache.stage(requestID: "req-A", promptTokens: prompt, cacheScope: ""))
+        let afterA = await budget.outstandingReservedBytes()
+        #expect(afterA > 0)
+        #expect(await cache.stage(requestID: "req-B", promptTokens: prompt, cacheScope: ""))
+        // Charged ONCE: attaching adds a residency ticket, not a reservation.
+        // (Pre-fix this was 2 × afterA.)
+        #expect(
+            await budget.outstandingReservedBytes() == afterA,
+            "attaching to a staged entry must not add a second reservation")
+        #expect(cache.bytesInUse == Int(afterA))
+
+        // Both engines look up the shared arrays (two live pins).
+        let hit = try #require(
+            cache.lookup(tokens: prompt, layerKinds: fixtureLayerKinds, cacheSalt: nil))
+        _ = try #require(
+            cache.lookup(tokens: prompt, layerKinds: fixtureLayerKinds, cacheSalt: nil))
+        // A fully completes (adoption + terminal backstop) while B is STILL
+        // pinned and the entry is STILL resident. Its reservation must NOT
+        // be released here — residency stays covered.
+        cache.endAdoption(tokens: prompt, matched: hit.matched, cacheSalt: nil)
+        cache.completeStaging(requestID: "req-A")
+        #expect(
+            await budget.outstandingReservedBytes() == afterA,
+            "a resident shared entry must stay reserved until its LAST user leaves")
+        #expect(cache.bytesInUse == Int(afterA))
+
+        // B finishes; the entry retires and the single reservation drains.
+        cache.endAdoption(tokens: prompt, matched: hit.matched, cacheSalt: nil)
+        cache.completeStaging(requestID: "req-B")
+        #expect(await waitForZeroOutstanding(budget), "the last user must drain the entry reservation")
+        #expect(cache.bytesInUse == 0)
     }
 }
 

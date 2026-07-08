@@ -27,6 +27,13 @@ import (
 // and they keep today's clampBackendCapacity 24-ceiling behavior exactly.
 // An empty EIGENINFERENCE_V2_VERSION_FLOOR disables the audit entirely
 // (zero behavior change); an empty provider version is below any floor.
+//
+// The ceiling is BOX-WIDE, not per-slot: the v2 engine runs one scheduler for
+// the whole box. So beside this per-slot ingest clamp, the provider-LEVEL
+// admission valve (Provider.maxConcurrency → v2BoxCeilingClamp, registry.go)
+// observes the same ceiling for >=floor providers — otherwise a v2 box with
+// multiple warm models would admit slots × ceiling in aggregate under the
+// legacy token-budget valve of 24.
 
 // defaultV2MaxConcurrencyCeiling is the ceiling applied to >=floor providers
 // when EIGENINFERENCE_V2_MAX_CONCURRENCY_CEILING is unset. Matches the engine's

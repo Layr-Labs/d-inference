@@ -1067,7 +1067,34 @@ func (p *Provider) ReportedTokenBudgetMaxForModel(model string) int64 {
 	return 0
 }
 
-// maxConcurrency is the lock-free version (caller must hold p.mu).
+// maxConcurrency is the lock-free version (caller must hold p.mu; p.Version is
+// p.mu-guarded): the legacy cap chain, bounded by the v2 box-wide ceiling for
+// >=v2-floor providers.
+func (p *Provider) maxConcurrency() int {
+	return v2BoxCeilingClamp(p.Version, p.legacyMaxConcurrency())
+}
+
+// v2BoxCeilingClamp bounds a provider-level concurrency cap by the v2 box-wide
+// ceiling for >=EIGENINFERENCE_V2_VERSION_FLOOR providers. Engine V2 runs ONE
+// engine with a BOX-WIDE concurrent-request cap (productionMaxConcurrentRequests,
+// the v2 ceiling — see v2_capacity_clamp.go). The heartbeat clamp bounds each
+// SLOT's max_concurrency, but the provider-LEVEL valve (pendingCount() <
+// maxConcurrency(), aggregated across ALL models) is what enforces the box-wide
+// total: without this clamp, a >=floor box with multiple warm models admits
+// slots × ceiling in aggregate under the legacy token-budget valve of 24 —
+// exactly the over-admission the tripwire exists to prevent. Tightening only
+// (min, never a raise: a small box's hardware-derived cap of 2 stays 2), and a
+// no-op when the floor env is unset or the provider is below it
+// (providerAtOrAboveV2Floor is false for both).
+func v2BoxCeilingClamp(version string, cap int) int {
+	if providerAtOrAboveV2Floor(version) && cap > v2MaxConcurrencyCeiling {
+		return v2MaxConcurrencyCeiling
+	}
+	return cap
+}
+
+// legacyMaxConcurrency is the pre-v2 provider-level cap chain (token-budget
+// safety valve → hardware tiers). Callers must hold p.mu.
 //
 // Tier values were lowered in Phase 2 of the routing-algorithm rework
 // (was 4/8/16/24/32). The old caps were derived from "how many
@@ -1076,7 +1103,7 @@ func (p *Provider) ReportedTokenBudgetMaxForModel(model string) int64 {
 // per-request TPS collapses". Empirically this is much smaller than
 // the memory-derived ceiling. Pushing past it makes each request slow
 // without increasing fleet throughput.
-func (p *Provider) maxConcurrency() int {
+func (p *Provider) legacyMaxConcurrency() int {
 	if p.BackendCapacity == nil {
 		return DefaultMaxConcurrent
 	}

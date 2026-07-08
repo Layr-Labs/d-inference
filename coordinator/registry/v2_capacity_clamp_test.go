@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 
@@ -192,6 +193,89 @@ func TestV2ClampAtOrBelowCeilingUntouched(t *testing.T) {
 	}
 	if rec.count() != 0 {
 		t.Fatalf("tripwire fired %d times for honest reports, want 0", rec.count())
+	}
+}
+
+// TestV2ProviderLevelCapObservesBoxCeiling (review fix): the v2 ceiling is
+// BOX-WIDE (one engine per box), so the provider-LEVEL admission valve
+// (pendingCount < maxConcurrency, aggregated across ALL models) must observe it
+// too — the per-slot ingest clamp alone lets a >=floor box with two warm models
+// admit slots × ceiling in aggregate under the legacy token-budget valve of 24.
+// Fails without v2BoxCeilingClamp in Provider.maxConcurrency (MaxConcurrency
+// returns 24 and the aggregate admission check stays open at 4 pending).
+func TestV2ProviderLevelCapObservesBoxCeiling(t *testing.T) {
+	enableV2ConcurrencyClamp(t, "0.7.5", 4)
+	reg := New(testLogger())
+	p := makeSchedulerProvider(t, reg, "v2-box", gptossBuild, 30)
+	setProviderVersion(p, "0.7.5")
+
+	// Two warm token-budget slots (multi-model co-residency), each honestly at
+	// the per-slot ceiling — nothing for the ingest clamp to correct.
+	reg.Heartbeat("v2-box", &protocol.HeartbeatMessage{
+		Type:   protocol.TypeHeartbeat,
+		Status: "serving",
+		BackendCapacity: &protocol.BackendCapacity{
+			TotalMemoryGB: 64,
+			Slots: []protocol.BackendSlotCapacity{
+				{Model: gptossBuild, State: "running", MaxConcurrency: 4, ActiveTokenBudgetMax: 100_000},
+				{Model: gemmaBuild, State: "running", MaxConcurrency: 4, ActiveTokenBudgetMax: 100_000},
+			},
+		},
+	})
+
+	if got := p.MaxConcurrency(); got != 4 {
+		t.Fatalf("v2 provider-level MaxConcurrency = %d, want the box-wide ceiling 4 (not the legacy token-budget valve of 24)", got)
+	}
+
+	// Aggregate admission: with the box-wide ceiling reached across BOTH models,
+	// no model has headroom — regardless of its own slot's occupancy.
+	for i := 0; i < 2; i++ {
+		p.AddPending(&PendingRequest{RequestID: fmt.Sprintf("oss-%d", i), Model: gptossBuild})
+		p.AddPending(&PendingRequest{RequestID: fmt.Sprintf("gemma-%d", i), Model: gemmaBuild})
+	}
+	reg.mu.RLock()
+	p.mu.Lock()
+	ossHeadroom := reg.hasConcurrencyHeadroomForModelCapResolvedLocked(p, gptossBuild)
+	gemmaHeadroom := reg.hasConcurrencyHeadroomForModelCapResolvedLocked(p, gemmaBuild)
+	p.mu.Unlock()
+	reg.mu.RUnlock()
+	if ossHeadroom || gemmaHeadroom {
+		t.Fatalf("headroom at box-wide capacity = (gptoss %v, gemma %v), want (false, false): 2+2 pending must saturate the aggregate v2 ceiling of 4", ossHeadroom, gemmaHeadroom)
+	}
+}
+
+// TestV2ProviderLevelCapUntouchedBelowFloorOrDisabled pins the no-behavior-
+// change contract of the provider-level clamp: a below-floor token-budget
+// provider keeps the legacy 24 valve, and so does a v2-version provider when
+// the floor env is unset. The clamp also never RAISES a cap — a small box's
+// hardware-derived cap of 2 stays 2 at/above the floor.
+func TestV2ProviderLevelCapUntouchedBelowFloorOrDisabled(t *testing.T) {
+	enableV2ConcurrencyClamp(t, "0.7.5", 4)
+	reg := New(testLogger())
+
+	legacy := makeTokenBudgetProvider(t, reg, "legacy-box", gptossBuild, 30, 0, 100_000, 0)
+	setProviderVersion(legacy, "0.7.4")
+	if got := legacy.MaxConcurrency(); got != 24 {
+		t.Fatalf("below-floor token-budget MaxConcurrency = %d, want the legacy 24", got)
+	}
+
+	// Tightening only: a >=floor box whose hardware tier is BELOW the ceiling
+	// keeps its smaller cap (24GB tier → 2).
+	small := makeSchedulerProvider(t, reg, "small-v2-box", gptossBuild, 30)
+	setProviderVersion(small, "0.7.5")
+	small.mu.Lock()
+	small.BackendCapacity.TotalMemoryGB = 24
+	small.mu.Unlock()
+	if got := small.MaxConcurrency(); got != 2 {
+		t.Fatalf(">=floor small-box MaxConcurrency = %d, want 2 (the clamp must never raise a cap)", got)
+	}
+
+	// Floor disabled: zero behavior change even for a v2-version provider.
+	SetV2ConcurrencyClamp("", 4)
+	v2 := makeTokenBudgetProvider(t, reg, "v2-box", gptossBuild, 30, 0, 100_000, 0)
+	setProviderVersion(v2, "0.7.5")
+	if got := v2.MaxConcurrency(); got != 24 {
+		t.Fatalf("floor-disabled v2 MaxConcurrency = %d, want 24 (no behavior change)", got)
 	}
 }
 

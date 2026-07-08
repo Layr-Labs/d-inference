@@ -2672,15 +2672,21 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 		// Solo gate: a slot EWMA is additionally recorded as a SOLO sample only
 		// when the whole box is uncontended at heartbeat time (Σ running+waiting
 		// ≤ 1 across ALL slots — the one allowance is the sample-generating
-		// request itself). The unconditional Record keeps its load-inclusive
-		// semantics for TTFT estimation (fleetMedianTPS); the gated RecordSolo
-		// feeds the quality-concurrency cap's per-model static rate
-		// (resolvedSoloModelTPSLocked). See solo_tps.go.
+		// request itself) AND the slot is the one that OWNS that request
+		// (running+waiting > 0). Both halves matter: without the second, every
+		// co-resident slot with a nonzero (stale, decayed) EWMA would be
+		// re-recorded as a fresh solo observation on each ~30s heartbeat,
+		// contaminating OTHER models' medians with samples no request produced —
+		// a fully idle box records nothing, because there is no fresh
+		// observation to record. The unconditional Record keeps its
+		// load-inclusive semantics for TTFT estimation (fleetMedianTPS); the
+		// gated RecordSolo feeds the quality-concurrency cap's per-model static
+		// rate (resolvedSoloModelTPSLocked). See solo_tps.go.
 		soloEligible := soloSampleEligible(p.BackendCapacity)
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.ObservedDecodeTPS > 0 {
 				r.tpsRegistry.Record(slot.Model, chipFamily, slot.ObservedDecodeTPS)
-				if soloEligible {
+				if soloEligible && slot.NumRunning+slot.NumWaiting > 0 {
 					r.tpsRegistry.RecordSolo(slot.Model, chipFamily, slot.ObservedDecodeTPS)
 				}
 			}

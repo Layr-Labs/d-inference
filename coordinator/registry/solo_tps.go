@@ -19,8 +19,10 @@ import (
 // consumers (fleetMedianTPS → TTFT estimation) want under-load samples.
 
 // RecordSolo adds a solo (uncontended-box) decode TPS sample for the given
-// model and chip family. Callers must pre-gate on soloSampleEligible — this
-// method itself only validates the sample value, mirroring Record.
+// model and chip family. Callers must pre-gate on soloSampleEligible AND on
+// the slot owning the box's one active request (NumRunning+NumWaiting > 0,
+// see the heartbeat ingest in registry.go) — this method itself only
+// validates the sample value, mirroring Record.
 func (r *TPSRegistry) RecordSolo(model, chipFamily string, tps float64) {
 	if tps <= 0 || model == "" {
 		return
@@ -83,13 +85,16 @@ func medianOfCopied(sorted []float64) float64 {
 }
 
 // soloSampleEligible reports whether a heartbeat's capacity snapshot qualifies
-// its slot EWMAs as SOLO samples: the whole box — every slot, every co-resident
-// model — has at most one running-or-waiting request. The ≤1 allowance is the
-// request that produced the EWMA itself; ANY other activity anywhere on the
-// box disqualifies, which is exactly what keeps mixed-box samples honest
-// (a gemma EWMA measured while gpt-oss batches on the same GPU is a contended
-// rate, not a solo one). Negative counts (already clamped upstream by
-// clampBackendCapacity) are defensively ignored.
+// as an uncontended box for SOLO sampling: the whole box — every slot, every
+// co-resident model — has at most one running-or-waiting request. The ≤1
+// allowance is the request that produced the EWMA itself; ANY other activity
+// anywhere on the box disqualifies, which is exactly what keeps mixed-box
+// samples honest (a gemma EWMA measured while gpt-oss batches on the same GPU
+// is a contended rate, not a solo one). This is the BOX-level half of the
+// gate; the heartbeat ingest additionally records only the slot that owns the
+// one active request, so idle co-resident slots cannot re-report a stale
+// decayed EWMA as a fresh solo observation every heartbeat. Negative counts
+// (already clamped upstream by clampBackendCapacity) are defensively ignored.
 func soloSampleEligible(bc *protocol.BackendCapacity) bool {
 	if bc == nil {
 		return false

@@ -30,6 +30,18 @@ func TestParseModelVersionFloors(t *testing.T) {
 		// Malformed entries degrade to "no floor", never to a bad floor.
 		{"bad_entries_skipped", "bogus,=0.7.5,gemma-4=,x", nil},
 		{"mixed_valid_invalid", "bogus,gemma-4=0.7.5,=1", []ModelVersionFloor{{Pattern: "gemma-4", Version: "0.7.5"}}},
+		// A NON-NUMERIC version must be dropped: CompareVersions treats an
+		// unparseable segment as 0, so installing "gemma-4=foo" would fence
+		// against an all-zero floor that every real version clears (the fence
+		// silently defeated). Regression for the Codex finding.
+		{"nonnumeric_version_dropped", "gemma-4=foo", nil},
+		// A partially-numeric version ("0.7.x") would install 0.7.0 and let a
+		// 0.7.4 box wrongly pass a 0.7.5-intended fence — dropped too.
+		{"partial_numeric_version_dropped", "gemma-4=0.7.x", nil},
+		// A valid entry survives alongside a dropped malformed one.
+		{"valid_kept_bad_version_dropped", "gemma-4=0.7.5,gpt-oss=vNext", []ModelVersionFloor{{Pattern: "gemma-4", Version: "0.7.5"}}},
+		// A leading v is tolerated (matches CompareVersions).
+		{"v_prefix_ok", "gemma-4=v0.7.5", []ModelVersionFloor{{Pattern: "gemma-4", Version: "v0.7.5"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -282,5 +294,72 @@ func TestModelVersionFloorSwapPlannerNeverTargetsBelowFloorBox(t *testing.T) {
 	// unfloored model it advertises.
 	if actions := reg.planModelLoadActions([]string{gptossBuild}, time.Now()); len(actions) != 1 || actions[0].providerID != "old-cold-box" {
 		t.Fatalf("planModelLoadActions(gpt-oss) = %+v, want one load onto old-cold-box (only gemma is floored)", actions)
+	}
+}
+
+// findModelCapacity returns the ModelCapacity snapshot entry for a build id.
+func findModelCapacity(caps []ModelCapacity, modelID string) *ModelCapacity {
+	for i := range caps {
+		if caps[i].ModelID == modelID {
+			return &caps[i]
+		}
+	}
+	return nil
+}
+
+// TestModelVersionFloorCapacitySnapshot is the Codex regression: the public
+// /v1/models/capacity feed must apply the per-model version floor too. A
+// below-floor box advertising a floored model is unroutable, so counting its
+// slot as a RoutableProvider would advertise capacity the preflight immediately
+// 429s — luring upstream routers into undeliverable traffic. Fails without the
+// floor gate inside ModelCapacitySnapshot (gemma RoutableProviders would be 2).
+func TestModelVersionFloorCapacitySnapshot(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetModelVersionFloors(ParseModelVersionFloors("gemma-4=0.7.5"))
+	floorProvider(t, reg, "old-box", "0.7.4") // below floor: advertises gemma + gpt-oss
+	floorProvider(t, reg, "new-box", "0.7.5") // at floor
+
+	caps := reg.ModelCapacitySnapshot()
+
+	gemma := findModelCapacity(caps, gemmaBuild)
+	if gemma == nil {
+		t.Fatalf("gemma missing from capacity snapshot (the at-floor box should still count)")
+	}
+	if gemma.RoutableProviders != 1 {
+		t.Fatalf("gemma RoutableProviders = %d, want 1 (only the >=0.7.5 box; the 0.7.4 box is floored out)", gemma.RoutableProviders)
+	}
+	// gpt-oss has no floor: both boxes count.
+	gptoss := findModelCapacity(caps, gptossBuild)
+	if gptoss == nil || gptoss.RoutableProviders != 2 {
+		t.Fatalf("gpt-oss RoutableProviders = %v, want 2 (unfloored — both boxes)", gptoss)
+	}
+}
+
+// TestModelVersionFloorDesiredModelsGate is the Codex regression: a below-floor
+// box must NOT be steered toward the Desired build of a floored alias — routing
+// will never use it there, so a desired_models command only makes it swap away
+// from a still-usable previous build into one it cannot serve. Fails without the
+// floor gate in DesiredModelsForProvider (the old box is told to converge to QAT).
+func TestModelVersionFloorDesiredModelsGate(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetModelAliases(map[string]AliasTarget{
+		"gemma-4-26b": {Desired: aliasQAT, Previous: aliasFP8},
+	})
+	reg.SetModelVersionFloors(ParseModelVersionFloors("gemma-4=0.7.5"))
+
+	// Below-floor box advertising the previous build: must not be told to
+	// converge to the floored desired build.
+	old := registerProviderWithModel(reg, "p-old", aliasFP8)
+	setProviderVersion(old, "0.7.4")
+	if got := reg.DesiredModelsForProvider("p-old"); len(got) != 0 {
+		t.Fatalf("below-floor box steered toward floored desired build, got %+v", got)
+	}
+
+	// At-floor box advertising the previous build: still told to converge.
+	newp := registerProviderWithModel(reg, "p-new", aliasFP8)
+	setProviderVersion(newp, "0.7.5")
+	got := reg.DesiredModelsForProvider("p-new")
+	if len(got) != 1 || got[0].DesiredBuild != aliasQAT {
+		t.Fatalf("at-floor box should be told the desired build, got %+v", got)
 	}
 }

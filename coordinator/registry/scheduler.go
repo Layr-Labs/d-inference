@@ -1188,7 +1188,10 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 	snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 	snap.availableOnDisk = !snap.modelLoaded
 	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
-	snap.prefillMedianTPS, snap.prefillMedianSamples = r.tpsRegistry.PrefillMedian(model, p.Hardware.ChipFamily)
+	// Prefill medians are keyed by chip CLASS (family+tier), not family — prefill
+	// throughput spreads 3–4× across same-family tiers, so pooling them would
+	// over-admit a slow tier at the hard TTFT gate (see prefillChipClass).
+	snap.prefillMedianTPS, snap.prefillMedianSamples = r.tpsRegistry.PrefillMedian(model, prefillChipClass(p.Hardware))
 
 	return snap, true
 }
@@ -2174,7 +2177,10 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 		snap.availableOnDisk = !snap.modelLoaded
 		snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
-		snap.prefillMedianTPS, snap.prefillMedianSamples = r.tpsRegistry.PrefillMedian(model, p.Hardware.ChipFamily)
+		// Prefill medians are keyed by chip CLASS (family+tier), not family — must
+		// match the ingest + dispatch-snapshot key or the preflight bestTTFT would
+		// diverge from dispatch (see prefillChipClass).
+		snap.prefillMedianTPS, snap.prefillMedianSamples = r.tpsRegistry.PrefillMedian(model, prefillChipClass(p.Hardware))
 
 		p.mu.Unlock()
 

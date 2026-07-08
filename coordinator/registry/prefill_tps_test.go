@@ -80,7 +80,7 @@ func TestPrefillRecordingThroughHeartbeat(t *testing.T) {
 	hb([]protocol.BackendSlotCapacity{
 		{Model: gptossBuild, State: "running", NumRunning: 1, ObservedPrefillTPS: 6500},
 	})
-	if tps, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3"); tps != 6500 || n != 1 {
+	if tps, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3|Max"); tps != 6500 || n != 1 {
 		t.Fatalf("PrefillMedian after heartbeat = (%v, %d), want (6500, 1)", tps, n)
 	}
 
@@ -90,7 +90,7 @@ func TestPrefillRecordingThroughHeartbeat(t *testing.T) {
 		{Model: gptossBuild, State: "running", NumRunning: 2, NumWaiting: 1, ObservedPrefillTPS: 7000},
 		{Model: gemmaBuild, State: "running", NumRunning: 3, ObservedDecodeTPS: 4},
 	})
-	if _, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3"); n != 2 {
+	if _, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3|Max"); n != 2 {
 		t.Fatalf("prefill samples after contended heartbeat = %d, want 2 (no solo gating)", n)
 	}
 
@@ -102,7 +102,7 @@ func TestPrefillRecordingThroughHeartbeat(t *testing.T) {
 	hb([]protocol.BackendSlotCapacity{
 		{Model: gptossBuild, State: "running", ObservedPrefillTPS: 0},
 	})
-	if _, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3"); n != 2 {
+	if _, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3|Max"); n != 2 {
 		t.Fatalf("prefill samples after garbage/zero heartbeats = %d, want 2", n)
 	}
 }
@@ -136,7 +136,7 @@ func TestPrefillHeartbeatDedupsResentEWMA(t *testing.T) {
 			{Model: gptossBuild, State: "idle", ObservedPrefillTPS: 6500},
 		})
 	}
-	if _, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3"); n != 1 {
+	if _, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3|Max"); n != 1 {
 		t.Fatalf("prefill samples after 5 identical heartbeats = %d, want 1 (a resent EWMA is not a new observation)", n)
 	}
 
@@ -149,7 +149,7 @@ func TestPrefillHeartbeatDedupsResentEWMA(t *testing.T) {
 	hb([]protocol.BackendSlotCapacity{
 		{Model: gptossBuild, State: "running", ObservedPrefillTPS: 6500},
 	})
-	if _, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3"); n != 3 {
+	if _, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3|Max"); n != 3 {
 		t.Fatalf("prefill samples after two genuine changes = %d, want 3", n)
 	}
 
@@ -159,10 +159,10 @@ func TestPrefillHeartbeatDedupsResentEWMA(t *testing.T) {
 		{Model: gptossBuild, State: "running", ObservedPrefillTPS: 6500},
 		{Model: gemmaBuild, State: "running", ObservedPrefillTPS: 6500},
 	})
-	if _, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3"); n != 3 {
+	if _, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3|Max"); n != 3 {
 		t.Fatalf("gpt-oss samples after unchanged resend = %d, want 3", n)
 	}
-	if _, n := reg.tpsRegistry.PrefillMedian(gemmaBuild, "M3"); n != 1 {
+	if _, n := reg.tpsRegistry.PrefillMedian(gemmaBuild, "M3|Max"); n != 1 {
 		t.Fatalf("gemma samples = %d, want 1 (per-model tracking)", n)
 	}
 }
@@ -185,7 +185,7 @@ func TestPrefillIngestZeroedUnderOldCeiling(t *testing.T) {
 			},
 		},
 	})
-	if _, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3"); n != 0 {
+	if _, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3|Max"); n != 0 {
 		t.Fatalf("prefill samples under the old 5000 ceiling = %d, want 0 (zeroed at ingest)", n)
 	}
 }
@@ -204,10 +204,11 @@ func longPromptRequest(id string) *PendingRequest {
 	}
 }
 
-// seedPrefillMedian records n gated samples for (model, chip M3).
+// seedPrefillMedian records n gated samples for (model, chip class "M3|Max" —
+// the family+tier key prefillChipClass derives from the test provider hardware).
 func seedPrefillMedian(reg *Registry, model string, n int, tps float64) {
 	for i := 0; i < n; i++ {
-		reg.tpsRegistry.RecordPrefill(model, "M3", tps)
+		reg.tpsRegistry.RecordPrefill(model, "M3|Max", tps)
 	}
 }
 
@@ -242,6 +243,71 @@ func TestPrefillMedianLongPromptRegression(t *testing.T) {
 		t.Fatalf("kill switch off: long prompt admitted with TTFT %.0fms — must reject on the ratio-derived estimate", decision.TTFTMs)
 	} else if decision.TTFTRejections != 1 {
 		t.Fatalf("kill switch off: TTFTRejections = %d, want 1", decision.TTFTRejections)
+	}
+}
+
+// TestPrefillMedianNotBorrowedAcrossChipTier is the regression for the Codex
+// chip-tier finding: prefill spreads 3–4× across tiers within a family, so a
+// median seeded by fast M3 Max boxes must NOT be trusted for an M3 base/Pro box
+// that never reported its own measurement — otherwise the base box's long
+// prompt is admitted at the hard TTFT gate on a rate it cannot sustain. With
+// the pre-fix family keying ("M3") the base box would borrow the Max median and
+// be admitted; with class keying ("M3|Max" vs "M3|") it correctly falls back to
+// the ratio path and is shed.
+func TestPrefillMedianNotBorrowedAcrossChipTier(t *testing.T) {
+	t.Setenv(ttftPrefillMediansEnv, "true")
+	t.Setenv(ttftPrefillMinSamplesEnv, "5")
+	reg := New(testLogger())
+
+	// Seed the median through the REAL heartbeat ingest from an M3 MAX box (5
+	// changing values → 5 samples, dedup-safe), so the samples land under
+	// whatever key the ingest actually uses. Under the fix that is "M3|Max";
+	// under the pre-fix family keying it would be "M3" — which is exactly what
+	// lets a base box wrongly borrow them.
+	makeSchedulerProvider(t, reg, "m3-max-seed", gptossBuild, 30) // testRegisterMessage = M3 Max
+	for _, v := range []float64{6400, 6450, 6500, 6550, 6600} {
+		reg.Heartbeat("m3-max-seed", &protocol.HeartbeatMessage{
+			Type:   protocol.TypeHeartbeat,
+			Status: "serving",
+			BackendCapacity: &protocol.BackendCapacity{
+				TotalMemoryGB: 64,
+				Slots:         []protocol.BackendSlotCapacity{{Model: gptossBuild, State: "running", NumRunning: 1, ObservedPrefillTPS: v}},
+			},
+		})
+	}
+	if _, n := reg.tpsRegistry.PrefillMedian(gptossBuild, "M3|Max"); n != 5 {
+		t.Fatalf("seed samples under M3|Max = %d, want 5", n)
+	}
+	// Remove the seed box from routing; the median ring is registry-global and
+	// persists, so only the base box below is evaluated for the long prompt.
+	reg.RemoveProviderBySerial("m3-max-seed", true)
+
+	// A same-FAMILY but different-TIER box (M3 base, empty ChipTier) that never
+	// reported its own prefill: its class key is "M3|", so the Max samples must
+	// NOT apply and the long prompt is shed on the ratio estimate. With the
+	// pre-fix family keying (ingest + lookup both "M3") it would find the median
+	// and be admitted.
+	base := makeSchedulerProvider(t, reg, "m3-base", gptossBuild, 30)
+	base.mu.Lock()
+	base.Hardware.ChipTier = "" // base chip → prefillChipClass "M3|"
+	base.Hardware.ChipName = "Apple M3"
+	base.mu.Unlock()
+	if got := prefillChipClass(base.Hardware); got != "M3|" {
+		t.Fatalf("prefillChipClass(base M3) = %q, want %q", got, "M3|")
+	}
+	if p, decision := reg.ReserveProviderEx(gptossBuild, longPromptRequest("cross-tier")); p != nil {
+		t.Fatalf("base-tier box admitted the long prompt (TTFT %.0fms) — the M3 Max median must not transfer across tiers", decision.TTFTMs)
+	} else if decision.TTFTRejections != 1 {
+		t.Fatalf("TTFTRejections = %d, want 1 (ratio-path shed, median not borrowed across tiers)", decision.TTFTRejections)
+	}
+
+	// Control: a same-tier M3 MAX box with no own measurement DOES trust the
+	// seeded median and is admitted — the transfer still works within a tier.
+	reg2 := New(testLogger())
+	seedPrefillMedian(reg2, gptossBuild, 5, 6500) // keys "M3|Max"
+	makeSchedulerProvider(t, reg2, "m3-max", gptossBuild, 30)
+	if p, _ := reg2.ReserveProviderEx(gptossBuild, longPromptRequest("same-tier")); p == nil {
+		t.Fatalf("same-tier (M3 Max) box shed the long prompt — the median must transfer within a tier")
 	}
 }
 

@@ -32,15 +32,19 @@ import (
 //     1000ms; the margin buys prediction error). Candidates without
 //     BackendCapacity have no reliable TTFT estimate and are excluded from
 //     the band when a deadline exists (they stay selectable via the
-//     cheapest-cost fallback, exactly as today). Requests without a deadline
-//     (pr.MaxTTFTMs <= 0 — soft-gate mode, the production default, and queue
-//     drains) have no TTFT criterion to predict against, so the band is
-//     restricted to WARM (weights-resident) candidates instead: without that,
-//     a cold box passing the decode floor would weighted-randomly beat a warm
-//     one and force an avoidable 15–60s model load the deadline branch would
-//     have priced in via the slot-state penalty. Cold candidates stay
-//     selectable via the cheapest-cost fallback, where statePenalty already
-//     makes them a last resort.
+//     cheapest-cost fallback, exactly as today). In the default soft-gate mode
+//     pr.MaxTTFTMs is 0, but public routes still stamp the ADVISORY
+//     pr.TTFTTargetMs (the same prompt-scaled deadline the preflight uses), so
+//     the band gates on that target too — a warm slow-prefill/long-prompt box
+//     already over the target is kept out of the band instead of
+//     weighted-randomly beating a fast box and regressing TTFT p90. Only when
+//     there is neither a ceiling nor a target (self-route / prefer-owner /
+//     queue drains) does the band fall back to a WARM-only proxy: without it a
+//     cold box passing the decode floor would weighted-randomly beat a warm one
+//     and force an avoidable 15–60s model load the deadline branch would have
+//     priced in via the slot-state penalty. Cold candidates stay selectable via
+//     the cheapest-cost fallback, where statePenalty already makes them a last
+//     resort.
 //   - predicted decode: projectedPerRequestDecodeTPS(snapshot) >=
 //     pr.MinDecodeTPS — the same projection the decode-floor quality
 //     preference uses. Vacuous when no floor is stamped.
@@ -104,26 +108,39 @@ func candidateInSatisficingBand(c *routingCandidate, pr *PendingRequest, marginM
 	if c == nil {
 		return false
 	}
-	if pr.MaxTTFTMs > 0 {
-		// A deadline exists: require a RELIABLE estimate that clears it with
-		// margin. No BackendCapacity means no reliable TTFT estimate — not a
-		// band member (still reachable via the cheapest-cost fallback).
+	// Effective TTFT deadline the band gates on: the HARD per-request ceiling
+	// when set (hard-reject mode), else the ADVISORY public target stamped in
+	// soft mode (pr.TTFTTargetMs). Both bound band membership identically; only
+	// MaxTTFTMs drives hard scheduler rejection, so using the soft target here
+	// changes no admission decision — it just keeps an over-target box out of
+	// the load-spread band.
+	deadline := pr.MaxTTFTMs
+	if deadline <= 0 {
+		deadline = pr.TTFTTargetMs
+	}
+	if deadline > 0 {
+		// A deadline/target exists: require a RELIABLE estimate that clears it
+		// with margin. No BackendCapacity means no reliable TTFT estimate — not
+		// a band member (still reachable via the cheapest-cost fallback). This
+		// is what keeps a WARM slow-prefill/long-prompt box that the preflight
+		// already marked over the (soft) deadline from weighted-randomly beating
+		// the fast candidate and regressing TTFT p90 (Codex review).
 		if !c.snapshot.hasBackendCapacity {
 			return false
 		}
-		if c.breakdown.TTFTMs > pr.MaxTTFTMs-marginMs {
+		if c.breakdown.TTFTMs > deadline-marginMs {
 			return false
 		}
 	} else if !c.snapshot.modelLoaded {
-		// No deadline (soft TTFT mode — the production default — or a queue
-		// drain): there is no TTFT criterion to predict against, so the band
-		// must not treat a COLD candidate as "satisfying" — a cold pick forces
-		// a 15–60s model load the deadline branch above would have priced in
-		// via the slot-state penalty inside breakdown.TTFTMs. Restrict the
-		// band to WARM (weights-resident) candidates; cold boxes stay
-		// reachable via the cheapest-cost fallback, whose statePenalty already
-		// makes them a last resort — exactly today's behavior. Growing warm
-		// capacity is the warm-pool controller's job, not the band's.
+		// No deadline AND no target (self-route / prefer-owner / a queue drain):
+		// there is no TTFT criterion to predict against, so the band must not
+		// treat a COLD candidate as "satisfying" — a cold pick forces a 15–60s
+		// model load the deadline branch above would have priced in via the
+		// slot-state penalty inside breakdown.TTFTMs. Restrict the band to WARM
+		// (weights-resident) candidates; cold boxes stay reachable via the
+		// cheapest-cost fallback, whose statePenalty already makes them a last
+		// resort — exactly today's behavior. Growing warm capacity is the
+		// warm-pool controller's job, not the band's.
 		return false
 	}
 	if pr.MinDecodeTPS > 0 && projectedPerRequestDecodeTPS(c.snapshot) < pr.MinDecodeTPS {

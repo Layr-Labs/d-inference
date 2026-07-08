@@ -147,6 +147,16 @@ type PendingRequest struct {
 	// <= MaxTTFTMs. Used by public inference routes to honor the public
 	// TTFT target. Self-route / prefer-owner requests leave this at 0.
 	MaxTTFTMs float64
+	// TTFTTargetMs is the ADVISORY public TTFT target in milliseconds. Unlike
+	// MaxTTFTMs it never drives hard scheduler rejection — it is stamped on
+	// public routes in BOTH gate modes (in hard mode it equals MaxTTFTMs; in the
+	// default soft mode MaxTTFTMs stays 0 but this carries the same deadline).
+	// Consumed only by the satisficing band (dormant by default) so that, in
+	// soft mode, a warm slow-prefill/long-prompt box already over the target is
+	// kept out of the load-spread band instead of weighted-randomly beating a
+	// fast box. 0 (self-route / prefer-owner / queue drains) = no target, and
+	// the band falls back to its cold-exclusion proxy. See satisficing_band.go.
+	TTFTTargetMs float64
 	// MinDecodeTPS is an optional per-request sustained-decode floor in tokens/sec
 	// (Routing v2 W2). When > 0, the scheduler PREFERS providers that would still
 	// deliver >= MinDecodeTPS to a newly admitted request (i.e. not overpack a
@@ -2806,7 +2816,9 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 					p.lastRecordedPrefillTPS = make(map[string]float64)
 				}
 				p.lastRecordedPrefillTPS[slot.Model] = slot.ObservedPrefillTPS
-				r.tpsRegistry.RecordPrefill(slot.Model, chipFamily, slot.ObservedPrefillTPS)
+				// Keyed by chip CLASS (family+tier), NOT family — prefill spreads
+				// 3–4× across same-family tiers; see prefillChipClass.
+				r.tpsRegistry.RecordPrefill(slot.Model, prefillChipClass(p.Hardware), slot.ObservedPrefillTPS)
 			}
 		}
 	}
@@ -3021,12 +3033,26 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 			advertised[m.ID] = struct{}{}
 		}
 	}
+	version := p.Version // captured under p.mu for the version-floor check below
 	p.mu.Unlock()
 
 	var entries []protocol.DesiredModelEntry
 	for alias, t := range r.modelAliases {
 		if t.Desired == "" {
 			continue
+		}
+		// Per-model provider-version floor: do NOT steer a below-floor box toward
+		// the Desired build of a floored alias (e.g. gemma-4=0.7.5 during the v2
+		// migration). Routing will never use that box for the floored model, so a
+		// desired_models command would only make it prefetch/hard-swap away from a
+		// still-usable previous build into one it can't serve — wasting memory and
+		// removing fallback capacity (Codex review). Empty-version boxes fail every
+		// floor. No-op when the floor env is unset. Mirrors the routing/warm-pool
+		// enforcement points in model_version_floors.go.
+		if floor, ok := r.modelVersionFloorForLocked(t.Desired); ok {
+			if version == "" || CompareVersions(version, floor) < 0 {
+				continue
+			}
 		}
 		_, hasDesired := advertised[t.Desired]
 		_, hasPrevious := advertised[t.Previous]
@@ -4630,6 +4656,16 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		// Enumerate every model this provider serves.
 		for _, m := range p.Models {
 			if !r.modelAllowedByCatalogLocked(m) {
+				continue
+			}
+			// Apply the per-model provider-version floor here too: a below-floor
+			// box is unroutable for a floored model (providerPassesRoutingGates
+			// rejects it), so counting its slot in the public capacity feed would
+			// advertise RoutableProviders/CanAccept from boxes the preflight
+			// immediately 429s — luring upstream routers into traffic this
+			// coordinator cannot serve (Codex review). No-op when the floor env is
+			// unset. Holds r.mu (RLock) and p.mu, as the helper requires.
+			if r.providerBelowModelVersionFloorLocked(p, m.ID) {
 				continue
 			}
 			// Use the SAME quality-concurrency-capped headroom the routing/preflight

@@ -1,6 +1,9 @@
 package registry
 
-import "github.com/eigeninference/d-inference/coordinator/env"
+import (
+	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+)
 
 // prefill_tps.go is the observed-prefill half of TPSRegistry: per-(model, chip
 // family) medians of the prefill EWMAs providers report in heartbeats
@@ -82,18 +85,43 @@ func ttftPrefillMinSamples() int {
 	return n
 }
 
+// prefillChipClass keys the prefill-median ring at a FINER grain than the
+// decode/solo rings' chip FAMILY. Prefill is compute-bound and spreads 3–4×
+// across the tiers WITHIN a family (e.g. M4 base vs M4 Max/Ultra), so keying by
+// family alone would let a few fast-tier samples satisfy the min-sample trust
+// floor and then admit a long prompt on a slower same-family tier at the HARD
+// TTFT gate — exactly the over-admit this ring's no-cross-chip-pooling rule
+// exists to avoid (Codex review). Family+tier is the normalized grain the
+// heartbeat carries (Hardware.ChipFamily + ChipTier); the base chip (empty
+// tier) maps to "<family>|", distinct from "<family>|Max". Falls back to the
+// raw ChipName when the family is absent, matching the decode ring's
+// empty-family key ("" stays "").
+//
+// NOTE: the decode (Record/Median) and solo (RecordSolo/SoloMedian) rings still
+// key by ChipFamily on the base branch; they face the same family-vs-tier
+// coarseness but a lower blast radius (they feed cost estimation / the quality
+// cap, not the hard TTFT admit) and the solo ring has SoloMedianAllChips as a
+// deliberate conservative cross-chip fallback. Moving those to tier grain is a
+// separate follow-up on that branch — not changed here.
+func prefillChipClass(hw protocol.Hardware) string {
+	if hw.ChipFamily == "" {
+		return hw.ChipName
+	}
+	return hw.ChipFamily + "|" + hw.ChipTier
+}
+
 // RecordPrefill adds an observed prefill TPS sample for the given model and
-// chip family. Called from heartbeat processing when a provider reports
-// slot.ObservedPrefillTPS > 0 (post-clamp, so out-of-range garbage was already
-// zeroed and never reaches the ring) AND the value changed since the
-// connection's last recorded sample (the heartbeat-side re-report dedup —
-// Provider.lastRecordedPrefillTPS). Load-inclusive like Record — see the file
-// comment for why prefill samples are not solo-gated.
-func (r *TPSRegistry) RecordPrefill(model, chipFamily string, tps float64) {
+// chip CLASS (family+tier, see prefillChipClass). Called from heartbeat
+// processing when a provider reports slot.ObservedPrefillTPS > 0 (post-clamp, so
+// out-of-range garbage was already zeroed and never reaches the ring) AND the
+// value changed since the connection's last recorded sample (the heartbeat-side
+// re-report dedup — Provider.lastRecordedPrefillTPS). Load-inclusive like Record
+// — see the file comment for why prefill samples are not solo-gated.
+func (r *TPSRegistry) RecordPrefill(model, chipClass string, tps float64) {
 	if tps <= 0 || model == "" {
 		return
 	}
-	key := tpsKey{Model: model, ChipFamily: chipFamily}
+	key := tpsKey{Model: model, ChipFamily: chipClass}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	samples := r.prefillSamples[key]
@@ -105,10 +133,11 @@ func (r *TPSRegistry) RecordPrefill(model, chipFamily string, tps float64) {
 }
 
 // PrefillMedian returns the median observed prefill TPS for the given model
-// and chip family plus the number of samples behind it. (0, 0) when no samples
-// exist. The count lets the TTFT estimate apply the min-sample trust floor.
-func (r *TPSRegistry) PrefillMedian(model, chipFamily string) (float64, int) {
-	key := tpsKey{Model: model, ChipFamily: chipFamily}
+// and chip CLASS (family+tier, see prefillChipClass) plus the number of samples
+// behind it. (0, 0) when no samples exist. The count lets the TTFT estimate
+// apply the min-sample trust floor.
+func (r *TPSRegistry) PrefillMedian(model, chipClass string) (float64, int) {
+	key := tpsKey{Model: model, ChipFamily: chipClass}
 	r.mu.RLock()
 	samples := r.prefillSamples[key]
 	sorted := make([]float64, len(samples))

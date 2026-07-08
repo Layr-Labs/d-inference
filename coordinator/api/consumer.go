@@ -679,8 +679,17 @@ func (s *Server) dispatchOneProvider(
 	// dispatch serves the best-available provider instead of re-rejecting an
 	// over-threshold request the preflight already chose to soft-serve. (Mirrors
 	// queueMaxTTFTMs, which already returns 0 in soft mode.)
-	if !policy.enabled && !policy.prefer && s.ttftHardReject {
-		pr.MaxTTFTMs = float64(ttftDeadline(estimatedPromptTokens).Milliseconds())
+	if !policy.enabled && !policy.prefer {
+		// Advisory public TTFT target — stamped in BOTH gate modes. In hard mode
+		// it also becomes the enforced MaxTTFTMs ceiling; in soft mode MaxTTFTMs
+		// stays 0 (dispatch serves the best-available provider) but the target
+		// still bounds the satisficing band so it can't spread onto an
+		// over-target box. Self-route / prefer-owner routes leave both 0.
+		target := float64(ttftDeadline(estimatedPromptTokens).Milliseconds())
+		pr.TTFTTargetMs = target
+		if s.ttftHardReject {
+			pr.MaxTTFTMs = target
+		}
 	}
 	// Routing v2 W2: soft per-request decode floor (0 = off). Applies to all
 	// routes; it only ranks providers, never rejects.
@@ -3337,8 +3346,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// TTFT is above the threshold.
 	// Routing v2 (P1 fix): enforce the TTFT ceiling only in HARD mode; soft mode
 	// leaves MaxTTFTMs 0 so dispatch serves the best-available provider.
-	if !policy.enabled && !policy.prefer && s.ttftHardReject {
-		pr.MaxTTFTMs = float64(genericDeadline.Milliseconds())
+	if !policy.enabled && !policy.prefer {
+		// Advisory public TTFT target (see the primary dispatch path): stamped in
+		// both gate modes; only becomes the enforced ceiling in hard mode.
+		target := float64(genericDeadline.Milliseconds())
+		pr.TTFTTargetMs = target
+		if s.ttftHardReject {
+			pr.MaxTTFTMs = target
+		}
 	}
 	// Routing v2 W2: soft per-request decode floor (0 = off).
 	pr.MinDecodeTPS = s.minDecodeTPS

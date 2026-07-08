@@ -237,3 +237,36 @@ func TestSatisficingBandCacheAffinityPinnedWithinBand(t *testing.T) {
 		}
 	}
 }
+
+// TestSatisficingBandExcludesOverTargetWarmInSoftMode is the Codex regression:
+// in the default SOFT TTFT mode public requests carry MaxTTFTMs == 0 but still
+// stamp the advisory pr.TTFTTargetMs, so a WARM box whose TTFT estimate is over
+// that target (slow prefill / long prompt, but fine decode) must be kept OUT of
+// the load-spread band — otherwise it weighted-randomly beats the fast box and
+// regresses TTFT p90. Here fast-box (~0.4s TTFT) clears the 1000ms target and
+// slow-box (~2.1s) does not, so the band is {fast-box} and it wins every trial.
+// Fails without the effective-deadline (TTFTTargetMs) gate in
+// candidateInSatisficingBand: slow-box passes the decode floor (20/1.27 ≈ 15.7 >
+// 15) and, with no TTFT check in the soft branch, would win ~half the trials.
+func TestSatisficingBandExcludesOverTargetWarmInSoftMode(t *testing.T) {
+	t.Setenv(satisficingBandEnv, "true")
+	t.Setenv(satisficingTTFTMarginEnv, "0") // band boundary = the raw target
+	reg := New(testLogger())
+	makeSchedulerProvider(t, reg, "fast-box", gptossBuild, 100) // TTFT ~0.4s
+	makeSchedulerProvider(t, reg, "slow-box", gptossBuild, 20)  // TTFT ~2.1s (over target)
+
+	for i := 0; i < 100; i++ {
+		pr := &PendingRequest{
+			RequestID:             fmt.Sprintf("soft-target-%d", i),
+			Model:                 gptossBuild,
+			EstimatedPromptTokens: 500,
+			RequestedMaxTokens:    2000,
+			MaxTTFTMs:             0,    // soft mode: no hard ceiling
+			TTFTTargetMs:          1000, // advisory public target the band gates on
+			MinDecodeTPS:          15,
+		}
+		if id := bandReserveOnce(t, reg, pr); id != "fast-box" {
+			t.Fatalf("trial %d: selected %s, want fast-box — an over-target warm box must be excluded from the soft-mode band", i, id)
+		}
+	}
+}

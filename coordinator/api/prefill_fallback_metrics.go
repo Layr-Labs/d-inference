@@ -14,9 +14,17 @@ package api
 //     estimate is over the deadline (genuinely too slow; enforce would not help).
 //
 // The caller invokes this only for requests the live estimate already flagged
-// ttft_too_slow, so the would_admit / would_shed split is exactly the projected
-// recovery vs. residual.
-func (s *Server) emitPrefillFallbackShadow(model string, recalibratedAdmits bool) {
+// ttft_too_slow. The extra `gate` tag records whether that flag actually sheds:
+//
+//   - gate:hard — the hard TTFT gate is on, so a legacy ttft_too_slow becomes a
+//     real 429. Here would_admit is the genuine projected ttft_429 RECOVERY the
+//     enforce flip delivers.
+//   - gate:soft — the default soft gate serves the request anyway (no 429), so a
+//     would_admit here is a soft near-miss the enforce flip would stop treating
+//     as a TTFT miss (warm-pool signal), NOT a recovered shed. Tagging it
+//     separately keeps the recovery signal (gate:hard) from being inflated by
+//     already-served traffic in the default deployment (Codex review).
+func (s *Server) emitPrefillFallbackShadow(model string, recalibratedAdmits, hardGate bool) {
 	if s == nil {
 		return
 	}
@@ -24,11 +32,16 @@ func (s *Server) emitPrefillFallbackShadow(model string, recalibratedAdmits bool
 	if recalibratedAdmits {
 		decision = "would_admit"
 	}
-	s.ddIncr("routing.prefill_fallback", []string{"model:" + model, "decision:" + decision, "mode:shadow"})
+	gate := "soft"
+	if hardGate {
+		gate = "hard"
+	}
+	s.ddIncr("routing.prefill_fallback", []string{"model:" + model, "decision:" + decision, "gate:" + gate, "mode:shadow"})
 	if s.metrics != nil {
 		s.metrics.IncCounter("routing.prefill_fallback",
 			MetricLabel{Name: "model", Value: model},
 			MetricLabel{Name: "decision", Value: decision},
+			MetricLabel{Name: "gate", Value: gate},
 			MetricLabel{Name: "mode", Value: "shadow"},
 		)
 	}
@@ -36,6 +49,7 @@ func (s *Server) emitPrefillFallbackShadow(model string, recalibratedAdmits bool
 		s.logger.Debug("prefill fallback shadow",
 			"model", model,
 			"decision", decision,
+			"gate", gate,
 		)
 	}
 }

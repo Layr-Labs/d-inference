@@ -65,12 +65,44 @@ func ParseModelVersionFloors(csv string) []ModelVersionFloor {
 		}
 		pattern = strings.ToLower(strings.TrimSpace(pattern))
 		version = strings.TrimSpace(version)
-		if pattern == "" || version == "" {
+		if pattern == "" || !validFloorVersion(version) {
 			continue
 		}
 		out = append(out, ModelVersionFloor{Pattern: pattern, Version: version})
 	}
 	return out
+}
+
+// validFloorVersion reports whether v is a usable dotted-numeric version — a
+// non-empty sequence of dot-separated segments that each parse as a
+// non-negative integer (an optional leading v/V is tolerated, matching
+// CompareVersions). A malformed floor version (e.g. "foo", "0.7.x") is REJECTED
+// at parse time rather than installed, because CompareVersions silently treats
+// an unparseable segment as 0 — so "gemma-4=foo" would install an all-zero
+// floor that every real version clears (fence defeated) and "gemma-4=0.7.x"
+// would install 0.7.0 (a 0.7.4 box wrongly passes a 0.7.5 fence). Dropping the
+// entry degrades to "no floor for that pattern" (the fail-open contract), never
+// to a wrong floor.
+func validFloorVersion(v string) bool {
+	v = strings.TrimSpace(v)
+	if len(v) > 0 && (v[0] == 'v' || v[0] == 'V') {
+		v = v[1:]
+	}
+	if v == "" {
+		return false
+	}
+	for _, part := range strings.Split(v, ".") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return false
+		}
+		for _, ch := range part {
+			if ch < '0' || ch > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // FormatModelVersionFloors renders floors back to the "pattern=version" CSV
@@ -92,7 +124,7 @@ func (r *Registry) SetModelVersionFloors(floors []ModelVersionFloor) {
 	for _, f := range floors {
 		pattern := strings.ToLower(strings.TrimSpace(f.Pattern))
 		version := strings.TrimSpace(f.Version)
-		if pattern == "" || version == "" {
+		if pattern == "" || !validFloorVersion(version) {
 			continue
 		}
 		normalized = append(normalized, ModelVersionFloor{Pattern: pattern, Version: version})

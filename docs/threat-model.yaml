@@ -1705,8 +1705,10 @@ threats:
       (SSDLookupKeys: HKDF info string, HMAC domain tag, salt length-prefix,
       tag truncation), to the DBK2 metadata fields or AAD construction
       (SSDBlockStore — nothing prompt-derived beyond the keyed lookupTag may
-      ever be added), to the purge points (KEK wipe, accountant cbv2
-      preservation), or to the staging-reservation release paths
+      ever be added), to the purge points or the tier's own on-disk root
+      (darkbloom/kv2 — deliberately OUTSIDE the legacy kv/ root that the
+      upgrade sweeper sheds; KEK wipe remains the crypto purge), or to the
+      staging-reservation release paths
       (SSDPrefixCache.endAdoption/completeStaging, EngineV2Bridge backstops).
       Also still: the cacheSalt scoping plumbing (cacheScope →
       CBv2Request.cacheSalt), EngineV2Factory.makeProductionEngine

@@ -111,7 +111,9 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         /// staging benefit gate subtracts it from `matched`.
         let adoptionBoundTokens: Int
         let layoutEpoch: String
-        /// `…/darkbloom/kv/<modelKey>/cbv2` — files live here, per-model.
+        /// `…/darkbloom/kv2/<modelKey>` — files live here, per-model, in
+        /// the SSD tier's OWN root (never under the legacy `kv/` root the
+        /// upgrade sweeper sheds).
         let root: URL
         let ttlSeconds: Int64
         let minEffectiveTokens: Int

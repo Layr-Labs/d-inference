@@ -26,18 +26,27 @@ enum SSDPrefixCacheFactory {
         subsystem: "com.darkbloom.provider", category: "ssd_prefix_cache")
     #endif
 
-    /// Legacy-compatible per-model cbv2 subtree:
-    /// `~/Library/Caches/darkbloom/kv/<modelKey>/cbv2` with
-    /// `modelKey = SHA256(modelId)[:12]` — stable across weight
+    /// The SSD tier's OWN root: `~/Library/Caches/darkbloom/kv2/<modelKey>`
+    /// with `modelKey = SHA256(modelId)[:12]` — stable across weight
     /// re-downloads (the metadata weightHash binding invalidates stale
-    /// files); preserved by the disk accountant's init sweep.
+    /// files).
+    ///
+    /// DELIBERATELY OUTSIDE the legacy `darkbloom/kv` root: the legacy
+    /// tier's startup machinery sheds retired-tier ciphertext under `kv/`
+    /// on upgrade (v0.7.5 integration: `LegacyKVCacheSweeper` replaces the
+    /// old accountant wipe), and this tier's durable restart warmth must
+    /// never depend on an exclusion contract with that sweeper — a
+    /// separate root is fully self-contained, zero coupling. Survival
+    /// after a legacy sweep is pinned by tests.
+    static let ssdRootDirectoryName = "darkbloom/kv2"
+
     static func cacheDirectory(modelId: String) -> URL {
         let modelKey = SHA256.hash(data: Data(modelId.utf8))
             .map { String(format: "%02x", $0) }.joined().prefix(12)
         let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return root.appendingPathComponent(
-            "darkbloom/kv/\(modelKey)/cbv2", isDirectory: true)
+            "\(Self.ssdRootDirectoryName)/\(modelKey)", isDirectory: true)
     }
 
     /// Build the SSD tier for a funded model slot. `weightHash` nil falls

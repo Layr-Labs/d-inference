@@ -786,34 +786,67 @@ struct SSDPrefixCacheReservationTests {
     }
 }
 
-// MARK: - Accountant init sweep
+// MARK: - Own-root isolation (legacy upgrade sweeper safety)
 
-@Suite("SSD prefix cache: accountant init sweep preserves cbv2")
-struct SSDAccountantSweepTests {
+@Suite("SSD prefix cache: own root survives the legacy kv sweep")
+struct SSDRootIsolationTests {
 
-    @Test("legacy contents wiped, cbv2 subtree preserved, stray files removed")
-    func sweepPreservesDurableSubtree() throws {
-        let root = tempDir("accountant")
-        defer { try? FileManager.default.removeItem(at: root) }
+    @Test("cacheDirectory lives under darkbloom/kv2, never under the legacy darkbloom/kv root")
+    func rootIsOutsideLegacyTree() {
+        let dir = SSDPrefixCacheFactory.cacheDirectory(modelId: "gpt-oss-20b")
+        let path = dir.path
+        #expect(path.contains("/darkbloom/kv2/"),
+            "SSD tier must use its own root: \(path)")
+        // The critical invariant: NOT inside the legacy root the upgrade
+        // sweeper sheds (kv2 is a SIBLING of kv, not a subtree).
+        #expect(!path.contains("/darkbloom/kv/"),
+            "SSD tier must never live under the legacy kv root: \(path)")
+        // Stable modelKey derivation (12-hex prefix of SHA256(modelId)).
+        #expect(dir.lastPathComponent.count == 12)
+    }
+
+    @Test("a simulated legacy sweep (rm -rf darkbloom/kv) leaves SSD entries intact and adoptable")
+    func legacySweepSurvival() async throws {
+        // Layout mirroring production: <caches>/darkbloom/kv (legacy) and
+        // <caches>/darkbloom/kv2/<modelKey> (SSD) as SIBLINGS.
+        let caches = tempDir("sweep-survival")
+        defer { try? FileManager.default.removeItem(at: caches) }
+        let legacyRoot = caches.appendingPathComponent("darkbloom/kv", isDirectory: true)
+        let ssdDir = caches.appendingPathComponent(
+            "darkbloom/kv2/aaaa11112222", isDirectory: true)
         let fm = FileManager.default
-        let model1 = root.appendingPathComponent("aaaa11112222", isDirectory: true)
-        let cbv2 = model1.appendingPathComponent("cbv2/ab", isDirectory: true)
-        try fm.createDirectory(at: cbv2, withIntermediateDirectories: true)
-        try Data([1, 2, 3]).write(to: cbv2.appendingPathComponent("abcd.dbk2"))
-        try Data([4]).write(to: model1.appendingPathComponent("legacy.darkbloom-kv"))
-        let model2 = root.appendingPathComponent("bbbb33334444", isDirectory: true)
-        try fm.createDirectory(at: model2, withIntermediateDirectories: true)
-        try Data([5]).write(to: model2.appendingPathComponent("stale.darkbloom-kv"))
-        try Data([6]).write(to: root.appendingPathComponent("stray.tmp"))
+        try fm.createDirectory(
+            at: legacyRoot.appendingPathComponent("aaaa11112222"),
+            withIntermediateDirectories: true)
+        try Data([1]).write(
+            to: legacyRoot.appendingPathComponent("aaaa11112222/old.darkbloom-kv"))
+        try fm.createDirectory(at: ssdDir, withIntermediateDirectories: true)
 
-        GlobalDiskAccountant.sweepPreservingDurableSubtrees(root: root)
+        let kek = SymmetricKey(size: .bits256)
+        let clock = ClockBox(10_000)
+        let writer = makeCache(dir: ssdDir, kek: kek, clock: clock)
+        let tokens = Array(0 ..< 64)
+        writer.donate(
+            tokens: tokens,
+            snapshots: fixtureSnapshots(tokenCount: 64),
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil)
+        #expect(await waitForIndexCount(writer, atLeast: 8))
+        writer.close()
 
-        // cbv2 file survives.
-        #expect(fm.fileExists(atPath: cbv2.appendingPathComponent("abcd.dbk2").path))
-        // Legacy siblings + cbv2-less model dirs + stray files are gone.
-        #expect(!fm.fileExists(atPath: model1.appendingPathComponent("legacy.darkbloom-kv").path))
-        #expect(!fm.fileExists(atPath: model2.path))
-        #expect(!fm.fileExists(atPath: root.appendingPathComponent("stray.tmp").path))
+        // THE LEGACY SWEEP: the upgrade path sheds retired-tier ciphertext
+        // by removing the entire kv/ root. kv2/ must be untouched.
+        try fm.removeItem(at: legacyRoot)
+
+        #expect(dbk2Files(under: ssdDir).count == 8, "SSD entries must survive the legacy sweep")
+        // And they remain fully adoptable: fresh cache, scan, stage.
+        let reader = makeCache(dir: ssdDir, kek: kek, clock: clock)
+        defer { reader.close() }
+        reader.scanOnDisk()
+        #expect(reader.index.count == 8)
+        #expect(await reader.stage(
+            requestID: "r-survive", promptTokens: tokens + [1], cacheScope: ""))
+        reader.completeStaging(requestID: "r-survive")
     }
 }
 

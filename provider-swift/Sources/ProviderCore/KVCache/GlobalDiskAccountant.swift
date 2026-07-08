@@ -143,60 +143,20 @@ public actor GlobalDiskAccountant {
         self.tickSeconds = max(1, tickSeconds)
         self.now = now
         self.freeBytes = freeBytes
-        // Startup sweep: wipe stale LEGACY on-disk KV under kvRoot. Legacy
-        // restart warmth is intentionally OFF — a clean unload purges each
-        // model's dir, but a jetsam SIGKILL (the "invisible OOM") can't run
-        // a clean purge, so legacy per-model contents present at process
-        // start are stale crash leftovers. Done here in init (synchronously,
-        // before any owner registers) so it can never race a live owner's
-        // files. Production passes sweepOnInit: true; tests default off so
-        // they don't wipe their own fixtures.
-        //
-        // EXCEPTION (v0.7.5 SSD offload tier): each model's `cbv2/` subtree
-        // is PRESERVED — its DBK2 files are self-authenticating (GCM +
-        // weightHash + layoutEpoch bindings drop stale ones at scan/read)
-        // and durable warmth across restarts is that tier's entire point.
-        // The SSD tier enforces its own box-wide budget + TTL; its `.dbk2`
-        // files are invisible to this accountant's `.darkbloom-kv` scans.
+        // Startup sweep: wipe ALL on-disk KV under kvRoot. Restart warmth is
+        // intentionally OFF — a clean unload purges each model's dir, but a jetsam
+        // SIGKILL (the "invisible OOM") can't run a clean purge, so any per-model
+        // dirs present at process start are stale crash leftovers. Done here in
+        // init (synchronously, before any owner registers) so it can never race a
+        // live owner's files. Production passes sweepOnInit: true; tests default
+        // off so they don't wipe their own fixtures.
         let fm = FileManager.default
-        if sweepOnInit {
-            Self.sweepPreservingDurableSubtrees(root: kvRoot, fm: fm)
+        if sweepOnInit, let entries = try? fm.contentsOfDirectory(
+            at: kvRoot, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+            for url in entries { try? fm.removeItem(at: url) }
         }
         // Ensure kvRoot exists (and re-create it if the sweep removed it).
         try? fm.createDirectory(at: kvRoot, withIntermediateDirectories: true)
-    }
-
-    /// Init-sweep body: remove every top-level entry under `root`, but
-    /// inside a per-model directory keep the durable `cbv2/` subtree (the
-    /// v0.7.5 SSD offload tier) while sweeping the legacy contents around
-    /// it. Static + injectable for tests.
-    static let durableSubdirName = "cbv2"
-
-    static func sweepPreservingDurableSubtrees(root: URL, fm: FileManager = .default) {
-        guard let entries = try? fm.contentsOfDirectory(
-            at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
-        else { return }
-        for url in entries {
-            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-            guard isDir else {
-                try? fm.removeItem(at: url)
-                continue
-            }
-            guard let children = try? fm.contentsOfDirectory(
-                at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
-            else { continue }
-            var preserved = false
-            for child in children {
-                if child.lastPathComponent == durableSubdirName {
-                    preserved = true
-                    continue
-                }
-                try? fm.removeItem(at: child)
-            }
-            if !preserved {
-                try? fm.removeItem(at: url)
-            }
-        }
     }
 
     // MARK: - Registration
@@ -455,14 +415,10 @@ public actor GlobalDiskAccountant {
             try? index.save()
         }
 
-        // If the dir has no more .darkbloom-kv files (at any depth), rmdir it —
-        // UNLESS it holds a durable `cbv2/` subtree (v0.7.5 SSD offload tier):
-        // that tier's files are invisible to this accountant by design and
-        // must survive legacy eviction exactly as they survive the init sweep.
+        // If the dir has no more .darkbloom-kv files (at any depth), rmdir it.
+        // Check nested subdirs too (checkpoint tier).
         let hasFiles = checkForKVFiles(in: modelDir, fm: fm, suffix: suffix)
-        let hasDurableSubtree = fm.fileExists(
-            atPath: modelDir.appendingPathComponent(Self.durableSubdirName).path)
-        if !hasFiles && !hasDurableSubtree {
+        if !hasFiles {
             try? fm.removeItem(at: modelDir)
             logger.info("removed empty unowned dir \(modelKey, privacy: .public)")
         }

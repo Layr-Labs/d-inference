@@ -61,7 +61,15 @@ private final class LivenessScriptedEngine: CBv2Engine, @unchecked Sendable {
     }
 
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
-        let script = lock.withLock { () -> Script in
+        let script = try lock.withLock { () throws -> Script in
+            // Real EngineV2 contract: after shutdown() flips
+            // rejectingSubmissions, submit throws the (1, 0) sentinel —
+            // the shape the bridge maps to the canonical queue-full
+            // message (→ 429). Mirrored so the recovery-window test
+            // exercises the same rejection the production engine gives.
+            if _shutdownCalls > 0 {
+                throw CBv2KVError.capacityExhausted(needed: 1, available: 0)
+            }
             _submitted.append(request)
             return self.script
         }
@@ -572,6 +580,34 @@ struct EngineV2LivenessRecoveryTests {
             $0.fields?["operation"]?.description == "engine_v2_refusal"
         }
         #expect(refusal?.fields?["reason"]?.description == "engine_init_failed")
+    }
+
+    @Test("recovery window: a new submission on the drained bridge is a 429, never a 500")
+    func drainWindowSubmissionsAreRetryableCapacity() async {
+        // Independent/Codex review scenario: a request accepted in the gap
+        // between the drain and the slot swap submits to the drained
+        // bridge. The engine's shutdown sentinel must classify as
+        // RETRYABLE capacity (queue-full → 429 + Retry-After, pre-content
+        // — the coordinator reroutes invisibly), never as a 500 provider
+        // fault. Drive the exact chain: drained engine → bridge error
+        // event → fromSchedulerMessage → status mapping.
+        let engine = LivenessScriptedEngine(script: .hang)
+        let bridge = EngineV2Bridge(
+            engine: engine, modelId: "m",
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [])
+        await bridge.shutdown()
+
+        var errorMessage: String?
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3], request: makeChatRequest(model: "m"))
+        for await event in stream {
+            if case .error(let message) = event { errorMessage = message }
+        }
+        let message = errorMessage ?? ""
+        #expect(message.contains("request queue full"), "got: \(message)")
+        let classified = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
+        #expect(classified == .queueFull(message))
+        #expect(ProviderLoop.mapInferenceErrorToStatus(classified) == 429)
     }
 
     @Test("no recovery while shutting down or for a mid-unload slot")

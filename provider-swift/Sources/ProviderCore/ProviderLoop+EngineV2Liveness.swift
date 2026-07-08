@@ -37,6 +37,18 @@
 /// (retirement, shutdown) win by design — every suspension point re-checks
 /// slot identity and aborts the swap if the slot vanished or was replaced.
 ///
+/// Requests DURING the window (the slot stays installed — same as the
+/// legacy reload): a NEW submission after the drain is rejected by the
+/// engine with the shutdown sentinel, which the bridge maps to the
+/// canonical queue-full message → 429 + Retry-After (retryable capacity,
+/// pre-content — the coordinator reroutes invisibly; pinned by test). The
+/// requests already IN FLIGHT at drain are the wedged ones — hanging with
+/// zero content for ≥ 120s — and get teardown terminals exactly as the
+/// legacy restart's abort gave them; their consumers were already
+/// rerouted by pre-content failover when the wedge began, and the
+/// heartbeat has been derouting the slot ("crashed" from 10s, then
+/// "reloading") the whole time.
+///
 /// Config/env parity with legacy: NONE — the legacy watchdog had no
 /// env/config gate (always on, 120s wedge threshold from the pending
 /// timeout, 120s restart cooldown); this port keeps all three semantics

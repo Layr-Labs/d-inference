@@ -205,18 +205,26 @@ extension ProviderLoop {
             productionSnapshot = snapshot
         }
 
+        // Tier selection (v0.7.5 SSD offload): the encrypted SSD tier is
+        // the DEFAULT for funded models; the RAM tier stays opt-in
+        // experimental; DARKBLOOM_PREFIX_CACHE=0 kills everything and
+        // DARKBLOOM_PREFIX_CACHE_SSD=0 kills just the SSD tier. When both
+        // tiers are requested, SSD wins for the slot (no tier composition
+        // in v1) with a WARN below.
+        let cacheMode = PrefixCachePolicy.mode(environment: environment)
+
         // Per-model funding gate (see PrefixCachePolicy's header): a hybrid
         // model whose adoption bound (windowCount × maxWindow) exceeds the
         // funding threshold can never produce a hit at real prompt lengths,
-        // so its cache is NOT funded and the full grant stays with live KV
-        // (gemma-4: bound 25,600 ⇒ unfunded; gpt-oss: 1,536 ⇒ funded).
-        // Text slots read the bound off the loaded model; VLM slots derive
-        // it from the checkpoint's text_config (config-only — the weight-
-        // sharing extraction runs later, inside engine construction).
-        // Hooks/unknown ⇒ 0 (pure-full-attention semantics ⇒ fundable).
-        let cacheGateEnabled = PrefixCachePolicy.isEnabled(environment: environment)
+        // so its cache is NOT funded — no RAM carve AND no SSD writes
+        // (gemma-4: bound 25,600 ⇒ unfunded, writes nothing; gpt-oss:
+        // 1,536 ⇒ funded). Text slots read the bound off the loaded model;
+        // VLM slots derive it from the checkpoint's text_config
+        // (config-only — the weight-sharing extraction runs later, inside
+        // engine construction). Hooks/unknown ⇒ 0 (pure-full-attention
+        // semantics ⇒ fundable).
         let adoptionBound: Int
-        if cacheGateEnabled, let snapshot = productionSnapshot {
+        if cacheMode != .off, let snapshot = productionSnapshot {
             if isVLM {
                 adoptionBound = modelDirectory.flatMap {
                     EngineV2VLMTextExtraction.adoptionBoundTokens(modelDirectory: $0)
@@ -227,21 +235,24 @@ extension ProviderLoop {
         } else {
             adoptionBound = 0
         }
-        let cacheFunded = cacheGateEnabled
+        let cacheFunded = cacheMode != .off
             && PrefixCachePolicy.shouldFund(
                 adoptionBoundTokens: adoptionBound, environment: environment)
 
         // THE single carve point (T-041, v0.7.5): split the slot's grant
         // between the engine's admission ceiling and the RAM-only v2 prefix
-        // cache. Everything downstream reads ENGINE TRUTH — the engine's
-        // private ledger (`AdmissionV2`), the bridge capacity snapshot, and
-        // the heartbeat `activeTokenBudgetMax` all derive from the REDUCED
-        // `kvBytesCapacity` handed to `makeProductionEngine` below — so the
-        // coordinator is never told about bytes the cache will consume, and
-        // cached KV + live-request KV can never jointly exceed the grant.
-        // Live serving wins: the carve shrinks the PREFIX budget (down to 0)
-        // before it would starve the engine below the serviceable floor.
-        let requestedPrefixBudget = cacheFunded
+        // cache. ONLY the opt-in RAM tier carves — the SSD tier requests
+        // ZERO memory (its budget is disk; the engine keeps the FULL slot
+        // grant, its only RAM claims are per-request staging reservations
+        // in the shared GlobalKVCacheBudget, refused ⇒ recompute under
+        // pressure). Everything downstream reads ENGINE TRUTH — the
+        // engine's private ledger (`AdmissionV2`), the bridge capacity
+        // snapshot, and the heartbeat `activeTokenBudgetMax` all derive
+        // from the `kvBytesCapacity` handed to `makeProductionEngine`
+        // below. Live serving wins: the carve shrinks the PREFIX budget
+        // (down to 0) before it would starve the engine below the
+        // serviceable floor.
+        let requestedPrefixBudget = (cacheMode == .ram && cacheFunded)
             ? PrefixCachePolicy.budgetBytes(environment: environment)
             : 0
         let carve = PrefixCachePolicy.carve(
@@ -251,14 +262,57 @@ extension ProviderLoop {
         let kvBytesCapacity = carve.engineKVBytesCapacity
         let prefixCacheBudgetBytes = carve.prefixCacheBudgetBytes
 
-        // Funded cache instance (production path only; nil under test hooks
-        // — the scripted engines have no cache seam — and when the gate or
-        // carve returned 0). Built HERE, not inside the closure, so the slot
-        // factory keeps the handle for the periodic stats logger below.
+        // Funded RAM cache instance (opt-in tier; production path only —
+        // nil under test hooks, the scripted engines have no cache seam —
+        // and when the gate or carve returned 0). Built HERE, not inside
+        // the closure, so the slot factory keeps the handle for the
+        // periodic stats logger below.
         let prefixCache = productionSnapshot != nil
             ? PrefixCachePolicy.makePrefixCache(
                 modelId: modelId, budgetBytes: prefixCacheBudgetBytes)
             : nil
+
+        // SSD tier instance (default for funded models; production path
+        // only). Same object serves as the ENGINE's CBv2PrefixCache and
+        // the BRIDGE's staging/backstop handle. Text slots only in v1:
+        // a VLM slot's CBv2 layer kinds exist only after the text-model
+        // extraction inside engine construction (moot today — gemma is
+        // unfunded), and vision requests never donate/look up anyway.
+        var ssdPrefixCache: SSDPrefixCache?
+        if case .ssd(let warnBothTiers) = cacheMode, productionSnapshot != nil {
+            if warnBothTiers {
+                logger.warning(
+                    "engine_v2: DARKBLOOM_PREFIX_CACHE=1 (RAM tier opt-in) and the SSD tier are BOTH active for \(modelId) — SSD wins for this slot; tiers do not compose in v1")
+            }
+            if cacheFunded {
+                if !isVLM,
+                    let snapshot = productionSnapshot,
+                    let layerKinds = EngineV2Factory.cbv2LayerKinds(model: snapshot.model)
+                {
+                    ssdPrefixCache = await SSDPrefixCacheFactory.make(
+                        modelId: modelId,
+                        weightHash: liveModelHashes[modelId],
+                        layerKinds: layerKinds,
+                        kvBudget: kvBudget,
+                        environment: environment)
+                } else if isVLM {
+                    logger.info(
+                        "engine_v2: SSD prefix cache skipped for \(modelId) — VLM slot (layer kinds derive inside engine construction; v1 is text-only)")
+                }
+            }
+        }
+
+        // The cache handed to the engine: RAM tier when opted in (and SSD
+        // killed), else the SSD conformer — both ride the engine's frozen
+        // existential `CBv2PrefixCache` seam.
+        let enginePrefixCache: (any CBv2PrefixCache)?
+        if let prefixCache {
+            enginePrefixCache = prefixCache
+        } else if let ssdPrefixCache {
+            enginePrefixCache = ssdPrefixCache
+        } else {
+            enginePrefixCache = nil
+        }
 
         // Engine builder.
         let makeEngine: () throws -> any CBv2Engine
@@ -301,7 +355,7 @@ extension ProviderLoop {
                     model: servingModel,
                     tokenizer: tokenizer.inner,
                     kvBytesCapacity: kvBytesCapacity,
-                    prefixCache: prefixCache)
+                    prefixCache: enginePrefixCache)
             }
         }
 
@@ -327,6 +381,10 @@ extension ProviderLoop {
                 // must match production shape so the claim/heartbeat math is
                 // testable with scripted engines.
                 prefixCacheBudgetBytes: prefixCacheBudgetBytes,
+                // SSD tier handle for the bridge's pre-submit staging hook,
+                // release backstops, and shutdown (closed by the factory on
+                // an engine-init failure).
+                ssdPrefixCache: ssdPrefixCache,
                 emitTelemetry: emitTelemetry,
                 makeEngine: makeEngine)
         else {
@@ -356,11 +414,18 @@ extension ProviderLoop {
         if let prefixCache {
             await bridge.startPrefixCacheStatsLogger(cache: prefixCache)
         }
+        if let ssdPrefixCache {
+            await bridge.startSSDPrefixCacheStatsLogger(cache: ssdPrefixCache)
+        }
         let prefixCacheState: String
-        if prefixCache != nil {
+        if ssdPrefixCache != nil {
             prefixCacheState =
-                "on, budget \(prefixCacheBudgetBytes) B (RAM-only, salt-scoped — T-041)"
-        } else if cacheGateEnabled && !cacheFunded {
+                "on (tier=ssd: encrypted offload, HMAC-keyed names, "
+                + "15-min sliding TTL, NO memory carve — T-041)"
+        } else if prefixCache != nil {
+            prefixCacheState =
+                "on, budget \(prefixCacheBudgetBytes) B (tier=ram opt-in, salt-scoped — T-041)"
+        } else if cacheMode != .off && !cacheFunded {
             // Name WHY: this model's hybrid window shape makes hits
             // unreachable at real prompt lengths, so its budget stays with
             // live KV (see PrefixCachePolicy's funding-gate rationale).

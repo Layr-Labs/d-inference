@@ -90,6 +90,22 @@ extension EngineV2Factory {
         }
     }
 
+    /// The model's CBv2 layer kinds, or nil for a non-adapted family
+    /// (which throws `unsupportedModel` at engine construction anyway).
+    /// Needed by the SSD prefix cache's construction (layout-epoch
+    /// binding + adoption bound) — kept NEXT TO the authoritative family
+    /// switch, like `adoptionBoundTokens`, so the two can never drift.
+    static func cbv2LayerKinds(model: any LanguageModel) -> [CBv2LayerKind]? {
+        switch model {
+        case let gemma as Gemma4TextModel:
+            return gemma.cbv2LayerKinds
+        case let gptoss as GPTOSSModel:
+            return gptoss.cbv2LayerKinds
+        default:
+            return nil
+        }
+    }
+
     /// Build the real `EngineV2` over a loaded model.
     ///
     /// - Parameters:
@@ -102,20 +118,26 @@ extension EngineV2Factory {
     ///     byte budget out of this figure (`PrefixCachePolicy.carve`) so
     ///     cached KV + live-request KV can never jointly exceed the slot's
     ///     grant under the unified-memory cap.
-    ///   - prefixCache: RAM-only v2 prefix cache (`PrefixCachePolicy
-    ///     .makePrefixCache` — gate + budget + carve are the caller's job).
+    ///   - prefixCache: v2 prefix cache — either the RAM `PrefixCacheV2`
+    ///     (`PrefixCachePolicy.makePrefixCache`, opt-in-experimental) or
+    ///     the provider's `SSDPrefixCache` (the v0.7.5 encrypted SSD
+    ///     offload tier, default for funded models — zero memory carve).
+    ///     Widened to the existential (`any CBv2PrefixCache`) so
+    ///     provider-side conformers plug in with ZERO mlx-swift-lm
+    ///     changes (the engine already stores the cache existentially).
+    ///     Gate + budget + carve + tier selection are the caller's job.
     ///     Non-nil ⇒ the engine runs with `enablePrefixCache: true`
     ///     (lookup/adopt on submit, donate on finish, per-request
     ///     `cacheSalt` tenant scoping live). nil ⇒ no cache, byte-identical
-    ///     to the pre-v0.7.5 engine. Threat model: T-041 (RAM-only on v2 —
-    ///     no on-disk artifact; the in-process cross-tenant TTFT oracle is
-    ///     the SEC-035 accepted risk).
+    ///     to the pre-v0.7.5 engine. Threat model: T-041 (SSD tier: at-rest
+    ///     artifacts with HMAC-keyed names — leak #2 closed; the in-process
+    ///     cross-tenant TTFT oracle stays the SEC-035 accepted risk).
     ///   - maxConcurrentRequests: concurrent-decode row cap.
     static func makeProductionEngine(
         model: any LanguageModel,
         tokenizer: any MLXLMCommon.Tokenizer,
         kvBytesCapacity: Int,
-        prefixCache: PrefixCacheV2? = nil,
+        prefixCache: (any CBv2PrefixCache)? = nil,
         maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests
     ) throws -> any CBv2Engine {
         guard kvBytesCapacity > 0 else {

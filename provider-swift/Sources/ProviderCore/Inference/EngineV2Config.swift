@@ -176,6 +176,7 @@ public enum EngineV2Factory {
         kvBytesPerToken: Int = 0,
         kvBudget: GlobalKVCacheBudget? = nil,
         prefixCacheBudgetBytes: Int = 0,
+        ssdPrefixCache: SSDPrefixCache? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngine: () throws -> any CBv2Engine
     ) -> EngineV2Bridge? {
@@ -203,9 +204,16 @@ public enum EngineV2Factory {
                 // bridge exposes it via `slotKVBytesClaim()` so later loads
                 // subtract the cache's bytes too (T-041 budget accounting).
                 prefixCacheBudgetBytes: prefixCacheBudgetBytes,
+                // SSD offload tier handle (v0.7.5): the bridge drives the
+                // pre-submit staging hook + release backstops + shutdown
+                // over the SAME instance the engine holds as its cache.
+                ssdPrefixCache: ssdPrefixCache,
                 emitTelemetry: emitTelemetry
             )
         } catch {
+            // A failed v2 init must not leak the SSD tier's background
+            // tasks/registration (the slot serves via legacy instead).
+            ssdPrefixCache?.close()
             emitFallbackTelemetry(
                 modelId: modelId,
                 error: error,

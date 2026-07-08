@@ -98,6 +98,60 @@ enum PrefixCachePolicy {
         return env == "1" || env == "true" || env == "yes" || env == "on"
     }
 
+    // MARK: - Tier selection (v0.7.5 SSD offload)
+
+    /// SSD-tier kill switch. The encrypted SSD offload tier is ON BY
+    /// DEFAULT for funded models (it caches without occupying serving
+    /// RAM); an explicit `DARKBLOOM_PREFIX_CACHE_SSD=0` (or any other
+    /// non-affirmative set value — fail-safe: a typo only ever disables)
+    /// kills just the SSD tier. `DARKBLOOM_PREFIX_CACHE=0` (the existing
+    /// master switch, any non-affirmative set value) kills EVERYTHING.
+    static let ssdEnvironmentFlag = "DARKBLOOM_PREFIX_CACHE_SSD"
+
+    /// Which prefix-cache tier a v2 slot runs (per-model funding gate is
+    /// applied separately, after this).
+    enum Mode: Equatable {
+        /// No prefix cache anywhere.
+        case off
+        /// RAM `PrefixCacheV2` — the opt-in-experimental tier, exactly the
+        /// v0.7.5 dormant-default semantics (`DARKBLOOM_PREFIX_CACHE=1`
+        /// with the SSD tier killed).
+        case ram
+        /// Encrypted SSD offload (default for funded models).
+        /// `warnBothTiers`: the box ALSO opted into the RAM tier — SSD
+        /// wins for the slot (no tier composition in v1), WARN logged.
+        case ssd(warnBothTiers: Bool)
+    }
+
+    /// Resolve the tier for this environment:
+    ///   * `DARKBLOOM_PREFIX_CACHE` set to anything non-affirmative ⇒
+    ///     `.off` (master kill, existing fail-safe semantics: a typo can
+    ///     only ever leave a box uncached).
+    ///   * SSD tier on (default, or `_SSD` affirmative) ⇒ `.ssd` — with a
+    ///     WARN flag when the RAM tier was ALSO opted in.
+    ///   * SSD killed + `DARKBLOOM_PREFIX_CACHE=1` ⇒ `.ram` (the opt-in
+    ///     experimental tier, unchanged).
+    ///   * SSD killed + master unset ⇒ `.off`.
+    static func mode(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Mode {
+        let master = environment[environmentFlag]?
+            .trimmingCharacters(in: .whitespaces).lowercased()
+        let masterAffirmative =
+            master == "1" || master == "true" || master == "yes" || master == "on"
+        // Master set to anything else (incl. "0") ⇒ kill everything.
+        if let master, !master.isEmpty, !masterAffirmative { return .off }
+
+        let ssd = environment[ssdEnvironmentFlag]?
+            .trimmingCharacters(in: .whitespaces).lowercased()
+        let ssdAffirmative = ssd == "1" || ssd == "true" || ssd == "yes" || ssd == "on"
+        let ssdKilled = ssd.map { !$0.isEmpty && !ssdAffirmative } ?? false
+        if !ssdKilled {
+            return .ssd(warnBothTiers: masterAffirmative)
+        }
+        return masterAffirmative ? .ram : .off
+    }
+
     // MARK: - Budget
 
     /// Requested in-memory budget (bytes): `DARKBLOOM_PREFIX_CACHE_MAX_GB`
@@ -125,6 +179,54 @@ enum PrefixCachePolicy {
 
     /// Largest GB value that won't overflow Int when multiplied by 2^30.
     private static var gbToBytesCeiling: Double { Double(Int.max) / 1_073_741_824 }
+
+    // MARK: - SSD disk budget
+
+    /// On-disk budget env override (GB) — the existing operator knob,
+    /// now governing the BOX-WIDE SSD-tier budget (adapted from the
+    /// legacy `BatchScheduler+PrefixCacheSizing` resolver, which dies
+    /// with the legacy engine).
+    static let diskBudgetEnvironmentFlag = "DARKBLOOM_PREFIX_CACHE_DISK_GB"
+
+    /// Box-wide SSD default: 20 GiB across ALL models (Gaj, 2026-07-07),
+    /// clamped to half the volume's free space on a tight disk.
+    static let defaultSSDDiskBudgetBytes = 20 * 1_073_741_824
+
+    /// Resolved box-wide SSD disk budget (bytes). A valid positive env
+    /// override wins verbatim; otherwise `min(20 GiB, free/2)` — like the
+    /// legacy default derivation, re-evaluated per enforcement so the
+    /// ceiling shrinks as the volume fills. Unknown free space ⇒ the
+    /// fixed default.
+    static func ssdDiskBudgetBytes(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        freeBytes: Int?
+    ) -> Int {
+        let envGB = environment[diskBudgetEnvironmentFlag].flatMap(Double.init)
+        if let gb = envGB, gb > 0, gb.isFinite, gb < gbToBytesCeiling {
+            return Int(gb * 1_073_741_824)
+        }
+        guard let free = freeBytes else { return defaultSSDDiskBudgetBytes }
+        return max(1, min(defaultSSDDiskBudgetBytes, free / 2))
+    }
+
+    /// Best-effort free capacity (bytes) of the volume containing `url`
+    /// (moved from the legacy sizing helpers). Prefers Apple's
+    /// "important usage" figure, falls back to the raw available capacity.
+    static func volumeFreeBytes(at url: URL) -> Int? {
+        let keys: Set<URLResourceKey> = [
+            .volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey,
+        ]
+        var probe = url
+        while !FileManager.default.fileExists(atPath: probe.path), probe.pathComponents.count > 1 {
+            probe = probe.deletingLastPathComponent()
+        }
+        guard let v = try? probe.resourceValues(forKeys: keys) else { return nil }
+        if let important = v.volumeAvailableCapacityForImportantUsage, important > 0 {
+            return Int(important)
+        }
+        if let plain = v.volumeAvailableCapacity, plain > 0 { return plain }
+        return nil
+    }
 
     // MARK: - Stats cadence
 

@@ -190,6 +190,37 @@ func TestCapacityRateOutcomeDedupe(t *testing.T) {
 	}
 }
 
+// A benign lifecycle capacity miss (cold "model not loaded" lazy-load) must
+// feed the black-hole cooldown but must NOT derate the gray-box capacity-503
+// RATE: that window has no accept-reset, so counting a healthy box's normal
+// reloads would penalize it as if its reported budget were dishonest. Contrast
+// RecordCapacityReject, which DOES derate. Codex review of #523.
+func TestCapacityRateLifecycleRejectFeedsCooldownNotRate(t *testing.T) {
+	r := New(testLogger())
+	const provider, model = "prov-lifecycle", "gemma-4-26b-qat-4bit"
+
+	// A pure run of lifecycle cold-404 misses (no accepts) must still trip the
+	// black-hole cooldown — a box that never loads is a black hole.
+	for i := 0; i < defaultCapacityCooldownThreshold; i++ {
+		r.RecordCapacityRejectLifecycle(provider, model)
+	}
+	if !r.CapacityCooldownActive(provider, model) {
+		t.Fatal("lifecycle cold-404 misses must still feed the black-hole cooldown (forever-404 = black hole)")
+	}
+	// ...but they must NOT have accumulated any gray-box capacity-503 rate.
+	if rate, samples := r.CapacityRejectRate(provider, model); samples != 0 || rate != 0 {
+		t.Fatalf("lifecycle misses derated the rate: rate=%.2f samples=%d, want 0/0 (the rate window must ignore cold-load misses)", rate, samples)
+	}
+
+	// A GENUINE derating reject on a fresh pair DOES accumulate the rate,
+	// proving the two entry points diverge only on the rate window.
+	const genuine = "prov-genuine"
+	seedRateOutcomes(r, genuine, model, capacityRateMinSample, 0)
+	if _, samples := r.CapacityRejectRate(genuine, model); samples != capacityRateMinSample {
+		t.Fatalf("genuine capacity rejects must derate: samples=%d, want %d", samples, capacityRateMinSample)
+	}
+}
+
 // Kill switch: EIGENINFERENCE_CAPACITY_RATE_PENALTY_MS=0 disables recording
 // and the penalty entirely.
 func TestCapacityRateKillSwitch(t *testing.T) {

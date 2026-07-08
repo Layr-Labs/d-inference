@@ -161,7 +161,35 @@ type capacityRejectKey struct {
 // While a cooldown is ACTIVE, strikes are still recorded (in-flight stragglers
 // dispatched before the trip land here) but never extend or re-arm it —
 // otherwise stragglers could push recovery out indefinitely.
+//
+// This is the DERATING entry point: a genuine capacity/token-budget 503 feeds
+// all three trackers, including the gray-box capacity-503 rate window
+// (capacity_rate.go). A benign cold "model not loaded" lazy-load miss must go
+// to RecordCapacityRejectLifecycle instead so it does NOT derate the rate.
 func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped bool) {
+	return r.recordCapacityReject(providerID, modelID, true)
+}
+
+// RecordCapacityRejectLifecycle records a BENIGN lifecycle capacity miss — a
+// cold "model not loaded" lazy-load 404 on first touch. It feeds the
+// black-hole cooldown (a box that 404s FOREVER with zero accepts is still a
+// black hole, caught by the zero-interleaved-accepts discriminator) and,
+// harmlessly, the budget clamp (a budgetless-armed clamp never gates — see
+// budgetClampActiveLocked), but it does NOT derate the pair in the gray-box
+// capacity-503 RATE window. That window deliberately has NO accept-reset, so
+// counting a healthy box's normal reload misses would accumulate a false
+// reject rate and penalize it as if its reported budget were dishonest. The
+// api layer routes cold "not loaded"/"no model loaded" rejections here;
+// genuine capacity/token-budget 503s go to RecordCapacityReject and DO derate.
+func (r *Registry) RecordCapacityRejectLifecycle(providerID, modelID string) (tripped bool) {
+	return r.recordCapacityReject(providerID, modelID, false)
+}
+
+// recordCapacityReject is the shared implementation. deratePair gates the
+// gray-box capacity-503 rate window: true for genuine capacity rejects, false
+// for benign lifecycle (cold-load) misses. The cooldown and the budget clamp
+// are fed on both paths.
+func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair bool) (tripped bool) {
 	if providerID == "" || modelID == "" {
 		return false
 	}
@@ -174,10 +202,15 @@ func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped boo
 	// stops admission believing the pair's stale heartbeat budget immediately
 	// (budget_clamp.go), and the rate window accumulates the reject side of the
 	// capacity-503 rate (capacity_rate.go — accepts deliberately do NOT reset
-	// it, unlike the strike streak below).
+	// it, unlike the strike streak below). The rate window is fed ONLY for a
+	// derating reject: a cold-load lifecycle miss (deratePair=false) is warm-up,
+	// not capacity dishonesty, and must not accumulate a rate the window can
+	// never reset off.
 	clampKey := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 	r.recordBudgetClampLocked(clampKey, r.providerReportsTokenBudgetLocked(providerID, modelID), now)
-	r.recordCapacityRateRejectLocked(clampKey, now)
+	if deratePair {
+		r.recordCapacityRateRejectLocked(clampKey, now)
+	}
 
 	cfg := r.capacityCooldownCfg
 	if cfg.Threshold <= 0 {

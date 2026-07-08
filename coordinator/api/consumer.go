@@ -306,7 +306,19 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 	if (statusCode == http.StatusTooManyRequests || statusCode == http.StatusNotFound ||
 		statusCode >= http.StatusInternalServerError) &&
 		isCapacityRejectStrike(errStr) {
-		if s.registry.RecordCapacityReject(providerID, pr.Model) {
+		// A cold "model not loaded" miss is benign warm-up lifecycle, not
+		// capacity dishonesty. It still feeds the black-hole cooldown (a box
+		// that 404s forever with zero accepts is a black hole), but it must NOT
+		// derate the pair's gray-box capacity-503 RATE (capacity_rate.go) — that
+		// window has no accept-reset, so counting a healthy box's normal reloads
+		// would penalize it. Genuine capacity/token-budget 503s derate.
+		var tripped bool
+		if isColdModelMissRejection(errStr) {
+			tripped = s.registry.RecordCapacityRejectLifecycle(providerID, pr.Model)
+		} else {
+			tripped = s.registry.RecordCapacityReject(providerID, pr.Model)
+		}
+		if tripped {
 			s.ddIncr(metricCapacityCooldownTripped, []string{"provider_id:" + providerID, "model:" + pr.Model})
 			s.logger.Warn("capacity-reject cooldown tripped: provider+model capacity-rejecting with zero interleaved accepts — routing will skip the pair until the cooldown expires",
 				"provider_id", providerID,

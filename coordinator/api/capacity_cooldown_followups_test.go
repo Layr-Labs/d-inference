@@ -77,6 +77,98 @@ func TestCapacityCooldown404NotLoadedStrikes(t *testing.T) {
 	}
 }
 
+// Cold "model not loaded" misses must NOT derate the gray-box capacity-503
+// RATE window, even over the sample floor and with interleaved accepts (the
+// normal lazy-load lifecycle) — the rate window has no accept-reset, so
+// counting a healthy box's reloads would penalize it. A genuine token-budget
+// 503 on the same path DOES derate. Codex review of #523.
+func TestCapacityRateExcludesColdModelMiss(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const model = "gemma-4-26b-8bit"
+	const notLoaded = "model 'gemma-4-26b-8bit' is not loaded on this provider"
+	const genuine = "token_budget_exhausted: request exceeds active token budget"
+	const sampleFloor = 8 // registry.capacityRateMinSample (unexported)
+
+	// Cold-miss box: cold "not loaded" 404s over the sample floor, each followed
+	// by a served completion (the normal lazy-load lifecycle). The rate window
+	// must stay empty.
+	cold := makeRoutableProvider(t, reg, "p-cold-miss", model)
+	for i := 0; i < sampleFloor; i++ {
+		srv.noteInferenceError(cold.ID, capacityTestPending(model, cold.ID, i), http.StatusNotFound, notLoaded)
+		srv.noteInferenceSuccess(capacityTestPending(model, cold.ID, i))
+	}
+	if rate, samples := reg.CapacityRejectRate(cold.ID, model); samples != 0 || rate != 0 {
+		t.Fatalf("cold 'not loaded' misses derated the capacity-reject rate: rate=%.2f samples=%d, want 0/0", rate, samples)
+	}
+
+	// Gray-box: genuine token-budget 503s with interleaved accepts DO accumulate
+	// the rate — the mechanism the penalty exists for.
+	gray := makeRoutableProvider(t, reg, "p-graybox", model)
+	for i := 0; i < sampleFloor; i++ {
+		srv.noteInferenceError(gray.ID, capacityTestPending(model, gray.ID, i), http.StatusServiceUnavailable, genuine)
+		srv.noteInferenceSuccess(capacityTestPending(model, gray.ID, i))
+	}
+	if rate, samples := reg.CapacityRejectRate(gray.ID, model); samples == 0 || rate <= 0 {
+		t.Fatalf("genuine token-budget 503s must derate the rate: rate=%.2f samples=%d", rate, samples)
+	}
+}
+
+// After-commit client-gone regression (Codex review of #523): a stream that
+// commits BEFORE the pair's first windowed reject, then the consumer
+// disconnects and the provider completes into the PARKED settlement path
+// (handleComplete, consumerGone=true), must still enter the capacity-503 rate
+// denominator. noteInferenceSuccess — which re-offers the outcome on clean
+// completion — never runs on this path, so without the handleComplete re-offer
+// the served completion vanishes and a few later 503s overstate a healthy
+// pair's reject rate.
+func TestCapacityRateParkedCompletionCountsAtHandleComplete(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const model = "gemma-4-26b-8bit"
+	p := makeRoutableProvider(t, reg, "p-parked", model)
+
+	pr := capacityTestPending(model, p.ID, 1)
+	pr.ConsumerKey = "test-key"
+
+	// Commit first content while the pair is healthy (no reject in-window yet):
+	// mirrors commitFirstContent — the offer records nothing, so the request
+	// still owes its one rate outcome (RateOutcomeCountedSafe stays false).
+	if reg.RecordCapacityAccept(pr.ProviderID, model) {
+		t.Fatal("commit-time accept with an empty reject window must not record a rate outcome")
+	}
+
+	// The pair goes gray while the (now client-gone) stream is still serving.
+	reg.RecordCapacityReject(pr.ProviderID, model)
+	if _, samples := reg.CapacityRejectRate(pr.ProviderID, model); samples != 1 {
+		t.Fatalf("setup: samples=%d after one reject, want 1", samples)
+	}
+
+	// Consumer disconnected mid-stream: the request is parked (no reader), then
+	// the provider completes. handleComplete claims the parked record
+	// (consumerGone=true) and must re-offer the served completion.
+	srv.holdForSettlement(pr)
+	srv.handleComplete(p.ID, p, &protocol.InferenceCompleteMessage{
+		Type:      protocol.TypeInferenceComplete,
+		RequestID: pr.RequestID,
+		Usage:     protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 200},
+	})
+
+	rate, samples := reg.CapacityRejectRate(pr.ProviderID, model)
+	if samples != 2 {
+		t.Fatalf("samples=%d after the parked completion, want 2 (1 reject + the served client-gone stream) — the parked completion never entered the denominator", samples)
+	}
+	if rate != 0.5 {
+		t.Fatalf("rate=%.2f, want 0.5 (1 reject / 2 outcomes)", rate)
+	}
+}
+
 // The generic-path accept regression (P2 #1): a busy box serving a LONG
 // /v1/completions stream sheds 5 capacity rejects inside the window. The
 // stream's first content is an ACCEPT interleaved with the rejects, so the

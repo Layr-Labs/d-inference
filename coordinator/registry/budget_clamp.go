@@ -212,7 +212,11 @@ func (r *Registry) noteBudgetClampAcceptLocked(key capacityRejectKey) {
 // (a), so a pair clamped while budget-reporting KEEPS holding through it —
 // reconnecting must not shed the clamp onto the legacy memory-admission path
 // (the stable fault key exists precisely so it can't). Pairs armed while
-// budgetless (entry.budgetReported == false: legacy providers) never hold.
+// budgetless (entry.budgetReported == false: legacy providers, cold "not
+// loaded" misses, a first dispatch before the first heartbeat) NEVER hold —
+// not even once a later heartbeat starts reporting a budget, since no dispatch
+// could get through the clamp to produce the accept proof (the reject was
+// never a stale-budget lie to begin with).
 func (r *Registry) budgetClampActiveLocked(providerID, modelID string, heartbeatAt time.Time, rawBudgetRemaining int64, budgetReported bool, now time.Time) bool {
 	if !r.budgetClampCfg.Enabled {
 		return false
@@ -224,10 +228,27 @@ func (r *Registry) budgetClampActiveLocked(providerID, modelID string, heartbeat
 	if !now.Before(e.clampedAt.Add(r.budgetClampCfg.TTL)) {
 		return false // TTL lapsed: fail open (a re-reject re-arms)
 	}
+	if !e.budgetReported {
+		// Armed while the pair reported NO token budget: a legacy provider, a
+		// cold "model not loaded" miss, or a first dispatch before the first
+		// capacity heartbeat. The clamp exists to override a STALE BUDGET, and a
+		// budgetless reject is not a stale-budget lie — it must never gate.
+		// Crucially, this must hold even after a LATER heartbeat starts
+		// reporting a budget (the budgeted release branch below would otherwise
+		// find acceptedSince=false and gate until TTL): the clamp would block
+		// dispatch, so no accept could ever land to prove release, stranding the
+		// warmed-up pair. A subsequent genuine reject while budget-reporting
+		// re-arms with budgetReported=true (sticky-or in recordBudgetClampLocked)
+		// and THAT gates.
+		return false
+	}
 	if !budgetReported {
-		// No live budget snapshot to judge release against: hold iff the pair
-		// was budget-reporting when clamped (legacy pairs stay exempt).
-		return e.budgetReported
+		// Armed while budget-reporting, but the current snapshot carries no
+		// budget (reconnect before the first heartbeat, or the model's slot
+		// missing from the live report): hold — reconnecting must not shed the
+		// clamp onto the legacy memory-admission path (the stable fault key
+		// exists precisely so it can't).
+		return true
 	}
 	released := e.acceptedSince &&
 		heartbeatAt.After(e.clampedAt) &&

@@ -532,6 +532,47 @@ func TestGrayBoxSelectionShareDropsWithFix(t *testing.T) {
 	})
 }
 
+// A clamp armed while the pair reported NO budget (a cold "model not loaded"
+// miss, or a first dispatch before the first capacity heartbeat) must NOT
+// retroactively gate the pair once a later heartbeat starts reporting a
+// budget: the reject was budgetless, so it is not the stale-budget lie the
+// clamp exists to override, and — because the clamp would block dispatch — no
+// accept could ever land to prove release, stranding the warmed-up pair until
+// TTL (Codex review of #523). Contrast TestBudgetClampSurvivesReconnect, where
+// the clamp armed while budget-reporting and MUST hold.
+func TestBudgetClampArmedBudgetlessDoesNotGateAfterBudgetAppears(t *testing.T) {
+	r := New(testLogger())
+	const model = "gemma-4-26b-qat-4bit"
+	// The slot reports NO token budget (cold / pre-load): the reject arms the
+	// clamp with budgetReported=false.
+	p := makeSchedulerProvider(t, r, "cold-box", model, 100)
+
+	r.RecordCapacityReject(p.ID, model)
+	if r.BudgetClampActive(p.ID, model) {
+		t.Fatal("a budgetless capacity reject must not gate the pair (legacy/cold exemption)")
+	}
+
+	// The model finishes loading; the first budget heartbeat arrives (strictly
+	// after the clamp, with meaningful headroom). Pre-fix, the budgeted release
+	// branch found acceptedSince=false and re-activated the clamp until TTL.
+	time.Sleep(2 * time.Millisecond)
+	sendBudgetHeartbeat(r, p.ID, model, grayBoxBudgetUsed, grayBoxBudgetMax)
+	if r.BudgetClampActive(p.ID, model) {
+		t.Fatal("a clamp armed while budgetless must not activate once a budget heartbeat arrives — no dispatch could produce the accept proof, so it would strand until TTL")
+	}
+	if sel, _ := reserveOnce(r, model, "warmed-up"); sel == nil {
+		t.Fatal("warmed-up pair must be admittable — a budgetless-armed clamp must never gate it")
+	}
+
+	// But a GENUINE reject now (while budget-reporting) DOES arm a gating clamp:
+	// the sticky-or upgrades budgetReported, so this is real stale-budget
+	// dishonesty, not warm-up.
+	r.RecordCapacityReject(p.ID, model)
+	if !r.BudgetClampActive(p.ID, model) {
+		t.Fatal("a capacity reject while the pair reports a budget must gate (real gray-box signal)")
+	}
+}
+
 // A clamped identity that reconnects has NO BackendCapacity until its first
 // heartbeat. The clamp must keep holding through that budgetless window — the
 // snapshot falling back to the legacy memory-admission path would shed the

@@ -71,7 +71,7 @@ extension EngineV2Factory {
     /// follows the CBv2 product target (4, max 8) rather than the legacy
     /// scheduler's 24-way ceiling — the v2 rollout is deliberately
     /// conservative and the coordinator sees the true value in heartbeats.
-    static let productionMaxConcurrentRequests = 4
+    public static let productionMaxConcurrentRequests = 4
 
     /// The model's prefix-cache adoption bound (`PrefixCachePolicy
     /// .adoptionBoundTokens` over the model's own `cbv2LayerKinds`), kept
@@ -111,7 +111,12 @@ extension EngineV2Factory {
     ///     no on-disk artifact; the in-process cross-tenant TTFT oracle is
     ///     the SEC-035 accepted risk).
     ///   - maxConcurrentRequests: concurrent-decode row cap.
-    static func makeProductionEngine(
+    /// PUBLIC: the perf-gate benchmark harness (`ProviderBenchmark`'s
+    /// `ThroughputSweep`/`SchedulerPrefillBenchmark`) builds its engines
+    /// through this exact production entry point so the numbers it reports
+    /// are the engine the fleet serves with — never a parallel construction
+    /// that could drift.
+    public static func makeProductionEngine(
         model: any LanguageModel,
         tokenizer: any MLXLMCommon.Tokenizer,
         kvBytesCapacity: Int,

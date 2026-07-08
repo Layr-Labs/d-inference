@@ -45,11 +45,6 @@ extension Benchmark {
             printError("--prefill-lengths must contain at least one positive integer")
             throw ExitCode.failure
         }
-        let strategies = SchedulerPrefillBenchmark.parseStrategies(prefillStrategies)
-        guard !strategies.isEmpty else {
-            printError("--prefill-strategies must contain at least one valid strategy")
-            throw ExitCode.failure
-        }
         guard prefillIterations >= 1 else {
             printError("--prefill-iterations must be >= 1")
             throw ExitCode.failure
@@ -59,7 +54,6 @@ extension Benchmark {
             modelID: modelID,
             modelDirectory: modelDirectory,
             promptLengths: lengths,
-            strategies: strategies,
             iterations: prefillIterations
         )
 

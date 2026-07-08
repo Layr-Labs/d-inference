@@ -45,16 +45,13 @@ struct Benchmark: AsyncParsableCommand {
     var decodePromptTokens = ThroughputSweep.defaultDecodePromptTokens
 
     @Flag(name: .long, help: """
-        Run the scheduler cold-prefill benchmark and print a JSON report. \
-        This times TTFT through the continuous-batching chunked prefill path \
-        with prefix cache disabled.
+        Run the cold-prefill TTFT benchmark through the production \
+        ContinuousBatchingV2 engine and print a JSON report (engine-internal \
+        chunked prefill, prefix cache off).
         """)
     var schedulerPrefill = false
 
-    @Option(name: .long, help: "Scheduler prefill: comma-separated strategies, e.g. fixed:512,adaptive.")
-    var prefillStrategies = SchedulerPrefillBenchmark.defaultStrategies
-
-    @Option(name: .long, help: "Scheduler prefill: measured iterations per length/strategy.")
+    @Option(name: .long, help: "Scheduler prefill: measured iterations per length.")
     var prefillIterations = 2
 
     mutating func run() async throws {

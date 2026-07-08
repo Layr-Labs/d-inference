@@ -11,15 +11,6 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
         public let iteration: Int
         public let ttftMs: Double
         public let msPerPrefillToken: Double
-        public let chunks: [Chunk]
-        public let finalAdaptiveChunkSize: Int?
-    }
-
-    public struct Chunk: Codable, Sendable {
-        public let requestedChunkSize: Int
-        public let actualChunkSize: Int
-        public let durationMs: Double
-        public let tokensPerSecond: Double
     }
 
     public let modelID: String
@@ -36,70 +27,28 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     }
 }
 
+/// Cold-prefill TTFT benchmark through the PRODUCTION ContinuousBatchingV2
+/// engine (`EngineV2Factory.makeProductionEngine` — the one-engine entry
+/// point every serving slot uses as of v0.7.5). For each prompt length it
+/// submits a single greedy request with `maxTokens: 1` against a fresh
+/// engine and times to the first event: engine-internal chunked prefill,
+/// exactly as production requests experience it. The prefix cache is not
+/// constructed (the factory's `prefixCache` defaults to nil), so every
+/// iteration is a true cold prefill.
+///
+/// The legacy strategy machinery (fixed-chunk vs adaptive prefill) died with
+/// the legacy engine — CBv2's prefill chunking is engine-internal — so the
+/// report's `strategy` label is always `"cbv2"`.
 public enum SchedulerPrefillBenchmark {
-    public static let defaultStrategies = "fixed:512,adaptive"
-
-    public enum Strategy: Sendable, Equatable {
-        case fixed(Int)
-        case adaptive
-
-        public var label: String {
-            switch self {
-            case .fixed(let chunk): return "fixed:\(chunk)"
-            case .adaptive: return "adaptive"
-            }
-        }
-    }
-
-    private final class ChunkRecorder: @unchecked Sendable {
-        private let lock = NSLock()
-        private var values: [SchedulerPrefillBenchmarkReport.Chunk] = []
-
-        func append(_ sample: ColdPrefillChunkSample) {
-            let durationMs = sample.durationSeconds * 1000.0
-            let tps = sample.durationSeconds > 0
-                ? Double(sample.totalTokens) / sample.durationSeconds
-                : 0
-            lock.lock()
-            values.append(SchedulerPrefillBenchmarkReport.Chunk(
-                requestedChunkSize: sample.requestedChunkSize,
-                actualChunkSize: sample.actualChunkSize,
-                durationMs: durationMs,
-                tokensPerSecond: tps
-            ))
-            lock.unlock()
-        }
-
-        func snapshot() -> [SchedulerPrefillBenchmarkReport.Chunk] {
-            lock.lock()
-            defer { lock.unlock() }
-            return values
-        }
-    }
-
-    public static func parseStrategies(_ raw: String) -> [Strategy] {
-        raw.split(separator: ",")
-            .compactMap { token -> Strategy? in
-                let value = token.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                if value == "adaptive" { return .adaptive }
-                let prefix = "fixed:"
-                guard value.hasPrefix(prefix),
-                      let chunk = Int(value.dropFirst(prefix.count)),
-                      chunk > 0
-                else { return nil }
-                return .fixed(chunk)
-            }
-    }
+    public static let strategyLabel = "cbv2"
 
     public static func run(
         modelID: String,
         modelDirectory: URL,
         promptLengths: [Int],
-        strategies: [Strategy],
         iterations: Int
     ) async throws -> SchedulerPrefillBenchmarkReport {
         let lengths = promptLengths.filter { $0 > 1 }.sorted()
-        let strategies = strategies.isEmpty ? [.fixed(512)] : strategies
         let iterations = max(1, iterations)
         log("loading model \(modelID)")
         log("  path: \(modelDirectory.path)")
@@ -108,56 +57,34 @@ public enum SchedulerPrefillBenchmark {
             from: modelDirectory,
             using: LocalTokenizerLoader()
         )
-        let baseTokens = await container.perform { ctx in
+        let facts = await container.perform { ctx -> (baseTokens: [Int], weightBytes: Int) in
             let encoded = ctx.tokenizer.encode(text: ThroughputSweep.seedText, addSpecialTokens: false)
-            return encoded.isEmpty ? [0] : encoded
+            let bytes = ctx.model.parameters().flattened().reduce(0) { $0 + $1.1.nbytes }
+            return (encoded.isEmpty ? [0] : encoded, bytes)
         }
+        let baseTokens = facts.baseTokens
 
-        // Mirror production policy construction: seed the adaptive ladder from
-        // the detected GPU roofline + the model's own architecture. One runtime
-        // is shared across all adaptive iterations (isolated temp store) so it
-        // accumulates clean first-chunk samples and actually converges, rather
-        // than re-seeding every measurement.
-        let hardware = try? HardwareDetector.detect()
-        let architecture = KVEstimation.parseModelArchitecture(
-            at: modelDirectory.appendingPathComponent("config.json"))
-        let adaptivePolicy = adaptivePolicy(
-            modelID: modelID, hardware: hardware, architecture: architecture)
-        if let hardware {
-            log("seed: chip=\(hardware.chipName) ridge=\(String(format: "%.1f", hardware.rooflineRidgeFlopPerByte)) -> initial chunk \(adaptivePolicy.initialState().currentChunkSize), ladder \(adaptivePolicy.ladder)")
-        } else {
-            log("seed: hardware unknown -> generic ladder \(adaptivePolicy.ladder), initial \(adaptivePolicy.initialState().currentChunkSize)")
-        }
-        let sharedAdaptiveRuntime = makeAdaptiveRuntime(modelID: modelID, policy: adaptivePolicy)
-
+        // Warm-up (kernel compiles, Metal pipelines) — not recorded.
         _ = try await measureOne(
             container: container,
-            modelID: modelID,
             baseTokens: baseTokens,
             promptTokens: min(lengths.first ?? 128, 128),
-            strategy: .fixed(512),
             iteration: 0,
-            record: false,
-            adaptiveRuntime: nil
+            weightBytes: facts.weightBytes
         )
 
         var samples: [SchedulerPrefillBenchmarkReport.Sample] = []
         for length in lengths {
-            for strategy in strategies {
-                for iteration in 1 ... iterations {
-                    let sample = try await measureOne(
-                        container: container,
-                        modelID: modelID,
-                        baseTokens: baseTokens,
-                        promptTokens: length,
-                        strategy: strategy,
-                        iteration: iteration,
-                        record: true,
-                        adaptiveRuntime: strategy == .adaptive ? sharedAdaptiveRuntime : nil
-                    )
-                    log("  \(strategy.label) L=\(length) i=\(iteration): \(String(format: "%.3f", sample.msPerPrefillToken)) ms/t (\(String(format: "%.1f", sample.ttftMs)) ms, chunk=\(sample.finalAdaptiveChunkSize.map(String.init) ?? "-"))")
-                    samples.append(sample)
-                }
+            for iteration in 1 ... iterations {
+                let sample = try await measureOne(
+                    container: container,
+                    baseTokens: baseTokens,
+                    promptTokens: length,
+                    iteration: iteration,
+                    weightBytes: facts.weightBytes
+                )
+                log("  \(strategyLabel) L=\(length) i=\(iteration): \(String(format: "%.3f", sample.msPerPrefillToken)) ms/t (\(String(format: "%.1f", sample.ttftMs)) ms)")
+                samples.append(sample)
             }
         }
 
@@ -165,7 +92,7 @@ public enum SchedulerPrefillBenchmark {
             modelID: modelID,
             modelPath: modelDirectory.path,
             promptLengths: lengths,
-            strategies: strategies.map(\.label),
+            strategies: [strategyLabel],
             iterations: iterations,
             samples: samples
         )
@@ -173,138 +100,64 @@ public enum SchedulerPrefillBenchmark {
 
     private static func measureOne(
         container: ModelContainer,
-        modelID: String,
         baseTokens: [Int],
         promptTokens: Int,
-        strategy: Strategy,
         iteration: Int,
-        record: Bool,
-        adaptiveRuntime: AdaptivePrefillRuntime?
+        weightBytes: Int
     ) async throws -> SchedulerPrefillBenchmarkReport.Sample {
-        let recorder = ChunkRecorder()
-
-        let engine = await container.perform { ctx -> BatchedEngine in
-            let prefillStepSize: Int
-            switch strategy {
-            case .fixed(let chunk): prefillStepSize = chunk
-            case .adaptive: prefillStepSize = 512
-            }
-            let scheduler = Scheduler(
+        // Same KV-ceiling derivation as a single-model serving slot; far
+        // above what one row needs, so admission never binds.
+        let kvCapacity = Int(min(
+            UnifiedMemoryCap.kvBudgetBytes(
+                physicalBytes: ProcessInfo.processInfo.physicalMemory,
+                residentWeightBytes: UInt64(max(0, weightBytes)),
+                configReserveBytes: 0),
+            UInt64(Int.max)))
+        let engine = try await container.perform { ctx -> any CBv2Engine in
+            try EngineV2Factory.makeProductionEngine(
                 model: ctx.model,
                 tokenizer: ctx.tokenizer,
-                config: SchedulerConfig(
-                    maxNumSeqs: 1,
-                    maxNumBatchedTokens: 8192,
-                    prefillStepSize: prefillStepSize,
-                    streamInterval: 1,
-                    maxKVCacheTokens: 0
-                ),
-                eosTokenIds: ctx.configuration.eosTokenIds,
-                prefixCache: nil
-            )
-            if let adaptiveRuntime {
-                scheduler.adaptivePrefillChunkSizer = adaptiveRuntime.proposeChunkSize
-                scheduler.onColdPrefillChunk = { sample in
-                    recorder.append(sample)
-                    adaptiveRuntime.record(sample)
-                }
-            } else {
-                scheduler.onColdPrefillChunk = recorder.append
-            }
-            return BatchedEngine(
-                scheduler: scheduler,
-                tokenizer: ctx.tokenizer,
-                modelName: modelID,
-                config: ContinuousBatchingConfig(
-                    schedulerConfig: scheduler.config,
-                    stepInterval: 0.001,
-                    prefixCacheConfig: nil,
-                    mtpEnabled: false
-                ),
-                externalChatTemplate: nil
-            )
+                kvBytesCapacity: kvCapacity,
+                maxConcurrentRequests: 1)
         }
-        await engine.start()
 
         let prompt = ThroughputSweep.tile(baseTokens, to: promptTokens, offset: iteration * 17)
-        let requestID = "prefill-bench-\(UUID().uuidString.prefix(8))"
         let started = ContinuousClock.now
-        _ = await engine.core.addRequest(Request(
-            requestId: requestID,
-            prompt: prompt as AnyHashable,
-            samplingParams: SamplingParams(maxTokens: 1, temperature: 0.0)
+        let stream = try engine.submit(CBv2Request(
+            id: CBv2RequestID(1),
+            promptTokens: prompt,
+            sampling: CBv2SamplingParams(temperature: 0.0),
+            maxTokens: 1
         ))
 
         var firstOutput: Duration?
-        var errorMessage: String?
-        for await output in engine.core.streamOutputs(requestId: requestID) {
+        for await event in stream {
             if firstOutput == nil {
                 firstOutput = ContinuousClock.now - started
             }
-            if let error = output.error {
-                errorMessage = error
+            if case .finished(let reason, _) = event {
+                if case .error(let message) = reason {
+                    await stopAndReclaim(engine)
+                    throw BenchmarkError.requestFailed(message)
+                }
                 break
             }
-            if output.finished { break }
-        }
-        if let errorMessage {
-            await stopAndReclaim(engine)
-            throw BenchmarkError.requestFailed(errorMessage)
         }
         let elapsed = firstOutput ?? (ContinuousClock.now - started)
         let ttftMs = ThroughputSweep.seconds(elapsed) * 1000.0
         let prefillTokens = max(1, promptTokens - 1)
         await stopAndReclaim(engine)
         return SchedulerPrefillBenchmarkReport.Sample(
-            strategy: strategy.label,
+            strategy: strategyLabel,
             promptTokens: promptTokens,
             iteration: iteration,
             ttftMs: ttftMs,
-            msPerPrefillToken: ttftMs / Double(prefillTokens),
-            chunks: record ? recorder.snapshot() : [],
-            finalAdaptiveChunkSize: adaptiveRuntime?.snapshotState().currentChunkSize
+            msPerPrefillToken: ttftMs / Double(prefillTokens)
         )
     }
 
-    private static func modelDirectoryIdentity(modelID: String) -> String {
-        "bench:\(modelID)"
-    }
-
-    /// Production-mirrored policy: roofline-seeded from hardware + architecture
-    /// when both are available, else the generic empirical default.
-    private static func adaptivePolicy(
-        modelID: String,
-        hardware: HardwareInfo?,
-        architecture: ModelArchitecture
-    ) -> AdaptivePrefillPolicy {
-        guard let hardware else { return .liveDefault() }
-        return AdaptivePrefillSeed.policy(hardware: hardware, model: architecture)
-    }
-
-    /// One adaptive runtime per benchmark run, backed by an isolated temp store
-    /// so prior on-disk learned state never taints the measurement.
-    private static func makeAdaptiveRuntime(
-        modelID: String,
-        policy: AdaptivePrefillPolicy
-    ) -> AdaptivePrefillRuntime {
-        let storeURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("darkbloom-adaptive-prefill-bench-\(UUID().uuidString)", isDirectory: true)
-            .appendingPathComponent("state.json")
-        let key = AdaptivePrefillStoreKey(
-            modelId: modelID,
-            weightIdentity: modelDirectoryIdentity(modelID: modelID),
-            kvMode: "fp16",
-            hardwareMemoryFingerprint: "bench:\(ProcessInfo.processInfo.physicalMemory)"
-        )
-        return AdaptivePrefillRuntime(
-            policy: policy,
-            store: AdaptivePrefillStore(url: storeURL),
-            key: key
-        )
-    }
-
-    private static func stopAndReclaim(_ engine: BatchedEngine) async {
-        await engine.core.stopAndWait()
+    private static func stopAndReclaim(_ engine: any CBv2Engine) async {
+        await engine.shutdown()
         Stream().synchronize()
         Memory.clearCache()
     }

@@ -842,8 +842,13 @@ struct EngineV2VisionRoutingTests {
         #expect(refusals.first?.fields?["media_kind"]?.description == "video")
     }
 
-    @Test("non-bridged slot keeps the legacy path; the preparer is never invoked")
-    func nonBridgedSlotStaysLegacy() async throws {
+    @Test("non-bridged slot fails LOUD on media (no legacy wrapper path left)")
+    func nonBridgedSlotFailsLoud() async throws {
+        // ONE ENGINE (v0.7.5): the legacy VLM wrapper stream is deleted.
+        // Every production slot carries a v2 bridge, so a media request on a
+        // bridge-less slot is a wiring bug — a hard internal error (500-
+        // shaped generationFailed), never a silent legacy serve. The
+        // preparer must not be consulted on the way to the backstop.
         let counter = PrepareCallCounter()
         let plumbing = EngineV2VisionPlumbing(
             prepare: { _, _ in
@@ -855,9 +860,16 @@ struct EngineV2VisionRoutingTests {
         let router = makeRoutingEngine(
             scheduler: makeUnloadedScheduler(), container: makeStubContainer(),
             bridge: nil, plumbing: plumbing)
-        await #expect(throws: VisionStubProcessorError.self) {
+        do {
             _ = try await collectContent(
                 try await router.streamChatCompletion(request: imageRequest()))
+            Issue.record("expected generationFailed throw")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            guard case .generationFailed(let message) = error else {
+                Issue.record("expected .generationFailed, got \(error)")
+                return
+            }
+            #expect(message.contains("no serving engine for media"))
         }
         #expect(counter.count == 0)
     }

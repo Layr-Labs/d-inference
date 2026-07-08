@@ -33,10 +33,10 @@ func bandRequest(id string) *PendingRequest {
 	}
 }
 
-// reserveOnce runs one production selection and releases the reservation so
+// bandReserveOnce runs one production selection and releases the reservation so
 // per-trial registry state (pending counts, costs, band membership) is
 // identical across trials. Returns the winner's ID.
-func reserveOnce(t *testing.T, reg *Registry, pr *PendingRequest) string {
+func bandReserveOnce(t *testing.T, reg *Registry, pr *PendingRequest) string {
 	t.Helper()
 	p, _ := reg.ReserveProviderEx(pr.Model, pr)
 	if p == nil {
@@ -56,7 +56,7 @@ func TestSatisficingBandOffSelectionPinned(t *testing.T) {
 	reg := New(testLogger())
 	bandFixture(t, reg)
 	for i := 0; i < 50; i++ {
-		if id := reserveOnce(t, reg, bandRequest(fmt.Sprintf("off-%d", i))); id != "fast-box" {
+		if id := bandReserveOnce(t, reg, bandRequest(fmt.Sprintf("off-%d", i))); id != "fast-box" {
 			t.Fatalf("flag off, trial %d: selected %s, want fast-box every time (deterministic cheapest-cost)", i, id)
 		}
 	}
@@ -76,7 +76,7 @@ func TestSatisficingBandSpreadsAcrossMembers(t *testing.T) {
 	const trials = 300
 	counts := map[string]int{}
 	for i := 0; i < trials; i++ {
-		counts[reserveOnce(t, reg, bandRequest(fmt.Sprintf("on-%d", i)))]++
+		counts[bandReserveOnce(t, reg, bandRequest(fmt.Sprintf("on-%d", i)))]++
 	}
 	for _, id := range []string{"fast-box", "mid-box", "slow-box"} {
 		if counts[id] == 0 {
@@ -112,7 +112,7 @@ func TestSatisficingBandNonMembersOnlyWhenBandEmpty(t *testing.T) {
 		}
 	}
 	for i := 0; i < 30; i++ {
-		if id := reserveOnce(t, reg, pr(i)); id != "fast-box" {
+		if id := bandReserveOnce(t, reg, pr(i)); id != "fast-box" {
 			t.Fatalf("empty band, trial %d: selected %s, want fast-box (exact cheapest-cost fallback)", i, id)
 		}
 	}
@@ -146,7 +146,7 @@ func TestSatisficingBandExcludesColdWhenNoDeadline(t *testing.T) {
 			MaxTTFTMs:    0,
 			MinDecodeTPS: 15,
 		}
-		if id := reserveOnce(t, reg, pr); id != "warm-box" {
+		if id := bandReserveOnce(t, reg, pr); id != "warm-box" {
 			t.Fatalf("trial %d: selected %s, want warm-box — a cold candidate must not enter the band when no deadline exists", i, id)
 		}
 	}
@@ -186,7 +186,7 @@ func TestSatisficingBandServeCounterFedOnRealPath(t *testing.T) {
 	t.Setenv(satisficingBandEnv, "false") // recording must be flag-independent
 	reg := New(testLogger())
 	bandFixture(t, reg)
-	winner := reserveOnce(t, reg, bandRequest("feed-1"))
+	winner := bandReserveOnce(t, reg, bandRequest("feed-1"))
 	if got := reg.serveCounter.recentServes(winner); got < 0.99 {
 		t.Fatalf("recentServes(%s) = %v after a real reservation, want ~1", winner, got)
 	}
@@ -232,7 +232,7 @@ func TestSatisficingBandCacheAffinityPinnedWithinBand(t *testing.T) {
 		pr := bandRequest(fmt.Sprintf("aff-%d", i))
 		pr.ConsumerKey = "consumer-1"
 		pr.CacheAffinityKey = "prefix-abc"
-		if id := reserveOnce(t, reg, pr); id != "mid-box" {
+		if id := bandReserveOnce(t, reg, pr); id != "mid-box" {
 			t.Fatalf("trial %d: selected %s, want the affinity-pinned band member mid-box", i, id)
 		}
 	}

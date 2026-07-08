@@ -433,10 +433,16 @@ public actor StandaloneServer {
     }
 
     /// Re-slice KV grants for the newcomer + existing slots, shrink existing
-    /// engines, and build the newcomer's bridge — the SAME shrink-first /
+    /// engines, and build the newcomer's bridge — the same shrink-first /
     /// restore-on-throw / grow-after sequence as
     /// `ProviderLoop.resliceAndBuildEngineV2Slot`, over the shared pure
-    /// policy (`EngineV2KVSizing.resliceGrants`). Runs inside the
+    /// policy (`EngineV2KVSizing.resliceGrants`). DELIBERATE divergence
+    /// from the loop's unwind: the failed newcomer's container is released
+    /// by the caller's frame unwinding (followed by `clearCache`), not via
+    /// an ownership box — survivor grants can be restored a beat before the
+    /// weights die. Local-only surface, no coordinator heartbeats, so the
+    /// transient Σ(grants) > true-budget window over-advertises nothing;
+    /// the shared KV gate still bounds real reservations. Runs inside the
     /// `isLoadingAny` critical section (see the header note), which is the
     /// standalone re-slice serialization.
     private func resliceAndBuildSlot(

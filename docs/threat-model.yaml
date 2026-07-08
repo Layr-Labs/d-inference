@@ -1528,8 +1528,10 @@ threats:
       no on-disk persistence of KV, hashes, or metadata. Leak #2 (plaintext
       on-disk tokenPrefixHash / GCM-AAD metadata) therefore does not exist on
       the v2 path: no disk artifact is ever written, so there is nothing for a
-      disk observer to test a guessed prefix against (the on-disk description
-      above remains accurate for the legacy engine only, until its deletion).
+      disk observer to test a guessed prefix against (the legacy engine and
+      its on-disk tier were DELETED in v0.7.5 — the on-disk description above
+      is historical, retained because the successor SSD tier reintroduces the
+      at-rest artifact class and must be reviewed against it).
       Leak #1 (the cross-tenant TTFT timing oracle) is unchanged in kind on v2
       — an in-process co-tenant can still distinguish hit from miss by
       first-token latency — and remains the SEC-035 accepted risk. New on the
@@ -1555,11 +1557,13 @@ threats:
     adversaries: [ADV-002]
     affected_assets: [A-001]
     affected_files:
-      - provider-swift/Sources/ProviderCore/Inference/BatchScheduler.swift
-      - provider-swift/Sources/ProviderCore/KVCache/EncryptedPrefixCachePersistence.swift
-      - provider-swift/Sources/ProviderCore/KVCache/PrefixCacheManager.swift
+      # (BatchScheduler / PrefixCacheManager / EncryptedPrefixCachePersistence
+      # were deleted with the legacy engine in v0.7.5; EncryptedKVStore is
+      # PRESERVED as the chunked AES-GCM store the SSD-offload successor
+      # reuses.)
       - provider-swift/Sources/ProviderCore/KVCache/EncryptedKVStore.swift
       - provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift
+      - provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift
       - provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift
       - libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefixCacheV2.swift
     mitigations:

@@ -1,9 +1,8 @@
 // Copyright © 2026 Eigen Labs.
 //
 // Prefix-cache policy for the ContinuousBatchingV2 engine — the gate, the
-// budget, and the KV carve, factored SCHEDULER-FREE (no BatchScheduler
-// dependency; the legacy scheduler delegates its env/budget checks here
-// until its deletion pass).
+// budget, and the KV carve. (The legacy scheduler that once delegated its
+// env/budget checks here was deleted in the v0.7.5 one-engine release.)
 //
 // The v2 cache (`PrefixCacheV2`, mlx-swift-lm ContinuousBatchingV2) is
 // RAM-ONLY: donated KV lives in process memory under an LRU byte budget,
@@ -22,8 +21,7 @@
 // offload tier (write-behind donation on completion, read-through
 // adoption, HMAC-keyed prefix hashes) that caches without occupying
 // serving RAM. That tier is reviewed under T-041 before it ships. This
-// shared gate governs the legacy engine's cache too until the legacy
-// deletion pass, so v0.7.5 ships with NO resident prefix cache anywhere
+// shared gate means v0.7.5 ships with NO resident prefix cache anywhere
 // by default.
 //
 // PER-MODEL FUNDING GATE (the adoption bound): the engine only ADOPTS a

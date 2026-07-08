@@ -275,7 +275,12 @@ enum LiveInferenceFixtures {
             maxConcurrentRequests: maxConcurrentRequests,
             kvBudget: nil,
             kvQuantConfigured: false,
-            environment: [:])  // prefix cache dormant — hermetic tests
+            // Hermetic tests: master-kill EVERY prefix-cache tier. An empty
+            // environment is no longer dormant — the SSD tier (v0.7.5) is
+            // default-on and would write real files under the user's
+            // ~/Library/Caches/darkbloom/kv2. Dedicated suites opt in with
+            // their own roots/keys.
+            environment: ["DARKBLOOM_PREFIX_CACHE": "0"])
 
         return LoadedBridge(
             bridge: bridge, container: container, modelDirectory: directory, sizing: sizing)

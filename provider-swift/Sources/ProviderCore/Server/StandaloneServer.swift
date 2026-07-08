@@ -518,7 +518,8 @@ public actor StandaloneServer {
                 kvQuantConfigured: config.kvQuant,
                 emitTelemetry: v2TestHooks?.emitTelemetry,
                 makeEngineOverride: v2TestHooks?.makeEngine,
-                logInfo: { standaloneLogger.info("\($0)") })
+                logInfo: { standaloneLogger.info("\($0)") },
+                logWarning: { standaloneLogger.warning("\($0)") })
         } catch {
             for entry in existing {
                 await entry.bridge.updateKVBytesCapacity(entry.previousGrant)

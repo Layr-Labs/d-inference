@@ -213,18 +213,20 @@ extension ProviderLoop {
         // in v1) with a WARN below.
         let cacheMode = PrefixCachePolicy.mode(environment: environment)
 
-        // Per-model funding gate (see PrefixCachePolicy's header): a hybrid
-        // model whose adoption bound (windowCount × maxWindow) exceeds the
-        // funding threshold can never produce a hit at real prompt lengths,
-        // so its cache is NOT funded — no RAM carve AND no SSD writes
-        // (gemma-4: bound 25,600 ⇒ unfunded, writes nothing; gpt-oss:
-        // 1,536 ⇒ funded). Text slots read the bound off the loaded model;
-        // VLM slots derive it from the checkpoint's text_config
-        // (config-only — the weight-sharing extraction runs later, inside
-        // engine construction). Hooks/unknown ⇒ 0 (pure-full-attention
-        // semantics ⇒ fundable).
+        // Per-model funding gate — RAM TIER ONLY as of the per-donation
+        // SSD gate (see PrefixCachePolicy's header): a hybrid model whose
+        // adoption bound (windowCount × maxWindow) exceeds the funding
+        // threshold can never produce a RAM hit at real prompt lengths, so
+        // no RAM budget is carved (gemma-4: bound 25,600 ⇒ RAM-unfunded;
+        // gpt-oss: 1,536 ⇒ fundable). The SSD tier ignores this gate and
+        // instead gates each DONATION on the same bound (long gemma tails
+        // cache; short gpt-oss donations don't). Text slots read the bound
+        // off the loaded model; VLM slots derive it from the checkpoint's
+        // text_config (config-only — the weight-sharing extraction runs
+        // later, inside engine construction). Hooks/unknown ⇒ 0
+        // (pure-full-attention semantics ⇒ fundable).
         let adoptionBound: Int
-        if cacheMode != .off, let snapshot = productionSnapshot {
+        if cacheMode == .ram, let snapshot = productionSnapshot {
             if isVLM {
                 adoptionBound = modelDirectory.flatMap {
                     EngineV2VLMTextExtraction.adoptionBoundTokens(modelDirectory: $0)
@@ -272,33 +274,49 @@ extension ProviderLoop {
                 modelId: modelId, budgetBytes: prefixCacheBudgetBytes)
             : nil
 
-        // SSD tier instance (default for funded models; production path
-        // only). Same object serves as the ENGINE's CBv2PrefixCache and
-        // the BRIDGE's staging/backstop handle. Text slots only in v1:
-        // a VLM slot's CBv2 layer kinds exist only after the text-model
-        // extraction inside engine construction (moot today — gemma is
-        // unfunded), and vision requests never donate/look up anyway.
+        // SSD tier instance (default for every CBv2-adapted model in .ssd
+        // mode; production path only). Same object serves as the ENGINE's
+        // CBv2PrefixCache and the BRIDGE's staging/backstop handle.
+        //
+        // NOT funding-gated (Gaj, 2026-07-07): the SSD tier gates PER
+        // DONATION instead — SSDPrefixCache.donate persists only prefixes
+        // longer than the model's adoption bound + the benefit floor, so
+        // gpt-oss skips never-adoptable short donations and gemma-4's
+        // >26.6k long-context tail is cached (the old per-model rule
+        // excluded gemma entirely). The per-model funding gate
+        // (shouldFund / DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS)
+        // now governs ONLY the opt-in RAM tier's carve.
+        //
+        // VLM slots derive layer kinds from config.json's text_config
+        // alone (EngineV2VLMTextExtraction.cbv2LayerKinds — the drift
+        // tests pin config-derived shape == engine truth); the extraction
+        // itself still runs inside engine construction. A family with no
+        // derivable kinds gets no cache (it would throw unsupportedModel
+        // at engine build anyway).
         var ssdPrefixCache: SSDPrefixCache?
-        if case .ssd(let warnBothTiers) = cacheMode, productionSnapshot != nil {
+        if case .ssd(let warnBothTiers) = cacheMode, let snapshot = productionSnapshot {
             if warnBothTiers {
                 logger.warning(
                     "engine_v2: DARKBLOOM_PREFIX_CACHE=1 (RAM tier opt-in) and the SSD tier are BOTH active for \(modelId) — SSD wins for this slot; tiers do not compose in v1")
             }
-            if cacheFunded {
-                if !isVLM,
-                    let snapshot = productionSnapshot,
-                    let layerKinds = EngineV2Factory.cbv2LayerKinds(model: snapshot.model)
-                {
-                    ssdPrefixCache = await SSDPrefixCacheFactory.make(
-                        modelId: modelId,
-                        weightHash: liveModelHashes[modelId],
-                        layerKinds: layerKinds,
-                        kvBudget: kvBudget,
-                        environment: environment)
-                } else if isVLM {
-                    logger.info(
-                        "engine_v2: SSD prefix cache skipped for \(modelId) — VLM slot (layer kinds derive inside engine construction; v1 is text-only)")
+            let ssdLayerKinds: [CBv2LayerKind]?
+            if isVLM {
+                ssdLayerKinds = modelDirectory.flatMap {
+                    EngineV2VLMTextExtraction.cbv2LayerKinds(modelDirectory: $0)
                 }
+            } else {
+                ssdLayerKinds = EngineV2Factory.cbv2LayerKinds(model: snapshot.model)
+            }
+            if let ssdLayerKinds {
+                ssdPrefixCache = await SSDPrefixCacheFactory.make(
+                    modelId: modelId,
+                    weightHash: liveModelHashes[modelId],
+                    layerKinds: ssdLayerKinds,
+                    kvBudget: kvBudget,
+                    environment: environment)
+            } else {
+                logger.info(
+                    "engine_v2: SSD prefix cache skipped for \(modelId) — no derivable CBv2 layer kinds (non-adapted family)")
             }
         }
 
@@ -418,17 +436,20 @@ extension ProviderLoop {
             await bridge.startSSDPrefixCacheStatsLogger(cache: ssdPrefixCache)
         }
         let prefixCacheState: String
-        if ssdPrefixCache != nil {
+        if let ssdPrefixCache {
             prefixCacheState =
                 "on (tier=ssd: encrypted offload, HMAC-keyed names, "
-                + "15-min sliding TTL, NO memory carve — T-041)"
+                + "15-min sliding TTL, NO memory carve, per-donation gate "
+                + "> \(ssdPrefixCache.config.adoptionBoundTokens + ssdPrefixCache.config.minEffectiveTokens) tok — T-041)"
         } else if prefixCache != nil {
             prefixCacheState =
                 "on, budget \(prefixCacheBudgetBytes) B (tier=ram opt-in, salt-scoped — T-041)"
-        } else if cacheMode != .off && !cacheFunded {
-            // Name WHY: this model's hybrid window shape makes hits
-            // unreachable at real prompt lengths, so its budget stays with
-            // live KV (see PrefixCachePolicy's funding-gate rationale).
+        } else if cacheMode == .ram && !cacheFunded {
+            // RAM tier only — the SSD tier has no per-model funding gate
+            // (it gates per donation instead). Name WHY: this model's
+            // hybrid window shape makes hits unreachable at real prompt
+            // lengths, so its RAM budget stays with live KV (see
+            // PrefixCachePolicy's funding-gate rationale).
             prefixCacheState = "unfunded (adoption bound \(adoptionBound) tok, funding cap "
                 + "\(PrefixCachePolicy.maxAdoptionBoundTokens(environment: environment)) "
                 + "— full grant stays with live KV)"

@@ -156,6 +156,13 @@ enum SSDPrefixCachePolicy {
     /// (the CheckpointCapturePipeline in-flight cap pattern). Overflow
     /// DROPS the donation — the engine is never back-pressured.
     static let writeQueueMaxJobs = 2
-    /// Max host bytes queued across buffered donation jobs.
+    /// Floor on host bytes queued across buffered donation jobs. The
+    /// effective cap is `max(this, maxStageBytes + writeQueueSlackBytes)`
+    /// (SSDPrefixCache init) so ONE full max-size donation — a ~600 MB
+    /// gemma-4 long-context tail under the per-donation gate — always
+    /// fits; a second concurrent large donation is dropped with a counter
+    /// (deliberate: bounded transient RAM, never a silent stall).
     static let writeQueueMaxBytes = 512 * 1_048_576
+    /// Headroom above `maxStageBytes` in the effective queue-byte cap.
+    static let writeQueueSlackBytes = 256 * 1_048_576
 }

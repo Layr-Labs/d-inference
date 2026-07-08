@@ -1543,10 +1543,20 @@ threats:
       SHIP DECISION for v0.7.5 (superseding the earlier dormant-only plan):
       the RAM tier stays OPT-IN experimental (DARKBLOOM_PREFIX_CACHE=1 with
       the SSD tier killed), and the ENCRYPTED SSD OFFLOAD TIER ships IN
-      v0.7.5, DEFAULT-ON for funded models (gpt-oss funded; gemma-4
-      unfunded — writes nothing, full grant stays with live KV). This
-      review is the mandated sign-off for the tier's reintroduction of an
-      at-rest artifact (the leak #2 class). Posture of the SSD tier
+      v0.7.5, DEFAULT-ON for every CBv2-adapted model with a PER-DONATION
+      gate (replacing the earlier per-model funding rule for this tier):
+      a donation persists only when its whole-block prefix exceeds the
+      model's adoption bound + the 1,024-token benefit floor. gpt-oss
+      (bound 1,536) therefore skips never-adoptable sub-~2.5k donations
+      (pure wear savings); gemma-4 (bound 25,600) caches exactly its
+      >26.6k long-context tail — at-rest exposure UNCHANGED IN KIND
+      (same HMAC names, same 15-min TTL, same crypto), merely extended to
+      gemma's long-context traffic. The per-model funding gate
+      (DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS) now governs ONLY
+      the opt-in RAM tier; a model is never SSD-cached only when its
+      adoption bound is unknown/saturated. This review is the mandated
+      sign-off for the tier's reintroduction of an at-rest artifact (the
+      leak #2 class). Posture of the SSD tier
       (provider-swift/Sources/ProviderCore/KVCacheSSD/):
         (a) LEAK #2 CLOSED, not re-accepted: on-disk file names, the RAM
             index, and file metadata carry ONLY HMAC-SHA256 tags under
@@ -1687,7 +1697,9 @@ threats:
       A persistence tier now EXISTS (KVCacheSSD, v0.7.5). Review under this
       finding: any change to the tier gating/mode selection in
       PrefixCachePolicy (mode / DARKBLOOM_PREFIX_CACHE / _SSD semantics —
-      the SSD tier is default-on for funded models), to the TTL or disk-budget
+      the SSD tier is default-on with a PER-DONATION gate: adoption bound +
+      benefit floor in SSDPrefixCache.donate; loosening it widens the
+      at-rest surface), to the TTL or disk-budget
       policy (SSDPrefixCachePolicy.ttlSeconds 15-min max,
       PrefixCachePolicy.ssdDiskBudgetBytes), to the NAME DERIVATION
       (SSDLookupKeys: HKDF info string, HMAC domain tag, salt length-prefix,

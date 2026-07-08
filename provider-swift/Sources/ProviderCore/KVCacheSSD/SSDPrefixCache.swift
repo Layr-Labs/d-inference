@@ -197,7 +197,13 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 strictFsync: strictFsync,
                 ttlSeconds: config.ttlSeconds,
                 maxJobs: SSDPrefixCachePolicy.writeQueueMaxJobs,
-                maxQueuedBytes: SSDPrefixCachePolicy.writeQueueMaxBytes,
+                // One full max-size donation (≤ maxStageBytes after the
+                // persisted-run byte cap, e.g. a ~600 MB gemma long-context
+                // tail) must ALWAYS be admittable — a second concurrent
+                // large donation may be dropped (counted), never stalled.
+                maxQueuedBytes: max(
+                    SSDPrefixCachePolicy.writeQueueMaxBytes,
+                    config.maxStageBytes + SSDPrefixCachePolicy.writeQueueSlackBytes),
                 diskBudgetBytes: diskBudgetBytes,
                 volumeSpace: { Self.volumeSpace(at: root) },
                 nowSeconds: config.nowSeconds),
@@ -394,6 +400,22 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         guard blockCount > 0 else { return }
         let prefixTokens = blockCount * config.blockSize
 
+        // PER-DONATION gate (Gaj, 2026-07-07 — replaces the binary
+        // per-model funding rule for the SSD tier): persist only prefixes
+        // LONG ENOUGH TO EVER BE ADOPTED — donated whole-block length must
+        // exceed the model's adoption bound (windowCount × maxWindow, the
+        // engine's recompute span) plus the staging benefit floor. For
+        // gpt-oss (bound 1,536 + 1,024 = 2,560) this skips sub-~2.5k
+        // donations that could never clear adoption — pure disk-wear win,
+        // no behavior change for adoptable traffic. For gemma-4 (bound
+        // 25,600 + 1,024 = 26,624) it automatically enables the >26.6k
+        // long-context tail that the old per-model gate excluded entirely.
+        // A saturated/unknown bound (overflow) can never pass — such a
+        // model is effectively never cached, by construction.
+        let (donationFloor, floorOverflow) =
+            config.adoptionBoundTokens.addingReportingOverflow(config.minEffectiveTokens)
+        guard !floorOverflow, prefixTokens > donationFloor else { return }
+
         // Validate cacheable-layer coverage (PrefixCacheV2 semantics: a
         // cacheable layer with missing/short state makes the whole
         // donation unusable).
@@ -420,11 +442,26 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             fullTags.append(full)
             tags16.append(full.prefix(SSDLookupKeys.truncatedTagLength))
         }
+        // Persisted-run byte cap: blocks whose CUMULATIVE run bytes exceed
+        // `maxStageBytes` can never be staged (the adoption trim loop cuts
+        // the run at that cap), so writing them is pure wear. Cap the
+        // persisted block range accordingly (leading blocks only — the run
+        // must stay prefix-contiguous). Per-block bytes derived from the
+        // snapshot shapes (exact for the uniform engine-native layout).
+        var perBlockBytes = 0
+        for layer in cacheable {
+            let dims = [layer.keys.dim(0), layer.keys.dim(1), config.blockSize, layer.keys.dim(3)]
+            let elements = dims.reduce(1, *)
+            perBlockBytes += 2 * elements * layer.keys.dtype.size
+        }
+        guard perBlockBytes > 0 else { return }
+        let maxPersistBlocks = config.maxStageBytes / perBlockBytes
+
         let now = config.nowSeconds()
         var newBlockIndices: [Int] = []
         lock.withLock {
             guard !closed else { return }
-            for (i, tag16) in tags16.enumerated() {
+            for (i, tag16) in tags16.enumerated() where i < maxPersistBlocks {
                 if index.contains(tag16: tag16) || inFlightWrites.contains(tag16) { continue }
                 inFlightWrites.insert(tag16)
                 newBlockIndices.append(i)

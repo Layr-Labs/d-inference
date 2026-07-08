@@ -291,6 +291,17 @@ enum PrefixCachePolicy {
     /// it is the per-box "cache budget off" switch that leaves the
     /// `DARKBLOOM_PREFIX_CACHE` master gate (which also governs the legacy
     /// engine) untouched.
+    ///
+    /// RAM TIER ONLY (v0.7.5 per-donation decision): the SSD tier RETIRED
+    /// this per-model gate — it is constructed for every CBv2-adapted
+    /// model in `.ssd` mode and gates each DONATION on the model's own
+    /// adoption bound + benefit floor instead
+    /// (`SSDPrefixCache.donate`), so hybrid models with huge bounds
+    /// (gemma-4) cache exactly their adoptable long-context tail rather
+    /// than nothing. `DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS`
+    /// therefore has NO effect on the SSD tier; a model is only "never
+    /// cached" there when its bound is unknown/saturated (the donation
+    /// gate can then never pass).
     static func shouldFund(
         adoptionBoundTokens bound: Int,
         environment: [String: String] = ProcessInfo.processInfo.environment

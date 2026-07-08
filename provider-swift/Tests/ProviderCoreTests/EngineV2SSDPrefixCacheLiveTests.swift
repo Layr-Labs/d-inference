@@ -31,6 +31,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 import Testing
 
 @testable import ProviderCore
@@ -85,6 +86,49 @@ struct EngineV2SSDPrefixCacheLiveTests {
             tokenizer: tokenizer,
             eosTokenIds: eos,
             layerKinds: gptoss.cbv2LayerKinds)
+    }
+
+    static let gemmaQatModelID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+
+    /// Prod gemma-4 checkpoints are VLM builds: load through the VLM
+    /// factory and extract the CBv2-adapted text model over the SAME
+    /// weight arrays — the identical path the slot factory takes. Layer
+    /// kinds ALSO derived config-only (the production SSD construction
+    /// path for VLM slots) and pinned equal to engine truth.
+    private func loadGemmaQat() async throws -> LiveModel {
+        guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
+            throw LiveFixtureSkip.missingMetallib
+        }
+        guard case .found(let directory) = LiveInferenceFixtures.locate(Self.gemmaQatModelID)
+        else {
+            throw LiveFixtureSkip.modelNotInCache(Self.gemmaQatModelID)
+        }
+        LiveInferenceFixtures.applyMemoryBudget(maxBytes: 64 * Self.gib)
+        let container = try await VLMModelFactory.shared.loadContainer(
+            from: directory, using: LocalTokenizerLoader())
+        let snapshot = await container.perform { ctx in
+            EngineV2ModelSnapshot(
+                model: ctx.model,
+                eosTokenIds: ctx.configuration.eosTokenIds,
+                extraEOSTokens: ctx.configuration.extraEOSTokens.sorted())
+        }
+        let tokenizer: TokenizerHandle = await container.perform { ctx in
+            TokenizerHandle(ctx.tokenizer)
+        }
+        let extraction = try EngineV2VLMTextExtraction.extractTextModel(
+            from: snapshot.model, modelDirectory: directory)
+        // The config-only derivation (what the slot factory hands the SSD
+        // cache for a VLM slot) must match engine truth.
+        let configKinds = EngineV2VLMTextExtraction.cbv2LayerKinds(modelDirectory: directory)
+        #expect(configKinds == extraction.model.cbv2LayerKinds,
+            "config-only layer kinds drifted from the extracted model's")
+        return LiveModel(
+            modelID: "gemma-4-26b-qat-4bit",
+            container: container,
+            model: extraction.model,
+            tokenizer: tokenizer,
+            eosTokenIds: snapshot.eosTokenIds,
+            layerKinds: extraction.model.cbv2LayerKinds)
     }
 
     // MARK: - SSD cache + bridge construction (the production seam)
@@ -405,6 +449,122 @@ struct EngineV2SSDPrefixCacheLiveTests {
         print(
             "[ssd-live] final: ttlExpired=\(finalStats.ttlExpired) hits=\(finalStats.hits) "
                 + "misses=\(finalStats.misses) corrupt=\(finalStats.corruptDropped)")
+        MLX.Memory.clearCache()
+    }
+
+    // MARK: - gemma-4 per-donation gate (live)
+
+    @Test(
+        "gemma-qat, DEFAULT config, typical prompt: zero disk writes, serves normally",
+        .enabled(if:
+            LiveInferenceFixtures.liveTestsEnabled
+                && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_GEMMA"] != nil)
+    )
+    func gemmaTypicalPromptWritesNothing() async throws {
+        let live = try await loadGemmaQat()
+        let bound = PrefixCachePolicy.adoptionBoundTokens(layerKinds: live.layerKinds)
+        #expect(bound == 25_600, "gemma-4 adoption bound drifted: \(bound)")
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ssd-live-gemma-neg-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let clock = ClockBox(Int64(Date().timeIntervalSince1970))
+        let cache = makeSSDCache(
+            live: live, dir: dir, kek: SymmetricKey(size: .bits256), clock: clock)
+        let bridge = try makeBridge(live, ssdCache: cache)
+
+        // Typical prompt (~1.5k tokens) — WAY under the 26,624-token
+        // donation floor: the request serves normally and the tier writes
+        // NOTHING (the negative Gaj asked for; the engine keeps its full
+        // grant structurally — prefixCacheBudgetBytes is 0 in SSD mode).
+        let conversation = try buildConversation(live, minTurn1Tokens: 1500)
+        let turn = try await runTurn(
+            bridge: bridge, live: live, promptTokens: conversation.turn1Tokens,
+            maxTokens: 16, requestId: "gemma-neg")
+        #expect(!turn.text.isEmpty, "typical gemma request must serve normally")
+        #expect(turn.prefixCacheHitTokens == 0)
+        try? await Task.sleep(for: .seconds(2))  // settle any (wrong) write-behind
+        let stats = cache.stats()
+        #expect(stats.blocksWritten == 0, "sub-floor gemma donation must write nothing")
+        #expect(dbk2Files(under: dir).isEmpty)
+        #expect(cache.bytesInUse == 0)
+        #expect(bridge.prefixCacheBudgetBytes == 0)
+        print("[ssd-live] gemma typical (\(conversation.turn1Tokens.count) tok): "
+            + "writes=\(stats.blocksWritten) files=0 ttft=\(turn.ttft)")
+        await bridge.shutdown()
+        MLX.Memory.clearCache()
+    }
+
+    @Test(
+        "gemma-qat, DEFAULT config, long context (>26.6k): tail cached, adopted from disk byte-identically",
+        .enabled(if:
+            LiveInferenceFixtures.liveTestsEnabled
+                && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_GEMMA"] != nil)
+    )
+    func gemmaLongContextTailCachedAndAdopted() async throws {
+        let live = try await loadGemmaQat()
+        let blockSize = PrefixCachePolicy.blockSize
+        let bound = PrefixCachePolicy.adoptionBoundTokens(layerKinds: live.layerKinds)
+        #expect(bound == 25_600)
+
+        // Past the donation floor (bound + 1,024) with whole-block margin.
+        let minTurn1 = bound + SSDPrefixCachePolicy.defaultMinEffectiveTokens + 3 * blockSize
+        let conversation = try buildConversation(live, minTurn1Tokens: minTurn1)
+        #expect(conversation.sharedPrefixTokens >= minTurn1)
+        let sharedBlocks = conversation.sharedPrefixTokens / blockSize
+        let expectedMinHit = sharedBlocks * blockSize - bound
+        #expect(expectedMinHit >= SSDPrefixCachePolicy.defaultMinEffectiveTokens)
+        print("[ssd-live] gemma long-context: turn1=\(conversation.turn1Tokens.count) tok, "
+            + "shared=\(conversation.sharedPrefixTokens), bound=\(bound), "
+            + "expectedMinHit=\(expectedMinHit)")
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ssd-live-gemma-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let clock = ClockBox(Int64(Date().timeIntervalSince1970))
+        let cache = makeSSDCache(
+            live: live, dir: dir, kek: SymmetricKey(size: .bits256), clock: clock)
+        let bridge = try makeBridge(live, ssdCache: cache)
+        let maxTokens = 16
+
+        // Turn 1: the long-context donation crosses the floor ⇒ persists.
+        let turn1 = try await runTurn(
+            bridge: bridge, live: live, promptTokens: conversation.turn1Tokens,
+            maxTokens: maxTokens, requestId: "gemma-t1")
+        #expect(!turn1.text.isEmpty)
+        let turn1Blocks = conversation.turn1Tokens.count / blockSize
+        #expect(await waitForBlocksOnDisk(cache, atLeast: turn1Blocks, timeout: .seconds(300)),
+            "gemma long-context donation never landed (\(cache.index.count)/\(turn1Blocks))")
+        let stats1 = cache.stats()
+        #expect(cache.bytesInUse == 0)
+        print("[ssd-live] gemma donated: blocks=\(stats1.blocksWritten) "
+            + "bytes=\(stats1.bytesWritten)")
+
+        // Turn 2 adopts FROM DISK (~26.9k matched, ≥1,024 effective).
+        let turn2Warm = try await runTurn(
+            bridge: bridge, live: live, promptTokens: conversation.turn2Tokens,
+            maxTokens: maxTokens, requestId: "gemma-t2-warm")
+        #expect(turn2Warm.prefixCacheHitTokens >= SSDPrefixCachePolicy.defaultMinEffectiveTokens,
+            "gemma warm turn 2 hit \(turn2Warm.prefixCacheHitTokens) (< 1024)")
+        #expect(cache.bytesInUse == 0, "staging must drain after adoption")
+        await bridge.shutdown()
+
+        // Cache-off reference: byte-identical greedy output.
+        let bridgeOff = try makeBridge(live, ssdCache: nil)
+        let turn2Off = try await runTurn(
+            bridge: bridgeOff, live: live, promptTokens: conversation.turn2Tokens,
+            maxTokens: maxTokens, requestId: "gemma-t2-off")
+        await bridgeOff.shutdown()
+        #expect(turn2Off.prefixCacheHitTokens == 0)
+        #expect(
+            turn2Warm.text == turn2Off.text,
+            Comment(rawValue:
+                "gemma warm output diverged: warm=\(turn2Warm.text.debugDescription) "
+                    + "off=\(turn2Off.text.debugDescription)"))
+        print("[ssd-live] gemma TTFT: warm=\(turn2Warm.ttft) off=\(turn2Off.ttft) "
+            + "(Δ=\(turn2Off.ttft - turn2Warm.ttft)); hitTokens=\(turn2Warm.prefixCacheHitTokens)")
         MLX.Memory.clearCache()
     }
 }

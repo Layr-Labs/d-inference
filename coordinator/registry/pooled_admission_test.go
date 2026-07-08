@@ -205,6 +205,147 @@ func TestFreeMemoryAdmitsPooledRejectsGapDoubleSpend(t *testing.T) {
 	}
 }
 
+// TestProviderPooledTokenBudgetByteNormalization pins the byte-space
+// reconstruction: per-slot token quantities scale by that slot's own
+// KVBytesPerToken, the shared free headroom is the largest per-slot free BYTE
+// view counted once, and a single budget slot without a KV rate disables byte
+// mode for the whole pool (legacy provider build).
+func TestProviderPooledTokenBudgetByteNormalization(t *testing.T) {
+	// Big-KV model A: 10k tokens × 100kB/token headroom = 1 GB.
+	// Small-KV model B: 100k tokens × 10kB/token = the SAME 1 GB pool.
+	slots := []protocol.BackendSlotCapacity{
+		{Model: "a", ActiveTokenBudgetMax: 10_000, KVBytesPerToken: 100_000},
+		{Model: "b", ActiveTokenBudgetMax: 100_000, KVBytesPerToken: 10_000},
+	}
+	pool := providerPooledTokenBudget(slots)
+	if !pool.byteMode {
+		t.Fatal("byteMode = false with every budget slot reporting a KV rate")
+	}
+	if pool.totalBytes != 1_000_000_000 || pool.usedBytes != 0 || pool.committedBytes != 0 {
+		t.Fatalf("byte pool = {used:%d committed:%d total:%d}, want {0 0 1e9} (shared free bytes counted once)",
+			pool.usedBytes, pool.committedBytes, pool.totalBytes)
+	}
+	// Token space is denominated by the LARGEST free-token view (B's 100k) —
+	// the very distortion byte mode exists to correct.
+	if pool.total != 100_000 {
+		t.Fatalf("token pool total = %d, want 100_000", pool.total)
+	}
+
+	// One budget slot without a rate → byte reconstruction impossible.
+	mixed := providerPooledTokenBudget([]protocol.BackendSlotCapacity{
+		{Model: "a", ActiveTokenBudgetMax: 10_000, KVBytesPerToken: 100_000},
+		{Model: "legacy", ActiveTokenBudgetMax: 9_000},
+	})
+	if mixed.byteMode {
+		t.Fatal("byteMode = true although a budget slot reports no KVBytesPerToken")
+	}
+}
+
+// TestFreeMemoryAdmitsByteNormalizedHeterogeneousKV is the X-unit regression:
+// co-resident slots with different KVBytesPerToken share ONE byte pool, so
+// token counts are not a common unit. A 90k-token pending burst on the
+// small-KV model (10 kB/token = 0.9 GB) leaves only 0.1 GB of the 1 GB pool,
+// so a 3k-token request to the big-KV model (100 kB/token = 0.3 GB) must be
+// rejected — token accounting (93k ≤ 100k) would admit it and the box OOMs.
+// Fails without the byte-normalized branch in pooledBudgetAdmits.
+func TestFreeMemoryAdmitsByteNormalizedHeterogeneousKV(t *testing.T) {
+	slots := []protocol.BackendSlotCapacity{
+		{Model: "big-kv", ActiveTokenBudgetMax: 10_000, KVBytesPerToken: 100_000},
+		{Model: "small-kv", ActiveTokenBudgetMax: 100_000, KVBytesPerToken: 10_000},
+	}
+	mkSnap := func(pendingSmallKVTokens int64) routingSnapshot {
+		return routingSnapshot{
+			// Snapshot for the big-KV model: no same-model pending, stale
+			// heartbeat (used 0), all pending is the small-KV burst.
+			activeTokenBudgetMax:      10_000,
+			kvBytesPerToken:           100_000,
+			pendingMaxTokensAllModels: int(pendingSmallKVTokens),
+			pendingMaxBytesAllModels:  pendingSmallKVTokens * 10_000,
+			pendingBytesKnown:         true,
+			pooledTokenBudget:         providerPooledTokenBudget(slots),
+		}
+	}
+	// 90k small-KV tokens pending = 0.9 GB; +0.3 GB request = 1.2 GB > 1 GB.
+	if freeMemoryAdmits(mkSnap(90_000), 100, 2_900) {
+		t.Fatal("admitted 0.3 GB of big-KV request into a byte pool with 0.9 GB already pending (token/byte unit confusion)")
+	}
+	// Control: 40k small-KV tokens pending = 0.4 GB; +0.3 GB = 0.7 GB ≤ 1 GB.
+	if !freeMemoryAdmits(mkSnap(40_000), 100, 2_900) {
+		t.Fatal("rejected a request although the byte pool has 0.6 GB of headroom (byte gate over-rejecting)")
+	}
+}
+
+// TestFreeMemoryAdmitsByteModeCorrectsTokenOverReject is the reverse sanity
+// case: when heartbeat skew leaves the token pool denominated by a SMALLER
+// free view than the true byte pool, token accounting over-rejects small-KV
+// work that genuinely fits in bytes. With the fix the byte check admits;
+// without it the token check (61k > 50k) wrongly rejects.
+func TestFreeMemoryAdmitsByteModeCorrectsTokenOverReject(t *testing.T) {
+	slots := []protocol.BackendSlotCapacity{
+		// Big-KV slot sees 1 GB free (10k × 100 kB); small-KV slot's staler
+		// view reports only 0.5 GB (50k × 10 kB). Token total = max(10k, 50k)
+		// = 50k tokens; byte total = max(1 GB, 0.5 GB) = 1 GB.
+		{Model: "big-kv", ActiveTokenBudgetMax: 10_000, KVBytesPerToken: 100_000},
+		{Model: "small-kv", ActiveTokenBudgetMax: 50_000, KVBytesPerToken: 10_000},
+	}
+	snap := routingSnapshot{
+		// Snapshot for the small-KV model with a 60k-token (0.6 GB) small-KV
+		// burst pending elsewhere on the box and a 1k-token (10 MB) request.
+		activeTokenBudgetMax:      50_000,
+		kvBytesPerToken:           10_000,
+		pendingMaxTokensAllModels: 60_000,
+		pendingMaxBytesAllModels:  600_000_000,
+		pendingBytesKnown:         true,
+		pooledTokenBudget:         providerPooledTokenBudget(slots),
+	}
+	if !pooledBudgetAdmits(snap, 1_000) {
+		t.Fatal("rejected 10 MB into a 1 GB byte pool holding 0.6 GB (token-unit over-rejection not corrected)")
+	}
+}
+
+// TestPooledAdmissionByteDoubleSpendRealPath drives the heterogeneous-KV
+// double-spend through the REAL reservation path: a small-KV burst that fits
+// the pool token-wise exhausts it byte-wise, so a big-KV co-resident request
+// inside the same heartbeat gap must be rejected. Fails without byte
+// normalization (token accounting reads 93k ≤ 100k and admits).
+func TestPooledAdmissionByteDoubleSpendRealPath(t *testing.T) {
+	reg := New(testLogger())
+	p := makeSchedulerProvider(t, reg, "shared-box", gptossBuild, 93)
+	addAdvertisedModel(p, gemmaBuild)
+	p.mu.Lock()
+	// gpt-oss: 10 kB/token → 100k-token view of the 1 GB shared pool.
+	p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 100_000
+	p.BackendCapacity.Slots[0].KVBytesPerToken = 10_000
+	// gemma: 100 kB/token → 10k-token view of the SAME 1 GB pool.
+	p.BackendCapacity.Slots = append(p.BackendCapacity.Slots, protocol.BackendSlotCapacity{
+		Model:                gemmaBuild,
+		State:                "running",
+		ActiveTokenBudgetMax: 10_000,
+		KVBytesPerToken:      100_000,
+	})
+	p.mu.Unlock()
+
+	// Burst gpt-oss: nine requests × 10k tokens = 90k tokens = 0.9 GB pending.
+	for i := 0; i < 9; i++ {
+		pr := &PendingRequest{
+			RequestID:             fmt.Sprintf("burst-%d", i),
+			Model:                 gptossBuild,
+			EstimatedPromptTokens: 500,
+			RequestedMaxTokens:    9_500,
+		}
+		if got := reg.ReserveProvider(gptossBuild, pr); got == nil {
+			t.Fatalf("burst request %d rejected; 9×10k tokens (0.9 GB) must fit the 1 GB pool", i)
+		}
+	}
+	// Gemma within the same gap: 3k tokens ≤ its 10k slot view and 93k ≤ 100k
+	// in token space — but 0.3 GB does NOT fit the 0.1 GB of byte headroom.
+	if got := reg.ReserveProvider(gemmaBuild, &PendingRequest{
+		RequestID: "victim", Model: gemmaBuild, EstimatedPromptTokens: 100, RequestedMaxTokens: 2_900,
+	}); got != nil {
+		t.Fatalf("gemma admitted during the heartbeat gap — token-unit accounting double-spent the byte pool (provider %q)", got.ID)
+	}
+}
+
 // TestFreeMemoryAdmitsLegacyProviderUnchanged: providers that report no token
 // budget (ActiveTokenBudgetMax == 0) never reach the budget branch — the
 // legacy memory-estimation path is untouched by the pooled fields.

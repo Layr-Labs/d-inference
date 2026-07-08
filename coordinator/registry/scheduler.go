@@ -80,14 +80,22 @@ type routingSnapshot struct {
 	// so co-resident models cannot double-spend the one shared KV pool inside
 	// the heartbeat gap.
 	pendingMaxTokensAllModels int
-	backendRunning            int
-	backendWaiting            int
-	maxTokensPotential        int64
-	decodeTPS                 float64
-	prefillTPS                float64
-	systemMetrics             protocol.SystemMetrics
-	gpuMemoryActiveGB         float64
-	totalMemoryGB             float64
+	// pendingMaxBytesAllModels is the byte-normalized analog: each pending
+	// request's token budget × its model's reported KVBytesPerToken. Valid
+	// only when pendingBytesKnown — every pending request's model had a
+	// reported KV rate (see fillSnapshotPendingAndPool). Co-resident models
+	// spend the ONE shared pool at different per-token byte rates, so tokens
+	// are not a common unit across models (pooled_admission.go).
+	pendingMaxBytesAllModels int64
+	pendingBytesKnown        bool
+	backendRunning           int
+	backendWaiting           int
+	maxTokensPotential       int64
+	decodeTPS                float64
+	prefillTPS               float64
+	systemMetrics            protocol.SystemMetrics
+	gpuMemoryActiveGB        float64
+	totalMemoryGB            float64
 	// freeForLoadGB is the provider-reported max additional model-weight (GB) it
 	// can load right now (net of cap/reserve/headroom, idle models reclaimed).
 	// When non-nil it is the authoritative cold-load gate; nil = legacy provider
@@ -1078,15 +1086,7 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 		minRAMGb:      r.catalogMinRAMGbLocked(model),
 	}
 
-	for _, pr := range p.pendingReqs {
-		tokens := pendingTokenBudget(pr)
-		snap.pendingMaxTokensAllModels += tokens
-		if pr.Model != model {
-			continue
-		}
-		snap.pendingForModel++
-		snap.pendingMaxTokens += tokens
-	}
+	fillSnapshotPendingAndPool(&snap, p, model)
 	// Concurrency headroom with the quality-concurrency cap: a slow model whose
 	// quality batch is below the flat fallback (e.g. Gemma at ~14 tok/s solo →
 	// batch 1-2) stops being admittable once it is at its quality cap, so load
@@ -1104,7 +1104,6 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 		if p.BackendCapacity.TotalMemoryGB > 0 {
 			snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 		}
-		snap.pooledTokenBudget = providerPooledTokenBudget(p.BackendCapacity.Slots)
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model != model {
 				continue
@@ -1196,9 +1195,11 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 		// burst admitted against model A within the heartbeat gap is invisible to
 		// model B's slot max until the next heartbeat. The request must therefore
 		// also fit the reconstructed whole-box pool with EVERY model's
-		// coordinator-pending tokens charged (see pooled_admission.go). Reduces
-		// exactly to the per-slot check for single-model providers.
-		return pooledBudgetAdmits(snap.pooledTokenBudget, snap.pendingMaxTokensAllModels, requestTokens)
+		// coordinator-pending tokens charged — byte-normalized per slot KV rate
+		// when reported, since co-resident models spend the pool at different
+		// bytes/token (see pooled_admission.go). Reduces exactly to the per-slot
+		// check for single-model providers.
+		return pooledBudgetAdmits(snap, requestTokens)
 	}
 
 	if !snap.modelLoaded {
@@ -1254,6 +1255,41 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 
 	free := snap.totalMemoryGB - snap.gpuMemoryActiveGB
 	return free >= required
+}
+
+// fillSnapshotPendingAndPool populates snap's reconstructed pooled budget and
+// its coordinator-pending aggregates — the per-model filtered pair
+// (pendingForModel / pendingMaxTokens) and the all-models totals in token and,
+// when normalizable, byte units. Byte normalization needs each pending
+// request's model to have a reported KVBytesPerToken (a budget slot in the
+// pool); any pending request that can't be normalized — e.g. for a cold model
+// with no resident slot — flips pendingBytesKnown off and pooledBudgetAdmits
+// falls back to token accounting for the whole check. Shared by the dispatch
+// snapshot (snapshotProviderLockedEx) and the queue preflight
+// (QuickCapacityCheck…) so the two admission paths cannot drift. Caller holds
+// p.mu.
+func fillSnapshotPendingAndPool(snap *routingSnapshot, p *Provider, model string) {
+	if p.BackendCapacity != nil {
+		snap.pooledTokenBudget = providerPooledTokenBudget(p.BackendCapacity.Slots)
+	}
+	bytesKnown := snap.pooledTokenBudget.byteMode
+	for _, pr := range p.pendingReqs {
+		tokens := pendingTokenBudget(pr)
+		snap.pendingMaxTokensAllModels += tokens
+		if bytesKnown {
+			if rate := snap.pooledTokenBudget.kvBytesPerToken[pr.Model]; rate > 0 {
+				snap.pendingMaxBytesAllModels += int64(tokens) * rate
+			} else {
+				bytesKnown = false
+			}
+		}
+		if pr.Model != model {
+			continue
+		}
+		snap.pendingForModel++
+		snap.pendingMaxTokens += tokens
+	}
+	snap.pendingBytesKnown = bytesKnown
 }
 
 func pendingTokenBudget(pr *PendingRequest) int {
@@ -2018,22 +2054,13 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			minRAMGb:           r.catalogMinRAMGbLocked(model),
 			hasBackendCapacity: p.BackendCapacity != nil,
 		}
-		for _, pending := range p.pendingReqs {
-			tokens := pendingTokenBudget(pending)
-			snap.pendingMaxTokensAllModels += tokens
-			if pending.Model != model {
-				continue
-			}
-			snap.pendingForModel++
-			snap.pendingMaxTokens += tokens
-		}
+		fillSnapshotPendingAndPool(&snap, p, model)
 		if snap.hasBackendCapacity {
 			snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
 			snap.freeForLoadGB = p.BackendCapacity.FreeForLoadGB
 			if p.BackendCapacity.TotalMemoryGB > 0 {
 				snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 			}
-			snap.pooledTokenBudget = providerPooledTokenBudget(p.BackendCapacity.Slots)
 			for _, slot := range p.BackendCapacity.Slots {
 				if slot.Model != model {
 					continue

@@ -33,13 +33,19 @@
 // prompts several times and takes minutes; it rides the existing
 // DARKBLOOM_LIVE_MLX_GEMMA opt-in.
 //
-// Funding-gate framing: because gemma's bound dwarfs real prompt lengths,
-// PRODUCTION does not fund its cache at all (PrefixCachePolicy.shouldFund,
-// default threshold 4,096) — the gemma test first pins that unfunded
-// default verdict, then runs the funded scenario explicitly as the
-// operator override (DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS)
-// so the hybrid-window recompute exactness stays exercised on real
-// weights. gpt-oss (bound 1,536) is the funded-by-default case.
+// OPT-IN framing (v0.7.5 ship decision): the cache is DORMANT by default
+// fleet-wide — resident RAM belongs to live serving; the encrypted SSD
+// offload tier is the successor design (see PrefixCachePolicy's header).
+// Both scenarios below therefore model an EXPLICITLY OPTED-IN box
+// (`DARKBLOOM_PREFIX_CACHE=1`): each test first pins the dormant default
+// verdict, then constructs the funded engine directly — exactly what the
+// slot factory builds for an opted-in box. Additionally, the per-model
+// funding gate means an opted-in gemma box STILL gets no budget at the
+// default threshold (adoption bound 25,600 ≫ 4,096; hits unreachable at
+// real prompt lengths), so the gemma scenario also layers the
+// DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS override to keep the
+// hybrid-window recompute exactness exercised on real weights. gpt-oss
+// (bound 1,536) is the funded case for any opted-in box.
 //
 // Gates: DARKBLOOM_LIVE_MLX_TESTS (+ DARKBLOOM_LIVE_MLX_GPTOSS for gpt-oss,
 // DARKBLOOM_LIVE_MLX_GEMMA for gemma); each checkpoint skips cleanly when
@@ -438,39 +444,48 @@ struct EngineV2PrefixCacheLiveTests {
     // MARK: - Tests
 
     @Test(
-        "gpt-oss-20b: funded by default; turn-2 exactness, hit accounting, batch invariance",
+        "gpt-oss-20b: dormant by default; funded when opted in — turn-2 exactness, hit accounting, batch invariance",
         .enabled(if:
             LiveInferenceFixtures.liveTestsEnabled
                 && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_GPTOSS"] != nil)
     )
     func gptOssPrefixCache() async throws {
         let live = try await loadGptOss()
+        // Fleet default (v0.7.5): the master gate is DORMANT — no box
+        // carries a cache unless explicitly opted in.
+        #expect(!PrefixCachePolicy.isEnabled(environment: [:]),
+            "the prefix cache must ship dormant by default")
         // Funding gate on the REAL checkpoint's layer kinds: gpt-oss's
         // adoption bound (12 × 128 = 1,536) is under the 4,096 default, so
-        // production funds its cache. The scenario below is therefore the
-        // default-env path for this model.
+        // an OPTED-IN box (DARKBLOOM_PREFIX_CACHE=1) funds its cache. The
+        // scenario below models exactly that opted-in box.
+        #expect(PrefixCachePolicy.isEnabled(environment: ["DARKBLOOM_PREFIX_CACHE": "1"]))
         let bound = PrefixCachePolicy.adoptionBoundTokens(layerKinds: live.layerKinds)
         #expect(bound == 1536, "gpt-oss-20b adoption bound drifted: \(bound)")
         #expect(PrefixCachePolicy.shouldFund(adoptionBoundTokens: bound, environment: [:]),
-            "gpt-oss must fund at the default threshold")
+            "gpt-oss must fund (for opted-in boxes) at the default threshold")
         try await runPrefixCacheScenario(live, maxTokens: 24)
     }
 
     @Test(
-        "gemma-4-26b-qat-4bit: UNFUNDED by default (adoption bound); funded+hybrid-recompute path via override",
+        "gemma-4-26b-qat-4bit: dormant by default AND unfunded even when opted in (adoption bound); funded+hybrid-recompute via override",
         .enabled(if: LiveInferenceFixtures.gemmaTestsEnabled)
     )
     func gemmaQatPrefixCache() async throws {
         let live = try await loadGemmaQat()
 
-        // DEFAULT-ENV verdict on the REAL checkpoint's layer kinds: the
-        // adoption bound (25 sliding × 1024 = 25,600) dwarfs real prompt
-        // lengths, so production does NOT fund gemma's cache — the full
-        // grant stays with live KV. Pin the whole unfunded composition the
-        // slot factory executes: gate verdict → zero requested budget →
-        // carve passthrough → no cache instance (the slot-factory plumbing
-        // itself — raw grant to the engine, zero bridge budget, no stats
-        // logger — is pinned in EngineV2PrefixCacheWiringTests).
+        // Fleet default (v0.7.5): dormant — nothing cached without opt-in.
+        #expect(!PrefixCachePolicy.isEnabled(environment: [:]),
+            "the prefix cache must ship dormant by default")
+
+        // Even an OPTED-IN gemma box gets no budget: the adoption bound
+        // (25 sliding × 1024 = 25,600) dwarfs real prompt lengths, so the
+        // funding gate says no and the full grant stays with live KV. Pin
+        // the whole unfunded composition the slot factory executes: gate
+        // verdict → zero requested budget → carve passthrough → no cache
+        // instance (the slot-factory plumbing itself — raw grant to the
+        // engine, zero bridge budget, no stats logger — is pinned in
+        // EngineV2PrefixCacheWiringTests).
         let bound = PrefixCachePolicy.adoptionBoundTokens(layerKinds: live.layerKinds)
         #expect(bound == 25600, "gemma-4-qat adoption bound drifted: \(bound)")
         #expect(!PrefixCachePolicy.shouldFund(adoptionBoundTokens: bound, environment: [:]),
@@ -492,11 +507,17 @@ struct EngineV2PrefixCacheLiveTests {
                 "config-only adoption bound diverged from the loaded model's")
         }
 
-        // FUNDED path under the operator override
-        // (DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS=26000): keeps
-        // the hybrid-window requiredRecompute exactness + hit accounting +
-        // batch invariance exercised on real gemma weights.
-        let overrideEnv = ["DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS": "26000"]
+        // FUNDED path under the full operator override — a box running
+        // DARKBLOOM_PREFIX_CACHE=1 (opt-in past the dormant default) AND
+        // DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS=26000 (past the
+        // funding gate): keeps the hybrid-window requiredRecompute
+        // exactness + hit accounting + batch invariance exercised on real
+        // gemma weights.
+        let overrideEnv = [
+            "DARKBLOOM_PREFIX_CACHE": "1",
+            "DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS": "26000",
+        ]
+        #expect(PrefixCachePolicy.isEnabled(environment: overrideEnv))
         #expect(PrefixCachePolicy.shouldFund(
             adoptionBoundTokens: bound, environment: overrideEnv),
             "the override must make gemma fundable for this scenario")

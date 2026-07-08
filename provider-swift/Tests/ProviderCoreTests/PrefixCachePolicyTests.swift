@@ -18,22 +18,24 @@ struct PrefixCachePolicyTests {
 
     // MARK: - Env gate
 
-    @Test("isEnabled: default ON; only an explicit opt-out disables")
+    @Test("isEnabled: DORMANT by default; only an explicit opt-in enables (v0.7.5 ship decision)")
     func envGate() {
-        // Unset ⇒ enabled (default ON — the legacy contract).
-        #expect(PrefixCachePolicy.isEnabled(environment: [:]))
-        // Explicit opt-outs, incl. case/whitespace normalization.
-        for off in ["0", "false", "off", "no", " 0 ", "FALSE", "Off", "NO"] {
-            #expect(
-                !PrefixCachePolicy.isEnabled(environment: ["DARKBLOOM_PREFIX_CACHE": off]),
-                "\(off) must disable")
-        }
-        // Anything else — including affirmatives and garbage — keeps the
-        // default ON (identical to the legacy env check).
-        for on in ["1", "true", "yes", "on", "junk", ""] {
+        // Unset ⇒ DORMANT (RAM is for live serving; the cache returns
+        // default-on with the encrypted SSD tier).
+        #expect(!PrefixCachePolicy.isEnabled(environment: [:]))
+        // Explicit opt-ins, incl. case/whitespace normalization.
+        for on in ["1", "true", "yes", "on", " 1 ", "TRUE", "Yes", "ON"] {
             #expect(
                 PrefixCachePolicy.isEnabled(environment: ["DARKBLOOM_PREFIX_CACHE": on]),
-                "\(on) must keep the cache enabled")
+                "\(on) must enable")
+        }
+        // Everything else — explicit offs, garbage, empty — stays dormant
+        // (fail-safe direction is OFF: a typo can never opt a box into the
+        // SEC-035 channel by accident).
+        for off in ["0", "false", "off", "no", "junk", ""] {
+            #expect(
+                !PrefixCachePolicy.isEnabled(environment: ["DARKBLOOM_PREFIX_CACHE": off]),
+                "\(off) must keep the cache dormant")
         }
     }
 

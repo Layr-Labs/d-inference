@@ -12,6 +12,20 @@
 // the in-process cross-tenant TTFT oracle remains the SEC-035 accepted
 // risk, narrowed by per-request `cacheSalt` scoping).
 //
+// DORMANT BY DEFAULT (v0.7.5 ship decision): resident RAM belongs to LIVE
+// serving — every byte a resident cache retains is a byte of KV
+// concurrency the box cannot serve — so the cache stays OFF unless a box
+// is explicitly opted in with `DARKBLOOM_PREFIX_CACHE=1` (plus an optional
+// `DARKBLOOM_PREFIX_CACHE_MAX_GB`) for experiments. The gate, budget,
+// funding-gate, and carve machinery below stay fully wired for opted-in
+// boxes and as the foundation for the successor design: an ENCRYPTED SSD
+// offload tier (write-behind donation on completion, read-through
+// adoption, HMAC-keyed prefix hashes) that caches without occupying
+// serving RAM. That tier is reviewed under T-041 before it ships. This
+// shared gate governs the legacy engine's cache too until the legacy
+// deletion pass, so v0.7.5 ships with NO resident prefix cache anywhere
+// by default.
+//
 // PER-MODEL FUNDING GATE (the adoption bound): the engine only ADOPTS a
 // cached prefix past `windowCount × maxWindow` matched tokens — every
 // stacked sliding-window layer compounds the recompute span
@@ -41,10 +55,10 @@ import MLXLMCommon
 
 enum PrefixCachePolicy {
 
-    /// Master gate, shared with the legacy engine: the prefix cache is ON
-    /// BY DEFAULT; an operator opts OUT with `DARKBLOOM_PREFIX_CACHE=0`
-    /// (also `false`/`off`/`no`). See T-041 — untrusted multi-tenant
-    /// deployments must set this.
+    /// Master gate, shared with the legacy engine: the prefix cache is
+    /// DORMANT BY DEFAULT as of v0.7.5 — a box opts IN with
+    /// `DARKBLOOM_PREFIX_CACHE=1` (also `true`/`yes`/`on`); absent, `0`,
+    /// or anything unrecognized keeps it off. See T-041 and the header.
     static let environmentFlag = "DARKBLOOM_PREFIX_CACHE"
 
     /// In-memory budget override (GB). Unset/invalid ⇒ the default policy
@@ -70,15 +84,18 @@ enum PrefixCachePolicy {
 
     // MARK: - Gate
 
-    /// The exact `DARKBLOOM_PREFIX_CACHE` semantics the legacy engine has
-    /// always used (default ON; only an explicit opt-out disables).
+    /// OPT-IN as of v0.7.5 (ship decision: resident RAM is for live
+    /// serving; caching returns by default with the encrypted SSD tier).
+    /// Only an explicit affirmative enables; absent / `0` / `false` /
+    /// `off` / `no` / anything unrecognized keeps the cache dormant.
+    /// Fail-safe direction is OFF: a typo'd value can only ever leave a
+    /// box uncached, never opt it into the SEC-035 channel by accident.
     static func isEnabled(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
         let env = environment[environmentFlag]?
             .trimmingCharacters(in: .whitespaces).lowercased()
-        let disabled = env == "0" || env == "false" || env == "off" || env == "no"
-        return !disabled
+        return env == "1" || env == "true" || env == "yes" || env == "on"
     }
 
     // MARK: - Budget

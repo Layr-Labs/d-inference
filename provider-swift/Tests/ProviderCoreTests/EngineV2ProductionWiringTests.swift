@@ -819,9 +819,11 @@ struct EngineV2MultiSlotCapacityTests {
                     // The default allowlist is now the exact prod checkpoint ids;
                     // these wiring fixtures use family-glob test ids, so widen it.
                     "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*,gpt-oss*",
-                    // This test pins the PURE fleet-sizing composition, so the
-                    // (default-on) prefix-cache carve is opted out; the carve's
-                    // own composition is pinned in EngineV2PrefixCacheWiringTests.
+                    // This test pins the PURE fleet-sizing composition; the
+                    // prefix cache is dormant by default (v0.7.5) and this
+                    // explicit 0 keeps it so even if the default flips again.
+                    // The carve's own composition is pinned in
+                    // EngineV2PrefixCacheWiringTests.
                     "DARKBLOOM_PREFIX_CACHE": "0",
                 ],
                 eosTokenIds: [2],

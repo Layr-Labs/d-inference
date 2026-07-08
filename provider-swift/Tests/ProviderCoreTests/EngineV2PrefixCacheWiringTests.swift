@@ -142,7 +142,10 @@ private let gib = 1_073_741_824
 
 /// Hook env shared by the carve tests: v2 forced on, family globs widened,
 /// cache budget pinned to 1 GiB so assertions are machine-independent.
-private func carveEnv(prefixCache: String? = nil, maxGB: String? = "1") -> [String: String] {
+/// The cache is DORMANT by default as of v0.7.5, so funded-path tests must
+/// opt in explicitly — the helper's default `prefixCache: "1"` models an
+/// opted-in box; pass nil to leave the flag ABSENT (the fleet default).
+private func carveEnv(prefixCache: String? = "1", maxGB: String? = "1") -> [String: String] {
     var env = [
         "DARKBLOOM_ENGINE_V2": "1",
         "DARKBLOOM_ENGINE_V2_MODELS": "gemma-4*,gpt-oss*",
@@ -165,7 +168,45 @@ struct EngineV2PrefixCacheCarveTests {
             existingEngineKVCapacities: [], configReserveBytes: UInt64(1 * gib))
     }
 
-    @Test("gate off (DARKBLOOM_PREFIX_CACHE=0): no carve, zero budget on the bridge")
+    @Test("DEFAULT (env absent): DORMANT — no carve, full grant to live KV, zero budget")
+    func defaultDormantNoCarve() async throws {
+        // The v0.7.5 fleet default: DARKBLOOM_PREFIX_CACHE is ABSENT, so the
+        // slot factory must not carve anything — the engine is handed the
+        // raw grant, the bridge carries no budget, and (production path)
+        // no cache instance or stats logger would exist: the zero budget
+        // pinned here is exactly what makes `makePrefixCache` return nil
+        // and the stats-logger start get skipped in `makeEngineV2BridgeForSlot`.
+        let loop = try makeLoop()
+        await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
+        let recorder = GrantRecorder()
+        await loop.setEngineV2SlotHooksForTesting(
+            ProviderLoop.EngineV2SlotHooks(
+                environment: carveEnv(prefixCache: nil),  // flag ABSENT
+                eosTokenIds: [2],
+                makeEngine: { _, kv in
+                    recorder.record(kv)
+                    return PrefixScriptedEngine(script: .reportCapacity(kv))
+                }))
+
+        let weights = 1 * gib
+        let scheduler = BatchScheduler()
+        await scheduler._setModelWeightBytesForTest(weights)
+        await scheduler._setKVRatesForTest(kvBytesPerToken: 4096, fp16KVBytesPerToken: 4096)
+        let bridge = try #require(await loop.makeEngineV2BridgeForSlotForTesting(
+            modelId: "gpt-oss-20b",
+            modelType: "gpt_oss",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(PrefixStubTokenizer()),
+            scheduler: scheduler))
+
+        #expect(recorder.granted == [rawGrant(weights: weights)])
+        #expect(bridge.prefixCacheBudgetBytes == 0)
+        #expect(await bridge.slotKVBytesClaim() == rawGrant(weights: weights))
+        // The composition the production path executes on this budget:
+        #expect(PrefixCachePolicy.makePrefixCache(modelId: "gpt-oss-20b", budgetBytes: 0) == nil)
+    }
+
+    @Test("explicit off (DARKBLOOM_PREFIX_CACHE=0): same dormant outcome")
     func gateOffNoCarve() async throws {
         let loop = try makeLoop()
         await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
@@ -243,7 +284,7 @@ struct EngineV2PrefixCacheCarveTests {
         let recorder = GrantRecorder()
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
-                environment: carveEnv(),  // default-on gate, 1 GiB budget
+                environment: carveEnv(),  // opted-in box (=1), 1 GiB budget
                 eosTokenIds: [2],
                 makeEngine: { _, kv in
                     recorder.record(kv)

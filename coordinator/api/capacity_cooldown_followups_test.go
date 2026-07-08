@@ -49,7 +49,7 @@ func TestCapacityCooldown404NotLoadedStrikes(t *testing.T) {
 	lazy := makeRoutableProvider(t, reg, "p-lazy-load", model)
 	for round := 0; round < 4; round++ {
 		for i := 0; i < 3; i++ {
-			srv.noteInferenceError(lazy.ID, capacityTestPending(model, lazy.ID, round*10+i), http.StatusNotFound, notLoaded)
+			srv.noteInferenceError(lazy.ID, capacityTestPending(model, lazy.ID, round*10+i), http.StatusNotFound, notLoaded, "")
 		}
 		srv.noteInferenceSuccess(capacityTestPending(model, lazy.ID, round))
 	}
@@ -60,7 +60,7 @@ func TestCapacityCooldown404NotLoadedStrikes(t *testing.T) {
 	// Black hole flavor: 404s forever, zero accepts — trips at the threshold.
 	stuck := makeRoutableProvider(t, reg, "p-never-loads", model)
 	for i := 0; i < 5; i++ {
-		srv.noteInferenceError(stuck.ID, capacityTestPending(model, stuck.ID, i), http.StatusNotFound, notLoaded)
+		srv.noteInferenceError(stuck.ID, capacityTestPending(model, stuck.ID, i), http.StatusNotFound, notLoaded, "")
 	}
 	if !reg.CapacityCooldownActive(stuck.ID, model) {
 		t.Fatal("a box that 404s 'not loaded' forever with zero accepts did not trip")
@@ -70,7 +70,7 @@ func TestCapacityCooldown404NotLoadedStrikes(t *testing.T) {
 	// request-shape error) never strikes, no matter how many arrive.
 	notFound := makeRoutableProvider(t, reg, "p-model-not-found", model)
 	for i := 0; i < 10; i++ {
-		srv.noteInferenceError(notFound.ID, capacityTestPending(model, notFound.ID, i), http.StatusNotFound, "model not found")
+		srv.noteInferenceError(notFound.ID, capacityTestPending(model, notFound.ID, i), http.StatusNotFound, "model not found", "")
 	}
 	if reg.CapacityCooldownActive(notFound.ID, model) {
 		t.Fatal("request-shape 404 'model not found' tripped the capacity cooldown")
@@ -98,7 +98,7 @@ func TestCapacityRateExcludesColdModelMiss(t *testing.T) {
 	// must stay empty.
 	cold := makeRoutableProvider(t, reg, "p-cold-miss", model)
 	for i := 0; i < sampleFloor; i++ {
-		srv.noteInferenceError(cold.ID, capacityTestPending(model, cold.ID, i), http.StatusNotFound, notLoaded)
+		srv.noteInferenceError(cold.ID, capacityTestPending(model, cold.ID, i), http.StatusNotFound, notLoaded, "")
 		srv.noteInferenceSuccess(capacityTestPending(model, cold.ID, i))
 	}
 	if rate, samples := reg.CapacityRejectRate(cold.ID, model); samples != 0 || rate != 0 {
@@ -109,7 +109,7 @@ func TestCapacityRateExcludesColdModelMiss(t *testing.T) {
 	// the rate — the mechanism the penalty exists for.
 	gray := makeRoutableProvider(t, reg, "p-graybox", model)
 	for i := 0; i < sampleFloor; i++ {
-		srv.noteInferenceError(gray.ID, capacityTestPending(model, gray.ID, i), http.StatusServiceUnavailable, genuine)
+		srv.noteInferenceError(gray.ID, capacityTestPending(model, gray.ID, i), http.StatusServiceUnavailable, genuine, "")
 		srv.noteInferenceSuccess(capacityTestPending(model, gray.ID, i))
 	}
 	if rate, samples := reg.CapacityRejectRate(gray.ID, model); samples == 0 || rate <= 0 {
@@ -142,7 +142,7 @@ func TestCapacityRejectDeterministicBatchBudgetArmsNoGrayBoxState(t *testing.T) 
 	// binding term was the context, identical fleet-wide.
 	det := makeRoutableProvider(t, reg, "p-oversized-prompt", model)
 	setProviderModelBudget(t, reg, det.ID, model, 5_000_000)
-	srv.noteInferenceError(det.ID, capacityTestPending(model, det.ID, 0), http.StatusServiceUnavailable, batchBudget)
+	srv.noteInferenceError(det.ID, capacityTestPending(model, det.ID, 0), http.StatusServiceUnavailable, batchBudget, "")
 	if reg.BudgetClampActive(det.ID, model) {
 		t.Fatal("a request-deterministic batch-budget reject must not arm the budget clamp")
 	}
@@ -152,7 +152,7 @@ func TestCapacityRejectDeterministicBatchBudgetArmsNoGrayBoxState(t *testing.T) 
 	// ...but repeated ones with zero interleaved accepts still trip the
 	// black-hole cooldown (the budget-misreporting signature).
 	for i := 1; i < 5; i++ {
-		srv.noteInferenceError(det.ID, capacityTestPending(model, det.ID, i), http.StatusServiceUnavailable, batchBudget)
+		srv.noteInferenceError(det.ID, capacityTestPending(model, det.ID, i), http.StatusServiceUnavailable, batchBudget, "")
 	}
 	if !reg.CapacityCooldownActive(det.ID, model) {
 		t.Fatal("repeated deterministic batch-budget rejects with zero accepts must still trip the cooldown")
@@ -163,12 +163,71 @@ func TestCapacityRejectDeterministicBatchBudgetArmsNoGrayBoxState(t *testing.T) 
 	// provider-specific capacity signal: full gray-box state.
 	pressured := makeRoutableProvider(t, reg, "p-pressured", model)
 	setProviderModelBudget(t, reg, pressured.ID, model, 90_000)
-	srv.noteInferenceError(pressured.ID, capacityTestPending(model, pressured.ID, 0), http.StatusServiceUnavailable, batchBudget)
+	srv.noteInferenceError(pressured.ID, capacityTestPending(model, pressured.ID, 0), http.StatusServiceUnavailable, batchBudget, "")
 	if !reg.BudgetClampActive(pressured.ID, model) {
 		t.Fatal("a node-pressured batch-budget reject (budget < context) must arm the budget clamp")
 	}
 	if _, samples := reg.CapacityRejectRate(pressured.ID, model); samples != 1 {
 		t.Fatalf("a node-pressured batch-budget reject must derate: samples=%d, want 1", samples)
+	}
+}
+
+// The gray-box request-shape classification must TRUST a provider's
+// structured ErrorReason over the stale heartbeat-budget heuristic, exactly
+// like the dispatch failover does (Codex review of #523, round 4): a newer
+// provider that says request_exceeds_node_budget with a "batch token budget"
+// string is reporting a node-specific capacity failure — even when its stale
+// reported budget still reads >= the model context — so the reject must feed
+// the full gray-box state, not be misrouted to the strike-only request-shape
+// path. Conversely an explicit request_exceeds_context reason is request-
+// deterministic regardless of string or budget.
+func TestGrayBoxClassificationTrustsStructuredReason(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const model = "reasoned-batch-budget-model"
+	const batchBudget = "token_budget_exhausted: request exceeds batch token budget"
+	registerModelContext(t, st, model, 131072)
+
+	// Structured node-specific reason + stale budget >= context: the reason
+	// wins — full gray-box state (clamp + rate), not the request-shape path.
+	nodeBudget := makeRoutableProvider(t, reg, "p-reasoned-node", model)
+	setProviderModelBudget(t, reg, nodeBudget.ID, model, 5_000_000)
+	srv.noteInferenceError(nodeBudget.ID, capacityTestPending(model, nodeBudget.ID, 0),
+		http.StatusServiceUnavailable, batchBudget, "request_exceeds_node_budget")
+	if !reg.BudgetClampActive(nodeBudget.ID, model) {
+		t.Fatal("a structured request_exceeds_node_budget reason must feed the clamp despite the stale >=context budget snapshot")
+	}
+	if _, samples := reg.CapacityRejectRate(nodeBudget.ID, model); samples != 1 {
+		t.Fatalf("a structured node-budget reject must derate: samples=%d, want 1", samples)
+	}
+
+	// No reason (legacy provider): the budget heuristic still applies —
+	// budget >= context reads request-deterministic, strike-only.
+	legacy := makeRoutableProvider(t, reg, "p-reasonless", model)
+	setProviderModelBudget(t, reg, legacy.ID, model, 5_000_000)
+	srv.noteInferenceError(legacy.ID, capacityTestPending(model, legacy.ID, 0),
+		http.StatusServiceUnavailable, batchBudget, "")
+	if reg.BudgetClampActive(legacy.ID, model) {
+		t.Fatal("reasonless deterministic batch-budget reject must stay strike-only (heuristic unchanged)")
+	}
+
+	// Explicit request_exceeds_context reason on a NON-batch capacity string
+	// from a pressured-looking provider: request-deterministic — no gray-box
+	// state, even though the budget heuristic alone would have said transient.
+	ctxReason := makeRoutableProvider(t, reg, "p-reasoned-ctx", model)
+	setProviderModelBudget(t, reg, ctxReason.ID, model, 90_000)
+	srv.noteInferenceError(ctxReason.ID, capacityTestPending(model, ctxReason.ID, 0),
+		http.StatusServiceUnavailable,
+		"token_budget_exhausted: request requires 200000 tokens but only 90000 available",
+		"request_exceeds_context")
+	if reg.BudgetClampActive(ctxReason.ID, model) {
+		t.Fatal("an explicit request_exceeds_context reason must not arm the clamp")
+	}
+	if _, samples := reg.CapacityRejectRate(ctxReason.ID, model); samples != 0 {
+		t.Fatalf("an explicit request_exceeds_context reason must not derate: samples=%d, want 0", samples)
 	}
 }
 

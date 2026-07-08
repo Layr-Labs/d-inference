@@ -560,9 +560,12 @@ func TestBudgetClampInactiveEntriesAreDeleted(t *testing.T) {
 	t.Run("budgetless-armed entry dropped on the next accept", func(t *testing.T) {
 		r := New(testLogger())
 		p := makeSchedulerProvider(t, r, "budgetless-drop", model, 100) // no token budget
-		r.RecordCapacityRejectLifecycle(p.ID, model)
+		// A generic capacity reject during a budgetless window arms a
+		// never-gating entry (lifecycle misses no longer touch the clamp at
+		// all — see RecordCapacityRejectLifecycle).
+		r.RecordCapacityReject(p.ID, model)
 		if !clampEntryExists(r, p.ID) {
-			t.Fatal("setup: lifecycle reject must have armed a (never-gating) entry")
+			t.Fatal("setup: budgetless reject must have armed a (never-gating) entry")
 		}
 		r.RecordCapacityAccept(p.ID, model)
 		if clampEntryExists(r, p.ID) {
@@ -590,6 +593,81 @@ func TestBudgetClampInactiveEntriesAreDeleted(t *testing.T) {
 			t.Fatal("fully released clamp entry must be deleted so the pair returns to the accept fast path")
 		}
 	})
+}
+
+// A TTL-EXPIRED clamp entry must not donate its budgetReported state to a
+// later budgetless re-arm (Codex review of #523, round 4): the expired cycle
+// already failed open, and inheriting its sticky bit would turn a benign
+// budgetless reject (cold "not loaded" miss, pre-heartbeat window) into a
+// budget-armed clamp that gates for another TTL — exactly what the
+// budgetless-armed exemption forbids.
+func TestBudgetClampExpiredEntryDoesNotDonateBudgetState(t *testing.T) {
+	r := New(testLogger())
+	const model = "gemma-4-26b-qat-4bit"
+	p := makeTokenBudgetProvider(t, r, "expired-donor", model, 100, grayBoxBudgetUsed, grayBoxBudgetMax, 100)
+
+	// Budget-reporting clamp arms, then only TTL-fails open (no accept, no
+	// heartbeat — the entry lingers).
+	r.RecordCapacityReject(p.ID, model)
+	ageBudgetClamp(r, p.ID, model, defaultBudgetClampTTL+time.Second)
+	if r.BudgetClampActive(p.ID, model) {
+		t.Fatal("setup: expired clamp must have failed open")
+	}
+
+	// The pair enters a budgetless window (pre-heartbeat / unload) and a
+	// benign reject re-arms. The fresh arm must read the CURRENT budgetless
+	// state, not inherit budgetReported=true from the expired cycle.
+	p.mu.Lock()
+	p.BackendCapacity = nil
+	p.mu.Unlock()
+	r.RecordCapacityReject(p.ID, model)
+	if r.BudgetClampActive(p.ID, model) {
+		t.Fatal("budgetless re-arm inherited budgetReported from the TTL-expired entry and gated the pair")
+	}
+	if sel, _ := reserveOnce(r, model, "post-expiry-budgetless"); sel == nil {
+		t.Fatal("a budgetless reject after an expired clamp cycle must not block admission")
+	}
+}
+
+// A lifecycle cold-404 miss must not touch the budget clamp EVEN when the
+// stale heartbeat snapshot still reports the slot's budget (Codex review of
+// #523, round 4): a provider that idle-unloads the model after its last
+// heartbeat (the normal 1h idle-unload + lazy-reload fleet cycle) still SHOWS
+// budget in the snapshot, so an exemption keyed on snapshot budgetless-ness
+// arms a real gating clamp from a routine re-warm 404 — and with the clamp
+// blocking dispatch, no accept can prove release until TTL. The forever-404
+// black hole stays covered by the zero-accept cooldown.
+func TestBudgetClampLifecycleMissWithStaleBudgetSnapshotDoesNotClamp(t *testing.T) {
+	r := New(testLogger())
+	const model = "gemma-4-26b-qat-4bit"
+	// Stale snapshot: the slot still reports a healthy budget even though the
+	// model was idle-unloaded (which is why the 404 happened).
+	p := makeTokenBudgetProvider(t, r, "rewarm-box", model, 100, grayBoxBudgetUsed, grayBoxBudgetMax, 100)
+
+	r.RecordCapacityRejectLifecycle(p.ID, model)
+	if r.BudgetClampActive(p.ID, model) {
+		t.Fatal("a lifecycle cold-404 must not arm a gating clamp from the stale budget snapshot")
+	}
+	r.mu.RLock()
+	_, armed := r.budgetClamps[capacityRejectKey{ProviderID: r.faultKeyLocked(p.ID), ModelID: model}]
+	r.mu.RUnlock()
+	if armed {
+		t.Fatal("a lifecycle cold-404 must not touch the clamp map at all")
+	}
+	if sel, _ := reserveOnce(r, model, "rewarm"); sel == nil {
+		t.Fatal("a re-warming pair must stay admittable (the reload dispatch is what warms it)")
+	}
+	// The black-hole safety is unchanged: forever-404 (zero accepts) still
+	// trips the cooldown, and the rate window stays untouched.
+	for i := 0; i < defaultCapacityCooldownThreshold-1; i++ {
+		r.RecordCapacityRejectLifecycle(p.ID, model)
+	}
+	if !r.CapacityCooldownActive(p.ID, model) {
+		t.Fatal("forever-404 with zero accepts must still trip the black-hole cooldown")
+	}
+	if _, samples := r.CapacityRejectRate(p.ID, model); samples != 0 {
+		t.Fatalf("lifecycle misses must not derate: samples=%d, want 0", samples)
+	}
 }
 
 // setAttestationAndBind completes a valid attestation for an already-registered

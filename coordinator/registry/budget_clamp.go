@@ -134,10 +134,11 @@ type budgetClampEntry struct {
 // recordBudgetClampLocked arms (or re-arms) the pair's budget clamp on a
 // capacity-shaped rejection. A re-reject is fresh evidence: the clamp window
 // restarts and the accept proof resets. budgetReported says whether the pair
-// currently reports a token budget; it is STICKY across re-arms (a re-reject
-// during a reconnect's budgetless window must not downgrade the identity's
-// demonstrated budget reporting). Caller holds the r.mu write lock (called
-// from RecordCapacityReject).
+// currently reports a token budget; it is STICKY across re-arms of a LIVE
+// clamp (a re-reject during a reconnect's budgetless window must not downgrade
+// the identity's demonstrated budget reporting) but is NOT inherited from a
+// TTL-expired entry — see the in-body comment. Caller holds the r.mu write
+// lock (called from RecordCapacityReject).
 func (r *Registry) recordBudgetClampLocked(key capacityRejectKey, budgetReported bool, now time.Time) {
 	if !r.budgetClampCfg.Enabled {
 		return
@@ -152,7 +153,15 @@ func (r *Registry) recordBudgetClampLocked(key capacityRejectKey, budgetReported
 			}
 		}
 	}
-	if prev, ok := r.budgetClamps[key]; ok {
+	// Sticky-or the demonstrated budget reporting from the PREVIOUS entry —
+	// but only while that entry is still inside its TTL. The sticky-or exists
+	// so a re-reject during a live clamp's budgetless reconnect window cannot
+	// downgrade the identity's demonstrated reporting; a TTL-EXPIRED entry is a
+	// clamp cycle that already failed open, and inheriting its budgetReported
+	// would let a later benign budgetless reject (cold "not loaded" miss,
+	// pre-heartbeat window) re-arm as stale-budget dishonesty and gate the pair
+	// for another TTL — exactly what the budgetless-armed exemption forbids.
+	if prev, ok := r.budgetClamps[key]; ok && now.Before(prev.clampedAt.Add(r.budgetClampCfg.TTL)) {
 		budgetReported = budgetReported || prev.budgetReported
 	}
 	r.budgetClamps[key] = &budgetClampEntry{clampedAt: now, budgetReported: budgetReported}

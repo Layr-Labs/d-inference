@@ -174,18 +174,26 @@ func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped boo
 }
 
 // RecordCapacityRejectLifecycle records a BENIGN lifecycle capacity miss — a
-// cold "model not loaded" lazy-load 404 on first touch. It feeds the
-// black-hole cooldown (a box that 404s FOREVER with zero accepts is still a
-// black hole, caught by the zero-interleaved-accepts discriminator) and,
-// harmlessly, the budget clamp (a budgetless-armed clamp never gates — see
-// budgetClampActiveLocked), but it does NOT derate the pair in the gray-box
-// capacity-503 RATE window. That window deliberately has NO accept-reset, so
-// counting a healthy box's normal reload misses would accumulate a false
-// reject rate and penalize it as if its reported budget were dishonest. The
-// api layer routes cold "not loaded"/"no model loaded" rejections here;
-// genuine capacity/token-budget 503s go to RecordCapacityReject and DO derate.
+// cold "model not loaded" lazy-load 404 on first touch, or the identical miss
+// after the 1h idle-unload (the normal fleet re-warm cycle). It feeds ONLY the
+// black-hole cooldown: a box that 404s FOREVER with zero accepts is still a
+// black hole, caught by the zero-interleaved-accepts discriminator.
+//
+// It arms NEITHER gray-box tracker. Not the rate window (no accept-reset, so
+// counting normal reload misses would accumulate a false reject rate) — and
+// not the budget clamp either: the lifecycle classification takes PRECEDENCE
+// over whatever the budget snapshot says. A provider that idle-unloaded the
+// model AFTER its last heartbeat still SHOWS the slot budget in the stale
+// snapshot, so keying the exemption on snapshot budgetless-ness (arming a
+// "budgetless" entry) would arm a REAL gating clamp from a routine re-warm
+// 404 — and with the clamp blocking dispatch, no accept could land to prove
+// release, stranding the pair until TTL. A cold miss is a statement about
+// model residency, never about token-budget honesty, so it must not touch the
+// clamp regardless of the snapshot. The api layer routes cold "not loaded"/
+// "no model loaded" rejections here; genuine capacity/token-budget 503s go to
+// RecordCapacityReject and feed everything.
 func (r *Registry) RecordCapacityRejectLifecycle(providerID, modelID string) (tripped bool) {
-	return r.recordCapacityReject(providerID, modelID, false, true)
+	return r.recordCapacityReject(providerID, modelID, false, false)
 }
 
 // RecordCapacityRejectRequestShape records a capacity-vocabulary rejection the

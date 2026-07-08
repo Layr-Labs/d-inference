@@ -169,6 +169,110 @@ func TestAdminRejectModelsReplaceAndLiveFlip(t *testing.T) {
 	}
 }
 
+// TestAdminRejectModelsWireShape pins the exact JSON keys of both responses so
+// the typed response structs can never silently drift from the documented wire
+// shape ({"models":[...]} for GET, {"models":[...],"previous":[...]} for PUT).
+func TestAdminRejectModelsWireShape(t *testing.T) {
+	ts, _ := setupAdminRejectModels(t)
+
+	assertKeys := func(body string, want ...string) {
+		t.Helper()
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(body), &raw); err != nil {
+			t.Fatalf("body %s: %v", body, err)
+		}
+		if len(raw) != len(want) {
+			t.Fatalf("body %s has %d keys, want %v", body, len(raw), want)
+		}
+		for _, k := range want {
+			if _, ok := raw[k]; !ok {
+				t.Fatalf("body %s missing key %q, want keys %v", body, k, want)
+			}
+		}
+	}
+
+	status, body := rejectModelsCall(t, ts, http.MethodPut, "admin-secret", `{"models":["mlx-community/Qwen3.5-0.8B-MLX-4bit"]}`)
+	if status != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200; body = %s", status, body)
+	}
+	assertKeys(body, "models", "previous")
+
+	status, body = rejectModelsCall(t, ts, http.MethodGet, "admin-secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200; body = %s", status, body)
+	}
+	assertKeys(body, "models")
+}
+
+// TestAdminRejectModelsValidation drives the PUT input hardening through the
+// real HTTP path: bounded count, bounded name length, no control characters,
+// '/' explicitly legal (real model IDs contain it), and a rejected payload
+// leaves the live set untouched.
+func TestAdminRejectModelsValidation(t *testing.T) {
+	longName := strings.Repeat("a", maxRejectModelNameLen+1)
+	tooMany := make([]string, maxRejectModelsCount+1)
+	for i := range tooMany {
+		tooMany[i] = "m"
+	}
+	tooManyBody, _ := json.Marshal(map[string][]string{"models": tooMany})
+
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantSubstr string
+	}{
+		{"slash in model ID is legal", `{"models":["mlx-community/Qwen3.5-0.8B-MLX-4bit"]}`, http.StatusOK, "mlx-community/Qwen3.5-0.8B-MLX-4bit"},
+		{"max-length name accepted", `{"models":["` + strings.Repeat("a", maxRejectModelNameLen) + `"]}`, http.StatusOK, ""},
+		{"blank entries dropped, not errors", `{"models":["  ",""]}`, http.StatusOK, `"models":[]`},
+		{"over-long name rejected", `{"models":["` + longName + `"]}`, http.StatusBadRequest, "exceeds"},
+		{"NUL control character rejected", `{"models":["bad\u0000name"]}`, http.StatusBadRequest, "control character"},
+		{"newline control character rejected", `{"models":["bad\nname"]}`, http.StatusBadRequest, "control character"},
+		{"index reported for bad entry", `{"models":["ok","bad\tname"]}`, http.StatusBadRequest, "models[1]"},
+		{"too many entries rejected", string(tooManyBody), http.StatusBadRequest, "too many models"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, srv := setupAdminRejectModels(t)
+			sentinel := "pre-existing-model"
+			srv.SetRejectModels(map[string]bool{sentinel: true})
+
+			status, body := rejectModelsCall(t, ts, http.MethodPut, "admin-secret", tc.body)
+			if status != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", status, tc.wantStatus, body)
+			}
+			if tc.wantSubstr != "" && !strings.Contains(body, tc.wantSubstr) {
+				t.Fatalf("body = %s, want substring %q", body, tc.wantSubstr)
+			}
+			got := srv.RejectModels()
+			if tc.wantStatus == http.StatusBadRequest {
+				// A rejected payload must not half-apply: the live set is untouched.
+				if len(got) != 1 || got[0] != sentinel {
+					t.Fatalf("reject set after failed PUT = %v, want [%s] untouched", got, sentinel)
+				}
+			} else if len(got) != 0 && got[0] == sentinel {
+				t.Fatalf("reject set after successful PUT still holds sentinel: %v", got)
+			}
+		})
+	}
+}
+
+// TestValidateRejectModelName covers the invalid-UTF-8 leg directly: it is
+// unreachable through the HTTP path (encoding/json coerces invalid bytes to
+// U+FFFD during decode) but guards non-JSON callers such as the
+// EIGENINFERENCE_REJECT_MODELS startup seeding.
+func TestValidateRejectModelName(t *testing.T) {
+	if err := validateRejectModelName("mlx-community/Qwen3.5-0.8B-MLX-4bit"); err != nil {
+		t.Fatalf("real model ID rejected: %v", err)
+	}
+	if err := validateRejectModelName("bad\xff\xfename"); err == nil {
+		t.Fatal("invalid UTF-8 accepted, want error")
+	}
+	if err := validateRejectModelName("bad\x1bname"); err == nil {
+		t.Fatal("ESC control character accepted, want error")
+	}
+}
+
 // TestAdminRejectModelsConcurrentAccess exercises replace/read/shed-check under
 // the race detector: the set is read on every inference admission while the
 // admin endpoint replaces it.

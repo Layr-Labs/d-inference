@@ -269,6 +269,10 @@ func TestParseModelFloatMapSeedEntries(t *testing.T) {
 		{"multi_with_spaces", " gemma-4-26b-qat-4bit=14 , gpt-oss-20b=30 ", map[string]float64{"gemma-4-26b-qat-4bit": 14, "gpt-oss-20b": 30}},
 		{"uppercase_key_lowered", "GPT-OSS-20B=30", map[string]float64{"gpt-oss-20b": 30}},
 		{"bad_entries_skipped", "bogus,=3,x=,gemma=abc,gemma=0,gemma=-2,good=14.5", map[string]float64{"good": 14.5}},
+		// strconv.ParseFloat accepts NaN/±Inf spellings; NaN in particular
+		// slips past a naive v <= 0 filter (NaN comparisons are always false)
+		// and would drive the cap math to an implementation-defined integer.
+		{"non_finite_skipped", "a=NaN,b=+Inf,c=Inf,d=-Inf,e=Infinity,good=2", map[string]float64{"good": 2}},
 		{"all_invalid", "bogus,=3,x=abc", nil},
 	}
 	for _, tc := range cases {

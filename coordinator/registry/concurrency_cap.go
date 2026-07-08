@@ -136,8 +136,12 @@ func (r *Registry) QualityCapOvercommit() float64 {
 // parseModelFloatMap parses the "model=value,..." CSV form (mirroring
 // envModelIntMap for EIGENINFERENCE_WARM_POOL_MIN_WARM, with float values).
 // Keys are lowercased so lookups on resolved build ids match
-// case-insensitively. Malformed entries and non-positive values are skipped;
-// an empty or all-invalid input yields nil (no entries). Shared by the
+// case-insensitively. Malformed, non-positive, and non-finite values are all
+// skipped — strconv.ParseFloat happily yields NaN and ±Inf ("m=NaN" passes a
+// naive v <= 0 filter because NaN comparisons are always false), and either
+// one flows into int(math.Ceil(...)) / qualityConcurrency as an
+// implementation-defined integer, silently strangling the model to cap 1.
+// An empty or all-invalid input yields nil (no entries). Shared by the
 // per-model overcommit overrides (qualityCapOvercommitByModelEnv) and the
 // solo-TPS seed (modelSoloTPSSeedEnv).
 func parseModelFloatMap(raw string) map[string]float64 {
@@ -160,7 +164,7 @@ func parseModelFloatMap(raw string) map[string]float64 {
 			continue
 		}
 		v, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
-		if err != nil || v <= 0 {
+		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
 			continue
 		}
 		out[model] = v

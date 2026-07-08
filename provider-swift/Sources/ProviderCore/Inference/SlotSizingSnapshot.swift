@@ -126,7 +126,7 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
             // only need a rough rate (vision reservations in tests) still
             // get one. Such a model cannot build a v2 engine and is refused
             // at load — this value never sizes a real engine grant.
-            kvRate = BatchScheduler.resolvedKVBytesPerToken(
+            kvRate = KVEstimation.resolvedKVBytesPerToken(
                 architecture: architecture, weightBytes: facts.bytes)
         }
 

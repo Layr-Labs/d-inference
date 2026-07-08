@@ -343,9 +343,7 @@ extension BatchScheduler {
             return stream
         }
 
-        let maxTokens = Self.resolvedMaxTokens(
-            requested: request.max_tokens, defaultMaxTokens: defaultMaxTokens
-        )
+        let maxTokens = request.max_tokens ?? defaultMaxTokens
 
         let requestBudget = promptTokens.count + maxTokens
         // Flush the reclaimable pool before the token gate if it's tight (the gate

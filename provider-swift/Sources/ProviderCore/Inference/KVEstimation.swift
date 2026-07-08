@@ -2,16 +2,19 @@
 //
 // Pure, actor-state-free helpers that read a model's `config.json` and
 // turn the architecture metadata into a per-token KV-cache cost in
-// bytes. The result drives `BatchScheduler.tokenBudgetMax`, which gates
-// admission.
+// bytes.
+//
+// v0.7.5 role: the PRE-LOAD estimate only. The model-load gate sizes its
+// admission decision from `resolvedKVBytesPerToken` before weights are
+// resident; once the container is loaded, `SlotSizingSnapshot` re-derives
+// the fp16 rate from the model's own `cbv2LayerKinds` (engine truth) and
+// uses this parse only as the fallback for models that cannot build a v2
+// engine (they are refused at load). A drift unit test
+// (`SlotSizingDriftTests`) pins the two derivations against each other
+// for both production families.
 //
 // All functions are `static` on the `KVEstimation` enum (no instance,
-// no actor isolation). The closure inside `loadModel` calls these
-// directly without bouncing off the actor.
-//
-// `BatchScheduler` extends with a couple of static convenience
-// shims (`resolvedKVBytesPerToken`, `resolvedMaxTokens`) that take
-// scheduler-specific defaults and forward into this namespace.
+// no actor isolation).
 
 import Foundation
 
@@ -338,20 +341,9 @@ public enum KVEstimation {
     ]
 }
 
-// MARK: - BatchScheduler convenience shims
-//
-// These live on `BatchScheduler` so the call sites in `loadModel` /
-// `submit` read naturally (`Self.resolvedKVBytesPerToken(...)`), while
-// the implementations stay namespaced under `KVEstimation`.
+// MARK: - Resolved pre-load estimate
 
-extension BatchScheduler {
-
-    /// Default `max_tokens` resolution: caller-requested or scheduler
-    /// default. Trivial helper, kept static so the closure in `submit`
-    /// can call it without actor hop.
-    static func resolvedMaxTokens(requested: Int?, defaultMaxTokens: Int) -> Int {
-        requested ?? defaultMaxTokens
-    }
+extension KVEstimation {
 
     /// Decide per-token KV cost from architecture metadata, falling back
     /// to a weight-bytes heuristic when config.json is unavailable OR
@@ -398,16 +390,5 @@ extension BatchScheduler {
             return heuristicKV
         }
         return estimatedKV
-    }
-
-    // MARK: - Test shim
-    //
-    // `BatchingTests.swift` accesses these via `BatchScheduler.<name>`;
-    // forward into `KVEstimation` so the test file doesn't need to know
-    // about the namespace split.
-    static var maxConfigJSONBytes: Int { KVEstimation.maxConfigJSONBytes }
-
-    static func readBoundedConfigJSON(_ url: URL) -> Data? {
-        KVEstimation.readBoundedConfigJSON(url)
     }
 }

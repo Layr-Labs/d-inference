@@ -77,7 +77,7 @@ extension BatchScheduler {
             : await makePrefixCacheBackingIfEnabled(
                 modelId: modelId, weightHash: weightHash, architecture: architecture
             )
-        let kvBytesPerToken = resolvedKVBytesPerToken(
+        let kvBytesPerToken = KVEstimation.resolvedKVBytesPerToken(
             architecture: architecture,
             weightBytes: weightBytes,
             quantScheme: kvQuantScheme

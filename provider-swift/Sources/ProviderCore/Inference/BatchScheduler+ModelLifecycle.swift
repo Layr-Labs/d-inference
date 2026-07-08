@@ -307,7 +307,7 @@ extension BatchScheduler {
             architecture: snapshot.architecture,
             kvQuantEnabled: kvQuantEnabled
         )
-        self.kvBytesPerToken = Self.resolvedKVBytesPerToken(
+        self.kvBytesPerToken = KVEstimation.resolvedKVBytesPerToken(
             architecture: snapshot.architecture,
             weightBytes: snapshot.bytes,
             quantScheme: quantScheme
@@ -318,7 +318,7 @@ extension BatchScheduler {
         // cache), so reserveVisionRequest sizes its generation-KV reservation
         // from this un-quantized value rather than the quantized rate the
         // batched engine admits against.
-        self.fp16KVBytesPerToken = Self.resolvedKVBytesPerToken(
+        self.fp16KVBytesPerToken = KVEstimation.resolvedKVBytesPerToken(
             architecture: snapshot.architecture,
             weightBytes: snapshot.bytes
         )

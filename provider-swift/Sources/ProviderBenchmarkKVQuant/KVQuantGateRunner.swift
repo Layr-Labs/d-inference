@@ -127,7 +127,7 @@ public struct KVQuantGateRunner {
     /// Architecture-aware admission-capacity metrics. These are the closest cheap
     /// equivalent of the live scheduler's post-load accounting: parse the model
     /// shape, estimate loaded weight bytes from local weight files, compute
-    /// `kv_bytes_per_token` with `BatchScheduler.resolvedKVBytesPerToken`, then
+    /// `kv_bytes_per_token` with `KVEstimation.resolvedKVBytesPerToken`, then
     /// apply the same max-admitted-token formula used after model load.
     private static func liveCapacityMetrics(
         config: KVQuantGateConfig,
@@ -139,12 +139,12 @@ public struct KVQuantGateRunner {
         let weightBytes = localWeightBytes(in: modelDirectory)
         guard weightBytes > 0 else { return [:] }
 
-        let refKV = BatchScheduler.resolvedKVBytesPerToken(
+        let refKV = KVEstimation.resolvedKVBytesPerToken(
             architecture: architecture,
             weightBytes: weightBytes,
             quantScheme: engineScheme(for: config.reference)
         )
-        let candKV = BatchScheduler.resolvedKVBytesPerToken(
+        let candKV = KVEstimation.resolvedKVBytesPerToken(
             architecture: architecture,
             weightBytes: weightBytes,
             quantScheme: engineScheme(for: config.candidate)

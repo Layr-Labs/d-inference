@@ -660,5 +660,3 @@ func vlmBuildUserInputRejectsVideoFramePixels() async {
     }
     for u in tempFiles { try? FileManager.default.removeItem(at: u) }
 }
-
-

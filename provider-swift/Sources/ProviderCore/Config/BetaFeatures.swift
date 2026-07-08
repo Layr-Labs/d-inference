@@ -65,33 +65,20 @@ public enum BetaFeatures {
         BetaFeature(
             id: "kv-quant",
             title: "KV-cache quantization",
-            summary: "8-bit KV cache for ~1.9x more concurrent context on supported models.",
+            summary: "CURRENTLY REJECTED (v0.7.5 serves fp16-only KV; CBv2 fast-follow planned).",
             details: """
-            Stores attention keys/values in 8-bit for the validated model \
-            families (GPT-OSS and Gemma 4), roughly doubling the tokens a \
-            provider can admit at once. Other model families are unaffected and \
-            keep fp16. After enabling and restarting, confirm it engaged with \
-            `darkbloom logs` (look for the `kv-quant` logger).
+            The legacy engine's 8-bit KV schemes died with the one-engine \
+            release: v0.7.5 serves fp16-only KV caches, and a kv_quant = true \
+            is REJECTED with a startup WARN rather than silently ignored. A \
+            ContinuousBatchingV2-native KV-quant is a planned fast-follow; \
+            leaving this enabled opts you in when it ships.
             """,
             requiresRestart: true,
             read: { $0.backend.kvQuant },
             write: { enabled, config in config.backend.kvQuant = enabled }
-        ),
-        BetaFeature(
-            id: "adaptive-prefill",
-            title: "Adaptive prefill autotuning",
-            summary: "Learns provider-local cold-prefill chunk sizes from latency and safety signals.",
-            details: """
-            Replaces the fixed 512-token cold-prefill chunk with a conservative \
-            provider-local autotuner. It starts at 512, grows only after clean \
-            measured cold-prefill chunks, and backs off immediately on slow \
-            chunks, high memory pressure, or serious thermal pressure. Prefix \
-            cache restores and checkpoint hits do not train the policy.
-            """,
-            requiresRestart: true,
-            read: { $0.backend.adaptivePrefill },
-            write: { enabled, config in config.backend.adaptivePrefill = enabled }
         )
+        // (adaptive-prefill was retired with the legacy engine, v0.7.5 —
+        // CBv2 chunks prefill engine-internally.)
     ]
 
     /// Look up a feature by its CLI id (case-insensitive).

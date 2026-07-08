@@ -23,7 +23,7 @@ struct DoctorChecksTests {
             configFileExists: configFileExists,
             config: ProviderConfig(
                 provider: ProviderSettings(name: "doctor-unit-test", memoryReserveGB: 1),
-                backend: BackendSettings(continuousBatching: true, idleTimeoutMins: 0, maxModelSlots: 1),
+                backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1),
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
             ),
             hardware: hardware,

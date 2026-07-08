@@ -538,7 +538,7 @@ struct ProviderLoopPrefetchTests {
             models: models,
             config: ProviderConfig(
                 provider: ProviderSettings(name: "prefetch-unit-test", memoryReserveGB: 1),
-                backend: BackendSettings(continuousBatching: true, idleTimeoutMins: 0, maxModelSlots: maxModelSlots),
+                backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: maxModelSlots),
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
             )
         )
@@ -1194,7 +1194,7 @@ struct ProviderLoopPrefetchTests {
             models: models,
             config: ProviderConfig(
                 provider: ProviderSettings(name: "prefetch-unit-test", memoryReserveGB: 1),
-                backend: BackendSettings(continuousBatching: true, idleTimeoutMins: 0, maxModelSlots: 2),
+                backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 2),
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
             ),
             modelHashes: hashes

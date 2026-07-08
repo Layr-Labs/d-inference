@@ -28,10 +28,17 @@ extension ProviderLoop {
                 "\(retired) is retired and IGNORED as of v0.7.5 — the v2 engine serves "
                     + "everything; rollback is release-level, not a per-box switch")
         }
-        if loopConfig.config.backend.engineV2 == false {
+        for retired in loopConfig.config.backend.retiredKeysPresent {
             logger.warning(
-                "provider.toml sets engine_v2 = false, which is retired and IGNORED as of "
-                    + "v0.7.5 — the v2 engine serves everything; remove the key")
+                "provider.toml sets [backend] \(retired), which is retired and IGNORED as "
+                    + "of v0.7.5 (one engine) — remove the key")
+        }
+        if loopConfig.config.backend.kvQuant {
+            logger.warning(
+                "provider.toml sets kv_quant = true, which is REJECTED as of v0.7.5 — the "
+                    + "v2 engine serves fp16-only KV caches (the legacy KV-quant schemes "
+                    + "died with the legacy engine; a CBv2-native KV-quant fast-follow is "
+                    + "planned). The value is NOT silently honored.")
         }
 
         logger.info("darkbloom \(ProviderCore.version) starting")

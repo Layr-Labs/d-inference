@@ -87,7 +87,6 @@ extension Start {
                 maxCachedModels: Int(clamping: config.backend.maxModelSlots),
                 authToken: token,
                 kvQuant: config.backend.kvQuant,
-                adaptivePrefill: config.backend.adaptivePrefill,
                 hardware: hardware,
                 engineV2MaxConcurrent: config.backend.engineV2MaxConcurrent,
                 engineV2MaxConcurrentByModel: config.backend.engineV2MaxConcurrentByModel

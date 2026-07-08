@@ -36,13 +36,34 @@ public enum EngineV2Config {
     /// RETIRED allowlist override. Ignored.
     public static let environmentAllowlist = "DARKBLOOM_ENGINE_V2_MODELS"
 
-    /// Names of retired engine-selection env vars that are SET in the given
-    /// environment — startup emits one WARN per entry so operators notice
-    /// the knob no longer does anything.
+    /// Every env var retired by the one-engine release (v0.7.5 §1.12):
+    /// the v2 selection knobs plus the legacy engine's tuning/feature
+    /// switches (compiled decode, B=1 fast paths, GPT-OSS KV kernel,
+    /// adaptive-prefill cap, checkpoint-capture inflight cap) and the
+    /// legacy SSD prefix-cache tier's sizing knobs. All parse to nothing;
+    /// the RAM-tier `DARKBLOOM_PREFIX_CACHE*` envs (dormant default) and
+    /// the memory-cap envs remain live.
+    public static let retiredEnvironmentKeys: [String] = [
+        environmentFlag,
+        environmentAllowlist,
+        "DARKBLOOM_COMPILED_DECODE",
+        "DARKBLOOM_GEMMA_B1_FAST_PATH",
+        "DARKBLOOM_B1_GREEDY_FAST_PATH",
+        "DARKBLOOM_KV_GPTOSS_KERNEL",
+        "DARKBLOOM_ADAPTIVE_PREFILL_ALLOW_8192",
+        "DARKBLOOM_KV_CAPTURE_MAX_INFLIGHT",
+        "DARKBLOOM_PREFIX_CACHE_DISK_GB",
+        "DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS",
+        "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL",
+    ]
+
+    /// Names of retired env vars that are SET in the given environment —
+    /// startup emits one WARN per entry so operators notice the knob no
+    /// longer does anything.
     public static func retiredEnvironmentKeysSet(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String] {
-        [environmentFlag, environmentAllowlist].filter {
+        retiredEnvironmentKeys.filter {
             !(environment[$0] ?? "").isEmpty
         }
     }

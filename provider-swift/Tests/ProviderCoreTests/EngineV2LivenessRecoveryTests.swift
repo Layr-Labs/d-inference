@@ -206,8 +206,7 @@ private func makeLivenessLoop() throws -> ProviderLoop {
         models: [],
         config: ProviderConfig(
             provider: ProviderSettings(name: "engine-v2-liveness-test", memoryReserveGB: 1),
-            backend: BackendSettings(
-                continuousBatching: true, idleTimeoutMins: 0, maxModelSlots: 3),
+            backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 3),
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
     )

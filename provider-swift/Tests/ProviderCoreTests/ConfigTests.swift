@@ -77,7 +77,7 @@ import Testing
     #expect(decoded.backend.kvQuant == true)
 }
 
-@Test func configParsingDefaultsAdaptivePrefillToFalse() throws {
+@Test func configParsingSurfacesNoRetiredKeysByDefault() throws {
     let config = ConfigManager.parse("""
     [provider]
     name = "test-provider"
@@ -86,33 +86,51 @@ import Testing
     port = 8100
     """)
 
-    #expect(config.backend.adaptivePrefill == false)
+    #expect(config.backend.retiredKeysPresent.isEmpty)
 }
 
-@Test func configParsingHonoursAdaptivePrefillTrue() throws {
+// v0.7.5 one-engine: the legacy engine's [backend] keys are RETIRED. An
+// old provider.toml must keep parsing cleanly — a stale config can never
+// brick a provider — and the retired keys must be SURFACED (startup WARNs
+// off this list) rather than silently swallowed. Their values are ignored.
+@Test func configParsingSurfacesRetiredKeysWithoutFailing() throws {
     let config = ConfigManager.parse("""
     [provider]
     name = "test-provider"
 
     [backend]
+    engine_v2 = false
+    continuous_batching = false
     adaptive_prefill = true
+    legacy_compiled_decode = true
+    idle_timeout_mins = 30
     """)
 
-    #expect(config.backend.adaptivePrefill == true)
+    #expect(
+        Set(config.backend.retiredKeysPresent) == [
+            "engine_v2", "continuous_batching", "adaptive_prefill",
+            "legacy_compiled_decode",
+        ])
+    // Live neighbors still decode.
+    #expect(config.backend.idleTimeoutMins == 30)
 }
 
-@Test func configSerializationRoundTripsAdaptivePrefill() throws {
+@Test func configSerializationDropsRetiredKeys() throws {
     let original = ProviderConfig(
         provider: ProviderSettings(name: "test-provider"),
-        backend: BackendSettings(adaptivePrefill: true),
+        backend: BackendSettings(),
         coordinator: CoordinatorSettings()
     )
 
     let toml = ConfigManager.serialize(original)
     let decoded = ConfigManager.parse(toml)
 
-    #expect(toml.contains("adaptive_prefill"))
-    #expect(decoded.backend.adaptivePrefill == true)
+    // Retired keys are never re-emitted, so a config round-trip sheds them.
+    #expect(!toml.contains("adaptive_prefill"))
+    #expect(!toml.contains("engine_v2 ="))
+    #expect(!toml.contains("continuous_batching"))
+    #expect(!toml.contains("legacy_compiled_decode"))
+    #expect(decoded.backend.retiredKeysPresent.isEmpty)
 }
 
 // MARK: - Startup preload + rollover jitter keys

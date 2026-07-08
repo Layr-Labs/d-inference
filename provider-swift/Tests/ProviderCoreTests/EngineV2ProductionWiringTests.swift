@@ -219,7 +219,7 @@ private func makeWiringLoop(
         config: ProviderConfig(
             provider: ProviderSettings(name: "engine-v2-wiring-test", memoryReserveGB: 1),
             backend: BackendSettings(
-                continuousBatching: true, idleTimeoutMins: 0, maxModelSlots: 3,
+                idleTimeoutMins: 0, maxModelSlots: 3,
                 engineV2MaxConcurrent: engineV2MaxConcurrent,
                 engineV2MaxConcurrentByModel: engineV2MaxConcurrentByModel),
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)

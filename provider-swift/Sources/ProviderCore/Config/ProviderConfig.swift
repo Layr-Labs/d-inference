@@ -70,7 +70,6 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 public struct BackendSettings: Sendable, Equatable, Codable {
     public var port: UInt16
     public var model: String?
-    public var continuousBatching: Bool
     /// Which models to advertise to the network. If empty, all downloaded models
     /// are advertised. If set, only these models are offered.
     public var enabledModels: [String]
@@ -81,22 +80,13 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// coordinator-driven preloads so advertised model count cannot become a
     /// memory-unbounded slot cap.
     public var maxModelSlots: UInt64
-    /// Opt-in KV-cache quantization for the validated model families
-    /// (GPT-OSS and Gemma 4). Default false serves fp16. When true, those
-    /// families store K/V quantized for ~1.9x more admitted tokens; any other
-    /// model is unaffected and keeps fp16. Enable per provider by setting
-    /// `kv_quant = true` under `[backend]` in provider.toml.
+    /// KV-cache quantization request. v0.7.5 serves fp16-only KV (the
+    /// KV-quant schemes died with the legacy engine); a `kv_quant = true`
+    /// is REJECTED-with-WARN at startup and per model load — never
+    /// silently ignored — because a CBv2-native KV-quant fast-follow is
+    /// planned and operators who set this should learn it does not apply
+    /// yet, not wonder why memory numbers moved.
     public var kvQuant: Bool
-    /// Opt-in dynamic cold-prefill chunk sizing. Default false preserves the
-    /// fixed 512-token production path. Enable with `adaptive_prefill = true`
-    /// under `[backend]` in provider.toml.
-    public var adaptivePrefill: Bool
-    /// RETIRED (v0.7.5): the v2 engine is unconditional — there is no
-    /// legacy engine left to select. The key is still parsed so old
-    /// provider.toml files load cleanly, and startup WARNs when an operator
-    /// set `engine_v2 = false` (the value is otherwise ignored). Full key
-    /// removal happens in a later cleanup pass.
-    public var engineV2: Bool
     /// Box-wide concurrent-request cap per v2 engine slot
     /// (`engine_v2_max_concurrent` under `[backend]`). Default 4 — the
     /// CBv2 product target. Clamped to [1, 8] at use: the engine's KV
@@ -110,15 +100,6 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// of model id → cap). Same [1, 8] clamp. Missing ids use
     /// `engineV2MaxConcurrent`.
     public var engineV2MaxConcurrentByModel: [String: UInt64]
-    /// Opt-in compiled decode for the LEGACY engine (default false). The
-    /// mlx-swift-lm library defaults its `DARKBLOOM_COMPILED_DECODE` env
-    /// gate ON; the provider forces it OFF at startup unless this is true
-    /// or the operator set the env var explicitly (which always wins —
-    /// see `LegacyCompiledDecodeGate`). Off keeps release behavior
-    /// identical to prod v0.6.30 (the compiled-decode rollback):
-    /// no compile-on-first-dispatch cold start, no B=1 window-straddle
-    /// divergence. Single-stream speedups ship via the v2 engine instead.
-    public var legacyCompiledDecode: Bool
     /// Startup model preload (default true). On boot the provider loads the
     /// `preload_models` set (or, when that is empty, the models it was serving
     /// before the last restart — see `LoadedModelsStore`) BEFORE registering
@@ -150,20 +131,23 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// false: availability beats perfection — a self-test failure may be
     /// transient and the model can still serve via the lazy-load path.
     public var startupSelftestFailClosed: Bool
+    /// RETIRED `[backend]` keys found in the decoded provider.toml
+    /// (`engine_v2`, `continuous_batching`, `adaptive_prefill`,
+    /// `legacy_compiled_decode`). The keys parse cleanly — an old config
+    /// must never brick a provider — but their values are IGNORED;
+    /// startup emits one WARN per entry so operators notice the knob no
+    /// longer exists. Not encoded back out.
+    public internal(set) var retiredKeysPresent: [String] = []
 
     public init(
         port: UInt16 = 8100,
         model: String? = nil,
-        continuousBatching: Bool = true,
         enabledModels: [String] = [],
         idleTimeoutMins: UInt64 = 60,
         maxModelSlots: UInt64 = 3,
         kvQuant: Bool = false,
-        adaptivePrefill: Bool = false,
-        engineV2: Bool = true,
         engineV2MaxConcurrent: UInt64 = 4,
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
-        legacyCompiledDecode: Bool = false,
         startupPreload: Bool = true,
         preloadModels: [String] = [],
         startupPreloadTimeoutSecs: UInt64 = 120,
@@ -172,16 +156,12 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     ) {
         self.port = port
         self.model = model
-        self.continuousBatching = continuousBatching
         self.enabledModels = enabledModels
         self.idleTimeoutMins = idleTimeoutMins
         self.maxModelSlots = maxModelSlots
         self.kvQuant = kvQuant
-        self.adaptivePrefill = adaptivePrefill
-        self.engineV2 = engineV2
         self.engineV2MaxConcurrent = engineV2MaxConcurrent
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
-        self.legacyCompiledDecode = legacyCompiledDecode
         self.startupPreload = startupPreload
         self.preloadModels = preloadModels
         self.startupPreloadTimeoutSecs = startupPreloadTimeoutSecs
@@ -192,16 +172,12 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     enum CodingKeys: String, CodingKey {
         case port
         case model
-        case continuousBatching = "continuous_batching"
         case enabledModels = "enabled_models"
         case idleTimeoutMins = "idle_timeout_mins"
         case maxModelSlots = "max_model_slots"
         case kvQuant = "kv_quant"
-        case adaptivePrefill = "adaptive_prefill"
-        case engineV2 = "engine_v2"
         case engineV2MaxConcurrent = "engine_v2_max_concurrent"
         case engineV2MaxConcurrentByModel = "engine_v2_max_concurrent_by_model"
-        case legacyCompiledDecode = "legacy_compiled_decode"
         case startupPreload = "startup_preload"
         case preloadModels = "preload_models"
         case startupPreloadTimeoutSecs = "startup_preload_timeout_secs"
@@ -209,24 +185,28 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case startupSelftestFailClosed = "startup_selftest_fail_closed"
     }
 
+    /// RETIRED `[backend]` keys (v0.7.5 one-engine): parsed for presence
+    /// only, values ignored. See `retiredKeysPresent`.
+    private enum RetiredCodingKeys: String, CodingKey, CaseIterable {
+        case continuousBatching = "continuous_batching"
+        case adaptivePrefill = "adaptive_prefill"
+        case engineV2 = "engine_v2"
+        case legacyCompiledDecode = "legacy_compiled_decode"
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.port = try container.decodeIfPresent(UInt16.self, forKey: .port) ?? 8100
         self.model = try container.decodeIfPresent(String.self, forKey: .model)
-        self.continuousBatching = try container.decodeIfPresent(Bool.self, forKey: .continuousBatching) ?? true
         self.enabledModels = try container.decodeIfPresent([String].self, forKey: .enabledModels) ?? []
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
         self.kvQuant = try container.decodeIfPresent(Bool.self, forKey: .kvQuant) ?? false
-        self.adaptivePrefill = try container.decodeIfPresent(Bool.self, forKey: .adaptivePrefill) ?? false
-        self.engineV2 = try container.decodeIfPresent(Bool.self, forKey: .engineV2) ?? true
         self.engineV2MaxConcurrent =
             try container.decodeIfPresent(UInt64.self, forKey: .engineV2MaxConcurrent) ?? 4
         self.engineV2MaxConcurrentByModel =
             try container.decodeIfPresent(
                 [String: UInt64].self, forKey: .engineV2MaxConcurrentByModel) ?? [:]
-        self.legacyCompiledDecode =
-            try container.decodeIfPresent(Bool.self, forKey: .legacyCompiledDecode) ?? false
         self.startupPreload = try container.decodeIfPresent(Bool.self, forKey: .startupPreload) ?? true
         self.preloadModels = try container.decodeIfPresent([String].self, forKey: .preloadModels) ?? []
         self.startupPreloadTimeoutSecs =
@@ -234,6 +214,12 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.startupSelftest = try container.decodeIfPresent(Bool.self, forKey: .startupSelftest) ?? true
         self.startupSelftestFailClosed =
             try container.decodeIfPresent(Bool.self, forKey: .startupSelftestFailClosed) ?? false
+        // Retired keys: presence-only scan so startup can WARN (values are
+        // ignored; an old provider.toml must keep loading cleanly).
+        let retired = try decoder.container(keyedBy: RetiredCodingKeys.self)
+        self.retiredKeysPresent = RetiredCodingKeys.allCases
+            .filter { retired.contains($0) }
+            .map(\.rawValue)
     }
 }
 
@@ -309,7 +295,6 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
             backend: BackendSettings(
                 port: 8100,
                 model: nil,
-                continuousBatching: true,
                 enabledModels: [],
                 idleTimeoutMins: 60,
                 maxModelSlots: 3

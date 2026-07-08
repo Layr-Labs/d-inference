@@ -67,10 +67,6 @@ public struct StandaloneServerConfig: Sendable {
     /// only drives the one-per-load WARN telemetry (config key retires in
     /// the v0.7.5 env/config cleanup).
     public let kvQuant: Bool
-    /// RETIRED with the legacy engine (adaptive cold-prefill was a
-    /// `BatchScheduler` feature). Accepted so existing callers keep
-    /// compiling until the v0.7.5 config cleanup deletes the key; ignored.
-    public let adaptivePrefill: Bool
     /// Detected local hardware. Was the adaptive-prefill ladder seed;
     /// retained for CLI compatibility, currently unused on the v2 path.
     public let hardware: HardwareInfo?
@@ -86,7 +82,6 @@ public struct StandaloneServerConfig: Sendable {
         maxCachedModels: Int = 3,
         authToken: String? = nil,
         kvQuant: Bool = false,
-        adaptivePrefill: Bool = false,
         hardware: HardwareInfo? = nil,
         engineV2MaxConcurrent: UInt64 = 4,
         engineV2MaxConcurrentByModel: [String: UInt64] = [:]
@@ -96,7 +91,6 @@ public struct StandaloneServerConfig: Sendable {
         self.maxCachedModels = max(1, maxCachedModels)
         self.authToken = authToken
         self.kvQuant = kvQuant
-        self.adaptivePrefill = adaptivePrefill
         self.hardware = hardware
         self.engineV2MaxConcurrent = engineV2MaxConcurrent
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel

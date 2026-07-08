@@ -1229,16 +1229,16 @@ struct EngineV2FailLoudFactoryTests {
         #expect(!EngineV2SupportedModels.isSupported(modelType: "llama"))
     }
 
-    @Test("backend config: engine_v2 still parses (retired, ignored); concurrency keys decode")
+    @Test("backend config: engine_v2 still parses (retired, surfaced); concurrency keys decode")
     func backendConfigKeys() throws {
         let decoder = JSONDecoder()
         // The retired key must still DECODE so old provider.toml files load
-        // (startup warns when false); selection no longer consults it.
+        // (startup warns off retiredKeysPresent); the field itself is gone.
         let off = try decoder.decode(
             BackendSettings.self,
             from: Data(#"{"engine_v2": false}"#.utf8)
         )
-        #expect(!off.engineV2)
+        #expect(off.retiredKeysPresent == ["engine_v2"])
         // New concurrency keys: default 4, per-model override map.
         let absent = try decoder.decode(BackendSettings.self, from: Data(#"{}"#.utf8))
         #expect(absent.engineV2MaxConcurrent == 4)

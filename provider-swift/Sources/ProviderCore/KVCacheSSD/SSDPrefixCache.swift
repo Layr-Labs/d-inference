@@ -485,6 +485,23 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         }
         guard !newBlockIndices.isEmpty else { return }
 
+        // Endurance pre-check BEFORE any extraction: when the daily write
+        // budget can't even cover ONE block, the consumer would drop every
+        // one of these blocks at `tryConsume` — after this loop has already
+        // paid the device-slice/eval/host-copy for each. Skip the whole
+        // donation up front instead. Gated on a single block (not the full
+        // donation) so a nearly-drained bucket still persists the leading
+        // prefix-contiguous blocks it can afford — the consumer's per-block
+        // `tryConsume` stays the authority. Settle the in-flight tags so a
+        // later donation can retry these blocks once the bucket refills.
+        guard writeBehind.mightAcceptWrite(bytes: perBlockBytes) else {
+            lock.withLock {
+                for i in newBlockIndices { inFlightWrites.remove(tags16[i]) }
+            }
+            statsBox.add(donationsDropped: newBlockIndices.count)
+            return
+        }
+
         // Per-block extraction: device slice → eval → compact host Data in
         // engine-native [B, kvHeads, block, headDim] layout. Device arrays
         // are dropped as soon as the bytes are copied out.
@@ -574,9 +591,14 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         let maxBlocks = hasher.maxLookupBlocks(tokenCount: promptTokens.count)
         guard maxBlocks > 0 else { return false }
         // Cheap pre-floor: a run can only clear the benefit gate when even
-        // a FULL match would (matched − bound ≥ minEffective).
-        guard maxBlocks * config.blockSize
-            >= config.adoptionBoundTokens + config.minEffectiveTokens
+        // a FULL match would (matched − bound ≥ minEffective). Overflow-safe
+        // like the donate-path floor (line ~418): an operator-set
+        // `DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS` near Int.max
+        // must DISABLE staging (saturated floor never passes), not trap the
+        // provider on every request.
+        let (preFloor, preFloorOverflow) =
+            config.adoptionBoundTokens.addingReportingOverflow(config.minEffectiveTokens)
+        guard !preFloorOverflow, maxBlocks * config.blockSize >= preFloor
         else { return false }
 
         let hashes = hasher.chainHashes(tokens: promptTokens, maxBlocks: maxBlocks)

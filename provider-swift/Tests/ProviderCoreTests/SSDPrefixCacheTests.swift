@@ -631,6 +631,63 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(cache.stats().blocksWritten == 0)
         #expect(dbk2Files(under: dir).isEmpty)
     }
+
+    @Test("exhausted write cap: donation dropped BEFORE extraction (synchronous), tags settled for retry")
+    func writeCapSkipsExtractionSynchronously() async throws {
+        let dir = tempDir("cap-sync")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let clock = ClockBox(10_000)
+        // 1-byte/day cap: `mightAcceptWrite(perBlockBytes)` is false from
+        // the first donation.
+        let cache = makeCache(dir: dir, kek: kek, clock: clock, maxWriteBytesPerDay: 1)
+        defer { cache.close() }
+
+        donateFixture(cache, tokens: Array(0 ..< tokenCount))
+        // The endurance pre-check drops the donation INSIDE donate() —
+        // before any device-slice/eval/host-copy and before the write-
+        // behind queue — so the drop is visible synchronously, no consumer
+        // polling. (Pre-fix, the drop only landed asynchronously at the
+        // consumer's per-block tryConsume, after full extraction.)
+        #expect(cache.stats().donationsDropped == 8)
+        #expect(cache.stats().blocksWritten == 0)
+        #expect(dbk2Files(under: dir).isEmpty)
+
+        // The skip settles the in-flight dedupe tags: the SAME prefix can
+        // be re-donated later (counted as dropped again) instead of being
+        // stranded in `inFlightWrites` until restart.
+        donateFixture(cache, tokens: Array(0 ..< tokenCount))
+        #expect(cache.stats().donationsDropped == 16)
+    }
+
+    @Test("stage pre-floor is overflow-safe: absurd MIN_EFFECTIVE_TOKENS disables staging, never traps")
+    func stagePreFloorOverflowSafe() async throws {
+        let dir = tempDir("floor-overflow")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let clock = ClockBox(10_000)
+
+        // Seed real on-disk blocks with a sanely-configured writer.
+        let writer = makeCache(dir: dir, kek: kek, clock: clock)
+        donateFixture(writer, tokens: Array(0 ..< tokenCount))
+        #expect(await waitForIndexCount(writer, atLeast: 8))
+        writer.close()
+
+        // Same dir, operator-misconfigured benefit floor: the stage
+        // pre-floor sum (adoptionBound + minEffective) would trap on naive
+        // addition. It must instead saturate and DISABLE staging.
+        let cache = makeCache(
+            dir: dir, kek: kek, clock: clock,
+            adoptionBound: 1, minEffectiveTokens: Int.max)
+        defer { cache.close() }
+        cache.scanOnDisk()
+        #expect(cache.index.count == 8, "scan must index the seeded blocks")
+        #expect(
+            await !cache.stage(
+                requestID: "r-overflow",
+                promptTokens: Array(0 ..< tokenCount) + [99],
+                cacheScope: ""))
+    }
 }
 
 // MARK: - Staging reservation hygiene

@@ -370,9 +370,11 @@ struct EngineV2PrefixCacheCarveTests {
         // in tokens — the live clamp (which subtracts the slot's own cache
         // budget from fleet reality) must agree with the construction
         // reduction, not shrink it further and not restore it. (The clamp
-        // recomputes against this machine's REAL physical memory, which is
-        // ≥ the 64 GiB test budget, so the construction grant is the
-        // binding term.)
+        // recomputes against the hooks' pinned 64 GiB — the SAME memory
+        // figure the grant arithmetic used (`updateAggregateCapacity`
+        // honors `engineV2SlotHooks.physicalMemoryBytes`) — so the
+        // construction grant is the binding term on any machine, CI
+        // included.)
         await loop.updateAggregateCapacity()
         let capacity = try #require(await loop.backendCapacityForTesting())
         let slot = try #require(capacity.slots.first(where: { $0.model == "gpt-oss-20b" }))

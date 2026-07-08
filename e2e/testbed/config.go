@@ -21,6 +21,19 @@ func DefaultTestModelID() string {
 	return "mlx-community/gpt-oss-20b-MXFP4-Q8"
 }
 
+// SecondaryTestModelID is the second checkpoint multi-model suites serve.
+// It must also be CBv2-servable (gpt_oss / gemma4 model families only —
+// the provider filters advertised models through EngineV2SupportedModels,
+// so a non-CBv2 checkpoint here would never register and its requests
+// would only measure routing failures). Override with
+// DARKBLOOM_TESTBED_MODEL_B.
+func SecondaryTestModelID() string {
+	if m := os.Getenv("DARKBLOOM_TESTBED_MODEL_B"); m != "" {
+		return m
+	}
+	return "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+}
+
 type ModelSpec struct {
 	// ModelID is the single-model shorthand. ModelIDs takes precedence when set.
 	ModelID string

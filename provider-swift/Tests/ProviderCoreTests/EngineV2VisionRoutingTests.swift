@@ -666,6 +666,87 @@ struct EngineV2VisionRoutingTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
+    @Test("near-headroom vision request is NOT double-charged across the submit handoff")
+    func visionHandoffDoesNotDoubleCharge() async throws {
+        // The vision reservation (media decode + full KV span) and the
+        // bridge's shared-budget reservation charge the SAME
+        // `GlobalKVCacheBudget`. The handoff must release the vision
+        // reservation BEFORE `submitTokenized` re-reserves the span — a
+        // budget that fits EITHER reservation alone but not both at once
+        // must still serve the request. (Pre-fix, the temporary
+        // double-charge rejected it with `token_budget_exhausted`.)
+        let request = imageRequest()  // maxTokens = 8
+        let (prepared, _) = makePreparedSubmission()
+
+        // Reproduce the router's own gate arithmetic exactly (same
+        // MediaIngest projections, same defaultMaxTokens: 64 as
+        // makeRoutingEngine) so the sizing below is deterministic. Rates
+        // are scaled so each reservation lands around 8 GiB — far above
+        // the cap's fixed 2 GiB OS floor, so `hardCapBytes` stays
+        // fraction/floor-exact at this scale.
+        let gib: UInt64 = 1_073_741_824
+        let gateContext = 4096
+        let kvTokens = MediaIngest.projectedKVTokens(
+            request, defaultMaxTokens: 64, contextLength: gateContext)
+        let gateRate = Int(8 * gib / UInt64(max(1, kvTokens)))
+        let gateReservation = MediaIngest.projectedDecodeBytes(request)
+            + UInt64(gateRate * kvTokens)
+        let worstCaseTokens = prepared.promptTokens.count + (request.maxTokens ?? 64)
+        let bridgeRate = max(1, Int(gateReservation) / worstCaseTokens)
+        let bridgeReservation = UInt64(bridgeRate * worstCaseTokens)
+
+        // Cap between max(single) and the sum: each ~8 GiB reservation
+        // fits alone under the ~12 GiB cap; holding both at once (~16 GiB)
+        // would exceed it. `hardCapBytes = min(0.9·total, total − 2 GiB)`,
+        // so total = cap + 2 GiB yields exactly `cap` (0.9·total ≥ cap
+        // at this scale).
+        let cap = gateReservation + bridgeReservation / 2
+        let total = cap + UnifiedMemoryCap.minimumReserveBytes
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            GlobalKVCacheBudget.MemorySnapshot(
+                total: total, active: 0, cache: 0, systemAvailable: .max)
+        }
+        let gate = VisionMemoryGate(
+            kvBudget: budget, fp16KVBytesPerToken: gateRate,
+            contextLength: gateContext)
+
+        let engine = VisionScriptedEngine(
+            script: .stream([
+                .delta(text: "fits", tokens: [10], logprobs: nil),
+                .finished(reason: .stop, usage: CBv2Usage(promptTokens: 6, completionTokens: 1)),
+            ]))
+        let bridge = EngineV2Bridge(
+            engine: engine,
+            modelId: "test/vlm-stub",
+            tokenizer: TokenizerHandle(VisionStubTokenizer()),
+            eosTokenIds: [2],
+            kvBytesPerToken: bridgeRate,
+            kvBudget: budget
+        )
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _ in prepared },
+            emitTelemetry: { _ in }
+        )
+        let router = makeRoutingEngine(
+            container: makeStubContainer(),
+            bridge: bridge, plumbing: plumbing, visionGate: gate)
+
+        let content = try await collectContent(
+            try await router.streamChatCompletion(request: request))
+        #expect(content == "fits")
+
+        // Both reservations must fully drain by stream end (the bridge
+        // releases its span on the terminal event; the vision reservation
+        // was released at the handoff).
+        var outstanding = await budget.outstandingReservedBytes()
+        let deadline = ContinuousClock.now + .seconds(5)
+        while outstanding != 0, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+            outstanding = await budget.outstandingReservedBytes()
+        }
+        #expect(outstanding == 0)
+    }
+
     @Test("construction failure REFUSES loudly: ERROR telemetry + 503, no legacy fallback")
     func constructionFailureRefusesLoudly() async throws {
         struct PrepFailure: Error {}

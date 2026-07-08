@@ -198,9 +198,12 @@ func TestBenchmark_SingleProviderNonStreaming(t *testing.T) {
 func TestBenchmark_MultiModelMultiProvider(t *testing.T) {
 	runBenchmark(t, "7-provider-multi-model",
 		testbed.SuiteConfig{
+			// Both models must be CBv2-servable (v0.7.5 one-engine) — a
+			// non-CBv2 checkpoint never registers, so its share of the
+			// round-robin would only measure routing failures.
 			ModelSpecs: []testbed.ModelSpec{
 				{ModelID: testbed.DefaultTestModelID(), NumProviders: 4},
-				{ModelID: "mlx-community/gemma-3-270m-4bit", NumProviders: 3},
+				{ModelID: testbed.SecondaryTestModelID(), NumProviders: 3},
 			},
 			NumUsers:      5,
 			QueueCapacity: 200,

@@ -38,10 +38,14 @@ jobs:
              provider-swift/.build/debug/mlx.metallib
 
       - name: Download model
+        # v0.7.5 one-engine: the testbed default is the smallest
+        # CBv2-servable checkpoint (gpt-oss-20b, ~12 GB — the old tiny
+        # Qwen/gemma-3 fixtures have no CBv2 adapter and can no longer
+        # register). A warm HF cache makes this a no-op; a cold runner
+        # pays the download once.
         run: |
           /tmp/mlxvenv/bin/pip install huggingface_hub
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/Qwen3.5-0.8B-MLX-4bit')"
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-3-270m-4bit')"
+          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gpt-oss-20b-MXFP4-Q8')"
 
       - name: Run integration + profile tests
         run: |
@@ -84,11 +88,14 @@ jobs:
           cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
              provider-swift/.build/debug/mlx.metallib
 
-      - name: Download model
+      - name: Download models
+        # Benchmarks serve the CBv2 default (gpt-oss-20b, ~12 GB) plus the
+        # secondary multi-model checkpoint (gemma-4-26B QAT, ~14.5 GB) for
+        # TestBenchmark_MultiModelMultiProvider. Warm HF cache ⇒ no-op.
         run: |
           /tmp/mlxvenv/bin/pip install huggingface_hub
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/Qwen3.5-0.8B-MLX-4bit')"
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-3-270m-4bit')"
+          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gpt-oss-20b-MXFP4-Q8')"
+          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-4-26B-A4B-it-qat-4bit')"
 
       - name: Run benchmarks
         run: |

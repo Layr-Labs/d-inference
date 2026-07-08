@@ -10,10 +10,18 @@ on:
 
 jobs:
   codex:
+    # Bot actors are excluded up front: the Codex connector's own review
+    # posts contain the literal "@codex" (the "comment @codex review"
+    # boilerplate in its collapsible footer), which used to re-trigger this
+    # workflow as chatgpt-codex-connector[bot] — an actor openai/codex-action
+    # then rejects (write access 'none', allow-bots false), failing the
+    # `codex` check on every bot review. Skip instead of fail.
     if: |
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(github.event.comment.body, '@codex')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@codex')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@codex'))
+      github.event.sender.type != 'Bot' && (
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(github.event.comment.body, '@codex')) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@codex')) ||
+        (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@codex'))
+      )
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read

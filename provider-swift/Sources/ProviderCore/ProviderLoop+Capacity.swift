@@ -80,11 +80,20 @@ extension ProviderLoop {
                     .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
                 totalResidentWeightBytes = overflow ? .max : sum
             }
+            // Physical memory MUST come from the same source the re-slice
+            // grant arithmetic uses (`fleetKVBudgetBytes`): the test hooks'
+            // override when installed, the machine's real memory otherwise.
+            // Mixing sources makes the clamp bind spuriously on any box
+            // smaller than the hooked figure (grants computed against the
+            // override, clamp against real RAM) — nil hooks ⇒ production
+            // behavior unchanged.
             let engineV2 = await engineV2Runtime.capacitySummary(
                 fleetKV: EngineV2Runtime.FleetKVContext(
                     totalResidentWeightBytes: totalResidentWeightBytes,
                     configReserveBytes: Self.memoryReserveBytes(
-                        forGiB: loopConfig.config.provider.memoryReserveGB)))
+                        forGiB: loopConfig.config.provider.memoryReserveGB),
+                    physicalBytes: engineV2SlotHooks?.physicalMemoryBytes
+                        ?? ProcessInfo.processInfo.physicalMemory))
             allSlots.append(contentsOf: engineV2.slots)
             totalActive += engineV2.activeRequests
         }

@@ -343,6 +343,21 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 do {
                     let prepared = try await plumbing.prepare(container, request)
                     let visionRequestId = "req-\(UUID().uuidString.prefix(12))"
+                    // Hand off memory accounting to the bridge BEFORE
+                    // submit: the decode-phase peak this vision reservation
+                    // covered (CIImage rasters, tower activations) is
+                    // behind us — the embeddings were eval'ed inside
+                    // `prepare` — and `submitTokenized`'s shared-budget
+                    // gate re-reserves the SAME KV span (prompt incl. soft
+                    // tokens + max_tokens at the fp16 rate) against the
+                    // SAME `GlobalKVCacheBudget`. Holding both across the
+                    // submit would double-charge that span, spuriously
+                    // rejecting near-headroom requests that fit under a
+                    // single reservation (`token_budget_exhausted`).
+                    // `release` is idempotent, so the catch-arms below (and
+                    // the post-throw paths they share with `prepare`
+                    // failures) stay correct as written.
+                    await mediaGate.release(requestId: mediaReqId)
                     // No provider-side tool parsing on this path — matching
                     // the legacy vision path exactly: the VLM processor's
                     // chat templating never renders tool specs, so the model
@@ -367,16 +382,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         multimodal: prepared.multimodalInput(),
                         mediaKind: prepared.mediaKind
                     )
-                    // The bridge now owns the request's memory accounting:
-                    // its shared-budget gate reserved prompt (incl. the
-                    // image/video soft tokens) + max_tokens at the fp16
-                    // rate, and the decode-phase peak this vision
-                    // reservation covered (CIImage rasters, tower
-                    // activations) is behind us — the embeddings were
-                    // eval'ed inside `prepare`. Holding both would
-                    // double-charge the KV span for the whole stream, so
-                    // release the vision reservation here.
-                    await mediaGate.release(requestId: mediaReqId)
                     return makeEventStream(
                         upstream: upstream,
                         cancelUpstream: { await bridge.cancel(requestId: visionRequestId) },

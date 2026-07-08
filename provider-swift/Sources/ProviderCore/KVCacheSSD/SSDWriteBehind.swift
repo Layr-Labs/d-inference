@@ -159,6 +159,16 @@ final class SSDWriteBehind: @unchecked Sendable {
         }
     }
 
+    /// Cheap endurance pre-check (no consumption): false when the daily
+    /// write budget could not cover a `bytes`-sized donation right now, so
+    /// `donate` can skip the device-slice/eval/host-copy extraction for
+    /// blocks the consumer would drop anyway. Advisory only — the consumer
+    /// still `tryConsume`s per block (the bucket can drain between check
+    /// and write); correctness never depends on this answer.
+    func mightAcceptWrite(bytes: Int) -> Bool {
+        rateLimiter.mightAccept(bytes: bytes)
+    }
+
     /// Enqueue a donation job. Non-blocking; false ⇒ dropped (queue full /
     /// byte cap) — the caller settles the in-flight tags and counts the
     /// drop. Safe to call from the engine's donation queue.

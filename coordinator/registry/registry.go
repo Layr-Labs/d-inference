@@ -4421,6 +4421,15 @@ type providerCapSnap struct {
 	activeTokenBudgetMax  int64
 	activeTokenBudgetUsed int64
 	queuedTokenBudget     int64
+	// pooledBudgetRemaining is the provider's whole-box pooled token budget
+	// left after charging ALL models' coordinator-pending tokens — the same
+	// pool the admission gate (pooledBudgetAdmits) enforces, so this public
+	// capacity feed cannot advertise per-slot headroom dispatch would reject:
+	// co-resident slots each re-report the ONE shared KV headroom, and an
+	// in-gap burst to model A is invisible to model B's slot fields until the
+	// next heartbeat. -1 = provider reports no pooled budget (legacy), which
+	// leaves the per-slot numbers unclamped.
+	pooledBudgetRemaining int64
 }
 
 // publiclyRoutableLocked reports whether a provider passes the public routing
@@ -4459,6 +4468,29 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		decodeTPS := resolvedDecodeTPS(p)
 		prefillTPS := resolvedPrefillTPS(p)
 
+		// Reconstruct the whole-box pooled budget remaining after charging
+		// every model's coordinator-pending tokens (mirrors pooledBudgetAdmits'
+		// token accounting: pending beyond the heartbeat-visible committed
+		// baseline spends the pool). Token units — this surface reports token
+		// budgets; byte normalization stays an admission-gate concern.
+		pooledRemaining := int64(-1)
+		if p.BackendCapacity != nil {
+			if pool := providerPooledTokenBudget(p.BackendCapacity.Slots); pool.total > 0 {
+				pendingAll := 0
+				for _, pr := range p.pendingReqs {
+					pendingAll += pendingTokenBudget(pr)
+				}
+				extra := int64(pendingAll) - pool.committed
+				if extra < 0 {
+					extra = 0
+				}
+				pooledRemaining = pool.total - pool.used - extra
+				if pooledRemaining < 0 {
+					pooledRemaining = 0
+				}
+			}
+		}
+
 		// Enumerate every model this provider serves.
 		for _, m := range p.Models {
 			if !r.modelAllowedByCatalogLocked(m) {
@@ -4480,11 +4512,12 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			}
 
 			snap := providerCapSnap{
-				model:          m.ID,
-				hasHeadroom:    hasHeadroom,
-				effectiveTPS:   decodeTPS,
-				prefillTPS:     prefillTPS,
-				activeRequests: modelPending,
+				model:                 m.ID,
+				hasHeadroom:           hasHeadroom,
+				effectiveTPS:          decodeTPS,
+				prefillTPS:            prefillTPS,
+				activeRequests:        modelPending,
+				pooledBudgetRemaining: pooledRemaining,
 			}
 
 			// Check backend capacity for this model's slot.
@@ -4561,14 +4594,25 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			if headroom < 0 {
 				headroom = 0
 			}
+			// Per-slot headroom cannot exceed the provider's pooled remaining:
+			// each co-resident slot re-reports the ONE shared KV headroom, so
+			// in-gap pending to another model already spent it. Without the
+			// clamp this surface advertises capacity pooledBudgetAdmits rejects.
+			if s.pooledBudgetRemaining >= 0 && headroom > s.pooledBudgetRemaining {
+				headroom = s.pooledBudgetRemaining
+			}
 			a.budgetRemaining += headroom
 			a.budgetTotal += s.activeTokenBudgetMax
 		}
 		// Routable providers require both concurrency headroom AND token-budget
 		// headroom. A provider with exhausted token budget should not make the
-		// model appear immediately ready.
-		hasBudgetHeadroom := s.activeTokenBudgetMax <= 0 ||
-			s.activeTokenBudgetUsed+s.queuedTokenBudget < s.activeTokenBudgetMax
+		// model appear immediately ready. An exhausted POOLED budget (0 — not
+		// the -1 no-budget sentinel) counts as exhausted for every model on the
+		// box, cold ones included: the admission gate charges those against the
+		// shared pool too (freeMemoryAdmits' cold-slot pooled gate).
+		hasBudgetHeadroom := (s.activeTokenBudgetMax <= 0 ||
+			s.activeTokenBudgetUsed+s.queuedTokenBudget < s.activeTokenBudgetMax) &&
+			s.pooledBudgetRemaining != 0
 		if s.hasHeadroom && hasBudgetHeadroom {
 			a.routable++
 			a.anyImmediateSlot = true

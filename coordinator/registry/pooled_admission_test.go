@@ -428,6 +428,69 @@ func TestPooledAdmissionColdModelDoubleSpendRealPath(t *testing.T) {
 	}
 }
 
+// TestModelCapacitySnapshotPooledBudgetClamp: the public capacity feed
+// (/v1/models[/capacity]) must not advertise per-slot budget headroom the
+// pooled admission gate would reject. Co-resident slots each re-report the
+// ONE shared 10k pool; after an in-gap 10k burst to gpt-oss, gemma's slot
+// fields still read used=0/max=10k — but a gemma request would be rejected
+// (pooledBudgetAdmits), so its row must report zero remaining budget and not
+// be Ready. Fails without the pooledBudgetRemaining clamp in
+// ModelCapacitySnapshot.
+func TestModelCapacitySnapshotPooledBudgetClamp(t *testing.T) {
+	build := func(pendingTokens int) *Registry {
+		reg := New(testLogger())
+		p := makeSchedulerProvider(t, reg, "shared-box", gptossBuild, 93)
+		addAdvertisedModel(p, gemmaBuild)
+		p.mu.Lock()
+		p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 10_000
+		p.BackendCapacity.Slots = append(p.BackendCapacity.Slots, protocol.BackendSlotCapacity{
+			Model:                gemmaBuild,
+			State:                "running",
+			ActiveTokenBudgetMax: 10_000,
+		})
+		p.mu.Unlock()
+		for i := 0; i < pendingTokens/2_000; i++ {
+			if got := reg.ReserveProvider(gptossBuild, &PendingRequest{
+				RequestID: fmt.Sprintf("burst-%d", i), Model: gptossBuild, EstimatedPromptTokens: 100, RequestedMaxTokens: 1_900,
+			}); got == nil {
+				t.Fatalf("burst request %d rejected", i)
+			}
+		}
+		return reg
+	}
+	capsByModel := func(reg *Registry) map[string]ModelCapacity {
+		out := make(map[string]ModelCapacity)
+		for _, c := range reg.ModelCapacitySnapshot() {
+			out[c.ModelID] = c
+		}
+		return out
+	}
+
+	// Pool fully pending to gpt-oss: gemma's stale slot (used 0 / max 10k)
+	// must not surface as remaining budget or readiness.
+	full := capsByModel(build(10_000))
+	gemma, ok := full[gemmaBuild]
+	if !ok {
+		t.Fatalf("missing capacity row for %s", gemmaBuild)
+	}
+	if gemma.TokenBudgetRemaining != 0 {
+		t.Fatalf("gemma token_budget_remaining = %d, want 0 (pool fully pending to co-resident gpt-oss)", gemma.TokenBudgetRemaining)
+	}
+	if gemma.Ready || gemma.CanAccept || gemma.RoutableProviders != 0 {
+		t.Fatalf("gemma row = %+v, want not ready/routable with the shared pool exhausted", gemma)
+	}
+
+	// Control: 4k of the 10k pool pending → 6k remaining, still routable.
+	part := capsByModel(build(4_000))
+	gemma = part[gemmaBuild]
+	if gemma.TokenBudgetRemaining != 6_000 {
+		t.Fatalf("gemma token_budget_remaining = %d, want 6_000 (10k pool − 4k pending)", gemma.TokenBudgetRemaining)
+	}
+	if !gemma.Ready || gemma.RoutableProviders != 1 {
+		t.Fatalf("gemma row = %+v, want ready/routable with 6k pooled headroom", gemma)
+	}
+}
+
 // TestFreeMemoryAdmitsLegacyProviderUnchanged: providers that report no token
 // budget (ActiveTokenBudgetMax == 0) never reach the budget branch — the
 // legacy memory-estimation path is untouched by the pooled fields.

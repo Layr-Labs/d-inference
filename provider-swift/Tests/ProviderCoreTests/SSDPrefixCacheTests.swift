@@ -591,10 +591,14 @@ struct SSDPrefixCacheLifecycleTests {
         donateFixture(cache, tokens: fresh, seed: 2.0)
         #expect(await waitForIndexCount(cache, atLeast: 16))
 
-        // Synthetic tiny budget: room for ~10 blocks ⇒ evict 6 oldest.
-        budget.enforce(budgetBytes: perBlockBytes * 10)
-        #expect(cache.index.totalBytes <= perBlockBytes * 10)
-        #expect(cache.stats().evictions >= 6)
+        // Synthetic tiny budget: room for 8 blocks ⇒ the 8 OLDEST (the
+        // entire older prefix — strictly older lastAccess) are unlinked.
+        // (Evicting only part of the older prefix would be
+        // nondeterministic: its blocks share one lastAccess, and any
+        // surviving prefix-contiguous run could still stage.)
+        budget.enforce(budgetBytes: perBlockBytes * 8)
+        #expect(cache.index.totalBytes <= perBlockBytes * 8)
+        #expect(cache.stats().evictions >= 8)
         // The NEWER prefix must still be fully adoptable; the older one not.
         #expect(await cache.stage(requestID: "r-new", promptTokens: fresh + [1], cacheScope: ""))
         cache.completeStaging(requestID: "r-new")

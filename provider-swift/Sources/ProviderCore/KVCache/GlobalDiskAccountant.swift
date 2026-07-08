@@ -455,10 +455,14 @@ public actor GlobalDiskAccountant {
             try? index.save()
         }
 
-        // If the dir has no more .darkbloom-kv files (at any depth), rmdir it.
-        // Check nested subdirs too (checkpoint tier).
+        // If the dir has no more .darkbloom-kv files (at any depth), rmdir it —
+        // UNLESS it holds a durable `cbv2/` subtree (v0.7.5 SSD offload tier):
+        // that tier's files are invisible to this accountant by design and
+        // must survive legacy eviction exactly as they survive the init sweep.
         let hasFiles = checkForKVFiles(in: modelDir, fm: fm, suffix: suffix)
-        if !hasFiles {
+        let hasDurableSubtree = fm.fileExists(
+            atPath: modelDir.appendingPathComponent(Self.durableSubdirName).path)
+        if !hasFiles && !hasDurableSubtree {
             try? fm.removeItem(at: modelDir)
             logger.info("removed empty unowned dir \(modelKey, privacy: .public)")
         }

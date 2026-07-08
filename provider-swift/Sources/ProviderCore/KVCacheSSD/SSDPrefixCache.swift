@@ -402,7 +402,8 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             guard Self.isCacheable(kind) else { continue }
             guard let snap = snapshots[i],
                 snap.offset >= prefixTokens,
-                snap.keys.ndim == 4, snap.keys.dim(2) >= prefixTokens
+                snap.keys.ndim == 4, snap.keys.dim(2) >= prefixTokens,
+                snap.values.ndim == 4, snap.values.dim(2) >= prefixTokens
             else { return }
             cacheable.append((i, snap.keys, snap.values))
         }
@@ -429,8 +430,20 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 newBlockIndices.append(i)
             }
         }
-        // Sliding-TTL bump for the blocks this active conversation reused.
+        // Sliding-TTL bump for the blocks this active conversation reused —
+        // index recency AND file mtimes (best-effort), so donation-only
+        // warmth survives a restart (the startup scan seeds lastAccess from
+        // mtime). Reused blocks = every tag NOT in newBlockIndices.
         index.touch(tags16: tags16, now: now)
+        let newSet = Set(newBlockIndices)
+        let touchDate = Date(timeIntervalSince1970: TimeInterval(now))
+        for (i, tag16) in tags16.enumerated() where !newSet.contains(i) {
+            guard index.contains(tag16: tag16) else { continue }
+            let url = SSDBlockStore.fileURL(
+                root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
+            try? FileManager.default.setAttributes(
+                [.modificationDate: touchDate], ofItemAtPath: url.path)
+        }
         guard !newBlockIndices.isEmpty else { return }
 
         // Per-block extraction: device slice → eval → compact host Data in

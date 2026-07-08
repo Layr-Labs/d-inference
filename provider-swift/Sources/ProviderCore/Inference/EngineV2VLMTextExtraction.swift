@@ -186,11 +186,24 @@ enum EngineV2VLMTextExtraction {
     /// engine construction will throw on the same config moments later, so
     /// no cache is ever actually built for a broken checkpoint).
     static func adoptionBoundTokens(modelDirectory: URL) -> Int? {
+        cbv2LayerKinds(modelDirectory: modelDirectory)
+            .map { PrefixCachePolicy.adoptionBoundTokens(layerKinds: $0) }
+    }
+
+    /// A VLM checkpoint's CBv2 layer kinds from `config.json`'s
+    /// `text_config` ALONE — identical to what the extracted text model
+    /// reports (the drift tests pin config-derived shape == engine truth).
+    /// Used by the slot factory to construct the SSD prefix cache for VLM
+    /// slots (layout-epoch + adoption-bound binding) BEFORE the extraction
+    /// runs inside engine construction. nil when the config is
+    /// unreadable/undecodable — no cache is built (the extraction will
+    /// throw on the same config moments later).
+    static func cbv2LayerKinds(modelDirectory: URL) -> [CBv2LayerKind]? {
         let configURL = modelDirectory.appendingPathComponent("config.json")
         guard let configData = try? Data(contentsOf: configURL),
             let textConfig = try? decodeTextConfiguration(configData: configData)
         else { return nil }
-        return PrefixCachePolicy.adoptionBoundTokens(layerKinds: textConfig.cbv2LayerKinds)
+        return textConfig.cbv2LayerKinds
     }
 
     // MARK: - Steps

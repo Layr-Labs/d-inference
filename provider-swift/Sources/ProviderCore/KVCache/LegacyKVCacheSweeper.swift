@@ -5,9 +5,10 @@
 // Through v0.7.4 the legacy engine persisted encrypted prefix-cache
 // checkpoints under `~/Library/Caches/darkbloom/kv`, accounted by a
 // `GlobalDiskAccountant` that also wiped stale files from a prior crash
-// at startup. v0.7.5 deleted that tier wholesale (the v2 prefix cache is
-// RAM-only — T-041; the encrypted SSD-offload successor is a future
-// design that will reuse `KVCacheKEK`). This sweeper preserves the two
+// at startup. v0.7.5 deleted that tier wholesale (its successor, the
+// encrypted SSD-offload tier under `KVCacheSSD/`, ships in v0.7.5 on its
+// OWN root — `darkbloom/kv2`, a SIBLING of this sweeper's target, never
+// inside it — and reuses `KVCacheKEK`). This sweeper preserves the two
 // hygiene properties the accountant's startup sweep provided, forever:
 //
 //   * a crash can never strand partial cache files, and

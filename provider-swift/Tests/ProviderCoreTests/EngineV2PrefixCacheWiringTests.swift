@@ -178,15 +178,22 @@ private func makeSizing(
 }
 
 /// Hook env shared by the carve tests: cache budget pinned to 1 GiB so
-/// assertions are machine-independent. The cache is DORMANT by default as
-/// of v0.7.5, so funded-path tests must opt in explicitly — the helper's
+/// assertions are machine-independent. The RAM tier is OPT-IN as of
+/// v0.7.5, so funded-path tests must opt in explicitly — the helper's
 /// default `prefixCache: "1"` models an opted-in box; pass nil to leave
 /// the flag ABSENT (the fleet default). (The old `DARKBLOOM_ENGINE_V2*`
 /// selection keys are gone — every slot is v2.)
-private func carveEnv(prefixCache: String? = "1", maxGB: String? = "1") -> [String: String] {
+private func carveEnv(
+    prefixCache: String? = "1", maxGB: String? = "1", ssdTier: String? = "0"
+) -> [String: String] {
     var env: [String: String] = [:]
     if let prefixCache { env["DARKBLOOM_PREFIX_CACHE"] = prefixCache }
     if let maxGB { env["DARKBLOOM_PREFIX_CACHE_MAX_GB"] = maxGB }
+    // v0.7.5 SSD offload: the SSD tier is default-ON and WINS over the RAM
+    // opt-in (no tier composition), so the RAM-carve tests here must kill
+    // it explicitly to reach the `.ram` mode they exercise. Pass nil to
+    // model a box with the SSD tier at its default.
+    if let ssdTier { env["DARKBLOOM_PREFIX_CACHE_SSD"] = ssdTier }
     return env
 }
 
@@ -238,7 +245,11 @@ struct EngineV2PrefixCacheCarveTests {
         let loop = try makeLoop()
         await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
         let recorder = GrantRecorder()
-        await installHooks(loop, environment: carveEnv(prefixCache: nil), recorder: recorder)
+        // Both flags ABSENT — the true fleet default. The SSD tier is
+        // default-ON but carves ZERO memory (and hooks build no production
+        // cache instance), so the carve must still be a passthrough.
+        await installHooks(
+            loop, environment: carveEnv(prefixCache: nil, ssdTier: nil), recorder: recorder)
 
         let weights = 1 * gib
         let bridge = try await buildSlot(

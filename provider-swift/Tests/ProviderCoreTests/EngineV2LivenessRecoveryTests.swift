@@ -479,6 +479,10 @@ struct EngineV2LivenessRecoveryTests {
                 environment: [
                     "DARKBLOOM_PREFIX_CACHE": "1",
                     "DARKBLOOM_PREFIX_CACHE_MAX_GB": "1",
+                    // The RAM carve only engages in `.ram` mode — the SSD
+                    // tier (default-on, v0.7.5) carves nothing and would
+                    // win tier selection, so kill it for this scenario.
+                    "DARKBLOOM_PREFIX_CACHE_SSD": "0",
                 ],
                 eosTokenIds: [2],
                 emitTelemetry: telemetry.callback(),

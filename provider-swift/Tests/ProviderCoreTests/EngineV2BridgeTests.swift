@@ -1134,6 +1134,16 @@ struct EngineV2FailLoudFactoryTests {
         #expect(
             EngineV2Config.retiredEnvironmentKeysSet(
                 environment: ["DARKBLOOM_ENGINE_V2": ""]).isEmpty)
+        // The v0.7.5 SSD offload tier RE-ADOPTED the legacy disk-budget and
+        // ephemeral-KEK envs — they are live knobs again and must never be
+        // WARN'd as retired (regression: the one-engine integration listed
+        // them before the SSD tier merged).
+        #expect(
+            EngineV2Config.retiredEnvironmentKeysSet(
+                environment: [
+                    "DARKBLOOM_PREFIX_CACHE_DISK_GB": "20",
+                    "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1",
+                ]).isEmpty)
     }
 
     @Test("refusal reasons classify construction errors")

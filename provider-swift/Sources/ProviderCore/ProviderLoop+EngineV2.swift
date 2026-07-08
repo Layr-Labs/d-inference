@@ -407,11 +407,14 @@ extension ProviderLoop {
 
         // Assembly is shared with the standalone server via
         // `EngineV2SlotFactory` (one construction path, no drift) —
-        // including THE single prefix-cache carve point (T-041, v0.7.5):
-        // the slot's re-slice grant is split between the engine's admission
-        // ceiling and the RAM-only v2 prefix cache INSIDE the factory
-        // (order: re-slice grant → funding-gated carve (dormant ⇒
-        // passthrough) → engine construction), so everything downstream
+        // including THE single prefix-cache carve point (T-041, v0.7.5)
+        // AND the SSD offload tier's construction: the slot's re-slice
+        // grant is split between the engine's admission ceiling and the
+        // opt-in RAM v2 prefix cache INSIDE the factory (order: re-slice
+        // grant → RAM-tier funding-gated carve (dormant default ⇒
+        // passthrough) → SSD tier construction (default-on, own kv2/
+        // root, per-donation gate, NO memory carve) → engine construction
+        // with the (possibly carved) grant), so everything downstream
         // reads engine truth and the coordinator is never told about bytes
         // the cache will consume. The test hooks, when installed, replace
         // the container-derived EOS snapshot and the production engine
@@ -465,13 +468,18 @@ extension ProviderLoop {
                 maxConcurrentRequests: maxConcurrent,
                 kvBudget: kvBudget,
                 kvQuantConfigured: loopConfig.config.backend.kvQuant,
-                logInfo: { slotLogger.info($0) })
+                // SSD-tier metadata binding: the verified hash for the bytes
+                // this slot loaded (nil ⇒ model-id binding degradation).
+                weightHash: liveModelHashes[modelId],
+                logInfo: { slotLogger.info($0) },
+                logWarning: { slotLogger.warning($0) })
         }
 
         // Register before the slot goes live so capacity heartbeats and
         // cancellation fan-out see the bridge from the first request.
-        // (Prefix-cache construction, budget carve, stats logger, and the
-        // cache-state log line all live inside the shared slot factory.)
+        // (Prefix-cache construction — RAM carve AND the SSD offload tier —
+        // budget bookkeeping, stats loggers, and the cache-state log line
+        // all live inside the shared slot factory.)
         await engineV2Runtime.register(modelId: modelId, bridge: bridge)
         if isVLM {
             logger.info(

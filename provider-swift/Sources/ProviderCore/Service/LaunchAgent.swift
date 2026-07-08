@@ -263,7 +263,14 @@ public enum LaunchAgent: Sendable {
     /// Env vars passed through from the installing shell into the launchd plist's
     /// `EnvironmentVariables`. Kept to a small allowlist so the daemon's
     /// environment stays predictable; only non-empty values are forwarded.
-    static let passthroughEnvKeys = ["DARKBLOOM_PREFIX_CACHE", "DARKBLOOM_MLX_RESOURCE_DEBUG"]
+    /// `DARKBLOOM_PREFIX_CACHE_SSD` (v0.7.5): the SSD tier's kill switch
+    /// must survive install/restart like the master gate — an operator who
+    /// killed the default-on tier must not have it silently revive on the
+    /// next launchd start.
+    static let passthroughEnvKeys = [
+        "DARKBLOOM_PREFIX_CACHE", "DARKBLOOM_PREFIX_CACHE_SSD",
+        "DARKBLOOM_MLX_RESOURCE_DEBUG",
+    ]
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,
     /// keeping only the allowlisted, non-empty keys. Pure (environment injected)

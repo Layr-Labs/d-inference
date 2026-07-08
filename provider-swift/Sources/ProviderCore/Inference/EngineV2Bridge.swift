@@ -91,6 +91,15 @@ public actor EngineV2Bridge {
     /// own capacity no longer shows them (T-041). `nonisolated`: immutable
     /// and Sendable, so heartbeat/test readers need no actor hop.
     public nonisolated let prefixCacheBudgetBytes: Int
+    /// Encrypted SSD offload tier (v0.7.5, default for funded models):
+    /// the SAME instance handed to the engine as its `CBv2PrefixCache`.
+    /// The bridge holds it for the pre-submit staging hook (read-through
+    /// adoption: probe index → reserve staging bytes → read+decrypt off
+    /// the engine threads → seed the staging map so the engine's
+    /// synchronous `lookup()` hits), the per-request release backstop
+    /// (`completeStaging`), and shutdown. nil ⇒ no SSD tier (RAM tier or
+    /// no cache) — byte-identical behavior to v0.7.5-dormant.
+    let ssdPrefixCache: SSDPrefixCache?
     /// Periodic prefix-cache stats logger (v2 analog of the legacy
     /// checkpoint-tier logger). Started by the slot factory when a funded
     /// cache exists; cancelled in `shutdown()`.
@@ -193,6 +202,7 @@ public actor EngineV2Bridge {
         kvBytesPerToken: Int = 0,
         kvBudget: GlobalKVCacheBudget? = nil,
         prefixCacheBudgetBytes: Int = 0,
+        ssdPrefixCache: SSDPrefixCache? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
         self.engine = engine
@@ -209,6 +219,7 @@ public actor EngineV2Bridge {
         self.kvBytesPerToken = kvBytesPerToken
         self.kvBudget = kvBudget
         self.prefixCacheBudgetBytes = max(0, prefixCacheBudgetBytes)
+        self.ssdPrefixCache = ssdPrefixCache
         self.emitTelemetry = emitTelemetry
     }
 
@@ -314,6 +325,32 @@ public actor EngineV2Bridge {
             return stream
         }
 
+        // PRE-SUBMIT SSD STAGING (v0.7.5 read-through adoption): probe the
+        // SSD tier's index for this prompt's chain prefix and, on a hit
+        // that clears the benefit gate, reserve the staged bytes in the
+        // shared KV budget and rehydrate the blocks OFF the engine/submit
+        // threads — so the engine's synchronous `lookup()` (inside
+        // `engine.submit` below) finds them in the RAM staging map. A
+        // false return is indistinguishable from a cache miss (silent
+        // recompute). Every staged=true is balanced by the engine's own
+        // `endAdoption` (fires on every adoption outcome, incl. abandon)
+        // with `completeStaging` as the idempotent backstop on the paths
+        // where lookup never ran (rejections below, pump terminals).
+        // Vision requests never stage (engine policy symmetry).
+        var ssdStaged = false
+        if let ssd = ssdPrefixCache, multimodal == nil {
+            ssdStaged = await ssd.stage(
+                requestID: id, promptTokens: promptTokens, cacheScope: cacheScope)
+            // `stage` suspended this actor — re-check the duplicate guard
+            // (same discipline as the shared-budget gate below).
+            guard active[id] == nil else {
+                if ssdStaged { ssd.completeStaging(requestID: id) }
+                continuation.yield(.error("token_budget_exhausted: duplicate request ID"))
+                continuation.finish()
+                return stream
+            }
+        }
+
         // Translate with a PLACEHOLDER engine id — the real id is minted
         // below, AFTER the shared-budget await, in the same synchronous
         // stretch as `engine.submit` and the `idMap` registration. Minting
@@ -356,6 +393,7 @@ public actor EngineV2Bridge {
             sharedKVReserved = await kvBudget.reserve(
                 requestID: id, kvBytesPerToken: kvBytesPerToken, tokenCount: worstCaseTokens)
             guard sharedKVReserved else {
+                if ssdStaged { ssdPrefixCache?.completeStaging(requestID: id) }
                 continuation.yield(.error(
                     "token_budget_exhausted: request requires \(worstCaseTokens) tokens "
                         + "but the shared KV budget has no headroom"))
@@ -371,6 +409,7 @@ public actor EngineV2Bridge {
             // on this id's existing entry.)
             guard active[id] == nil else {
                 await kvBudget.release(requestID: id)
+                if ssdStaged { ssdPrefixCache?.completeStaging(requestID: id) }
                 continuation.yield(.error("token_budget_exhausted: duplicate request ID"))
                 continuation.finish()
                 return stream
@@ -402,7 +441,10 @@ public actor EngineV2Bridge {
         } catch {
             // Engine rejected AFTER the shared reservation was taken — release
             // it before surfacing the error (no pump will ever finish it).
+            // A rejected submit also never ran the prefix-cache lookup, so
+            // the engine can never balance the staging ticket — backstop it.
             if sharedKVReserved { await kvBudget?.release(requestID: id) }
+            if ssdStaged { ssdPrefixCache?.completeStaging(requestID: id) }
             // Admission failure. The message keeps the canonical
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity
@@ -513,6 +555,10 @@ public actor EngineV2Bridge {
         pumpTasks.removeAll()
         for task in live.values { task.cancel() }
         await engine.shutdown()
+        // SSD tier teardown AFTER the engine drain: queued donation writes
+        // are dropped, staging pins/reservations released, on-disk files
+        // KEPT — durable warmth across unload/restart is the feature.
+        ssdPrefixCache?.close()
     }
 
     // MARK: - Event pump (CBv2Event → GenerationEvent)
@@ -609,6 +655,10 @@ public actor EngineV2Bridge {
                 if holdsSharedReservation {
                     await kvBudget?.release(requestID: id)
                 }
+                // SSD staging backstop: usually a no-op (the engine's
+                // endAdoption already balanced the ticket at adoption
+                // time); covers the lookup-missed corner. Idempotent.
+                ssdPrefixCache?.completeStaging(requestID: id)
                 continuation.finish()
                 return
             }
@@ -625,6 +675,7 @@ public actor EngineV2Bridge {
             if holdsSharedReservation {
                 await kvBudget?.release(requestID: id)
             }
+            ssdPrefixCache?.completeStaging(requestID: id)
             continuation.finish()
         }
     }

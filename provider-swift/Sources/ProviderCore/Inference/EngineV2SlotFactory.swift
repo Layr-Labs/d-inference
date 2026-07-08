@@ -38,13 +38,17 @@ enum EngineV2SlotFactory {
 
     // MARK: - Prefix-cache carve (T-041, v0.7.5)
 
-    /// Outcome of the funding gate + carve for one slot.
+    /// Outcome of the tier selection + funding gate + carve for one slot.
     struct PrefixCarveDecision {
         /// The grant split: engine admission ceiling + cache byte budget.
+        /// Only the opt-in RAM tier ever carves; `.ssd`/`.off` modes are a
+        /// passthrough (the SSD tier's budget is DISK, not memory).
         let carve: PrefixCachePolicy.Carve
-        /// `DARKBLOOM_PREFIX_CACHE` master gate (dormant by default).
-        let gateEnabled: Bool
-        /// Whether the per-model funding gate funded this model's cache.
+        /// Resolved tier for this environment (`PrefixCachePolicy.mode`):
+        /// SSD default-on, RAM opt-in (with SSD killed), master kill.
+        let mode: PrefixCachePolicy.Mode
+        /// Whether the per-model funding gate funded the RAM tier's carve
+        /// (RAM tier only — the SSD tier gates per DONATION instead).
         let funded: Bool
         /// The model's adoption bound (tokens) the funding gate judged.
         let adoptionBoundTokens: Int
@@ -53,13 +57,17 @@ enum EngineV2SlotFactory {
     /// THE single carve point (T-041): split a slot's re-slice grant
     /// between the engine's admission ceiling and the RAM-only v2 prefix
     /// cache. Order of the load pipeline: re-slice grant → THIS funding-
-    /// gated carve (dormant ⇒ passthrough) → engine construction.
+    /// gated carve (`.ram` mode only; `.ssd`/`.off` ⇒ passthrough) →
+    /// SSD tier construction (`.ssd` mode, no memory carve) → engine
+    /// construction with the (possibly reduced) grant.
     ///
-    /// Per-model funding gate (see PrefixCachePolicy's header): a hybrid
-    /// model whose adoption bound (windowCount × maxWindow) exceeds the
-    /// funding threshold can never produce a hit at real prompt lengths,
-    /// so its cache is NOT funded and the full grant stays with live KV
-    /// (gemma-4: bound 25,600 ⇒ unfunded; gpt-oss: 1,536 ⇒ funded).
+    /// Per-model funding gate — RAM TIER ONLY (see PrefixCachePolicy's
+    /// header): a hybrid model whose adoption bound (windowCount ×
+    /// maxWindow) exceeds the funding threshold can never produce a hit
+    /// at real prompt lengths, so its cache is NOT funded and the full
+    /// grant stays with live KV (gemma-4: bound 25,600 ⇒ unfunded;
+    /// gpt-oss: 1,536 ⇒ funded). The SSD tier ignores this gate and gates
+    /// each DONATION on the same bound instead (`SSDPrefixCache.donate`).
     /// Text slots read the bound off the loaded model; VLM slots derive
     /// it from the checkpoint's text_config (config-only — the weight-
     /// sharing extraction runs later, inside engine construction).
@@ -83,9 +91,10 @@ enum EngineV2SlotFactory {
         kvBytesPerToken: Int,
         environment: [String: String]
     ) -> PrefixCarveDecision {
-        let gateEnabled = PrefixCachePolicy.isEnabled(environment: environment)
+        let mode = PrefixCachePolicy.mode(environment: environment)
+        let ramTier = mode == .ram
         let adoptionBound: Int
-        if gateEnabled, let model {
+        if ramTier, let model {
             if isVLM {
                 adoptionBound = modelDirectory.flatMap {
                     EngineV2VLMTextExtraction.adoptionBoundTokens(modelDirectory: $0)
@@ -96,7 +105,7 @@ enum EngineV2SlotFactory {
         } else {
             adoptionBound = 0
         }
-        let funded = gateEnabled
+        let funded = ramTier
             && PrefixCachePolicy.shouldFund(
                 adoptionBoundTokens: adoptionBound, environment: environment)
         let requestedBudget = funded
@@ -108,23 +117,32 @@ enum EngineV2SlotFactory {
             kvBytesPerToken: kvBytesPerToken)
         return PrefixCarveDecision(
             carve: carve,
-            gateEnabled: gateEnabled,
+            mode: mode,
             funded: funded,
             adoptionBoundTokens: adoptionBound)
     }
 
     /// Human-readable cache state for the slot-serving log line.
     static func prefixCacheStateDescription(
-        decision: PrefixCarveDecision, environment: [String: String]
+        decision: PrefixCarveDecision,
+        ssdCache: SSDPrefixCache?,
+        environment: [String: String]
     ) -> String {
+        if let ssdCache {
+            return "on (tier=ssd: encrypted offload, HMAC-keyed names, "
+                + "15-min sliding TTL, NO memory carve, per-donation gate "
+                + "> \(ssdCache.config.adoptionBoundTokens + ssdCache.config.minEffectiveTokens) tok — T-041)"
+        }
         if decision.carve.prefixCacheBudgetBytes > 0 {
             return "on, budget \(decision.carve.prefixCacheBudgetBytes) B "
-                + "(RAM-only, salt-scoped — T-041)"
+                + "(tier=ram opt-in, salt-scoped — T-041)"
         }
-        if decision.gateEnabled && !decision.funded {
-            // Name WHY: this model's hybrid window shape makes hits
-            // unreachable at real prompt lengths, so its budget stays with
-            // live KV (see PrefixCachePolicy's funding-gate rationale).
+        if decision.mode == .ram && !decision.funded {
+            // RAM tier only — the SSD tier has no per-model funding gate
+            // (it gates per donation instead). Name WHY: this model's
+            // hybrid window shape makes hits unreachable at real prompt
+            // lengths, so its budget stays with live KV (see
+            // PrefixCachePolicy's funding-gate rationale).
             return "unfunded (adoption bound \(decision.adoptionBoundTokens) tok, "
                 + "funding cap "
                 + "\(PrefixCachePolicy.maxAdoptionBoundTokens(environment: environment)) "
@@ -158,6 +176,10 @@ enum EngineV2SlotFactory {
     ///     their ledger).
     ///   - kvQuantConfigured: operator set `kv_quant` — v2 is fp16-only,
     ///     so a WARN telemetry event fires once per load.
+    ///   - weightHash: the slot's verified weight hash (metadata binding
+    ///     for the SSD tier's on-disk artifacts). nil ⇒ the tier degrades
+    ///     to a model-id binding (same posture as the legacy tier) — the
+    ///     standalone server passes nil (it never computes weight hashes).
     ///   - environment: prefix-cache policy environment
     ///     (`DARKBLOOM_PREFIX_CACHE*`); injectable for tests.
     ///   - emitTelemetry: injectable sink (tests); nil ⇒ shared client.
@@ -166,8 +188,10 @@ enum EngineV2SlotFactory {
     ///     `ProviderLoop.EngineV2SlotHooks`); nil ⇒ the real
     ///     `EngineV2Factory.makeProductionEngine`. The carve + budget
     ///     bookkeeping run either way (production shape); the cache
-    ///     INSTANCE and stats logger exist only on the production path.
+    ///     INSTANCES (RAM or SSD) and stats loggers exist only on the
+    ///     production path.
     ///   - logInfo: sink for the VLM parity-gate + cache-state info lines.
+    ///   - logWarning: sink for the both-tiers-requested WARN line.
     static func makeProductionBridge(
         modelId: String,
         modelType: String?,
@@ -180,10 +204,12 @@ enum EngineV2SlotFactory {
         maxConcurrentRequests: Int,
         kvBudget: GlobalKVCacheBudget?,
         kvQuantConfigured: Bool,
+        weightHash: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngineOverride: (@Sendable (String, Int) throws -> any CBv2Engine)? = nil,
-        logInfo: @escaping @Sendable (String) -> Void = { _ in }
+        logInfo: @escaping @Sendable (String) -> Void = { _ in },
+        logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> EngineV2Bridge {
         // Snapshot the model handle + EOS config out of the container.
         // Handing the module reference to the v2 engine serializes all
@@ -206,9 +232,11 @@ enum EngineV2SlotFactory {
             tokenToId: { tokenizer.inner.convertTokenToId($0) }
         )
 
-        // THE single carve point (T-041): re-slice grant → funding-gated
-        // carve (dormant ⇒ passthrough) → engine construction with the
-        // reduced ceiling. Both production slot owners share this path.
+        // THE single carve point (T-041): re-slice grant → RAM-tier
+        // funding-gated carve (dormant default ⇒ passthrough) → SSD tier
+        // construction (no memory carve) → engine construction with the
+        // (possibly reduced) ceiling. Both production slot owners share
+        // this path.
         let carveDecision = resolvePrefixCarve(
             modelId: modelId,
             isVLM: isVLM,
@@ -220,15 +248,75 @@ enum EngineV2SlotFactory {
         let engineKVBytesCapacity = carveDecision.carve.engineKVBytesCapacity
         let prefixCacheBudgetBytes = carveDecision.carve.prefixCacheBudgetBytes
 
-        // Funded cache instance (production engines only — scripted test
-        // engines have no cache seam; the budget bookkeeping still applies
-        // so claim/heartbeat math keeps production shape). Built HERE, not
-        // inside the closure, so the factory keeps the handle for the
-        // periodic stats logger below.
+        // Funded RAM cache instance (opt-in tier; production engines only —
+        // scripted test engines have no cache seam; the budget bookkeeping
+        // still applies so claim/heartbeat math keeps production shape).
+        // Built HERE, not inside the closure, so the factory keeps the
+        // handle for the periodic stats logger below.
         let prefixCache = makeEngineOverride == nil
             ? PrefixCachePolicy.makePrefixCache(
                 modelId: modelId, budgetBytes: prefixCacheBudgetBytes)
             : nil
+
+        // SSD tier instance (v0.7.5 encrypted offload — the DEFAULT for
+        // every CBv2-adapted model in `.ssd` mode; production path only).
+        // The same object serves as the ENGINE's `CBv2PrefixCache` and the
+        // BRIDGE's staging/backstop/shutdown handle. NOT funding-gated:
+        // the tier gates each DONATION on the model's own adoption bound +
+        // benefit floor instead (`SSDPrefixCache.donate`), so gemma-4's
+        // long-context tail caches while gpt-oss's never-adoptable short
+        // donations are skipped. Its budget is DISK (own kv2/ root, 20 GiB
+        // box-wide LRU) — the engine keeps the FULL slot grant; the tier's
+        // only RAM claims are per-request staging reservations in the
+        // shared `GlobalKVCacheBudget` (refused ⇒ silent recompute).
+        //
+        // VLM slots derive layer kinds from config.json's text_config
+        // alone (`EngineV2VLMTextExtraction.cbv2LayerKinds` — drift tests
+        // pin config-derived shape == engine truth); the weight-sharing
+        // extraction itself still runs inside engine construction. A
+        // family with no derivable kinds gets no cache (it would throw
+        // unsupportedModel at engine build anyway).
+        var ssdPrefixCache: SSDPrefixCache?
+        if makeEngineOverride == nil, case .ssd(let warnBothTiers) = carveDecision.mode {
+            if warnBothTiers {
+                logWarning(
+                    "engine_v2: DARKBLOOM_PREFIX_CACHE=1 (RAM tier opt-in) and the "
+                        + "SSD tier are BOTH active for \(modelId) — SSD wins for "
+                        + "this slot; tiers do not compose in v1")
+            }
+            let ssdLayerKinds: [CBv2LayerKind]?
+            if isVLM {
+                ssdLayerKinds = modelDirectory.flatMap {
+                    EngineV2VLMTextExtraction.cbv2LayerKinds(modelDirectory: $0)
+                }
+            } else {
+                ssdLayerKinds = EngineV2Factory.cbv2LayerKinds(model: snapshot.model)
+            }
+            if let ssdLayerKinds {
+                ssdPrefixCache = await SSDPrefixCacheFactory.make(
+                    modelId: modelId,
+                    weightHash: weightHash,
+                    layerKinds: ssdLayerKinds,
+                    kvBudget: kvBudget,
+                    environment: environment)
+            } else {
+                logInfo(
+                    "engine_v2: SSD prefix cache skipped for \(modelId) — no "
+                        + "derivable CBv2 layer kinds (non-adapted family)")
+            }
+        }
+
+        // The cache handed to the engine: the RAM tier when opted in (and
+        // the SSD tier killed), else the SSD conformer — both ride the
+        // engine's frozen existential `CBv2PrefixCache` seam.
+        let enginePrefixCache: (any CBv2PrefixCache)?
+        if let prefixCache {
+            enginePrefixCache = prefixCache
+        } else if let ssdPrefixCache {
+            enginePrefixCache = ssdPrefixCache
+        } else {
+            enginePrefixCache = nil
+        }
 
         let makeEngine: () throws -> any CBv2Engine
         if let makeEngineOverride {
@@ -259,7 +347,7 @@ enum EngineV2SlotFactory {
                     model: servingModel,
                     tokenizer: tokenizer.inner,
                     kvBytesCapacity: engineKVBytesCapacity,
-                    prefixCache: prefixCache,
+                    prefixCache: enginePrefixCache,
                     maxConcurrentRequests: maxConcurrentRequests)
             }
         }
@@ -280,6 +368,10 @@ enum EngineV2SlotFactory {
             // bookkeeping — the bridge exposes it via `slotKVBytesClaim()`
             // so re-slices and heartbeats subtract the cache's bytes too.
             prefixCacheBudgetBytes: prefixCacheBudgetBytes,
+            // SSD tier handle for the bridge's pre-submit staging hook,
+            // release backstops, and shutdown (closed by `makeBridge` on
+            // an engine-init failure so background tasks never leak).
+            ssdPrefixCache: ssdPrefixCache,
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
 
@@ -288,10 +380,15 @@ enum EngineV2SlotFactory {
         if let prefixCache {
             await bridge.startPrefixCacheStatsLogger(cache: prefixCache)
         }
+        if let ssdPrefixCache {
+            await bridge.startSSDPrefixCacheStatsLogger(cache: ssdPrefixCache)
+        }
         logInfo(
             "engine_v2: \(modelId) prefix cache "
                 + prefixCacheStateDescription(
-                    decision: carveDecision, environment: environment))
+                    decision: carveDecision,
+                    ssdCache: ssdPrefixCache,
+                    environment: environment))
 
         // WARN once (per load) that kv_quant is ignored on the v2 path
         // (fp16 caches are what the engine builds).

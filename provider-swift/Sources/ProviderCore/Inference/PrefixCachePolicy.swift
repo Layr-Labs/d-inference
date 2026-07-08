@@ -4,25 +4,31 @@
 // budget, and the KV carve. (The legacy scheduler that once delegated its
 // env/budget checks here was deleted in the v0.7.5 one-engine release.)
 //
-// The v2 cache (`PrefixCacheV2`, mlx-swift-lm ContinuousBatchingV2) is
-// RAM-ONLY: donated KV lives in process memory under an LRU byte budget,
-// with no persistence tier — see threat model T-041/TB-007 (the on-disk
-// metadata leak of the legacy encrypted tier does not exist on this path;
-// the in-process cross-tenant TTFT oracle remains the SEC-035 accepted
-// risk, narrowed by per-request `cacheSalt` scoping).
+// TWO TIERS as of v0.7.5:
 //
-// DORMANT BY DEFAULT (v0.7.5 ship decision): resident RAM belongs to LIVE
-// serving — every byte a resident cache retains is a byte of KV
-// concurrency the box cannot serve — so the cache stays OFF unless a box
-// is explicitly opted in with `DARKBLOOM_PREFIX_CACHE=1` (plus an optional
-// `DARKBLOOM_PREFIX_CACHE_MAX_GB`) for experiments. The gate, budget,
-// funding-gate, and carve machinery below stay fully wired for opted-in
-// boxes and as the foundation for the successor design: an ENCRYPTED SSD
-// offload tier (write-behind donation on completion, read-through
-// adoption, HMAC-keyed prefix hashes) that caches without occupying
-// serving RAM. That tier is reviewed under T-041 before it ships. This
-// shared gate means v0.7.5 ships with NO resident prefix cache anywhere
-// by default.
+//   * The ENCRYPTED SSD OFFLOAD TIER (`SSDPrefixCache`, KVCacheSSD/)
+//     SHIPS IN v0.7.5 and is the DEFAULT for every CBv2-adapted model:
+//     write-behind donation on completion (per-donation gate: persist
+//     only prefixes longer than the model's adoption bound + the
+//     1,024-token benefit floor), read-through adoption, HMAC-keyed
+//     names (T-041 leak #2 closed), 15-minute sliding TTL, 20 GiB
+//     box-wide LRU disk budget, and ZERO memory carve — resident RAM
+//     belongs entirely to LIVE serving. Reviewed and shipped under
+//     T-041. Kill switch: `DARKBLOOM_PREFIX_CACHE_SSD=0` (and the
+//     master `DARKBLOOM_PREFIX_CACHE=0` kills every tier).
+//
+//   * The RAM tier (`PrefixCacheV2`, mlx-swift-lm ContinuousBatchingV2)
+//     stays OPT-IN EXPERIMENTAL: donated KV in process memory under an
+//     LRU byte budget carved out of the slot's KV grant. Reached only
+//     with `DARKBLOOM_PREFIX_CACHE=1` AND the SSD tier killed (when
+//     both are active, SSD wins with a WARN — no tier composition).
+//     Every byte it retains is a byte of KV concurrency the box cannot
+//     serve, hence opt-in (plus optional
+//     `DARKBLOOM_PREFIX_CACHE_MAX_GB`). The in-process cross-tenant
+//     TTFT oracle remains the SEC-035 accepted risk on both tiers,
+//     narrowed by per-request `cacheSalt` scoping.
+//
+// See `mode(environment:)` for the tier selector.
 //
 // PER-MODEL FUNDING GATE (the adoption bound): the engine only ADOPTS a
 // cached prefix past `windowCount × maxWindow` matched tokens — every
@@ -53,10 +59,11 @@ import MLXLMCommon
 
 enum PrefixCachePolicy {
 
-    /// Master gate, shared with the legacy engine: the prefix cache is
-    /// DORMANT BY DEFAULT as of v0.7.5 — a box opts IN with
-    /// `DARKBLOOM_PREFIX_CACHE=1` (also `true`/`yes`/`on`); absent, `0`,
-    /// or anything unrecognized keeps it off. See T-041 and the header.
+    /// Master gate. As of v0.7.5 it plays
+    /// two roles (see `mode`): any set-but-non-affirmative value KILLS
+    /// every tier (incl. the default-on SSD tier); an affirmative value
+    /// opts the box into the experimental RAM tier (which only engages
+    /// when the SSD tier is also killed). See T-041 and the header.
     static let environmentFlag = "DARKBLOOM_PREFIX_CACHE"
 
     /// In-memory budget override (GB). Unset/invalid ⇒ the default policy
@@ -82,18 +89,72 @@ enum PrefixCachePolicy {
 
     // MARK: - Gate
 
-    /// OPT-IN as of v0.7.5 (ship decision: resident RAM is for live
-    /// serving; caching returns by default with the encrypted SSD tier).
-    /// Only an explicit affirmative enables; absent / `0` / `false` /
-    /// `off` / `no` / anything unrecognized keeps the cache dormant.
-    /// Fail-safe direction is OFF: a typo'd value can only ever leave a
-    /// box uncached, never opt it into the SEC-035 channel by accident.
+    /// RAM-tier opt-in (v2 slots use `mode` instead,
+    /// which layers the default-on SSD tier on top): only an explicit
+    /// affirmative enables; absent / `0` / `false` / `off` / `no` /
+    /// anything unrecognized keeps the RAM cache dormant. Fail-safe
+    /// direction is OFF: a typo'd value can only ever leave a box
+    /// uncached, never opt it into the SEC-035 channel by accident.
     static func isEnabled(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
         let env = environment[environmentFlag]?
             .trimmingCharacters(in: .whitespaces).lowercased()
         return env == "1" || env == "true" || env == "yes" || env == "on"
+    }
+
+    // MARK: - Tier selection (v0.7.5 SSD offload)
+
+    /// SSD-tier kill switch. The encrypted SSD offload tier is ON BY
+    /// DEFAULT for funded models (it caches without occupying serving
+    /// RAM); an explicit `DARKBLOOM_PREFIX_CACHE_SSD=0` (or any other
+    /// non-affirmative set value — fail-safe: a typo only ever disables)
+    /// kills just the SSD tier. `DARKBLOOM_PREFIX_CACHE=0` (the existing
+    /// master switch, any non-affirmative set value) kills EVERYTHING.
+    static let ssdEnvironmentFlag = "DARKBLOOM_PREFIX_CACHE_SSD"
+
+    /// Which prefix-cache tier a v2 slot runs (per-model funding gate is
+    /// applied separately, after this).
+    enum Mode: Equatable {
+        /// No prefix cache anywhere.
+        case off
+        /// RAM `PrefixCacheV2` — the opt-in-experimental tier, exactly the
+        /// v0.7.5 dormant-default semantics (`DARKBLOOM_PREFIX_CACHE=1`
+        /// with the SSD tier killed).
+        case ram
+        /// Encrypted SSD offload (default for funded models).
+        /// `warnBothTiers`: the box ALSO opted into the RAM tier — SSD
+        /// wins for the slot (no tier composition in v1), WARN logged.
+        case ssd(warnBothTiers: Bool)
+    }
+
+    /// Resolve the tier for this environment:
+    ///   * `DARKBLOOM_PREFIX_CACHE` set to anything non-affirmative ⇒
+    ///     `.off` (master kill, existing fail-safe semantics: a typo can
+    ///     only ever leave a box uncached).
+    ///   * SSD tier on (default, or `_SSD` affirmative) ⇒ `.ssd` — with a
+    ///     WARN flag when the RAM tier was ALSO opted in.
+    ///   * SSD killed + `DARKBLOOM_PREFIX_CACHE=1` ⇒ `.ram` (the opt-in
+    ///     experimental tier, unchanged).
+    ///   * SSD killed + master unset ⇒ `.off`.
+    static func mode(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Mode {
+        let master = environment[environmentFlag]?
+            .trimmingCharacters(in: .whitespaces).lowercased()
+        let masterAffirmative =
+            master == "1" || master == "true" || master == "yes" || master == "on"
+        // Master set to anything else (incl. "0") ⇒ kill everything.
+        if let master, !master.isEmpty, !masterAffirmative { return .off }
+
+        let ssd = environment[ssdEnvironmentFlag]?
+            .trimmingCharacters(in: .whitespaces).lowercased()
+        let ssdAffirmative = ssd == "1" || ssd == "true" || ssd == "yes" || ssd == "on"
+        let ssdKilled = ssd.map { !$0.isEmpty && !ssdAffirmative } ?? false
+        if !ssdKilled {
+            return .ssd(warnBothTiers: masterAffirmative)
+        }
+        return masterAffirmative ? .ram : .off
     }
 
     // MARK: - Budget
@@ -123,6 +184,54 @@ enum PrefixCachePolicy {
 
     /// Largest GB value that won't overflow Int when multiplied by 2^30.
     private static var gbToBytesCeiling: Double { Double(Int.max) / 1_073_741_824 }
+
+    // MARK: - SSD disk budget
+
+    /// On-disk budget env override (GB) — the existing operator knob,
+    /// now governing the BOX-WIDE SSD-tier budget (adapted from the
+    /// legacy `BatchScheduler+PrefixCacheSizing` resolver, which dies
+    /// with the legacy engine).
+    static let diskBudgetEnvironmentFlag = "DARKBLOOM_PREFIX_CACHE_DISK_GB"
+
+    /// Box-wide SSD default: 20 GiB across ALL models (Gaj, 2026-07-07),
+    /// clamped to half the volume's free space on a tight disk.
+    static let defaultSSDDiskBudgetBytes = 20 * 1_073_741_824
+
+    /// Resolved box-wide SSD disk budget (bytes). A valid positive env
+    /// override wins verbatim; otherwise `min(20 GiB, free/2)` — like the
+    /// legacy default derivation, re-evaluated per enforcement so the
+    /// ceiling shrinks as the volume fills. Unknown free space ⇒ the
+    /// fixed default.
+    static func ssdDiskBudgetBytes(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        freeBytes: Int?
+    ) -> Int {
+        let envGB = environment[diskBudgetEnvironmentFlag].flatMap(Double.init)
+        if let gb = envGB, gb > 0, gb.isFinite, gb < gbToBytesCeiling {
+            return Int(gb * 1_073_741_824)
+        }
+        guard let free = freeBytes else { return defaultSSDDiskBudgetBytes }
+        return max(1, min(defaultSSDDiskBudgetBytes, free / 2))
+    }
+
+    /// Best-effort free capacity (bytes) of the volume containing `url`
+    /// (moved from the legacy sizing helpers). Prefers Apple's
+    /// "important usage" figure, falls back to the raw available capacity.
+    static func volumeFreeBytes(at url: URL) -> Int? {
+        let keys: Set<URLResourceKey> = [
+            .volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey,
+        ]
+        var probe = url
+        while !FileManager.default.fileExists(atPath: probe.path), probe.pathComponents.count > 1 {
+            probe = probe.deletingLastPathComponent()
+        }
+        guard let v = try? probe.resourceValues(forKeys: keys) else { return nil }
+        if let important = v.volumeAvailableCapacityForImportantUsage, important > 0 {
+            return Int(important)
+        }
+        if let plain = v.volumeAvailableCapacity, plain > 0 { return plain }
+        return nil
+    }
 
     // MARK: - Stats cadence
 
@@ -185,8 +294,18 @@ enum PrefixCachePolicy {
     /// Whether a model with this adoption bound should have its cache
     /// funded. A threshold of 0 funds NOTHING (including bound-0 models) —
     /// it is the per-box "cache budget off" switch that leaves the
-    /// `DARKBLOOM_PREFIX_CACHE` master gate (which also governs the legacy
-    /// engine) untouched.
+    /// `DARKBLOOM_PREFIX_CACHE` master gate untouched.
+    ///
+    /// RAM TIER ONLY (v0.7.5 per-donation decision): the SSD tier RETIRED
+    /// this per-model gate — it is constructed for every CBv2-adapted
+    /// model in `.ssd` mode and gates each DONATION on the model's own
+    /// adoption bound + benefit floor instead
+    /// (`SSDPrefixCache.donate`), so hybrid models with huge bounds
+    /// (gemma-4) cache exactly their adoptable long-context tail rather
+    /// than nothing. `DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS`
+    /// therefore has NO effect on the SSD tier; a model is only "never
+    /// cached" there when its bound is unknown/saturated (the donation
+    /// gate can then never pass).
     static func shouldFund(
         adoptionBoundTokens bound: Int,
         environment: [String: String] = ProcessInfo.processInfo.environment

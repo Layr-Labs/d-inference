@@ -1503,7 +1503,7 @@ threats:
   - id: T-041
     trust_boundary: TB-007
     stride: Information_Disclosure
-    title: Cross-tenant prefix-cache sharing + TTFT timing oracle (dormant by default as of v0.7.5; opt-in)
+    title: Cross-tenant prefix-cache sharing + TTFT timing oracle (v0.7.5 ships the encrypted SSD offload tier — HMAC-keyed at-rest artifacts, default-on for funded models)
     description: >
       The encrypted prefix KV cache (DARKBLOOM_PREFIX_CACHE) is shared across all
       consumers on a provider — the provider cannot see tenant identity, so a KV
@@ -1542,18 +1542,65 @@ threats:
       never resolve each other; a consumer who sets a scope opts their
       prefixes out of cross-tenant reuse (and out of the oracle for those
       prefixes) without needing the operator-level kill switch.
-      SHIP DECISION for v0.7.5: the cache ships DORMANT BY DEFAULT — resident
-      RAM is reserved for live serving, so DARKBLOOM_PREFIX_CACHE reverts to
-      OPT-IN (=1 enables; absent/0/anything else keeps it off, on BOTH
-      engines via the shared PrefixCachePolicy gate). The baseline fleet
-      exposure of this channel is therefore ZERO on v0.7.5; the exposure
-      exists only on boxes an operator explicitly opts in, where the posture
-      is exactly as described above (still RAM-only on v2, salt-scoped,
-      SEC-035 for the residual oracle). The planned successor — an encrypted
-      SSD offload tier (write-behind donation, read-through adoption,
-      HMAC-keyed prefix hashes) that caches without occupying serving RAM —
-      MUST be reviewed under this finding before it ships (it reintroduces
-      an at-rest artifact, i.e. the leak #2 class).
+      SHIP DECISION for v0.7.5 (superseding the earlier dormant-only plan):
+      the RAM tier stays OPT-IN experimental (DARKBLOOM_PREFIX_CACHE=1 with
+      the SSD tier killed), and the ENCRYPTED SSD OFFLOAD TIER ships IN
+      v0.7.5, DEFAULT-ON for every CBv2-adapted model with a PER-DONATION
+      gate (replacing the earlier per-model funding rule for this tier):
+      a donation persists only when its whole-block prefix exceeds the
+      model's adoption bound + the 1,024-token benefit floor. gpt-oss
+      (bound 1,536) therefore skips never-adoptable sub-~2.5k donations
+      (pure wear savings); gemma-4 (bound 25,600) caches exactly its
+      >26.6k long-context tail — at-rest exposure UNCHANGED IN KIND
+      (same HMAC names, same 15-min TTL, same crypto), merely extended to
+      gemma's long-context traffic. The per-model funding gate
+      (DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS) now governs ONLY
+      the opt-in RAM tier; a model is never SSD-cached only when its
+      adoption bound is unknown/saturated. This review is the mandated
+      sign-off for the tier's reintroduction of an at-rest artifact (the
+      leak #2 class). Posture of the SSD tier
+      (provider-swift/Sources/ProviderCore/KVCacheSSD/):
+        (a) LEAK #2 CLOSED, not re-accepted: on-disk file names, the RAM
+            index, and file metadata carry ONLY HMAC-SHA256 tags under
+            K_lookup = HKDF(KEK, "dbkv2-lookup-v1") — a per-install secret
+            rooted in the Secure Enclave via the existing KEK chain. Raw
+            chain hashes / token-prefix hashes never touch disk, so a disk
+            observer cannot test a guessed prefix against anything. The
+            long-open HMAC mitigation ships IMPLEMENTED with the tier that
+            re-opened it.
+        (b) The at-rest window is bounded by a 15-MINUTE sliding TTL
+            (DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS can only shorten it;
+            sliding on hit; opportunistic sweep on write + periodic task);
+            a 20 GiB box-wide LRU disk budget (DARKBLOOM_PREFIX_CACHE_DISK_GB,
+            min'd with free-disk/2) unlinks oldest-by-last-hit.
+        (c) File crypto is the reviewed legacy scheme unchanged: per-file
+            random DEK wrapped AES-256-GCM under the SE-rooted KEK,
+            HKDF-derived per-chunk nonces ("dbkv-chunk-v2"), canonical
+            metadata JSON as AAD on every chunk (tamper ⇒ auth failure ⇒
+            delete + recompute), atomic tmp+rename writes (DBK2 format,
+            version 2).
+        (d) Salt scoping is PRESERVED on disk: the request's cacheSalt is
+            folded into both the engine chain hash AND (length-prefixed)
+            the HMAC tag input, so entries donated under different scopes
+            can never resolve — or even name-collide with — each other.
+        (e) NO memory carve: the engine keeps its full KV grant; the
+            tier's only RAM claims are per-request staging reservations in
+            the shared GlobalKVCacheBudget (refused ⇒ silent recompute).
+      Residual at-rest metadata, accepted: file sizes (uniform block
+      shape), file count, mtimes/createdAt (activity timing), and the
+      cached-model identity (modelKey directory — already public via
+      heartbeats). None of these confirm a specific prefix.
+      Kill switches: DARKBLOOM_PREFIX_CACHE=0 kills every tier;
+      DARKBLOOM_PREFIX_CACHE_SSD=0 kills just the SSD tier. If both the
+      RAM opt-in and the SSD tier are active, SSD wins with a WARN (no
+      tier composition in v1). Purge points: KEK wipe makes all files
+      unreadable AND unfindable (K_lookup derives from the KEK).
+      SEC-035 (leak #1, the in-process TTFT oracle) is UNCHANGED IN KIND
+      and stays the accepted risk — with one extension for this sign-off:
+      durability extends the oracle across restarts/idle-unloads within
+      the 15-minute TTL window (a co-tenant can probe whether a prefix was
+      cached earlier the same quarter-hour). Salt scoping remains the
+      consumer-side opt-out.
     adversaries: [ADV-002]
     affected_assets: [A-001]
     affected_files:
@@ -1562,9 +1609,18 @@ threats:
       # PRESERVED as the chunked AES-GCM store the SSD-offload successor
       # reuses.)
       - provider-swift/Sources/ProviderCore/KVCache/EncryptedKVStore.swift
+      - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache.swift
+      - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore.swift
+      - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDLookupKeys.swift
+      - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockIndex.swift
+      - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift
+      - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift
+      - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift
       - provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift
       - provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift
       - provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift
+      - provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift
+      - provider-swift/Sources/ProviderCore/ProviderLoop+EngineV2.swift
       - libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefixCacheV2.swift
     mitigations:
       - description: >
@@ -1573,19 +1629,23 @@ threats:
           sharing or TTFT timing channel.
         status: implemented
       - description: >
-          DORMANT BY DEFAULT (v0.7.5): DARKBLOOM_PREFIX_CACHE is an OPT-IN gate —
-          only an explicit affirmative (=1/true/yes/on) enables the cache; absent,
-          0, or any unrecognized value keeps it off (fail-safe direction is OFF, so
-          a typo can never opt a box in). One shared gate
-          (PrefixCachePolicy.isEnabled) governs both engines, so the default fleet
-          carries NO resident prefix cache and no exposure from this channel.
-          Untrusted multi-tenant deployments simply stay at the default.
+          RAM tier DORMANT BY DEFAULT (v0.7.5): DARKBLOOM_PREFIX_CACHE is an
+          OPT-IN gate for the resident RAM tier — only an explicit affirmative
+          (=1/true/yes/on) enables it; absent, 0, or any unrecognized value
+          keeps it off (fail-safe direction is OFF, so a typo can never opt a
+          box in), and the same flag set non-affirmative is the MASTER KILL
+          for every tier including the default-on SSD tier
+          (PrefixCachePolicy.mode). The default fleet carries NO resident
+          prefix cache; its default exposure is the SSD tier's bounded
+          at-rest posture described above.
         status: implemented
       - description: >
-          v2 path is RAM-only by construction (PrefixCacheV2 holds donated KV in
-          process memory under an LRU byte budget; no persistence tier is wired) —
-          eliminates leak #2 entirely on v2: no on-disk artifact, no at-rest
-          encryption obligation, no metadata for a disk observer.
+          RAM tier is memory-only by construction (PrefixCacheV2 holds donated
+          KV in process memory under an LRU byte budget; no persistence tier
+          is wired) — no on-disk artifact, no at-rest encryption obligation,
+          no metadata for a disk observer on that tier. On the SSD tier the
+          leak #2 class is closed by the HMAC-keyed naming scheme instead
+          (see the tier posture in the description and the mitigations below).
         status: implemented
       - description: >
           Per-request cacheSalt tenant scoping on v2 (prompt_cache_key/user →
@@ -1593,6 +1653,22 @@ threats:
           salts can never resolve each other, so scoped consumers are excluded
           from cross-tenant reuse. Consumer-initiated (unscoped requests still
           share the unsalted namespace), so it narrows — not closes — leak #1.
+          PRESERVED ON DISK by the SSD tier: the salt is folded into both the
+          chain hash and the HMAC name tag, so scoped files are unfindable and
+          unusable outside their scope.
+        status: implemented
+      - description: >
+          SSD tier at-rest window bound: 15-minute sliding TTL (env can only
+          shorten), 20 GiB box-wide LRU disk budget, weightHash + layoutEpoch
+          fail-closed bindings, and KEK-wipe purge (files become unreadable AND
+          unfindable — K_lookup derives from the KEK).
+        status: implemented
+      - description: >
+          SSD tier NO-memory-carve posture: the engine keeps its full slot KV
+          grant (requestedBudgetBytes = 0 in SSD mode; asserted in tests);
+          staging RAM is per-request, reserved in GlobalKVCacheBudget before
+          any read, and released on every terminal path (engine endAdoption +
+          bridge backstop) — live serving always wins.
         status: implemented
       - description: >
           ACCEPTED RISK (SEC-035): accepts the cross-tenant timing/sharing channel
@@ -1614,28 +1690,40 @@ threats:
           in code — the operator must opt out manually.
         status: open
       - description: >
-          HMAC the on-disk tokenPrefixHash with a per-install secret so a disk
+          HMAC the on-disk prefix identity with a per-install secret so a disk
           observer cannot recompute it from a guessed prefix (mitigates leak #2).
-          LEGACY PATH ONLY / N/A on v2: the v2 cache is RAM-only and writes no
-          on-disk hash to protect; this obligation dies with the legacy engine's
-          deletion and must be re-opened only if a v2 persistence tier (SSD KV)
-          is ever added.
-        status: open
+          IMPLEMENTED for the v2 SSD tier (v0.7.5): file names, index keys, and
+          metadata carry only HMAC-SHA256 tags under K_lookup =
+          HKDF(SE-rooted KEK, "dbkv2-lookup-v1"), with the request salt
+          length-prefix-folded into the tag input (SSDLookupKeys). The legacy
+          tier's plaintext tokenPrefixHash remains as-was until the legacy
+          engine's deletion pass removes it.
+        status: implemented
     open_findings: [SEC-035]
     severity: medium
     detection_hint: >
-      Any change to the DARKBLOOM_PREFIX_CACHE default/gating or budget policy in
-      PrefixCachePolicy (the shared gate helper both engines consult), to the v2
-      cache construction/activation in EngineV2Factory.makeProductionEngine
-      (prefixCache/enablePrefixCache), to the cacheSalt scoping plumbing
-      (cacheScope → CBv2Request.cacheSalt), or — legacy path, until deletion — to
-      BatchScheduler.makePrefixCacheBackingIfEnabled or what the plaintext file
-      metadata exposes (tokenPrefixHash, tokenCount) must be reviewed against
-      this cross-tenant channel. Flipping the v0.7.5 DORMANT default back to
-      enabled-by-default re-raises the fleet baseline exposure and needs a fresh
-      SEC-035 sign-off. The encrypted SSD offload tier (the planned successor)
-      and ANY other persistence added to PrefixCacheV2 re-opens leak #2 and its
-      HMAC obligation and must be reviewed under this finding before shipping.
+      A persistence tier now EXISTS (KVCacheSSD, v0.7.5). Review under this
+      finding: any change to the tier gating/mode selection in
+      PrefixCachePolicy (mode / DARKBLOOM_PREFIX_CACHE / _SSD semantics —
+      the SSD tier is default-on with a PER-DONATION gate: adoption bound +
+      benefit floor in SSDPrefixCache.donate; loosening it widens the
+      at-rest surface), to the TTL or disk-budget
+      policy (SSDPrefixCachePolicy.ttlSeconds 15-min max,
+      PrefixCachePolicy.ssdDiskBudgetBytes), to the NAME DERIVATION
+      (SSDLookupKeys: HKDF info string, HMAC domain tag, salt length-prefix,
+      tag truncation), to the DBK2 metadata fields or AAD construction
+      (SSDBlockStore — nothing prompt-derived beyond the keyed lookupTag may
+      ever be added), to the purge points or the tier's own on-disk root
+      (darkbloom/kv2 — deliberately OUTSIDE the legacy kv/ root that the
+      upgrade sweeper sheds; KEK wipe remains the crypto purge), or to the
+      staging-reservation release paths
+      (SSDPrefixCache.endAdoption/completeStaging, EngineV2Bridge backstops).
+      Also still: the cacheSalt scoping plumbing (cacheScope →
+      CBv2Request.cacheSalt), EngineV2Factory.makeProductionEngine
+      (prefixCache/enablePrefixCache), and — legacy path, until deletion —
+      BatchScheduler.makePrefixCacheBackingIfEnabled / the legacy plaintext
+      metadata (tokenPrefixHash). Raising the TTL past 15 minutes or widening
+      the default-on scope needs a fresh SEC-035 sign-off.
 
   # ── TB-008: Coordinator → Payments ───────────────────────────
 

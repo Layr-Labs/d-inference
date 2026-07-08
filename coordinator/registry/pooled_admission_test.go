@@ -205,6 +205,292 @@ func TestFreeMemoryAdmitsPooledRejectsGapDoubleSpend(t *testing.T) {
 	}
 }
 
+// TestProviderPooledTokenBudgetByteNormalization pins the byte-space
+// reconstruction: per-slot token quantities scale by that slot's own
+// KVBytesPerToken, the shared free headroom is the largest per-slot free BYTE
+// view counted once, and a single budget slot without a KV rate disables byte
+// mode for the whole pool (legacy provider build).
+func TestProviderPooledTokenBudgetByteNormalization(t *testing.T) {
+	// Big-KV model A: 10k tokens × 100kB/token headroom = 1 GB.
+	// Small-KV model B: 100k tokens × 10kB/token = the SAME 1 GB pool.
+	slots := []protocol.BackendSlotCapacity{
+		{Model: "a", ActiveTokenBudgetMax: 10_000, KVBytesPerToken: 100_000},
+		{Model: "b", ActiveTokenBudgetMax: 100_000, KVBytesPerToken: 10_000},
+	}
+	pool := providerPooledTokenBudget(slots)
+	if !pool.byteMode {
+		t.Fatal("byteMode = false with every budget slot reporting a KV rate")
+	}
+	if pool.totalBytes != 1_000_000_000 || pool.usedBytes != 0 || pool.committedBytes != 0 {
+		t.Fatalf("byte pool = {used:%d committed:%d total:%d}, want {0 0 1e9} (shared free bytes counted once)",
+			pool.usedBytes, pool.committedBytes, pool.totalBytes)
+	}
+	// Token space is denominated by the LARGEST free-token view (B's 100k) —
+	// the very distortion byte mode exists to correct.
+	if pool.total != 100_000 {
+		t.Fatalf("token pool total = %d, want 100_000", pool.total)
+	}
+
+	// One budget slot without a rate → byte reconstruction impossible.
+	mixed := providerPooledTokenBudget([]protocol.BackendSlotCapacity{
+		{Model: "a", ActiveTokenBudgetMax: 10_000, KVBytesPerToken: 100_000},
+		{Model: "legacy", ActiveTokenBudgetMax: 9_000},
+	})
+	if mixed.byteMode {
+		t.Fatal("byteMode = true although a budget slot reports no KVBytesPerToken")
+	}
+}
+
+// TestFreeMemoryAdmitsByteNormalizedHeterogeneousKV is the X-unit regression:
+// co-resident slots with different KVBytesPerToken share ONE byte pool, so
+// token counts are not a common unit. A 90k-token pending burst on the
+// small-KV model (10 kB/token = 0.9 GB) leaves only 0.1 GB of the 1 GB pool,
+// so a 3k-token request to the big-KV model (100 kB/token = 0.3 GB) must be
+// rejected — token accounting (93k ≤ 100k) would admit it and the box OOMs.
+// Fails without the byte-normalized branch in pooledBudgetAdmits.
+func TestFreeMemoryAdmitsByteNormalizedHeterogeneousKV(t *testing.T) {
+	slots := []protocol.BackendSlotCapacity{
+		{Model: "big-kv", ActiveTokenBudgetMax: 10_000, KVBytesPerToken: 100_000},
+		{Model: "small-kv", ActiveTokenBudgetMax: 100_000, KVBytesPerToken: 10_000},
+	}
+	mkSnap := func(pendingSmallKVTokens int64) routingSnapshot {
+		return routingSnapshot{
+			// Snapshot for the big-KV model: no same-model pending, stale
+			// heartbeat (used 0), all pending is the small-KV burst.
+			activeTokenBudgetMax:      10_000,
+			kvBytesPerToken:           100_000,
+			pendingMaxTokensAllModels: int(pendingSmallKVTokens),
+			pendingMaxBytesAllModels:  pendingSmallKVTokens * 10_000,
+			pendingBytesKnown:         true,
+			pooledTokenBudget:         providerPooledTokenBudget(slots),
+		}
+	}
+	// 90k small-KV tokens pending = 0.9 GB; +0.3 GB request = 1.2 GB > 1 GB.
+	if freeMemoryAdmits(mkSnap(90_000), 100, 2_900) {
+		t.Fatal("admitted 0.3 GB of big-KV request into a byte pool with 0.9 GB already pending (token/byte unit confusion)")
+	}
+	// Control: 40k small-KV tokens pending = 0.4 GB; +0.3 GB = 0.7 GB ≤ 1 GB.
+	if !freeMemoryAdmits(mkSnap(40_000), 100, 2_900) {
+		t.Fatal("rejected a request although the byte pool has 0.6 GB of headroom (byte gate over-rejecting)")
+	}
+}
+
+// TestFreeMemoryAdmitsByteModeCorrectsTokenOverReject is the reverse sanity
+// case: when heartbeat skew leaves the token pool denominated by a SMALLER
+// free view than the true byte pool, token accounting over-rejects small-KV
+// work that genuinely fits in bytes. With the fix the byte check admits;
+// without it the token check (61k > 50k) wrongly rejects.
+func TestFreeMemoryAdmitsByteModeCorrectsTokenOverReject(t *testing.T) {
+	slots := []protocol.BackendSlotCapacity{
+		// Big-KV slot sees 1 GB free (10k × 100 kB); small-KV slot's staler
+		// view reports only 0.5 GB (50k × 10 kB). Token total = max(10k, 50k)
+		// = 50k tokens; byte total = max(1 GB, 0.5 GB) = 1 GB.
+		{Model: "big-kv", ActiveTokenBudgetMax: 10_000, KVBytesPerToken: 100_000},
+		{Model: "small-kv", ActiveTokenBudgetMax: 50_000, KVBytesPerToken: 10_000},
+	}
+	snap := routingSnapshot{
+		// Snapshot for the small-KV model with a 60k-token (0.6 GB) small-KV
+		// burst pending elsewhere on the box and a 1k-token (10 MB) request.
+		activeTokenBudgetMax:      50_000,
+		kvBytesPerToken:           10_000,
+		pendingMaxTokensAllModels: 60_000,
+		pendingMaxBytesAllModels:  600_000_000,
+		pendingBytesKnown:         true,
+		pooledTokenBudget:         providerPooledTokenBudget(slots),
+	}
+	if !pooledBudgetAdmits(snap, 1_000) {
+		t.Fatal("rejected 10 MB into a 1 GB byte pool holding 0.6 GB (token-unit over-rejection not corrected)")
+	}
+}
+
+// TestPooledAdmissionByteDoubleSpendRealPath drives the heterogeneous-KV
+// double-spend through the REAL reservation path: a small-KV burst that fits
+// the pool token-wise exhausts it byte-wise, so a big-KV co-resident request
+// inside the same heartbeat gap must be rejected. Fails without byte
+// normalization (token accounting reads 93k ≤ 100k and admits).
+func TestPooledAdmissionByteDoubleSpendRealPath(t *testing.T) {
+	reg := New(testLogger())
+	p := makeSchedulerProvider(t, reg, "shared-box", gptossBuild, 93)
+	addAdvertisedModel(p, gemmaBuild)
+	p.mu.Lock()
+	// gpt-oss: 10 kB/token → 100k-token view of the 1 GB shared pool.
+	p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 100_000
+	p.BackendCapacity.Slots[0].KVBytesPerToken = 10_000
+	// gemma: 100 kB/token → 10k-token view of the SAME 1 GB pool.
+	p.BackendCapacity.Slots = append(p.BackendCapacity.Slots, protocol.BackendSlotCapacity{
+		Model:                gemmaBuild,
+		State:                "running",
+		ActiveTokenBudgetMax: 10_000,
+		KVBytesPerToken:      100_000,
+	})
+	p.mu.Unlock()
+
+	// Burst gpt-oss: nine requests × 10k tokens = 90k tokens = 0.9 GB pending.
+	for i := 0; i < 9; i++ {
+		pr := &PendingRequest{
+			RequestID:             fmt.Sprintf("burst-%d", i),
+			Model:                 gptossBuild,
+			EstimatedPromptTokens: 500,
+			RequestedMaxTokens:    9_500,
+		}
+		if got := reg.ReserveProvider(gptossBuild, pr); got == nil {
+			t.Fatalf("burst request %d rejected; 9×10k tokens (0.9 GB) must fit the 1 GB pool", i)
+		}
+	}
+	// Gemma within the same gap: 3k tokens ≤ its 10k slot view and 93k ≤ 100k
+	// in token space — but 0.3 GB does NOT fit the 0.1 GB of byte headroom.
+	if got := reg.ReserveProvider(gemmaBuild, &PendingRequest{
+		RequestID: "victim", Model: gemmaBuild, EstimatedPromptTokens: 100, RequestedMaxTokens: 2_900,
+	}); got != nil {
+		t.Fatalf("gemma admitted during the heartbeat gap — token-unit accounting double-spent the byte pool (provider %q)", got.ID)
+	}
+}
+
+// TestFreeMemoryAdmitsColdModelChargesPool is the cold-slot pooled-gate
+// regression (pure-function form): the target model reports NO budget slot
+// (activeTokenBudgetMax == 0, not loaded here), so it skips the budget branch
+// entirely — but a resident co-model's slot reports the shared pool, and the
+// in-gap pending burst has already consumed it. The cold request must be
+// charged against the pool too, or it double-spends the same KV the resident
+// pending will occupy. Fails without the cold-path pooledBudgetAdmits call.
+func TestFreeMemoryAdmitsColdModelChargesPool(t *testing.T) {
+	slots := []protocol.BackendSlotCapacity{
+		{Model: "resident", ActiveTokenBudgetMax: 10_000},
+	}
+	mkSnap := func(pendingAllModels int) routingSnapshot {
+		return routingSnapshot{
+			// Snapshot for a COLD model: no slot, no budget, model not loaded.
+			pendingMaxTokensAllModels: pendingAllModels,
+			pooledTokenBudget:         providerPooledTokenBudget(slots),
+		}
+	}
+	if freeMemoryAdmits(mkSnap(10_000), 100, 1_900) {
+		t.Fatal("cold request admitted into a pool fully pending to a resident model (cold path skipped the pooled gate)")
+	}
+	// Control: with 4k of the 10k pool pending, the 2k cold request fits.
+	if !freeMemoryAdmits(mkSnap(4_000), 100, 1_900) {
+		t.Fatal("cold request rejected although the pool has 6k of headroom")
+	}
+}
+
+// TestPooledAdmissionColdModelDoubleSpendRealPath mirrors
+// TestPooledAdmissionCoResidencyDoubleSpend with the target model COLD: gemma
+// is advertised but has no backend slot, so its requests take the
+// non-budget admission path. An in-gap burst to the resident gpt-oss slot
+// consumes the whole shared pool; the cold gemma request must still be
+// rejected. Fails without the cold-path pooled gate in freeMemoryAdmits.
+func TestPooledAdmissionColdModelDoubleSpendRealPath(t *testing.T) {
+	reg := New(testLogger())
+	p := makeSchedulerProvider(t, reg, "shared-box", gptossBuild, 93)
+	addAdvertisedModel(p, gemmaBuild) // advertised, NOT loaded: no gemma slot
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 10_000
+	p.mu.Unlock()
+
+	// Burst the resident model: five requests × 2k tokens = the whole pool.
+	for i := 0; i < 5; i++ {
+		pr := &PendingRequest{
+			RequestID:             fmt.Sprintf("burst-%d", i),
+			Model:                 gptossBuild,
+			EstimatedPromptTokens: 100,
+			RequestedMaxTokens:    1_900,
+		}
+		if got := reg.ReserveProvider(gptossBuild, pr); got == nil {
+			t.Fatalf("burst request %d rejected; 5×2k must fit the 10k pool", i)
+		}
+	}
+	// Cold gemma within the same gap: no slot to check, but the pool is fully
+	// pending to gpt-oss — the post-load KV for this request does not exist.
+	if got := reg.ReserveProvider(gemmaBuild, &PendingRequest{
+		RequestID: "victim", Model: gemmaBuild, EstimatedPromptTokens: 100, RequestedMaxTokens: 1_900,
+	}); got != nil {
+		t.Fatalf("cold gemma admitted during the heartbeat gap — pool double-spend via the budget-less path (provider %q)", got.ID)
+	}
+
+	// Control: on a fresh box with only 4k pending, the cold request admits.
+	reg2 := New(testLogger())
+	p2 := makeSchedulerProvider(t, reg2, "shared-box-2", gptossBuild, 93)
+	addAdvertisedModel(p2, gemmaBuild)
+	p2.mu.Lock()
+	p2.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 10_000
+	p2.mu.Unlock()
+	for i := 0; i < 2; i++ {
+		if got := reg2.ReserveProvider(gptossBuild, &PendingRequest{
+			RequestID: fmt.Sprintf("light-%d", i), Model: gptossBuild, EstimatedPromptTokens: 100, RequestedMaxTokens: 1_900,
+		}); got == nil {
+			t.Fatalf("light burst request %d rejected", i)
+		}
+	}
+	if got := reg2.ReserveProvider(gemmaBuild, &PendingRequest{
+		RequestID: "fits", Model: gemmaBuild, EstimatedPromptTokens: 100, RequestedMaxTokens: 1_900,
+	}); got == nil {
+		t.Fatal("cold gemma rejected although the pool has 6k of headroom (cold pooled gate over-rejecting)")
+	}
+}
+
+// TestModelCapacitySnapshotPooledBudgetClamp: the public capacity feed
+// (/v1/models[/capacity]) must not advertise per-slot budget headroom the
+// pooled admission gate would reject. Co-resident slots each re-report the
+// ONE shared 10k pool; after an in-gap 10k burst to gpt-oss, gemma's slot
+// fields still read used=0/max=10k — but a gemma request would be rejected
+// (pooledBudgetAdmits), so its row must report zero remaining budget and not
+// be Ready. Fails without the pooledBudgetRemaining clamp in
+// ModelCapacitySnapshot.
+func TestModelCapacitySnapshotPooledBudgetClamp(t *testing.T) {
+	build := func(pendingTokens int) *Registry {
+		reg := New(testLogger())
+		p := makeSchedulerProvider(t, reg, "shared-box", gptossBuild, 93)
+		addAdvertisedModel(p, gemmaBuild)
+		p.mu.Lock()
+		p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 10_000
+		p.BackendCapacity.Slots = append(p.BackendCapacity.Slots, protocol.BackendSlotCapacity{
+			Model:                gemmaBuild,
+			State:                "running",
+			ActiveTokenBudgetMax: 10_000,
+		})
+		p.mu.Unlock()
+		for i := 0; i < pendingTokens/2_000; i++ {
+			if got := reg.ReserveProvider(gptossBuild, &PendingRequest{
+				RequestID: fmt.Sprintf("burst-%d", i), Model: gptossBuild, EstimatedPromptTokens: 100, RequestedMaxTokens: 1_900,
+			}); got == nil {
+				t.Fatalf("burst request %d rejected", i)
+			}
+		}
+		return reg
+	}
+	capsByModel := func(reg *Registry) map[string]ModelCapacity {
+		out := make(map[string]ModelCapacity)
+		for _, c := range reg.ModelCapacitySnapshot() {
+			out[c.ModelID] = c
+		}
+		return out
+	}
+
+	// Pool fully pending to gpt-oss: gemma's stale slot (used 0 / max 10k)
+	// must not surface as remaining budget or readiness.
+	full := capsByModel(build(10_000))
+	gemma, ok := full[gemmaBuild]
+	if !ok {
+		t.Fatalf("missing capacity row for %s", gemmaBuild)
+	}
+	if gemma.TokenBudgetRemaining != 0 {
+		t.Fatalf("gemma token_budget_remaining = %d, want 0 (pool fully pending to co-resident gpt-oss)", gemma.TokenBudgetRemaining)
+	}
+	if gemma.Ready || gemma.CanAccept || gemma.RoutableProviders != 0 {
+		t.Fatalf("gemma row = %+v, want not ready/routable with the shared pool exhausted", gemma)
+	}
+
+	// Control: 4k of the 10k pool pending → 6k remaining, still routable.
+	part := capsByModel(build(4_000))
+	gemma = part[gemmaBuild]
+	if gemma.TokenBudgetRemaining != 6_000 {
+		t.Fatalf("gemma token_budget_remaining = %d, want 6_000 (10k pool − 4k pending)", gemma.TokenBudgetRemaining)
+	}
+	if !gemma.Ready || gemma.RoutableProviders != 1 {
+		t.Fatalf("gemma row = %+v, want ready/routable with 6k pooled headroom", gemma)
+	}
+}
+
 // TestFreeMemoryAdmitsLegacyProviderUnchanged: providers that report no token
 // budget (ActiveTokenBudgetMax == 0) never reach the budget branch — the
 // legacy memory-estimation path is untouched by the pooled fields.

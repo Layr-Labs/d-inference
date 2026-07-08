@@ -143,9 +143,11 @@ func soloHeartbeat(slots []protocol.BackendSlotCapacity) *protocol.HeartbeatMess
 
 // TestSoloRecordingGatedOnUncontendedBox drives the REAL heartbeat ingest
 // path: a slot EWMA becomes a solo sample only when the whole box has at most
-// one running-or-waiting request (the sample-generating request itself). Any
-// co-resident activity — another model running, or waiting queue depth —
-// disqualifies the sample; the load-inclusive store records regardless.
+// one running-or-waiting request (the sample-generating request itself) AND
+// the slot is the one running it. Any co-resident activity — another model
+// running, or waiting queue depth — disqualifies the sample, and a fully idle
+// box records nothing (a decayed EWMA with no active request is not a fresh
+// observation); the load-inclusive store records regardless.
 func TestSoloRecordingGatedOnUncontendedBox(t *testing.T) {
 	reg := New(testLogger())
 	makeSchedulerProvider(t, reg, "box", gemmaBuild, 93)
@@ -159,12 +161,14 @@ func TestSoloRecordingGatedOnUncontendedBox(t *testing.T) {
 		t.Fatalf("solo samples after uncontended heartbeat = %d, want 1", n)
 	}
 
-	// Fully idle box reporting a (decayed) EWMA also qualifies.
+	// Fully idle box: the reported EWMA is a stale decayed value with no
+	// request behind it — NOT a fresh solo observation. Recording it would let
+	// an idle box mint one bogus sample per heartbeat.
 	reg.Heartbeat("box", soloHeartbeat([]protocol.BackendSlotCapacity{
 		{Model: gemmaBuild, State: "idle", ObservedDecodeTPS: 15},
 	}))
-	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3"); n != 2 {
-		t.Fatalf("solo samples after idle heartbeat = %d, want 2", n)
+	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3"); n != 1 {
+		t.Fatalf("solo samples after idle heartbeat = %d, want 1 (idle EWMA must not be recorded)", n)
 	}
 
 	// Co-resident model busy → gemma's EWMA is a contended rate: NOT solo.
@@ -176,12 +180,41 @@ func TestSoloRecordingGatedOnUncontendedBox(t *testing.T) {
 	reg.Heartbeat("box", soloHeartbeat([]protocol.BackendSlotCapacity{
 		{Model: gemmaBuild, State: "running", NumRunning: 1, NumWaiting: 1, ObservedDecodeTPS: 6},
 	}))
-	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3"); n != 2 {
-		t.Fatalf("solo samples after contended heartbeats = %d, want 2 (contended samples must be rejected)", n)
+	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3"); n != 1 {
+		t.Fatalf("solo samples after contended heartbeats = %d, want 1 (contended samples must be rejected)", n)
 	}
 	// The load-inclusive store keeps EVERY sample (TTFT estimation semantics).
 	if got := reg.tpsRegistry.Median(gemmaBuild, "M3"); got != (6+14)/2.0 {
 		t.Fatalf("load-inclusive median = %v, want 10 (all four gemma samples recorded: 14,15,5,6)", got)
+	}
+}
+
+// TestSoloRecordingOnlySamplesActiveSlot is the idle-co-resident contamination
+// regression: with model A running the box's ONE active request, model B's
+// idle slot keeps re-reporting its stale decayed EWMA in every heartbeat.
+// Only A may be sampled — otherwise B accumulates one duplicate "solo"
+// sample per ~30s heartbeat from a single long-past observation, reaches the
+// min-sample trust floor without any real measurement, and B's quality cap is
+// then derived from a rate no request produced.
+func TestSoloRecordingOnlySamplesActiveSlot(t *testing.T) {
+	reg := New(testLogger())
+	makeSchedulerProvider(t, reg, "box", gemmaBuild, 93)
+
+	for i := 0; i < 5; i++ {
+		reg.Heartbeat("box", soloHeartbeat([]protocol.BackendSlotCapacity{
+			{Model: gemmaBuild, State: "running", NumRunning: 1, ObservedDecodeTPS: 14},
+			{Model: gptossBuild, State: "idle", ObservedDecodeTPS: 60}, // stale EWMA, no request
+		}))
+	}
+	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3"); n != 5 {
+		t.Fatalf("active-slot solo samples = %d, want 5", n)
+	}
+	if _, n := reg.tpsRegistry.SoloMedian(gptossBuild, "M3"); n != 0 {
+		t.Fatalf("idle co-resident slot recorded %d solo samples, want 0 (stale EWMA contamination)", n)
+	}
+	// The load-inclusive store still sees both slots' EWMAs.
+	if got := reg.tpsRegistry.Median(gptossBuild, "M3"); got != 60 {
+		t.Fatalf("load-inclusive median for idle slot = %v, want 60", got)
 	}
 }
 
@@ -269,6 +302,10 @@ func TestParseModelFloatMapSeedEntries(t *testing.T) {
 		{"multi_with_spaces", " gemma-4-26b-qat-4bit=14 , gpt-oss-20b=30 ", map[string]float64{"gemma-4-26b-qat-4bit": 14, "gpt-oss-20b": 30}},
 		{"uppercase_key_lowered", "GPT-OSS-20B=30", map[string]float64{"gpt-oss-20b": 30}},
 		{"bad_entries_skipped", "bogus,=3,x=,gemma=abc,gemma=0,gemma=-2,good=14.5", map[string]float64{"good": 14.5}},
+		// strconv.ParseFloat accepts NaN/±Inf spellings; NaN in particular
+		// slips past a naive v <= 0 filter (NaN comparisons are always false)
+		// and would drive the cap math to an implementation-defined integer.
+		{"non_finite_skipped", "a=NaN,b=+Inf,c=Inf,d=-Inf,e=Infinity,good=2", map[string]float64{"good": 2}},
 		{"all_invalid", "bogus,=3,x=abc", nil},
 	}
 	for _, tc := range cases {

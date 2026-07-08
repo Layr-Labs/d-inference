@@ -17,12 +17,21 @@ import "strings"
 // (dedicatedPatternForLocked) — and the version comparison is CompareVersions,
 // the same tolerant dotted-numeric compare the capability version floors use.
 //
-// Enforcement points (both, so we never pre-warm a box we won't route to):
+// Enforcement points (all four, so alias resolution, routing, and warming can
+// never disagree about who serves a floored model):
 //   - the single routing gate providerPassesRoutingGatesLockedEx (shared by the
 //     dispatch hot path, the capacity preflight, and the final admit re-check),
 //     beside the trait version floors;
+//   - alias routability providerCanRouteBuildLocked (ResolveModel /
+//     ResolveModelConstrained / RoutableProviderIDsForBuild), so a below-floor
+//     box advertising the Desired build cannot make an alias resolve to a build
+//     the routing gate then rejects — resolution falls back to Previous;
 //   - the warm-pool candidate gate warmPoolCandidateReasonLocked (reason
-//     warmColdBelowVersionFloor).
+//     warmColdBelowVersionFloor);
+//   - the queue-driven swap planner: providerHasWarmModelLocked (a below-floor
+//     warm box must not suppress loading the model onto a routable node) and
+//     modelLoadCandidatePendingLocked (never send load_model to a box routing
+//     won't use).
 //
 // Providers with an EMPTY version fail every floor (same rule as the trait
 // floors: a binary too old to report a version is below any floor). An empty

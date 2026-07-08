@@ -192,3 +192,95 @@ func TestModelVersionFloorOwnedSummaryConsistency(t *testing.T) {
 		t.Fatalf("with a >=floor owned box: OwnedProviderSummary = (online %d, serves %d), want (2, 1)", online, serves)
 	}
 }
+
+// TestModelVersionFloorAliasResolutionFallsBackToPrevious (review fix): alias
+// routability (providerCanRouteBuildLocked) must apply the same per-model
+// version floor as the dispatch gate. Without it, a below-floor box advertising
+// the alias's Desired build makes ResolveModel resolve to Desired, the
+// candidate scan then finds ZERO eligible providers, and the request
+// queues/dies against a build the fleet cannot serve — instead of falling back
+// to the routable Previous build. Fails without the floor check in
+// providerCanRouteBuildLocked.
+func TestModelVersionFloorAliasResolutionFallsBackToPrevious(t *testing.T) {
+	reg := New(testLogger())
+	// aliasQAT contains "qat"; aliasFP8 does not — the floor fences ONLY the
+	// Desired build.
+	reg.SetModelVersionFloors(ParseModelVersionFloors("qat=0.7.5"))
+	reg.SetModelAliases(map[string]AliasTarget{
+		"gemma-4-26b": {Desired: aliasQAT, Previous: aliasFP8},
+	})
+
+	// The ONLY box advertising Desired is below the floor; Previous has a
+	// routable box.
+	oldBox := registerProviderWithModel(reg, "old-desired-box", aliasQAT)
+	makeProviderRoutable(oldBox)
+	setProviderVersion(oldBox, "0.7.4")
+	makeProviderRoutable(registerProviderWithModel(reg, "prev-box", aliasFP8))
+
+	build, isAlias, ok := reg.ResolveModel("gemma-4-26b")
+	if !ok || !isAlias || build != aliasFP8 {
+		t.Fatalf("ResolveModel = (%q, %v, %v), want the Previous build %q — a below-floor box must not make Desired look routable", build, isAlias, ok, aliasFP8)
+	}
+	// RoutableProviderIDsForBuild shares the same predicate, so rollout/drop
+	// measurement agrees with resolution: the floored Desired build has zero
+	// routable providers.
+	if ids := reg.RoutableProviderIDsForBuild(aliasQAT); len(ids) != 0 {
+		t.Fatalf("RoutableProviderIDsForBuild(%q) = %v, want none (only provider is below floor)", aliasQAT, ids)
+	}
+
+	// Upgrading the box restores Desired-first resolution.
+	setProviderVersion(oldBox, "0.7.5")
+	if build, _, _ := reg.ResolveModel("gemma-4-26b"); build != aliasQAT {
+		t.Fatalf("after upgrade: ResolveModel = %q, want Desired %q", build, aliasQAT)
+	}
+}
+
+// TestModelVersionFloorSwapPlannerIgnoresBelowFloorWarmBox (review fix): the
+// queue-driven swap path must mirror the floor. A below-floor box holding the
+// model WARM must not suppress load planning (providerHasWarmModelLocked) —
+// routing will never use its warm slot — and the planner must pick a >=floor
+// cold box as the load_model target. Fails without the floor check in
+// providerHasWarmModelLocked (no action is planned at all).
+func TestModelVersionFloorSwapPlannerIgnoresBelowFloorWarmBox(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetModelVersionFloors(ParseModelVersionFloors("gemma-4=0.7.5"))
+
+	// Below-floor box WARM for gemma (running slot from the fixture).
+	floorProvider(t, reg, "old-warm-box", "0.7.4")
+	// >=floor box COLD for gemma (advertises it, no slot).
+	newBox := floorProvider(t, reg, "new-cold-box", "0.7.5")
+	newBox.mu.Lock()
+	newBox.BackendCapacity.Slots = nil
+	newBox.mu.Unlock()
+
+	actions := reg.planModelLoadActions([]string{gemmaBuild}, time.Now())
+	if len(actions) != 1 || actions[0].providerID != "new-cold-box" || actions[0].modelID != gemmaBuild {
+		t.Fatalf("planModelLoadActions = %+v, want exactly one load of %s onto new-cold-box — the below-floor warm box must not suppress it", actions, gemmaBuild)
+	}
+}
+
+// TestModelVersionFloorSwapPlannerNeverTargetsBelowFloorBox (review fix): the
+// load planner (modelLoadCandidatePendingLocked) must never send load_model to
+// a below-floor box — routing would never use the resulting warm slot, so the
+// load burns GPU memory while queued demand keeps waiting. Fails without the
+// floor check in modelLoadCandidatePendingLocked (the idle below-floor box is
+// picked as the target).
+func TestModelVersionFloorSwapPlannerNeverTargetsBelowFloorBox(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetModelVersionFloors(ParseModelVersionFloors("gemma-4=0.7.5"))
+
+	// The only box is idle, COLD for gemma, and below the floor.
+	oldBox := floorProvider(t, reg, "old-cold-box", "0.7.4")
+	oldBox.mu.Lock()
+	oldBox.BackendCapacity.Slots = nil
+	oldBox.mu.Unlock()
+
+	if actions := reg.planModelLoadActions([]string{gemmaBuild}, time.Now()); len(actions) != 0 {
+		t.Fatalf("planModelLoadActions = %+v, want none — a below-floor box must never receive load_model for a floored model", actions)
+	}
+	// The floor is model-scoped: the same box is still a valid target for an
+	// unfloored model it advertises.
+	if actions := reg.planModelLoadActions([]string{gptossBuild}, time.Now()); len(actions) != 1 || actions[0].providerID != "old-cold-box" {
+		t.Fatalf("planModelLoadActions(gpt-oss) = %+v, want one load onto old-cold-box (only gemma is floored)", actions)
+	}
+}

@@ -1794,6 +1794,19 @@ func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minT
 	if !r.providerServesRoutableModelLocked(p, buildID, allowPrivate) {
 		return false
 	}
+	// Per-model provider-version floor (EIGENINFERENCE_MODEL_VERSION_FLOORS):
+	// alias routability must apply the same floor as the dispatch gate
+	// (providerPassesRoutingGatesLockedEx → providerBelowModelVersionFloorLocked)
+	// — otherwise a below-floor box advertising the Desired build makes
+	// ResolveModel/ResolveModelConstrained resolve to Desired, the candidate scan
+	// then finds ZERO eligible providers, and the request queues/dies against a
+	// build the fleet cannot serve instead of falling back to the alias's
+	// Previous build. Applied unconditionally — self-route included — matching
+	// the dispatch gate (a below-floor binary would MIS-SERVE the model, owner's
+	// box or not; model_version_floors.go).
+	if r.providerBelowModelVersionFloorLocked(p, buildID) {
+		return false
+	}
 	if r.dispatchLoadCooldownActiveLocked(p.ID, buildID, now) {
 		return false
 	}
@@ -3081,6 +3094,15 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 	if !r.providerServesRoutableModelLocked(p, model, false) {
 		return false
 	}
+	// Per-model provider-version floor: routing will never send the model to a
+	// below-floor (or version-less) box (providerPassesRoutingGatesLockedEx), so
+	// its warm slot must not suppress swap planning — otherwise one below-floor
+	// warm box makes the planner believe the model is covered and skip
+	// load_model to an eligible >=floor node, stranding queued requests until
+	// timeout. Mirrors the routing gate (model_version_floors.go).
+	if r.providerBelowModelVersionFloorLocked(p, model) {
+		return false
+	}
 	if p.BackendCapacity != nil {
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model == model {
@@ -3148,6 +3170,15 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 		return 0, false
 	}
 	if !r.providerServesRoutableModelLocked(p, model, false) {
+		return 0, false
+	}
+	// Per-model provider-version floor: never pick a below-floor (or
+	// version-less) box as a load_model target — routing will never send the
+	// model there (providerPassesRoutingGatesLockedEx), so the load would burn
+	// GPU memory on an unroutable warm slot while the queued demand keeps
+	// waiting. Mirrors providerHasWarmModelLocked and the warm-pool candidate
+	// gate (warmColdBelowVersionFloor).
+	if r.providerBelowModelVersionFloorLocked(p, model) {
 		return 0, false
 	}
 

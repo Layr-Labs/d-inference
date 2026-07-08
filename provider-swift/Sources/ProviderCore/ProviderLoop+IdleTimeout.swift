@@ -38,7 +38,7 @@ extension ProviderLoop {
         let me = self
         idleMonitorTask = Task {
             while !Task.isCancelled {
-                try? await Task.sleep(for: pollInterval)
+                try? await taskSleep( pollInterval)
                 if Task.isCancelled { break }
                 await me.tickIdleMonitor(timeout: timeout)
             }

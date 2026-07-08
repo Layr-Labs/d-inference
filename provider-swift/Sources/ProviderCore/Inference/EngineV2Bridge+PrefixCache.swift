@@ -92,7 +92,7 @@ extension EngineV2Bridge {
         let budget = self.prefixCacheBudgetBytes
         prefixCacheStatsTask = Task.detached { [weak cache] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(intervalSecs))
+                try? await taskSleep( .seconds(intervalSecs))
                 if Task.isCancelled { return }
                 guard let cache else { return }
                 Self.logPrefixCacheStats(cache: cache, modelId: modelId, budgetBytes: budget)

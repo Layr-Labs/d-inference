@@ -29,7 +29,7 @@ extension ProviderLoop {
             while !Task.isCancelled {
                 // `Task.sleep(nanoseconds:)` — NOT the Duration/Clock
                 // overload. Under -O (Swift 6.3, macOS 26) the generic
-                // `Task.sleep(for:tolerance:clock:)` inlined into this loop
+                // `taskSleep(tolerance:clock:)` inlined into this loop
                 // aborted the process ~2 s after startup with the task
                 // allocator's "freed pointer was not the last allocation"
                 // (swift_task_dealloc LIFO violation) — reproduced 100% in

@@ -253,7 +253,7 @@ public actor ModelPrefetchCoordinator {
             // Timeout task (unstructured): guarantees the bound regardless of
             // the drain.
             Task.detached {
-                try? await Task.sleep(for: timeout)
+                try? await taskSleep( timeout)
                 oneShot.resume()
             }
         }

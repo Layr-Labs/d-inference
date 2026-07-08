@@ -261,7 +261,7 @@ public final class TelemetryClient: @unchecked Sendable {
                 }
 
                 do {
-                    try await Task.sleep(for: .seconds(interval))
+                    try await taskSleep( .seconds(interval))
                 } catch {
                     return // Cancelled
                 }

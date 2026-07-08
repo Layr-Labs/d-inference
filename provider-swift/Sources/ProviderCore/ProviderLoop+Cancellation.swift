@@ -138,7 +138,7 @@ extension ProviderLoop {
                 return false
             }
             do {
-                try await Task.sleep(for: .milliseconds(250))
+                try await taskSleep( .milliseconds(250))
             } catch {
                 return false
             }

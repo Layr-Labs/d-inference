@@ -245,7 +245,7 @@ extension ProviderLoop {
         return try await withThrowingTaskGroup(of: Duration.self) { group in
             group.addTask { try await me.runStartupSelfTestDecode(modelId: modelId) }
             group.addTask {
-                try await Task.sleep(for: Self.startupSelfTestTimeout)
+                try await taskSleep( Self.startupSelfTestTimeout)
                 throw InferenceError.generationFailed(
                     "startup self-test timed out after \(Self.startupSelfTestTimeout.components.seconds)s")
             }

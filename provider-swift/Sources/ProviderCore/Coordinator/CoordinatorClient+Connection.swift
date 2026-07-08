@@ -36,7 +36,7 @@ extension CoordinatorClient {
                 }
 
                 do {
-                    try await Task.sleep(for: .seconds(delay))
+                    try await taskSleep( .seconds(delay))
                 } catch {
                     // Task cancelled = shutdown
                     break
@@ -246,13 +246,13 @@ extension CoordinatorClient {
                 guard let self else { return }
                 let interval = self.config.heartbeatInterval
 
-                try await Task.sleep(for: .seconds(interval))
+                try await taskSleep( .seconds(interval))
 
                 while true {
                     if self.shutdownRequested { break }
                     let json = await self.buildHeartbeatJSON()
                     self.sendTextFrame(json, on: connection, identifier: "heartbeat")
-                    try await Task.sleep(for: .seconds(interval))
+                    try await taskSleep( .seconds(interval))
                 }
             }
 
@@ -260,7 +260,7 @@ extension CoordinatorClient {
             group.addTask {
                 var lastTick = CFAbsoluteTimeGetCurrent()
                 while true {
-                    try await Task.sleep(for: .seconds(pingInterval))
+                    try await taskSleep( .seconds(pingInterval))
 
                     // If far more wall-clock elapsed than we slept for, the
                     // process was suspended/throttled (App Nap or sleep). The

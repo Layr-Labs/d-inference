@@ -123,7 +123,7 @@ extension ProviderLoop {
             // dedupes), so a slept Task replaces the GCD asyncAfter without
             // changing the race semantics.
             Task {
-                try? await Task.sleep(for: timeout)
+                try? await taskSleep( timeout)
                 oneShot.resume(returning: false)
             }
         }

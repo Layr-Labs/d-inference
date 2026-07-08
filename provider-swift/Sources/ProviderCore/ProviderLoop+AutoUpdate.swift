@@ -61,12 +61,12 @@ extension ProviderLoop {
         let me = self
         autoUpdateTask = Task.detached {
             // Wait 5 minutes before first check.
-            try? await Task.sleep(for: Self.autoUpdateInitialDelay)
+            try? await taskSleep( Self.autoUpdateInitialDelay)
 
             while !Task.isCancelled {
                 await me.performAutoUpdateCheck(coordinatorURL: coordinatorURL)
                 // Sleep 30 minutes before next check.
-                try? await Task.sleep(for: Self.autoUpdateInterval)
+                try? await taskSleep( Self.autoUpdateInterval)
             }
         }
         logger.info("Background auto-update monitor started (initial delay: 5m, interval: 30m)")
@@ -102,7 +102,7 @@ extension ProviderLoop {
                     + Double(delay.components.attoseconds) / 1e18
                 logger.info(
                     "Auto-update: bundle staged; waiting \(String(format: "%.0f", secs))s rollover jitter before draining (update_jitter_seconds=\(jitterMaxSeconds))")
-                try? await Task.sleep(for: delay)
+                try? await taskSleep( delay)
             },
             beginDraining: { await me.beginUpdateDraining() },
             waitForDrain: { timeout in await me.waitForInflightDrain(timeout: timeout) },

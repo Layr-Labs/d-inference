@@ -83,7 +83,7 @@ extension ProviderLoop {
         autoReportTask?.cancel()
         autoReportTask = Task {
             do {
-                try await Task.sleep(for: .seconds(600))
+                try await taskSleep( .seconds(600))
             } catch {
                 return // cancelled (shutdown or trust upgraded)
             }

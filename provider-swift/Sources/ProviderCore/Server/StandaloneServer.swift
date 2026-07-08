@@ -266,7 +266,7 @@ public actor StandaloneServer {
         while ContinuousClock.now < deadline {
             if didBind { return true }
             if bindFailed || serverTask == nil { return false }
-            try? await Task.sleep(for: .milliseconds(50))
+            try? await taskSleep( .milliseconds(50))
         }
         return didBind
     }

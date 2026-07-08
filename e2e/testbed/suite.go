@@ -136,7 +136,10 @@ func resolveModelID(modelID string) string {
 	if env := os.Getenv("TESTBED_MODEL_ID"); env != "" {
 		return env
 	}
-	return "mlx-community/Qwen3.5-0.8B-MLX-4bit"
+	// v0.7.5 one-engine: only CBv2-adapted checkpoints are servable
+	// (DefaultTestModelID — gpt-oss-20b unless DARKBLOOM_TESTBED_MODEL
+	// overrides).
+	return DefaultTestModelID()
 }
 
 func (s *Suite) PrimaryModelID() string {

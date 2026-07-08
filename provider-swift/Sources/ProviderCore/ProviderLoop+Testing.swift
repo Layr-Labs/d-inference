@@ -171,15 +171,52 @@ extension ProviderLoop {
         tokenizer: TokenizerHandle,
         sizing: SlotSizingSnapshot
     ) async throws -> EngineV2Bridge {
+        // Convenience shape: box the container the way ensureModelLoaded
+        // does (the test also holds its own reference, so unwind-ordering
+        // assertions need the box variant below instead).
         try await resliceAndBuildEngineV2Slot(
             modelId: modelId,
             modelType: modelType,
             isVLM: isVLM,
             modelDirectory: modelDirectory,
-            container: container,
+            newcomer: EngineV2NewcomerBox(container),
             tokenizer: tokenizer,
             sizing: sizing
         )
+    }
+
+    /// Box variant: the caller hands over container OWNERSHIP, so the
+    /// unwind-ordering regression tests can observe (via a weak reference)
+    /// that a failed build releases the newcomer's weights BEFORE survivor
+    /// grants are restored.
+    func resliceAndBuildEngineV2SlotForTesting(
+        modelId: String,
+        modelType: String?,
+        isVLM: Bool = false,
+        modelDirectory: URL? = nil,
+        newcomer: EngineV2NewcomerBox,
+        tokenizer: TokenizerHandle,
+        sizing: SlotSizingSnapshot
+    ) async throws -> EngineV2Bridge {
+        try await resliceAndBuildEngineV2Slot(
+            modelId: modelId,
+            modelType: modelType,
+            isVLM: isVLM,
+            modelDirectory: modelDirectory,
+            newcomer: newcomer,
+            tokenizer: tokenizer,
+            sizing: sizing
+        )
+    }
+
+    /// Test seam: the post-bridge-guard failure unwind (retire bridge →
+    /// release newcomer weights → regrow survivors, in that order).
+    func unwindBuiltSlotAndRegrowForTesting(
+        modelId: String,
+        bridge: EngineV2Bridge,
+        newcomer: EngineV2NewcomerBox
+    ) async {
+        await unwindBuiltSlotAndRegrow(modelId: modelId, bridge: bridge, newcomer: newcomer)
     }
 
     /// Test seam: the unload-side re-slice (grow survivors back to their
@@ -213,6 +250,7 @@ extension ProviderLoop {
         sizing: SlotSizingSnapshot
     ) async throws -> EngineV2Bridge {
         await acquireResliceGate()
+        let newcomer = EngineV2NewcomerBox(container)
         let bridge: EngineV2Bridge
         do {
             bridge = try await resliceAndBuildEngineV2Slot(
@@ -220,23 +258,23 @@ extension ProviderLoop {
                 modelType: modelType,
                 isVLM: false,
                 modelDirectory: nil,
-                container: container,
+                newcomer: newcomer,
                 tokenizer: tokenizer,
                 sizing: sizing
+            )
+            modelSlots[modelId] = ModelSlot(
+                engineV2: bridge,
+                container: try newcomer.borrow(),
+                tokenizer: tokenizer,
+                sizing: sizing,
+                isVLM: false,
+                modelType: modelType,
+                lastInferenceAt: .now
             )
         } catch {
             releaseResliceGate()
             throw error
         }
-        modelSlots[modelId] = ModelSlot(
-            engineV2: bridge,
-            container: container,
-            tokenizer: tokenizer,
-            sizing: sizing,
-            isVLM: false,
-            modelType: modelType,
-            lastInferenceAt: .now
-        )
         releaseResliceGate()
         return bridge
     }

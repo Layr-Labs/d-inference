@@ -21,10 +21,54 @@
 /// remaining slots grow back to their re-sliced shares.
 
 import Foundation
+import MLX
 import MLXLMCommon
 #if canImport(os)
 import os
 #endif
+
+/// Ownership box for a loading model's container (the "newcomer").
+/// `ensureModelLoaded` routes every container access through this box so
+/// failure unwinds can drop the LAST strong reference to the weights —
+/// `release()` — BEFORE survivor grants are restored or regrown (Codex
+/// review): restoring first would let Σ(engine grants) transiently exceed
+/// the true fleet budget while the failed newcomer's weights are still
+/// resident, over-advertising capacity the shared KV gate then rejects
+/// (the gray-box class). NSLock-guarded and `@unchecked Sendable` only so
+/// test seams can hand it across the ProviderLoop actor boundary; all
+/// production access is ProviderLoop-actor confined.
+final class EngineV2NewcomerBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _container: MLXLMCommon.ModelContainer?
+
+    init(_ container: MLXLMCommon.ModelContainer) {
+        self._container = container
+    }
+
+    /// The container, or nil after `release()`.
+    var container: MLXLMCommon.ModelContainer? {
+        lock.withLock { _container }
+    }
+
+    /// Transient access for a single call. NEVER bind the result to a
+    /// long-lived local — that would keep the weights alive past
+    /// `release()` and defeat the unwind ordering.
+    func borrow() throws -> MLXLMCommon.ModelContainer {
+        guard let container = (lock.withLock { _container }) else {
+            // Only reachable through a wiring bug (use-after-release);
+            // maps to 500 via the existing InferenceError handling.
+            throw InferenceError.noModelLoaded
+        }
+        return container
+    }
+
+    /// Drop the strong reference to the container. The weights become
+    /// reclaimable; pair with `MLX.Memory.clearCache()` so the pool
+    /// returns their buffers before anything re-reads live residency.
+    func release() {
+        lock.withLock { _container = nil }
+    }
+}
 
 extension ProviderLoop {
 
@@ -151,9 +195,11 @@ extension ProviderLoop {
 
     /// Re-slice KV grants for the newcomer + existing slots, shrink
     /// existing engines, and build the newcomer's bridge. On ANY throw —
-    /// re-slice floor, extraction failure, engine construction — every
-    /// existing engine's grant is RESTORED exactly before the error
-    /// propagates, so a failed load never leaves survivors squeezed.
+    /// re-slice floor, extraction failure, engine construction — the
+    /// newcomer's weights are RELEASED (box + clearCache) and only THEN is
+    /// every existing engine's grant RESTORED exactly (Codex-review
+    /// ordering: restoring first would let Σ(grants) exceed the true fleet
+    /// budget while the failed newcomer's weights are still resident).
     /// Returns the bridge, already registered with `engineV2Runtime`.
     /// CALLER HOLDS the re-slice gate (see `acquireResliceGate`), spanning
     /// through slot installation, so a concurrent idle-timeout unload's
@@ -164,7 +210,7 @@ extension ProviderLoop {
         modelType: String?,
         isVLM: Bool,
         modelDirectory: URL?,
-        container: ModelContainer,
+        newcomer newcomerBox: EngineV2NewcomerBox,
         tokenizer: TokenizerHandle,
         sizing: SlotSizingSnapshot
     ) async throws -> EngineV2Bridge {
@@ -195,6 +241,11 @@ extension ProviderLoop {
                 reason: .resliceFloor,
                 error: nil,
                 emitTelemetry: engineV2SlotHooks?.emitTelemetry)
+            // Pre-shrink refusal: no grants were mutated, but drop the
+            // newcomer's weights promptly so live residency reflects the
+            // refusal before the caller's error handling runs.
+            newcomerBox.release()
+            MLX.Memory.clearCache()
             throw InferenceError.modelLoadFailed(message)
         }
 
@@ -207,8 +258,15 @@ extension ProviderLoop {
             }
         }
 
-        // Phase 2 — build the newcomer with its grant. Restore-on-throw:
-        // grow every shrunk engine back to its exact previous grant.
+        // Phase 2 — build the newcomer with its grant. Restore-on-throw,
+        // in the Codex-review order: (1) release the newcomer's weights,
+        // (2) clearCache so the pool returns their buffers, (3) grow every
+        // shrunk engine back to its exact previous grant. Restoring before
+        // the weights are gone would let Σ(grants) exceed the true fleet
+        // budget for as long as the failed container stayed resident.
+        // `borrow()` is evaluated inline so the container reference lives
+        // only for the duration of the call — by the time this catch runs,
+        // the box holds the last strong reference and `release()` frees it.
         let bridge: EngineV2Bridge
         do {
             bridge = try await makeEngineV2BridgeForSlot(
@@ -216,11 +274,13 @@ extension ProviderLoop {
                 modelType: modelType,
                 isVLM: isVLM,
                 modelDirectory: modelDirectory,
-                container: container,
+                container: newcomerBox.borrow(),
                 tokenizer: tokenizer,
                 sizing: sizing,
                 kvBytesCapacity: targets[modelId] ?? 0)
         } catch {
+            newcomerBox.release()
+            MLX.Memory.clearCache()
             for entry in existing {
                 await entry.bridge.updateKVBytesCapacity(entry.previousGrant)
             }
@@ -236,6 +296,23 @@ extension ProviderLoop {
             }
         }
         return bridge
+    }
+
+    /// Failure unwind AFTER a successful bridge build (the post-bridge
+    /// headroom guard): retire the bridge, RELEASE the aborted newcomer's
+    /// weights, and only then regrow the survivors — in that order (Codex
+    /// review), so the regrow's fleet budget reflects true residency and
+    /// Σ(grants) never exceeds it. Caller holds the re-slice gate.
+    internal func unwindBuiltSlotAndRegrow(
+        modelId: String,
+        bridge: EngineV2Bridge,
+        newcomer: EngineV2NewcomerBox
+    ) async {
+        await engineV2Runtime.unregister(modelId: modelId)
+        await bridge.shutdown()
+        newcomer.release()
+        MLX.Memory.clearCache()
+        await resliceGrowSurvivorsLocked()
     }
 
     /// Grow the surviving slots back to their re-sliced shares after an

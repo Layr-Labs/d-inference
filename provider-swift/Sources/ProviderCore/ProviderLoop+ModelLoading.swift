@@ -242,7 +242,13 @@ extension ProviderLoop {
                 try Task.checkCancellation()
                 if isShuttingDown { throw CancellationError() }
             }
-            let container = try await loadModelContainer(from: modelPath)
+            // Ownership box (Codex-review unwind ordering): every later
+            // access to the loading container goes through this box so
+            // failure paths can drop the LAST strong reference to the
+            // weights BEFORE survivor grants are restored/regrown. Never
+            // bind `borrow()` to a long-lived local — that would keep the
+            // weights alive past `release()`.
+            let newcomer = EngineV2NewcomerBox(try await loadModelContainer(from: modelPath))
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
@@ -284,8 +290,8 @@ extension ProviderLoop {
             // Scheduler-free sizing snapshot (v0.7.5): weight bytes + the
             // engine-truth fp16 KV rate + context window — everything the
             // re-slice, bridge, heartbeat, and vision gate need.
-            let sizing = await SlotSizingSnapshot.build(
-                container: container,
+            let sizing = try await SlotSizingSnapshot.build(
+                container: newcomer.borrow(),
                 modelPath: modelPath,
                 fallbackDefaultMaxTokens: Self.schedulerDefaultMaxTokens)
 
@@ -295,6 +301,7 @@ extension ProviderLoop {
             // released in catch for the error paths above.)
             await kvBudget.release(requestID: pendingLoadID)
             if isShuttingDown || Task.isCancelled {
+                newcomer.release()
                 MLX.Memory.clearCache()
                 throw CancellationError()
             }
@@ -321,6 +328,9 @@ extension ProviderLoop {
                     Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
                 let minGb = String(
                     format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
+                // Pre-shrink failure: no grants were mutated, so ordering is
+                // moot — but drop the weights promptly all the same.
+                newcomer.release()
                 MLX.Memory.clearCache()
                 let message = "Model '\(modelId)' loaded but has insufficient KV headroom "
                     + "under the memory cap (\(headroomGb) GB free, need \(minGb) GB to serve) — unloaded"
@@ -328,7 +338,7 @@ extension ProviderLoop {
                 throw InferenceError.modelLoadFailed(message)
             }
 
-            let tokenizer: TokenizerHandle = await container.perform { ctx in
+            let tokenizer: TokenizerHandle = try await newcomer.borrow().perform { ctx in
                 TokenizerHandle(ctx.tokenizer)
             }
 
@@ -355,13 +365,16 @@ extension ProviderLoop {
                     modelType: modelInfo.modelType,
                     isVLM: slotIsVLM,
                     modelDirectory: modelPath,
-                    container: container,
+                    newcomer: newcomer,
                     tokenizer: tokenizer,
                     sizing: sizing
                 )
             } catch let error as InferenceError {
                 // Already shaped (e.g. the re-slice floor refusal) — record +
                 // rethrow unchanged so loadErrorStatusCode sees the original.
+                // The unwind ordering (release newcomer weights → clearCache
+                // → restore survivor grants) already ran inside
+                // `resliceAndBuildEngineV2Slot`'s catch, before this one.
                 releaseResliceGate()
                 MLX.Memory.clearCache()
                 if case .modelLoadFailed(let message) = error {
@@ -389,13 +402,13 @@ extension ProviderLoop {
                 let headroomGb = String(
                     format: "%.1f",
                     Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
-                await engineV2Runtime.unregister(modelId: modelId)
-                await engineV2Bridge.shutdown()
-                MLX.Memory.clearCache()
-                // The aborted newcomer's grant was carved out of the fleet
-                // budget — grow the survivors back to their shares (still
-                // holding the re-slice gate; release only after).
-                await resliceGrowSurvivorsLocked()
+                // Retire the bridge, release the newcomer's weights, THEN
+                // regrow survivors — in that order (Codex review): regrowing
+                // while the aborted newcomer's weights are still resident
+                // would let Σ(grants) exceed the true fleet budget. Still
+                // holding the re-slice gate; release only after.
+                await unwindBuiltSlotAndRegrow(
+                    modelId: modelId, bridge: engineV2Bridge, newcomer: newcomer)
                 releaseResliceGate()
                 let message = "Model '\(modelId)' loaded but its engine build left insufficient "
                     + "KV headroom under the memory cap (\(headroomGb) GB free) — unloaded"
@@ -409,9 +422,17 @@ extension ProviderLoop {
                 + Double(loadElapsed.components.attoseconds) / 1e15
             await engineV2Bridge.recordModelLoadTime(ms: Int64(max(0, loadMs.rounded())))
 
+            guard let installContainer = newcomer.container else {
+                // Unreachable (the box is drained only on failure paths) —
+                // defensive so a wiring bug can never leak the re-slice gate
+                // and wedge every future load.
+                releaseResliceGate()
+                throw InferenceError.modelLoadFailed(
+                    "internal: newcomer container missing at install for '\(modelId)'")
+            }
             modelSlots[modelId] = ModelSlot(
                 engineV2: engineV2Bridge,
-                container: container,
+                container: installContainer,
                 tokenizer: tokenizer,
                 sizing: sizing,
                 isVLM: slotIsVLM,

@@ -411,6 +411,187 @@ func TestBudgetClampAndRateConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
+// A RELEASED clamp's entry must not linger and revive as a block on the
+// identity's next reconnect (Codex review of #523, round 3): before the fix
+// the released entry stayed in budgetClamps, and the reconnected session's
+// budgetless pre-heartbeat window read map presence as an active clamp —
+// re-blocking a pair that had already proven recovery. Covers both release
+// orders (the heartbeat sweep and the accept-path drop).
+func TestBudgetClampReleasedEntryDoesNotReviveOnReconnect(t *testing.T) {
+	const model = "gemma-4-26b-qat-4bit"
+
+	run := func(t *testing.T, serial, sess1, sess2 string, release func(r *Registry, providerID string)) {
+		t.Helper()
+		r := New(testLogger())
+		p1 := attestSchedulerProvider(t, r, sess1, model, serial, 100)
+		p1.mu.Lock()
+		p1.BackendCapacity.Slots[0].ActiveTokenBudgetUsed = grayBoxBudgetUsed
+		p1.BackendCapacity.Slots[0].ActiveTokenBudgetMax = grayBoxBudgetMax
+		p1.mu.Unlock()
+
+		r.RecordCapacityReject(p1.ID, model)
+		if !r.BudgetClampActive(p1.ID, model) {
+			t.Fatal("setup: clamp must be active")
+		}
+		release(r, p1.ID)
+		if r.BudgetClampActive(p1.ID, model) {
+			t.Fatal("setup: clamp must have released")
+		}
+		r.mu.RLock()
+		_, lingering := r.budgetClamps[capacityRejectKey{ProviderID: "serial:" + serial, ModelID: model}]
+		r.mu.RUnlock()
+		if lingering {
+			t.Fatal("released clamp entry must be deleted, not linger in budgetClamps")
+		}
+
+		// Reconnect before the original TTL, budgetless (no heartbeat yet): the
+		// pair already proved recovery, so nothing may block admission.
+		r.Disconnect(sess1)
+		p2 := attestSchedulerProvider(t, r, sess2, model, serial, 100)
+		p2.mu.Lock()
+		p2.BackendCapacity = nil
+		p2.mu.Unlock()
+		if r.BudgetClampActive(p2.ID, model) {
+			t.Fatal("released clamp revived on the reconnected session's budgetless pre-heartbeat window")
+		}
+		if sel, _ := reserveOnce(r, model, "post-release-reconnect"); sel == nil {
+			t.Fatal("reconnect after a full release must be admittable")
+		}
+	}
+
+	t.Run("released by the heartbeat sweep (accept then heartbeat, no further traffic)", func(t *testing.T) {
+		run(t, "SER-REL-HB", "rel-hb-1", "rel-hb-2", func(r *Registry, providerID string) {
+			r.RecordCapacityAccept(providerID, model)
+			time.Sleep(2 * time.Millisecond)
+			sendBudgetHeartbeat(r, providerID, model, grayBoxBudgetUsed, grayBoxBudgetMax)
+		})
+	})
+	t.Run("released by the accept-path drop (heartbeat then accept)", func(t *testing.T) {
+		run(t, "SER-REL-AC", "rel-ac-1", "rel-ac-2", func(r *Registry, providerID string) {
+			time.Sleep(2 * time.Millisecond)
+			sendBudgetHeartbeat(r, providerID, model, grayBoxBudgetUsed, grayBoxBudgetMax)
+			r.RecordCapacityAccept(providerID, model)
+		})
+	})
+}
+
+// The heartbeat release sweep must evaluate the heartbeat's OWN snapshot, not
+// re-read r.providers: a Disconnect racing in between the heartbeat stamping
+// the provider and the sweep running would otherwise find no provider, skip
+// the delete, and let the released entry re-block the identity's next
+// reconnect (Codex round-3 review follow-up). Simulated deterministically by
+// disconnecting BEFORE the sweep runs with the heartbeat's values — the
+// 2-minute disconnectedStableIDs cache keeps the session resolvable, exactly
+// as in the production race.
+func TestBudgetClampHeartbeatReleaseSurvivesDisconnectRace(t *testing.T) {
+	r := New(testLogger())
+	const model, serial = "gemma-4-26b-qat-4bit", "SER-REL-RACE"
+
+	p1 := attestSchedulerProvider(t, r, "rel-race-1", model, serial, 100)
+	p1.mu.Lock()
+	p1.BackendCapacity.Slots[0].ActiveTokenBudgetUsed = grayBoxBudgetUsed
+	p1.BackendCapacity.Slots[0].ActiveTokenBudgetMax = grayBoxBudgetMax
+	p1.mu.Unlock()
+
+	r.RecordCapacityReject(p1.ID, model)
+	r.RecordCapacityAccept(p1.ID, model)
+	time.Sleep(2 * time.Millisecond)
+
+	// The heartbeat that proves release arrives... and the provider disconnects
+	// before the sweep runs. Replay the sweep exactly as Heartbeat would have
+	// called it, with the heartbeat's own stamped time and report.
+	heartbeatAt := time.Now()
+	capacity := &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{{
+			Model:                 model,
+			State:                 "running",
+			ActiveTokenBudgetUsed: grayBoxBudgetUsed,
+			ActiveTokenBudgetMax:  grayBoxBudgetMax,
+		}},
+	}
+	r.Disconnect("rel-race-1")
+	r.releaseBudgetClampsOnHeartbeat("rel-race-1", heartbeatAt, capacity)
+
+	r.mu.RLock()
+	_, lingering := r.budgetClamps[capacityRejectKey{ProviderID: "serial:" + serial, ModelID: model}]
+	r.mu.RUnlock()
+	if lingering {
+		t.Fatal("release proof voided by the disconnect race — the sweep must evaluate the heartbeat's own snapshot")
+	}
+
+	// The reconnect (budgetless, pre-heartbeat) must not be blocked.
+	p2 := attestSchedulerProvider(t, r, "rel-race-2", model, serial, 100)
+	p2.mu.Lock()
+	p2.BackendCapacity = nil
+	p2.mu.Unlock()
+	if r.BudgetClampActive(p2.ID, model) {
+		t.Fatal("released clamp revived on reconnect after the disconnect race")
+	}
+}
+
+// Inactive clamp entries (released / TTL-expired / budgetless-armed) must be
+// DELETED, not merely read as inactive: RecordCapacityAccept's healthy-pair
+// fast path keys on map presence, so a lingering entry would pull every later
+// accept for the pair onto the r.mu write lock indefinitely (Codex review of
+// #523, round 3). An ACTIVE clamp's entry must survive its accepts until the
+// full release proof.
+func TestBudgetClampInactiveEntriesAreDeleted(t *testing.T) {
+	const model = "gemma-4-26b-qat-4bit"
+
+	clampEntryExists := func(r *Registry, providerID string) bool {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		_, ok := r.budgetClamps[capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: model}]
+		return ok
+	}
+
+	t.Run("TTL-expired entry dropped on the next accept", func(t *testing.T) {
+		r := New(testLogger())
+		p := makeTokenBudgetProvider(t, r, "ttl-drop", model, 100, grayBoxBudgetUsed, grayBoxBudgetMax, 100)
+		r.RecordCapacityReject(p.ID, model)
+		ageBudgetClamp(r, p.ID, model, defaultBudgetClampTTL+time.Second)
+		r.RecordCapacityAccept(p.ID, model)
+		if clampEntryExists(r, p.ID) {
+			t.Fatal("TTL-expired clamp entry must be deleted by the accept path")
+		}
+	})
+
+	t.Run("budgetless-armed entry dropped on the next accept", func(t *testing.T) {
+		r := New(testLogger())
+		p := makeSchedulerProvider(t, r, "budgetless-drop", model, 100) // no token budget
+		r.RecordCapacityRejectLifecycle(p.ID, model)
+		if !clampEntryExists(r, p.ID) {
+			t.Fatal("setup: lifecycle reject must have armed a (never-gating) entry")
+		}
+		r.RecordCapacityAccept(p.ID, model)
+		if clampEntryExists(r, p.ID) {
+			t.Fatal("budgetless-armed (never-gating) clamp entry must be deleted by the accept path")
+		}
+	})
+
+	t.Run("active entry survives accepts until the full release proof", func(t *testing.T) {
+		r := New(testLogger())
+		p := makeTokenBudgetProvider(t, r, "active-keep", model, 100, grayBoxBudgetUsed, grayBoxBudgetMax, 100)
+		r.RecordCapacityReject(p.ID, model)
+		// Accept with a stale (pre-clamp) heartbeat: release unproven — the
+		// entry must stay (and keep gating).
+		r.RecordCapacityAccept(p.ID, model)
+		if !clampEntryExists(r, p.ID) {
+			t.Fatal("an unreleased clamp entry must survive the accept (release still needs the fresh heartbeat)")
+		}
+		if !r.BudgetClampActive(p.ID, model) {
+			t.Fatal("unreleased clamp must still gate")
+		}
+		// The fresh-headroom heartbeat completes the proof: the sweep deletes.
+		time.Sleep(2 * time.Millisecond)
+		sendBudgetHeartbeat(r, p.ID, model, grayBoxBudgetUsed, grayBoxBudgetMax)
+		if clampEntryExists(r, p.ID) {
+			t.Fatal("fully released clamp entry must be deleted so the pair returns to the accept fast path")
+		}
+	})
+}
+
 // setAttestationAndBind completes a valid attestation for an already-registered
 // provider through the real SetAttestationResult path (which performs the
 // fault-state migration under test).

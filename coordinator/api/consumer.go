@@ -311,11 +311,20 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 		// that 404s forever with zero accepts is a black hole), but it must NOT
 		// derate the pair's gray-box capacity-503 RATE (capacity_rate.go) — that
 		// window has no accept-reset, so counting a healthy box's normal reloads
-		// would penalize it. Genuine capacity/token-budget 503s derate.
+		// would penalize it. A "batch token budget" reject that classifyRejection
+		// proves REQUEST-deterministic (provider budget not below the model
+		// context ⇒ the binding term was the fleet-wide context) indicts the
+		// request, not the provider: it counts a cooldown strike only — arming
+		// the one-shot clamp or the no-reset rate window off a single oversized
+		// prompt would gate/derate a healthy pair. Genuine capacity/token-budget
+		// 503s feed everything.
 		var tripped bool
-		if isColdModelMissRejection(errStr) {
+		switch {
+		case isColdModelMissRejection(errStr):
 			tripped = s.registry.RecordCapacityRejectLifecycle(providerID, pr.Model)
-		} else {
+		case s.isRequestShapeBatchBudgetReject(providerID, pr.Model, errStr):
+			tripped = s.registry.RecordCapacityRejectRequestShape(providerID, pr.Model)
+		default:
 			tripped = s.registry.RecordCapacityReject(providerID, pr.Model)
 		}
 		if tripped {
@@ -336,6 +345,41 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 // inference-error breaker) and routing.provider_breaker_open (node health) so
 // black-hole trips are independently alertable.
 const metricCapacityCooldownTripped = "routing.capacity_cooldown_tripped"
+
+// isRequestShapeBatchBudgetReject reports whether a capacity-class rejection
+// is a "batch token budget" reject that classifyRejection proves REQUEST-
+// deterministic: the rejecting provider's reported token budget is not below
+// the model's context window, so the provider's admission cap
+// min(context, budget) was the CONTEXT — the prompt is too big fleet-wide and
+// every provider rejects it identically. Such a reject must arm neither the
+// one-shot budget clamp nor the no-reset capacity-503 rate window
+// (RecordCapacityRejectRequestShape). When the reported budget IS below the
+// context, the binding term may have been this node's memory-pressured KV
+// budget — a genuine provider-specific capacity signal — and the reject feeds
+// the full gray-box state (same discrimination the dispatch failover uses:
+// classifyRejection in inference_failure_class.go, DAR-347).
+//
+// Inputs mirror the dispatch path exactly: providerBudget from the provider's
+// last heartbeat (ReportedTokenBudgetMaxForModel), modelContext from the model
+// registry record. Called only inside the isCapacityRejectStrike branch, so
+// explicit context-overflow strings never reach it (they never strike at all).
+// The string gate keeps the two lookups off every other rejection.
+func (s *Server) isRequestShapeBatchBudgetReject(providerID, model, errStr string) bool {
+	e := strings.ToLower(strings.TrimSpace(errStr))
+	e = strings.ReplaceAll(e, "’", "'")
+	if !strings.Contains(e, "batch token budget") {
+		return false
+	}
+	var providerBudget int64
+	if p := s.registry.GetProvider(providerID); p != nil {
+		providerBudget = p.ReportedTokenBudgetMaxForModel(model)
+	}
+	modelContext := 0
+	if rec, err := s.store.GetModelRegistryRecord(model); err == nil && rec != nil {
+		modelContext = rec.MaxContextLength
+	}
+	return classifyRejection("", errStr, providerBudget, modelContext) == rejectionDeterministicUnservable
+}
 
 // noteInferenceSuccess clears the inference-error strike state for the serving
 // provider-model pair on a clean completion (streaming relay ended without a

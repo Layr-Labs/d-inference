@@ -117,6 +117,61 @@ func TestCapacityRateExcludesColdModelMiss(t *testing.T) {
 	}
 }
 
+// A "batch token budget" reject that classifyRejection proves REQUEST-
+// deterministic (the rejecting provider's reported budget is not below the
+// model context, so the prompt exceeded the fleet-wide context) indicts the
+// request, not the provider: it must arm NEITHER the one-shot budget clamp NOR
+// the no-reset capacity-503 rate window — a single oversized prompt would
+// otherwise gate/derate a healthy pair. It still counts a cooldown strike (a
+// budget-misreporting box rejects normal prompts with this exact string, and
+// the cooldown's accept-reset makes strikes safe for healthy pairs). When the
+// reported budget IS below the context (node memory pressure — provider-
+// specific), the same string feeds the full gray-box state. Codex review of
+// #523, round 3.
+func TestCapacityRejectDeterministicBatchBudgetArmsNoGrayBoxState(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const model = "batch-budget-model"
+	const batchBudget = "token_budget_exhausted: request exceeds batch token budget"
+	registerModelContext(t, st, model, 131072)
+
+	// Deterministic: reported budget (5M) >= model context (131072) — the
+	// binding term was the context, identical fleet-wide.
+	det := makeRoutableProvider(t, reg, "p-oversized-prompt", model)
+	setProviderModelBudget(t, reg, det.ID, model, 5_000_000)
+	srv.noteInferenceError(det.ID, capacityTestPending(model, det.ID, 0), http.StatusServiceUnavailable, batchBudget)
+	if reg.BudgetClampActive(det.ID, model) {
+		t.Fatal("a request-deterministic batch-budget reject must not arm the budget clamp")
+	}
+	if _, samples := reg.CapacityRejectRate(det.ID, model); samples != 0 {
+		t.Fatalf("a request-deterministic batch-budget reject must not derate: samples=%d, want 0", samples)
+	}
+	// ...but repeated ones with zero interleaved accepts still trip the
+	// black-hole cooldown (the budget-misreporting signature).
+	for i := 1; i < 5; i++ {
+		srv.noteInferenceError(det.ID, capacityTestPending(model, det.ID, i), http.StatusServiceUnavailable, batchBudget)
+	}
+	if !reg.CapacityCooldownActive(det.ID, model) {
+		t.Fatal("repeated deterministic batch-budget rejects with zero accepts must still trip the cooldown")
+	}
+
+	// Node-pressured: reported budget (90k) < model context (131072) — the
+	// binding term may have been THIS node's shrunk KV budget, a genuine
+	// provider-specific capacity signal: full gray-box state.
+	pressured := makeRoutableProvider(t, reg, "p-pressured", model)
+	setProviderModelBudget(t, reg, pressured.ID, model, 90_000)
+	srv.noteInferenceError(pressured.ID, capacityTestPending(model, pressured.ID, 0), http.StatusServiceUnavailable, batchBudget)
+	if !reg.BudgetClampActive(pressured.ID, model) {
+		t.Fatal("a node-pressured batch-budget reject (budget < context) must arm the budget clamp")
+	}
+	if _, samples := reg.CapacityRejectRate(pressured.ID, model); samples != 1 {
+		t.Fatalf("a node-pressured batch-budget reject must derate: samples=%d, want 1", samples)
+	}
+}
+
 // After-commit client-gone regression (Codex review of #523): a stream that
 // commits BEFORE the pair's first windowed reject, then the consumer
 // disconnects and the provider completes into the PARKED settlement path

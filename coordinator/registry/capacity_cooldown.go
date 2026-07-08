@@ -165,9 +165,12 @@ type capacityRejectKey struct {
 // This is the DERATING entry point: a genuine capacity/token-budget 503 feeds
 // all three trackers, including the gray-box capacity-503 rate window
 // (capacity_rate.go). A benign cold "model not loaded" lazy-load miss must go
-// to RecordCapacityRejectLifecycle instead so it does NOT derate the rate.
+// to RecordCapacityRejectLifecycle instead so it does NOT derate the rate, and
+// a provably request-deterministic reject (oversized prompt — identical
+// fleet-wide) must go to RecordCapacityRejectRequestShape so it arms NO
+// gray-box state at all.
 func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped bool) {
-	return r.recordCapacityReject(providerID, modelID, true)
+	return r.recordCapacityReject(providerID, modelID, true, true)
 }
 
 // RecordCapacityRejectLifecycle records a BENIGN lifecycle capacity miss — a
@@ -182,14 +185,36 @@ func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped boo
 // api layer routes cold "not loaded"/"no model loaded" rejections here;
 // genuine capacity/token-budget 503s go to RecordCapacityReject and DO derate.
 func (r *Registry) RecordCapacityRejectLifecycle(providerID, modelID string) (tripped bool) {
-	return r.recordCapacityReject(providerID, modelID, false)
+	return r.recordCapacityReject(providerID, modelID, false, true)
+}
+
+// RecordCapacityRejectRequestShape records a capacity-vocabulary rejection the
+// api layer has PROVEN request-deterministic — a "batch token budget" reject
+// from a provider whose reported budget is not below the model context, so the
+// binding term was the model context and every provider rejects the same
+// prompt identically (classifyRejection: rejectionDeterministicUnservable).
+// Such a reject indicts the REQUEST, not the provider: it must arm NEITHER the
+// one-shot budget clamp NOR the no-reset rate window, or a single oversized
+// prompt would clamp/derate a healthy pair (and, for the clamp, block the very
+// dispatches whose accepts prove release).
+//
+// It still counts a cooldown STRIKE, deliberately: isCapacityRejectStrike
+// includes "batch token budget" because a box misreporting a huge budget
+// rejects NORMAL prompts with exactly this string — and such a box classifies
+// as request-deterministic here too (its advertised budget >= context IS the
+// lie). The cooldown's zero-interleaved-accepts discriminator is what makes
+// that safe for healthy pairs (threshold 5 in 60s with NO accept; any accept
+// resets the streak), a safety the clamp and rate window by design lack.
+func (r *Registry) RecordCapacityRejectRequestShape(providerID, modelID string) (tripped bool) {
+	return r.recordCapacityReject(providerID, modelID, false, false)
 }
 
 // recordCapacityReject is the shared implementation. deratePair gates the
-// gray-box capacity-503 rate window: true for genuine capacity rejects, false
-// for benign lifecycle (cold-load) misses. The cooldown and the budget clamp
-// are fed on both paths.
-func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair bool) (tripped bool) {
+// gray-box capacity-503 rate window (true only for genuine capacity rejects);
+// armClamp gates the budget clamp (false only for request-deterministic
+// rejects, which indict the request rather than the provider). The cooldown
+// strike is fed on all paths.
+func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair, armClamp bool) (tripped bool) {
 	if providerID == "" || modelID == "" {
 		return false
 	}
@@ -205,9 +230,13 @@ func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair b
 	// it, unlike the strike streak below). The rate window is fed ONLY for a
 	// derating reject: a cold-load lifecycle miss (deratePair=false) is warm-up,
 	// not capacity dishonesty, and must not accumulate a rate the window can
-	// never reset off.
+	// never reset off. The clamp is armed only when the reject indicts the
+	// PROVIDER (armClamp=false for request-deterministic rejects — an oversized
+	// prompt says nothing about the pair's budget honesty).
 	clampKey := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
-	r.recordBudgetClampLocked(clampKey, r.providerReportsTokenBudgetLocked(providerID, modelID), now)
+	if armClamp {
+		r.recordBudgetClampLocked(clampKey, r.providerReportsTokenBudgetLocked(providerID, modelID), now)
+	}
 	if deratePair {
 		r.recordCapacityRateRejectLocked(clampKey, now)
 	}
@@ -378,8 +407,13 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 	// (b) — never an instant release, which still needs a strictly-fresher
 	// heartbeat with meaningful headroom — and ONE served outcome for the rate
 	// window (which deliberately has NO reset semantics: the accept/reject mix
-	// IS the signal).
+	// IS the signal). Then drop the entry if it is now inactive (this accept
+	// completed the release proof, the TTL lapsed, or it was armed budgetless):
+	// a lingering inactive entry would keep every later accept for the pair off
+	// the read-lock fast path above and would re-block the identity's next
+	// budgetless reconnect window.
 	r.noteBudgetClampAcceptLocked(key)
+	r.dropInactiveBudgetClampLocked(providerID, modelID, now)
 	if countRateOutcome {
 		rateOutcomeRecorded = r.recordCapacityRateAcceptLocked(key, now)
 	}

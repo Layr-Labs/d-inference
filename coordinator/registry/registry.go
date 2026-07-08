@@ -2779,6 +2779,15 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	}
 	p.mu.Unlock()
 
+	// This heartbeat may be the release proof for a budget clamp
+	// (budget_clamp.go): drop any clamp entry this heartbeat's snapshot proves
+	// inactive so a released pair returns to the accept fast path and cannot
+	// be re-blocked by a lingering entry on its next reconnect. The sweep
+	// evaluates the heartbeat's OWN stamped time and report (not a re-read of
+	// the provider), so a racing disconnect cannot void the release proof.
+	// Cheap no-op probe when the provider has no clamp state.
+	r.releaseBudgetClampsOnHeartbeat(id, now, msg.BackendCapacity)
+
 	r.PersistProviderThrottled(p)
 	// Persist accumulated uptime (throttled) so it survives restarts/reconnects;
 	// the heartbeat path is otherwise the only place uptime grows.

@@ -3,6 +3,7 @@ import ProviderCore
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 
 /// Prefill-throughput + per-batch decode-throughput sweep for a loaded MLX
 /// model. Produces a `ThroughputSweepReport` (JSON).
@@ -50,10 +51,22 @@ public enum ThroughputSweep {
         log("loading model \(modelID)")
         log("  path: \(modelDirectory.path)")
 
-        let container = try await LLMModelFactory.shared.loadContainer(
-            from: modelDirectory,
-            using: LocalTokenizerLoader()
-        )
+        // VLM checkpoints (config declares `vision_config`) load through the
+        // VLM factory and serve through the weight-sharing extracted text
+        // model — the same construction every production slot performs.
+        let isVLM = readHasVisionConfig(modelDirectory: modelDirectory)
+        let container: ModelContainer
+        if isVLM {
+            container = try await VLMModelFactory.shared.loadContainer(
+                from: modelDirectory,
+                using: LocalTokenizerLoader()
+            )
+        } else {
+            container = try await LLMModelFactory.shared.loadContainer(
+                from: modelDirectory,
+                using: LocalTokenizerLoader()
+            )
+        }
 
         let facts = try await container.perform { ctx -> ModelFacts in
             let params = ctx.model.parameters().flattened()
@@ -76,7 +89,9 @@ public enum ThroughputSweep {
             batchSizes: batchSizes,
             decodeTokens: decodeTokens,
             decodePromptTokens: decodePromptTokens,
-            weightBytes: facts.weightBytes
+            weightBytes: facts.weightBytes,
+            isVLM: isVLM,
+            modelDirectory: modelDirectory
         )
 
         let derived = ThroughputSweepReport.makeDerived(
@@ -174,7 +189,9 @@ public enum ThroughputSweep {
         batchSizes: [Int],
         decodeTokens: Int,
         decodePromptTokens: Int,
-        weightBytes: Int
+        weightBytes: Int,
+        isVLM: Bool,
+        modelDirectory: URL?
     ) async -> [ThroughputSweepReport.DecodeSample] {
         let sizes = batchSizes.filter { $0 > 0 }.sorted()
         guard !sizes.isEmpty else { return [] }
@@ -186,14 +203,15 @@ public enum ThroughputSweep {
         // (CBv2 compiled decode pays its cold start here, not in a sample).
         await runDecodeBatch(
             container: container, modelID: modelID, baseTokens: baseTokens,
-            batchSize: 1, decodeTokens: 4, promptLen: promptLen, weightBytes: weightBytes)
+            batchSize: 1, decodeTokens: 4, promptLen: promptLen, weightBytes: weightBytes,
+            isVLM: isVLM, modelDirectory: modelDirectory)
 
         var samples: [ThroughputSweepReport.DecodeSample] = []
         for batchSize in sizes {
             let (totalTokens, maxElapsed) = await runDecodeBatch(
                 container: container, modelID: modelID, baseTokens: baseTokens,
                 batchSize: batchSize, decodeTokens: genTokens, promptLen: promptLen,
-                weightBytes: weightBytes)
+                weightBytes: weightBytes, isVLM: isVLM, modelDirectory: modelDirectory)
             let secs = seconds(maxElapsed)
             let aggregate = secs > 0 ? Double(totalTokens) / secs : 0
             let perSeq = aggregate / Double(batchSize)
@@ -222,7 +240,9 @@ public enum ThroughputSweep {
         batchSize: Int,
         decodeTokens: Int,
         promptLen: Int,
-        weightBytes: Int
+        weightBytes: Int,
+        isVLM: Bool,
+        modelDirectory: URL?
     ) async -> (totalTokens: Int, maxElapsed: Duration) {
         // The engine's KV admission ceiling: the same unified-memory budget a
         // single-model provider slot would be granted. Far above what these
@@ -240,9 +260,13 @@ public enum ThroughputSweep {
         let parts: EngineParts
         do {
             parts = try await container.perform { ctx -> EngineParts in
-                EngineParts(
+                // Serving-model resolution: VLM checkpoints run the
+                // weight-sharing text extraction, exactly like a slot build.
+                let servingModel = try EngineV2Factory.benchmarkServingModel(
+                    model: ctx.model, isVLM: isVLM, modelDirectory: modelDirectory)
+                return EngineParts(
                     engine: try EngineV2Factory.makeProductionEngine(
-                        model: ctx.model,
+                        model: servingModel,
                         tokenizer: ctx.tokenizer,
                         kvBytesCapacity: kvCapacity,
                         maxConcurrentRequests: max(batchSize, 1)),
@@ -337,6 +361,16 @@ public enum ThroughputSweep {
     static func seconds(_ duration: Duration) -> Double {
         Double(duration.components.seconds)
             + Double(duration.components.attoseconds) / 1e18
+    }
+
+    /// Whether the checkpoint's config.json declares a `vision_config`
+    /// (VLM — load via the VLM factory, serve via the text extraction).
+    static func readHasVisionConfig(modelDirectory: URL) -> Bool {
+        let url = modelDirectory.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return obj["vision_config"] != nil
     }
 
     /// Best-effort read of the quantization bit width from config.json.

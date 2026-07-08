@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 import ProviderCore
 
 public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
@@ -53,10 +54,21 @@ public enum SchedulerPrefillBenchmark {
         log("loading model \(modelID)")
         log("  path: \(modelDirectory.path)")
 
-        let container = try await LLMModelFactory.shared.loadContainer(
-            from: modelDirectory,
-            using: LocalTokenizerLoader()
-        )
+        // VLM checkpoints load via the VLM factory and measure through the
+        // weight-sharing extracted text model (production serving path).
+        let isVLM = ThroughputSweep.readHasVisionConfig(modelDirectory: modelDirectory)
+        let container: ModelContainer
+        if isVLM {
+            container = try await VLMModelFactory.shared.loadContainer(
+                from: modelDirectory,
+                using: LocalTokenizerLoader()
+            )
+        } else {
+            container = try await LLMModelFactory.shared.loadContainer(
+                from: modelDirectory,
+                using: LocalTokenizerLoader()
+            )
+        }
         let facts = await container.perform { ctx -> (baseTokens: [Int], weightBytes: Int) in
             let encoded = ctx.tokenizer.encode(text: ThroughputSweep.seedText, addSpecialTokens: false)
             let bytes = ctx.model.parameters().flattened().reduce(0) { $0 + $1.1.nbytes }
@@ -70,7 +82,9 @@ public enum SchedulerPrefillBenchmark {
             baseTokens: baseTokens,
             promptTokens: min(lengths.first ?? 128, 128),
             iteration: 0,
-            weightBytes: facts.weightBytes
+            weightBytes: facts.weightBytes,
+            isVLM: isVLM,
+            modelDirectory: modelDirectory
         )
 
         var samples: [SchedulerPrefillBenchmarkReport.Sample] = []
@@ -81,7 +95,9 @@ public enum SchedulerPrefillBenchmark {
                     baseTokens: baseTokens,
                     promptTokens: length,
                     iteration: iteration,
-                    weightBytes: facts.weightBytes
+                    weightBytes: facts.weightBytes,
+                    isVLM: isVLM,
+                    modelDirectory: modelDirectory
                 )
                 log("  \(strategyLabel) L=\(length) i=\(iteration): \(String(format: "%.3f", sample.msPerPrefillToken)) ms/t (\(String(format: "%.1f", sample.ttftMs)) ms)")
                 samples.append(sample)
@@ -103,7 +119,9 @@ public enum SchedulerPrefillBenchmark {
         baseTokens: [Int],
         promptTokens: Int,
         iteration: Int,
-        weightBytes: Int
+        weightBytes: Int,
+        isVLM: Bool,
+        modelDirectory: URL?
     ) async throws -> SchedulerPrefillBenchmarkReport.Sample {
         // Same KV-ceiling derivation as a single-model serving slot; far
         // above what one row needs, so admission never binds.
@@ -114,8 +132,10 @@ public enum SchedulerPrefillBenchmark {
                 configReserveBytes: 0),
             UInt64(Int.max)))
         let engine = try await container.perform { ctx -> any CBv2Engine in
-            try EngineV2Factory.makeProductionEngine(
-                model: ctx.model,
+            let servingModel = try EngineV2Factory.benchmarkServingModel(
+                model: ctx.model, isVLM: isVLM, modelDirectory: modelDirectory)
+            return try EngineV2Factory.makeProductionEngine(
+                model: servingModel,
                 tokenizer: ctx.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: 1)

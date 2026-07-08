@@ -276,7 +276,7 @@ public actor EngineV2Bridge {
     /// `request.logprobs == true` so the translated sampling params ask
     /// the engine to capture them).
     ///
-    /// `multimodal` (v0.7.4; video since v0.7.5) is the precomputed
+    /// `multimodal` (v0.7.5, image + video) is the precomputed
     /// media-prefill input for an image/video request
     /// (`EngineV2VisionPrefill.PreparedSubmission.multimodalInput()` —
     /// spans over `promptTokens`' placeholder runs, embeddings already
@@ -421,7 +421,7 @@ public actor EngineV2Bridge {
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(now: .now)
 
-        // Media-through-v2 engagement signal (v0.7.4; media-kind tagged
+        // Media-through-v2 engagement signal (v0.7.5; media-kind tagged
         // since v0.7.5): one INFO per media request the engine ACCEPTED,
         // tagged `multimodal=true` + `media_kind` on the existing engine_v2
         // fields so prod adoption per media shape is observable next to the
@@ -802,7 +802,7 @@ public actor EngineV2Bridge {
         }
     }
 
-    /// Media-through-v2 engagement (v0.7.4; media-kind tagged since
+    /// Media-through-v2 engagement (v0.7.5; media-kind tagged since
     /// v0.7.5): INFO per engine-accepted image/video request. PRIVACY:
     /// allowlisted operational fields only — the request's media/prompt
     /// content never rides telemetry; `multimodal` is a bare boolean tag

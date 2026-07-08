@@ -79,7 +79,7 @@ extension ProviderLoop {
                 // request/engine pairing — 400, never a retry signal.
                 // (Other provider-side construction failures refuse loudly
                 // as `.requestRejected` → 503 so the coordinator reroutes;
-                // the v0.7.4 legacy fallback is gone.)
+                // the pre-release legacy fallback is gone.)
                 return 400
             case .generationFailed:
                 return 500

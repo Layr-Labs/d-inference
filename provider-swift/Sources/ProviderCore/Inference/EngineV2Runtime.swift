@@ -126,7 +126,11 @@ public actor EngineV2Runtime {
             var clamp: Int?
             if let fleetKV, let grant = grants[modelId] {
                 var otherClaims = grants.filter { $0.key != modelId }.map {
-                    $0.value + (prefixBudgets[$0.key] ?? 0)
+                    // Overflow-safe like `slotKVBytesClaim()`: saturate
+                    // rather than trap on absurd inputs.
+                    let (sum, overflow) = $0.value
+                        .addingReportingOverflow(prefixBudgets[$0.key] ?? 0)
+                    return overflow ? Int.max : sum
                 }
                 // Own cache budget: carved out of the fleet budget but not
                 // visible in the engine's own (already-reduced) grant, so it

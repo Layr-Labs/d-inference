@@ -72,6 +72,15 @@ enum EngineV2KVSizing {
     ///
     /// Pure policy (no MLX globals) so it is unit-testable; `physicalBytes`
     /// defaults to the machine's real memory in production.
+    /// RETAINED after the re-slice rewrite (slot-lifecycle deviation #5):
+    /// grants are now assigned by `resliceGrants`, so nothing SIZES from
+    /// this anymore — but the heartbeat safety net
+    /// (`liveEngineKVBytesBudget` below, consumed by
+    /// `EngineV2Runtime.capacitySummary`) still recomputes each bridge's
+    /// live budget from CURRENT fleet residency through this exact
+    /// derivation. Refactoring the clamp onto raw current-grant inputs
+    /// would duplicate this arithmetic without deleting it; it goes when
+    /// the clamp does.
     static func engineKVBytesCapacity(
         newModelWeightBytes: Int,
         coResidentWeightBytes: UInt64,

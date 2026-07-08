@@ -1,6 +1,6 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Media-through-engine_v2 unit tests (v0.7.4 vision + v0.7.5 video/fail-
+// Media-through-engine_v2 unit tests (v0.7.5 vision + video/fail-
 // loud) — live-isolated style: a scripted in-process `CBv2Engine`, a real
 // `ModelContainer` over stub model/processor/tokenizer, and an injected
 // `EngineV2VisionPlumbing` preparer. No model weights, no network.
@@ -886,7 +886,7 @@ struct EngineV2VisionRoutingTests {
             bridge: bridge, plumbing: plumbing)
 
         // The real tinyMP4 passes `validateMedia`'s AVFoundation probe, so
-        // the request reaches the v2 branch (v0.7.4 gated video to legacy
+        // the request reaches the v2 branch (a pre-release draft gated video to legacy
         // here; v0.7.5 routes it through the engine).
         let request = imageRequest(parts: [
             .text("what happens in this clip?"), .videoURL(tinyMP4DataURI),

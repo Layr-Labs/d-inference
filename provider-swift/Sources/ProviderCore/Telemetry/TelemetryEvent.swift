@@ -262,7 +262,7 @@ public enum TelemetryFieldFilter {
         "streak_seconds", "reservation_count", "reserved_bytes",
         "mlx_cache_bytes", "system_available_bytes", "reservations",
         "request_id", "age_seconds",
-        // Media-through-engine_v2 tags (v0.7.4 bool + v0.7.5 kind) — a bare
+        // Media-through-engine_v2 tags (v0.7.5: bool + image/video/mixed kind) — a bare
         // boolean and a coarse image/video/mixed label; media/prompt content
         // NEVER rides telemetry. Mirror in Go + TS allowlists.
         "multimodal", "media_kind",

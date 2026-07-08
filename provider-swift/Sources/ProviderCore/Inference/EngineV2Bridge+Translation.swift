@@ -41,7 +41,7 @@ enum EngineV2Translation {
     ///   salt fallback — byte-identical hashes to the pre-salt behavior).
     ///   LIVE as of v0.7.5: the production engine runs `PrefixCacheV2`
     ///   whenever `PrefixCachePolicy` funds it.
-    /// * `multimodal` (v0.7.4) carries the precomputed vision-prefill spans
+    /// * `multimodal` (v0.7.5) carries the precomputed vision-prefill spans
     ///   + embeddings for image requests (`EngineV2VisionPrefill`); nil for
     ///   text requests keeps the engine's text path byte-identical.
     static func cbv2Request(

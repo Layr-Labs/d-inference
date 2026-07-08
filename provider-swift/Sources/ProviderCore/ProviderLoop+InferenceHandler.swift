@@ -442,7 +442,7 @@ extension ProviderLoop {
                 )
             } catch {
                 // A cancel that lands while the stream is STARTING — the
-                // consumer cancelled during prompt templating or the v0.7.4
+                // consumer cancelled during prompt templating or the v0.7.5
                 // vision-feature construction (`handleCancellation` cancels
                 // this detached task, and the vision seam rethrows
                 // CancellationError instead of falling back to legacy) — is

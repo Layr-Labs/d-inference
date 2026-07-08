@@ -3,7 +3,7 @@
 // ContinuousBatchingV2 — media-prefill construction for VLM slots.
 //
 // v0.7.2 routed only TEXT requests on a VLM-loaded Gemma 4 slot through the
-// v2 engine (over the weight-shared extracted `Gemma4TextModel`); v0.7.4
+// v2 engine (over the weight-shared extracted `Gemma4TextModel`); v0.7.5
 // added IMAGE requests via embedding-spliced vision prefill; v0.7.5 adds
 // VIDEO (and mixed image+video), removing the last media reason to keep a
 // legacy path. The engine contract is unchanged: `CBv2Request.multimodal`
@@ -45,7 +45,7 @@
 // scheduler engine's catch → ERROR `engine_v2_vision_refusal` telemetry +
 // a retriable 503 (`.requestRejected`) so the coordinator's pre-content
 // failover reroutes the request invisibly. There is NO legacy fallback for
-// media on a v2-bridged slot (the v0.7.4 `engine_v2_vision_fallback` WARN
+// media on a v2-bridged slot (the pre-release `engine_v2_vision_fallback` WARN
 // is gone with it). Deterministic input faults (`MediaError` — malformed/
 // oversized media) keep their 4xx mapping and are not refusals.
 //
@@ -436,7 +436,7 @@ public enum EngineV2VisionPrefill {
     }
 
     /// ERROR `engine_health` event for a media-prefill construction failure
-    /// → loud refusal (v0.7.5; replaces the v0.7.4 fallback WARN — there is
+    /// → loud refusal (v0.7.5; replaces the pre-release fallback WARN — there is
     /// no legacy fallback anymore). Mirrors `EngineV2Config
     /// .emitFallbackTelemetry`'s field shape, plus `multimodal: true` and
     /// the `media_kind` tag (image/video/mixed) so refusal rates are

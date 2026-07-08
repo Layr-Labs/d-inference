@@ -1,6 +1,6 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Live (weight-gated) validation of v0.7.4 VISION-THROUGH-ENGINE_V2 on the
+// Live (weight-gated) validation of v0.7.5 VISION-THROUGH-ENGINE_V2 on the
 // EXACT checkpoints production serves (gemma-4-26b-qat-4bit /
 // gemma-4-26b-8bit), updated for the v0.7.5 ONE-ENGINE release: the legacy
 // `BatchScheduler` (and its wrapper vision stream) is deleted, so every

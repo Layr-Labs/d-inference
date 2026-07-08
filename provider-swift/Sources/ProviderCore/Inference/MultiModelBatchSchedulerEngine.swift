@@ -109,7 +109,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// (silently) when the model serves via legacy, which never honored
     /// either knob.
     private let engineV2Sampling: EngineV2SamplingOverrides?
-    /// v0.7.4 vision-through-v2 seam: the preparer that turns an image
+    /// v0.7.5 media-through-v2 seam: the preparer that turns an image/video
     /// request into a `CBv2MultimodalInput` submission plus the sink for the
     /// fallback WARN. nil ⇒ `.production` (the real `EngineV2VisionPrefill`
     /// + `TelemetryClient.shared`); unit tests inject a scripted preparer so
@@ -331,7 +331,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // kind) + a retriable 503 (`.requestRejected`) so the
             // coordinator's pre-content failover reroutes invisibly. The
             // legacy wrapper path below is NOT reachable for media on a
-            // v2-bridged slot anymore (v0.7.4's silent fallback is gone).
+            // v2-bridged slot anymore (the pre-release silent fallback is gone).
             // Three throws are NOT refusals: `CancellationError` (the
             // caller went away — propagate, 499), `MediaError`
             // (deterministic input fault — keeps its 4xx mapping), and
@@ -568,7 +568,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Translate an engine `GenerationEvent` stream into the upstream
     /// `MLXServerGenerationEvent` shape, with tool-call parsing, usage/info
     /// framing, structured-error promotion, and release-on-every-exit.
-    /// Shared by the batched/v2 TEXT path and the v0.7.4 vision-through-v2
+    /// Shared by the batched/v2 TEXT path and the v0.7.5 media-through-v2
     /// path (which passes `toolHandler: nil` — see the routing comment) so
     /// the downstream SSE/billing contract is identical for both.
     private func makeEventStream(

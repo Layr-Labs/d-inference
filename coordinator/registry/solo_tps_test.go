@@ -284,7 +284,9 @@ func TestResolvedSoloModelTPSFallbackChain(t *testing.T) {
 	}
 
 	// (b) cross-chip pooled median once total n ≥ floor (5), even though the
-	// provider's own chip family (M3) has no samples yet.
+	// provider's own chip family (M3) has no samples yet. The configured seed
+	// remains an upper bound for an unsampled class, so the faster pooled median
+	// cannot widen this provider's cold-start cap.
 	for i, v := range []float64{16, 16, 16, 20, 20} {
 		chip := "M1"
 		if i >= 3 {
@@ -292,8 +294,8 @@ func TestResolvedSoloModelTPSFallbackChain(t *testing.T) {
 		}
 		reg.tpsRegistry.RecordSolo(gemmaBuild, chip, v)
 	}
-	if got := resolveSolo(reg, p, gemmaBuild); got.tps != 16 || !got.perModel {
-		t.Fatalf("cross-chip fallback = %+v, want tps 16 (pooled median), perModel true", got)
+	if got := resolveSolo(reg, p, gemmaBuild); got.tps != 14 || !got.perModel {
+		t.Fatalf("cross-chip fallback = %+v, want seed-bounded tps 14 (pooled median 16), perModel true", got)
 	}
 
 	// (a) per-(model, chip) median wins over cross-chip and seed once trusted.

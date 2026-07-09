@@ -421,6 +421,28 @@ func TestQualityCapPerModelTPSPostmortemRegression(t *testing.T) {
 	})
 }
 
+// TestQualityCapSeedBoundsCrossClassTransfer pins cold-class safety when the
+// only live solo samples come from a faster chip class. A configured model seed
+// is the conservative cold-start estimate for an unsampled class, so faster
+// cross-class observations must not widen that class's quality cap above it.
+func TestQualityCapSeedBoundsCrossClassTransfer(t *testing.T) {
+	reg := New(testLogger())
+	enablePerModelQualityCap(t, reg, gemmaBuild+"=14", "", "")
+	p := mixedBoxProvider(t, reg, "unsampled-slow-class", 93)
+	p.mu.Lock()
+	p.Hardware.ChipFamily = "M2"
+	p.Hardware.ChipTier = "Pro"
+	p.mu.Unlock()
+
+	for i := 0; i < qualityCapSoloMinSamples; i++ {
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M4|Max", 40)
+	}
+
+	if got := resolveSolo(reg, p, gemmaBuild); got.tps != 14 || !got.perModel {
+		t.Fatalf("unsampled slow-class resolver = %+v, want seed 14 (faster cross-class median 40 must not override the configured cold-start bound)", got)
+	}
+}
+
 // TestQualityCapPerModelTPSKillSwitchRestoresOldBehavior pins the kill switch:
 // EIGENINFERENCE_QUALITY_CAP_PER_MODEL_TPS=false must restore the provider-
 // level resolvedDecodeTPS(p) at the cap exactly — reproducing the postmortem's

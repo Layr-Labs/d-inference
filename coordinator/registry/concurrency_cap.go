@@ -204,10 +204,12 @@ type soloModelTPS struct {
 //     keyed by chipClassKey (family+tier) so a fast tier never lends its rate
 //     to a slow one — once it has ≥ qualityCapSoloMinSamples samples;
 //  2. the MIN of the per-class solo medians across chip classes (conservative
-//     cross-class transfer, SoloMedianAllChips), same total-sample floor — can
-//     never exceed the slowest class's rate, so it never over-caps a slow box;
-//  3. the modelSoloTPSSeedEnv seed (cold-start answer — the TPS registry is
-//     in-memory and restart-wiped);
+//     cross-class transfer, SoloMedianAllChips), same total-sample floor. When
+//     a modelSoloTPSSeedEnv seed exists, it is an upper bound on that transfer:
+//     observations from faster classes cannot widen an unsampled slower class's
+//     cap above its configured cold-start estimate;
+//  3. the modelSoloTPSSeedEnv seed when there is no trusted cross-class rate
+//     (the TPS registry is in-memory and restart-wiped);
 //  4. the provider-level resolvedDecodeTPS(p) — exactly the pre-per-model
 //     behavior, including its sqrt-bandwidth fallback semantics.
 //
@@ -224,11 +226,15 @@ func (r *Registry) resolvedSoloModelTPSLocked(p *Provider, model string) soloMod
 		if tps, n := r.tpsRegistry.SoloMedian(model, chipClassKey(p.Hardware)); n >= qualityCapSoloMinSamples && tps > 0 {
 			return soloModelTPS{tps: tps, perModel: true}
 		}
+		seed, hasSeed := modelSoloTPSSeed[strings.ToLower(model)]
 		if tps, n := r.tpsRegistry.SoloMedianAllChips(model); n >= qualityCapSoloMinSamples && tps > 0 {
+			if hasSeed && seed < tps {
+				tps = seed
+			}
 			return soloModelTPS{tps: tps, perModel: true}
 		}
-		if tps, ok := modelSoloTPSSeed[strings.ToLower(model)]; ok {
-			return soloModelTPS{tps: tps, perModel: true}
+		if hasSeed {
+			return soloModelTPS{tps: seed, perModel: true}
 		}
 	}
 	return soloModelTPS{tps: resolvedDecodeTPS(p), perModel: false}

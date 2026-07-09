@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"sort"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
@@ -34,15 +35,12 @@ import (
 //
 // One served request counts as ONE accept outcome: the api layer OFFERS the
 // accept at the commit point (first content chunk) and stamps the request when
-// the offer actually recorded (accepts are only stored while a reject is in
-// the window — see recordCapacityRateAcceptLocked); at clean completion it
-// re-offers only when the commit-time offer did not record
-// (!RateOutcomeCountedSafe), which covers both paths that never commit content
-// AND streams that committed BEFORE the pair's first windowed reject but were
-// still serving during it — without the re-offer those served requests would
-// vanish from the denominator and a few later rejects would overstate a
-// healthy pair's rate. Commit-recorded XOR completion-recorded, so the
-// denominator is per-dispatch honest.
+// the offer records; at clean completion it re-offers only when the commit-time
+// offer did not record (!RateOutcomeCountedSafe), which covers paths that never
+// commit content. Accepts are retained even before the first reject so a later
+// reject burst is measured against every recent served dispatch, not against an
+// artificially reject-only window. Commit-recorded XOR completion-recorded, so
+// the denominator is per-dispatch honest.
 // Rejects are recorded once per failed dispatch attempt by
 // RecordCapacityReject.
 //
@@ -91,51 +89,76 @@ func (r *Registry) recordCapacityRateRejectLocked(key capacityRejectKey, now tim
 	if r.capacityRateCfg.PenaltyMs <= 0 {
 		return
 	}
-	sweepCapacityRateMapLocked(r.capacityRateRejects, now)
+	_, existed := r.capacityRateRejects[key]
 	r.capacityRateRejects[key] = appendWindowedOutcome(r.capacityRateRejects[key], now)
+	if !existed {
+		sweepCapacityRateMapLocked(r.capacityRateRejects, now)
+	}
+
+	// A pair may have gone quiet long enough for its accept-only history to
+	// expire before this first/new reject. Prune it now so repeated routing reads
+	// do not keep scanning stale timestamps and the first rate uses only the same
+	// five-minute window as the reject side.
+	if accepts, ok := r.capacityRateAccepts[key]; ok {
+		accepts = pruneWindowedOutcomes(accepts, now)
+		if len(accepts) == 0 {
+			delete(r.capacityRateAccepts, key)
+		} else {
+			r.capacityRateAccepts[key] = accepts
+		}
+	}
 }
 
 // recordCapacityRateAcceptLocked appends one served-dispatch outcome for the
-// pair and prunes the window. Accepts are recorded only while the pair has a
-// capacity-503 inside the window: the penalty math fast-exits at rejects==0
-// regardless, so pre-reject accepts add nothing, and skipping them keeps
-// RecordCapacityAccept's healthy-pair read-lock fast path intact (a served
-// request on a never-rejecting pair never takes the write lock for this).
-// Once the reject side has fully decayed, the pair's slices are dropped
-// instead — state returns to empty and the fast path is restored. Returns
-// whether the accept was actually stored, so the api layer can stamp the
-// request (MarkRateOutcomeCounted) and let its completion re-offer when the
-// commit-time offer recorded nothing. Caller holds the r.mu write lock
-// (called from RecordCapacityAccept with countRateOutcome=true).
+// pair and prunes the window. Accepts are retained before, during, and after a
+// reject window: a first reject must be divided by all recent dispatch outcomes,
+// and accepts that outlive the last reject must remain available to a new burst.
+// The rate/penalty read paths still return zero while no reject is in-window, so
+// this healthy history is observationally dormant. Returns whether the accept
+// was stored so the api layer can stamp the request (MarkRateOutcomeCounted)
+// and prevent completion from double-counting it. Caller holds r.mu for write.
 func (r *Registry) recordCapacityRateAcceptLocked(key capacityRejectKey, now time.Time) (recorded bool) {
 	if r.capacityRateCfg.PenaltyMs <= 0 {
 		return false
 	}
-	if countInWindow(r.capacityRateRejects[key], now) == 0 {
-		delete(r.capacityRateRejects, key)
-		delete(r.capacityRateAccepts, key)
-		return false
-	}
-	sweepCapacityRateMapLocked(r.capacityRateAccepts, now)
+	_, existed := r.capacityRateAccepts[key]
 	r.capacityRateAccepts[key] = appendWindowedOutcome(r.capacityRateAccepts[key], now)
+	if !existed {
+		sweepCapacityRateMapLocked(r.capacityRateAccepts, now)
+	}
 	return true
 }
 
-// appendWindowedOutcome slides the window (keeps only in-window timestamps)
-// and appends the new outcome, reusing the backing array.
-func appendWindowedOutcome(outcomes []time.Time, now time.Time) []time.Time {
-	kept := outcomes[:0]
-	for _, ts := range outcomes {
-		if now.Sub(ts) < capacityRateWindow {
-			kept = append(kept, ts)
-		}
+// pruneWindowedOutcomes keeps only timestamps strictly inside the sliding
+// window. Outcome histories are chronological, so binary search avoids scanning
+// a hot pair's whole five-minute history on every accept. Reslicing instead of
+// compacting makes steady-state expiry amortized O(1); append occasionally grows
+// the backing array and releases the skipped prefix.
+func pruneWindowedOutcomes(outcomes []time.Time, now time.Time) []time.Time {
+	cutoff := now.Add(-capacityRateWindow)
+	first := sort.Search(len(outcomes), func(i int) bool {
+		return outcomes[i].After(cutoff)
+	})
+	if first == 0 {
+		return outcomes
 	}
-	return append(kept, now)
+	if first == len(outcomes) {
+		return outcomes[:0]
+	}
+	return outcomes[first:]
+}
+
+// appendWindowedOutcome slides the chronological window and appends the new
+// outcome, reusing the backing array.
+func appendWindowedOutcome(outcomes []time.Time, now time.Time) []time.Time {
+	return append(pruneWindowedOutcomes(outcomes, now), now)
 }
 
 // sweepCapacityRateMapLocked bounds a rate map by dropping pairs whose newest
 // outcome has aged out of the window, once the map grows (mirrors the sibling
 // cooldown sweeps — churned session-keyed identities are never re-keyed).
+// Histories must remain chronological because this deliberately uses the tail
+// for an O(1) newest check while holding the registry lock.
 func sweepCapacityRateMapLocked(m map[capacityRejectKey][]time.Time, now time.Time) {
 	if len(m) <= 1024 {
 		return
@@ -148,15 +171,13 @@ func sweepCapacityRateMapLocked(m map[capacityRejectKey][]time.Time, now time.Ti
 }
 
 // countInWindow counts timestamps still inside the window without mutating the
-// slice, so read paths stay safe under r.mu.RLock.
+// chronological slice, so read paths stay safe under r.mu.RLock.
 func countInWindow(outcomes []time.Time, now time.Time) int {
-	n := 0
-	for _, ts := range outcomes {
-		if now.Sub(ts) < capacityRateWindow {
-			n++
-		}
-	}
-	return n
+	cutoff := now.Add(-capacityRateWindow)
+	first := sort.Search(len(outcomes), func(i int) bool {
+		return outcomes[i].After(cutoff)
+	})
+	return len(outcomes) - first
 }
 
 // capacityRatePenaltyLocked returns the cost penalty (ms) and the measured
@@ -191,6 +212,9 @@ func (r *Registry) CapacityRejectRate(providerID, modelID string) (rate float64,
 	now := time.Now()
 	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 	rejects := countInWindow(r.capacityRateRejects[key], now)
+	if rejects == 0 {
+		return 0, 0
+	}
 	accepts := countInWindow(r.capacityRateAccepts[key], now)
 	total := rejects + accepts
 	if total == 0 {

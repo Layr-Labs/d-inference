@@ -406,12 +406,9 @@ func (s *Server) noteInferenceSuccess(pr *registry.PendingRequest) {
 	// count exactly ONE outcome, so this completion-time accept re-offers the
 	// outcome only when the commit-time accept did not actually RECORD one
 	// (RateOutcomeCountedSafe — stamped from RecordCapacityAccept's return at
-	// every commit site). Keying on the recorded outcome rather than on
-	// ContentCommittedSafe covers the stream that committed BEFORE the pair's
-	// first windowed reject (nothing recorded then — accepts only store while
-	// a reject is in-window) but was still serving during the rejects: it
-	// enters the denominator here instead of vanishing and letting a few
-	// later 503s overstate a healthy pair's reject rate.
+	// every commit site). With rate tracking enabled, commit-time accepts are
+	// retained even before the first reject; paths that never commit content
+	// record their sole outcome here instead.
 	s.registry.RecordCapacityAcceptOutcome(pr.ProviderID, pr.Model, !pr.RateOutcomeCountedSafe())
 	// A clean completion proves the node is healthy — close its node-health
 	// breaker (and reset the exponential backoff) if it had tripped.

@@ -219,10 +219,10 @@ type PendingRequest struct {
 	// outcome (capacity_rate.go denominator) was recorded by the commit-time
 	// accept — RecordCapacityAccept returned rateOutcomeRecorded=true. The
 	// completion-time accept (noteInferenceSuccess) re-offers the outcome only
-	// when this is false, so a stream that committed BEFORE the pair's first
-	// windowed reject but was still serving during it still counts, and a
-	// commit-recorded request cannot double-count. Guarded by timingMu like
-	// contentCommitted (same writer/reader goroutines).
+	// when this is false, covering requests that never commit content while a
+	// commit-recorded request cannot double-count. Accepts are retained before
+	// the first reject so event ordering cannot distort the five-minute rate.
+	// Guarded by timingMu like contentCommitted (same writer/reader goroutines).
 	rateOutcomeCounted bool
 }
 

@@ -231,14 +231,10 @@ func TestGrayBoxClassificationTrustsStructuredReason(t *testing.T) {
 	}
 }
 
-// After-commit client-gone regression (Codex review of #523): a stream that
-// commits BEFORE the pair's first windowed reject, then the consumer
-// disconnects and the provider completes into the PARKED settlement path
-// (handleComplete, consumerGone=true), must still enter the capacity-503 rate
-// denominator. noteInferenceSuccess — which re-offers the outcome on clean
-// completion — never runs on this path, so without the handleComplete re-offer
-// the served completion vanishes and a few later 503s overstate a healthy
-// pair's reject rate.
+// After-commit client-gone regression: a stream that commits before the pair's
+// first windowed reject records its accept immediately. If the consumer then
+// disconnects and the provider completes into the parked settlement path,
+// handleComplete must observe the commit-time stamp and avoid counting it again.
 func TestCapacityRateParkedCompletionCountsAtHandleComplete(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
@@ -251,22 +247,22 @@ func TestCapacityRateParkedCompletionCountsAtHandleComplete(t *testing.T) {
 	pr := capacityTestPending(model, p.ID, 1)
 	pr.ConsumerKey = "test-key"
 
-	// Commit first content while the pair is healthy (no reject in-window yet):
-	// mirrors commitFirstContent — the offer records nothing, so the request
-	// still owes its one rate outcome (RateOutcomeCountedSafe stays false).
-	if reg.RecordCapacityAccept(pr.ProviderID, model) {
-		t.Fatal("commit-time accept with an empty reject window must not record a rate outcome")
+	// Commit first content while the pair is healthy (no reject in-window yet),
+	// mirroring commitFirstContent and its request-local exactly-once stamp.
+	if !reg.RecordCapacityAccept(pr.ProviderID, model) {
+		t.Fatal("commit-time accept must be retained before the first reject")
 	}
+	pr.MarkRateOutcomeCounted()
 
 	// The pair goes gray while the (now client-gone) stream is still serving.
 	reg.RecordCapacityReject(pr.ProviderID, model)
-	if _, samples := reg.CapacityRejectRate(pr.ProviderID, model); samples != 1 {
-		t.Fatalf("setup: samples=%d after one reject, want 1", samples)
+	if _, samples := reg.CapacityRejectRate(pr.ProviderID, model); samples != 2 {
+		t.Fatalf("setup: samples=%d after one accept and one reject, want 2", samples)
 	}
 
 	// Consumer disconnected mid-stream: the request is parked (no reader), then
 	// the provider completes. handleComplete claims the parked record
-	// (consumerGone=true) and must re-offer the served completion.
+	// (consumerGone=true) and must not re-offer the already recorded accept.
 	srv.holdForSettlement(pr)
 	srv.handleComplete(p.ID, p, &protocol.InferenceCompleteMessage{
 		Type:      protocol.TypeInferenceComplete,
@@ -276,7 +272,7 @@ func TestCapacityRateParkedCompletionCountsAtHandleComplete(t *testing.T) {
 
 	rate, samples := reg.CapacityRejectRate(pr.ProviderID, model)
 	if samples != 2 {
-		t.Fatalf("samples=%d after the parked completion, want 2 (1 reject + the served client-gone stream) — the parked completion never entered the denominator", samples)
+		t.Fatalf("samples=%d after parked completion, want 2 — completion double-counted the commit", samples)
 	}
 	if rate != 0.5 {
 		t.Fatalf("rate=%.2f, want 0.5 (1 reject / 2 outcomes)", rate)

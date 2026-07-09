@@ -82,10 +82,12 @@ type routingSnapshot struct {
 	pendingMaxTokensAllModels int
 	// pendingMaxBytesAllModels is the byte-normalized analog: each pending
 	// request's token budget × its model's reported KVBytesPerToken. Valid
-	// only when pendingBytesKnown — every pending request's model had a
-	// reported KV rate (see fillSnapshotPendingAndPool). Co-resident models
-	// spend the ONE shared pool at different per-token byte rates, so tokens
-	// are not a common unit across models (pooled_admission.go).
+	// only when pendingBytesKnown. A cold request without a reported model rate
+	// is charged at the bounded conservative default (see
+	// fillSnapshotPendingAndPool), so it cannot disable byte accounting for a
+	// reconstructable pool. Co-resident models spend the ONE shared pool at
+	// different per-token byte rates, so tokens are not a common unit across
+	// models (pooled_admission.go).
 	pendingMaxBytesAllModels int64
 	pendingBytesKnown        bool
 	backendRunning           int
@@ -1266,7 +1268,7 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	// pool charges all-models coordinator pending plus this request; a cold
 	// model has no reported KV rate (snap.kvBytesPerToken == 0), so on a
 	// byte-reconstructable pool it is priced conservatively in bytes at the
-	// box's max resident rate (pooledBudgetAdmits' cold-rate substitution),
+	// bounded unknown-model default (resolvedPooledKVBytesPerToken),
 	// falling to token units only when the pool is not byte-reconstructable.
 	// No-op for legacy providers with no budget slots at all (pool.total == 0).
 	if !pooledBudgetAdmits(snap, requestTokens) {
@@ -1331,11 +1333,11 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 // fillSnapshotPendingAndPool populates snap's reconstructed pooled budget and
 // its coordinator-pending aggregates — the per-model filtered pair
 // (pendingForModel / pendingMaxTokens) and the all-models totals in token and,
-// when normalizable, byte units. Byte normalization needs each pending
-// request's model to have a reported KVBytesPerToken (a budget slot in the
-// pool); any pending request that can't be normalized — e.g. for a cold model
-// with no resident slot — flips pendingBytesKnown off and pooledBudgetAdmits
-// falls back to token accounting for the whole check. Shared by the dispatch
+// when normalizable, byte units. Byte normalization uses each resident model's
+// reported KVBytesPerToken and the same bounded conservative default as
+// incoming/capacity math for a cold model with no resident slot. Only a legacy
+// pool that cannot be reconstructed in bytes leaves pendingBytesKnown false.
+// Shared by the dispatch
 // snapshot (snapshotProviderLockedEx) and the queue preflight
 // (QuickCapacityCheck…) so the two admission paths cannot drift. Caller holds
 // p.mu.
@@ -1348,11 +1350,8 @@ func fillSnapshotPendingAndPool(snap *routingSnapshot, p *Provider, model string
 		tokens := pendingTokenBudget(pr)
 		snap.pendingMaxTokensAllModels += tokens
 		if bytesKnown {
-			if rate := snap.pooledTokenBudget.kvBytesPerToken[pr.Model]; rate > 0 {
-				snap.pendingMaxBytesAllModels += int64(tokens) * rate
-			} else {
-				bytesKnown = false
-			}
+			rate := resolvedPooledKVBytesPerToken(snap.pooledTokenBudget, snap.pooledTokenBudget.kvBytesPerToken[pr.Model])
+			snap.pendingMaxBytesAllModels = addPooledKVByteCharge(snap.pendingMaxBytesAllModels, int64(tokens), rate)
 		}
 		if pr.Model != model {
 			continue

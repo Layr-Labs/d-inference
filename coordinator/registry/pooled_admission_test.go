@@ -645,60 +645,138 @@ func TestModelCapacitySnapshotByteModePooledClamp(t *testing.T) {
 // TestPooledColdUnknownKVChargedInBytes is the cold unknown-KV regression: on a
 // byte-reconstructable mixed-KV box, a COLD request (its own model has no
 // resident slot, so snap.kvBytesPerToken == 0) must be priced CONSERVATIVELY in
-// bytes at the box's max resident rate, NOT collapse to token accounting that
-// under-charges a large-KV burst against the small-KV token view of the pool.
-// Fails without the maxKVBytesPerToken cold-rate substitution.
+// bytes at the bounded unknown-model default, NOT collapse to token accounting
+// or borrow a rate that only describes resident models.
 func TestPooledColdUnknownKVChargedInBytes(t *testing.T) {
-	t.Run("mixed_kv_cold_priced_at_max_rate", func(t *testing.T) {
+	t.Run("mixed_kv_cold_priced_at_default_rate", func(t *testing.T) {
 		slots := []protocol.BackendSlotCapacity{
 			{Model: "big-kv", ActiveTokenBudgetMax: 10_000, KVBytesPerToken: 100_000},   // 1 GB view
 			{Model: "small-kv", ActiveTokenBudgetMax: 100_000, KVBytesPerToken: 10_000}, // same 1 GB
 		}
 		pool := providerPooledTokenBudget(slots)
-		if !pool.byteMode || pool.maxKVBytesPerToken != 100_000 {
-			t.Fatalf("pool byteMode=%v maxKVBytesPerToken=%d, want true / 100000", pool.byteMode, pool.maxKVBytesPerToken)
+		if !pool.byteMode {
+			t.Fatal("pool byteMode = false, want true")
+		}
+		if got := resolvedPooledKVBytesPerToken(pool, 0); got != kvCacheBytesPerToken {
+			t.Fatalf("resolved cold KV rate = %d, want conservative default %d", got, kvCacheBytesPerToken)
 		}
 		cold := routingSnapshot{
 			kvBytesPerToken:   0, // cold/absent slot
 			pendingBytesKnown: true,
 			pooledTokenBudget: pool,
 		}
-		// 50k tokens: token fallback would admit (50k ≤ 100k token pool); byte
-		// pricing at the 100 kB/token max rate = 5 GB ≫ 1 GB pool → reject.
+		// 50k tokens: token fallback would admit (50k <= 100k token pool), but
+		// conservative byte pricing is far beyond the 1 GB pool.
 		if pooledBudgetAdmits(cold, 50_000) {
-			t.Fatal("cold large-KV request admitted via token fallback (5 GB into a 1 GB byte pool)")
+			t.Fatal("cold unknown-KV request admitted via token/resident-rate fallback")
 		}
-		// Control: 8k tokens = 0.8 GB fits the 1 GB byte pool.
-		if !pooledBudgetAdmits(cold, 8_000) {
-			t.Fatal("cold request rejected although 0.8 GB fits the 1 GB byte pool")
+		// Control: 2k tokens at the default rate remain below 1 GB.
+		if !pooledBudgetAdmits(cold, 2_000) {
+			t.Fatal("cold request rejected although its conservative byte charge fits the pool")
 		}
-		// Capacity feed mirrors the gate: 1 GB ÷ 100 kB/token = 10k tokens.
-		if rem := pooledRemainingTokens(pool, 0, 0, true, 0); rem != 10_000 {
-			t.Fatalf("cold pooledRemainingTokens = %d, want 10_000 (byte pool ÷ max rate)", rem)
+		wantRemaining := pool.totalBytes / kvCacheBytesPerToken
+		if rem := pooledRemainingTokens(pool, 0, 0, true, 0); rem != wantRemaining {
+			t.Fatalf("cold pooledRemainingTokens = %d, want %d (byte pool / default rate)", rem, wantRemaining)
 		}
 	})
 
-	// Single-KV byteMode box: a cold request priced at the sole resident rate is
-	// arithmetically identical to token accounting, so the boundary is unchanged.
-	t.Run("single_kv_cold_equals_token_boundary", func(t *testing.T) {
+	// A known resident model still uses its reported rate, so its established
+	// byte/token boundary is unchanged by the cold-model default.
+	t.Run("known_model_keeps_reported_rate_boundary", func(t *testing.T) {
 		pool := providerPooledTokenBudget([]protocol.BackendSlotCapacity{
 			{Model: "m", ActiveTokenBudgetMax: 10_000, KVBytesPerToken: 50_000},
 		})
-		cold := routingSnapshot{kvBytesPerToken: 0, pendingBytesKnown: true, pooledTokenBudget: pool}
-		if !pooledBudgetAdmits(cold, 10_000) {
-			t.Fatal("cold request at the exact 10k boundary rejected (single-KV byte pricing changed the boundary)")
+		known := routingSnapshot{kvBytesPerToken: 50_000, pendingBytesKnown: true, pooledTokenBudget: pool}
+		if !pooledBudgetAdmits(known, 10_000) {
+			t.Fatal("known request at the exact 10k boundary rejected")
 		}
-		if pooledBudgetAdmits(cold, 10_001) {
-			t.Fatal("cold request past the 10k boundary admitted (single-KV budget loosened)")
+		if pooledBudgetAdmits(known, 10_001) {
+			t.Fatal("known request past the 10k boundary admitted")
 		}
 	})
+}
+
+// TestPooledFirstColdRequestUsesConservativeDefault pins the unknown-model
+// boundary: resident slots only reveal THEIR KV rates, so the largest resident
+// rate is not a safe price for a first request to a cold model. A box with only
+// a cheap 10 kB/token resident model has a 1 GB pool; a 3k-token cold request
+// fits at that resident rate but exceeds the pool at the bounded conservative
+// default used for an unknown model.
+func TestPooledFirstColdRequestUsesConservativeDefault(t *testing.T) {
+	pool := providerPooledTokenBudget([]protocol.BackendSlotCapacity{
+		{Model: "resident-small-kv", ActiveTokenBudgetMax: 100_000, KVBytesPerToken: 10_000},
+	})
+	snap := routingSnapshot{
+		kvBytesPerToken:   0, // first request: cold model has no slot-reported rate
+		pendingBytesKnown: true,
+		pooledTokenBudget: pool,
+	}
+
+	if pooledBudgetAdmits(snap, 3_000) {
+		t.Fatal("first cold request priced at resident-only KV max instead of the conservative unknown-model default")
+	}
+	wantRemaining := pool.totalBytes / kvCacheBytesPerToken
+	if got := pooledRemainingTokens(pool, 0, 0, true, 0); got != wantRemaining {
+		t.Fatalf("cold pooled remaining = %d, want %d from conservative default rate", got, wantRemaining)
+	}
+}
+
+// TestPooledPendingColdRequestKeepsByteAccounting pins the second-request
+// boundary. Once an unknown cold request is pending, its missing resident slot
+// must be charged at the same conservative default rather than disabling byte
+// accounting for the entire provider. Otherwise a subsequent resident request
+// falls back to the much looser token pool and double-spends physical KV bytes.
+func TestPooledPendingColdRequestKeepsByteAccounting(t *testing.T) {
+	const residentRate = int64(10_000)
+	p := &Provider{
+		BackendCapacity: &protocol.BackendCapacity{Slots: []protocol.BackendSlotCapacity{
+			{Model: "resident-small-kv", ActiveTokenBudgetMax: 100_000, KVBytesPerToken: residentRate},
+		}},
+		pendingReqs: map[string]*PendingRequest{
+			"cold": {
+				RequestID:          "cold",
+				Model:              "cold-unknown-kv",
+				RequestedMaxTokens: 2_100,
+			},
+		},
+	}
+
+	var snap routingSnapshot
+	fillSnapshotPendingAndPool(&snap, p, "resident-small-kv")
+	snap.kvBytesPerToken = residentRate
+
+	wantPendingBytes := int64(2_100) * kvCacheBytesPerToken
+	if !snap.pendingBytesKnown {
+		t.Error("cold pending request disabled provider byte accounting")
+	}
+	if snap.pendingMaxBytesAllModels != wantPendingBytes {
+		t.Errorf("cold pending bytes = %d, want %d at conservative default rate", snap.pendingMaxBytesAllModels, wantPendingBytes)
+	}
+	if pooledBudgetAdmits(snap, 20_000) {
+		t.Error("subsequent resident request admitted via token fallback after cold pending request consumed byte headroom")
+	}
+	wantRemaining := (snap.pooledTokenBudget.totalBytes - wantPendingBytes) / residentRate
+	if got := pooledRemainingTokens(
+		snap.pooledTokenBudget,
+		snap.pendingMaxTokensAllModels,
+		snap.pendingMaxBytesAllModels,
+		snap.pendingBytesKnown,
+		snap.kvBytesPerToken,
+	); got != wantRemaining {
+		t.Errorf("resident pooled remaining = %d, want %d after default-priced cold pending request", got, wantRemaining)
+	}
+
+	overflowTokens := int64(math.MaxInt64/kvCacheBytesPerToken + 1)
+	if got := addPooledKVByteCharge(0, overflowTokens, resolvedPooledKVBytesPerToken(snap.pooledTokenBudget, 0)); got != math.MaxInt64 {
+		t.Errorf("overflowing cold pending charge = %d, want saturated MaxInt64", got)
+	}
 }
 
 // TestPooledRemainingTokensMatchesAdmits pins the equivalence the capacity feed
 // relies on: pooledBudgetAdmits(snap, n) admits IFF n <= pooledRemainingTokens(
 // pool, …, snap.kvBytesPerToken), across the byte path (known rate), the byte
-// COLD path (rate 0 → max resident rate substitution), token mode, and the
-// pending-unknown fall-through. Both must apply the SAME cold-rate substitution.
+// COLD path (rate 0 -> bounded default substitution), token mode, and the
+// pending-unknown fall-through. Both must apply the SAME rate resolver.
 func TestPooledRemainingTokensMatchesAdmits(t *testing.T) {
 	bytePool := providerPooledTokenBudget([]protocol.BackendSlotCapacity{
 		{Model: "big-kv", ActiveTokenBudgetMax: 10_000, KVBytesPerToken: 100_000},

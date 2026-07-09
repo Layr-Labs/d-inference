@@ -2838,6 +2838,10 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	p.BackendCapacity = msg.BackendCapacity
 	if p.BackendCapacity != nil {
 		chipFamily := p.Hardware.ChipFamily
+		// Solo samples are keyed by chip CLASS (family+tier, chipClassKey) so a
+		// fast tier (M4 Max) never lends its rate to a slow one (M4 Pro); the
+		// load-inclusive Record stays family-keyed (fleetMedianTPS semantics).
+		chipClass := chipClassKey(p.Hardware)
 		// Solo gate: a slot EWMA is additionally recorded as a SOLO sample only
 		// when the whole box is uncontended at heartbeat time (Σ running+waiting
 		// ≤ 1 across ALL slots — the one allowance is the sample-generating
@@ -2861,7 +2865,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 			if slot.ObservedDecodeTPS > 0 {
 				r.tpsRegistry.Record(slot.Model, chipFamily, slot.ObservedDecodeTPS)
 				if soloEligible && slot.NumRunning > 0 {
-					r.tpsRegistry.RecordSolo(slot.Model, chipFamily, slot.ObservedDecodeTPS)
+					r.tpsRegistry.RecordSolo(slot.Model, chipClass, slot.ObservedDecodeTPS)
 				}
 			}
 			// Observed prefill feeds the per-(model, chip) prefill-median ring
@@ -4750,10 +4754,12 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			}
 
 			// Per-model pooled remaining: byte-aware when the box is byte-
-			// reconstructable and this model's slot reports a KV rate, else token
-			// accounting — exactly pooledBudgetAdmits' branch. Cold/absent slots
-			// have no rate (map miss ⇒ 0), which lands on the token path just like
-			// the gate's cold-model path. Inert for single-KV/legacy boxes.
+			// reconstructable, else token accounting — exactly pooledBudgetAdmits'
+			// branch. Cold/absent slots have no rate (map miss ⇒ 0); on a byte-
+			// reconstructable pool they are priced at the box's max resident rate
+			// (the same cold-rate substitution the gate uses), so this feed stays
+			// equivalent to the gate on the cold path too. Inert for single-KV/
+			// legacy boxes.
 			pooledRemaining := pooledRemainingTokens(
 				poolSnap.pooledTokenBudget,
 				poolSnap.pendingMaxTokensAllModels,

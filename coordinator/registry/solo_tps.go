@@ -18,17 +18,32 @@ import (
 // The load-inclusive store (Record/Median, tps_registry.go) is untouched: its
 // consumers (fleetMedianTPS → TTFT estimation) want under-load samples.
 
+// chipClassKey keys the solo-sample store at a FINER grain than ChipFamily
+// alone: an M4 Max and an M4 Pro are the same family but 3–4× apart in decode
+// throughput, so pooling them by family lets a fast tier's rate raise a slow
+// tier's quality cap — the exact over-admission this cap exists to prevent.
+// The class is ChipFamily|ChipTier (e.g. "M4|Max"); the raw ChipName is the
+// fallback when the family is absent. Byte-for-byte the form #526's
+// prefillChipClass uses, so the solo and prefill rings key identically.
+func chipClassKey(hw protocol.Hardware) string {
+	if hw.ChipFamily == "" {
+		return hw.ChipName
+	}
+	return hw.ChipFamily + "|" + hw.ChipTier
+}
+
 // RecordSolo adds a solo (uncontended-box) decode TPS sample for the given
-// model and chip family. Callers must pre-gate on soloSampleEligible AND on
-// the slot having an actual running decode (NumRunning > 0, see the heartbeat
-// ingest in registry.go) so a purely-queued box's retained EWMA is not
-// sampled — this method itself only validates the sample value, mirroring
-// Record.
-func (r *TPSRegistry) RecordSolo(model, chipFamily string, tps float64) {
+// model and chip CLASS (chipClassKey — family+tier, not family alone). Callers
+// must pre-gate on soloSampleEligible AND on the slot having an actual running
+// decode (NumRunning > 0, see the heartbeat ingest in registry.go) so a
+// purely-queued box's retained EWMA is not sampled — this method itself only
+// validates the sample value, mirroring Record. The tpsKey.ChipFamily field
+// carries the chip-class string for solo entries.
+func (r *TPSRegistry) RecordSolo(model, chipClass string, tps float64) {
 	if tps <= 0 || model == "" {
 		return
 	}
-	key := tpsKey{Model: model, ChipFamily: chipFamily}
+	key := tpsKey{Model: model, ChipFamily: chipClass}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	samples := r.soloSamples[key]
@@ -40,11 +55,11 @@ func (r *TPSRegistry) RecordSolo(model, chipFamily string, tps float64) {
 }
 
 // SoloMedian returns the median solo decode TPS for the given model and chip
-// family plus the number of samples behind it. (0, 0) when no solo samples
-// exist. The count lets callers apply a min-sample trust floor before using
-// the median for admission decisions.
-func (r *TPSRegistry) SoloMedian(model, chipFamily string) (float64, int) {
-	key := tpsKey{Model: model, ChipFamily: chipFamily}
+// CLASS (chipClassKey) plus the number of samples behind it. (0, 0) when no
+// solo samples exist. The count lets callers apply a min-sample trust floor
+// before using the median for admission decisions.
+func (r *TPSRegistry) SoloMedian(model, chipClass string) (float64, int) {
+	key := tpsKey{Model: model, ChipFamily: chipClass}
 	r.mu.RLock()
 	samples := r.soloSamples[key]
 	sorted := make([]float64, len(samples))
@@ -53,22 +68,49 @@ func (r *TPSRegistry) SoloMedian(model, chipFamily string) (float64, int) {
 	return medianOfCopied(sorted), len(sorted)
 }
 
-// SoloMedianAllChips returns the model-wide solo median pooled across every
-// chip family that has at least one solo sample, plus the total sample count.
-// It is the conservative cross-chip transfer used when a specific (model,
-// chip) pair has too few samples: some real solo measurement of the model
-// beats a provider-level benchmark taken on a different model.
+// SoloMedianAllChips is the CONSERVATIVE cross-class transfer used when a
+// provider's own chip class has too few solo samples: it returns the MINIMUM
+// of the per-class medians across every chip class that has at least one solo
+// sample for the model, plus the TOTAL sample count across those classes.
+//
+// SAFETY INVARIANT: the resolver must never hand a slow box a rate faster than
+// its own class demonstrated. Pooling every sample into one median (the old
+// behavior) lets a fast, sample-heavy class dominate and return a rate above a
+// slow box's real capability — over-capping it into the very quality collapse
+// this cap prevents. Taking the min of per-class medians instead can never
+// exceed the slowest class's typical rate: worst case it UNDER-caps a fast box
+// (safe, quality-protective), never over-caps a slower one.
+//
+// The returned int is the total sample count across classes, so the resolver's
+// existing >= qualityCapSoloMinSamples trust floor is unchanged. The
+// tpsKey.ChipFamily field carries the chip-class string for solo entries, so
+// grouping by key.Model + key.ChipFamily groups by class.
 func (r *TPSRegistry) SoloMedianAllChips(model string) (float64, int) {
 	r.mu.RLock()
-	var pooled []float64
+	perClass := make(map[string][]float64)
 	for key, samples := range r.soloSamples {
-		if key.Model != model {
+		if key.Model != model || len(samples) == 0 {
 			continue
 		}
-		pooled = append(pooled, samples...)
+		// append copies the values, so perClass is safe to sort after RUnlock.
+		perClass[key.ChipFamily] = append(perClass[key.ChipFamily], samples...)
 	}
 	r.mu.RUnlock()
-	return medianOfCopied(pooled), len(pooled)
+
+	minMedian, total := 0.0, 0
+	have := false
+	for _, samples := range perClass {
+		// samples is a private copy; medianOfCopied sorts it in place.
+		m := medianOfCopied(samples)
+		total += len(samples)
+		if m <= 0 {
+			continue
+		}
+		if !have || m < minMedian {
+			minMedian, have = m, true
+		}
+	}
+	return minMedian, total
 }
 
 // medianOfCopied returns the median of samples, sorting in place (callers pass

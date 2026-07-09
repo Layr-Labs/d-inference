@@ -200,10 +200,12 @@ type soloModelTPS struct {
 // resolvedSoloModelTPSLocked resolves the static solo decode rate the quality
 // cap should use for (p, model). Fallback chain, most- to least-specific:
 //
-//  1. per-(model, chip) solo median — gated samples only (solo_tps.go) — once
-//     it has ≥ qualityCapSoloMinSamples samples;
-//  2. model-wide solo median pooled across chip families (conservative
-//     cross-chip transfer), same sample floor;
+//  1. per-(model, chip CLASS) solo median — gated samples only (solo_tps.go),
+//     keyed by chipClassKey (family+tier) so a fast tier never lends its rate
+//     to a slow one — once it has ≥ qualityCapSoloMinSamples samples;
+//  2. the MIN of the per-class solo medians across chip classes (conservative
+//     cross-class transfer, SoloMedianAllChips), same total-sample floor — can
+//     never exceed the slowest class's rate, so it never over-caps a slow box;
 //  3. the modelSoloTPSSeedEnv seed (cold-start answer — the TPS registry is
 //     in-memory and restart-wiped);
 //  4. the provider-level resolvedDecodeTPS(p) — exactly the pre-per-model
@@ -219,7 +221,7 @@ type soloModelTPS struct {
 // r.mu and p.mu.
 func (r *Registry) resolvedSoloModelTPSLocked(p *Provider, model string) soloModelTPS {
 	if qualityCapPerModelTPS {
-		if tps, n := r.tpsRegistry.SoloMedian(model, p.Hardware.ChipFamily); n >= qualityCapSoloMinSamples && tps > 0 {
+		if tps, n := r.tpsRegistry.SoloMedian(model, chipClassKey(p.Hardware)); n >= qualityCapSoloMinSamples && tps > 0 {
 			return soloModelTPS{tps: tps, perModel: true}
 		}
 		if tps, n := r.tpsRegistry.SoloMedianAllChips(model); n >= qualityCapSoloMinSamples && tps > 0 {

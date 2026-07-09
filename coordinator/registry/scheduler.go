@@ -1147,7 +1147,7 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 			snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
 			snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 			snap.queuedTokenBudget = slot.QueuedTokenBudget
-			snap.kvBytesPerToken = slot.KVBytesPerToken
+			snap.kvBytesPerToken = clampKVBytesPerToken(slot.KVBytesPerToken)
 			snap.stepsExecuted = slot.StepsExecuted
 			snap.admits = slot.Admits
 			snap.firstTokensEmitted = slot.FirstTokensEmitted
@@ -2152,7 +2152,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 				snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 				snap.queuedTokenBudget = slot.QueuedTokenBudget
 				snap.maxTokensPotential = slot.MaxTokensPotential
-				snap.kvBytesPerToken = slot.KVBytesPerToken
+				snap.kvBytesPerToken = clampKVBytesPerToken(slot.KVBytesPerToken)
 				snap.stepsExecuted = slot.StepsExecuted
 				snap.admits = slot.Admits
 				snap.firstTokensEmitted = slot.FirstTokensEmitted

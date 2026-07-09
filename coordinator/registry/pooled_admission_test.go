@@ -2,10 +2,54 @@ package registry
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
+
+// TestProviderPooledTokenBudgetClampsKVByteRate is the overflow regression: a
+// slot reporting an absurd (unbounded) KVBytesPerToken multiplied by a normal
+// token count wraps int64 to a NEGATIVE usedBytes/totalBytes, which breaks the
+// byte-pool admission (a negative total either rejects everything or, with a
+// negative left side, admits everything). The clamp caps the rate at
+// maxKVBytesPerToken so all products and sums stay positive and admission fails
+// closed. Fails without clampKVBytesPerToken in providerPooledTokenBudget.
+func TestProviderPooledTokenBudgetClampsKVByteRate(t *testing.T) {
+	const normalMax = 400_000
+	slots := []protocol.BackendSlotCapacity{
+		{Model: "a", ActiveTokenBudgetMax: normalMax, ActiveTokenBudgetUsed: 200_000, KVBytesPerToken: math.MaxInt64 / 2},
+	}
+	pool := providerPooledTokenBudget(slots)
+	if !pool.byteMode {
+		t.Fatal("byteMode = false with a (clamped) positive KV rate")
+	}
+	if pool.usedBytes < 0 || pool.committedBytes < 0 || pool.totalBytes < 0 {
+		t.Fatalf("byte pool overflowed to negative: used=%d committed=%d total=%d (KV rate not clamped)",
+			pool.usedBytes, pool.committedBytes, pool.totalBytes)
+	}
+	if pool.totalBytes < pool.usedBytes {
+		t.Fatalf("totalBytes %d < usedBytes %d (overflow)", pool.totalBytes, pool.usedBytes)
+	}
+	if got := pool.kvBytesPerToken["a"]; got != maxKVBytesPerToken {
+		t.Fatalf("stored KV rate = %d, want clamp %d (raw absurd rate not clamped)", got, maxKVBytesPerToken)
+	}
+	// Admission must fail-closed for a request that overflows the pool, not
+	// admit-everything off a wrapped negative total. Free headroom is
+	// (400k − 200k) = 200k tokens at the clamped rate.
+	snap := routingSnapshot{
+		activeTokenBudgetMax: normalMax,
+		kvBytesPerToken:      maxKVBytesPerToken,
+		pendingBytesKnown:    true,
+		pooledTokenBudget:    pool,
+	}
+	if pooledBudgetAdmits(snap, 10_000_000_000) {
+		t.Fatal("admitted a 10B-token request into a finite byte pool (overflow admitted-everything)")
+	}
+	if !pooledBudgetAdmits(snap, 100_000) {
+		t.Fatal("rejected a 100k-token request that fits the 200k-token byte headroom")
+	}
+}
 
 func TestProviderPooledTokenBudget(t *testing.T) {
 	cases := []struct {

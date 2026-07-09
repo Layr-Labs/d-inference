@@ -30,6 +30,30 @@ import "github.com/eigeninference/d-inference/coordinator/protocol"
 // against it — the byte form is what makes a small-KV model's burst visible
 // to a big-KV co-resident and vice versa.
 
+// maxKVBytesPerToken bounds a slot's reported per-token KV cost before it enters
+// byte-pool math. Heartbeat token counts are clamped to ~10B upstream, but
+// slot.KVBytesPerToken is UNBOUNDED — a garbage or malicious rate multiplied by
+// a large token count overflows int64 to a negative usedBytes/totalBytes, which
+// silently breaks admission (a negative pool total either rejects everything or,
+// with a negative left side, admits everything). 16 MiB/token is ~160× gemma's
+// real ~100 kB/token, so every legitimate rate passes untouched; the product
+// with the 10B-token clamp is 1.68e17, and the per-slot sums stay far below
+// int64max (9.2e18).
+const maxKVBytesPerToken = 1 << 24 // 16 MiB per token
+
+// clampKVBytesPerToken floors a per-token KV rate at 0 and caps it at
+// maxKVBytesPerToken so byte-pool products cannot overflow. A negative rate is
+// treated as absent (0), matching the pool's "no byte rate" handling.
+func clampKVBytesPerToken(r int64) int64 {
+	if r < 0 {
+		return 0
+	}
+	if r > maxKVBytesPerToken {
+		return maxKVBytesPerToken
+	}
+	return r
+}
+
 // pooledTokenBudget is a provider's reconstructed whole-box token budget,
 // carried in token units always and additionally in byte units when every
 // budget slot reports KVBytesPerToken (byteMode).
@@ -92,7 +116,10 @@ func providerPooledTokenBudget(slots []protocol.BackendSlotCapacity) pooledToken
 			c = 0
 		}
 		pool.committed += c
-		if slot.KVBytesPerToken <= 0 {
+		// Clamp the raw rate ONCE (overflow guard, see maxKVBytesPerToken) and
+		// use the clamped value for the map store and every byte product below.
+		rate := clampKVBytesPerToken(slot.KVBytesPerToken)
+		if rate <= 0 {
 			// A budget slot without a KV rate makes byte reconstruction
 			// impossible for the whole pool (legacy provider build).
 			pool.byteMode = false
@@ -101,12 +128,12 @@ func providerPooledTokenBudget(slots []protocol.BackendSlotCapacity) pooledToken
 		if pool.kvBytesPerToken == nil {
 			pool.kvBytesPerToken = make(map[string]int64, len(slots))
 		}
-		pool.kvBytesPerToken[slot.Model] = slot.KVBytesPerToken
-		pool.usedBytes += slotUsed * slot.KVBytesPerToken
-		pool.committedBytes += c * slot.KVBytesPerToken
+		pool.kvBytesPerToken[slot.Model] = rate
+		pool.usedBytes += slotUsed * rate
+		pool.committedBytes += c * rate
 		// Per-slot free headroom in bytes; all slots see the same shared byte
 		// pool, so the largest is the live shared headroom (counted once).
-		if free := (slot.ActiveTokenBudgetMax - slotUsed) * slot.KVBytesPerToken; free > sharedFreeBytes {
+		if free := (slot.ActiveTokenBudgetMax - slotUsed) * rate; free > sharedFreeBytes {
 			sharedFreeBytes = free
 		}
 	}

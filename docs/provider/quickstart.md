@@ -134,8 +134,8 @@ end = "08:00"
 - `backend.idle_timeout_mins` — minutes of inactivity before an idle model is
   unloaded (default 60; 0 disables eviction).
 - `backend.max_model_slots` — maximum resident models at once (default 3).
-- `backend.kv_quant` — opt-in beta: 8-bit KV cache for GPT-OSS / Gemma 4 (~1.9x
-  more concurrent context). Off by default. Manage it with `darkbloom beta` — see
+- `backend.kv_quant` — retained for forward compatibility, but v0.7.5 serves
+  fp16-only KV. Setting it logs a warning and does not enable quantization. See
   [Beta Features](beta-features.md).
 - `coordinator.private_only` — serve only your own self-route traffic; never
   join the public fleet.

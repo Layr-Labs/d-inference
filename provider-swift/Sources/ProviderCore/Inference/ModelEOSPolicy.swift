@@ -2,10 +2,8 @@
 //
 // Model-specific EOS-token policy — scheduler-free home (v0.7.5).
 //
-// Re-homed unchanged from `BatchScheduler.effectiveEOSTokenIds` so the v2
-// slot builder no longer needs a `BatchScheduler` just to resolve stop
-// tokens. The `BatchScheduler` static forwards here (one implementation,
-// two call surfaces) until the legacy scheduler is deleted.
+// Re-homed from the retired `BatchScheduler.effectiveEOSTokenIds` so EngineV2
+// slot construction has one scheduler-independent stop-token policy.
 
 import Foundation
 

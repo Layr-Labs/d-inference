@@ -8,8 +8,7 @@
 /// (and its BoringSSL/NIO/Jinja transitive closure) just for the
 /// `from(modelFolder:)` entrypoint we already have.
 ///
-/// Used by `ProviderLoop.loadModelContainer`, `BatchScheduler.loadModel`,
-/// and `LocalMLXModelLoader`.
+/// Used by ProviderLoop and LocalMLXModelLoader.
 
 import Foundation
 import MLXLMCommon

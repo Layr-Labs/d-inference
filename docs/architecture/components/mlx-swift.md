@@ -53,7 +53,10 @@ The `ProviderCore` target links:
 - `MLX`, `MLXNN` from `mlx-swift`
 - `MLXLLM`, `MLXVLM`, `MLXLMCommon`, `MLXLMServer` from `mlx-swift-lm`
 
-The provider's `BatchScheduler` and `MultiModelBatchSchedulerEngine` (`provider-swift/Sources/ProviderCore/Inference/`) translate coordinator requests into MLX-Swift-LM calls, manage model loading/unloading, and implement continuous batching with prefix caching.
+The provider's `MultiModelBatchSchedulerEngine` translates OpenAI requests and
+routes them to one `EngineV2Bridge` per resident model. `ProviderLoop` manages
+model loading and unloading, while `EngineV2Runtime` coordinates capacity and
+cancellation across the ContinuousBatchingV2 engines.
 
 ## Privacy-relevant boundaries
 

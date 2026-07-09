@@ -15,11 +15,10 @@ import MLXLMServer
 extension MultiModelBatchSchedulerEngine {
 
     /// Translate an upstream `OpenAIChatCompletionRequest` into the
-    /// internal `ChatCompletionRequest` that `BatchScheduler.submit`
-    /// expects.
+    /// internal `ChatCompletionRequest` submitted through EngineV2.
     ///
-    /// Multimodal content parts are collapsed to text (image URLs are
-    /// dropped) because the BatchScheduler is text-only.
+    /// This text translator collapses multimodal parts; production media
+    /// requests are intercepted and prepared before reaching it.
     ///
     /// KNOWN DEVIATION (P1 #3, narrowed): the upstream
     /// `OpenAIChatCompletionRequest` does not expose `seed` or `logit_bias`
@@ -30,8 +29,7 @@ extension MultiModelBatchSchedulerEngine {
     /// they are recovered the same way `logprobs`/`top_logprobs` are: decoded
     /// straight from the sealed body
     /// (`ProviderLoop.extractSamplingOverrides`) and overlaid here via the
-    /// `logitBias`/`seed` parameters (v2 engine path only; the legacy engine
-    /// honors neither knob and its submit call is unchanged). The standalone
+    /// `logitBias`/`seed` parameters. The standalone
     /// `--local` path still drops both — it decodes inside the upstream
     /// Hummingbird router with no provider seam — pending the upstream shape
     /// gaining the fields.

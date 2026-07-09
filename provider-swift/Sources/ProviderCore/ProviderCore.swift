@@ -116,11 +116,12 @@ public enum ProviderCore {
     //   * Media: image + video prefill through CBv2 multimodal
     //     (EngineV2VisionPrefill spans per image / per sampled video frame),
     //     media_kind-tagged telemetry.
-    //   * Prefix cache: RAM-only PrefixCacheV2 wired but DORMANT by default
-    //     (opt-in DARKBLOOM_PREFIX_CACHE=1; per-model funding gate; budget
-    //     carved out of the slot grant — T-041). The legacy on-disk tier is
-    //     deleted; its Secure-Enclave KEK derivation (KVCacheKEK) is
-    //     preserved for the encrypted SSD-offload successor.
+    //   * Prefix cache: encrypted SSD offload ships default-on with no serving
+    //     memory carve; the RAM PrefixCacheV2 tier remains experimental and
+    //     opt-in. Both are salt-scoped; RAM uses the per-model funding gate,
+    //     while SSD applies the adoption bound and effective-token floor to
+    //     each donation. DARKBLOOM_PREFIX_CACHE=0 is the master kill switch and
+    //     DARKBLOOM_PREFIX_CACHE_SSD=0 disables only SSD.
     //   * Liveness: wedge self-recovery rebuilds the engine over the
     //     retained container with the same grant+carve (drain → rebuild →
     //     swap; 120s cooldown), replacing the legacy self-restart.
@@ -128,7 +129,7 @@ public enum ProviderCore {
     //     slot factory; local chat body ceiling raised to 32 MiB.
     //   * Retired knobs WARN loudly: DARKBLOOM_ENGINE_V2(+_MODELS),
     //     DARKBLOOM_COMPILED_DECODE, B=1 fast-path + KV-quant + adaptive-
-    //     prefill + SSD-prefix envs; [backend] engine_v2 /
+    //     prefill envs; [backend] engine_v2 /
     //     continuous_batching / adaptive_prefill / legacy_compiled_decode
     //     parse-and-WARN as retired; kv_quant is REJECTED-with-WARN (a
     //     CBv2-native KV-quant fast-follow is planned).

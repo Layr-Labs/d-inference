@@ -176,12 +176,10 @@ extension ProviderLoop {
         let cacheScope = Self.extractCacheScope(from: decryptedData)
         // OpenAI `logprobs` / `top_logprobs` (also absent from the upstream
         // request shape). Non-nil only when the request asked for logprobs;
-        // honored on the v2 engine path (the legacy engine never emitted
-        // logprobs — see EngineV2Logprobs.swift).
+        // honored by the EngineV2 path (see EngineV2Logprobs.swift).
         let logprobsSpec = Self.extractLogprobsSpec(from: decryptedData)
         // OpenAI `logit_bias` / `seed` (also absent from the upstream request
-        // shape). Overlaid onto the v2 engine translation; the legacy path
-        // never honored either knob and is untouched.
+        // shape). Overlaid onto the EngineV2 translation.
         let samplingOverrides = Self.extractSamplingOverrides(from: decryptedData)
 
         // 3. Fast pre-accept admission check. The coordinator accepts fast and
@@ -281,7 +279,7 @@ extension ProviderLoop {
         let slotContainer = slot.container
         let slotIsVLM = slot.isVLM
         // ONE ENGINE (v0.7.5): the slot's v2 bridge serves every request;
-        // the scheduler-free vision gate covers the legacy VLM media path's
+        // the scheduler-free vision gate covers media decode and generation
         // memory reservations.
         let slotEngineV2 = slot.engineV2
         let slotVisionGate = slot.visionGate(kvBudget: kvBudget)
@@ -294,8 +292,8 @@ extension ProviderLoop {
 
         // 8. Spawn inference task. The streaming pipeline now flows through
         // the upstream `MLXLMServer` library:
-        //   - `MultiModelBatchSchedulerEngine` adapts our `BatchScheduler` to
-        //     the `MLXServerEngine` contract.
+        //   - `MultiModelBatchSchedulerEngine` adapts the selected slot's
+        //     EngineV2 bridge to the `MLXServerEngine` contract.
         //   - `MLXOpenAIService.streamChatCompletionFrames` formats SSE
         //     frames (matching the wire shape the coordinator already parses).
         // We encrypt each frame and forward it via `inferenceChunk` exactly

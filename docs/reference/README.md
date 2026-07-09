@@ -21,8 +21,8 @@ Dry reference material for Darkbloom's public interfaces, wire protocols, schema
 
 | Doc | Content |
 |---|---|
-| [ssd-kv-cache.md](ssd-kv-cache.md) | SSD cache wire format and configuration |
-| [ssd-kv-cache-design.md](ssd-kv-cache-design.md) | Design details for the checkpoint tier |
-| [ssd-kv-cache-hybrid-models.md](ssd-kv-cache-hybrid-models.md) | Exact-checkpoint tier for hybrid sliding-window models |
+| [ssd-kv-cache.md](ssd-kv-cache.md) | v0.7.5 EngineV2 SSD cache format and configuration |
+| [ssd-kv-cache-design.md](ssd-kv-cache-design.md) | Archived pre-v0.7.5 design |
+| [ssd-kv-cache-hybrid-models.md](ssd-kv-cache-hybrid-models.md) | EngineV2 hybrid-model adoption and recompute rules |
 
 These documents are intended to be consulted, not read front-to-back. For narrative explanations, see the [architecture docs](../architecture/README.md).

@@ -25,15 +25,10 @@ extension ProviderLoop {
             stats.incrementCancellationsReceived()
         }
 
-        // P1 #1 (CRITICAL): do NOT call `scheduler.cancel(requestId:)`
-        // directly here. After the MLXLMServer adoption,
-        // `MultiModelBatchSchedulerEngine.streamChatCompletion` mints
-        // a fresh internal request id when it calls
-        // `BatchScheduler.submit(requestId:)`, so the coordinator-side
-        // `requestId` we hold here does NOT match the id the scheduler
-        // is tracking. A direct `scheduler.cancel(<coordinator id>)`
-        // would be a no-op against an unknown id and let generation run
-        // until on-termination tearing happens organically.
+        // MLXLMServer mints an internal request id before submitting to the
+        // EngineV2 bridge, so the coordinator id held here may not match the
+        // id the engine tracks. Cancelling only by coordinator id can therefore
+        // be a no-op.
         //
         // Instead, rely on Task cancellation propagation:
         //
@@ -46,8 +41,7 @@ extension ProviderLoop {
         //        exits, the engine stream is deallocated, its
         //        `onTermination` fires
         //     -> MultiModelBatchSchedulerEngine.streamChatCompletion's
-        //        `onTermination` calls
-        //        `scheduler.cancel(<internal id>)` with the correct id.
+        //        `onTermination` cancels the bridge's internal id.
         //
         // The cancellation-registry token below remains so the explicit
         // `if token.isCancelled` check inside the streaming loop also
@@ -55,12 +49,11 @@ extension ProviderLoop {
         // reach the same teardown).
         await cancellationRegistry.cancel(requestId: requestId)
 
-        // ContinuousBatchingV2 (flag-gated, additive): forward the
-        // coordinator request-id to any active v2 bridge so
+        // Forward the coordinator request-id to the owning EngineV2 bridge so
         // `CBv2Engine.cancel` drops the row promptly (the in-flight step
         // completes, then the engine delivers `.finished(.cancelled)` and
-        // the bridge tears down). Guarded on the slot set so the flag-off
-        // steady state takes ZERO extra actor hops here. Defense in depth:
+        // the bridge tears down). The zero-slot guard avoids an actor hop.
+        // Defense in depth:
         // the primary v2 teardown is the same Task-cancellation propagation
         // documented above (the bridge stream's onTermination cancels the
         // engine-minted id); this fan-out additionally catches any submit

@@ -94,7 +94,7 @@ model.
 | Model migration | [`operations/model-migration.md`](./operations/model-migration.md) |
 | State export (`DAR-70`) | [`operations/state-export.md`](./operations/state-export.md) |
 | EigenCloud → GCP migration | [`operations/eigencloud-to-gcp-migration.md`](./operations/eigencloud-to-gcp-migration.md) |
-| SSD KV-cache stress soak | [`operations/m5-stress-runbook.md`](./operations/m5-stress-runbook.md) |
+| Archived pre-v0.7.5 SSD soak | [`operations/m5-stress-runbook.md`](./operations/m5-stress-runbook.md) |
 
 ### Reference
 

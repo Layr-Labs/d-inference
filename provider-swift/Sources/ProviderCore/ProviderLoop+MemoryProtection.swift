@@ -23,8 +23,8 @@ extension ProviderLoop {
     internal func startMemoryProtection() {
         // Pin the MLX memory ceiling BEFORE any model weights are loaded (the
         // first big allocation happens in ensureModelLoaded → loadModelContainer,
-        // which runs after this). Idempotent; the BatchScheduler.loadModel call
-        // is a backstop for the standalone path. See MLXMemoryGuard.
+        // which runs after this). Idempotent; StandaloneServer invokes the same
+        // guard directly before its first load. See MLXMemoryGuard.
         MLXMemoryGuard.configureOnce(log: { [logger] limits in
             logger.info(
                 "MLX memory ceiling: limit=\(limits.memoryLimitBytes / (1024 * 1024 * 1024))GB cache=\(limits.cacheLimitBytes / (1024 * 1024 * 1024))GB")

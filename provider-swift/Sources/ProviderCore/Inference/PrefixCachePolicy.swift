@@ -105,16 +105,17 @@ enum PrefixCachePolicy {
 
     // MARK: - Tier selection (v0.7.5 SSD offload)
 
-    /// SSD-tier kill switch. The encrypted SSD offload tier is ON BY
-    /// DEFAULT for funded models (it caches without occupying serving
-    /// RAM); an explicit `DARKBLOOM_PREFIX_CACHE_SSD=0` (or any other
+    /// SSD-tier kill switch. The encrypted SSD offload tier is ON BY DEFAULT
+    /// for CBv2-supported models when KEK construction succeeds; it caches
+    /// without occupying serving RAM and benefit-gates each donation. An
+    /// explicit `DARKBLOOM_PREFIX_CACHE_SSD=0` (or any other
     /// non-affirmative set value — fail-safe: a typo only ever disables)
     /// kills just the SSD tier. `DARKBLOOM_PREFIX_CACHE=0` (the existing
     /// master switch, any non-affirmative set value) kills EVERYTHING.
     static let ssdEnvironmentFlag = "DARKBLOOM_PREFIX_CACHE_SSD"
 
-    /// Which prefix-cache tier a v2 slot runs (per-model funding gate is
-    /// applied separately, after this).
+    /// Which prefix-cache tier a v2 slot runs. The per-model funding gate is
+    /// applied only to RAM after this selection.
     enum Mode: Equatable {
         /// No prefix cache anywhere.
         case off
@@ -122,7 +123,7 @@ enum PrefixCachePolicy {
         /// v0.7.5 dormant-default semantics (`DARKBLOOM_PREFIX_CACHE=1`
         /// with the SSD tier killed).
         case ram
-        /// Encrypted SSD offload (default for funded models).
+        /// Encrypted SSD offload (default for supported models).
         /// `warnBothTiers`: the box ALSO opted into the RAM tier — SSD
         /// wins for the slot (no tier composition in v1), WARN logged.
         case ssd(warnBothTiers: Bool)
@@ -170,8 +171,7 @@ enum PrefixCachePolicy {
         return resolveMemoryBudget(envGB: envGB, physicalMemory: physicalMemory)
     }
 
-    /// Pure memory-budget policy (moved verbatim from the legacy
-    /// `BatchScheduler.resolveMemoryBudget`, which now delegates here). A
+    /// Pure memory-budget policy retained from the legacy scheduler. A
     /// valid positive env override wins; a non-finite or out-of-Int-range
     /// value is REJECTED back to the physicalMemory/8 default rather than
     /// crashing (Int(Double) traps on inf/NaN/overflow).
@@ -189,8 +189,7 @@ enum PrefixCachePolicy {
 
     /// On-disk budget env override (GB) — the existing operator knob,
     /// now governing the BOX-WIDE SSD-tier budget (adapted from the
-    /// legacy `BatchScheduler+PrefixCacheSizing` resolver, which dies
-    /// with the legacy engine).
+    /// retired `BatchScheduler+PrefixCacheSizing` resolver).
     static let diskBudgetEnvironmentFlag = "DARKBLOOM_PREFIX_CACHE_DISK_GB"
 
     /// Box-wide SSD default: 20 GiB across ALL models (Gaj, 2026-07-07),
@@ -237,8 +236,8 @@ enum PrefixCachePolicy {
 
     static let defaultStatsIntervalSecs = 120
 
-    /// Pure stats-interval policy (legacy `BatchScheduler.resolveStatsInterval`
-    /// semantics, now shared). Unset / malformed / negative ⇒ default;
+    /// Pure stats-interval policy with the retired scheduler's wire-compatible
+    /// semantics. Unset / malformed / negative ⇒ default;
     /// `0` ⇒ disabled; a positive value sets the cadence in seconds.
     static func statsIntervalSecs(
         environment: [String: String] = ProcessInfo.processInfo.environment

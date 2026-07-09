@@ -8,8 +8,8 @@
 ///
 /// Now `run()` calls `runStartupPreloadGate()` BEFORE the coordinator client
 /// is created: the previously-served (or operator-configured) model set is
-/// loaded via the normal `ensureModelLoaded` path (weights + legacy scheduler
-/// + v2 bridge/warmup when flagged), optionally followed by a 1-token greedy
+/// loaded via the normal `ensureModelLoaded` path (weights + EngineV2 bridge),
+/// optionally followed by a 1-token greedy
 /// decode through the real serving path so Metal JIT, compiled buckets, and
 /// the chat-template render are warm before the first routed request.
 ///
@@ -281,8 +281,7 @@ extension ProviderLoop {
     // MARK: - Self-test decode (the serving path)
 
     /// One-token greedy decode through the SAME path a routed request takes:
-    /// `MultiModelBatchSchedulerEngine` over the loaded slot (v2 bridge when
-    /// the slot carries one, else the legacy scheduler) via
+    /// `MultiModelBatchSchedulerEngine` over the loaded slot's EngineV2 bridge via
     /// `MLXOpenAIService.streamChatCompletionFrames`. Forces end-to-end
     /// warmth — Metal JIT, compiled decode buckets, chat-template render —
     /// with a tiny prompt. Holds a local reservation so eviction can't pull

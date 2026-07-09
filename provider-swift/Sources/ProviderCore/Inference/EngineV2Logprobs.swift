@@ -14,7 +14,7 @@
 // The upstream SSE encoder (`MLXOpenAIService.streamChatCompletionFrames` /
 // `OpenAIChatCompletionChunk`) has no logprobs field, and the provider's
 // `GenerationEvent` deliberately stays `.chunk/.info/.error` (extending it
-// would break the "flag off ⇒ byte-identical" legacy invariant). So the
+// would broaden the shared event contract). So the
 // entries travel OUT-OF-BAND: the bridge pump converts each delta's
 // logprobs (`EngineV2Translation.sseTokenLogprobs`) and appends them to a
 // per-request `EngineV2LogprobsChannel`; the coordinator inference handler
@@ -26,10 +26,10 @@
 // Scope: the coordinator serving path only. The standalone `--local` HTTP
 // path serves frames inside the upstream Hummingbird router (no provider
 // seam after SSE encoding), so it does not emit logprobs — same visible
-// behavior as the legacy engine there.
+// behavior remains no logprobs there.
 //
-// KNOWN DEVIATIONS from OpenAI semantics (acceptable for the flag-gated
-// rollout): entries are emitted for EVERY sampled token, so when a
+// KNOWN DEVIATIONS from OpenAI semantics: entries are emitted for EVERY
+// sampled token, so when a
 // reasoning parser or tool handler diverts a token's text away from
 // `delta.content`, that token's entry still attaches to the next visible
 // content chunk (OpenAI omits reasoning/tool tokens from

@@ -305,8 +305,9 @@ trust_boundaries:
       launches load the existing key by access group and label query. The private key
       never leaves the SE silicon. Two operations are performed with it: (1) ECDSA
       signing of attestation blobs, and (2) ECIES unwrap/decryption — when the
-      encrypted SSD KV cache is enabled (DARKBLOOM_PREFIX_CACHE, default ON;
-      opt out with =0), the
+      default EngineV2 SSD cache is active (unless
+      DARKBLOOM_PREFIX_CACHE_SSD=0 or the master
+      DARKBLOOM_PREFIX_CACHE=0 kill switch is set), the
       same key decrypts the wrapped per-provider KEK that protects on-disk KV
       (PersistentEnclaveKey+ECIES.swift, SecureEnclaveKeyWrappingService.swift). This
       grants entitled same-team binaries a decryption capability on this key, not only
@@ -553,11 +554,12 @@ trust_boundaries:
       the process boundary, Hardened Runtime, and memory wiping. The inference engine
       is the innermost trust boundary — a failure here directly exposes consumer data.
     how_it_works: >
-      The BatchScheduler actor (BatchScheduler.swift) manages concurrent inference with
-      a configurable maxConcurrentRequests (default 4). All concurrent requests share
-      a single BatchGenerator for continuous batching. Requests waiting more than 120
-      seconds in the pending queue are evicted with an error. The scheduler tracks active
-      requests by UID in an actor-protected dictionary.
+      ProviderLoop and StandaloneServer own one EngineV2Bridge per resident model.
+      Each bridge wraps mlx-swift-lm ContinuousBatchingV2 with a configurable
+      running-row cap (default 4, clamped to 1–8) and a bounded waiting queue
+      (default 64). EngineV2Runtime is the
+      process-wide registry used for aggregate capacity and cancellation. Every v0.7.5
+      model slot uses this path; there is no legacy inference fallback.
 
       Model weights are loaded from the HuggingFace cache directory
       (~/.cache/huggingface) via ModelScanner.resolveLocalPath(). Weight integrity is
@@ -574,28 +576,20 @@ trust_boundaries:
       response and stops generation. An active GPU forward pass is not interrupted —
       cancellation is checked only at the Swift layer between MLX calls.
 
-      Response encryption uses the consumer's ephemeral X25519 public key (from the
-      inference request) via NaCl crypto_box (XSalsa20-Poly1305). If encryption throws
-      an exception the catch block logs a warning and encryptedPayload remains nil. The
-      chunk message is then sent with plaintext data in the data field and nil
-      encryptedData (ProviderLoop.swift:436–451). The coordinator currently rejects
-      plaintext chunks and marks the provider untrusted, but this is a coordinator-side
-      defence, not a provider-side fail-closed.
+      Response encryption uses the consumer's ephemeral X25519 public key via NaCl
+      crypto_box (XSalsa20-Poly1305). Shared-key precomputation or per-chunk encryption
+      failure sends inference_error and aborts the stream; plaintext response chunks are
+      never emitted. The coordinator independently rejects plaintext chunks.
 
-      Idle timeout is managed by IdleTimeoutPolicy: shouldUnload() requires the model
-      to be loaded, no in-flight requests, and elapsed time >= timeout. The monitor
-      polls every 60 seconds (ProviderLoop.swift:622). On unload, model, tokenizer,
-      and generator references are set to nil (BatchScheduler.swift:366–369) and Swift
-      ARC releases the objects; MLX GPU memory reclamation is implicit and non-deterministic.
+      Idle timeout requires a resident model, no in-flight requests, and elapsed time
+      at or above the configured timeout. On unload, ProviderLoop unregisters and
+      gracefully shuts down the model's EngineV2Bridge, removes the ModelSlot, and
+      clears MLX's cache before re-slicing the surviving engine grants.
 
       GPU memory metrics (MLX.GPU.activeMemory, peakMemory, cacheMemory) are tracked
       and reported but not explicitly zeroed between requests. There is no Metal-level
       memset of GPU buffers between inference sessions.
     current_limitations:
-      - "Response encryption failure falls back to plaintext SSE chunks rather than
-        terminating the request with an error (ProviderLoop.swift:436–451, SEC-016).
-        Provider-side fix requires sending inference_error instead of populating the
-        plaintext data field."
       - "GPU-side MLX buffers (Metal allocations for activations, KV-cache, logits) are
         not explicitly zeroed between requests. Residual inference data from one consumer
         may be readable by a subsequent consumer's batch if MLX reuses allocations."
@@ -922,23 +916,22 @@ threats:
   - id: T-008
     trust_boundary: TB-002
     stride: Information_Disclosure
-    title: Provider sends plaintext SSE chunks on encryption failure
+    title: Regression could expose plaintext SSE chunks on encryption failure
     description: >
-      If response encryption fails mid-stream, the Swift provider falls back to
-      sending plaintext data in the SSE chunk rather than failing the request.
-      The coordinator currently rejects plaintext chunks but this is a provider-side
-      regression risk.
+      The provider must fail closed if shared-key setup or response encryption fails.
+      Current Swift code sends inference_error and aborts without emitting plaintext;
+      the coordinator also rejects plaintext chunks as an independent backstop.
     adversaries: [ADV-001]
     affected_assets: [A-001]
     affected_files:
-      - provider-swift/Sources/ProviderCore/ProviderLoop.swift
+      - provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift
       - coordinator/api/provider.go
     mitigations:
       - description: Coordinator rejects plaintext inference chunks and marks provider untrusted.
         status: implemented
-      - description: Provider should fail closed (send inference_error) rather than falling back to plaintext.
-        status: open
-    open_findings: [SEC-016]
+      - description: Provider fails closed with inference_error on key setup or chunk-encryption failure.
+        status: implemented
+    open_findings: []
     severity: medium
     detection_hint: >
       Any change to the streaming response path in ProviderLoop.swift, encryption
@@ -982,7 +975,7 @@ threats:
       which created a cancellation token but never wired it into the in-process
       task. The Swift provider wires InferenceCancellation into the generation
       loop; the residual "cannot interrupt an active GPU forward pass"
-      limitation is tracked under T-008.
+      limitation is documented in the TB-007 current limitations.
     adversaries: [ADV-002]
     affected_assets: [A-009]
     affected_files:
@@ -1461,8 +1454,9 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-001]
     affected_files:
-      - provider-swift/Sources/ProviderCore/Inference/BatchScheduler.swift
-      - provider-swift/Sources/ProviderCore/Inference/LocalMLXModelFoundation.swift
+      - provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift
+      - provider-swift/Sources/ProviderCore/Inference/EngineV2Runtime.swift
+      - libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVBackend.swift
     mitigations:
       - description: CPU-side inference buffers are zeroed after each request.
         status: implemented
@@ -1503,7 +1497,7 @@ threats:
   - id: T-041
     trust_boundary: TB-007
     stride: Information_Disclosure
-    title: Cross-tenant prefix-cache sharing + TTFT timing oracle (v0.7.5 ships the encrypted SSD offload tier — HMAC-keyed at-rest artifacts, default-on for funded models)
+    title: Cross-tenant prefix-cache sharing + TTFT timing oracle (v0.7.5 ships the encrypted SSD offload tier — HMAC-keyed at-rest artifacts, default-on for CBv2-supported models with per-donation gating)
     description: >
       The encrypted prefix KV cache (DARKBLOOM_PREFIX_CACHE) is shared across all
       consumers on a provider — the provider cannot see tenant identity, so a KV
@@ -1523,15 +1517,11 @@ threats:
       As of 2026-06, the cache is ON BY DEFAULT (operator decision); it was
       previously opt-in. Default-on makes this channel the baseline exposure for
       every provider unless explicitly disabled.
-      As of v0.7.5 the serving engine is CBv2 and the prefix cache on that path
-      is the engine's PrefixCacheV2 (mlx-swift-lm ContinuousBatchingV2) — RAM-ONLY,
-      no on-disk persistence of KV, hashes, or metadata. Leak #2 (plaintext
-      on-disk tokenPrefixHash / GCM-AAD metadata) therefore does not exist on
-      the v2 path: no disk artifact is ever written, so there is nothing for a
-      disk observer to test a guessed prefix against (the legacy engine and
-      its on-disk tier were DELETED in v0.7.5 — the on-disk description above
-      is historical, retained because the successor SSD tier reintroduces the
-      at-rest artifact class and must be reviewed against it).
+      As of v0.7.5 the serving engine is CBv2 and the legacy engine/on-disk tier
+      are deleted. The default successor SSD tier does write encrypted DBK2
+      blocks, but closes leak #2 with KEK-derived HMAC lookup tags: raw prefix
+      hashes and token IDs never touch disk. The plaintext tokenPrefixHash
+      description above is therefore historical and does not describe KVCacheSSD.
       Leak #1 (the cross-tenant TTFT timing oracle) is unchanged in kind on v2
       — an in-process co-tenant can still distinguish hit from miss by
       first-token latency — and remains the SEC-035 accepted risk. New on the
@@ -1555,8 +1545,10 @@ threats:
       (same HMAC names, same 15-min TTL, same crypto), merely extended to
       gemma's long-context traffic. The per-model funding gate
       (DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS) now governs ONLY
-      the opt-in RAM tier; a model is never SSD-cached only when its
-      adoption bound is unknown/saturated. This review is the mandated
+      the opt-in RAM tier. SSD construction can also be disabled by either
+      kill switch or an unavailable KEK; when active, individual donations
+      can still be declined by the adoption/benefit, staging, endurance, or
+      disk guards. This review is the mandated
       sign-off for the tier's reintroduction of an at-rest artifact (the
       leak #2 class). Posture of the SSD tier
       (provider-swift/Sources/ProviderCore/KVCacheSSD/):
@@ -1583,9 +1575,11 @@ threats:
             folded into both the engine chain hash AND (length-prefixed)
             the HMAC tag input, so entries donated under different scopes
             can never resolve — or even name-collide with — each other.
-        (e) NO memory carve: the engine keeps its full KV grant; the
-            tier's only RAM claims are per-request staging reservations in
-            the shared GlobalKVCacheBudget (refused ⇒ silent recompute).
+        (e) NO persistent KV memory carve: the engine keeps its full KV grant.
+            Transient RAM includes read-through staging (one shared reservation
+            per staged entry; requests attach) and bounded host Data in the
+            write-behind donation pipeline. Refusal/drop preserves live serving
+            and falls back to recompute.
       Residual at-rest metadata, accepted: file sizes (uniform block
       shape), file count, mtimes/createdAt (activity timing), and the
       cached-model identity (modelKey directory — already public via
@@ -1659,16 +1653,19 @@ threats:
         status: implemented
       - description: >
           SSD tier at-rest window bound: 15-minute sliding TTL (env can only
-          shorten), 20 GiB box-wide LRU disk budget, weightHash + layoutEpoch
+          shorten), 20 GiB box-wide LRU disk budget, verified weightHash in
+          coordinator mode (model-ID fallback in standalone) + layoutEpoch
           fail-closed bindings, and KEK-wipe purge (files become unreadable AND
           unfindable — K_lookup derives from the KEK).
         status: implemented
       - description: >
-          SSD tier NO-memory-carve posture: the engine keeps its full slot KV
-          grant (requestedBudgetBytes = 0 in SSD mode; asserted in tests);
-          staging RAM is per-request, reserved in GlobalKVCacheBudget before
-          any read, and released on every terminal path (engine endAdoption +
-          bridge backstop) — live serving always wins.
+          SSD tier NO-persistent-memory-carve posture: the engine keeps its full
+          slot KV grant (requestedBudgetBytes = 0 in SSD mode; asserted in
+          tests). Transient RAM includes read-through staging (one shared
+          GlobalKVCacheBudget reservation per staged entry, with requests
+          attaching) and bounded host Data in the write-behind donation
+          pipeline. Refusal/drop preserves live serving and falls back to
+          recompute.
         status: implemented
       - description: >
           ACCEPTED RISK (SEC-035): accepts the cross-tenant timing/sharing channel
@@ -1700,9 +1697,9 @@ threats:
           IMPLEMENTED for the v2 SSD tier (v0.7.5): file names, index keys, and
           metadata carry only HMAC-SHA256 tags under K_lookup =
           HKDF(SE-rooted KEK, "dbkv2-lookup-v1"), with the request salt
-          length-prefix-folded into the tag input (SSDLookupKeys). The legacy
-          tier's plaintext tokenPrefixHash remains as-was until the legacy
-          engine's deletion pass removes it.
+          length-prefix-folded into the tag input (SSDLookupKeys). The v0.7.5
+          startup sweep deletes the retired tier's old files, and the new tier
+          never reads them.
         status: implemented
     open_findings: [SEC-035]
     severity: medium
@@ -1724,10 +1721,8 @@ threats:
       staging-reservation release paths
       (SSDPrefixCache.endAdoption/completeStaging, EngineV2Bridge backstops).
       Also still: the cacheSalt scoping plumbing (cacheScope →
-      CBv2Request.cacheSalt), EngineV2Factory.makeProductionEngine
-      (prefixCache/enablePrefixCache), and — legacy path, until deletion —
-      BatchScheduler.makePrefixCacheBackingIfEnabled / the legacy plaintext
-      metadata (tokenPrefixHash). Raising the TTL past 15 minutes or widening
+      CBv2Request.cacheSalt) and EngineV2Factory.makeProductionEngine
+      (prefixCache/enablePrefixCache). Raising the TTL past 15 minutes or widening
       the default-on scope needs a fresh SEC-035 sign-off.
 
   # ── TB-008: Coordinator → Payments ───────────────────────────

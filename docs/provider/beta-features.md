@@ -41,12 +41,12 @@ You can also see which beta features are active in `darkbloom status` (the
 
 ## Available features
 
-### `kv-quant` — KV-cache quantization
+### `kv-quant` — reserved KV-cache quantization toggle
 
-Stores attention keys/values in 8-bit for the validated model families
-(**GPT-OSS** and **Gemma 4**), roughly doubling the number of tokens a provider
-can admit concurrently (~1.9x more KV capacity). Other model families are
-unaffected and continue to serve fp16.
+v0.7.5 serves fp16-only KV through ContinuousBatchingV2. The configuration
+field remains so operators can express intent for a future CBv2-native
+implementation, but enabling it now logs a startup/per-load warning and does
+not change cache precision or capacity.
 
 ```bash
 darkbloom beta enable kv-quant
@@ -60,17 +60,16 @@ Equivalent TOML:
 kv_quant = true
 ```
 
-After restarting, confirm quantization actually engaged for a served model with:
+After restarting, the logs state that quantization is unavailable:
 
 ```bash
-darkbloom logs        # look for the `kv-quant` logger
+darkbloom logs
 ```
 
 Notes and caveats:
 
-- Only GPT-OSS and Gemma 4 are quantized; the provider falls back to fp16 for any
-  other family, so enabling it is safe across a mixed catalog.
+- No v0.7.5 model family is quantized; all EngineV2 KV caches remain fp16.
 - The setting is read at backend start, so a restart is required after toggling.
-- Default is `false` (fp16). The field is defined in
-  `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` and consumed
-  by the scheduler via `resolveKVQuantScheme(...)`.
+- Default is `false`. The field is retained in
+  `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` for a
+  future EngineV2 implementation.

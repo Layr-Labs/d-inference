@@ -1,110 +1,103 @@
 # SSD KV Cache Reference
 
-The Swift provider caches prefill KV in GPU memory and on encrypted SSD so
-later requests with a matching prefix skip the prefill pass.
+This is the as-built v0.7.5 reference for the ContinuousBatchingV2 encrypted
+SSD prefix cache. The pre-v0.7.5 `BatchScheduler`, `PrefixCacheManager`, and
+`EncryptedPrefixCachePersistence` implementations are retired.
 
-## Status
+## Status and modes
 
-On by default. Opt out with `DARKBLOOM_PREFIX_CACHE=0`. Requires a Secure
-Enclave-wrapped KEK; if the SE/entitlement is missing the cache stays off.
+The encrypted SSD tier is selected by default for CBv2-supported models. It
+keeps the engine's full live-KV memory grant and stores donated prefix blocks
+under `~/Library/Caches/darkbloom/kv2/`.
 
-## Tiers
-
-| Tier | Models | Implementation |
+| Mode | Selection | Memory behavior |
 |---|---|---|
-| Engine block cache | Pure-attention (`KVCacheSimple`-only) | `MLXLMCommon.PrefixCache` + `EncryptedPrefixCachePersistence` |
-| Exact-checkpoint cache | Hybrid sliding-window (Gemma-4, GPT-OSS) | `PrefixCacheManager` + `PrefixCacheIndex` + `PrefixCacheRAM` |
+| Encrypted SSD | Default, unless a kill switch disables it | No persistent RAM carve; read staging is reserved per staged entry; bounded host buffers back the write-behind queue |
+| Experimental RAM | `DARKBLOOM_PREFIX_CACHE_SSD=0` and `DARKBLOOM_PREFIX_CACHE=1` | Carves a bounded `PrefixCacheV2` budget from the slot grant |
+| Off | `DARKBLOOM_PREFIX_CACHE=0`, or SSD disabled without RAM opt-in | Entire slot grant remains available for live KV |
 
-Models with `MambaCache`/recurrent layers are excluded.
+The SSD tier requires the Secure-Enclave-rooted KEK. If key creation is not
+available, it fails closed to uncached serving. The ephemeral KEK escape hatch
+is for unsigned tests only and does not preserve cache data across restarts.
+
+## Request flow
+
+1. `EngineV2` hashes 256-token prefix blocks with the model and request cache
+   scope.
+2. `SSDPrefixCache` probes its in-memory HMAC-tag index before submission.
+3. On a hit, it reserves staging bytes in `GlobalKVCacheBudget`, reads and
+   authenticates a contiguous block run, and seeds the engine's staging map.
+4. ContinuousBatchingV2 adopts only the reusable prefix and recomputes the
+   model-specific sliding-window bound.
+5. Completed requests donate eligible block snapshots to a bounded write-behind
+   queue. Admission, write-rate, low-disk, TTL, and box-wide LRU guards apply.
+
+Pure-attention and supported hybrid sliding-window models share this layer-aware
+CBv2 block path. Hybrid reuse is useful only after the engine's recompute bound;
+the SSD tier therefore persists a donation only when it also clears the
+configured effective-token floor. See
+[`ssd-kv-cache-hybrid-models.md`](./ssd-kv-cache-hybrid-models.md).
 
 ## Environment variables
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DARKBLOOM_PREFIX_CACHE` | `1` (on) | Master toggle; set `0` to disable. |
-| `DARKBLOOM_PREFIX_CACHE_MAX_GB` | physical RAM / 8 | In-GPU block-cache budget. |
-| `DARKBLOOM_PREFIX_CACHE_DISK_GB` | min(10 GB, free/2) | Global on-disk budget across all models. |
-| `DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS` | 16384 Gemma, 0 otherwise | 2nd-use SSD admission threshold. |
-| `DARKBLOOM_PREFIX_CACHE_TTL_SECONDS` | 300 | Sliding TTL for SSD checkpoints; `0` = infinite. |
+| `DARKBLOOM_PREFIX_CACHE` | unset | Master kill when set non-affirmative; affirmative opts into RAM only when SSD is disabled |
+| `DARKBLOOM_PREFIX_CACHE_SSD` | enabled | SSD-tier selector; set `0` to disable only SSD |
+| `DARKBLOOM_PREFIX_CACHE_DISK_GB` | min(20 GiB, free/2) | Box-wide SSD budget |
+| `DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS` | 900 | Sliding TTL; overrides can only shorten the 15-minute maximum |
+| `DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS` | 1024 | Minimum reusable tokens after the hybrid recompute bound |
+| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB` | 1024 | Per-request staging-memory cap |
+| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | 1000 | Maximum estimated staging time |
+| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` | 150 | Daily endurance limit; `0` means unlimited |
+| `DARKBLOOM_PREFIX_CACHE_MAX_GB` | physical RAM / 8 | Experimental RAM-tier budget only |
+| `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` | disabled | Unsigned test-only in-memory KEK |
 
-## File format
+Installed launchd services preserve only the two cache mode switches. The
+remaining tuning variables are available to foreground/test processes or must
+be added explicitly to the launchd environment with `launchctl`; exporting
+them in an interactive shell does not change an already-installed daemon.
 
-`<hashHex>.darkbloom-kv`:
+Writes stop when free space drops below the greater of 20 GiB or 5% of the
+volume. Reads remain available. An ENOSPC write starts a ten-minute write
+cooldown.
 
-| offset | size | field |
-|---|---|---|
-| 0 | 4 | magic `DBKV` |
-| 4 | 2 | format_version (LE u16) |
-| 6 | 2 | flags |
-| 8 | 12 | file_IV |
-| 20 | 4 | wrapped_DEK length |
-| 24 | N | wrapped_DEK |
-| 24+N | 4 | metadata length |
-| 28+N | M | metadata JSON (AAD) |
-| 28+N+M | 4 | chunk_count |
-| … | … | encrypted chunks |
+## Storage and cryptography
 
-Metadata is plaintext (it is the GCM AAD); KV tensors are encrypted.
+Each model uses `~/Library/Caches/darkbloom/kv2/<modelKey>/`, where `modelKey`
+is the first 12 hex characters of SHA-256(model ID). Each `.dbk2` file contains
+one 256-token KV block. Files are AES-256-GCM encrypted with a fresh DEK wrapped
+by the Secure-Enclave-rooted KEK; canonical metadata is authenticated as AAD.
 
-## Cryptography
+File names and the in-memory index use truncated HMAC-SHA256 lookup tags derived
+from the KEK. The full tag is authenticated in metadata. Raw token IDs, raw
+prefix hashes, request IDs, and cache-scope values never touch disk.
+Coordinator-connected providers bind entries to the verified weight hash;
+standalone mode falls back to model-ID binding because it does not compute one.
+Reads also verify that binding, the layout epoch, block size, and full lookup
+tag. Any parse, binding, or authentication failure is deleted and treated as a
+cold miss.
 
-- Secure Enclave P-256 identity wraps a long-lived KEK.
-- KEK is stored in Keychain (`KeychainWrappedKEKStorage`).
-- Each file gets a fresh DEK, wrapped under KEK with metadata as AAD.
-- Chunks use AES-256-GCM with HKDF-derived nonces.
-- All primitives are Apple CryptoKit.
+The legacy `darkbloom/kv/` tree is swept on startup. The v0.7.5 `kv2/` root is
+separate and is not touched by that cleanup.
 
-## Load-path verification ladder
+## Security boundary
 
-Every load independently verifies:
-
-1. Path is derived from trusted values, not stored index.
-2. Metadata readable.
-3. `meta.modelHash` matches binding.
-4. Shape integers match binding.
-5. `meta.tokenPrefixHash` matches requested prefix.
-6. GCM decrypt succeeds.
-7. Tensor shape and byte length match.
-8. `metaState` is well-formed for the cache type.
-
-Any failure is a recoverable cold miss.
-
-## Global disk budget
-
-`GlobalDiskAccountant` enforces a process-wide ceiling across all loaded models.
-When the total exceeds the budget, it evicts the lowest benefit-per-byte entries
-cross-model. Live managers are signaled; unowned directories are deleted directly.
-
-## On-disk layout
-
-```
-~/Library/Caches/darkbloom/kv/
-└── <modelKey>/
-    └── <blockHashHex>.darkbloom-kv
-```
-
-`<modelKey>` = `sha256(modelId)[:12]`. MB-1 binding uses `weightHash` when
-available; stale-weight files are rejected and deleted on access.
-
-## Security model (TB-007)
-
-The cache adds encryption-at-rest. It does **not** close the in-process cross-
-tenant TTFT side-channel: a shared prefix block is shared across consumers, and
-the timing difference between hit and miss is an oracle. Untrusted multi-tenant
-deployments MUST opt out.
-
-Plaintext metadata (token count, prefix hash, model binding) is a known-prefix
-oracle for a disk observer.
+Encryption and HMAC-keyed names close the legacy disk confirmation oracle. A
+shared prefix can still change time-to-first-token inside the trusted provider
+process, and SSD warmth can survive restart within the 15-minute TTL. Request
+cache scope narrows that channel; `DARKBLOOM_PREFIX_CACHE=0` removes it.
 
 ## Code locations
 
 | Concern | File |
 |---|---|
-| File format / crypto seal | `provider-swift/Sources/ProviderCore/KVCache/EncryptedKVStore.swift` |
-| KEK envelope | `KVCacheKEK.swift`, `KeyWrappingService.swift`, `SecureEnclaveKeyWrappingService.swift`, `WrappedKEKStorage.swift` |
-| `[KVCache]` ↔ bytes | `KVCacheSerializer.swift` |
-| Engine tier | `EncryptedPrefixCachePersistence.swift` |
-| Checkpoint tier | `PrefixCacheManager.swift`, `PrefixCacheIndex.swift`, `PrefixDigest.swift`, `PrefixCacheRAM.swift`, `PrefixCachePastWindow.swift` |
-| Global disk accountant | `GlobalDiskAccountant.swift` |
-| Flag wiring | `Inference/BatchScheduler.swift` |
-| Tests | `provider-swift/Tests/ProviderCoreTests/KVCache/*` |
+| Mode selection and budgets | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` |
+| Slot wiring | `provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift` |
+| Engine integration | `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift` |
+| SSD cache | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache.swift` |
+| File codec | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore.swift` |
+| HMAC lookup names | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDLookupKeys.swift` |
+| TTL and box-wide LRU | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockIndex.swift` |
+| Write-behind and endurance | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift` |
+| Tests | `provider-swift/Tests/ProviderCoreTests/SSDPrefixCacheTests.swift` |

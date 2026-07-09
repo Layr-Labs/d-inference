@@ -2,13 +2,12 @@
 //
 // Live KV-headroom probe — scheduler-free home (v0.7.5).
 //
-// Re-homed unchanged from `BatchScheduler+Telemetry`'s
+// Re-homed from the retired `BatchScheduler+Telemetry` implementation's
 // `measuredLiveKVHeadroomBytes` / `hasServeableKVHeadroom`: pure
 // `UnifiedMemoryCap` math over the live MLX + OS memory counters, used by
 // the post-load guard in `ensureModelLoaded` (a model that loads with no
 // serveable KV headroom is unloaded + 503'd instead of advertising a slot
-// whose every request the KV gate would reject). The `BatchScheduler`
-// members forward here until the legacy scheduler is deleted.
+// whose every request the KV gate would reject).
 
 import Foundation
 import MLX

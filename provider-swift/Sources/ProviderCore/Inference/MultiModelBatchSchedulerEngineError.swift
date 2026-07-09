@@ -1,8 +1,8 @@
 // Copyright © 2026 Eigen Labs.
 //
 // Typed errors emitted by ``MultiModelBatchSchedulerEngine`` and the
-// scheduler-message parser that promotes BatchScheduler `.error(...)`
-// payloads into those typed cases.
+// generation-message parser that promotes structured `.error(...)` payloads
+// into those typed cases.
 //
 // Split out of `MultiModelBatchSchedulerEngine.swift` so the error
 // surface and its message-prefix dictionary stay self-contained and
@@ -14,8 +14,8 @@ import Foundation
 /// Errors surfaced by ``MultiModelBatchSchedulerEngine`` that map to
 /// HTTP-status-bearing OpenAI error responses upstream.
 ///
-/// The scheduler emits `.error(String)` events with structured message
-/// prefixes (see ``BatchScheduler``); the engine translates those into
+/// EngineV2Bridge emits `.error(String)` events with structured message
+/// prefixes; the adapter translates those into
 /// typed cases here so ``ProviderLoop/mapInferenceErrorToStatus(_:)``
 /// can return retry/backoff-bearing status codes (429/503) instead of
 /// collapsing every admission failure into a generic 500.
@@ -90,9 +90,9 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
         }
     }
 
-    /// Map a `BatchScheduler` `.error(message)` payload into a typed
-    /// engine error. Recognises the structured prefixes that
-    /// ``BatchScheduler`` and its planner emit; anything else stays
+    /// Map a generation `.error(message)` payload into a typed engine error.
+    /// Recognises the structured prefixes emitted by EngineV2 translation and
+    /// admission; anything else stays
     /// as ``generationFailed`` so the operator-facing message is
     /// preserved verbatim.
     ///

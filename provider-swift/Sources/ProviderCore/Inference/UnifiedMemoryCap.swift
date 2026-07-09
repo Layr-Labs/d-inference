@@ -51,7 +51,7 @@ public enum UnifiedMemoryCap {
     static let minimumLoadKVBytes: UInt64 = 1 * 1024 * 1024 * 1024  // 1 GiB
 
     /// The post-load guard decision, as a pure function so it's unit-testable
-    /// (the BatchScheduler accessor that feeds it reads real MLX globals). A
+    /// (KVHeadroomProbe feeds it from real MLX globals). A
     /// freshly-loaded model is serveable iff its MEASURED live KV headroom (taken
     /// AFTER trimming the cold-load buffer cache) is at least the minimum
     /// serveable KV. Below that, the caller unloads + rejects rather than keep a

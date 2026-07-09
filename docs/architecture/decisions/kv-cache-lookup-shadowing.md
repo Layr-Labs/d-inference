@@ -1,6 +1,8 @@
 # KV-cache lookup shadowing on small-window hybrid models
 
-**Status:** Accepted / Deferred
+**Status:** Superseded in v0.7.5. The one-engine `KVCacheSSD` path removed the
+RAM-first checkpoint lookup described below. See
+[`../../reference/ssd-kv-cache-hybrid-models.md`](../../reference/ssd-kv-cache-hybrid-models.md).
 
 ## Context
 

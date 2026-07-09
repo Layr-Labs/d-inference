@@ -88,9 +88,9 @@ extension ProviderLoop {
     /// computed from, so grant arithmetic is deterministic in tests.
     struct EngineV2SlotHooks: Sendable {
         /// Environment the prefix-cache gate/budget/carve policy reads
-        /// (`DARKBLOOM_PREFIX_CACHE*`). Defaults to EMPTY — the dormant
-        /// fleet default — so grant-arithmetic tests are hermetic; carve
-        /// tests inject an opted-in environment explicitly.
+        /// (`DARKBLOOM_PREFIX_CACHE*`). An empty environment selects the SSD
+        /// default; scripted test engines suppress real cache construction,
+        /// while carve tests inject an explicit RAM-tier environment.
         let environment: [String: String]
         let eosTokenIds: Set<Int>
         let extraEOSTokens: [String]
@@ -411,8 +411,8 @@ extension ProviderLoop {
         // AND the SSD offload tier's construction: the slot's re-slice
         // grant is split between the engine's admission ceiling and the
         // opt-in RAM v2 prefix cache INSIDE the factory (order: re-slice
-        // grant → RAM-tier funding-gated carve (dormant default ⇒
-        // passthrough) → SSD tier construction (default-on, own kv2/
+        // grant → RAM-tier funding-gated carve (SSD/default ⇒ passthrough)
+        // → SSD tier construction (default-on, own kv2/
         // root, per-donation gate, NO memory carve) → engine construction
         // with the (possibly carved) grant), so everything downstream
         // reads engine truth and the coordinator is never told about bytes

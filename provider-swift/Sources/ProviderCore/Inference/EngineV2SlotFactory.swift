@@ -240,7 +240,7 @@ enum EngineV2SlotFactory {
         )
 
         // THE single carve point (T-041): re-slice grant → RAM-tier
-        // funding-gated carve (dormant default ⇒ passthrough) → SSD tier
+        // funding-gated carve (RAM is dormant by default ⇒ passthrough) → SSD tier
         // construction (no memory carve) → engine construction with the
         // (possibly reduced) ceiling. Both production slot owners share
         // this path.

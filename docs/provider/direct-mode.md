@@ -143,10 +143,10 @@ fallback pattern above does exactly that.
 
 `--local-endpoint` is the unified mode: the provider keeps its coordinator
 connection (serving the public fleet) **and** exposes the local OpenAI endpoint
-off the **same** loaded models. There is no double-load — both front-ends
-dispatch through ONE shared `BatchScheduler` registry and `GlobalKVCacheBudget`,
-so a local request and a coordinator request feed the same continuous-batching
-engine and count against the same capacity the coordinator sees. Local in-flight
+off the **same** loaded models. There is no double-load: both front-ends route
+to the same per-model `EngineV2Bridge` instances and `GlobalKVCacheBudget`, so a
+local request and a coordinator request feed the same continuous-batching engine
+and count against the same capacity the coordinator sees. Local in-flight
 requests hold a reservation that keeps the idle monitor / load-gate from evicting
 a model mid-stream. The HTTP layer is identical to `--local` (shared builder), so
 auth, CORS, and error mapping behave the same.

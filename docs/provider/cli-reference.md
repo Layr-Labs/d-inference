@@ -221,7 +221,7 @@ darkbloom beta disable <feature>    # turn off
 
 | Feature | Effect |
 |---------|--------|
-| `kv-quant` | 8-bit KV cache for GPT-OSS / Gemma 4 (~1.9x more concurrent context); toggles `backend.kv_quant` |
+| `kv-quant` | Forward-compatibility toggle; v0.7.5 warns and continues with fp16 KV |
 
 `enable`/`disable` read-modify-write the TOML config and report whether a restart
 is required. See [Beta Features](beta-features.md) for the full guide. `darkbloom

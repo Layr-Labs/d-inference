@@ -46,8 +46,8 @@ public struct StartupPreloader: Sendable {
     public struct Dependencies: Sendable {
         /// Memory (GB) currently free for a model load (the load-gate view).
         public var freeMemoryGb: @Sendable () async -> Double
-        /// Full model load: weights + legacy scheduler + v2 bridge/warmup when
-        /// flagged (production: `ensureModelLoaded`).
+        /// Full model load: weights + EngineV2 bridge/warmup
+        /// (production: `ensureModelLoaded`).
         public var load: @Sendable (String) async throws -> Void
         /// Optional 1-token decode through the serving path after each load.
         /// nil = self-test disabled. Returns the decode duration.

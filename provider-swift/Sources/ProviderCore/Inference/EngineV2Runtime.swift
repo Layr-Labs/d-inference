@@ -5,27 +5,24 @@
 // plumbing hooks into:
 //
 //   * `ProviderLoop+Capacity.updateAggregateCapacity` folds
-//     `capacitySummary()` slots into the SAME heartbeat payload as legacy
-//     scheduler slots (no protocol change).
+//     `capacitySummary()` slots into the existing heartbeat wire shape.
 //   * `ProviderLoop+Cancellation.handleCancellation` fans the coordinator
 //     request-id out through `cancel(requestId:)` → `CBv2Engine.cancel`.
 //
-// Both hooks guard on `ProviderLoop.hasEngineV2Slots` BEFORE hopping here,
-// so when the v2 engine is off they cost zero — no actor hop, no
-// allocations — and flag-off behavior stays byte-identical.
+// Both hooks guard on `ProviderLoop.hasEngineV2Slots` before hopping here,
+// so a provider with no loaded model avoids the actor hop.
 
 import Foundation
 
 public actor EngineV2Runtime {
     public static let shared = EngineV2Runtime()
 
-    /// modelId → bridge. One bridge per v2-served model, mirroring the
-    /// one-scheduler-per-model shape of the legacy registry.
+    /// modelId → bridge. There is one bridge per resident model.
     private var bridges: [String: EngineV2Bridge] = [:]
 
     /// Test instrumentation: total `capacitySummary()` + `cancel(requestId:)`
-    /// invocations. Lets tests prove the flag-off production paths never
-    /// consult the runtime (the zero-overhead guard).
+    /// invocations. Lets tests prove the zero-slot production paths never
+    /// consult the runtime.
     private(set) var consultCount = 0
 
     /// Public init so tests can build isolated instances; production code
@@ -59,16 +56,13 @@ public actor EngineV2Runtime {
         public static let empty = CapacitySummary(slots: [], activeRequests: 0)
     }
 
-    /// Fleet-level inputs for the heartbeat budget CLAMP (round-3 PR#499
-    /// P2). v2 admission ceilings are construction-fixed, so a model loaded
-    /// LATER (especially a legacy/non-allowlisted slot) leaves existing
-    /// bridges advertising a stale `activeTokenBudgetMax`. The heartbeat
-    /// caller (`ProviderLoop.updateAggregateCapacity`) snapshots the CURRENT
-    /// fleet residency here so each bridge's reported max can be recomputed
-    /// from live inputs (`EngineV2KVSizing.liveEngineKVBytesBudget`).
+    /// Fleet-level inputs for the heartbeat budget safety clamp. Runtime
+    /// re-slicing updates each engine grant as models load and unload; the
+    /// heartbeat caller snapshots current residency here so reporting can
+    /// fail closed if live memory drifts between re-slices.
     public struct FleetKVContext: Sendable {
-        /// Σ resident model weights across ALL slots (v2 AND legacy),
-        /// including each bridge's own model.
+        /// Sum of resident model weights across all slots, including each
+        /// bridge's own model.
         public let totalResidentWeightBytes: UInt64
         /// Operator `memory_reserve_gb`, in bytes (see `EngineV2KVSizing`).
         public let configReserveBytes: UInt64
@@ -88,24 +82,22 @@ public actor EngineV2Runtime {
 
     /// Per-model heartbeat slots + aggregate active count for every
     /// registered bridge. Sorted by model id so heartbeat payloads are
-    /// deterministic. Empty when v2 is off.
+    /// deterministic. Empty when no models are loaded.
     ///
     /// When `fleetKV` is supplied, each bridge's reported
     /// `activeTokenBudgetMax` is clamped to the sizing function's CURRENT
-    /// answer for that engine — its construction grant capped by the live
-    /// fleet budget with the OTHER v2 engines' grants subtracted (the same
-    /// derivation `makeEngineV2BridgeForSlot` used at sizing time), so
-    /// Σ(reported budgets) tracks fleet reality as later models load. nil
-    /// preserves the raw construction-time figures.
+    /// answer for that engine: its current re-sliced grant capped by the live
+    /// fleet budget after the other slots' claims. nil preserves the current
+    /// engine figures without the additional safety clamp.
     public func capacitySummary(fleetKV: FleetKVContext? = nil) async -> CapacitySummary {
         consultCount += 1
         guard !bridges.isEmpty else { return .empty }
-        // Snapshot every bridge's construction grant + prefix-cache budget
+        // Snapshot every bridge's current grant + prefix-cache budget
         // first: bridge i's clamp subtracts the OTHER bridges' figures, so
         // all must be read before any slot is built.
         //
-        // Prefix-cache accounting (T-041): a bridge's engine grant was
-        // REDUCED by its cache budget at construction, but the cache's bytes
+        // Prefix-cache accounting (T-041): a RAM-tier bridge's engine grant is
+        // reduced by its cache budget, but the cache's bytes
         // are still claimed under the fleet KV budget. The clamp therefore
         // subtracts each OTHER slot's TOTAL claim (grant + cache budget) AND
         // this bridge's OWN cache budget — so the reported max keeps the
@@ -155,7 +147,7 @@ public actor EngineV2Runtime {
 
     /// Forward a coordinator request-id cancellation to whichever bridge
     /// owns it. Returns true when a bridge accepted the cancel; false when
-    /// no v2 bridge knows the id (the legacy path owns it).
+    /// no loaded bridge knows the id.
     ///
     /// O(n) BY DESIGN (hardening review): n is the number of v2-SERVED
     /// MODELS — bounded by the provider's `max_model_slots` (single digits;

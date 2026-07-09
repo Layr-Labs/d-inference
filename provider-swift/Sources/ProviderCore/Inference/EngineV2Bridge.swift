@@ -67,23 +67,24 @@ public actor EngineV2Bridge {
     let maxConcurrentRequests: Int
     /// Per-token KV byte cost for bytes→tokens capacity derivation
     /// (0 = unknown; capacity then falls back to the engine's token counts).
-    /// This is the UNQUANTIZED (fp16) rate: engine_v2 builds fp16 caches even
-    /// when the provider's `kv_quant` is on (KV-quant unsupported by v2), so
-    /// heartbeat token budgets AND the shared-budget reservation below are
+    /// This is the unquantized fp16 rate: v0.7.5 rejects `kv_quant` intent with
+    /// a warning and EngineV2 builds only fp16 caches, so heartbeat budgets and
+    /// the shared-budget reservation below are
     /// sized to the caches actually built — see `EngineV2KVSizing`.
     let kvBytesPerToken: Int
-    /// Process-wide KV reservation ledger shared with the legacy schedulers.
+    /// Process-wide KV reservation ledger shared by every EngineV2 slot.
     /// When set (production), each v2 submission must RESERVE its worst-case
     /// KV footprint here BEFORE it is handed to the engine — the reservation
     /// both GATES v2 admission against the process-wide unified-memory cap
     /// (the engine's private byte ledger only knows its own slot; with
     /// another slot's live KV already reserved, this shared pool is the only
     /// gate that sees the whole process) and is the accounting entry the
-    /// model-LOAD gate and the legacy live-KV gate subtract. nil in unit
+    /// model-load gate subtracts. nil in unit
     /// tests ⇒ no shared gating/accounting.
     let kvBudget: GlobalKVCacheBudget?
-    /// Byte budget carved out of this slot's KV grant for the RAM-only v2
-    /// prefix cache (`PrefixCachePolicy.carve`; 0 ⇒ cache off). The engine's
+    /// Byte budget carved out of this slot's KV grant for the opt-in RAM
+    /// prefix cache (`PrefixCachePolicy.carve`). Zero means no RAM carve and
+    /// includes both cache-off and the default SSD mode. The engine's
     /// `kvBytesCapacity` was REDUCED by this amount at construction, so the
     /// engine ledger, the heartbeat budget, and the cache jointly never
     /// exceed the slot's grant. Fleet sizing reads it back via
@@ -91,17 +92,18 @@ public actor EngineV2Bridge {
     /// own capacity no longer shows them (T-041). `nonisolated`: immutable
     /// and Sendable, so heartbeat/test readers need no actor hop.
     public nonisolated let prefixCacheBudgetBytes: Int
-    /// Encrypted SSD offload tier (v0.7.5, default for funded models):
+    /// Encrypted SSD offload tier (v0.7.5, default for CBv2-supported models
+    /// when Secure Enclave KEK construction succeeds):
     /// the SAME instance handed to the engine as its `CBv2PrefixCache`.
     /// The bridge holds it for the pre-submit staging hook (read-through
     /// adoption: probe index → reserve staging bytes → read+decrypt off
     /// the engine threads → seed the staging map so the engine's
     /// synchronous `lookup()` hits), the per-request release backstop
-    /// (`completeStaging`), and shutdown. nil ⇒ no SSD tier (RAM tier or
-    /// no cache) — byte-identical behavior to v0.7.5-dormant.
+    /// (`completeStaging`), and shutdown. nil means the slot selected RAM,
+    /// caching is off, or SSD initialization was unavailable.
     let ssdPrefixCache: SSDPrefixCache?
     /// Periodic prefix-cache stats logger (v2 analog of the legacy
-    /// checkpoint-tier logger). Started by the slot factory when a funded
+    /// checkpoint-tier logger). Started by the slot factory when an active
     /// cache exists; cancelled in `shutdown()`.
     var prefixCacheStatsTask: Task<Void, Never>?
     /// Injectable telemetry sink (tests); nil ⇒ `TelemetryClient.shared`.
@@ -512,8 +514,8 @@ public actor EngineV2Bridge {
     /// drains; grow admits immediately. The engine's `capacity()` snapshot
     /// reflects the new ceiling right away, so heartbeats and later
     /// re-slices (which read `slotKVBytesClaim()` — engine + cache budget)
-    /// see the CURRENT grant. A dormant cache (budget 0 — the fleet
-    /// default) makes this the identity mapping.
+    /// see the CURRENT grant. A zero RAM carve, including the default SSD
+    /// mode, makes this the identity mapping.
     ///
     /// Callers never hand a total below the cache budget: load-time
     /// re-slices refuse such targets at the serviceability floor

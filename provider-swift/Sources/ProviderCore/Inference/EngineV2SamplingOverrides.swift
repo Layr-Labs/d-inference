@@ -14,9 +14,8 @@
 // `ChatCompletionRequest` from the upstream shape only, so
 // `EngineV2Translation.parseLogitBias(request.logit_bias)` always saw nil.
 //
-// Consumed by the v2 engine path only (`EngineV2Translation.samplingParams`);
-// the legacy engine never honored either knob, and its submit call is left
-// byte-identical (flag-off invariant).
+// Consumed by `EngineV2Translation.samplingParams`; the standalone upstream
+// router still lacks the provider-side raw-body seam needed for these fields.
 
 import Foundation
 

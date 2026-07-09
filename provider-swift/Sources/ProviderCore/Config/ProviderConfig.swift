@@ -120,7 +120,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// ~26 GB weight load + engine warmup with margin.
     public var startupPreloadTimeoutSecs: UInt64
     /// After each startup preload, run a 1-token greedy decode through the real
-    /// serving path (v2 bridge when flagged, else the legacy scheduler) so
+    /// serving path through the model's EngineV2 bridge so
     /// Metal JIT, compiled buckets, and the chat-template render are warm
     /// before the first routed request. Default true. Failure is fail-open
     /// (WARN telemetry, model stays advertised) unless

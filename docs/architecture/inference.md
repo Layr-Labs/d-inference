@@ -8,10 +8,16 @@ subprocess or local server; the MLX engine is linked directly via
 HTTP/WebSocket request
         │
         ▼
-BatchScheduler (actor)
+ProviderLoop / StandaloneServer
         │
         ▼
-MLXLMCommon continuous-batching engine
+MultiModelBatchSchedulerEngine (OpenAI translation and model acquire)
+        │
+        ▼
+EngineV2Bridge (one per resident model)
+        │
+        ▼
+mlx-swift-lm ContinuousBatchingV2
         │
         ▼
 Apple Silicon GPU (Metal)
@@ -25,12 +31,13 @@ The provider uses `mlx-swift-lm`'s continuous-batching scheduler:
 - Decode steps are run together for all active requests.
 - New requests are added to the running batch when capacity allows.
 
-Key file: `provider-swift/Sources/ProviderCore/Inference/BatchScheduler.swift`.
+Key files are `EngineV2Bridge.swift`, `EngineV2Runtime.swift`,
+`ProviderLoop+ModelLoading.swift`, and `Server/StandaloneServer.swift`.
 
 ## Capacity reporting
 
-Providers report `BackendCapacity.Slots` to the coordinator. The scheduler uses
-this as the authoritative capacity source. Each slot reports a state such as
+Providers report `BackendCapacity.Slots` to the coordinator. The coordinator
+scheduler uses this as the authoritative capacity source. Each slot reports a state such as
 `running`, `idle`, `crashed`, `reloading`, or `idle_shutdown`.
 
 Code:
@@ -42,13 +49,12 @@ Code:
 
 ## Prefix cache
 
-An encrypted SSD-backed prefix cache accelerates repeated or shared prompts.
-It is on by default and can be disabled with `DARKBLOOM_PREFIX_CACHE=0`.
-
-- Pure-attention models use the engine's `PrefixCache` block tier.
-- Hybrid sliding-window models (Gemma-4, GPT-OSS) use the exact-checkpoint
-  `PrefixCacheManager` tier.
-- Models with `MambaCache`/recurrent layers are excluded from caching.
+An EngineV2 prefix cache accelerates repeated or shared prompts. The encrypted
+SSD tier is selected by default and can be disabled with
+`DARKBLOOM_PREFIX_CACHE_SSD=0`; `DARKBLOOM_PREFIX_CACHE=0` disables every tier.
+When SSD is disabled, setting `DARKBLOOM_PREFIX_CACHE=1` selects the experimental
+RAM `PrefixCacheV2` tier. Both pure-attention and supported hybrid
+sliding-window models use CBv2 layer-aware block snapshots and adoption bounds.
 
 See [`reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) for the as-built reference and
 [`reference/ssd-kv-cache-hybrid-models.md`](../reference/ssd-kv-cache-hybrid-models.md) for the hybrid-model design.

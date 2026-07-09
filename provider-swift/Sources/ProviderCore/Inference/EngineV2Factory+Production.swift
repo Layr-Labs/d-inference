@@ -7,7 +7,7 @@
 // scripted stub. This file supplies the closure's production body: assemble
 // the real `MLXLMCommon.EngineV2` from the model the provider just loaded
 // (no re-download, no second weight copy — the engine retains the same
-// module instance the legacy `BatchedEngine` serves) plus the v2 runtime
+// module instance retained by the loaded model container) plus the runtime
 // pieces:
 //
 //   * layer kinds + per-layer attending caches from the model's own
@@ -121,15 +121,16 @@ extension EngineV2Factory {
     ///   - prefixCache: v2 prefix cache — either the RAM `PrefixCacheV2`
     ///     (`PrefixCachePolicy.makePrefixCache`, opt-in-experimental) or
     ///     the provider's `SSDPrefixCache` (the v0.7.5 encrypted SSD
-    ///     offload tier, default for funded models — zero memory carve).
+    ///     offload tier, default for supported models with per-donation
+    ///     benefit gating and zero memory carve).
     ///     Widened to the existential (`any CBv2PrefixCache`) so
     ///     provider-side conformers plug in with ZERO mlx-swift-lm
     ///     changes (the engine already stores the cache existentially).
     ///     Gate + budget + carve + tier selection are the caller's job.
     ///     Non-nil ⇒ the engine runs with `enablePrefixCache: true`
     ///     (lookup/adopt on submit, donate on finish, per-request
-    ///     `cacheSalt` tenant scoping live). nil ⇒ no cache, byte-identical
-    ///     to the pre-v0.7.5 engine. Threat model: T-041 (SSD tier: at-rest
+    ///     `cacheSalt` tenant scoping live). nil means cache unavailable or
+    ///     disabled. Threat model: T-041 (SSD tier: at-rest
     ///     artifacts with HMAC-keyed names — leak #2 closed; the in-process
     ///     cross-tenant TTFT oracle stays the SEC-035 accepted risk).
     ///   - maxConcurrentRequests: concurrent-decode row cap.
@@ -195,11 +196,10 @@ extension EngineV2Factory {
             schedulerConfig: CBv2SchedulerConfig(
                 maxConcurrentRequests: max(1, maxConcurrentRequests),
                 enablePrefixCache: prefixCache != nil),
-            // TB-007 / T-041 (updated for v0.7.5): the v2 prefix cache is
-            // RAM-only `PrefixCacheV2` with per-request `cacheSalt` tenant
-            // scoping — reviewed under the existing SEC-035 accepted risk
-            // (in-process TTFT oracle; strictly safer than the legacy
-            // on-disk tier). Gate/budget/carve: `PrefixCachePolicy`.
+            // TB-007 / T-041 (v0.7.5): this CBv2 cache is either the
+            // default-on encrypted SSD tier or the opt-in RAM PrefixCacheV2
+            // tier. Both use per-request cacheSalt scoping; selection and
+            // budgets live in PrefixCachePolicy.
             prefixCache: prefixCache
         )
     }

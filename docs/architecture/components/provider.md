@@ -12,7 +12,7 @@ The provider is the decryption endpoint for prompts. Its hardened process and Se
 | Coordinator WebSocket client and protocol codec | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient.swift`, `CoordinatorClientCodec.swift` |
 | Main event loop: requests, heartbeats, challenges, model swaps | `provider-swift/Sources/ProviderCore/ProviderLoop.swift` |
 | Secure Enclave identity, attestation signing, code-identity | `provider-swift/Sources/ProviderCore/Security/SecureEnclaveIdentity.swift`, `AttestationSigner.swift`, `AttestationBuilder.swift` |
-| Batch scheduling and inference engine bridge | `provider-swift/Sources/ProviderCore/Inference/BatchScheduler.swift`, `MultiModelBatchSchedulerEngine.swift` |
+| Batch scheduling and inference engine bridge | `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift`, `EngineV2Runtime.swift`, `MultiModelBatchSchedulerEngine.swift` |
 | Model discovery, weight hashing, prefetch/hotswap | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift`, `Server/ModelPrefetchCoordinator.swift` |
 | In-process local OpenAI-compatible HTTP endpoint (optional unified mode) | `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift`, `StandaloneServer.swift` |
 | Crypto: NaCl Box, node keypair, response encryption | `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift`, `X25519ChaChaPoly.swift` |
@@ -31,10 +31,10 @@ The provider is the decryption endpoint for prompts. Its hardened process and Se
 
 - **Coordinator client** (`Coordinator/`): maintains the WebSocket connection, reconnection backoff, and the advertised model store.
 - **ProviderLoop** (`ProviderLoop.swift`): the actor-based event loop. It owns per-model inference slots (`modelSlots`), handles inference requests, cancellations, `load_model` / `prefetch_model` / `desired_models` messages, and attestation challenges.
-- **Inference** (`Inference/`): `BatchScheduler` and `MultiModelBatchSchedulerEngine` translate coordinator requests into `mlx-swift-lm` calls. Each loaded model gets its own slot with continuous batching and prefix caching.
+- **Inference** (`Inference/`): `MultiModelBatchSchedulerEngine` translates OpenAI requests and routes them to an `EngineV2Bridge`. Each loaded model gets one EngineV2 slot with continuous batching and prefix caching; `EngineV2Runtime` coordinates capacity and cancellation across slots.
 - **Security** (`Security/`): Secure Enclave key generation, attestation blob construction, code-identity response handling, and runtime hardening checks.
 - **Crypto** (`Crypto/`): X25519 keypair for E2E encryption and ChaCha20-Poly1305 helpers used in some local paths. The coordinator↔provider wire uses NaCl Box via `swift-sodium` for cross-language compatibility with Go `nacl/box`.
-- **KV cache** (`KVCache/`): prefix caching in RAM, optional encrypted disk persistence, and a global KV-cache budget.
+- **KV cache** (`KVCache/`, `KVCacheSSD/`): a default-on encrypted SSD prefix-cache tier, an experimental opt-in RAM tier, and the global live-KV budget.
 
 ### Attestation and identity
 
@@ -51,7 +51,7 @@ APNs code-identity attestation (v0.6.0+) is implemented in `ProviderCore/Apns/AP
 - **Provider as decryption endpoint**: The provider's X25519 private key is generated in-process and never leaves the Mac. Only this process can open the coordinator's per-request NaCl Box. See `Crypto/NodeKeyPair.swift` and the decryption path in `ProviderLoop.swift`.
 - **In-process inference**: Inference runs inside the `darkbloom` process via `mlx-swift-lm`. There is no subprocess or local server that another process can observe. The optional local HTTP endpoint (`LocalInferenceHTTP.swift`) serves from the same loaded models but is still in-process.
 - **Secure Enclave binding**: The SE P-256 identity and the X25519 node key are bound to the provider binary and machine. Attestation challenges prove liveness and fresh SIP/Secure Boot status.
-- **Memory and disk**: Model weights and KV cache live in unified memory. Optional encrypted KV-cache persistence uses a Secure-Enclave-wrapped KEK. See `KVCache/EncryptedKVStore.swift` and `KVCache/SecureEnclaveKeyWrappingService.swift`.
+- **Memory and disk**: Model weights and live KV use unified memory. The default prefix-cache tier stores encrypted blocks on SSD with a Secure-Enclave-wrapped KEK and leaves serving RAM for live KV. See `KVCacheSSD/SSDPrefixCache.swift`, `KVCache/EncryptedKVStore.swift`, and `KVCache/SecureEnclaveKeyWrappingService.swift`.
 - **No prompt logging**: The provider decrypts prompts only to feed the inference engine. It does not log prompt content; logs contain request IDs, model IDs, and token counts.
 
 For the hop-by-hop encryption model, see [`../security/encryption.md`](../security/encryption.md) and the coordinator-side description in [`coordinator.md`](coordinator.md).

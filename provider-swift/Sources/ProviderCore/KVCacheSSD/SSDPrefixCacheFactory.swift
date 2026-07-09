@@ -1,9 +1,9 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Production construction of the SSD prefix cache for a funded v2 model
-// slot: Secure-Enclave-rooted KEK (the reviewed legacy key hierarchy,
-// unchanged), per-model directory under the legacy-compatible root, env
-// knob resolution, startup scan + periodic TTL sweep.
+// Production construction of the default SSD prefix cache for a CBv2-supported
+// model slot: Secure-Enclave-rooted KEK (the reviewed legacy key hierarchy,
+// unchanged), a per-model directory under `darkbloom/kv2`, environment knob
+// resolution, startup scan, and periodic TTL sweep. Donation is benefit-gated.
 //
 // Returns nil — tier disabled, slot serves uncached — when the KEK is
 // unavailable (unsigned build without the keychain entitlement), unless
@@ -49,7 +49,7 @@ enum SSDPrefixCacheFactory {
             "\(Self.ssdRootDirectoryName)/\(modelKey)", isDirectory: true)
     }
 
-    /// Build the SSD tier for a funded model slot. `weightHash` nil falls
+    /// Build the SSD tier for a supported model slot. `weightHash` nil falls
     /// back to the model id (same binding degradation as the legacy tier).
     static func make(
         modelId: String,

@@ -1,5 +1,12 @@
 # M5 SSD KV-Cache 4-Hour Stress Soak Runbook
 
+> **Archived for pre-v0.7.5 providers. Do not run this against v0.7.5.** The
+> one-engine release removed the checkpoint tier, second-use promotion, and
+> several flags used below. The current SSD tier is documented in
+> [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) and is covered by
+> `SSDPrefixCacheTests` and `EngineV2SSDPrefixCacheLiveTests`. A replacement
+> hardware-soak procedure must use the `KVCacheSSD` metrics and controls.
+
 Drives the encrypted SSD prefix cache on the **M5 Max bench box** (NOT prod) for a fixed duration under a prompt mix designed to exercise the store → reload → evict paths, then checks the run against pass/fail criteria.
 
 > **Scope / safety.** This is a **test/stress run on an authorized bench box** (`gaj@m5-max-128gb-1.tail618116.ts.net`). It stops the production `darkbloom` daemon for the duration and **restores it afterward**. It does **not** touch prod infrastructure, EigenCloud, or any signed-deployment config. The build used is an **unsigned** local build that runs the cache with an **ephemeral in-memory KEK** (`DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1`) — cache files do not survive a restart and this flag must never be set on a signed build.

@@ -1,10 +1,9 @@
 // Copyright © 2026 Eigen Labs.
 //
 // Bridge between `MLXLMServer.MLXServerEngine` (a single-engine contract)
-// and Darkbloom's multi-model `BatchScheduler` registry. The provider
-// loads N models concurrently, one `BatchScheduler` per model, and
-// dispatches each incoming OpenAI request by `request.model` to the
-// matching scheduler.
+// and Darkbloom's multi-model EngineV2 slot registry. The provider loads N
+// models concurrently, one `EngineV2Bridge` per model, and dispatches each
+// incoming OpenAI request by `request.model` to the matching bridge.
 //
 // The upstream library ships with `MLXBatchedEngineServerEngine`, but
 // that type owns exactly one `BatchedEngine` and is intended for the
@@ -14,9 +13,8 @@
 // the `MLXServerEngine` shape upstream wants.
 //
 // Concurrency model: the engine is a value-type `struct` that holds an
-// immutable closure (`registryProvider`). All mutable state lives in
-// the actor-isolated schedulers themselves, so `Sendable` is trivially
-// satisfied.
+// immutable closure (`registryProvider`). Mutable inference state lives in
+// actor-isolated EngineV2 bridges, so `Sendable` is trivially satisfied.
 //
 // Companion files:
 //   - `MultiModelBatchSchedulerEngine+Registry.swift`
@@ -32,9 +30,8 @@ import Foundation
 import MLXLMCommon
 import MLXLMServer
 
-/// Bridges `MLXServerEngine` to Darkbloom's multi-model `BatchScheduler`
-/// registry. One instance per process; dispatches each request to the
-/// scheduler that owns the requested model.
+/// Bridges `MLXServerEngine` to Darkbloom's multi-model EngineV2 registry.
+/// Dispatches each request to the bridge that owns the requested model.
 ///
 /// The constructor takes a `registryProvider` closure rather than a
 /// snapshot dictionary because the LRU may load/evict models between
@@ -81,33 +78,25 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// template, so passing through is the format-agnostic choice.
     private let reasoningEffort: String?
     /// Per-tenant prefix-cache scope (`SHA256(prompt_cache_key)`/`user`, ""
-    /// ⇒ unscoped). Threaded into `submitTokenized` so the checkpoint cache is
-    /// partitioned per consumer (closes the TB-007 cross-tenant channel). On
-    /// the v2 path the same value maps onto `CBv2Request.cacheSalt` — LIVE
-    /// as of v0.7.5 (the production engine runs `PrefixCacheV2` when
-    /// `PrefixCachePolicy` funds it; see T-041).
+    /// means unscoped). Maps to `CBv2Request.cacheSalt` for both the default
+    /// encrypted SSD tier and the opt-in RAM tier.
     private let cacheScope: String
-    /// Per-request usage-detail signal (v2 engine path only): the bridge
+    /// Per-request usage-detail signal: the bridge
     /// records the engine's terminal `prefixCacheHitTokens` here so the
     /// caller's frames loop can splice OpenAI-standard
     /// `prompt_tokens_details.cached_tokens` into the trailing SSE usage
-    /// chunk. Same out-of-band pattern as `engineV2Logprobs`. Ignored
-    /// (silently) when the model serves via legacy.
+    /// chunk. Same out-of-band pattern as `engineV2Logprobs`.
     private let engineV2Usage: EngineV2RequestUsageSignal?
-    /// Per-request logprobs plumbing (v2 engine path only; the legacy engine
-    /// never emitted logprobs). Non-nil ⇒ the sealed request asked for
+    /// Per-request logprobs plumbing. Non-nil means the sealed request asked for
     /// logprobs: the v2 translation flips `logprobs`/`top_logprobs` on so
     /// the engine captures them, and the bridge publishes OpenAI-shaped
-    /// entries to `engineV2Logprobs.channel` for the caller's SSE frame
-    /// decorator. Ignored (silently) when the model serves via legacy.
+    /// entries to `engineV2Logprobs.channel` for the caller's SSE frame decorator.
     private let engineV2Logprobs: EngineV2LogprobsPlumbing?
     /// OpenAI `logit_bias`/`seed` decoded out-of-band from the sealed body
     /// (the upstream `OpenAIChatCompletionRequest` models neither — same
     /// pattern as `engineV2Logprobs`/`reasoningEffort`/`cacheScope`).
-    /// Overlaid onto the v2 translation so
-    /// `EngineV2Translation.samplingParams` sees the real values; ignored
-    /// (silently) when the model serves via legacy, which never honored
-    /// either knob.
+    /// Overlaid onto the EngineV2 translation so
+    /// `EngineV2Translation.samplingParams` sees the real values.
     private let engineV2Sampling: EngineV2SamplingOverrides?
     /// v0.7.5 media-through-v2 seam: the preparer that turns an image/video
     /// request into a `CBv2MultimodalInput` submission plus the sink for the
@@ -249,10 +238,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
         // Multimodal (image/video) requests can't flow through the token-only
         // batched TEXT paths. For VLM models they are handled here: on a
-        // v2-bridged slot, image AND video requests prefill through the
-        // engine with precomputed vision-tower embeddings (v0.7.5, below);
-        // only slots WITHOUT a v2 bridge serve media via the container's
-        // non-batched prepare/generate vision path.
+        // EngineV2 with precomputed vision-tower embeddings (v0.7.5, below).
+        // Production slots always have a bridge; the bridge-less branch is
+        // retained only for injected/test registry entries.
         //
         // ORDERING CONTRACT (v0.7.2 VLM text routing): this media check MUST
         // stay ABOVE the engineV2Bridge TEXT branch below. A VLM slot may

@@ -1,11 +1,12 @@
 /// ProviderLoop -- the main event loop that ties all subsystems together.
 ///
-/// Owns the CoordinatorClient, BatchScheduler, NodeKeyPair, and
+/// Owns the CoordinatorClient, per-model EngineV2 bridges, NodeKeyPair, and
 /// SecureEnclaveIdentity. Processes coordinator events: inference requests,
 /// cancellations, attestation challenges, and connection lifecycle.
 ///
 /// Each inference request spawns its own Task for concurrent processing.
-/// The BatchScheduler manages admission control and model loading.
+/// EngineV2Runtime coordinates capacity and cancellation across model slots;
+/// ProviderLoop owns model loading and lifecycle policy.
 /// Responses are encrypted with the consumer's ephemeral public key
 /// and streamed back through the coordinator.
 
@@ -166,14 +167,12 @@ public actor ProviderLoop {
     internal let preloadTaskStarted: (@Sendable (String) -> Void)?
     internal let beforeModelLoad: (@Sendable (String) async -> Void)?
 
-    /// Per-model inference slots. Each loaded model gets its own
-    /// BatchScheduler and worker task. Keyed by model ID.
+    /// Per-model inference slots. Each loaded model gets one EngineV2Bridge.
+    /// Keyed by model ID.
     internal var modelSlots: [String: ModelSlot] = [:]
 
-    /// ContinuousBatchingV2 bridge registry consulted by the capacity and
-    /// cancellation hooks — but ONLY when at least one v2 slot exists (see
-    /// the `hasEngineV2Slots` guards in `ProviderLoop+Capacity` /
-    /// `+Cancellation`), so flag-off providers never pay the actor hop.
+    /// ContinuousBatchingV2 bridge registry consulted by capacity and
+    /// cancellation hooks. It is the sole inference-engine registry in v0.7.5.
     /// Defaults to the process-global instance; tests inject an isolated one.
     internal var engineV2Runtime: EngineV2Runtime = .shared
 
@@ -523,9 +522,9 @@ public actor ProviderLoop {
         // loaded. No-op when the configured reserve is ≤ the cap's implied reserve.
         self.kvBudget = GlobalKVCacheBudget(
             configReserveBytes: Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB))
-        // The on-disk KV tier is RETIRED (v0.7.5; the v2 prefix cache is
-        // RAM-only — T-041). Sweep the legacy directory so crashes never
-        // strand ciphertext and ≤0.7.4 upgrades shed the old footprint.
+        // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
+        // The v0.7.5 EngineV2 SSD tier uses the separate `darkbloom/kv2` root,
+        // so this cleanup cannot delete current cache data.
         LegacyKVCacheSweeper.sweep()
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
@@ -571,15 +570,15 @@ public actor ProviderLoop {
         /// legacy scheduler on the slot anymore. Construction failure means
         /// the slot never exists (`ensureModelLoaded` unloads + 503s).
         let engineV2: EngineV2Bridge
-        /// Retained for the VLM media path (vision tower shares weights
+        /// Retained for VLM vision preprocessing (the tower shares weights
         /// with the extracted text model) and for liveness rebuilds.
         let container: MLXLMCommon.ModelContainer
         let tokenizer: TokenizerHandle
         /// Scheduler-free sizing facts (weights, fp16 KV rate, context) —
         /// feeds re-slicing, heartbeat fleet context, and the vision gate.
         let sizing: SlotSizingSnapshot
-        /// Vision-language model (config has `vision_config`). Multimodal
-        /// requests are served from `container` via the non-batched path.
+        /// Vision-language model (config has `vision_config`). The container
+        /// supplies vision preprocessing before multimodal EngineV2 prefill.
         let isVLM: Bool
         /// Model type (e.g. "gemma"), captured at load. Authoritative for the
         /// reasoning-parser choice for as long as the model can serve — read
@@ -589,9 +588,8 @@ public actor ProviderLoop {
         let modelType: String?
         var lastInferenceAt: ContinuousClock.Instant
 
-        /// Per-slot memory gate for the legacy VLM media path — the
-        /// scheduler-free home of `reserveVisionRequest` (media-decode RAM
-        /// + generation KV against the shared `GlobalKVCacheBudget`).
+        /// Per-slot memory gate for VLM media decode and generation KV against
+        /// the shared `GlobalKVCacheBudget`.
         func visionGate(kvBudget: GlobalKVCacheBudget?) -> VisionMemoryGate {
             VisionMemoryGate(
                 kvBudget: kvBudget,
@@ -661,7 +659,7 @@ public actor ProviderLoop {
     //   - ProviderLoop+Capacity.swift            capacity refresh + updateAggregateCapacity
     //   - ProviderLoop+AutoUpdate.swift          background self-update + phase transitions
     //   - ProviderLoop+ModelLoading.swift        ensureModelLoaded/unload + memory admission
-    //   - ProviderLoop+EngineV2.swift            ContinuousBatchingV2 slot wiring (flag-gated)
+    //   - ProviderLoop+EngineV2.swift            ContinuousBatchingV2 slot wiring
     //   - ProviderLoop+EngineV2Liveness.swift    wedge self-recovery (drain → rebuild → swap)
     //   - ProviderLoop+Cancellation.swift        cancellation + in-flight drain
     //   - ProviderLoop+AttestationChallenge.swift attestation + APNs code challenge
@@ -677,4 +675,3 @@ import MLX
 import MLXLLM
 import MLXLMCommon
 import MLXVLM
-

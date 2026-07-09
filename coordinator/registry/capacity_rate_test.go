@@ -21,9 +21,8 @@ func capacityRatePenaltyOf(r *Registry, providerID, model string) (penaltyMs, ra
 	return r.capacityRatePenaltyLocked(providerID, model, time.Now())
 }
 
-// seedRateOutcomes drives the real entry points: rejects first (accepts only
-// count into the window while a reject is present — see
-// recordCapacityRateAcceptLocked), then accepts.
+// seedRateOutcomes drives the real entry points in reject-first order. Other
+// tests cover accept-first and interleaved ordering explicitly.
 func seedRateOutcomes(r *Registry, providerID, model string, rejects, accepts int) {
 	for i := 0; i < rejects; i++ {
 		r.RecordCapacityReject(providerID, model)
@@ -118,8 +117,8 @@ func TestCapacityRateAtThresholdNoPenalty(t *testing.T) {
 }
 
 // Outcomes age out of the window naturally — no reset event required. Once the
-// rejects decay the penalty is gone, and the next accept clears the residual
-// state entirely (restoring the healthy-pair fast path).
+// rejects decay the penalty is gone, while still-recent accepts remain hidden
+// but available to the next reject window.
 func TestCapacityRateDecays(t *testing.T) {
 	r := New(testLogger())
 	const provider, model = "prov-decay", "gemma-4-26b-qat-4bit"
@@ -132,15 +131,16 @@ func TestCapacityRateDecays(t *testing.T) {
 	if penalty, rate := capacityRatePenaltyOf(r, provider, model); penalty != 0 || rate != 0 {
 		t.Fatalf("penalty=%v rate=%v after the rejects aged out, want 0/0", penalty, rate)
 	}
-	// An accept on the fully-decayed pair clears the residual slices.
+	// A later accept keeps the recent denominator warm. The stale reject slice is
+	// observationally inert; accept history must not be deleted just because the
+	// last reject expired.
 	r.RecordCapacityAcceptOutcome(provider, model, true)
 	r.mu.RLock()
 	key := capacityRejectKey{ProviderID: provider, ModelID: model}
-	_, hasRejects := r.capacityRateRejects[key]
-	_, hasAccepts := r.capacityRateAccepts[key]
+	accepts := countInWindow(r.capacityRateAccepts[key], time.Now())
 	r.mu.RUnlock()
-	if hasRejects || hasAccepts {
-		t.Fatal("decayed rate state must be dropped on the next accept")
+	if accepts != 7 {
+		t.Fatalf("recent accept history = %d, want 7 after the new accept", accepts)
 	}
 }
 
@@ -298,22 +298,18 @@ func TestCapacityRateNeverClosesRouting(t *testing.T) {
 	}
 }
 
-// A stream that commits BEFORE the pair's first windowed reject must still
-// enter the rate denominator when it is serving THROUGH the rejects: the
-// commit-time offer records nothing (accepts only store while a reject is
-// in-window), so the completion-time accept — keyed on the RECORDED outcome
-// (RateOutcomeCountedSafe), not on ContentCommittedSafe — re-offers it. Codex
-// review of #523: without this, a healthy pair serving long streams looked
-// like a 100%-reject gray box after a few later 503s.
-func TestCapacityRatePreRejectCommitCountsAtCompletion(t *testing.T) {
+// A stream that commits BEFORE the pair's first windowed reject is retained at
+// commit, so later rejects see it immediately and completion must not count it
+// again. This is the exactly-once contract behind RateOutcomeCountedSafe.
+func TestCapacityRatePreRejectCommitCountsExactlyOnce(t *testing.T) {
 	r := New(testLogger())
 	const model = "gemma-4-26b-qat-4bit"
 	p := makeTokenBudgetProvider(t, r, "pre-reject-commit", model, 100, grayBoxBudgetUsed, grayBoxBudgetMax, 100)
 
-	// Long stream commits first content while the pair is healthy: the offer
-	// must report NOT recorded (nothing in the reject window yet).
-	if recorded := r.RecordCapacityAccept(p.ID, model); recorded {
-		t.Fatal("commit-time accept with an empty reject window must not record a rate outcome")
+	// Long stream commits first content while the pair is healthy. Its accept is
+	// dormant until a reject arrives, but it is already retained and stamped.
+	if recorded := r.RecordCapacityAccept(p.ID, model); !recorded {
+		t.Fatal("commit-time accept must be retained before the first reject")
 	}
 
 	// The box goes gray while the stream is still serving: 8 capacity-503s.
@@ -321,11 +317,10 @@ func TestCapacityRatePreRejectCommitCountsAtCompletion(t *testing.T) {
 		r.RecordCapacityReject(p.ID, model)
 	}
 
-	// Completion: the api layer re-offers because the commit-time offer did
-	// not record (this is the noteInferenceSuccess wiring:
-	// countRateOutcome = !RateOutcomeCountedSafe → true here).
-	if recorded := r.RecordCapacityAcceptOutcome(p.ID, model, true); !recorded {
-		t.Fatal("completion-time re-offer during the reject window must record the request's one outcome")
+	// Completion sees RateOutcomeCountedSafe=true and passes false, so it cannot
+	// add the request a second time.
+	if recorded := r.RecordCapacityAcceptOutcome(p.ID, model, false); recorded {
+		t.Fatal("completion after a pre-reject commit must not record a second outcome")
 	}
 
 	rate, samples := r.CapacityRejectRate(p.ID, model)

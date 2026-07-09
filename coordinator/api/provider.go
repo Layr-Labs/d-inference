@@ -1595,13 +1595,11 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		// (capacity_rate.go denominator). On the clean-completion path
 		// noteInferenceSuccess re-offers it, but that never runs here — the
 		// consumer handler already returned. Re-offer it now, keyed on the
-		// recorded outcome exactly as noteInferenceSuccess does: a stream that
-		// committed BEFORE the pair's first windowed reject recorded nothing at
-		// commit (RateOutcomeCountedSafe=false), so without this it would vanish
-		// from the denominator and a few later 503s would overstate a healthy
-		// pair's reject rate. A commit that already recorded passes
-		// countRateOutcome=false and cannot double-count. Uses pr.ProviderID
-		// (the committed attempt's provider) to match the commit-time key.
+		// recorded outcome exactly as noteInferenceSuccess does. Commit-time
+		// accepts are retained even before the first reject; a commit that already
+		// recorded passes countRateOutcome=false and cannot double-count. A path
+		// without a recorded commit contributes its sole outcome here. Uses
+		// pr.ProviderID (the committed attempt's provider) to match the commit key.
 		s.registry.RecordCapacityAcceptOutcome(pr.ProviderID, pr.Model, !pr.RateOutcomeCountedSafe())
 	}
 

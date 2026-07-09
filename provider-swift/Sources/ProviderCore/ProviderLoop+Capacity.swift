@@ -117,13 +117,25 @@ extension ProviderLoop {
             reserveBytes: loadReserve,
             outstandingReservationBytes: outstandingKV)
 
+        // The real slot-cap guard counts resident slots, while in-progress and
+        // globally queued loads have committed future slots. Use a union because
+        // the success path installs modelSlots[model] before clearing modelsLoading.
+        var occupiedModelIDs = Set(modelSlots.keys)
+        occupiedModelIDs.formUnion(modelsLoading)
+        occupiedModelIDs.formUnion(loadGateWaitingModels.keys)
+
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
             gpuMemoryActiveGb: Double(MLX.GPU.activeMemory) / gbDivisor,
             gpuMemoryPeakGb: Double(MLX.GPU.peakMemory) / gbDivisor,
             gpuMemoryCacheGb: Double(MLX.GPU.cacheMemory) / gbDivisor,
             totalMemoryGb: Double(totalMem) / gbDivisor,
-            freeForLoadGb: freeForLoadGb
+            freeForLoadGb: freeForLoadGb,
+            maxModelSlots: maxModelSlots,
+            // `allSlots` intentionally omits models being unloaded so the
+            // coordinator cannot route to them. Resident entries plus loads
+            // already in progress are the slot commitments the next load sees.
+            occupiedModelSlots: occupiedModelIDs.count
         )
         state.inferenceActive = totalActive > 0
     }

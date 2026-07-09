@@ -792,6 +792,13 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		}
 		queuePR.Timing.QueuedAt = time.Now()
 		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
+			if errors.Is(err, registry.ErrModelShed) {
+				retryAfter := s.modelShedRetryAfter(d.model)
+				d.refundReservation()
+				s.recordRejection(d.rejectionInfoWithDecision("queue", "model_shed", http.StatusTooManyRequests, retryAfter*1000, decision))
+				s.writeModelShedResponse(w, d.publicModel, d.model, retryAfter)
+				return outcomeResponseWritten
+			}
 			s.ddIncr("routing.decisions", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model), "outcome:over_capacity"})
 			retryAfter := s.estimateRetryAfter(d.model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
@@ -829,6 +836,15 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
 				d.refundReservation()
 				return outcomeClientGone
+			}
+			if errors.Is(err, registry.ErrModelShed) {
+				s.recordWarmPoolQueueState(d.model)
+				d.updateRoutingOutcome(d.errorRoutingOutcome("error", "model_shed", http.StatusTooManyRequests))
+				d.refundReservation()
+				retryAfter := s.modelShedRetryAfter(d.model)
+				s.recordRejection(d.rejectionInfoWithDecision("queue", "model_shed", http.StatusTooManyRequests, retryAfter*1000, decision))
+				s.writeModelShedResponse(w, d.publicModel, d.model, retryAfter)
+				return outcomeResponseWritten
 			}
 			if errors.Is(err, registry.ErrQueueTTFTTooSlow) {
 				// The drain proved every eligible provider fails ONLY the TTFT

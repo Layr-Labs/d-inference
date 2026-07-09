@@ -305,18 +305,40 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		if s.coldDispatchEnabled() && s.coldSpillAvailable(model, registry.RequestTraits{HasTools: p.hasTools}, p.requiresVision, p.allowedProviderSerials) {
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:cold_dispatch_spill"})
 			// Fall through to dispatch+queue; reservation kept.
-		} else if s.registry.IsDedicatedModel(model) && s.registry.HasProviderForModel(model, p.allowedProviderSerials...) {
-			// Dedicated-box model (e.g. Gemma 4): the fleet DOES serve this
-			// model, but no provider DEDICATED to it can take the request right
-			// now — either none are dedicated, or the dedicated ones are busy/
-			// cooling. That is transient capacity pressure, not an absent model,
-			// so shed to OpenRouter as a 429 + Retry-After (clean failover)
-			// rather than a 503 (which can get the endpoint marked unhealthy /
-			// deranked). Mirrors the capacity_429 path above.
+		} else if s.registry.HasCapableProviderForModel(model, registry.RequestTraits{HasTools: p.hasTools}, p.requiresVision, p.allowedProviderSerials...) {
+			// The fleet DOES serve this model on a provider that is STRUCTURALLY
+			// capable of taking this public request (passes trust/privacy +
+			// render/trait gates), but none can take it right now (all are
+			// transiently excluded — cooling, breaker-open, thermal, or — for a
+			// dedicated family — non-dedicated). That is transient capacity
+			// pressure, not an absent model, so shed to OpenRouter as a 429 +
+			// Retry-After (clean failover) rather than a 503 (which can get the
+			// endpoint marked unhealthy / deranked). Mirrors the capacity_429
+			// path above.
+			//
+			// The predicate is HasCapableProviderForModel, NOT the bare
+			// HasProviderForModel: a model advertised only by private-only,
+			// runtime-unverified, below-trust, or render-broken providers is
+			// STRUCTURALLY unservable (no freeing slot ever makes it routable) and
+			// must stay on the 503 path below — a 429 there would have the client
+			// retry a permanently-dead model forever. The split is still keyed
+			// ONLY on provider capability, never on IsDedicatedModel: shed
+			// classification must not change when EIGENINFERENCE_DEDICATED_MODELS
+			// is cleared, so that env is a pure routing-policy flip with instant
+			// rollback (HasCapableProviderForModel ignores the dedicated rule, so a
+			// dedicated-family model on a non-dedicated box still reads as
+			// transient). The outcome tag keeps its historical name (dashboards key
+			// on it); the reason tag splits the old dedicated trigger from the
+			// re-keyed provider-exists one — IsDedicatedModel is consulted for
+			// that TAG only, not for the status code.
 			retryAfter := s.estimateRetryAfter(model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
-			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:dedicated_capacity_429"})
+			reason := "provider_exists"
+			if s.registry.IsDedicatedModel(model) {
+				reason = "dedicated"
+			}
+			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:dedicated_capacity_429", "reason:" + reason})
 			s.recordRejection(rejectionInfo{
 				r:                       r,
 				stage:                   "preflight_capacity",
@@ -340,7 +362,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
 			})
 			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-				fmt.Sprintf("no provider dedicated to model %q is available right now — retry after %ds", publicModel, retryAfter),
+				fmt.Sprintf("no provider for model %q can take the request right now — retry after %ds", publicModel, retryAfter),
 				withCode("rate_limit_exceeded")))
 			return model, true
 		} else {

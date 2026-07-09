@@ -35,6 +35,7 @@ func makeWarmPoolColdProvider(t *testing.T, reg *Registry, id, model string, dec
 	p.BackendCapacity = &protocol.BackendCapacity{
 		TotalMemoryGB:     totalMemory,
 		GPUMemoryActiveGB: activeMemory,
+		MaxModelSlots:     3,
 		Slots: []protocol.BackendSlotCapacity{
 			{Model: "other-model", State: "idle"},
 		},

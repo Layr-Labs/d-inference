@@ -2410,7 +2410,7 @@ func (r *Registry) drainQueuedRequestsForModels(models []string) {
 				// the decision's BestTTFTMs for Retry-After.
 				if drainRejectionTTFTTerminal(req.Pending, decision) {
 					req.Decision = decision
-					req.failWithReason(ErrQueueTTFTTooSlow)
+					queue.FailRequest(req, ErrQueueTTFTTooSlow)
 					continue
 				}
 				skipped = append(skipped, req)
@@ -2419,22 +2419,7 @@ func (r *Registry) drainQueuedRequestsForModels(models []string) {
 			req.Decision = decision
 			requeueSkipped()
 
-			select {
-			case <-req.Done():
-				provider.RemovePending(req.Pending.RequestID)
-				r.SetProviderIdle(provider.ID)
-				continue
-			default:
-			}
-
-			select {
-			case req.ResponseCh <- provider:
-				// Successfully assigned.
-			case <-req.Done():
-				provider.RemovePending(req.Pending.RequestID)
-				r.SetProviderIdle(provider.ID)
-				continue
-			default:
+			if !queue.AssignProviderIfAllowed(req, provider) {
 				provider.RemovePending(req.Pending.RequestID)
 				r.SetProviderIdle(provider.ID)
 				continue

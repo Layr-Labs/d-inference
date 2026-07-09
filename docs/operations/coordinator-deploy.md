@@ -186,8 +186,9 @@ The fallback version advertised when no release is registered is `LatestProvider
 exists** — fixed by registering the release, not by bumping code.
 
 ```bash
-git tag -a v0.7.4 -m "Release v0.7.4"
-git push origin master --tags
+VERSION=0.7.5
+git tag -a "v${VERSION}" -m "Release v${VERSION}"
+git push origin master "v${VERSION}"
 ```
 
 ### Required GitHub secrets
@@ -234,12 +235,35 @@ semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlig
 | `EIGENINFERENCE_QUEUE_BEFORE_SHED`, `_QUEUE_MAX_DEPTH`, `_QUEUE_MAX_WAIT` | Capacity queueing (dedicated pools included) |
 | `EIGENINFERENCE_HEALTH_EJECTION` | Stable-identity ejection kill switch — **`on` in prod**; `off` disables black-hole ejection entirely |
 | `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT`, `_BY_MODEL` | Per-box admission density (default 1.2) |
+| `EIGENINFERENCE_COMBINED_ADMISSION_CAP` | Box-wide Σ(load/qc) admission budget on top of the per-model quality caps (default `false` — dormant; turned on with the open-pool flip) |
 | `EIGENINFERENCE_QUALITY_CAP_PER_MODEL_TPS` | Quality cap reads each model's own solo decode rate (default `true`; `false` restores the provider-level benchmark) |
 | `EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES` | Solo samples required before a per-(model, chip) median is trusted (default 5) |
 | `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` | Cold-start solo rates, `build-id=tok/s` CSV (e.g. `gemma-4-26b-qat-4bit=14,gpt-oss-20b=30`); the in-memory TPS registry is restart-wiped |
-| `EIGENINFERENCE_WARM_POOL_*` | Warm-pool controller (active; `OBSERVE_ONLY=false`) |
+| `EIGENINFERENCE_WARM_POOL_*` | Warm-pool controller (active; `OBSERVE_ONLY=false`). `_ALLOW_BUSY_LOAD_MAX` bounds `max(coordinator pending, backend running+waiting)` for a cold box (default `0` = fully idle required; runbook raises to `2` for recovery). Busy warming also requires no-eviction memory headroom and v0.7.5+ `max_model_slots` plus `occupied_model_slots` heartbeats proving a free resident slot, including models still unloading; legacy/unknown busy boxes remain ineligible |
+| `EIGENINFERENCE_REJECT_MODELS` | Startup seed for the per-model shed list (429 at admission). Mutable at RUNTIME via `GET/PUT /v1/admin/reject-models` (`scripts/admin.sh reject-models get\|set\|clear`) — shed flips no longer need a restart |
 | `EIGENINFERENCE_DEDICATED_MODELS` | Static dedicated-box partition (`gemma-4`) |
 | `EIGENINFERENCE_IPAPI_KEY` | ip-api.com PRO key; unset falls back to the free 45 req/min tier |
+
+### v0.7.5 release-train gate
+
+Do not deploy an intermediate coordinator while the one-engine v0.7.5 release
+is incomplete. Legacy-engine removal and the coordinator routing changes ship
+as one validated release train:
+
+1. Merge PR #525, then PR #526. Do not deploy either intermediate coordinator.
+2. Run the combined coordinator merge-train gates on the resulting `master`.
+3. Bring PR #522 onto that final `master`, close its release blockers, and run
+   the complete provider release gates.
+4. Use a dev tag or `workflow_dispatch` with `environment=dev` to validate the
+   signed and notarized v0.7.5 bundle, installer, update path, and owned-provider
+   canary in pre-production. Complete that signoff before creating a production
+   tag or manually dispatching the workflow with `environment=prod`; either
+   production path registers an active release.
+5. Create the production tag only after pre-production signoff. The production
+   workflow uploads and registers an active release, so fleet rollout begins
+   immediately; monitor the rollout and stop or roll back if its gates fail.
+6. Only after the complete one-engine provider release is healthy, deploy the
+   coordinator once with the full merged train.
 
 ## Troubleshooting
 

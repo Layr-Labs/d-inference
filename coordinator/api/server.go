@@ -235,7 +235,14 @@ type Server struct {
 	// keep Gemma shed while allowing gpt-oss traffic with TTFT_HARD_REJECT=false).
 	// Exclusive self-route bypasses this because it never falls back to the public
 	// fleet and is useful for owner debugging. nil/empty = none.
-	rejectModels map[string]bool
+	//
+	// Seeded from EIGENINFERENCE_REJECT_MODELS at startup and mutable at RUNTIME
+	// via GET/PUT /v1/admin/reject-models (admin_reject_models.go) so a shed flip
+	// no longer costs a coordinator restart (each restart wipes in-memory
+	// calibrator/TPS/breaker state). Guarded by rejectModelsMu: the set is read on
+	// the per-request admission path and replaced wholesale by the admin endpoint.
+	rejectModelsMu sync.RWMutex
+	rejectModels   map[string]bool
 
 	// minDecodeTPS is the per-request sustained-decode floor (tokens/sec) passed
 	// to the scheduler as PendingRequest.MinDecodeTPS. When > 0 the router prefers
@@ -1034,13 +1041,29 @@ func (s *Server) SetTTFTHardReject(enabled bool) {
 }
 
 // SetRejectModels sets the requested/resolved model IDs to 429 at public
-// admission. Call before serving starts.
+// admission. Safe for concurrent use: startup seeds it from
+// EIGENINFERENCE_REJECT_MODELS and the admin endpoint (PUT
+// /v1/admin/reject-models) replaces it at runtime.
 func (s *Server) SetRejectModels(models map[string]bool) {
-	if len(models) == 0 {
-		s.rejectModels = nil
-		return
-	}
-	copy := make(map[string]bool, len(models))
+	s.ReplaceRejectModels(models)
+}
+
+// ReplaceRejectModels atomically replaces the reject set (full replacement —
+// an empty/nil set sheds nothing) and returns the previous and installed sets
+// as sorted lists, so callers can log the exact old -> new transition even
+// under concurrent replacements. Entries mapped to false, blank, or
+// whitespace-only are dropped.
+func (s *Server) ReplaceRejectModels(models map[string]bool) (previous, current []string) {
+	previous, current, _ = s.replaceRejectModels(models)
+	return previous, current
+}
+
+// replaceRejectModels serializes the public admission set with the queue's
+// matching snapshot. Holding rejectModelsMu across both updates means
+// concurrent PUTs cannot apply stale queue sweeps, and readers observe the new
+// admission set only after enqueue/requeue/drain guards are installed.
+func (s *Server) replaceRejectModels(models map[string]bool) (previous, current []string, failedQueued int) {
+	normalized := make(map[string]bool, len(models))
 	for model, reject := range models {
 		if !reject {
 			continue
@@ -1049,16 +1072,42 @@ func (s *Server) SetRejectModels(models map[string]bool) {
 		if model == "" {
 			continue
 		}
-		copy[model] = true
+		normalized[model] = true
 	}
-	if len(copy) == 0 {
-		s.rejectModels = nil
-		return
+	if len(normalized) == 0 {
+		normalized = nil
 	}
-	s.rejectModels = copy
+	s.rejectModelsMu.Lock()
+	prev := s.rejectModels
+	s.rejectModels = normalized
+	previous = sortedModelSet(prev)
+	current = sortedModelSet(normalized)
+	failedQueued = s.registry.RejectQueuedRequestsForShedModels(current)
+	s.rejectModelsMu.Unlock()
+	return previous, current, failedQueued
+}
+
+// RejectModels returns the current reject set as a sorted list. Never nil (an
+// empty set yields an empty slice) so JSON consumers always see an array.
+func (s *Server) RejectModels() []string {
+	s.rejectModelsMu.RLock()
+	defer s.rejectModelsMu.RUnlock()
+	return sortedModelSet(s.rejectModels)
+}
+
+// sortedModelSet flattens a model set to a sorted, never-nil slice.
+func sortedModelSet(models map[string]bool) []string {
+	out := make([]string, 0, len(models))
+	for model := range models {
+		out = append(out, model)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (s *Server) modelShed(resolved, requested string) bool {
+	s.rejectModelsMu.RLock()
+	defer s.rejectModelsMu.RUnlock()
 	if len(s.rejectModels) == 0 {
 		return false
 	}
@@ -1883,6 +1932,14 @@ func (s *Server) routes() {
 	// /readyz stays unauthenticated. See drain.go (DAR-327 Phase 1).
 	s.mux.HandleFunc("POST /v1/admin/drain", s.requireAuth(s.handleAdminDrain))
 
+	// Runtime shed list (admin only) — read/replace the per-model reject set
+	// (seeded from EIGENINFERENCE_REJECT_MODELS at startup) without a coordinator
+	// restart. Same auth pattern as /v1/admin/drain: requireAuth parses a Privy
+	// admin JWT / accepts the admin key as a pseudo-account, and the handlers
+	// authorize via isAdminAuthorized. See admin_reject_models.go.
+	s.mux.HandleFunc("GET /v1/admin/reject-models", s.requireAuth(s.handleAdminGetRejectModels))
+	s.mux.HandleFunc("PUT /v1/admin/reject-models", s.requireAuth(s.handleAdminPutRejectModels))
+
 	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
 	// Browse as JSON or stream a CSV/NDJSON download for offline analysis.
 	// See docs/architecture/routing-telemetry-and-calibration.md §6. Handlers
@@ -1927,52 +1984,76 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.ddGauge("providers.online", float64(s.registry.OnlineCount()), nil)
-			// APNs code-identity coverage — watch this climb during the grace
-			// window before letting APNS_ENFORCE_AFTER pass.
-			codeAttested, _ := s.registry.CodeAttestationCoverage()
-			s.ddGauge("attestation.code_attested", float64(codeAttested), nil)
-			enforced := 0.0
-			if s.registry.CodeAttestationEnforced() {
-				enforced = 1.0
-			}
-			s.ddGauge("attestation.code_enforced", enforced, nil)
-			for model, count := range s.registry.ModelProviderSnapshot() {
-				s.ddGauge("providers.per_model", float64(count), []string{"model:" + model})
-			}
-			for ver, count := range s.registry.ProviderCountByVersion() {
-				s.ddGauge("providers.per_version", float64(count), []string{"version:" + ver})
-			}
-			// Trust-state cohort gauges — alert when self_signed/untrusted grows.
-			for _, b := range s.registry.ProviderCountByTrustStatus() {
-				s.ddGauge("providers.by_trust_status", float64(b.Count),
-					[]string{"trust_level:" + b.TrustLevel, "status:" + b.Status})
-			}
-			// Stuck-cohort breakdown — distinguishes never-enrolled from
-			// enrolled-but-SecurityInfo-timing-out so we know if the problem is
-			// provider-side enrollment or APNs/MDM delivery.
-			for reason, count := range s.registry.ProviderCountByMDMFailure() {
-				s.ddGauge("providers.by_mdm_failure", float64(count), []string{"reason:" + reason})
-			}
-			if s.minProviderVersion != "" {
-				s.ddGauge("coordinator.min_provider_version_set", 1, []string{"min_version:" + s.minProviderVersion})
-			}
-			if q := s.registry.Queue(); q != nil {
-				s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
-			}
-			// Network utilization — demand/capacity across the warm-serving and
-			// token-budget axes, plus a per-model breakdown.
-			util := s.registry.NetworkUtilizationSnapshot()
-			s.ddGauge("utilization.network", util.Utilization, nil)
-			s.ddGauge("utilization.warm", util.WarmUtilization, nil)
-			s.ddGauge("utilization.token_budget", util.TokenBudgetUtilization, nil)
-			s.ddGauge("utilization.bottleneck", util.BottleneckUtilization, nil)
-			s.ddGauge("capacity.tps", util.CapacityTPS, nil)
-			s.ddGauge("capacity.demand_concurrency", util.DemandConcurrency, nil)
-			s.ddGauge("capacity.serving_capacity", util.ServingCapacity, nil)
-			s.ddGauge("capacity.spill_arrival_rate", util.SpillArrivalRate, nil)
-			for _, m := range util.Models {
-				s.ddGauge("utilization.model", m.Utilization, []string{"model:" + m.Model})
+			s.pushDDGauges()
+		}
+	}
+}
+
+// pushDDGauges pushes one round of point-in-time gauge values to DogStatsD.
+// Split from StartDDGaugeLoop's ticker so tests can exercise the emission
+// directly against a live UDP collector.
+func (s *Server) pushDDGauges() {
+	s.ddGauge("providers.online", float64(s.registry.OnlineCount()), nil)
+	// APNs code-identity coverage — watch this climb during the grace
+	// window before letting APNS_ENFORCE_AFTER pass.
+	codeAttested, _ := s.registry.CodeAttestationCoverage()
+	s.ddGauge("attestation.code_attested", float64(codeAttested), nil)
+	enforced := 0.0
+	if s.registry.CodeAttestationEnforced() {
+		enforced = 1.0
+	}
+	s.ddGauge("attestation.code_enforced", enforced, nil)
+	for model, count := range s.registry.ModelProviderSnapshot() {
+		s.ddGauge("providers.per_model", float64(count), []string{"model:" + model})
+	}
+	for ver, count := range s.registry.ProviderCountByVersion() {
+		s.ddGauge("providers.per_version", float64(count), []string{"version:" + ver})
+	}
+	// Trust-state cohort gauges — alert when self_signed/untrusted grows.
+	for _, b := range s.registry.ProviderCountByTrustStatus() {
+		s.ddGauge("providers.by_trust_status", float64(b.Count),
+			[]string{"trust_level:" + b.TrustLevel, "status:" + b.Status})
+	}
+	// Stuck-cohort breakdown — distinguishes never-enrolled from
+	// enrolled-but-SecurityInfo-timing-out so we know if the problem is
+	// provider-side enrollment or APNs/MDM delivery.
+	for reason, count := range s.registry.ProviderCountByMDMFailure() {
+		s.ddGauge("providers.by_mdm_failure", float64(count), []string{"reason:" + reason})
+	}
+	if s.minProviderVersion != "" {
+		s.ddGauge("coordinator.min_provider_version_set", 1, []string{"min_version:" + s.minProviderVersion})
+	}
+	if q := s.registry.Queue(); q != nil {
+		s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
+	}
+	// Network utilization — demand/capacity across the warm-serving and
+	// token-budget axes, plus a per-model breakdown.
+	util := s.registry.NetworkUtilizationSnapshot()
+	s.ddGauge("utilization.network", util.Utilization, nil)
+	s.ddGauge("utilization.warm", util.WarmUtilization, nil)
+	s.ddGauge("utilization.token_budget", util.TokenBudgetUtilization, nil)
+	s.ddGauge("utilization.bottleneck", util.BottleneckUtilization, nil)
+	s.ddGauge("capacity.tps", util.CapacityTPS, nil)
+	s.ddGauge("capacity.demand_concurrency", util.DemandConcurrency, nil)
+	s.ddGauge("capacity.serving_capacity", util.ServingCapacity, nil)
+	s.ddGauge("capacity.spill_arrival_rate", util.SpillArrivalRate, nil)
+	for _, m := range util.Models {
+		s.ddGauge("utilization.model", m.Utilization, []string{"model:" + m.Model})
+	}
+	// Warm-pool cold-eligibility diagnostics: why the controller can (or cannot)
+	// act. eligible_cold hitting 0 silently clamps every warm target — including
+	// MIN_WARM floors — so the per-(model, reason) disqualifier tallies make "why
+	// is eligible_cold 0" a dashboard instead of a restart-and-grep (postmortem
+	// 2026-07-06 §3.3). Reason values are the warmColdReason strings
+	// (registry/warm_pool_controller.go) — keep them stable, dashboards key on them.
+	if snaps, _ := s.registry.LatestWarmPoolSnapshots(); len(snaps) > 0 {
+		for _, snap := range snaps {
+			modelTag := []string{"model:" + snap.Model}
+			s.ddGauge("warm_pool.eligible_cold", float64(snap.EligibleCold), modelTag)
+			s.ddGauge("warm_pool.cold_ineligible", float64(snap.ColdIneligible), modelTag)
+			for reason, n := range snap.ColdDisqualifiers {
+				s.ddGauge("warm_pool.cold_disqualified", float64(n),
+					[]string{"model:" + snap.Model, "reason:" + reason})
 			}
 		}
 	}

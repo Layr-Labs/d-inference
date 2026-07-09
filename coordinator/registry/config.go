@@ -82,6 +82,17 @@ type WarmPoolConfig struct {
 	// Floors are capped by warm+eligibleCold and still obey load throttles.
 	MinWarmByModel map[string]int
 
+	// AllowBusyLoadMax bounds the busy-load a COLD provider may carry and still be
+	// an eligible warm-pool target: eligible when max(pendingCount, Σ slots
+	// (NumRunning+NumWaiting)) <= AllowBusyLoadMax. The default 0 preserves the
+	// historical fully-idle requirement (any activity disqualifies —
+	// warmColdNotIdle). Raising it (runbook: 2) lets the controller warm a
+	// lightly-busy box instead of stalling at eligible_cold=0 during recovery
+	// (postmortem 2026-07-06 §3.3); a non-idle candidate is additionally required
+	// to fit the weights WITHOUT evicting co-resident models (warmColdBusyNoEvict),
+	// mirroring the dispatch-path no-eviction rule in freeMemoryAdmits.
+	AllowBusyLoadMax int
+
 	// Ramp shaping. MaxLoadsPerTick is the baseline per-tick load burst;
 	// RampGapFraction scales the burst up with the remaining target gap, bounded
 	// by MaxLoadsPerTickCeiling (a sane hard maximum). MaxGlobalPendingLoads caps
@@ -130,6 +141,7 @@ func ReadConfig() Config {
 			AssumedPromptTokens:        env.EnvInt(env.EnvPrefix+"_WARM_POOL_ASSUMED_PROMPT_TOKENS", 512),
 			AssumedCompletionTokens:    env.EnvInt(env.EnvPrefix+"_WARM_POOL_ASSUMED_COMPLETION_TOKENS", 256),
 			MinWarmByModel:             envModelIntMap(env.EnvPrefix + "_WARM_POOL_MIN_WARM"),
+			AllowBusyLoadMax:           env.EnvInt(env.EnvPrefix+"_WARM_POOL_ALLOW_BUSY_LOAD_MAX", 0),
 
 			MaxLoadsPerTick:        env.EnvInt(env.EnvPrefix+"_WARM_POOL_MAX_LOADS_PER_TICK", 4),
 			MaxLoadsPerTickCeiling: env.EnvInt(env.EnvPrefix+"_WARM_POOL_MAX_LOADS_PER_TICK_CEILING", 16),
@@ -250,6 +262,9 @@ func (c WarmPoolConfig) Check() error {
 	}
 	if c.AssumedPromptTokens < 0 || c.AssumedCompletionTokens < 0 {
 		return fmt.Errorf("registry: warm pool assumed token counts must be >= 0")
+	}
+	if c.AllowBusyLoadMax < 0 {
+		return fmt.Errorf("registry: warm pool allow-busy load max must be >= 0")
 	}
 	if c.FallbackQualityConcurrency < 1 {
 		return fmt.Errorf("registry: warm pool fallback quality concurrency must be >= 1")

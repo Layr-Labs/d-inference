@@ -103,10 +103,12 @@ func TestBackendCapacityMarshalRoundtrip(t *testing.T) {
 				MaxTokensPotential: 0,
 			},
 		},
-		GPUMemoryActiveGB: 45.2,
-		GPUMemoryPeakGB:   52.1,
-		GPUMemoryCacheGB:  8.3,
-		TotalMemoryGB:     128,
+		GPUMemoryActiveGB:  45.2,
+		GPUMemoryPeakGB:    52.1,
+		GPUMemoryCacheGB:   8.3,
+		TotalMemoryGB:      128,
+		MaxModelSlots:      3,
+		OccupiedModelSlots: 2,
 	}
 
 	data, err := json.Marshal(cap)
@@ -136,6 +138,12 @@ func TestBackendCapacityMarshalRoundtrip(t *testing.T) {
 	}
 	if decoded.TotalMemoryGB != 128 {
 		t.Errorf("total_memory_gb = %f, want 128", decoded.TotalMemoryGB)
+	}
+	if decoded.MaxModelSlots != 3 {
+		t.Errorf("max_model_slots = %d, want 3", decoded.MaxModelSlots)
+	}
+	if decoded.OccupiedModelSlots != 2 {
+		t.Errorf("occupied_model_slots = %d, want 2", decoded.OccupiedModelSlots)
 	}
 }
 

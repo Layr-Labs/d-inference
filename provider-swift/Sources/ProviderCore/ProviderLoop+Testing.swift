@@ -41,6 +41,36 @@ extension ProviderLoop {
     /// advertised set, clamped to `[1, backend.maxModelSlots]`).
     func maxModelSlotsForTesting() -> Int { maxModelSlots }
 
+    /// Test seam: hide or reveal a resident model as unload-in-progress without
+    /// running the real scheduler teardown.
+    func setModelUnloadingForTesting(_ id: String, _ unloading: Bool) {
+        if unloading {
+            modelsUnloading.insert(id)
+        } else {
+            modelsUnloading.remove(id)
+        }
+    }
+
+    /// Test seam: reserve or release a future resident slot without loading
+    /// model weights.
+    func setModelLoadingForTesting(_ id: String, _ loading: Bool) {
+        if loading {
+            modelsLoading.insert(id)
+        } else {
+            modelsLoading.remove(id)
+        }
+    }
+
+    /// Test seam: reserve or release a distinct model commitment queued behind
+    /// the global load gate.
+    func setModelWaitingForLoadGateForTesting(_ id: String, _ waiting: Bool) {
+        if waiting {
+            loadGateWaitingModels[id] = 1
+        } else {
+            loadGateWaitingModels.removeValue(forKey: id)
+        }
+    }
+
     /// Test seam: override the desired-build prefetch retry backoff schedule
     /// (the production default waits tens of seconds between attempts).
     func setDesiredPrefetchRetryDelaysForTesting(_ delays: [Duration]) {

@@ -252,6 +252,14 @@ type BackendCapacity struct {
 	GPUMemoryPeakGB   float64               `json:"gpu_memory_peak_gb"`   // Metal peak memory
 	GPUMemoryCacheGB  float64               `json:"gpu_memory_cache_gb"`  // Metal cache memory (reclaimable)
 	TotalMemoryGB     float64               `json:"total_memory_gb"`      // total system/GPU memory
+	// MaxModelSlots is the provider's current effective resident-model slot cap.
+	// Zero means a legacy/unknown provider. The warm-pool bounded-busy path uses
+	// it to avoid issuing a load_model that cannot allocate another slot.
+	MaxModelSlots int `json:"max_model_slots,omitempty"`
+	// OccupiedModelSlots is the provider's authoritative resident or committed-load
+	// slot count, including models hidden from routable capacity while loading,
+	// queued, or unloading. Zero means legacy/unknown.
+	OccupiedModelSlots int `json:"occupied_model_slots,omitempty"`
 	// FreeForLoadGB is the max additional model-WEIGHT footprint (GB) the
 	// provider can load right now: net of the 90% unified-memory cap, OS/operator
 	// reserve, and activation+min-KV load headroom, clamped to real OS-available

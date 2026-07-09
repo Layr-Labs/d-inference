@@ -1,6 +1,9 @@
 package registry
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // Dedicated-model routing isolates a model family (e.g. Gemma 4) to providers
 // that run ONLY that family. A "dedicated" provider is one whose entire
@@ -135,6 +138,75 @@ func (r *Registry) HasProviderForModel(model string, allowedSerials ...string) b
 			r.providerServesCatalogModelLocked(p, model)
 		p.mu.Unlock()
 		if eligible {
+			return true
+		}
+	}
+	return false
+}
+
+// HasCapableProviderForModel is the capability-aware sibling of
+// HasProviderForModel: it reports whether any provider advertises a
+// catalog-allowed build of the resolved model id AND passes the STRUCTURAL
+// public-routing gates — the liveness/trust/privacy core (online, trust floor,
+// runtime-verified, private-text support, challenge freshness, not private-only)
+// and trait eligibility (render-ok + capability version floors; vision when
+// requiresVision), plus absolute hardware fit for non-resident models — while
+// IGNORING the transient exclusions a freeing slot or a lapsing timer clears
+// (the dedicated-box isolation rule, capacity /
+// dispatch-load / inference-error cooldowns, the node-health breaker, and
+// thermal state).
+//
+// It answers the question HasProviderForModel cannot: is a zero-candidate state
+// TRANSIENT (a slot/cooldown will clear, or a dedicated box will free — shed as
+// an uptime-neutral 429) or STRUCTURAL (the model is advertised only by
+// private-only, runtime-unverified, below-trust, or render-broken providers that
+// can NEVER serve this public request as configured — a 503 the client should
+// not retry forever)? The consumer preflight uses it to keep genuinely
+// unservable models on the 503 path while a dedicated-family model whose only
+// providers are non-dedicated (dedicated-rule-excluded but otherwise capable)
+// still reads as a transient 429. Like HasProviderForModel it never consults
+// IsDedicatedModel, so the 429-vs-503 classification stays independent of
+// EIGENINFERENCE_DEDICATED_MODELS (a pure routing-policy flip with instant
+// rollback). When allowedSerials is non-empty the check is restricted to
+// providers whose attested serial is in the set.
+func (r *Registry) HasCapableProviderForModel(model string, traits RequestTraits, requiresVision bool, allowedSerials ...string) bool {
+	allowedSet := make(map[string]struct{}, len(allowedSerials))
+	for _, s := range allowedSerials {
+		allowedSet[s] = struct{}{}
+	}
+	now := time.Now()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		if len(allowedSet) > 0 && !providerMatchesAllowedSerial(p, allowedSet) {
+			continue
+		}
+		p.mu.Lock()
+		capable := r.providerServesCatalogModelLocked(p, model) &&
+			r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now) &&
+			r.providerEligibleForTraitsLocked(p, model, traits) &&
+			(!requiresVision || r.providerServesVisionModelLocked(p, model, false))
+		if capable {
+			slotState := "unknown"
+			totalMemoryGB := float64(p.Hardware.MemoryGB)
+			if p.BackendCapacity != nil {
+				if p.BackendCapacity.TotalMemoryGB > 0 {
+					totalMemoryGB = p.BackendCapacity.TotalMemoryGB
+				}
+				for _, slot := range p.BackendCapacity.Slots {
+					if slot.Model == model {
+						slotState = slot.State
+						break
+					}
+				}
+			}
+			if !slotStateModelLoaded(slotState) &&
+				!modelFitsHardware(r.catalogMinRAMGbLocked(model), r.modelSizeGBForFitLocked(p, model), totalMemoryGB) {
+				capable = false
+			}
+		}
+		p.mu.Unlock()
+		if capable {
 			return true
 		}
 	}

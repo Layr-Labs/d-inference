@@ -110,6 +110,21 @@ cmd_models_list() {
     curl -fsSL "$COORDINATOR_URL/v1/models/catalog" | python3 -m json.tool
 }
 
+cmd_reject_models_get() {
+    authed_curl "$COORDINATOR_URL/v1/admin/reject-models" | python3 -m json.tool
+}
+
+cmd_reject_models_set() {
+    # FULL replacement of the runtime shed list (no restart). No args = shed
+    # nothing. Startup still seeds the initial set from
+    # EIGENINFERENCE_REJECT_MODELS.
+    local body
+    body=$(python3 -c 'import json, sys; print(json.dumps({"models": sys.argv[1:]}))' "$@")
+    authed_curl -X PUT "$COORDINATOR_URL/v1/admin/reject-models" \
+        -H "Content-Type: application/json" \
+        -d "$body" | python3 -m json.tool
+}
+
 cmd_raw() {
     local method="${1:?Usage: $0 raw <METHOD> <path> [body]}"
     local path="${2:?Usage: $0 raw <METHOD> <path> [body]}"
@@ -148,6 +163,14 @@ case "${1:-help}" in
             *) echo "Usage: $0 models [list]" ;;
         esac
         ;;
+    reject-models)
+        case "${2:-get}" in
+            get) cmd_reject_models_get ;;
+            set) shift 2; cmd_reject_models_set "$@" ;;
+            clear) cmd_reject_models_set ;;
+            *) echo "Usage: $0 reject-models [get|set <model>...|clear]" ;;
+        esac
+        ;;
     raw)
         cmd_raw "${2:-}" "${3:-}" "${4:-}"
         ;;
@@ -161,6 +184,9 @@ case "${1:-help}" in
         echo "  releases latest [platform]     Show latest active release"
         echo "  releases deactivate <version>  Deactivate a release"
         echo "  models list                    List model catalog"
+        echo "  reject-models get              Show the runtime shed list"
+        echo "  reject-models set <model>...   REPLACE the shed list (no restart)"
+        echo "  reject-models clear            Shed nothing (empty list)"
         echo "  raw <METHOD> <path> [body]     Raw API call with auth"
         echo ""
         echo "Environment:"

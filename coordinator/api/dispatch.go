@@ -419,7 +419,12 @@ func (d *dispatchState) commitFirstContent(pr *registry.PendingRequest, chunk st
 	// legitimately sheds concurrent dispatches — waiting for the completion
 	// accept (noteInferenceSuccess) would let transient fullness masquerade as
 	// the zero-accepts black-hole signature. See registry/capacity_cooldown.go.
-	d.s.registry.RecordCapacityAccept(pr.ProviderID, pr.Model)
+	// The return says whether the pair's capacity-503 RATE window stored this
+	// accept. The enabled tracker retains it even before the first reject; stamp
+	// the request so completion cannot add the same denominator outcome twice.
+	if d.s.registry.RecordCapacityAccept(pr.ProviderID, pr.Model) {
+		pr.MarkRateOutcomeCounted()
+	}
 }
 
 // successRoutingOutcome builds a success outcome for the committed attempt.
@@ -987,8 +992,8 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 // provider error and, unless held boilerplate was discarded (which emits its own
 // pre-content failover counter), emits the generic retry counter. This is the
 // exact `if !s.noteDispatchProviderError(...) { s.ddIncr(retry) }` pattern.
-func (d *dispatchState) noteDispatchRetry(provider *registry.Provider, pr *registry.PendingRequest, statusCode int, errStr string, held *[]string) {
-	if !d.s.noteDispatchProviderError(provider, pr, statusCode, errStr, held) {
+func (d *dispatchState) noteDispatchRetry(provider *registry.Provider, pr *registry.PendingRequest, statusCode int, errStr, errReason string, held *[]string) {
+	if !d.s.noteDispatchProviderError(provider, pr, statusCode, errStr, errReason, held) {
 		d.s.ddIncr("inference.dispatches", []string{"status:retry"})
 	}
 }
@@ -1154,7 +1159,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 					s.cancelDispatch(provider, pr)
 					d.setLastInferenceError(provider, errMsg)
 					d.lastFailedVersion = failedProviderVersion(provider)
-					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, &d.heldChunks)
+					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
 					return outcomeRetry
@@ -1196,7 +1201,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 			if s.metrics != nil {
 				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
 			}
-			d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, &d.heldChunks)
+			d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, &d.heldChunks)
 			d.provider = nil
 			d.pr = nil
 			return outcomeRetry
@@ -1369,7 +1374,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 					s.cancelDispatch(provider, pr)
 					d.setLastInferenceError(provider, errMsg)
 					d.lastFailedVersion = failedProviderVersion(provider)
-					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, &d.heldChunks)
+					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
 					return outcomeRetry
@@ -1391,7 +1396,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 			if s.metrics != nil {
 				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
 			}
-			d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, &d.heldChunks)
+			d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, &d.heldChunks)
 			d.provider = nil
 			d.pr = nil
 			return outcomeRetry
@@ -1483,7 +1488,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					s.cancelDispatch(provider, pr)
 					d.setLastInferenceError(provider, errMsg)
 					d.lastFailedVersion = failedProviderVersion(provider)
-					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, &d.heldChunks)
+					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
 					return outcomeRetry
@@ -1522,7 +1527,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					d.excludeProviders[backupProvider.ID] = struct{}{}
 					d.lastFailedVersion = failedProviderVersion(backupProvider)
 					d.updateSpeculativeFailure(backupPR, errMsg)
-					s.noteDispatchProviderError(backupProvider, backupPR, errMsg.StatusCode, errMsg.Error, &backupHeld)
+					s.noteDispatchProviderError(backupProvider, backupPR, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, &backupHeld)
 					// Preserve a deterministic-unservable verdict from this loser so the
 					// surviving primary's error can't mask it (see latchDeterministicLoser).
 					d.latchDeterministicLoser(backupProvider, errMsg)
@@ -1570,7 +1575,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			s.cancelDispatch(provider, pr)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			d.updateSpeculativeFailure(pr, errMsg)
-			s.noteDispatchProviderError(provider, pr, errMsg.StatusCode, errMsg.Error, &d.heldChunks)
+			s.noteDispatchProviderError(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, &d.heldChunks)
 			// Preserve a deterministic-unservable verdict from this loser so the
 			// surviving backup's error can't mask it (see latchDeterministicLoser).
 			d.latchDeterministicLoser(provider, errMsg)
@@ -1586,7 +1591,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			s.cancelDispatch(backupProvider, backupPR)
 			d.lastFailedVersion = failedProviderVersion(backupProvider)
 			d.updateSpeculativeFailure(backupPR, errMsg)
-			s.noteDispatchProviderError(backupProvider, backupPR, errMsg.StatusCode, errMsg.Error, &backupHeld)
+			s.noteDispatchProviderError(backupProvider, backupPR, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, &backupHeld)
 			// Preserve a deterministic-unservable verdict from this loser so the
 			// surviving primary's error can't mask it (see latchDeterministicLoser).
 			d.latchDeterministicLoser(backupProvider, errMsg)
@@ -1610,10 +1615,10 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			// acceptedWait timeout path so a stalling provider/model
 			// (shape-keyed) trips its cooldown.
 			if len(d.heldChunks) > 0 {
-				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "")
+				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "")
 			}
 			if len(backupHeld) > 0 {
-				s.noteInferenceError(backupProvider.ID, backupPR, http.StatusGatewayTimeout, "")
+				s.noteInferenceError(backupProvider.ID, backupPR, http.StatusGatewayTimeout, "", "")
 			}
 			s.cancelDispatch(provider, pr)
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
@@ -1669,7 +1674,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 					d.setLastInferenceError(provider, errMsg2)
 					d.lastFailedVersion = failedProviderVersion(provider)
 					d.updateSpeculativeFailure(pr, errMsg2)
-					d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, errMsg2.Error, &d.heldChunks)
+					d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
 					d.requestID = ""
@@ -1694,7 +1699,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 			d.setLastInferenceError(provider, errMsg2)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			d.updateSpeculativeFailure(pr, errMsg2)
-			d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, errMsg2.Error, &d.heldChunks)
+			d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, &d.heldChunks)
 			d.provider = nil
 			d.pr = nil
 			d.requestID = ""
@@ -1766,7 +1771,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 					d.setLastInferenceError(backupProvider, errMsg2)
 					d.lastFailedVersion = failedProviderVersion(backupProvider)
 					d.updateSpeculativeFailure(backupPR, errMsg2)
-					d.noteDispatchRetry(backupProvider, backupPR, errMsg2.StatusCode, errMsg2.Error, &backupHeld)
+					d.noteDispatchRetry(backupProvider, backupPR, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, &backupHeld)
 					d.provider = nil
 					d.pr = nil
 					return outcomeRetry
@@ -1796,7 +1801,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			d.setLastInferenceError(backupProvider, errMsg2)
 			d.lastFailedVersion = failedProviderVersion(backupProvider)
 			d.updateSpeculativeFailure(backupPR, errMsg2)
-			s.noteDispatchProviderError(backupProvider, backupPR, errMsg2.StatusCode, errMsg2.Error, &backupHeld)
+			s.noteDispatchProviderError(backupProvider, backupPR, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, &backupHeld)
 			d.provider = nil
 			d.pr = nil
 			return outcomeRetry
@@ -1861,7 +1866,7 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 					s.cancelDispatch(provider, pr)
 					d.setLastInferenceError(provider, errMsg2)
 					d.lastFailedVersion = failedProviderVersion(provider)
-					d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, errMsg2.Error, &d.heldChunks)
+					d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
 					return outcomeRetry
@@ -1881,7 +1886,7 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 			d.setLastInferenceError(provider, errMsg2)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			d.updateSpeculativeFailure(pr, errMsg2)
-			s.noteDispatchProviderError(provider, pr, errMsg2.StatusCode, errMsg2.Error, &d.heldChunks)
+			s.noteDispatchProviderError(provider, pr, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, &d.heldChunks)
 			d.provider = nil
 			d.pr = nil
 			d.requestID = ""
@@ -1996,7 +2001,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 					if s.metrics != nil {
 						s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
 					}
-					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, &d.heldChunks)
+					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
 					return outcomeRetry
@@ -2028,7 +2033,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 			if s.metrics != nil {
 				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
 			}
-			d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, &d.heldChunks)
+			d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, &d.heldChunks)
 			d.provider = nil
 			d.pr = nil
 			return outcomeRetry
@@ -2041,7 +2046,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 			// that repeatedly acks and stalls enters cooldown instead
 			// of soaking retries forever. (504 is one of the breaker's
 			// counted codes; this arm is where those 504s originate.)
-			s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "")
+			s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "")
 			d.setLastError("provider accepted but timed out before first chunk", http.StatusGatewayTimeout)
 			if d.preambleLiveness {
 				d.setLastError("provider sent preamble but stalled before first content", http.StatusGatewayTimeout)

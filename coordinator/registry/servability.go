@@ -144,6 +144,15 @@ func snapshotStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
 // a merely-busy fleet ahead of the queue.
 func liveRemainingBudget(snap routingSnapshot) (budget int64, known bool) {
 	if snap.activeTokenBudgetMax > 0 {
+		// Gray-box budget clamp (budget_clamp.go): a capacity-503 proved the
+		// live gate rejects, so the pair's LIVE headroom is zero regardless of
+		// the stale-optimistic heartbeat budget. Live-semantics readers only —
+		// the STRUCTURAL ceiling (snapshotStructuralBudget → PredictServable)
+		// stays raw on purpose: the clamp is transient (TTL-bounded) and must
+		// never feed the fleet-level structural 429.
+		if snap.budgetClamped {
+			return 0, true
+		}
 		rem := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
 		if rem < 0 {
 			rem = 0

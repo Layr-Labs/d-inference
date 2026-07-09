@@ -46,11 +46,44 @@ const defaultQualityCapOvercommit = 1.2
 // the global overcommit.
 const qualityCapOvercommitByModelEnv = env.EnvPrefix + "_QUALITY_CONCURRENCY_OVERCOMMIT_BY_MODEL"
 
+// Per-model solo-TPS source for the quality cap (the postmortem layer-6 root
+// fix — see resolvedSoloModelTPSLocked):
+//
+//   - qualityCapPerModelTPSEnv is the kill switch (bool, default TRUE). false
+//     restores the provider-level resolvedDecodeTPS(p) rate at every quality-cap
+//     site exactly.
+//   - qualityCapSoloMinSamplesEnv is the minimum solo sample count (per chip,
+//     or pooled across chips) before a solo median is trusted (int, default 5).
+//   - modelSoloTPSSeedEnv is the cold-start seed, a "model=tok/s" CSV keyed by
+//     concrete resolved build id (matched case-insensitively), e.g.
+//     "gemma-4-26b-qat-4bit=14,gpt-oss-20b=30". The TPS registry is in-memory
+//     and restart-wiped, so the seed is the answer until gated solo samples
+//     accumulate (e.g. while a model warms behind a shed).
+const (
+	qualityCapPerModelTPSEnv    = env.EnvPrefix + "_QUALITY_CAP_PER_MODEL_TPS"
+	qualityCapSoloMinSamplesEnv = env.EnvPrefix + "_QUALITY_CAP_SOLO_MIN_SAMPLES"
+	modelSoloTPSSeedEnv         = env.EnvPrefix + "_MODEL_SOLO_TPS_SEED"
+)
+
+// defaultQualityCapSoloMinSamples is the solo-median trust floor when
+// EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES is unset.
+const defaultQualityCapSoloMinSamples = 5
+
 // qualityCapOvercommitByModel holds the parsed per-model overrides. Like the
 // package's other startup-configured routing knobs (prefillToDecodeRatio,
 // ttftOccupancyAlpha), it is written once by SetQualityConcurrencyCap before
 // the coordinator serves and only read on routing paths thereafter.
 var qualityCapOvercommitByModel map[string]float64
+
+// qualityCapPerModelTPS / qualityCapSoloMinSamples / modelSoloTPSSeed are the
+// parsed per-model solo-TPS knobs. Same lifecycle as
+// qualityCapOvercommitByModel: written once by SetQualityConcurrencyCap before
+// serving, read-only on routing paths.
+var (
+	qualityCapPerModelTPS    = true
+	qualityCapSoloMinSamples = defaultQualityCapSoloMinSamples
+	modelSoloTPSSeed         map[string]float64
+)
 
 // SetQualityConcurrencyCap configures the per-provider quality-concurrency
 // admission cap. enabled=false leaves the legacy flat cap unchanged. floorTPS
@@ -76,7 +109,13 @@ func (r *Registry) SetQualityConcurrencyCap(enabled bool, overcommit, floorTPS f
 	if fallback < 1 {
 		fallback = 1
 	}
-	qualityCapOvercommitByModel = parseQualityCapOvercommitByModel(os.Getenv(qualityCapOvercommitByModelEnv))
+	qualityCapOvercommitByModel = parseModelFloatMap(os.Getenv(qualityCapOvercommitByModelEnv))
+	qualityCapPerModelTPS = env.EnvBool(qualityCapPerModelTPSEnv, true)
+	qualityCapSoloMinSamples = env.EnvInt(qualityCapSoloMinSamplesEnv, defaultQualityCapSoloMinSamples)
+	if qualityCapSoloMinSamples < 1 {
+		qualityCapSoloMinSamples = 1
+	}
+	modelSoloTPSSeed = parseModelFloatMap(os.Getenv(modelSoloTPSSeedEnv))
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.qualityCapEnabled = enabled
@@ -94,11 +133,18 @@ func (r *Registry) QualityCapOvercommit() float64 {
 	return r.qualityCapOvercommit
 }
 
-// parseQualityCapOvercommitByModel parses the "model=overcommit,..." CSV form
-// (mirroring envModelIntMap for EIGENINFERENCE_WARM_POOL_MIN_WARM, with float
-// values). Malformed entries and non-positive values are skipped; an empty or
-// all-invalid input yields nil (no overrides).
-func parseQualityCapOvercommitByModel(raw string) map[string]float64 {
+// parseModelFloatMap parses the "model=value,..." CSV form (mirroring
+// envModelIntMap for EIGENINFERENCE_WARM_POOL_MIN_WARM, with float values).
+// Keys are lowercased so lookups on resolved build ids match
+// case-insensitively. Malformed, non-positive, and non-finite values are all
+// skipped — strconv.ParseFloat happily yields NaN and ±Inf ("m=NaN" passes a
+// naive v <= 0 filter because NaN comparisons are always false), and either
+// one flows into int(math.Ceil(...)) / qualityConcurrency as an
+// implementation-defined integer, silently strangling the model to cap 1.
+// An empty or all-invalid input yields nil (no entries). Shared by the
+// per-model overcommit overrides (qualityCapOvercommitByModelEnv) and the
+// solo-TPS seed (modelSoloTPSSeedEnv).
+func parseModelFloatMap(raw string) map[string]float64 {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil
@@ -118,7 +164,7 @@ func parseQualityCapOvercommitByModel(raw string) map[string]float64 {
 			continue
 		}
 		v, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
-		if err != nil || v <= 0 {
+		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
 			continue
 		}
 		out[model] = v
@@ -139,17 +185,91 @@ func (r *Registry) qualityCapOvercommitForModelLocked(model string) float64 {
 	return r.qualityCapOvercommit
 }
 
+// soloModelTPS is a static single-stream decode rate for a (provider, model)
+// pair plus its provenance. perModel is true when the rate came from a
+// model-specific source — a gated solo median or the seed env — which is
+// trustworthy for capping even when the provider never reported a registration
+// benchmark; false means the rate is the provider-level resolvedDecodeTPS
+// chain (registration benchmark, or the model-agnostic sqrt-bandwidth proxy
+// that only dedicated models may be capped from).
+type soloModelTPS struct {
+	tps      float64
+	perModel bool
+}
+
+// resolvedSoloModelTPSLocked resolves the static solo decode rate the quality
+// cap should use for (p, model). Fallback chain, most- to least-specific:
+//
+//  1. per-(model, chip CLASS) solo median — gated samples only (solo_tps.go),
+//     keyed by chipClassKey (family+tier) so a fast tier never lends its rate
+//     to a slow one — once it has ≥ qualityCapSoloMinSamples samples;
+//  2. the MIN of the per-class solo medians across chip classes (conservative
+//     cross-class transfer, SoloMedianAllChips), same total-sample floor. When
+//     a modelSoloTPSSeedEnv seed exists, it is an upper bound on that transfer:
+//     observations from faster classes cannot widen an unsampled slower class's
+//     cap above its configured cold-start estimate;
+//  3. the modelSoloTPSSeedEnv seed when there is no trusted cross-class rate
+//     (the TPS registry is in-memory and restart-wiped);
+//  4. the provider-level resolvedDecodeTPS(p) — exactly the pre-per-model
+//     behavior, including its sqrt-bandwidth fallback semantics.
+//
+// The rate is deliberately STATIC (never an under-load EWMA): an observed rate
+// collapses under the very overload the cap exists to prevent, which would
+// drive the cap to 1 in a feedback loop. Solo medians preserve that property
+// because ingest is gated on a fully uncontended box.
+//
+// The qualityCapPerModelTPSEnv kill switch (false) short-circuits to (4),
+// restoring resolvedDecodeTPS(p) at every wired site exactly. Caller holds
+// r.mu and p.mu.
+func (r *Registry) resolvedSoloModelTPSLocked(p *Provider, model string) soloModelTPS {
+	if qualityCapPerModelTPS {
+		if tps, n := r.tpsRegistry.SoloMedian(model, chipClassKey(p.Hardware)); n >= qualityCapSoloMinSamples && tps > 0 {
+			return soloModelTPS{tps: tps, perModel: true}
+		}
+		seed, hasSeed := modelSoloTPSSeed[strings.ToLower(model)]
+		if tps, n := r.tpsRegistry.SoloMedianAllChips(model); n >= qualityCapSoloMinSamples && tps > 0 {
+			if hasSeed && seed < tps {
+				tps = seed
+			}
+			return soloModelTPS{tps: tps, perModel: true}
+		}
+		if hasSeed {
+			return soloModelTPS{tps: seed, perModel: true}
+		}
+	}
+	return soloModelTPS{tps: resolvedDecodeTPS(p), perModel: false}
+}
+
 // effectiveMaxConcurrencyForModelLocked returns the per-provider admission
+// concurrency cap for model from an explicit provider-level static rate
+// (resolvedDecodeTPS). Kept for callers/tests that already resolved the rate;
+// production admission paths use effectiveMaxConcurrencyForModelResolvedLocked
+// so the cap consumes the per-model solo rate. Caller holds r.mu and p.mu.
+func (r *Registry) effectiveMaxConcurrencyForModelLocked(p *Provider, model string, staticDecodeTPS float64) int {
+	return r.effectiveMaxConcurrencyForModelRateLocked(p, model, soloModelTPS{tps: staticDecodeTPS})
+}
+
+// effectiveMaxConcurrencyForModelResolvedLocked is the per-model admission cap
+// with the static solo rate resolved internally (resolvedSoloModelTPSLocked).
+// This is what fixes the postmortem layer-6 failure: a mixed box benchmarked
+// on gpt-oss (58–93 tok/s) no longer lends gemma its provider-level rate — the
+// gemma cap is computed from gemma's own solo median (10–18 tok/s → cap 1–2).
+// Caller holds r.mu and p.mu.
+func (r *Registry) effectiveMaxConcurrencyForModelResolvedLocked(p *Provider, model string) int {
+	return r.effectiveMaxConcurrencyForModelRateLocked(p, model, r.resolvedSoloModelTPSLocked(p, model))
+}
+
+// effectiveMaxConcurrencyForModelRateLocked returns the per-provider admission
 // concurrency cap for model: the MINIMUM of the legacy cap
 // (p.maxConcurrencyForModelLocked — a provider-reported per-slot MaxConcurrency
 // if set, else the flat fallback) and quality_concurrency × overcommit. Taking
 // the min means a provider that self-reports a TIGHTER cap still binds (it knows
 // its backend best), while a provider that reports a looser cap — or none — is
-// still held to the quality bar, so neither path can over-admit. staticDecodeTPS
-// must be the provider's single-stream (static) decode rate for the model
-// (resolvedDecodeTPS), not the observed-under-load value (which collapses under
-// the overload this cap exists to prevent). Caller holds r.mu and p.mu.
-func (r *Registry) effectiveMaxConcurrencyForModelLocked(p *Provider, model string, staticDecodeTPS float64) int {
+// still held to the quality bar, so neither path can over-admit. rate must be a
+// single-stream (static) decode rate for the model, not the observed-under-load
+// value (which collapses under the overload this cap exists to prevent).
+// Caller holds r.mu and p.mu.
+func (r *Registry) effectiveMaxConcurrencyForModelRateLocked(p *Provider, model string, rate soloModelTPS) int {
 	base := p.maxConcurrencyForModelLocked(model)
 	if !r.qualityCapEnabled {
 		return base
@@ -161,13 +281,16 @@ func (r *Registry) effectiveMaxConcurrencyForModelLocked(p *Provider, model stri
 	// a fast non-dedicated model from it could shed healthy traffic. Only cap from
 	// the bandwidth fallback for DEDICATED models, which are known-slow and urgently
 	// need it; a non-dedicated model without a real benchmark keeps the legacy flat
-	// cap until its provider reports decode_tps.
-	if p.DecodeTPS <= 0 {
+	// cap until its provider reports decode_tps. A PER-MODEL rate (solo median or
+	// seed — rate.perModel) is model-specific by construction, so the guard does
+	// not apply to it: those models are capped even without a registration
+	// benchmark.
+	if p.DecodeTPS <= 0 && !rate.perModel {
 		if _, dedicated := r.dedicatedPatternForLocked(model); !dedicated {
 			return base
 		}
 	}
-	qc := qualityConcurrency(staticDecodeTPS, r.qualityCapFloorTPS, effectiveTPSLoadFactor, base, r.qualityCapFallback)
+	qc := qualityConcurrency(rate.tps, r.qualityCapFloorTPS, effectiveTPSLoadFactor, base, r.qualityCapFallback)
 	capped := int(math.Ceil(float64(qc) * r.qualityCapOvercommitForModelLocked(model)))
 	if capped < 1 {
 		capped = 1
@@ -178,15 +301,19 @@ func (r *Registry) effectiveMaxConcurrencyForModelLocked(p *Provider, model stri
 	return base
 }
 
-// hasConcurrencyHeadroomForModelCapLocked mirrors
+// hasConcurrencyHeadroomForModelCapResolvedLocked mirrors
 // Provider.hasConcurrencyHeadroomForModelLocked but applies the registry's
-// quality-concurrency cap to the per-model limit. staticDecodeTPS is the
-// provider's single-stream decode rate for the model. Caller holds r.mu and
-// p.mu.
-func (r *Registry) hasConcurrencyHeadroomForModelCapLocked(p *Provider, model string, staticDecodeTPS float64) bool {
-	return p.pendingLoadForModelLocked(model) < r.effectiveMaxConcurrencyForModelLocked(p, model, staticDecodeTPS) &&
+// quality-concurrency cap to the per-model limit, with the static single-stream
+// decode rate resolved internally. It is the single production entry point for
+// routing, queue preflight, final admission, warm-pool saturation, and public
+// capacity. The candidate rate is resolved once and shared with the box-wide
+// combined cap so the two gates cannot disagree on rate provenance.
+// Caller holds r.mu and p.mu.
+func (r *Registry) hasConcurrencyHeadroomForModelCapResolvedLocked(p *Provider, model string) bool {
+	rate := r.resolvedSoloModelTPSLocked(p, model)
+	return p.pendingLoadForModelLocked(model) < r.effectiveMaxConcurrencyForModelRateLocked(p, model, rate) &&
 		p.pendingCount() < p.maxConcurrency() &&
-		r.combinedAdmissionHeadroomLocked(p, model, staticDecodeTPS)
+		r.combinedAdmissionHeadroomLocked(p, model, rate)
 }
 
 // SetCombinedAdmissionCap toggles the box-wide combined admission budget (see
@@ -252,37 +379,22 @@ func combinedAdmissionAdmits(slots []combinedSlotLoad, candidateQC int, overcomm
 // hard edge that lets the pool open before contention-aware scoring lands).
 //
 // Dormant unless BOTH EIGENINFERENCE_COMBINED_ADMISSION_CAP and the quality cap
-// are enabled — the budget is meaningless without the quality-concurrency
-// machinery, and with the flag off behavior is byte-identical to today. The
-// candidate model's qc uses the caller-threaded staticDecodeTPS (the same input
-// the per-model cap consumes, whatever resolver feeds it); co-resident slots use
-// the provider's static single-stream rate (resolvedDecodeTPS — the identical
-// value the per-model capacity feed resolves for those models today; the
-// per-(model, chip) solo resolver refines this input at the same seam when it
-// lands). Never the observed-under-load EWMA — see the file header. The
-// benchmark trust rule mirrors effectiveMaxConcurrencyForModelLocked: with no
-// registration benchmark (p.DecodeTPS <= 0) a non-dedicated candidate is not
-// capped from the bandwidth fallback.
+// are enabled. Candidate and co-resident quality concurrency both use
+// resolvedSoloModelTPSLocked, the same per-model solo median / seed / provider
+// fallback chain as the independent cap. The trust rule also matches the
+// independent cap: an unbenchmarked non-dedicated model with only the coarse
+// provider fallback is unresolvable and fails open rather than being hard-capped.
 //
 // Per-slot load is the model-scoped max(coordinator-pending, backend
 // running+waiting) — pendingLoadForModelLocked's semantics — computed inline
 // because that helper's legacy fallback (no reported MaxConcurrency → TOTAL
 // pending count) is per-model-safe but would double-count when summed across
 // slots. Caller holds r.mu and p.mu.
-func (r *Registry) combinedAdmissionHeadroomLocked(p *Provider, model string, staticDecodeTPS float64) bool {
+func (r *Registry) combinedAdmissionHeadroomLocked(p *Provider, model string, candidate soloModelTPS) bool {
 	if !r.combinedAdmissionCap || !r.qualityCapEnabled {
 		return true
 	}
-	if p.DecodeTPS <= 0 {
-		if _, dedicated := r.dedicatedPatternForLocked(model); !dedicated {
-			return true
-		}
-	}
-	candidateQC := 0
-	if staticDecodeTPS > 0 {
-		candidateQC = qualityConcurrency(staticDecodeTPS, r.qualityCapFloorTPS, effectiveTPSLoadFactor,
-			p.maxConcurrencyForModelLocked(model), r.qualityCapFallback)
-	}
+	candidateQC := r.combinedQualityConcurrencyLocked(p, model, candidate)
 	var slots []combinedSlotLoad
 	if p.BackendCapacity != nil {
 		slots = make([]combinedSlotLoad, 0, len(p.BackendCapacity.Slots))
@@ -294,19 +406,32 @@ func (r *Registry) combinedAdmissionHeadroomLocked(p *Provider, model string, st
 			if backendLoad := clampNonNegative(slot.NumRunning) + clampNonNegative(slot.NumWaiting); backendLoad > load {
 				load = backendLoad
 			}
-			slotTPS := resolvedDecodeTPS(p)
+			slotRate := r.resolvedSoloModelTPSLocked(p, slot.Model)
 			if slot.Model == model {
-				slotTPS = staticDecodeTPS
+				slotRate = candidate
 			}
-			qc := 0
-			if slotTPS > 0 {
-				qc = qualityConcurrency(slotTPS, r.qualityCapFloorTPS, effectiveTPSLoadFactor,
-					p.maxConcurrencyForModelLocked(slot.Model), r.qualityCapFallback)
-			}
+			qc := r.combinedQualityConcurrencyLocked(p, slot.Model, slotRate)
 			slots = append(slots, combinedSlotLoad{load: load, qc: qc})
 		}
 	}
 	return combinedAdmissionAdmits(slots, candidateQC, r.qualityCapOvercommitForModelLocked(model))
+}
+
+// combinedQualityConcurrencyLocked resolves the strict quality concurrency used
+// by the combined budget while applying the same provenance trust rule as the
+// independent per-model cap. Zero means unresolvable and is handled fail-open by
+// combinedAdmissionAdmits. Caller holds r.mu and p.mu.
+func (r *Registry) combinedQualityConcurrencyLocked(p *Provider, model string, rate soloModelTPS) int {
+	if rate.tps <= 0 {
+		return 0
+	}
+	if p.DecodeTPS <= 0 && !rate.perModel {
+		if _, dedicated := r.dedicatedPatternForLocked(model); !dedicated {
+			return 0
+		}
+	}
+	return qualityConcurrency(rate.tps, r.qualityCapFloorTPS, effectiveTPSLoadFactor,
+		p.maxConcurrencyForModelLocked(model), r.qualityCapFallback)
 }
 
 // clampNonNegative floors a heartbeat-reported count at 0 so a malformed slot
@@ -316,14 +441,4 @@ func clampNonNegative(v int) int {
 		return 0
 	}
 	return v
-}
-
-// hasConcurrencyHeadroomForModelCapResolvedLocked is hasConcurrencyHeadroomForModelCapLocked
-// with the provider's static single-stream decode rate resolved internally. Used
-// by the public capacity feeds (ModelCapacitySnapshot) so /v1/models[/capacity]
-// report the SAME headroom the routing path enforces — otherwise a capped box is
-// advertised as routable and upstream routers keep sending requests it 429s.
-// Caller holds r.mu and p.mu.
-func (r *Registry) hasConcurrencyHeadroomForModelCapResolvedLocked(p *Provider, model string) bool {
-	return r.hasConcurrencyHeadroomForModelCapLocked(p, model, resolvedDecodeTPS(p))
 }

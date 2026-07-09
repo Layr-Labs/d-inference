@@ -380,6 +380,124 @@ func TestQualityCapProjectedDecodeTPSAtDefaultHoldsNearFloor(t *testing.T) {
 	}
 }
 
+// TestQualityCapPerModelTPSPostmortemRegression is THE 2026-07-06 gemma
+// postmortem layer-6 scenario: a mixed box whose registration benchmark was
+// taken on gpt-oss (93 tok/s) hosts a gemma slot that actually decodes ~14
+// tok/s solo. The old cap consumed the provider-LEVEL rate for every model, so
+// gemma got cap ceil(qc 19 × 1.2) = 23 — and the coordinator marched 8–11
+// concurrent gemma requests onto exactly the boxes that collapse past batch 3.
+// With the per-model solo source, gemma's cap must come from gemma's own solo
+// median (14 ≤ floor 15 → qc 1 → cap 2) while gpt-oss keeps its wide cap from
+// the benchmark. Reverting the resolver wiring makes the gemma assertion fail
+// (cap becomes 23 again).
+func TestQualityCapPerModelTPSPostmortemRegression(t *testing.T) {
+	run := func(t *testing.T, seedGemma func(reg *Registry)) {
+		reg := New(testLogger())
+		enablePerModelQualityCap(t, reg, "", "", "")
+		seedGemma(reg)
+		p := mixedBoxProvider(t, reg, "mixed-93", 93)
+
+		if got := effCapResolved(reg, p, gemmaBuild); got != 2 {
+			t.Fatalf("gemma cap on the mixed box = %d, want 2 (solo 14 ≤ floor 15 → qc 1 × overcommit 1.2; NOT the benchmark-derived 23)", got)
+		}
+		if got := effCapResolved(reg, p, gptossBuild); got != 23 {
+			t.Fatalf("gpt-oss cap on the mixed box = %d, want 23 (its own 93 tok/s benchmark stays wide)", got)
+		}
+	}
+
+	t.Run("solo_median_recorded", func(t *testing.T) {
+		run(t, func(reg *Registry) {
+			for _, v := range []float64{12, 13, 14, 15, 16} {
+				reg.tpsRegistry.RecordSolo(gemmaBuild, "M3", v)
+			}
+		})
+	})
+	t.Run("seed_env_cold_start", func(t *testing.T) {
+		run(t, func(reg *Registry) {
+			t.Setenv(modelSoloTPSSeedEnv, gemmaBuild+"=14")
+			// Re-parse with the seed present (startup order: env → setter).
+			enableQualityCap(t, reg, "")
+		})
+	})
+}
+
+// TestQualityCapSeedBoundsCrossClassTransfer pins cold-class safety when the
+// only live solo samples come from a faster chip class. A configured model seed
+// is the conservative cold-start estimate for an unsampled class, so faster
+// cross-class observations must not widen that class's quality cap above it.
+func TestQualityCapSeedBoundsCrossClassTransfer(t *testing.T) {
+	reg := New(testLogger())
+	enablePerModelQualityCap(t, reg, gemmaBuild+"=14", "", "")
+	p := mixedBoxProvider(t, reg, "unsampled-slow-class", 93)
+	p.mu.Lock()
+	p.Hardware.ChipFamily = "M2"
+	p.Hardware.ChipTier = "Pro"
+	p.mu.Unlock()
+
+	for i := 0; i < qualityCapSoloMinSamples; i++ {
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M4|Max", 40)
+	}
+
+	if got := resolveSolo(reg, p, gemmaBuild); got.tps != 14 || !got.perModel {
+		t.Fatalf("unsampled slow-class resolver = %+v, want seed 14 (faster cross-class median 40 must not override the configured cold-start bound)", got)
+	}
+}
+
+// TestQualityCapPerModelTPSKillSwitchRestoresOldBehavior pins the kill switch:
+// EIGENINFERENCE_QUALITY_CAP_PER_MODEL_TPS=false must restore the provider-
+// level resolvedDecodeTPS(p) at the cap exactly — reproducing the postmortem's
+// buggy wide gemma cap (23 from the gpt-oss benchmark) even though a trusted
+// gemma solo median exists. This doubles as the proof that the regression test
+// above fails without the fix: the old code path IS the switch-off path.
+func TestQualityCapPerModelTPSKillSwitchRestoresOldBehavior(t *testing.T) {
+	reg := New(testLogger())
+	enablePerModelQualityCap(t, reg, gemmaBuild+"=14", "false", "")
+	for i := 0; i < 10; i++ {
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3", 14)
+	}
+	p := mixedBoxProvider(t, reg, "mixed-93", 93)
+
+	if got := effCapResolved(reg, p, gemmaBuild); got != 23 {
+		t.Fatalf("kill switch off: gemma cap = %d, want the old provider-level 23 (byte-for-byte legacy behavior)", got)
+	}
+	// And it must match the explicit provider-level path exactly.
+	if resolved, legacy := effCapResolved(reg, p, gemmaBuild), effCap(reg, p, gemmaBuild); resolved != legacy {
+		t.Fatalf("kill switch off: resolved cap %d != legacy explicit-rate cap %d", resolved, legacy)
+	}
+}
+
+// TestQualityCapPerModelRateCapsWithoutRegistrationBenchmark: the DecodeTPS<=0
+// guard exists because the sqrt-bandwidth fallback is model-agnostic — but a
+// PER-MODEL rate (solo median / seed) is trustworthy by construction, so a
+// non-dedicated model on a benchmark-less box is still capped from it. Without
+// any per-model source the old guard semantics hold (flat cap).
+func TestQualityCapPerModelRateCapsWithoutRegistrationBenchmark(t *testing.T) {
+	reg := New(testLogger())
+	enablePerModelQualityCap(t, reg, "", "", "")
+	for i := 0; i < 5; i++ {
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3", 14)
+	}
+
+	mkNoBenchmark := func(id string) *Provider {
+		p := mixedBoxProvider(t, reg, id, 0) // DecodeTPS unset
+		p.mu.Lock()
+		p.Hardware.MemoryBandwidthGBs = 800 // sqrt(800) ≈ 28 fallback
+		p.mu.Unlock()
+		return p
+	}
+
+	// Solo median present → capped even without a registration benchmark.
+	p := mkNoBenchmark("no-bench")
+	if got := effCapResolved(reg, p, gemmaBuild); got != 2 {
+		t.Fatalf("no-benchmark box with solo median: gemma cap = %d, want 2", got)
+	}
+	// No per-model source (gpt-oss): non-dedicated + bandwidth fallback → the
+	// old guard keeps the flat cap (don't shed a fast model on a coarse proxy).
+	if got := effCapResolved(reg, p, gptossBuild); got != 24 {
+		t.Fatalf("no-benchmark box without per-model source: gpt-oss cap = %d, want flat 24", got)
+	}
+}
+
 // TestWarmTargetDedicatedWholePool: for a dedicated model UNDER DEMAND the
 // warm-pool target is the entire eligible pool (warm + eligibleCold), so idle
 // dedicated boxes get warmed. With NO demand for that build it is left at the

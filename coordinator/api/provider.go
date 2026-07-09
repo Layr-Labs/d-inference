@@ -1590,6 +1590,17 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// unchanged.
 	if consumerGone {
 		s.emitClientGone(pr.Model, pr.EstimatedPromptTokens, providerChipFamily(provider), phaseAfterCommit)
+		// A parked (after-commit client-gone) completion is still a SERVED
+		// provider dispatch, so it owes its one capacity-503 rate-window outcome
+		// (capacity_rate.go denominator). On the clean-completion path
+		// noteInferenceSuccess re-offers it, but that never runs here — the
+		// consumer handler already returned. Re-offer it now, keyed on the
+		// recorded outcome exactly as noteInferenceSuccess does. Commit-time
+		// accepts are retained even before the first reject; a commit that already
+		// recorded passes countRateOutcome=false and cannot double-count. A path
+		// without a recorded commit contributes its sole outcome here. Uses
+		// pr.ProviderID (the committed attempt's provider) to match the commit key.
+		s.registry.RecordCapacityAcceptOutcome(pr.ProviderID, pr.Model, !pr.RateOutcomeCountedSafe())
 	}
 
 	// Store SE signature for the consumer response headers.

@@ -8,10 +8,22 @@ import (
 // TPSRegistry aggregates observed decode TPS values from heartbeats,
 // keyed by model and chip family. Used to provide fleet-calibrated
 // estimates for providers that haven't reported observed TPS yet.
+//
+// It holds two independent sample stores with the same 50-sample FIFO+median
+// shape but deliberately different ingest semantics:
+//
+//   - samples (Record/Median): EVERY reported EWMA, including under-load ones.
+//     Feeds fleetMedianTPS → TTFT estimation, whose load-inclusive semantics
+//     are intentional (an estimate of what a request will actually see).
+//   - soloSamples (RecordSolo/SoloMedian, solo_tps.go): only samples taken
+//     while the WHOLE box was uncontended. Feeds the quality-concurrency cap,
+//     which needs a static solo rate that cannot collapse under the very
+//     overload the cap exists to prevent.
 type TPSRegistry struct {
-	mu         sync.RWMutex
-	samples    map[tpsKey][]float64
-	maxSamples int
+	mu          sync.RWMutex
+	samples     map[tpsKey][]float64
+	soloSamples map[tpsKey][]float64
+	maxSamples  int
 }
 
 type tpsKey struct {
@@ -21,8 +33,9 @@ type tpsKey struct {
 
 func NewTPSRegistry() *TPSRegistry {
 	return &TPSRegistry{
-		samples:    make(map[tpsKey][]float64),
-		maxSamples: 50, // keep last 50 observations per model+chip
+		samples:     make(map[tpsKey][]float64),
+		soloSamples: make(map[tpsKey][]float64),
+		maxSamples:  50, // keep last 50 observations per model+chip
 	}
 }
 

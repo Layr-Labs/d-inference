@@ -44,13 +44,14 @@ func TestCombinedAdmissionAdmitsTable(t *testing.T) {
 }
 
 // combinedHeadroom evaluates the full admission headroom check (per-model caps
-// + combined cap) under the routing path's lock discipline and static rate.
+// + combined cap) under the routing path's lock discipline. The production
+// entry point resolves the candidate's per-model static rate internally.
 func combinedHeadroom(reg *Registry, p *Provider, model string) bool {
 	reg.mu.RLock()
 	defer reg.mu.RUnlock()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return reg.hasConcurrencyHeadroomForModelCapLocked(p, model, resolvedDecodeTPS(p))
+	return reg.hasConcurrencyHeadroomForModelCapResolvedLocked(p, model)
 }
 
 // makeCombinedCapBox builds one provider serving two models: slot A
@@ -71,7 +72,7 @@ func makeCombinedCapBox(t *testing.T, reg *Registry, modelA, modelB string, load
 }
 
 // TestCombinedAdmissionCapCrossModel is the cross-model hard edge end to end
-// through hasConcurrencyHeadroomForModelCapLocked: with the flag OFF a box
+// through hasConcurrencyHeadroomForModelCapResolvedLocked: with the flag OFF a box
 // saturated on model A still admits model B (today's behavior, byte-identical);
 // with the flag ON the A-saturated box refuses B (Σ 2/2 + 1/10 = 1.1 > 1.0);
 // once A drains, B admits again (0 + 1/10 <= 1.0).

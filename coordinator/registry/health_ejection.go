@@ -201,10 +201,10 @@ func (r *Registry) bindStableFaultKey(sessionID, stableID string) {
 // migrateFaultStateLocked re-keys every fault-tracking map entry from oldKey to
 // newKey so accumulated history follows an identity rebind. Merge policy where
 // both keys hold state: expiries and streak recency take the max, trip counts
-// take the max, strike slices are unioned (window pruning re-normalizes them on
-// the next record), and health windows are merged in timestamp order bounded by
-// the ring size (providerHealthWindow.merge) so an in-progress consecutive-fault
-// streak survives the rebind. Caller holds r.mu.
+// take the max, timestamp histories merge chronologically (their bounded-map
+// sweeps use the tail as the newest entry), and health windows are merged in
+// timestamp order bounded by the ring size (providerHealthWindow.merge) so an
+// in-progress consecutive-fault streak survives the rebind. Caller holds r.mu.
 func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 	if oldKey == "" || newKey == "" || oldKey == newKey {
 		return
@@ -227,7 +227,7 @@ func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 		if k.ProviderID == oldKey {
 			nk := k
 			nk.ProviderID = newKey
-			r.inferenceErrorStrikes[nk] = append(r.inferenceErrorStrikes[nk], strikes...)
+			r.inferenceErrorStrikes[nk] = mergeChronologicalTimestamps(r.inferenceErrorStrikes[nk], strikes)
 			delete(r.inferenceErrorStrikes, k)
 		}
 	}
@@ -269,7 +269,7 @@ func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 		if k.ProviderID == oldKey {
 			nk := k
 			nk.ProviderID = newKey
-			r.capacityRejectStrikes[nk] = append(r.capacityRejectStrikes[nk], strikes...)
+			r.capacityRejectStrikes[nk] = mergeChronologicalTimestamps(r.capacityRejectStrikes[nk], strikes)
 			delete(r.capacityRejectStrikes, k)
 		}
 	}
@@ -291,6 +291,40 @@ func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 				r.capacityCooldownTrips[nk] = trips
 			}
 			delete(r.capacityCooldownTrips, k)
+		}
+	}
+
+	// Gray-box budget clamp: the entry with the LATER clamp time wins whole
+	// (its clampedAt anchors both the TTL and the release-freshness check, and
+	// its acceptedSince belongs to that clamp window).
+	for k, entry := range r.budgetClamps {
+		if k.ProviderID == oldKey {
+			nk := k
+			nk.ProviderID = newKey
+			if cur, ok := r.budgetClamps[nk]; !ok || entry.clampedAt.After(cur.clampedAt) {
+				r.budgetClamps[nk] = entry
+			}
+			delete(r.budgetClamps, k)
+		}
+	}
+
+	// Capacity-503 rate windows: union the outcome slices chronologically. The
+	// large-map sweep uses the tail as the newest timestamp, so appending an older
+	// source history after a fresh destination would otherwise delete live state.
+	for k, outcomes := range r.capacityRateRejects {
+		if k.ProviderID == oldKey {
+			nk := k
+			nk.ProviderID = newKey
+			r.capacityRateRejects[nk] = mergeChronologicalTimestamps(r.capacityRateRejects[nk], outcomes)
+			delete(r.capacityRateRejects, k)
+		}
+	}
+	for k, outcomes := range r.capacityRateAccepts {
+		if k.ProviderID == oldKey {
+			nk := k
+			nk.ProviderID = newKey
+			r.capacityRateAccepts[nk] = mergeChronologicalTimestamps(r.capacityRateAccepts[nk], outcomes)
+			delete(r.capacityRateAccepts, k)
 		}
 	}
 
@@ -327,6 +361,34 @@ func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 		}
 		delete(r.healthEjectionLastTripCapacity, oldKey)
 	}
+}
+
+// mergeChronologicalTimestamps returns the oldest-to-newest union of two
+// already-ordered histories. Identity migration is rare, so allocate only when
+// both identities already hold state; the common move-to-empty case reuses the
+// source slice. Equal timestamps remain distinct outcomes.
+func mergeChronologicalTimestamps(dst, src []time.Time) []time.Time {
+	if len(dst) == 0 {
+		return src
+	}
+	if len(src) == 0 {
+		return dst
+	}
+
+	merged := make([]time.Time, 0, len(dst)+len(src))
+	i, j := 0, 0
+	for i < len(dst) && j < len(src) {
+		if !dst[i].After(src[j]) {
+			merged = append(merged, dst[i])
+			i++
+		} else {
+			merged = append(merged, src[j])
+			j++
+		}
+	}
+	merged = append(merged, dst[i:]...)
+	merged = append(merged, src[j:]...)
+	return merged
 }
 
 // faultKeyLocked resolves a session provider id to the key its fault state

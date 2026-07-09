@@ -235,6 +235,9 @@ semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlig
 | `EIGENINFERENCE_HEALTH_EJECTION` | Stable-identity ejection kill switch — **`on` in prod**; `off` disables black-hole ejection entirely |
 | `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT`, `_BY_MODEL` | Per-box admission density (default 1.2) |
 | `EIGENINFERENCE_COMBINED_ADMISSION_CAP` | Box-wide Σ(load/qc) admission budget on top of the per-model quality caps (default `false` — dormant; turned on with the open-pool flip) |
+| `EIGENINFERENCE_QUALITY_CAP_PER_MODEL_TPS` | Quality cap reads each model's own solo decode rate (default `true`; `false` restores the provider-level benchmark) |
+| `EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES` | Solo samples required before a per-(model, chip) median is trusted (default 5) |
+| `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` | Cold-start solo rates, `build-id=tok/s` CSV (e.g. `gemma-4-26b-qat-4bit=14,gpt-oss-20b=30`); the in-memory TPS registry is restart-wiped |
 | `EIGENINFERENCE_WARM_POOL_*` | Warm-pool controller (active; `OBSERVE_ONLY=false`). `_ALLOW_BUSY_LOAD_MAX` bounds the busy load a cold box may carry and still be warmable (default `0` = fully idle required; runbook raises to `2` for recovery) |
 | `EIGENINFERENCE_REJECT_MODELS` | Startup seed for the per-model shed list (429 at admission). Mutable at RUNTIME via `GET/PUT /v1/admin/reject-models` (`scripts/admin.sh reject-models get\|set\|clear`) — shed flips no longer need a restart |
 | `EIGENINFERENCE_DEDICATED_MODELS` | Static dedicated-box partition (`gemma-4`) |

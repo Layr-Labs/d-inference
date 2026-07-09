@@ -87,13 +87,20 @@ type warmPoolModelSnapshot struct {
 	// backend slots for this model (the observable L in Little's Law).
 	running int
 	waiting int
-	// soloDecodeTPS / prefillTPS / maxProviderConc are representative (median)
-	// rates and the per-provider concurrency cap across providers serving the
-	// model, used for quality concurrency and the E[S] service-time estimate.
-	soloDecodeTPS   float64
-	prefillTPS      float64
-	maxProviderConc int
-	eligibleCold    []warmPoolCandidate
+	// soloDecodeTPS / serviceDecodeTPS / prefillTPS / maxProviderConc are
+	// representative (median) rates and the per-provider concurrency cap across
+	// providers serving the model. soloDecodeTPS is the STATIC solo rate from
+	// the quality-cap resolver (resolvedSoloModelTPSLocked) and feeds quality
+	// concurrency, so warm targets and admission caps use the same math and
+	// cannot disagree. serviceDecodeTPS keeps the observed-EWMA-preferring
+	// chain (resolvedModelTPSLocked) and feeds only the E[S] service-time
+	// estimate, which deliberately wants the load-inclusive rate a request
+	// actually sees.
+	soloDecodeTPS    float64
+	serviceDecodeTPS float64
+	prefillTPS       float64
+	maxProviderConc  int
+	eligibleCold     []warmPoolCandidate
 	// coldIneligible / coldDisq tally cold (on-disk, not-warm) providers that
 	// FAILED the warm-pool candidate gate, by reason — diagnostics for why
 	// eligibleCold is smaller than the raw cold count.
@@ -327,7 +334,16 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 		p := pressure[model]
 		q := queue[model]
 		f := fleet[model]
-		svc := estimateServiceTime(f.prefillTPS, f.soloDecodeTPS, params)
+		// E[S] from the load-inclusive service rate (what a request actually
+		// sees); quality concurrency below from the solo rate (the admission
+		// cap's math). Falls back to the solo rate when no service samples
+		// exist (both medians share the same provider set, so this only guards
+		// the degenerate empty case).
+		serviceTPS := f.serviceDecodeTPS
+		if serviceTPS <= 0 {
+			serviceTPS = f.soloDecodeTPS
+		}
+		svc := estimateServiceTime(f.prefillTPS, serviceTPS, params)
 		target := c.targetWarm(f, p, q, params, svc, now)
 
 		gap := target - f.warm
@@ -524,7 +540,10 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 	out := make(map[string]warmPoolModelSnapshot)
 	// Per-model rate samples (from every eligible provider serving the model,
 	// warm or warmable) collapsed to a representative median at the end.
+	// decodeSamples carries the quality-cap solo rate (→ qualityConcurrency);
+	// serviceSamples the observed-EWMA service rate (→ E[S]).
 	decodeSamples := make(map[string][]float64)
+	serviceSamples := make(map[string][]float64)
 	prefillSamples := make(map[string][]float64)
 	concSamples := make(map[string][]float64)
 	for _, p := range r.providers {
@@ -548,8 +567,17 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 					s.warmSaturated++
 				}
 				out[model] = s
-				decodeTPS, prefillTPS := resolvedModelTPSLocked(p, model)
-				decodeSamples[model] = append(decodeSamples[model], decodeTPS)
+				// decodeSamples feed soloDecodeTPS → qualityConcurrency in the
+				// warm target. Use the SAME solo resolver as the admission cap
+				// (solo median / seed → provider benchmark), NOT the per-slot
+				// observed EWMA: the EWMA is a contended rate, and planning warm
+				// targets from it while admission caps from the solo rate would
+				// let the two disagree. The observed-EWMA chain
+				// (resolvedModelTPSLocked) still feeds serviceSamples/prefill —
+				// E[S] wants the load-inclusive rate a request actually sees.
+				serviceTPS, prefillTPS := resolvedModelTPSLocked(p, model)
+				decodeSamples[model] = append(decodeSamples[model], r.resolvedSoloModelTPSLocked(p, model).tps)
+				serviceSamples[model] = append(serviceSamples[model], serviceTPS)
 				prefillSamples[model] = append(prefillSamples[model], prefillTPS)
 				concSamples[model] = append(concSamples[model], float64(p.maxConcurrencyForModelLocked(model)))
 				continue
@@ -560,8 +588,10 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 			if reason == warmColdEligible {
 				s.eligibleCold = append(s.eligibleCold, candidate)
 				out[model] = s
-				decodeTPS, prefillTPS := resolvedModelTPSLocked(p, model)
-				decodeSamples[model] = append(decodeSamples[model], decodeTPS)
+				// Same solo-resolver / service-rate split as the warm branch above.
+				serviceTPS, prefillTPS := resolvedModelTPSLocked(p, model)
+				decodeSamples[model] = append(decodeSamples[model], r.resolvedSoloModelTPSLocked(p, model).tps)
+				serviceSamples[model] = append(serviceSamples[model], serviceTPS)
 				prefillSamples[model] = append(prefillSamples[model], prefillTPS)
 				concSamples[model] = append(concSamples[model], float64(p.maxConcurrencyForModelLocked(model)))
 			} else {
@@ -578,6 +608,7 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 	for model, s := range out {
 		sort.Slice(s.eligibleCold, func(i, j int) bool { return s.eligibleCold[i].score > s.eligibleCold[j].score })
 		s.soloDecodeTPS = medianFloat(decodeSamples[model])
+		s.serviceDecodeTPS = medianFloat(serviceSamples[model])
 		s.prefillTPS = medianFloat(prefillSamples[model])
 		s.maxProviderConc = int(medianFloat(concSamples[model]))
 		out[model] = s

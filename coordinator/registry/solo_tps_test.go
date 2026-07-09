@@ -114,7 +114,13 @@ func TestSoloMedianFIFOCap(t *testing.T) {
 	}
 }
 
-func TestSoloMedianAllChipsPoolsAcrossFamilies(t *testing.T) {
+// TestSoloMedianAllChipsMinOfClassMedians pins the CONSERVATIVE cross-class
+// transfer: SoloMedianAllChips returns the MINIMUM of the per-class medians
+// (never the pooled median, which a fast, sample-heavy class can dominate) plus
+// the TOTAL sample count. A slow class (m1, median 20) and a fast class (m4,
+// median 30) → the min (20), so the rate can never exceed the slowest class's
+// typical rate and can never over-cap a slow box.
+func TestSoloMedianAllChipsMinOfClassMedians(t *testing.T) {
 	r := NewTPSRegistry()
 	r.RecordSolo("model", "m1", 20)
 	r.RecordSolo("model", "m1", 20)
@@ -123,8 +129,19 @@ func TestSoloMedianAllChipsPoolsAcrossFamilies(t *testing.T) {
 	r.RecordSolo("model", "m4", 30)
 	r.RecordSolo("other-model", "m4", 999) // different model must not pollute
 	tps, n := r.SoloMedianAllChips("model")
-	if tps != 30 || n != 5 {
-		t.Fatalf("SoloMedianAllChips = (%v, %d), want (30, 5)", tps, n)
+	if tps != 20 || n != 5 {
+		t.Fatalf("SoloMedianAllChips = (%v, %d), want (20, 5) — min of class medians, total count", tps, n)
+	}
+
+	// A fast class with MANY samples must not drag the min up: the pooled median
+	// would be 30, but the slow class's median (12) is what a slow box can do.
+	r2 := NewTPSRegistry()
+	for i := 0; i < 20; i++ {
+		r2.RecordSolo("m", "M4|Max", 30) // fast, sample-heavy
+	}
+	r2.RecordSolo("m", "M1", 12) // slow, one sample
+	if tps, n := r2.SoloMedianAllChips("m"); tps != 12 || n != 21 {
+		t.Fatalf("SoloMedianAllChips = (%v, %d), want (12, 21) — fast class must not dominate the min", tps, n)
 	}
 }
 
@@ -153,11 +170,12 @@ func TestSoloRecordingGatedOnUncontendedBox(t *testing.T) {
 	makeSchedulerProvider(t, reg, "box", gemmaBuild, 93)
 
 	// Uncontended: gemma serving exactly the sample-generating request.
+	// Solo samples are keyed by chip CLASS ("M3|Max"), not family ("M3").
 	reg.Heartbeat("box", soloHeartbeat([]protocol.BackendSlotCapacity{
 		{Model: gemmaBuild, State: "running", NumRunning: 1, ObservedDecodeTPS: 14},
 		{Model: gptossBuild, State: "idle", NumRunning: 0, NumWaiting: 0},
 	}))
-	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3"); n != 1 {
+	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3|Max"); n != 1 {
 		t.Fatalf("solo samples after uncontended heartbeat = %d, want 1", n)
 	}
 
@@ -167,7 +185,7 @@ func TestSoloRecordingGatedOnUncontendedBox(t *testing.T) {
 	reg.Heartbeat("box", soloHeartbeat([]protocol.BackendSlotCapacity{
 		{Model: gemmaBuild, State: "idle", ObservedDecodeTPS: 15},
 	}))
-	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3"); n != 1 {
+	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3|Max"); n != 1 {
 		t.Fatalf("solo samples after idle heartbeat = %d, want 1 (idle EWMA must not be recorded)", n)
 	}
 
@@ -180,7 +198,7 @@ func TestSoloRecordingGatedOnUncontendedBox(t *testing.T) {
 	reg.Heartbeat("box", soloHeartbeat([]protocol.BackendSlotCapacity{
 		{Model: gemmaBuild, State: "running", NumRunning: 1, NumWaiting: 1, ObservedDecodeTPS: 6},
 	}))
-	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3"); n != 1 {
+	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3|Max"); n != 1 {
 		t.Fatalf("solo samples after contended heartbeats = %d, want 1 (contended samples must be rejected)", n)
 	}
 	// The load-inclusive store keeps EVERY sample (TTFT estimation semantics).
@@ -206,10 +224,10 @@ func TestSoloRecordingOnlySamplesActiveSlot(t *testing.T) {
 			{Model: gptossBuild, State: "idle", ObservedDecodeTPS: 60}, // stale EWMA, no request
 		}))
 	}
-	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3"); n != 5 {
+	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3|Max"); n != 5 {
 		t.Fatalf("active-slot solo samples = %d, want 5", n)
 	}
-	if _, n := reg.tpsRegistry.SoloMedian(gptossBuild, "M3"); n != 0 {
+	if _, n := reg.tpsRegistry.SoloMedian(gptossBuild, "M3|Max"); n != 0 {
 		t.Fatalf("idle co-resident slot recorded %d solo samples, want 0 (stale EWMA contamination)", n)
 	}
 	// The load-inclusive store still sees both slots' EWMAs.
@@ -236,7 +254,7 @@ func TestSoloRecordingRequiresRunningDecode(t *testing.T) {
 	reg.Heartbeat("box", soloHeartbeat([]protocol.BackendSlotCapacity{
 		{Model: gemmaBuild, State: "running", NumRunning: 0, NumWaiting: 1, ObservedDecodeTPS: 14},
 	}))
-	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3"); n != 0 {
+	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3|Max"); n != 0 {
 		t.Fatalf("solo samples after queued-but-not-running heartbeat = %d, want 0 (stale EWMA, no running decode)", n)
 	}
 
@@ -244,7 +262,7 @@ func TestSoloRecordingRequiresRunningDecode(t *testing.T) {
 	reg.Heartbeat("box", soloHeartbeat([]protocol.BackendSlotCapacity{
 		{Model: gemmaBuild, State: "running", NumRunning: 1, NumWaiting: 0, ObservedDecodeTPS: 12},
 	}))
-	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3"); n != 1 {
+	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3|Max"); n != 1 {
 		t.Fatalf("solo samples after running-uncontended heartbeat = %d, want 1", n)
 	}
 	// The load-inclusive store records BOTH heartbeats' EWMAs regardless.
@@ -290,6 +308,137 @@ func TestResolvedSoloModelTPSFallbackChain(t *testing.T) {
 	// rate (the registration benchmark).
 	if got := resolveSolo(reg, p, gptossBuild); got.tps != 93 || got.perModel {
 		t.Fatalf("provider-level fallback = %+v, want tps 93, perModel false", got)
+	}
+}
+
+// setChipClass overrides a provider's chip family/tier so tests can drive the
+// class-keyed solo resolver (chipClassKey = family|tier).
+func setChipClass(p *Provider, family, tier string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Hardware.ChipFamily = family
+	p.Hardware.ChipTier = tier
+}
+
+// TestSoloResolverChipClassKeying is the correctness-critical safety test for
+// Fix 2: solo caps are keyed by chip CLASS (family+tier), and the cross-class
+// fallback is the MIN of per-class medians. Together these guarantee the
+// resolver never hands a slow box a rate faster than its own class demonstrated
+// — the over-admission that collapses a slow box under load.
+func TestSoloResolverChipClassKeying(t *testing.T) {
+	// (a) same-class primary lookup applies: an M3|Max box uses M3|Max samples.
+	t.Run("same_class_primary", func(t *testing.T) {
+		reg := New(testLogger())
+		enablePerModelQualityCap(t, reg, "", "", "")
+		p := mixedBoxProvider(t, reg, "m3max", 93)
+		setChipClass(p, "M3", "Max")
+		for _, v := range []float64{10, 12, 12, 12, 30} { // median 12
+			reg.tpsRegistry.RecordSolo(gemmaBuild, "M3|Max", v)
+		}
+		if got := resolveSolo(reg, p, gemmaBuild); got.tps != 12 || !got.perModel {
+			t.Fatalf("same-class resolver = %+v, want tps 12, perModel true", got)
+		}
+	})
+
+	// (b) cross-tier isolation: an M4|Pro box must NOT inherit the fast M4|Max
+	// tier's rate. With family-only keying both tiers pooled under "M4" and the
+	// Pro box got the Max rate; class keying keeps them separate, so the Pro box
+	// resolves to its OWN slower median.
+	t.Run("cross_tier_isolation", func(t *testing.T) {
+		reg := New(testLogger())
+		enablePerModelQualityCap(t, reg, "", "", "")
+		p := mixedBoxProvider(t, reg, "m4pro", 93)
+		setChipClass(p, "M4", "Pro")
+		for i := 0; i < 5; i++ {
+			reg.tpsRegistry.RecordSolo(gemmaBuild, "M4|Max", 40) // fast tier
+		}
+		for _, v := range []float64{14, 15, 15, 15, 16} { // slow tier, median 15
+			reg.tpsRegistry.RecordSolo(gemmaBuild, "M4|Pro", v)
+		}
+		if got := resolveSolo(reg, p, gemmaBuild); got.tps != 15 {
+			t.Fatalf("M4|Pro resolved %v, want 15 (its own class median), NOT the M4|Max 40", got.tps)
+		}
+	})
+
+	// (c) conservative cross-class fallback: a box whose own class has no samples
+	// falls to SoloMedianAllChips, which returns the MIN of class medians — the
+	// slow class (10), never the fast one (40). A slow box can never be over-capped.
+	t.Run("conservative_cross_class_fallback", func(t *testing.T) {
+		reg := New(testLogger())
+		enablePerModelQualityCap(t, reg, "", "", "")
+		p := mixedBoxProvider(t, reg, "m2max", 93)
+		setChipClass(p, "M2", "Max") // no M2|Max samples exist
+		for i := 0; i < 5; i++ {
+			reg.tpsRegistry.RecordSolo(gemmaBuild, "M4|Max", 40) // fast class
+		}
+		for i := 0; i < 5; i++ {
+			reg.tpsRegistry.RecordSolo(gemmaBuild, "M1", 10) // slow class
+		}
+		if got := resolveSolo(reg, p, gemmaBuild); got.tps != 10 || !got.perModel {
+			t.Fatalf("cross-class fallback = %+v, want tps 10 (min of class medians), NOT the fast 40", got)
+		}
+	})
+
+	// (d) cold-start safety: a cold-class box with only FASTER classes present
+	// still gets the conservative min of those class medians (25, the slower of
+	// the two), never the fastest (40).
+	t.Run("cold_class_conservative_min", func(t *testing.T) {
+		reg := New(testLogger())
+		enablePerModelQualityCap(t, reg, "", "", "")
+		p := mixedBoxProvider(t, reg, "m2ultra", 93)
+		setChipClass(p, "M2", "Ultra") // no M2|Ultra samples exist
+		for i := 0; i < 5; i++ {
+			reg.tpsRegistry.RecordSolo(gemmaBuild, "M4|Max", 40) // fastest
+		}
+		for i := 0; i < 5; i++ {
+			reg.tpsRegistry.RecordSolo(gemmaBuild, "M3|Max", 25) // slower of the two
+		}
+		if got := resolveSolo(reg, p, gemmaBuild); got.tps != 25 {
+			t.Fatalf("cold-class resolver = %v, want 25 (conservative min), never the fastest 40", got.tps)
+		}
+	})
+}
+
+// TestSoloClassKeyingEndToEndNoCrossTierOverCap drives the REAL heartbeat
+// ingest so both the ingest key (registry.go) and the resolver key
+// (concurrency_cap.go) are exercised: two same-family boxes of different tiers
+// (M4 Max fast, M4 Pro slow) serving gemma solo. With chip-CLASS keying the
+// slow box's cap comes from its OWN 14 tok/s (→ cap 2) while the fast box keeps
+// its wide cap from 40 tok/s. With family-only keying both tiers pool under
+// "M4" and the slow box's cap inflates from the fast box's samples — the exact
+// cross-tier over-admission this fix prevents. Reverting either the ingest or
+// the resolver keying trips one of the two assertions.
+func TestSoloClassKeyingEndToEndNoCrossTierOverCap(t *testing.T) {
+	reg := New(testLogger())
+	enablePerModelQualityCap(t, reg, "", "", "5")
+
+	mk := func(id, family, tier string) *Provider {
+		p := makeSchedulerProvider(t, reg, id, gemmaBuild, 93)
+		p.mu.Lock()
+		p.Hardware.ChipFamily = family
+		p.Hardware.ChipTier = tier
+		p.mu.Unlock()
+		return p
+	}
+	fast := mk("fast", "M4", "Max")
+	slow := mk("slow", "M4", "Pro")
+
+	// Five uncontended solo heartbeats each: fast decodes gemma at 40, slow at
+	// 14. One running gemma request per heartbeat gates the sample in.
+	for i := 0; i < 5; i++ {
+		reg.Heartbeat("fast", soloHeartbeat([]protocol.BackendSlotCapacity{
+			{Model: gemmaBuild, State: "running", NumRunning: 1, ObservedDecodeTPS: 40},
+		}))
+		reg.Heartbeat("slow", soloHeartbeat([]protocol.BackendSlotCapacity{
+			{Model: gemmaBuild, State: "running", NumRunning: 1, ObservedDecodeTPS: 14},
+		}))
+	}
+
+	if got := effCapResolved(reg, slow, gemmaBuild); got != 2 {
+		t.Fatalf("slow (M4|Pro) gemma cap = %d, want 2 (its own 14 tok/s); family keying inflates it from the fast M4|Max box", got)
+	}
+	if got := effCapResolved(reg, fast, gemmaBuild); got <= 2 {
+		t.Fatalf("fast (M4|Max) gemma cap = %d, want wide (its own 40 tok/s), not dragged down cross-tier", got)
 	}
 }
 

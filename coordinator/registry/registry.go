@@ -2729,6 +2729,10 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	p.BackendCapacity = msg.BackendCapacity
 	if p.BackendCapacity != nil {
 		chipFamily := p.Hardware.ChipFamily
+		// Solo samples are keyed by chip CLASS (family+tier, chipClassKey) so a
+		// fast tier (M4 Max) never lends its rate to a slow one (M4 Pro); the
+		// load-inclusive Record stays family-keyed (fleetMedianTPS semantics).
+		chipClass := chipClassKey(p.Hardware)
 		// Solo gate: a slot EWMA is additionally recorded as a SOLO sample only
 		// when the whole box is uncontended at heartbeat time (Σ running+waiting
 		// ≤ 1 across ALL slots — the one allowance is the sample-generating
@@ -2752,7 +2756,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 			if slot.ObservedDecodeTPS > 0 {
 				r.tpsRegistry.Record(slot.Model, chipFamily, slot.ObservedDecodeTPS)
 				if soloEligible && slot.NumRunning > 0 {
-					r.tpsRegistry.RecordSolo(slot.Model, chipFamily, slot.ObservedDecodeTPS)
+					r.tpsRegistry.RecordSolo(slot.Model, chipClass, slot.ObservedDecodeTPS)
 				}
 			}
 		}

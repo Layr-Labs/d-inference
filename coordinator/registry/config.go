@@ -83,8 +83,8 @@ type WarmPoolConfig struct {
 	MinWarmByModel map[string]int
 
 	// AllowBusyLoadMax bounds the busy-load a COLD provider may carry and still be
-	// an eligible warm-pool target: eligible when pendingCount + Σ slots
-	// (NumRunning+NumWaiting) <= AllowBusyLoadMax. The default 0 preserves the
+	// an eligible warm-pool target: eligible when max(pendingCount, Σ slots
+	// (NumRunning+NumWaiting)) <= AllowBusyLoadMax. The default 0 preserves the
 	// historical fully-idle requirement (any activity disqualifies —
 	// warmColdNotIdle). Raising it (runbook: 2) lets the controller warm a
 	// lightly-busy box instead of stalling at eligible_cold=0 during recovery

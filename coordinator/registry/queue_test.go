@@ -367,3 +367,145 @@ func TestFailQueuedRequestsForModelFailsOwnerlessPreferWaiter(t *testing.T) {
 		t.Fatal("owner-less prefer waiter was not failed")
 	}
 }
+
+func TestRequestQueueShedSnapshotGuardsLateEnqueue(t *testing.T) {
+	q := NewRequestQueue(10, 30*time.Second)
+	build := "queue-shed-build"
+	alias := "queue-shed-alias"
+	q.ReplaceShedModels([]string{alias})
+
+	matching := &QueuedRequest{
+		RequestID: "matching",
+		Model:     build,
+		Pending:   &PendingRequest{RequestID: "matching", Model: build, PublicModel: alias},
+	}
+	if err := q.Enqueue(matching); !errors.Is(err, ErrModelShed) {
+		t.Fatalf("matching alias enqueue error = %v, want ErrModelShed", err)
+	}
+
+	raw := &QueuedRequest{
+		RequestID: "raw",
+		Model:     build,
+		Pending:   &PendingRequest{RequestID: "raw", Model: build, PublicModel: build},
+	}
+	if err := q.Enqueue(raw); err != nil {
+		t.Fatalf("raw-build waiter sharing the concrete queue was rejected: %v", err)
+	}
+
+	selfRoute := &QueuedRequest{
+		RequestID: "self",
+		Model:     build,
+		Pending:   &PendingRequest{RequestID: "self", Model: build, PublicModel: alias, SelfRouteOnly: true},
+	}
+	if err := q.Enqueue(selfRoute); err != nil {
+		t.Fatalf("exclusive self-route waiter was rejected: %v", err)
+	}
+	if got := q.QueueSize(build); got != 2 {
+		t.Fatalf("queue size = %d, want raw-build plus self-route waiters", got)
+	}
+}
+
+func TestRequestQueueShedSnapshotGuardsRequeueAndDrainAssignment(t *testing.T) {
+	q := NewRequestQueue(10, 30*time.Second)
+	model := "queue-shed-model"
+
+	requeued := &QueuedRequest{
+		RequestID: "requeued",
+		Model:     model,
+		Pending:   &PendingRequest{RequestID: "requeued", Model: model, PublicModel: model},
+	}
+	draining := &QueuedRequest{
+		RequestID: "draining",
+		Model:     model,
+		Pending:   &PendingRequest{RequestID: "draining", Model: model, PublicModel: model},
+	}
+	if err := q.Enqueue(requeued); err != nil {
+		t.Fatalf("enqueue requeue candidate: %v", err)
+	}
+	if err := q.Enqueue(draining); err != nil {
+		t.Fatalf("enqueue drain candidate: %v", err)
+	}
+	requeued = q.PopNextFresh(model)
+	draining = q.PopNextFresh(model)
+	q.ReplaceShedModels([]string{model})
+	q.RequeueFront(requeued)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := q.WaitForProviderContext(ctx, requeued); !errors.Is(err, ErrModelShed) {
+		t.Fatalf("requeued shed waiter error = %v, want ErrModelShed", err)
+	}
+
+	if q.AssignProviderIfAllowed(draining, &Provider{ID: "p1"}) {
+		t.Fatal("drain assigned a provider after the model was shed")
+	}
+	if _, err := q.WaitForProviderContext(ctx, draining); !errors.Is(err, ErrModelShed) {
+		t.Fatalf("draining shed waiter error = %v, want ErrModelShed", err)
+	}
+
+	// Exclusive self-route bypasses the public shed even if it was popped before
+	// the replacement and reaches the final assignment afterward.
+	q.ReplaceShedModels(nil)
+	selfRoute := &QueuedRequest{
+		RequestID: "self",
+		Model:     model,
+		Pending:   &PendingRequest{RequestID: "self", Model: model, PublicModel: model, SelfRouteOnly: true},
+	}
+	if err := q.Enqueue(selfRoute); err != nil {
+		t.Fatalf("enqueue self-route: %v", err)
+	}
+	selfRoute = q.PopNextFresh(model)
+	q.ReplaceShedModels([]string{model})
+	provider := &Provider{ID: "self-provider"}
+	if !q.AssignProviderIfAllowed(selfRoute, provider) {
+		t.Fatal("self-route drain was blocked by the public shed")
+	}
+	if got, err := q.WaitForProviderContext(ctx, selfRoute); err != nil || got != provider {
+		t.Fatalf("self-route assignment = (%v, %v), want provider", got, err)
+	}
+}
+
+func TestRequestQueueAssignmentAndAbandonAreAtomic(t *testing.T) {
+	q := NewRequestQueue(10, 30*time.Second)
+	for i := 0; i < 1000; i++ {
+		req := &QueuedRequest{
+			RequestID: "atomic",
+			Model:     "atomic-model",
+			Pending:   &PendingRequest{RequestID: "atomic", Model: "atomic-model"},
+		}
+		req.init()
+		provider := &Provider{ID: "p1"}
+		start := make(chan struct{})
+		assignedCh := make(chan bool, 1)
+		abandonedCh := make(chan bool, 1)
+		go func() {
+			<-start
+			assignedCh <- q.AssignProviderIfAllowed(req, provider)
+		}()
+		go func() {
+			<-start
+			abandonedCh <- q.abandonIfWaiting(req)
+		}()
+		close(start)
+		assigned := <-assignedCh
+		abandoned := <-abandonedCh
+		if assigned == abandoned {
+			t.Fatalf("iteration %d: assigned=%v abandoned=%v, want exactly one terminal transition", i, assigned, abandoned)
+		}
+		if assigned {
+			select {
+			case got := <-req.ResponseCh:
+				if got != provider {
+					t.Fatalf("iteration %d: assigned provider = %v, want %v", i, got, provider)
+				}
+			default:
+				t.Fatalf("iteration %d: assignment won without provider response", i)
+			}
+		} else {
+			select {
+			case <-req.Done():
+			default:
+				t.Fatalf("iteration %d: abandon won without closing Done", i)
+			}
+		}
+	}
+}

@@ -1206,6 +1206,10 @@ type Registry struct {
 	providers map[string]*Provider
 
 	queue *RequestQueue
+	// queueShedModels mirrors the Server's current public reject set into any
+	// test-swapped queue. Production installs the queue once at startup, but
+	// keeping the snapshot here makes SetQueue linearizable too.
+	queueShedModels []string
 
 	MinTrustLevel TrustLevel
 
@@ -2346,6 +2350,9 @@ func (r *Registry) SetQueue(q *RequestQueue) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.queue = q
+	if q != nil {
+		q.ReplaceShedModels(r.queueShedModels)
+	}
 }
 
 // Sanity caps on provider-reported stats. A malicious (or broken) provider
@@ -3310,6 +3317,24 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 			}
 		}
 		if !found {
+			// Preserve slot-cap safety until the next heartbeat replaces this
+			// synthetic snapshot. OccupiedModelSlots may include non-routable
+			// unloading/loading models that are absent from Slots, so advance its
+			// count conservatively when a newly successful load is injected.
+			visibleBefore := make(map[string]struct{}, len(p.BackendCapacity.Slots))
+			for _, slot := range p.BackendCapacity.Slots {
+				if slot.Model != "" {
+					visibleBefore[slot.Model] = struct{}{}
+				}
+			}
+			occupied := p.BackendCapacity.OccupiedModelSlots
+			if len(visibleBefore) > occupied {
+				occupied = len(visibleBefore)
+			}
+			if p.BackendCapacity.MaxModelSlots <= 0 || occupied < p.BackendCapacity.MaxModelSlots {
+				occupied++
+			}
+			p.BackendCapacity.OccupiedModelSlots = occupied
 			p.BackendCapacity.Slots = append(p.BackendCapacity.Slots, protocol.BackendSlotCapacity{
 				Model: modelID,
 				State: "idle",
@@ -3449,33 +3474,28 @@ func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
 // dispatch to a model pulled out of rotation mid-incident. Unlike
 // RejectUnservableQueuedRequests this makes NO capacity check: the operator's
 // shed is authoritative, so a served-model verdict must not preserve the
-// waiters. Exclusive self-route waiters (SelfRouteOnly) are preserved by
-// FailQueuedRequestsForModel because they bypass the shed at admission (an
-// owner's own machine is never shed); prefer-owner and public waiters are failed
-// — passing a nil eligibility map preserves NO prefer waiter, mirroring the
-// shed's admission exemption (only self-route bypasses). Callers pass the
-// RESOLVED queue-key model ids that modelShed matched. Returns the total number
-// of queued requests failed.
+// waiters. Exclusive self-route waiters (SelfRouteOnly) are preserved by the
+// queue filter because they bypass the shed at admission (an
+// owner's own machine is never shed); prefer-owner and public waiters are failed.
+// Matching is per request against both the resolved queue model and PublicModel,
+// so shedding an alias does not fail raw-build or other-alias waiters that share
+// the same concrete queue. Returns the total number of queued requests failed.
 func (r *Registry) RejectQueuedRequestsForShedModels(models []string) int {
-	queue := r.Queue()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.queueShedModels = append(r.queueShedModels[:0], models...)
+	queue := r.queue
 	if queue == nil {
 		return 0
 	}
-	total := 0
-	for _, model := range models {
-		if queue.QueueSize(model) == 0 {
-			continue
-		}
-		failed := queue.FailQueuedRequestsForModel(model, nil)
-		if failed > 0 {
-			total += failed
-			r.logger.Warn("failed queued requests for shed model",
-				"model_id", model,
-				"rejected", failed,
-			)
-		}
+	failed := queue.ReplaceShedModels(models)
+	if failed > 0 {
+		r.logger.Warn("failed queued requests for shed models",
+			"models", models,
+			"rejected", failed,
+		)
 	}
-	return total
+	return failed
 }
 
 func cumulativeDelta(previous, current int64) int64 {

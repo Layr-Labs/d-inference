@@ -814,7 +814,9 @@ import Testing
             gpuMemoryActiveGb: 5.5,
             gpuMemoryPeakGb: 6.5,
             gpuMemoryCacheGb: 1.5,
-            totalMemoryGb: 36
+            totalMemoryGb: 36,
+            maxModelSlots: 3,
+            occupiedModelSlots: 2
         )
     ))
 
@@ -827,6 +829,8 @@ import Testing
     #expect(capacity?["gpu_memory_peak_gb"] as? Double == 6.5)
     #expect(capacity?["gpu_memory_cache_gb"] as? Double == 1.5)
     #expect(capacity?["total_memory_gb"] as? Double == 36)
+    #expect(capacity?["max_model_slots"] as? Int == 3)
+    #expect(capacity?["occupied_model_slots"] as? Int == 2)
     #expect(slot?["num_running"] as? Int == 1)
     #expect(slot?["num_waiting"] as? Int == 2)
     #expect(slot?["active_tokens"] as? Int == 3000)

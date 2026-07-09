@@ -375,8 +375,9 @@ func combinedAdmissionAdmits(slots []combinedSlotLoad, candidateQC int, overcomm
 // (combinedAdmissionAdmits) to a candidate (provider, model) pair. Per-model
 // caps are checked independently, so a box saturated on model A still admits
 // model B — each model sees only its own slot. This gate sums every resident
-// slot's normalized load so cross-model saturation is visible at admission (the
-// hard edge that lets the pool open before contention-aware scoring lands).
+// slot's normalized load plus coordinator-pending cold models that are absent
+// from the latest heartbeat, so cross-model saturation is visible at admission
+// (the hard edge that lets the pool open before contention-aware scoring lands).
 //
 // Dormant unless BOTH EIGENINFERENCE_COMBINED_ADMISSION_CAP and the quality cap
 // are enabled. Candidate and co-resident quality concurrency both use
@@ -397,12 +398,19 @@ func (r *Registry) combinedAdmissionHeadroomLocked(p *Provider, model string, ca
 	candidateQC := r.combinedQualityConcurrencyLocked(p, model, candidate)
 	var slots []combinedSlotLoad
 	if p.BackendCapacity != nil {
-		slots = make([]combinedSlotLoad, 0, len(p.BackendCapacity.Slots))
+		pendingByModel := make(map[string]int)
+		for _, pending := range p.pendingReqs {
+			if pending != nil && pending.Model != "" {
+				pendingByModel[pending.Model]++
+			}
+		}
+		slots = make([]combinedSlotLoad, 0, len(p.BackendCapacity.Slots)+len(pendingByModel))
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model == "" {
 				continue
 			}
-			load := p.pendingCountForModelLocked(slot.Model)
+			load := pendingByModel[slot.Model]
+			delete(pendingByModel, slot.Model)
 			if backendLoad := clampNonNegative(slot.NumRunning) + clampNonNegative(slot.NumWaiting); backendLoad > load {
 				load = backendLoad
 			}
@@ -411,6 +419,17 @@ func (r *Registry) combinedAdmissionHeadroomLocked(p *Provider, model string, ca
 				slotRate = candidate
 			}
 			qc := r.combinedQualityConcurrencyLocked(p, slot.Model, slotRate)
+			slots = append(slots, combinedSlotLoad{load: load, qc: qc})
+		}
+		// Coordinator reservations can precede the heartbeat slot for a cold
+		// model. Charge those pending-only models once so heartbeat lag cannot
+		// make already-committed box load disappear.
+		for pendingModel, load := range pendingByModel {
+			rate := r.resolvedSoloModelTPSLocked(p, pendingModel)
+			if pendingModel == model {
+				rate = candidate
+			}
+			qc := r.combinedQualityConcurrencyLocked(p, pendingModel, rate)
 			slots = append(slots, combinedSlotLoad{load: load, qc: qc})
 		}
 	}

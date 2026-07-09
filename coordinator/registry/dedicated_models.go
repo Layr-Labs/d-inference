@@ -150,8 +150,9 @@ func (r *Registry) HasProviderForModel(model string, allowedSerials ...string) b
 // public-routing gates — the liveness/trust/privacy core (online, trust floor,
 // runtime-verified, private-text support, challenge freshness, not private-only)
 // and trait eligibility (render-ok + capability version floors; vision when
-// requiresVision) — while IGNORING the transient exclusions a freeing slot or a
-// lapsing timer clears (the dedicated-box isolation rule, capacity /
+// requiresVision), plus absolute hardware fit for non-resident models — while
+// IGNORING the transient exclusions a freeing slot or a lapsing timer clears
+// (the dedicated-box isolation rule, capacity /
 // dispatch-load / inference-error cooldowns, the node-health breaker, and
 // thermal state).
 //
@@ -185,6 +186,25 @@ func (r *Registry) HasCapableProviderForModel(model string, traits RequestTraits
 			r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now) &&
 			r.providerEligibleForTraitsLocked(p, model, traits) &&
 			(!requiresVision || r.providerServesVisionModelLocked(p, model, false))
+		if capable {
+			slotState := "unknown"
+			totalMemoryGB := float64(p.Hardware.MemoryGB)
+			if p.BackendCapacity != nil {
+				if p.BackendCapacity.TotalMemoryGB > 0 {
+					totalMemoryGB = p.BackendCapacity.TotalMemoryGB
+				}
+				for _, slot := range p.BackendCapacity.Slots {
+					if slot.Model == model {
+						slotState = slot.State
+						break
+					}
+				}
+			}
+			if !slotStateModelLoaded(slotState) &&
+				!modelFitsHardware(r.catalogMinRAMGbLocked(model), r.modelSizeGBForFitLocked(p, model), totalMemoryGB) {
+				capable = false
+			}
+		}
 		p.mu.Unlock()
 		if capable {
 			return true

@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -108,6 +109,56 @@ func TestCombinedAdmissionCapCrossModel(t *testing.T) {
 	p.mu.Unlock()
 	if !combinedHeadroom(reg, p, modelB) {
 		t.Fatal("flag on: B must admit once A drains")
+	}
+}
+
+// TestCombinedAdmissionUsesPerModelRateForResidentSlots pins the #524 merge
+// boundary: co-resident slot load must be normalized by THAT model's resolved
+// solo rate, not the provider-wide registration benchmark. A slow model at one
+// request already consumes its whole quality budget even when the box happened
+// to benchmark fast on another model. Trusted per-model seeds must also bind on
+// providers that did not report a registration benchmark.
+func TestCombinedAdmissionUsesPerModelRateForResidentSlots(t *testing.T) {
+	modelA := "combined-slow-resident"
+	modelB := "combined-slow-candidate"
+
+	for _, providerTPS := range []float64{93, 0} {
+		t.Run(fmt.Sprintf("provider_tps_%.0f", providerTPS), func(t *testing.T) {
+			reg := New(testLogger())
+			enablePerModelQualityCap(t, reg, modelA+"=14,"+modelB+"=14", "", "")
+			reg.SetCombinedAdmissionCap(true)
+			p := makeCombinedCapBox(t, reg, modelA, modelB, 1)
+			p.mu.Lock()
+			p.DecodeTPS = providerTPS
+			p.BackendCapacity.Slots[0].MaxConcurrency = 24
+			p.BackendCapacity.Slots[1].MaxConcurrency = 24
+			p.mu.Unlock()
+
+			if combinedHeadroom(reg, p, modelB) {
+				t.Fatal("slow resident at quality concurrency 1 must exhaust the combined box budget")
+			}
+		})
+	}
+}
+
+// TestCombinedAdmissionCountsPendingColdModelWithoutHeartbeatSlot covers the
+// gap between coordinator reservation and the next provider heartbeat. A cold
+// model with a pending request may not have a BackendCapacity slot yet, but its
+// load still consumes box-wide quality capacity. The independent per-model cap
+// permits the second request (ceil(1 * 1.2) = 2); the combined cap must reject it.
+func TestCombinedAdmissionCountsPendingColdModelWithoutHeartbeatSlot(t *testing.T) {
+	resident := "combined-resident"
+	cold := "combined-pending-cold"
+	reg := New(testLogger())
+	enablePerModelQualityCap(t, reg, cold+"=14", "", "")
+	reg.SetCombinedAdmissionCap(true)
+	p := makeSchedulerProvider(t, reg, "pending-cold-box", resident, 93)
+	p.mu.Lock()
+	p.pendingReqs["cold-1"] = &PendingRequest{RequestID: "cold-1", Model: cold}
+	p.mu.Unlock()
+
+	if combinedHeadroom(reg, p, cold) {
+		t.Fatal("pending cold model absent from heartbeat slots must consume the combined box budget")
 	}
 }
 

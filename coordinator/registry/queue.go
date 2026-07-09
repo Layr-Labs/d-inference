@@ -42,6 +42,11 @@ var ErrQueueTimeout = errors.New("request queue timeout")
 // ttft_too_slow 429 instead of a queue timeout.
 var ErrQueueTTFTTooSlow = errors.New("all providers for queued request exceed the TTFT target")
 
+// ErrModelShed is returned when an operator reject-set replacement removes a
+// queued public request, or when a request that passed the API admission check
+// races with that replacement and attempts to enqueue or drain afterward.
+var ErrModelShed = errors.New("request model is temporarily shed")
+
 // QueuedRequest represents a request waiting for a provider.
 type QueuedRequest struct {
 	RequestID  string
@@ -52,6 +57,9 @@ type QueuedRequest struct {
 	EnqueuedAt time.Time
 	DoneCh     chan struct{} // closed when the waiter is no longer interested
 	doneOnce   sync.Once
+	// queueState is guarded by RequestQueue.mu. It linearizes provider
+	// assignment and terminal failure against timeout/cancellation.
+	queueState queuedRequestState
 
 	// Decision captures the cost breakdown of the routing decision that
 	// dispatched (or terminally failed) this queued request. Populated by
@@ -69,6 +77,15 @@ type QueuedRequest struct {
 	// accesses.
 	FailureReason error
 }
+
+type queuedRequestState uint8
+
+const (
+	queuedRequestWaiting queuedRequestState = iota
+	queuedRequestAssigned
+	queuedRequestFailed
+	queuedRequestAbandoned
+)
 
 func (r *QueuedRequest) init() {
 	if r.ResponseCh == nil {
@@ -130,10 +147,11 @@ func drainRejectionTTFTTerminal(pr *PendingRequest, decision RoutingDecision) bo
 
 // RequestQueue manages per-model queues for requests awaiting providers.
 type RequestQueue struct {
-	mu      sync.Mutex
-	queues  map[string][]*QueuedRequest // model -> queue
-	maxSize int                         // max queue size per model
-	maxWait time.Duration               // max time a request waits
+	mu         sync.Mutex
+	queues     map[string][]*QueuedRequest // model -> queue
+	shedModels map[string]struct{}         // current public reject-set snapshot
+	maxSize    int                         // max queue size per model
+	maxWait    time.Duration               // max time a request waits
 }
 
 // Default queue limits (see NewRequestQueueFromEnv for the sizing rationale).
@@ -182,6 +200,9 @@ func (q *RequestQueue) Enqueue(req *QueuedRequest) error {
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if queuedRequestMatchesModels(req, q.shedModels) {
+		return ErrModelShed
+	}
 
 	// Clean stale entries first
 	q.cleanStaleLocked(req.Model)
@@ -205,31 +226,54 @@ func (q *RequestQueue) WaitForProviderContext(ctx context.Context, req *QueuedRe
 
 	select {
 	case p := <-req.ResponseCh:
-		req.markDone()
-		if p == nil {
-			if req.FailureReason != nil {
-				return nil, req.FailureReason
-			}
+		return queuedRequestResult(req, p)
+	case <-timer.C:
+		if q.abandonIfWaiting(req) {
 			return nil, ErrQueueTimeout
 		}
-		return p, nil
-	case <-timer.C:
-		// Remove the request from the queue
-		req.markDone()
-		q.Remove(req.RequestID, req.Model)
-		return nil, ErrQueueTimeout
+		return queuedRequestResult(req, <-req.ResponseCh)
 	case <-ctx.Done():
-		req.markDone()
-		q.Remove(req.RequestID, req.Model)
-		return nil, ctx.Err()
+		if q.abandonIfWaiting(req) {
+			return nil, ctx.Err()
+		}
+		return queuedRequestResult(req, <-req.ResponseCh)
 	}
+}
+
+func queuedRequestResult(req *QueuedRequest, provider *Provider) (*Provider, error) {
+	req.markDone()
+	if provider != nil {
+		return provider, nil
+	}
+	if req.FailureReason != nil {
+		return nil, req.FailureReason
+	}
+	return nil, ErrQueueTimeout
+}
+
+// abandonIfWaiting atomically commits timeout/cancellation against provider
+// assignment and queue failures. False means another terminal outcome already
+// committed and its buffered response must be consumed by the waiter.
+func (q *RequestQueue) abandonIfWaiting(req *QueuedRequest) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if req == nil || req.queueState != queuedRequestWaiting {
+		return false
+	}
+	req.queueState = queuedRequestAbandoned
+	req.markDone()
+	q.removeLocked(req.RequestID, req.Model)
+	return true
 }
 
 // Remove removes a specific request from the queue by request ID.
 func (q *RequestQueue) Remove(requestID, model string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	q.removeLocked(requestID, model)
+}
 
+func (q *RequestQueue) removeLocked(requestID, model string) {
 	queue := q.queues[model]
 	for i, req := range queue {
 		if req.RequestID == requestID {
@@ -258,11 +302,7 @@ func (q *RequestQueue) PopNextFresh(model string) *QueuedRequest {
 			delete(q.queues, model)
 		}
 		if now.Sub(req.EnqueuedAt) > q.maxWait {
-			req.markDone()
-			select {
-			case req.ResponseCh <- nil:
-			default:
-			}
+			q.failRequestLocked(req, nil)
 			continue
 		}
 		return req
@@ -277,6 +317,13 @@ func (q *RequestQueue) RequeueFront(req *QueuedRequest) {
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if req.queueState != queuedRequestWaiting {
+		return
+	}
+	if queuedRequestMatchesModels(req, q.shedModels) {
+		q.failRequestLocked(req, ErrModelShed)
+		return
+	}
 	queue := q.queues[req.Model]
 	queue = append([]*QueuedRequest{req}, queue...)
 	q.queues[req.Model] = queue
@@ -384,11 +431,8 @@ func (q *RequestQueue) FailQueuedRequestsForModel(model string, preferOwnerEligi
 				continue
 			}
 		}
-		req.markDone()
-		select {
-		case req.ResponseCh <- nil:
+		if q.failRequestLocked(req, nil) {
 			failed++
-		default:
 		}
 	}
 	if len(survivors) == 0 {
@@ -397,6 +441,110 @@ func (q *RequestQueue) FailQueuedRequestsForModel(model string, preferOwnerEligi
 		q.queues[model] = survivors
 	}
 	return failed
+}
+
+// ReplaceShedModels atomically installs the queue's public reject-set snapshot
+// and rejects matching waiters already present. Enqueue, requeue, and drain
+// assignment consult the same snapshot under q.mu, closing races where a
+// request passed API admission just before an operator PUT. Requests queue under
+// the resolved build, so matching checks both that id and Pending.PublicModel.
+// Exclusive self-route bypasses the public shed policy. Returns the number of
+// queued waiters removed.
+func (q *RequestQueue) ReplaceShedModels(models []string) int {
+	shed := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		if model != "" {
+			shed[model] = struct{}{}
+		}
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.shedModels = shed
+
+	failed := 0
+	for queueModel := range q.queues {
+		q.cleanStaleLocked(queueModel)
+		queue := q.queues[queueModel]
+		if len(queue) == 0 {
+			continue
+		}
+		survivors := make([]*QueuedRequest, 0, len(queue))
+		for _, req := range queue {
+			if !queuedRequestMatchesModels(req, shed) {
+				survivors = append(survivors, req)
+				continue
+			}
+			if q.failRequestLocked(req, ErrModelShed) {
+				failed++
+			}
+		}
+		if len(survivors) == 0 {
+			delete(q.queues, queueModel)
+		} else {
+			q.queues[queueModel] = survivors
+		}
+	}
+	return failed
+}
+
+// AssignProviderIfAllowed is the queue-drain commit point. It serializes the
+// final shed check with ReplaceShedModels and the provider send, so either the
+// assignment commits before an operator replacement or the waiter receives
+// ErrModelShed after it; a popped request cannot slip through between them.
+func (q *RequestQueue) AssignProviderIfAllowed(req *QueuedRequest, provider *Provider) bool {
+	if req == nil || provider == nil {
+		return false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if req.queueState != queuedRequestWaiting {
+		return false
+	}
+	if queuedRequestMatchesModels(req, q.shedModels) {
+		q.failRequestLocked(req, ErrModelShed)
+		return false
+	}
+	select {
+	case req.ResponseCh <- provider:
+		req.queueState = queuedRequestAssigned
+		return true
+	default:
+		return false
+	}
+}
+
+// FailRequest commits a typed terminal queue failure unless assignment,
+// timeout, or cancellation already won the request-state transition.
+func (q *RequestQueue) FailRequest(req *QueuedRequest, reason error) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.failRequestLocked(req, reason)
+}
+
+func (q *RequestQueue) failRequestLocked(req *QueuedRequest, reason error) bool {
+	if req == nil || req.queueState != queuedRequestWaiting {
+		return false
+	}
+	req.queueState = queuedRequestFailed
+	req.failWithReason(reason)
+	return true
+}
+
+func queuedRequestMatchesModels(req *QueuedRequest, models map[string]struct{}) bool {
+	if req == nil || len(models) == 0 {
+		return false
+	}
+	if req.Pending != nil && req.Pending.SelfRouteOnly {
+		return false
+	}
+	if _, ok := models[req.Model]; ok {
+		return true
+	}
+	if req.Pending != nil {
+		_, ok := models[req.Pending.PublicModel]
+		return ok
+	}
+	return false
 }
 
 // QueuedModels returns the set of model IDs that currently have at least
@@ -427,12 +575,7 @@ func (q *RequestQueue) cleanStaleLocked(model string) {
 	var fresh []*QueuedRequest
 	for _, req := range queue {
 		if now.Sub(req.EnqueuedAt) > q.maxWait {
-			// Close the response channel to signal timeout
-			req.markDone()
-			select {
-			case req.ResponseCh <- nil:
-			default:
-			}
+			q.failRequestLocked(req, nil)
 		} else {
 			fresh = append(fresh, req)
 		}

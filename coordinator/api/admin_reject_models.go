@@ -130,13 +130,12 @@ func (s *Server) handleAdminPutRejectModels(w http.ResponseWriter, r *http.Reque
 		}
 		set[model] = true
 	}
-	previous, current := s.ReplaceRejectModels(set)
+	previous, current, failedQueued := s.replaceRejectModels(set)
 	// A runtime shed must take effect on requests ALREADY in the queue, not just
 	// future admission: fail the queued waiters for every model the new set sheds
 	// so an operator pulling a model mid-incident isn't undercut by up to a full
 	// queue window of requests still dispatching to it. Exclusive self-route
 	// waiters are preserved (they bypass the shed at admission).
-	failedQueued := s.failQueuedForShedModels()
 	s.logger.Warn("model shed set REPLACED via /v1/admin/reject-models (runtime, no restart)",
 		"old", previous,
 		"new", current,
@@ -147,28 +146,4 @@ func (s *Server) handleAdminPutRejectModels(w http.ResponseWriter, r *http.Reque
 		Models:   current,
 		Previous: previous,
 	})
-}
-
-// failQueuedForShedModels fails the queued waiters for every currently-queued
-// model that the reject set now sheds, so a runtime shed-set change takes effect
-// on in-flight queue entries instead of only future admission. It is scoped to
-// models that actually have queue depth (catalog-bounded, cheap) and matches the
-// resolved queue key against the reject set via modelShed. Exclusive self-route
-// waiters are preserved inside the registry (they bypass the shed). Returns the
-// number of queued requests failed.
-func (s *Server) failQueuedForShedModels() int {
-	q := s.registry.Queue()
-	if q == nil {
-		return 0
-	}
-	var shed []string
-	for _, model := range q.QueuedModels() {
-		if s.modelShed(model, model) {
-			shed = append(shed, model)
-		}
-	}
-	if len(shed) == 0 {
-		return 0
-	}
-	return s.registry.RejectQueuedRequestsForShedModels(shed)
 }

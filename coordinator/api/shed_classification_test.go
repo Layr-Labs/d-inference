@@ -167,6 +167,43 @@ func TestShedStructurallyUnservableStays503(t *testing.T) {
 	}
 }
 
+// TestShedColdModelTooLargeStays503 covers permanent hardware incapability that
+// QuickCapacityCheck cannot classify after a transient gate wins first. A
+// thermal-critical provider advertising a cold model is not a retryable source
+// of capacity when the catalog says the model can never fit that machine.
+func TestShedColdModelTooLargeStays503(t *testing.T) {
+	ts, reg, _ := setupShedClassification(t)
+	t.Setenv(envColdDispatch, "false")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	model := "cold-too-large"
+	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{
+		{ID: model, ModelType: "chat", Quantization: "4bit"},
+	}, testPublicKeyB64())
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+	p := markOnlyProviderRoutable(t, reg)
+	reg.SetModelCatalog([]registry.CatalogEntry{{ID: model, MinRAMGB: 64}})
+
+	p.Mu().Lock()
+	p.Hardware.MemoryGB = 16
+	p.BackendCapacity = nil // cold: no resident slot proving the model has fit
+	p.SystemMetrics.ThermalState = "critical"
+	p.Mu().Unlock()
+
+	status, body, _, err := chatRequestWithHeaders(ctx, ts.URL, model)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 for permanently undersized cold pool; body = %s", status, body)
+	}
+	if !strings.Contains(body, "model_unavailable") {
+		t.Fatalf("body = %s, want model_unavailable", body)
+	}
+}
+
 // TestShedReKeyDedicatedTaggedButNotClassifying verifies the DEDICATED-set
 // behavior is preserved under re-key: a dedicated-family model whose only
 // provider is a mixed (non-dedicated) box still sheds 429 + Retry-After

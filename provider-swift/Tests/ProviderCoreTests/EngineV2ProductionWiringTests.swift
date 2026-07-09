@@ -1276,6 +1276,46 @@ struct EngineV2RuntimeGuardTests {
         #expect(await runtime.consultCount == 0)
     }
 
+    @Test("capacity counts a resident slot hidden while unloading")
+    func capacityCountsUnloadingSlot() async throws {
+        let loop = try makeWiringLoop()
+        await loop.installModelSlotForTesting(
+            modelId: "qwen3-8b",
+            scheduler: BatchScheduler(),
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer())
+        )
+        await loop.setModelUnloadingForTesting("qwen3-8b", true)
+
+        await loop.updateAggregateCapacity()
+        let capacity = try #require(await loop.backendCapacityForTesting())
+        #expect(capacity.slots.isEmpty)
+        #expect(capacity.occupiedModelSlots == 1)
+    }
+
+    @Test("capacity counts a model load before its resident slot is installed")
+    func capacityCountsLoadingModel() async throws {
+        let loop = try makeWiringLoop()
+        await loop.setModelLoadingForTesting("qwen3-8b", true)
+
+        await loop.updateAggregateCapacity()
+        let capacity = try #require(await loop.backendCapacityForTesting())
+        #expect(capacity.slots.isEmpty)
+        #expect(capacity.occupiedModelSlots == 1)
+    }
+
+    @Test("capacity counts distinct models queued behind the global load gate")
+    func capacityCountsQueuedLoadModels() async throws {
+        let loop = try makeWiringLoop()
+        await loop.setModelLoadingForTesting("qwen3-8b", true)
+        await loop.setModelWaitingForLoadGateForTesting("gemma-4-27b-it", true)
+
+        await loop.updateAggregateCapacity()
+        let capacity = try #require(await loop.backendCapacityForTesting())
+        #expect(capacity.slots.isEmpty)
+        #expect(capacity.occupiedModelSlots == 2)
+    }
+
     @Test("capacity folds the v2 bridge slot into the heartbeat when a v2 slot exists")
     func capacityIncludesV2Slot() async throws {
         let loop = try makeWiringLoop()

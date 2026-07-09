@@ -556,6 +556,12 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     public var gpuMemoryPeakGb: Double
     public var gpuMemoryCacheGb: Double
     public var totalMemoryGb: Double
+    /// Current effective resident-model slot cap. Zero means unknown when
+    /// decoding a legacy payload that predates `max_model_slots`.
+    public var maxModelSlots: Int
+    /// Authoritative resident or committed-load slot count, including models
+    /// hidden from routable `slots` while loading, queued, or unloading.
+    public var occupiedModelSlots: Int
     /// Max additional model-WEIGHT footprint (GB) the provider can load right
     /// now, accounting for the 90% unified cap, OS/operator reserve, load
     /// headroom, real OS-available memory, and eviction of idle resident models
@@ -572,6 +578,8 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         case gpuMemoryCacheGb = "gpu_memory_cache_gb"
         case totalMemoryGb = "total_memory_gb"
         case freeForLoadGb = "free_for_load_gb"
+        case maxModelSlots = "max_model_slots"
+        case occupiedModelSlots = "occupied_model_slots"
     }
 
     public init(
@@ -580,7 +588,9 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         gpuMemoryPeakGb: Double,
         gpuMemoryCacheGb: Double,
         totalMemoryGb: Double,
-        freeForLoadGb: Double = 0
+        freeForLoadGb: Double = 0,
+        maxModelSlots: Int = 0,
+        occupiedModelSlots: Int = 0
     ) {
         self.slots = slots
         self.gpuMemoryActiveGb = gpuMemoryActiveGb
@@ -588,10 +598,12 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.gpuMemoryCacheGb = gpuMemoryCacheGb
         self.totalMemoryGb = totalMemoryGb
         self.freeForLoadGb = freeForLoadGb
+        self.maxModelSlots = maxModelSlots
+        self.occupiedModelSlots = occupiedModelSlots
     }
 
-    // Explicit decode so older payloads without `free_for_load_gb` still decode
-    // (defaults to 0). Encoding stays synthesized and always emits the field.
+    // Explicit decode keeps older payloads compatible. Zero means the optional
+    // field was absent; new provider heartbeats always report a positive cap.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.slots = try c.decode([BackendSlotCapacity].self, forKey: .slots)
@@ -600,6 +612,24 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.gpuMemoryCacheGb = try c.decode(Double.self, forKey: .gpuMemoryCacheGb)
         self.totalMemoryGb = try c.decode(Double.self, forKey: .totalMemoryGb)
         self.freeForLoadGb = try c.decodeIfPresent(Double.self, forKey: .freeForLoadGb) ?? 0
+        self.maxModelSlots = try c.decodeIfPresent(Int.self, forKey: .maxModelSlots) ?? 0
+        self.occupiedModelSlots = try c.decodeIfPresent(Int.self, forKey: .occupiedModelSlots) ?? 0
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(slots, forKey: .slots)
+        try c.encode(gpuMemoryActiveGb, forKey: .gpuMemoryActiveGb)
+        try c.encode(gpuMemoryPeakGb, forKey: .gpuMemoryPeakGb)
+        try c.encode(gpuMemoryCacheGb, forKey: .gpuMemoryCacheGb)
+        try c.encode(totalMemoryGb, forKey: .totalMemoryGb)
+        try c.encode(freeForLoadGb, forKey: .freeForLoadGb)
+        if maxModelSlots > 0 {
+            try c.encode(maxModelSlots, forKey: .maxModelSlots)
+        }
+        if occupiedModelSlots > 0 {
+            try c.encode(occupiedModelSlots, forKey: .occupiedModelSlots)
+        }
     }
 }
 

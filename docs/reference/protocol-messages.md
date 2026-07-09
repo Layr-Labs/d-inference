@@ -294,6 +294,9 @@ Go: [`BackendCapacity`](../../coordinator/protocol/messages.go); Swift: `Backend
 | `gpu_memory_peak_gb` | number |
 | `gpu_memory_cache_gb` | number |
 | `total_memory_gb` | number |
+| `free_for_load_gb` | number / omitted | Additional model-weight footprint currently loadable |
+| `max_model_slots` | integer / omitted | Effective resident-model slot cap; omitted by legacy providers |
+| `occupied_model_slots` | integer / omitted | Resident or committed load slots, including queued/loading/unloading models hidden from `slots` |
 
 ### `BackendSlotCapacity`
 

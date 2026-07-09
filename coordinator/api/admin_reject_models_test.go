@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -330,14 +331,11 @@ func TestAdminRejectModelsFailsQueuedWaiters(t *testing.T) {
 		t.Fatalf("PUT status = %d, want 200; body = %s", status, body)
 	}
 
-	// The public waiter for the shed model was failed (nil on ResponseCh).
-	select {
-	case p := <-publicShed.ResponseCh:
-		if p != nil {
-			t.Fatalf("public shed waiter got provider %v, want nil (failed)", p)
-		}
-	default:
-		t.Fatal("public shed waiter was not failed on shed")
+	// The public waiter receives a typed shed failure, not a false queue timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := queue.WaitForProviderContext(ctx, publicShed); !errors.Is(err, registry.ErrModelShed) {
+		t.Fatalf("public shed waiter error = %v, want ErrModelShed", err)
 	}
 
 	// The self-route waiter for the shed model is preserved (bypasses the shed).
@@ -352,6 +350,52 @@ func TestAdminRejectModelsFailsQueuedWaiters(t *testing.T) {
 	case <-publicKeep.ResponseCh:
 		t.Fatal("unrelated-model waiter was failed on shed")
 	default:
+	}
+}
+
+// TestAdminRejectModelsFailsOnlyMatchingAliasWaiters pins queue identity across
+// alias resolution. Requests queue under the concrete build id, but an operator
+// may shed the caller-facing alias. Only requests made through that alias should
+// fail; raw-build, other-alias, and exclusive self-route waiters sharing the
+// concrete queue must survive.
+func TestAdminRejectModelsFailsOnlyMatchingAliasWaiters(t *testing.T) {
+	ts, srv := setupAdminRejectModels(t)
+	queue := srv.registry.Queue()
+
+	build := "mlx-community/model-build"
+	alias := "public-model"
+	otherAlias := "other-public-model"
+	requests := []*registry.QueuedRequest{
+		{RequestID: "alias", Model: build, Pending: &registry.PendingRequest{RequestID: "alias", Model: build, PublicModel: alias}},
+		{RequestID: "raw", Model: build, Pending: &registry.PendingRequest{RequestID: "raw", Model: build, PublicModel: build}},
+		{RequestID: "other-alias", Model: build, Pending: &registry.PendingRequest{RequestID: "other-alias", Model: build, PublicModel: otherAlias}},
+		{RequestID: "self-alias", Model: build, Pending: &registry.PendingRequest{RequestID: "self-alias", Model: build, PublicModel: alias, SelfRouteOnly: true}},
+	}
+	for _, req := range requests {
+		if err := queue.Enqueue(req); err != nil {
+			t.Fatalf("enqueue %s: %v", req.RequestID, err)
+		}
+	}
+
+	status, body := rejectModelsCall(t, ts, http.MethodPut, "admin-secret", `{"models":["`+alias+`"]}`)
+	if status != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200; body = %s", status, body)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := queue.WaitForProviderContext(ctx, requests[0]); !errors.Is(err, registry.ErrModelShed) {
+		t.Fatalf("matching alias waiter error = %v, want ErrModelShed", err)
+	}
+	for _, req := range requests[1:] {
+		select {
+		case <-req.ResponseCh:
+			t.Fatalf("nonmatching or self-route waiter %q was failed", req.RequestID)
+		default:
+		}
+	}
+	if got := queue.QueueSize(build); got != 3 {
+		t.Fatalf("concrete build queue depth = %d, want 3 surviving waiters", got)
 	}
 }
 
@@ -394,4 +438,26 @@ func TestAdminRejectModelsConcurrentAccess(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+
+	// The queue guard and the public admission set must finish on the same
+	// snapshot even when replacements race; otherwise a stale post-replace sweep
+	// can reject the wrong model or admit a newly shed one.
+	current := make(map[string]bool)
+	for _, model := range srv.RejectModels() {
+		current[model] = true
+	}
+	for _, model := range []string{"m-a", "m-b", "m-c"} {
+		req := &registry.QueuedRequest{
+			RequestID: "snapshot-" + model,
+			Model:     model,
+			Pending:   &registry.PendingRequest{RequestID: "snapshot-" + model, Model: model, PublicModel: model},
+		}
+		err := srv.registry.Queue().Enqueue(req)
+		if gotShed := errors.Is(err, registry.ErrModelShed); gotShed != current[model] {
+			t.Fatalf("queue shed snapshot for %q = %v (err %v), admission set = %v", model, gotShed, err, current)
+		}
+		if err == nil {
+			srv.registry.Queue().Remove(req.RequestID, model)
+		}
+	}
 }

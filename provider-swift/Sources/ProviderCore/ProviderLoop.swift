@@ -225,6 +225,9 @@ public actor ProviderLoop {
     internal var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     internal var modelsLoading: Set<String> = []
     internal var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Distinct model commitments queued behind the global load gate. Counts
+    /// preserve duplicate callers while capacity reports the dictionary keys.
+    internal var loadGateWaitingModels: [String: Int] = [:]
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false
 
@@ -610,4 +613,3 @@ import MLX
 import MLXLLM
 import MLXLMCommon
 import MLXVLM
-

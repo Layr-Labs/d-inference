@@ -215,5 +215,7 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     let legacy = #"{"slots":[],"gpu_memory_active_gb":1,"gpu_memory_peak_gb":2,"gpu_memory_cache_gb":0.5,"total_memory_gb":64}"#
     let decoded = try JSONDecoder().decode(BackendCapacity.self, from: Data(legacy.utf8))
     #expect(decoded.freeForLoadGb == 0, "legacy payload defaults to 0, no throw")
+    #expect(decoded.maxModelSlots == 0, "legacy payload defaults unknown slot cap to 0")
+    #expect(decoded.occupiedModelSlots == 0, "legacy payload defaults unknown slot occupancy to 0")
     #expect(abs(decoded.totalMemoryGb - 64) < 0.001)
 }

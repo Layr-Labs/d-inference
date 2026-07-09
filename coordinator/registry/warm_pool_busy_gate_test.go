@@ -3,10 +3,12 @@ package registry
 import (
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // Tests for the bounded-busy warm-pool candidate gate (postmortem 2026-07-06
-// layer 7): eligibility is pendingCount + Σ slots(NumRunning+NumWaiting) <=
+// layer 7): eligibility is max(pendingCount, Σ slots(NumRunning+NumWaiting)) <=
 // WarmPoolConfig.AllowBusyLoadMax, with the default 0 preserving the historical
 // fully-idle requirement exactly, and non-idle candidates additionally required
 // to fit the model weights WITHOUT evicting co-resident models.
@@ -69,8 +71,8 @@ func TestWarmPoolBusyGateDefaultZeroPreservesFullIdle(t *testing.T) {
 }
 
 // TestWarmPoolBusyGateBoundedThreshold exercises the AllowBusyLoadMax=2
-// boundary: total busy load (coordinator-pending + backend running+waiting,
-// summed across ALL slots) of 1 or 2 is eligible, 3 is not.
+// boundary: coordinator and backend counts are overlapping views of the same
+// work, so their maximum (not their sum) of 1 or 2 is eligible and 3 is not.
 func TestWarmPoolBusyGateBoundedThreshold(t *testing.T) {
 	model := "busy-gate-bounded"
 
@@ -83,9 +85,9 @@ func TestWarmPoolBusyGateBoundedThreshold(t *testing.T) {
 	}{
 		{name: "busy_1_running", numRunning: 1, want: warmColdEligible},
 		{name: "busy_2_running_waiting", numRunning: 1, numWaiting: 1, want: warmColdEligible},
-		{name: "busy_2_pending_plus_running", pending: 1, numRunning: 1, want: warmColdEligible},
+		{name: "mirrored_busy_2_not_double_counted", pending: 2, numRunning: 2, want: warmColdEligible},
 		{name: "busy_3_over_threshold", numRunning: 2, numWaiting: 1, want: warmColdNotIdle},
-		{name: "busy_3_pending_plus_backend", pending: 1, numRunning: 2, want: warmColdNotIdle},
+		{name: "pending_3_over_threshold", pending: 3, numRunning: 2, want: warmColdNotIdle},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -105,6 +107,126 @@ func TestWarmPoolBusyGateBoundedThreshold(t *testing.T) {
 				t.Fatalf("reason = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestWarmPoolBusyGateRequiresModelSlotHeadroom prevents bounded-busy recovery
+// from issuing a load the provider must reject. A busy provider cannot evict an
+// active slot, so its heartbeat must prove the target can consume another model
+// slot. Legacy providers that omit max_model_slots fail closed only on the
+// bounded-busy path; fully idle warming remains backward compatible.
+func TestWarmPoolBusyGateRequiresModelSlotHeadroom(t *testing.T) {
+	model := "busy-gate-slot-headroom"
+
+	for _, tc := range []struct {
+		name          string
+		maxModelSlots int
+		want          warmColdReason
+	}{
+		{name: "one_of_two_slots_used", maxModelSlots: 2, want: warmColdEligible},
+		{name: "only_slot_is_active", maxModelSlots: 1, want: warmColdBusyNoEvict},
+		{name: "legacy_slot_cap_unknown", maxModelSlots: 0, want: warmColdBusyNoEvict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := New(testLogger())
+			configureBusyGate(reg, 2)
+			p := makeWarmPoolColdProvider(t, reg, "box-"+tc.name, model, 80, 64, 8)
+			p.mu.Lock()
+			p.BackendCapacity.MaxModelSlots = tc.maxModelSlots
+			p.BackendCapacity.Slots[0].State = "running"
+			p.BackendCapacity.Slots[0].NumRunning = 1
+			p.mu.Unlock()
+
+			if got := warmCandidateReason(reg, p, model); got != tc.want {
+				t.Fatalf("reason = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWarmPoolBusyGateRejectsUnusableTargetSlot(t *testing.T) {
+	model := "busy-gate-unusable-target-slot"
+	for _, state := range []string{"crashed", "reloading", "idle_shutdown"} {
+		t.Run(state, func(t *testing.T) {
+			reg := New(testLogger())
+			configureBusyGate(reg, 2)
+			p := makeWarmPoolColdProvider(t, reg, "box-"+state, model, 80, 64, 8)
+			p.mu.Lock()
+			p.BackendCapacity.MaxModelSlots = 2
+			p.BackendCapacity.Slots[0] = protocol.BackendSlotCapacity{
+				Model: model, State: state, NumRunning: 1,
+			}
+			p.mu.Unlock()
+
+			if got := warmCandidateReason(reg, p, model); got != warmColdBusyNoEvict {
+				t.Fatalf("target slot state %q reason = %q, want %q", state, got, warmColdBusyNoEvict)
+			}
+		})
+	}
+}
+
+func TestWarmPoolBusyGateCountsPendingColdModelsAgainstSlotCap(t *testing.T) {
+	model := "busy-gate-pending-slot"
+	reg := New(testLogger())
+	configureBusyGate(reg, 2)
+	p := makeWarmPoolColdProvider(t, reg, "pending-slot-box", model, 80, 64, 8)
+	p.mu.Lock()
+	p.BackendCapacity.MaxModelSlots = 2
+	p.BackendCapacity.Slots[0].State = "running"
+	p.BackendCapacity.Slots[0].NumRunning = 1
+	p.pendingReqs["pending-cold"] = &PendingRequest{
+		RequestID: "pending-cold",
+		Model:     "another-cold-model",
+	}
+	p.mu.Unlock()
+
+	if got := warmCandidateReason(reg, p, model); got != warmColdBusyNoEvict {
+		t.Fatalf("reason = %q, want %q when pending cold model reserves final slot", got, warmColdBusyNoEvict)
+	}
+}
+
+func TestWarmPoolBusyGateCountsHiddenOccupiedSlots(t *testing.T) {
+	model := "busy-gate-hidden-occupied-slot"
+	reg := New(testLogger())
+	configureBusyGate(reg, 2)
+	p := makeWarmPoolColdProvider(t, reg, "hidden-slot-box", model, 80, 64, 8)
+	p.mu.Lock()
+	p.BackendCapacity.MaxModelSlots = 2
+	p.BackendCapacity.OccupiedModelSlots = 2
+	p.BackendCapacity.Slots[0].State = "running"
+	p.BackendCapacity.Slots[0].NumRunning = 1
+	p.mu.Unlock()
+
+	if got := warmCandidateReason(reg, p, model); got != warmColdBusyNoEvict {
+		t.Fatalf("reason = %q, want %q when an unloading slot is hidden from routable slots", got, warmColdBusyNoEvict)
+	}
+}
+
+func TestMarkModelWarmConservativelyAdvancesOccupiedSlots(t *testing.T) {
+	model := "synthetic-warm-occupancy"
+	reg := New(testLogger())
+	p := makeWarmPoolColdProvider(t, reg, "synthetic-warm-box", model, 80, 64, 8)
+	p.mu.Lock()
+	p.BackendCapacity.MaxModelSlots = 3
+	p.BackendCapacity.OccupiedModelSlots = 2
+	p.mu.Unlock()
+
+	reg.MarkModelWarm(p.ID, model)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if got := p.BackendCapacity.OccupiedModelSlots; got != 3 {
+		t.Fatalf("occupied model slots after synthetic warm = %d, want 3", got)
+	}
+	found := false
+	for _, slot := range p.BackendCapacity.Slots {
+		if slot.Model == model && slot.State == "idle" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("synthetic warm slot was not installed")
 	}
 }
 

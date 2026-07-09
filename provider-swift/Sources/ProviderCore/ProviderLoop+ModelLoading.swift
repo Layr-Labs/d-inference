@@ -141,8 +141,21 @@ extension ProviderLoop {
             )
         }
 
-        // Serialize loads so concurrent eviction decisions don't interleave
+        // Serialize loads so concurrent eviction decisions don't interleave.
+        // Keep each distinct queued model visible to capacity reporting: local
+        // endpoint loads have no coordinator-side pending request to account for
+        // their future slot.
+        var registeredLoadGateWaiter = false
+        defer {
+            if registeredLoadGateWaiter {
+                removeLoadGateWaitingModel(modelId)
+            }
+        }
         while isLoadingAny {
+            if !registeredLoadGateWaiter {
+                loadGateWaitingModels[modelId, default: 0] += 1
+                registeredLoadGateWaiter = true
+            }
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                 loadGateWaiters.append(cont)
             }
@@ -157,6 +170,11 @@ extension ProviderLoop {
             if modelSlots[modelId] != nil { return }
         }
         isLoadingAny = true
+        modelsLoading.insert(modelId)
+        if registeredLoadGateWaiter {
+            removeLoadGateWaitingModel(modelId)
+            registeredLoadGateWaiter = false
+        }
 
         // Re-check slot cap after gate (another load may have consumed a slot)
         if modelSlots.count >= maxModelSlots {
@@ -165,15 +183,20 @@ extension ProviderLoop {
                 !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key)
             }
             if evictable.isEmpty || !allowEviction {
-                isLoadingAny = false
-                releaseLoadGateWaiters()
-                // Both messages contain "slot" so loadErrorStatusCode maps
-                // them to 503 (transient capacity, coordinator reroutes).
-                throw InferenceError.invalidModelDirectory(
+                let error = InferenceError.invalidModelDirectory(
                     allowEviction
                         ? "All \(maxModelSlots) model slot(s) are active; cannot load '\(modelId)'"
                         : "All \(maxModelSlots) model slot(s) are occupied and eviction is disabled for this load; cannot load '\(modelId)'"
                 )
+                modelsLoading.remove(modelId)
+                isLoadingAny = false
+                releaseLoadGateWaiters()
+                for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
+                    waiter.resume(throwing: error)
+                }
+                // Both messages contain "slot" so loadErrorStatusCode maps
+                // them to 503 (transient capacity, coordinator reroutes).
+                throw error
             }
             if let lru = evictable.min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt }) {
                 await unloadModel(lru.key)
@@ -184,7 +207,6 @@ extension ProviderLoop {
         // kvBudget once the gate passes and released once the weights are
         // resident. Declared out here so the catch can release it on any path.
         let pendingLoadID = "pending-load:\(modelId)"
-        modelsLoading.insert(modelId)
         do {
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -414,6 +436,15 @@ extension ProviderLoop {
         loadGateWaiters.removeAll()
         for waiter in waiters {
             waiter.resume()
+        }
+    }
+
+    internal func removeLoadGateWaitingModel(_ modelId: String) {
+        guard let count = loadGateWaitingModels[modelId] else { return }
+        if count <= 1 {
+            loadGateWaitingModels.removeValue(forKey: modelId)
+        } else {
+            loadGateWaitingModels[modelId] = count - 1
         }
     }
 

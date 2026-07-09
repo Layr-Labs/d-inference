@@ -146,11 +146,7 @@ func (s *Server) shedIfModelRejected(w http.ResponseWriter, r *http.Request, par
 	if policy.enabled || !s.modelShed(model, publicModel) {
 		return false
 	}
-	retryAfter := s.estimateRetryAfter(model)
-	if retryAfter <= 0 {
-		retryAfter = 30
-	}
-	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_shed"})
+	retryAfter := s.modelShedRetryAfter(model)
 	s.recordRejection(rejectionInfo{
 		r:                     r,
 		stage:                 "model_shed",
@@ -170,11 +166,24 @@ func (s *Server) shedIfModelRejected(w http.ResponseWriter, r *http.Request, par
 		retryAfterMs:          retryAfter * 1000,
 		params:                rejectionSamplingParams(parsed),
 	})
+	s.writeModelShedResponse(w, publicModel, model, retryAfter)
+	return true
+}
+
+func (s *Server) modelShedRetryAfter(model string) int {
+	retryAfter := s.estimateRetryAfter(model)
+	if retryAfter <= 0 {
+		return 30
+	}
+	return retryAfter
+}
+
+func (s *Server) writeModelShedResponse(w http.ResponseWriter, publicModel, model string, retryAfter int) {
+	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_shed"})
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
 		fmt.Sprintf("model %q is temporarily rate-limited — retry after %ds", publicModel, retryAfter),
 		withCode("rate_limit_exceeded")))
-	return true
 }
 
 // sendProviderCancel sends a Cancel message for the given request to the
@@ -3507,6 +3516,13 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 		timing.QueuedAt = time.Now()
 		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
+			if errors.Is(err, registry.ErrModelShed) {
+				retryAfter := s.modelShedRetryAfter(model)
+				refundReservation()
+				s.recordRejection(rejectionForGenericWithDecision("queue", "model_shed", http.StatusTooManyRequests, retryAfter*1000, decision))
+				s.writeModelShedResponse(w, publicModel, model, retryAfter)
+				return
+			}
 			retryAfter := s.estimateRetryAfter(model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
@@ -3553,6 +3569,15 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				s.emitClientGone(model, estimatedPromptTokens, providerChipFamily(provider), phaseBeforeFirstToken)
 				s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
 				refundReservation()
+				return
+			}
+			if errors.Is(err, registry.ErrModelShed) {
+				s.recordWarmPoolQueueState(model)
+				s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "error", "model_shed", http.StatusTooManyRequests))
+				retryAfter := s.modelShedRetryAfter(model)
+				refundReservation()
+				s.recordRejection(rejectionForGenericWithDecision("queue", "model_shed", http.StatusTooManyRequests, retryAfter*1000, decision))
+				s.writeModelShedResponse(w, publicModel, model, retryAfter)
 				return
 			}
 			if errors.Is(err, registry.ErrQueueTTFTTooSlow) {

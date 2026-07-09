@@ -27,6 +27,7 @@ func makeSchedulerProvider(t *testing.T, reg *Registry, id, model string, decode
 	}
 	p.BackendCapacity = &protocol.BackendCapacity{
 		TotalMemoryGB: 64,
+		MaxModelSlots: 3,
 		Slots: []protocol.BackendSlotCapacity{
 			{
 				Model:              model,

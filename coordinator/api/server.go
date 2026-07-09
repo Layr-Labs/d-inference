@@ -1054,6 +1054,15 @@ func (s *Server) SetRejectModels(models map[string]bool) {
 // under concurrent replacements. Entries mapped to false, blank, or
 // whitespace-only are dropped.
 func (s *Server) ReplaceRejectModels(models map[string]bool) (previous, current []string) {
+	previous, current, _ = s.replaceRejectModels(models)
+	return previous, current
+}
+
+// replaceRejectModels serializes the public admission set with the queue's
+// matching snapshot. Holding rejectModelsMu across both updates means
+// concurrent PUTs cannot apply stale queue sweeps, and readers observe the new
+// admission set only after enqueue/requeue/drain guards are installed.
+func (s *Server) replaceRejectModels(models map[string]bool) (previous, current []string, failedQueued int) {
 	normalized := make(map[string]bool, len(models))
 	for model, reject := range models {
 		if !reject {
@@ -1071,8 +1080,11 @@ func (s *Server) ReplaceRejectModels(models map[string]bool) (previous, current 
 	s.rejectModelsMu.Lock()
 	prev := s.rejectModels
 	s.rejectModels = normalized
+	previous = sortedModelSet(prev)
+	current = sortedModelSet(normalized)
+	failedQueued = s.registry.RejectQueuedRequestsForShedModels(current)
 	s.rejectModelsMu.Unlock()
-	return sortedModelSet(prev), sortedModelSet(normalized)
+	return previous, current, failedQueued
 }
 
 // RejectModels returns the current reject set as a sorted list. Never nil (an

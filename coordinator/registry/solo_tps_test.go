@@ -218,6 +218,41 @@ func TestSoloRecordingOnlySamplesActiveSlot(t *testing.T) {
 	}
 }
 
+// TestSoloRecordingRequiresRunningDecode is the queued-but-not-running
+// regression (Finding 3 of the final round): a box with one QUEUED request and
+// no running decode is box-wide uncontended (soloEligible), and the owning slot
+// has NumWaiting > 0 — but its ObservedDecodeTPS is a retained EWMA with no
+// running decode behind it. The prior round's NumRunning+NumWaiting > 0 gate
+// would mint that stale EWMA as a fresh solo sample every heartbeat; the
+// tightened NumRunning > 0 gate must not. A running-and-uncontended heartbeat
+// still records. Fails without the NumRunning > 0 gate in the heartbeat ingest.
+func TestSoloRecordingRequiresRunningDecode(t *testing.T) {
+	reg := New(testLogger())
+	makeSchedulerProvider(t, reg, "box", gemmaBuild, 93)
+
+	// Queued but NOT decoding: NumRunning 0 / NumWaiting 1. Box-wide load = 1
+	// (uncontended), but observed_decode_tps is a stale retained EWMA — no
+	// running request produced it, so it must NOT be sampled.
+	reg.Heartbeat("box", soloHeartbeat([]protocol.BackendSlotCapacity{
+		{Model: gemmaBuild, State: "running", NumRunning: 0, NumWaiting: 1, ObservedDecodeTPS: 14},
+	}))
+	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3"); n != 0 {
+		t.Fatalf("solo samples after queued-but-not-running heartbeat = %d, want 0 (stale EWMA, no running decode)", n)
+	}
+
+	// Running and uncontended: NumRunning 1 / NumWaiting 0 → a real solo sample.
+	reg.Heartbeat("box", soloHeartbeat([]protocol.BackendSlotCapacity{
+		{Model: gemmaBuild, State: "running", NumRunning: 1, NumWaiting: 0, ObservedDecodeTPS: 12},
+	}))
+	if _, n := reg.tpsRegistry.SoloMedian(gemmaBuild, "M3"); n != 1 {
+		t.Fatalf("solo samples after running-uncontended heartbeat = %d, want 1", n)
+	}
+	// The load-inclusive store records BOTH heartbeats' EWMAs regardless.
+	if got := reg.tpsRegistry.Median(gemmaBuild, "M3"); got != (12+14)/2.0 {
+		t.Fatalf("load-inclusive median = %v, want 13 (both EWMAs recorded: 14, 12)", got)
+	}
+}
+
 // --- Resolver fallback chain ---
 
 func TestResolvedSoloModelTPSFallbackChain(t *testing.T) {

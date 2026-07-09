@@ -49,7 +49,7 @@ func TestCapacityCooldown404NotLoadedStrikes(t *testing.T) {
 	lazy := makeRoutableProvider(t, reg, "p-lazy-load", model)
 	for round := 0; round < 4; round++ {
 		for i := 0; i < 3; i++ {
-			srv.noteInferenceError(lazy.ID, capacityTestPending(model, lazy.ID, round*10+i), http.StatusNotFound, notLoaded)
+			srv.noteInferenceError(lazy.ID, capacityTestPending(model, lazy.ID, round*10+i), http.StatusNotFound, notLoaded, "")
 		}
 		srv.noteInferenceSuccess(capacityTestPending(model, lazy.ID, round))
 	}
@@ -60,7 +60,7 @@ func TestCapacityCooldown404NotLoadedStrikes(t *testing.T) {
 	// Black hole flavor: 404s forever, zero accepts — trips at the threshold.
 	stuck := makeRoutableProvider(t, reg, "p-never-loads", model)
 	for i := 0; i < 5; i++ {
-		srv.noteInferenceError(stuck.ID, capacityTestPending(model, stuck.ID, i), http.StatusNotFound, notLoaded)
+		srv.noteInferenceError(stuck.ID, capacityTestPending(model, stuck.ID, i), http.StatusNotFound, notLoaded, "")
 	}
 	if !reg.CapacityCooldownActive(stuck.ID, model) {
 		t.Fatal("a box that 404s 'not loaded' forever with zero accepts did not trip")
@@ -70,10 +70,216 @@ func TestCapacityCooldown404NotLoadedStrikes(t *testing.T) {
 	// request-shape error) never strikes, no matter how many arrive.
 	notFound := makeRoutableProvider(t, reg, "p-model-not-found", model)
 	for i := 0; i < 10; i++ {
-		srv.noteInferenceError(notFound.ID, capacityTestPending(model, notFound.ID, i), http.StatusNotFound, "model not found")
+		srv.noteInferenceError(notFound.ID, capacityTestPending(model, notFound.ID, i), http.StatusNotFound, "model not found", "")
 	}
 	if reg.CapacityCooldownActive(notFound.ID, model) {
 		t.Fatal("request-shape 404 'model not found' tripped the capacity cooldown")
+	}
+}
+
+// Cold "model not loaded" misses must NOT derate the gray-box capacity-503
+// RATE window, even over the sample floor and with interleaved accepts (the
+// normal lazy-load lifecycle) — the rate window has no accept-reset, so
+// counting a healthy box's reloads would penalize it. A genuine token-budget
+// 503 on the same path DOES derate. Codex review of #523.
+func TestCapacityRateExcludesColdModelMiss(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const model = "gemma-4-26b-8bit"
+	const notLoaded = "model 'gemma-4-26b-8bit' is not loaded on this provider"
+	const genuine = "token_budget_exhausted: request exceeds active token budget"
+	const sampleFloor = 8 // registry.capacityRateMinSample (unexported)
+
+	// Cold-miss box: cold "not loaded" 404s over the sample floor, each followed
+	// by a served completion (the normal lazy-load lifecycle). The rate window
+	// must stay empty.
+	cold := makeRoutableProvider(t, reg, "p-cold-miss", model)
+	for i := 0; i < sampleFloor; i++ {
+		srv.noteInferenceError(cold.ID, capacityTestPending(model, cold.ID, i), http.StatusNotFound, notLoaded, "")
+		srv.noteInferenceSuccess(capacityTestPending(model, cold.ID, i))
+	}
+	if rate, samples := reg.CapacityRejectRate(cold.ID, model); samples != 0 || rate != 0 {
+		t.Fatalf("cold 'not loaded' misses derated the capacity-reject rate: rate=%.2f samples=%d, want 0/0", rate, samples)
+	}
+
+	// Gray-box: genuine token-budget 503s with interleaved accepts DO accumulate
+	// the rate — the mechanism the penalty exists for.
+	gray := makeRoutableProvider(t, reg, "p-graybox", model)
+	for i := 0; i < sampleFloor; i++ {
+		srv.noteInferenceError(gray.ID, capacityTestPending(model, gray.ID, i), http.StatusServiceUnavailable, genuine, "")
+		srv.noteInferenceSuccess(capacityTestPending(model, gray.ID, i))
+	}
+	if rate, samples := reg.CapacityRejectRate(gray.ID, model); samples == 0 || rate <= 0 {
+		t.Fatalf("genuine token-budget 503s must derate the rate: rate=%.2f samples=%d", rate, samples)
+	}
+}
+
+// A "batch token budget" reject that classifyRejection proves REQUEST-
+// deterministic (the rejecting provider's reported budget is not below the
+// model context, so the prompt exceeded the fleet-wide context) indicts the
+// request, not the provider: it must arm NEITHER the one-shot budget clamp NOR
+// the no-reset capacity-503 rate window — a single oversized prompt would
+// otherwise gate/derate a healthy pair. It still counts a cooldown strike (a
+// budget-misreporting box rejects normal prompts with this exact string, and
+// the cooldown's accept-reset makes strikes safe for healthy pairs). When the
+// reported budget IS below the context (node memory pressure — provider-
+// specific), the same string feeds the full gray-box state. Codex review of
+// #523, round 3.
+func TestCapacityRejectDeterministicBatchBudgetArmsNoGrayBoxState(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const model = "batch-budget-model"
+	const batchBudget = "token_budget_exhausted: request exceeds batch token budget"
+	registerModelContext(t, st, model, 131072)
+
+	// Deterministic: reported budget (5M) >= model context (131072) — the
+	// binding term was the context, identical fleet-wide.
+	det := makeRoutableProvider(t, reg, "p-oversized-prompt", model)
+	setProviderModelBudget(t, reg, det.ID, model, 5_000_000)
+	srv.noteInferenceError(det.ID, capacityTestPending(model, det.ID, 0), http.StatusServiceUnavailable, batchBudget, "")
+	if reg.BudgetClampActive(det.ID, model) {
+		t.Fatal("a request-deterministic batch-budget reject must not arm the budget clamp")
+	}
+	if _, samples := reg.CapacityRejectRate(det.ID, model); samples != 0 {
+		t.Fatalf("a request-deterministic batch-budget reject must not derate: samples=%d, want 0", samples)
+	}
+	// ...but repeated ones with zero interleaved accepts still trip the
+	// black-hole cooldown (the budget-misreporting signature).
+	for i := 1; i < 5; i++ {
+		srv.noteInferenceError(det.ID, capacityTestPending(model, det.ID, i), http.StatusServiceUnavailable, batchBudget, "")
+	}
+	if !reg.CapacityCooldownActive(det.ID, model) {
+		t.Fatal("repeated deterministic batch-budget rejects with zero accepts must still trip the cooldown")
+	}
+
+	// Node-pressured: reported budget (90k) < model context (131072) — the
+	// binding term may have been THIS node's shrunk KV budget, a genuine
+	// provider-specific capacity signal: full gray-box state.
+	pressured := makeRoutableProvider(t, reg, "p-pressured", model)
+	setProviderModelBudget(t, reg, pressured.ID, model, 90_000)
+	srv.noteInferenceError(pressured.ID, capacityTestPending(model, pressured.ID, 0), http.StatusServiceUnavailable, batchBudget, "")
+	if !reg.BudgetClampActive(pressured.ID, model) {
+		t.Fatal("a node-pressured batch-budget reject (budget < context) must arm the budget clamp")
+	}
+	if _, samples := reg.CapacityRejectRate(pressured.ID, model); samples != 1 {
+		t.Fatalf("a node-pressured batch-budget reject must derate: samples=%d, want 1", samples)
+	}
+}
+
+// The gray-box request-shape classification must TRUST a provider's
+// structured ErrorReason over the stale heartbeat-budget heuristic, exactly
+// like the dispatch failover does (Codex review of #523, round 4): a newer
+// provider that says request_exceeds_node_budget with a "batch token budget"
+// string is reporting a node-specific capacity failure — even when its stale
+// reported budget still reads >= the model context — so the reject must feed
+// the full gray-box state, not be misrouted to the strike-only request-shape
+// path. Conversely an explicit request_exceeds_context reason is request-
+// deterministic regardless of string or budget.
+func TestGrayBoxClassificationTrustsStructuredReason(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const model = "reasoned-batch-budget-model"
+	const batchBudget = "token_budget_exhausted: request exceeds batch token budget"
+	registerModelContext(t, st, model, 131072)
+
+	// Structured node-specific reason + stale budget >= context: the reason
+	// wins — full gray-box state (clamp + rate), not the request-shape path.
+	nodeBudget := makeRoutableProvider(t, reg, "p-reasoned-node", model)
+	setProviderModelBudget(t, reg, nodeBudget.ID, model, 5_000_000)
+	srv.noteInferenceError(nodeBudget.ID, capacityTestPending(model, nodeBudget.ID, 0),
+		http.StatusServiceUnavailable, batchBudget, "request_exceeds_node_budget")
+	if !reg.BudgetClampActive(nodeBudget.ID, model) {
+		t.Fatal("a structured request_exceeds_node_budget reason must feed the clamp despite the stale >=context budget snapshot")
+	}
+	if _, samples := reg.CapacityRejectRate(nodeBudget.ID, model); samples != 1 {
+		t.Fatalf("a structured node-budget reject must derate: samples=%d, want 1", samples)
+	}
+
+	// No reason (legacy provider): the budget heuristic still applies —
+	// budget >= context reads request-deterministic, strike-only.
+	legacy := makeRoutableProvider(t, reg, "p-reasonless", model)
+	setProviderModelBudget(t, reg, legacy.ID, model, 5_000_000)
+	srv.noteInferenceError(legacy.ID, capacityTestPending(model, legacy.ID, 0),
+		http.StatusServiceUnavailable, batchBudget, "")
+	if reg.BudgetClampActive(legacy.ID, model) {
+		t.Fatal("reasonless deterministic batch-budget reject must stay strike-only (heuristic unchanged)")
+	}
+
+	// Explicit request_exceeds_context reason on a NON-batch capacity string
+	// from a pressured-looking provider: request-deterministic — no gray-box
+	// state, even though the budget heuristic alone would have said transient.
+	ctxReason := makeRoutableProvider(t, reg, "p-reasoned-ctx", model)
+	setProviderModelBudget(t, reg, ctxReason.ID, model, 90_000)
+	srv.noteInferenceError(ctxReason.ID, capacityTestPending(model, ctxReason.ID, 0),
+		http.StatusServiceUnavailable,
+		"token_budget_exhausted: request requires 200000 tokens but only 90000 available",
+		"request_exceeds_context")
+	if reg.BudgetClampActive(ctxReason.ID, model) {
+		t.Fatal("an explicit request_exceeds_context reason must not arm the clamp")
+	}
+	if _, samples := reg.CapacityRejectRate(ctxReason.ID, model); samples != 0 {
+		t.Fatalf("an explicit request_exceeds_context reason must not derate: samples=%d, want 0", samples)
+	}
+}
+
+// After-commit client-gone regression (Codex review of #523): a stream that
+// commits BEFORE the pair's first windowed reject, then the consumer
+// disconnects and the provider completes into the PARKED settlement path
+// (handleComplete, consumerGone=true), must still enter the capacity-503 rate
+// denominator. noteInferenceSuccess — which re-offers the outcome on clean
+// completion — never runs on this path, so without the handleComplete re-offer
+// the served completion vanishes and a few later 503s overstate a healthy
+// pair's reject rate.
+func TestCapacityRateParkedCompletionCountsAtHandleComplete(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const model = "gemma-4-26b-8bit"
+	p := makeRoutableProvider(t, reg, "p-parked", model)
+
+	pr := capacityTestPending(model, p.ID, 1)
+	pr.ConsumerKey = "test-key"
+
+	// Commit first content while the pair is healthy (no reject in-window yet):
+	// mirrors commitFirstContent — the offer records nothing, so the request
+	// still owes its one rate outcome (RateOutcomeCountedSafe stays false).
+	if reg.RecordCapacityAccept(pr.ProviderID, model) {
+		t.Fatal("commit-time accept with an empty reject window must not record a rate outcome")
+	}
+
+	// The pair goes gray while the (now client-gone) stream is still serving.
+	reg.RecordCapacityReject(pr.ProviderID, model)
+	if _, samples := reg.CapacityRejectRate(pr.ProviderID, model); samples != 1 {
+		t.Fatalf("setup: samples=%d after one reject, want 1", samples)
+	}
+
+	// Consumer disconnected mid-stream: the request is parked (no reader), then
+	// the provider completes. handleComplete claims the parked record
+	// (consumerGone=true) and must re-offer the served completion.
+	srv.holdForSettlement(pr)
+	srv.handleComplete(p.ID, p, &protocol.InferenceCompleteMessage{
+		Type:      protocol.TypeInferenceComplete,
+		RequestID: pr.RequestID,
+		Usage:     protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 200},
+	})
+
+	rate, samples := reg.CapacityRejectRate(pr.ProviderID, model)
+	if samples != 2 {
+		t.Fatalf("samples=%d after the parked completion, want 2 (1 reject + the served client-gone stream) — the parked completion never entered the denominator", samples)
+	}
+	if rate != 0.5 {
+		t.Fatalf("rate=%.2f, want 0.5 (1 reject / 2 outcomes)", rate)
 	}
 }
 

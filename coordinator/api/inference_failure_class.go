@@ -257,6 +257,25 @@ func isCapacityRejectStrike(errStr string) bool {
 	return true
 }
 
+// isColdModelMissRejection reports whether a capacity-class rejection is the
+// BENIGN cold "model not loaded" lifecycle miss (a lazy load on first touch),
+// as opposed to a genuine capacity/token-budget shed. Matching mirrors the
+// "not loaded" / "no model loaded" markers in capacityClassMarkers (substring,
+// case-insensitive, curly-apostrophe-normalised).
+//
+// A cold miss must still feed the black-hole cooldown (a box that 404s FOREVER
+// with zero accepts is a black hole — RecordCapacityRejectLifecycle keeps
+// feeding it) but must NOT derate the pair's gray-box capacity-503 RATE: that
+// window has no accept-reset, so counting a healthy box's normal reloads would
+// penalize it as if its reported budget were dishonest. Callers gate on this
+// AFTER isCapacityRejectStrike (a non-capacity "model not found" never reaches
+// here).
+func isColdModelMissRejection(errStr string) bool {
+	s := strings.ToLower(strings.TrimSpace(errStr))
+	s = strings.ReplaceAll(s, "’", "'")
+	return strings.Contains(s, "not loaded") || strings.Contains(s, "no model loaded")
+}
+
 // capacityClassMarkers are BUCKET A substrings: ADMITTED-but-unservable or
 // lifecycle rejections that should reclassify a provider 5xx to an uptime-neutral
 // 429. Drop a newly-observed capacity string here (predicates that need more than

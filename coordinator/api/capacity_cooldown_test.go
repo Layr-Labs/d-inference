@@ -105,7 +105,7 @@ func TestCapacityCooldownTripsMetricLogAndRoutingDiverts(t *testing.T) {
 	// The incident pattern: every dispatch to the black hole bounces with the
 	// capacity string (classified 503) and it never serves anything.
 	for i := 0; i < 8; i++ {
-		srv.noteInferenceError(blackHole.ID, capacityTestPending(model, blackHole.ID, i), 503, rejectStr)
+		srv.noteInferenceError(blackHole.ID, capacityTestPending(model, blackHole.ID, i), 503, rejectStr, "")
 	}
 	if !reg.CapacityCooldownActive(blackHole.ID, model) {
 		t.Fatal("black-hole provider not in capacity cooldown after 8 zero-accept rejects")
@@ -142,7 +142,7 @@ func TestCapacityCooldownTripsMetricLogAndRoutingDiverts(t *testing.T) {
 	// keeps SERVING (accepts interleaved), so it must NEVER trip.
 	for round := 0; round < 5; round++ {
 		for i := 0; i < 4; i++ {
-			srv.noteInferenceError(healthy.ID, capacityTestPending(model, healthy.ID, round*10+i), 503, rejectStr)
+			srv.noteInferenceError(healthy.ID, capacityTestPending(model, healthy.ID, round*10+i), 503, rejectStr, "")
 		}
 		srv.noteInferenceSuccess(capacityTestPending(model, healthy.ID, round))
 	}
@@ -153,7 +153,7 @@ func TestCapacityCooldownTripsMetricLogAndRoutingDiverts(t *testing.T) {
 	// Client-shape 4xx carrying a capacity-looking string never strikes.
 	other := makeRoutableProvider(t, reg, "p-4xx", model)
 	for i := 0; i < 10; i++ {
-		srv.noteInferenceError(other.ID, capacityTestPending(model, other.ID, i), 400, rejectStr)
+		srv.noteInferenceError(other.ID, capacityTestPending(model, other.ID, i), 400, rejectStr, "")
 	}
 	if reg.CapacityCooldownActive(other.ID, model) {
 		t.Fatal("client-shape 4xx with a capacity string tripped the capacity cooldown")
@@ -164,7 +164,7 @@ func TestCapacityCooldownTripsMetricLogAndRoutingDiverts(t *testing.T) {
 	ctxProvider := makeRoutableProvider(t, reg, "p-ctx", model)
 	for i := 0; i < 10; i++ {
 		srv.noteInferenceError(ctxProvider.ID, capacityTestPending(model, ctxProvider.ID, i), 503,
-			"token_budget_exhausted: request exceeds model context window (200000 prompt tokens > 131072 context)")
+			"token_budget_exhausted: request exceeds model context window (200000 prompt tokens > 131072 context)", "")
 	}
 	if reg.CapacityCooldownActive(ctxProvider.ID, model) {
 		t.Fatal("deterministic context-overflow rejections tripped the capacity cooldown")
@@ -211,7 +211,7 @@ func TestCapacityCooldownRetryReselectionEscapesSink(t *testing.T) {
 			// The sink instantly capacity-rejects; the retry loop records the
 			// failure and re-selects.
 			sinkPicks++
-			srv.noteInferenceError(sink.ID, pr, 503, rejectStr)
+			srv.noteInferenceError(sink.ID, pr, 503, rejectStr, "")
 			reg.SetProviderIdle(sink.ID)
 			continue
 		}

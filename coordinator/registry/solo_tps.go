@@ -20,9 +20,10 @@ import (
 
 // RecordSolo adds a solo (uncontended-box) decode TPS sample for the given
 // model and chip family. Callers must pre-gate on soloSampleEligible AND on
-// the slot owning the box's one active request (NumRunning+NumWaiting > 0,
-// see the heartbeat ingest in registry.go) — this method itself only
-// validates the sample value, mirroring Record.
+// the slot having an actual running decode (NumRunning > 0, see the heartbeat
+// ingest in registry.go) so a purely-queued box's retained EWMA is not
+// sampled — this method itself only validates the sample value, mirroring
+// Record.
 func (r *TPSRegistry) RecordSolo(model, chipFamily string, tps float64) {
 	if tps <= 0 || model == "" {
 		return
@@ -91,10 +92,11 @@ func medianOfCopied(sorted []float64) float64 {
 // anywhere on the box disqualifies, which is exactly what keeps mixed-box
 // samples honest (a gemma EWMA measured while gpt-oss batches on the same GPU
 // is a contended rate, not a solo one). This is the BOX-level half of the
-// gate; the heartbeat ingest additionally records only the slot that owns the
-// one active request, so idle co-resident slots cannot re-report a stale
-// decayed EWMA as a fresh solo observation every heartbeat. Negative counts
-// (already clamped upstream by clampBackendCapacity) are defensively ignored.
+// gate; the heartbeat ingest additionally records only a slot with an actual
+// running decode (NumRunning > 0), so neither an idle co-resident slot nor a
+// purely-queued box can re-report a stale decayed EWMA as a fresh solo
+// observation every heartbeat. Negative counts (already clamped upstream by
+// clampBackendCapacity) are defensively ignored.
 func soloSampleEligible(bc *protocol.BackendCapacity) bool {
 	if bc == nil {
 		return false

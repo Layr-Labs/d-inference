@@ -2732,13 +2732,18 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 		// Solo gate: a slot EWMA is additionally recorded as a SOLO sample only
 		// when the whole box is uncontended at heartbeat time (Σ running+waiting
 		// ≤ 1 across ALL slots — the one allowance is the sample-generating
-		// request itself) AND the slot is the one that OWNS that request
-		// (running+waiting > 0). Both halves matter: without the second, every
-		// co-resident slot with a nonzero (stale, decayed) EWMA would be
-		// re-recorded as a fresh solo observation on each ~30s heartbeat,
-		// contaminating OTHER models' medians with samples no request produced —
-		// a fully idle box records nothing, because there is no fresh
-		// observation to record. The unconditional Record keeps its
+		// request itself) AND the slot has an actual RUNNING decode
+		// (NumRunning > 0). Both halves matter. Requiring NumRunning (not
+		// running+waiting) excludes a purely-QUEUED box: the provider reports
+		// NumWaiting from its pending set while ObservedDecodeTPS is a retained
+		// EWMA (BatchScheduler+Telemetry.swift), so a box with one queued-but-
+		// not-yet-decoding request would otherwise mint that stale EWMA as a
+		// fresh solo sample every ~30s heartbeat and, once the min-sample floor
+		// is reached, base the model's quality cap on traffic no running request
+		// produced. It also keeps the prior round's owner-slot-only rule: an
+		// idle co-resident slot with a decayed EWMA is NumRunning == 0, so it is
+		// never re-sampled, and a fully idle box records nothing. The
+		// unconditional Record keeps its
 		// load-inclusive semantics for TTFT estimation (fleetMedianTPS); the
 		// gated RecordSolo feeds the quality-concurrency cap's per-model static
 		// rate (resolvedSoloModelTPSLocked). See solo_tps.go.
@@ -2746,7 +2751,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.ObservedDecodeTPS > 0 {
 				r.tpsRegistry.Record(slot.Model, chipFamily, slot.ObservedDecodeTPS)
-				if soloEligible && slot.NumRunning+slot.NumWaiting > 0 {
+				if soloEligible && slot.NumRunning > 0 {
 					r.tpsRegistry.RecordSolo(slot.Model, chipFamily, slot.ObservedDecodeTPS)
 				}
 			}
@@ -4537,27 +4542,19 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		decodeTPS := resolvedDecodeTPS(p)
 		prefillTPS := resolvedPrefillTPS(p)
 
-		// Reconstruct the whole-box pooled budget remaining after charging
-		// every model's coordinator-pending tokens (mirrors pooledBudgetAdmits'
-		// token accounting: pending beyond the heartbeat-visible committed
-		// baseline spends the pool). Token units — this surface reports token
-		// budgets; byte normalization stays an admission-gate concern.
-		pooledRemaining := int64(-1)
+		// Reconstruct the whole-box pooled budget and its all-models
+		// coordinator-pending charges (token and, when every pending request
+		// normalizes, byte) ONCE per provider — the SAME accumulation the
+		// admission gate uses (fillSnapshotPendingAndPool). The per-model
+		// remaining differs only by that model's KV rate in byte mode, so it is
+		// finalized inside the model loop via pooledRemainingTokens, keeping this
+		// feed's verdict identical to pooledBudgetAdmits' on a mixed-KV box (a
+		// pool exhausted in BYTES by a small-KV burst must not surface token
+		// headroom for a big-KV co-resident). Token units out; byte
+		// normalization stays internal.
+		var poolSnap routingSnapshot
 		if p.BackendCapacity != nil {
-			if pool := providerPooledTokenBudget(p.BackendCapacity.Slots); pool.total > 0 {
-				pendingAll := 0
-				for _, pr := range p.pendingReqs {
-					pendingAll += pendingTokenBudget(pr)
-				}
-				extra := int64(pendingAll) - pool.committed
-				if extra < 0 {
-					extra = 0
-				}
-				pooledRemaining = pool.total - pool.used - extra
-				if pooledRemaining < 0 {
-					pooledRemaining = 0
-				}
-			}
+			fillSnapshotPendingAndPool(&poolSnap, p, "")
 		}
 
 		// Enumerate every model this provider serves.
@@ -4579,6 +4576,19 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 					modelPending++
 				}
 			}
+
+			// Per-model pooled remaining: byte-aware when the box is byte-
+			// reconstructable and this model's slot reports a KV rate, else token
+			// accounting — exactly pooledBudgetAdmits' branch. Cold/absent slots
+			// have no rate (map miss ⇒ 0), which lands on the token path just like
+			// the gate's cold-model path. Inert for single-KV/legacy boxes.
+			pooledRemaining := pooledRemainingTokens(
+				poolSnap.pooledTokenBudget,
+				poolSnap.pendingMaxTokensAllModels,
+				poolSnap.pendingMaxBytesAllModels,
+				poolSnap.pendingBytesKnown,
+				poolSnap.pooledTokenBudget.kvBytesPerToken[m.ID],
+			)
 
 			snap := providerCapSnap{
 				model:                 m.ID,

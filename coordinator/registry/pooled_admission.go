@@ -113,7 +113,13 @@ func providerPooledTokenBudget(slots []protocol.BackendSlotCapacity) pooledToken
 	if budgetSlots == 0 {
 		pool.byteMode = false
 	}
-	pool.totalBytes = pool.committedBytes + sharedFreeBytes
+	// totalBytes mirrors the token path's total (providerTokenBudget: LIVE
+	// used + shared free), NOT committed+potential. committedBytes carries
+	// MaxTokensPotential only as the pending de-dup baseline (subtracted in
+	// pooledBudgetAdmits' extra); adding it into the pool total too would
+	// double-count a co-resident slot's not-yet-materialized future growth as
+	// extra physical KV capacity, letting an in-gap burst overcommit the box.
+	pool.totalBytes = pool.usedBytes + sharedFreeBytes
 	return pool
 }
 
@@ -148,4 +154,42 @@ func pooledBudgetAdmits(snap routingSnapshot, requestTokens int64) bool {
 		extra = 0
 	}
 	return pool.used+extra+requestTokens <= pool.total
+}
+
+// pooledRemainingTokens is the capacity-snapshot analog of pooledBudgetAdmits:
+// how many tokens of a model whose per-token KV rate is modelRate still fit the
+// shared pool once every model's coordinator-pending tokens are charged.
+// pooledBudgetAdmits(snap, n) admits iff n <= pooledRemainingTokens(pool, …,
+// snap.kvBytesPerToken) with the same inputs, so the public capacity feed
+// (/v1/models[/capacity]) cannot advertise pooled headroom the admission gate
+// refuses. Both branch identically: BYTES when the pool is byte-reconstructable
+// (byteMode), every pending charge normalized (pendingBytesKnown), and THIS
+// model's KV rate is known (modelRate > 0 — its resident slot; 0 for a
+// cold/absent slot, matching the gate's cold path); token accounting otherwise.
+// Returns -1 when the provider reports no pooled budget (total <= 0) — the "no
+// pooled constraint" sentinel that leaves the per-slot numbers unclamped.
+func pooledRemainingTokens(pool pooledTokenBudget, pendingTokensAllModels int, pendingBytesAllModels int64, pendingBytesKnown bool, modelRate int64) int64 {
+	if pool.total <= 0 {
+		return -1
+	}
+	if pool.byteMode && pendingBytesKnown && modelRate > 0 {
+		extra := pendingBytesAllModels - pool.committedBytes
+		if extra < 0 {
+			extra = 0
+		}
+		remBytes := pool.totalBytes - pool.usedBytes - extra
+		if remBytes < 0 {
+			remBytes = 0
+		}
+		return remBytes / modelRate
+	}
+	extra := int64(pendingTokensAllModels) - pool.committed
+	if extra < 0 {
+		extra = 0
+	}
+	rem := pool.total - pool.used - extra
+	if rem < 0 {
+		rem = 0
+	}
+	return rem
 }

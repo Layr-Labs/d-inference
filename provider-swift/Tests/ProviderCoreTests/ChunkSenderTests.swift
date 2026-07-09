@@ -127,23 +127,54 @@ struct ChunkSenderTests {
 
     // MARK: - Optimization 2: coalescing
 
-    @Test("batcher coalesces all pending frames into a single sink batch")
+    @Test("batcher coalesces frames enqueued while the sink is busy into a single batch")
     func batcherCoalescesPendingFramesIntoOneBatch() {
+        // Coalescing is best-effort per dispatch turn (see ChunkBatcher.swift
+        // header): frames coalesce only if they land in the same turn, so
+        // "enqueue 5, expect 1 batch" is timing-dependent — on a loaded runner
+        // the deferred flush can run mid-enqueue and split the batch.
+        //
+        // Deterministic choreography instead: a primer frame's delivery BLOCKS
+        // the batcher's serial queue inside the sink (via `gate`). While the
+        // queue is blocked, four more frames are enqueued — their enqueue
+        // blocks pile up FIFO behind the blocked delivery. Once the gate opens
+        // they all append before any flush block can run, so the batcher MUST
+        // coalesce them into exactly one batch.
         let batcher = ChunkBatcher()
         let recorder = BatchRecorder()
-        batcher.installSinkForTesting { frames in recorder.record(frames) }
+        let sinkEntered = DispatchSemaphore(value: 0)
+        let gate = DispatchSemaphore(value: 0)
+        let primerSeen = TestFlag()
 
-        // All five enqueues are submitted (FIFO) before flush()'s sync barrier,
-        // so they accumulate and drain in ONE batch — deterministic regardless of
-        // dispatch timing (see ChunkBatcher.flush()).
-        for i in 0..<5 { batcher.enqueue(Data([UInt8(i)])) }
-        batcher.flush()
+        batcher.installSinkForTesting { frames in
+            recorder.record(frames)
+            if !primerSeen.get() {
+                primerSeen.set(true)
+                sinkEntered.signal()
+                gate.wait() // hold the serial queue inside the primer delivery
+            }
+        }
+
+        // Primer: batch 1 is [0], and its delivery parks the queue on `gate`.
+        batcher.enqueue(Data([0]))
+        guard sinkEntered.wait(timeout: .now() + .seconds(10)) == .success else {
+            Issue.record("sink was never invoked for the primer frame")
+            gate.signal() // avoid wedging the batcher queue on failure
+            return
+        }
+
+        // Queue is blocked: these four enqueues are all pending before ANY
+        // flush turn can run, so they must drain as one coalesced batch.
+        for i in 1..<5 { batcher.enqueue(Data([UInt8(i)])) }
+        gate.signal()
+        batcher.flush() // sync barrier: everything above is delivered on return
 
         let batches = recorder.batches()
-        #expect(batches.count == 1, "expected one coalesced batch, got \(batches.count)")
-        #expect(batches.first?.count == 5)
-        // Order preserved within the coalesced batch.
-        #expect(batches.first?.compactMap { $0.first } == [0, 1, 2, 3, 4])
+        #expect(batches.count == 2, "expected primer batch + one coalesced batch, got \(batches.count)")
+        #expect(batches.first?.compactMap { $0.first } == [0], "primer batch should be exactly the gated frame")
+        #expect(batches.last?.count == 4, "frames enqueued while the sink was busy must coalesce into one batch")
+        // Order preserved across and within batches.
+        #expect(batches.flatMap { $0 }.compactMap { $0.first } == [0, 1, 2, 3, 4])
     }
 
     @Test("batcher delivers every frame exactly once across flushes")

@@ -90,12 +90,12 @@ func TestDefaultConfigs(t *testing.T) {
 
 	sc := DefaultSuiteConfig()
 	assert.Equal(t, 1, len(sc.ModelSpecs))
-	assert.Equal(t, "mlx-community/Qwen3.5-0.8B-MLX-4bit", sc.ModelSpecs[0].ModelID)
+	assert.Equal(t, DefaultModelID(), sc.ModelSpecs[0].ModelID)
 	assert.Equal(t, 1, sc.ModelSpecs[0].NumProviders)
 	assert.Equal(t, 1, sc.NumUsers)
 	assert.Equal(t, 1, sc.TotalProviders())
-	assert.Equal(t, "mlx-community/Qwen3.5-0.8B-MLX-4bit", sc.PrimaryModelID())
-	assert.Equal(t, []string{"mlx-community/Qwen3.5-0.8B-MLX-4bit"}, sc.AllModelIDs())
+	assert.Equal(t, DefaultModelID(), sc.PrimaryModelID())
+	assert.Equal(t, []string{DefaultModelID()}, sc.AllModelIDs())
 
 	multiSpec := SuiteConfig{
 		ModelSpecs: []ModelSpec{
@@ -107,4 +107,27 @@ func TestDefaultConfigs(t *testing.T) {
 	assert.Equal(t, 7, multiSpec.TotalProviders())
 	assert.Equal(t, []string{"model-a", "model-b"}, multiSpec.AllModelIDs())
 	assert.Equal(t, "model-a", multiSpec.PrimaryModelID())
+}
+
+func TestDefaultModelIDEnvOverride(t *testing.T) {
+	// Clear both knobs to observe the built-in default regardless of the
+	// outer environment (t.Setenv restores the originals afterwards).
+	t.Setenv("TESTBED_MODEL", "")
+	t.Setenv("TESTBED_MODEL_ID", "")
+	assert.Equal(t, builtinDefaultModelID, DefaultModelID())
+	assert.Equal(t, "gpt-oss-20b", builtinDefaultModelID)
+
+	t.Setenv("TESTBED_MODEL_ID", "legacy-model")
+	assert.Equal(t, "legacy-model", DefaultModelID(), "legacy TESTBED_MODEL_ID alias should still work")
+
+	t.Setenv("TESTBED_MODEL", "override-model")
+	assert.Equal(t, "override-model", DefaultModelID(), "TESTBED_MODEL takes precedence")
+
+	sc := SuiteConfig{}
+	assert.Equal(t, "override-model", sc.PrimaryModelID(), "empty suite config resolves through DefaultModelID")
+}
+
+func TestKnownModelSizesProdEntries(t *testing.T) {
+	assert.Equal(t, "15.6 GB", KnownModelSizes["gemma-4-26b-qat-4bit"])
+	assert.Equal(t, "12.1 GB", KnownModelSizes["gpt-oss-20b"])
 }

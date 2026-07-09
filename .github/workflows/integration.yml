@@ -5,105 +5,267 @@ on:
     branches: [master, main]
   pull_request:
 
+concurrency:
+  group: ci-integration-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  integration-tests:
-    name: E2E Integration Tests
+  build:
+    name: Build Provider
     runs-on: blacksmith-12vcpu-macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
     env:
-      DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
-      TESTBED_PROVIDER_CONFIG: debug
+      MLX_VERSION: 0.31.2
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
 
-      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+      # Same action + key family as ci.yml's SwiftPM cache, but a separate
+      # key prefix (spm-integration-) so debug builds here don't thrash
+      # ci.yml's test/release build caches.
+      - name: Restore SwiftPM cache
+        id: spm-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
-          go-version-file: go.mod
-
-      - name: Install Postgres
-        run: brew install postgresql@16
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/org.swift.swiftpm
+            provider-swift/.build
+          key: spm-integration-v1-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+          restore-keys: |
+            spm-integration-v1-${{ runner.os }}-
 
       - name: Build provider (Swift)
-        run: |
-          cd provider-swift
-          swift build -c debug
+        working-directory: provider-swift
+        run: swift build -c debug
+
+      - name: Save SwiftPM cache
+        if: steps.spm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/org.swift.swiftpm
+            provider-swift/.build
+          key: spm-integration-v1-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+
+      # The metallib only depends on the pinned mlx wheel version, so warm
+      # runs skip the pip venv entirely.
+      - name: Restore mlx.metallib cache
+        id: metallib-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: /tmp/mlx-metallib/mlx.metallib
+          key: mlx-metallib-v1-${{ runner.os }}-${{ env.MLX_VERSION }}
 
       - name: Extract mlx.metallib
+        if: steps.metallib-cache.outputs.cache-hit != 'true'
         run: |
           python3 -m venv /tmp/mlxvenv
-          /tmp/mlxvenv/bin/pip install 'mlx==0.31.2'
-          cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
-             provider-swift/.build/debug/mlx.metallib
+          /tmp/mlxvenv/bin/pip install "mlx==${MLX_VERSION}"
+          metallib="/tmp/mlxvenv/lib/python$(/tmp/mlxvenv/bin/python -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")')/site-packages/mlx/lib/mlx.metallib"
+          test -f "$metallib" || { echo "::error::mlx.metallib not found at $metallib"; exit 1; }
+          mkdir -p /tmp/mlx-metallib
+          cp "$metallib" /tmp/mlx-metallib/mlx.metallib
 
-      - name: Download model
-        run: |
-          /tmp/mlxvenv/bin/pip install huggingface_hub
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/Qwen3.5-0.8B-MLX-4bit')"
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-3-270m-4bit')"
+      - name: Save mlx.metallib cache
+        if: steps.metallib-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: /tmp/mlx-metallib/mlx.metallib
+          key: mlx-metallib-v1-${{ runner.os }}-${{ env.MLX_VERSION }}
 
-      - name: Run integration + profile tests
+      - name: Stage provider artifact
         run: |
-          export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
-          go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
-            -run 'TestIntegration|TestProfile'
+          mkdir -p /tmp/provider-artifact
+          cp provider-swift/.build/debug/darkbloom /tmp/provider-artifact/darkbloom
+          cp /tmp/mlx-metallib/mlx.metallib /tmp/provider-artifact/mlx.metallib
+
+      - name: Upload provider artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: provider-binary
+          path: /tmp/provider-artifact/*
+          retention-days: 1
+          if-no-files-found: error
+
+  integration:
+    name: E2E Integration (${{ matrix.model.id }})
+    needs: build
+    runs-on: blacksmith-12vcpu-macos-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        model:
+          - { id: gemma-4-26b-qat-4bit, gb: "15.6 GB" }
+          - { id: gpt-oss-20b, gb: "12.1 GB" }
+    env:
+      DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
+      TESTBED_PROVIDER_CONFIG: debug
+      DARKBLOOM_PROVIDER_BINARY: /tmp/provider-artifact/darkbloom
+      MLX_METALLIB_PATH: /tmp/provider-artifact/mlx.metallib
+      TESTBED_MODEL: ${{ matrix.model.id }}
+      TESTBED_MODEL_GB: ${{ matrix.model.gb }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: ./.github/actions/e2e-setup
+        with:
+          model: ${{ matrix.model.id }}
+
+      - name: Run integration tests
+        run: |
+          go test ./e2e/ -count=1 -v -timeout 30m -p=1 \
+            -run 'TestIntegration'
+
+  stress:
+    name: E2E Stress (${{ matrix.model.id }})
+    needs: build
+    runs-on: blacksmith-12vcpu-macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        model:
+          - { id: gemma-4-26b-qat-4bit, gb: "15.6 GB" }
+          - { id: gpt-oss-20b, gb: "12.1 GB" }
+    env:
+      DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
+      TESTBED_PROVIDER_CONFIG: debug
+      DARKBLOOM_PROVIDER_BINARY: /tmp/provider-artifact/darkbloom
+      MLX_METALLIB_PATH: /tmp/provider-artifact/mlx.metallib
+      TESTBED_MODEL: ${{ matrix.model.id }}
+      TESTBED_MODEL_GB: ${{ matrix.model.gb }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: ./.github/actions/e2e-setup
+        with:
+          model: ${{ matrix.model.id }}
+
+      - name: Run stress tests
+        run: |
+          go test ./e2e/ -count=1 -v -timeout 20m -p=1 \
+            -run 'TestStress'
+
+  profile:
+    name: E2E Profile (gemma-4-26b-qat-4bit)
+    needs: build
+    runs-on: blacksmith-12vcpu-macos-latest
+    timeout-minutes: 40
+    env:
+      DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
+      TESTBED_PROVIDER_CONFIG: debug
+      DARKBLOOM_PROVIDER_BINARY: /tmp/provider-artifact/darkbloom
+      MLX_METALLIB_PATH: /tmp/provider-artifact/mlx.metallib
+      TESTBED_MODEL: gemma-4-26b-qat-4bit
+      TESTBED_MODEL_GB: "15.6 GB"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: ./.github/actions/e2e-setup
+        with:
+          model: gemma-4-26b-qat-4bit
+
+      - name: Run profile tests
+        run: |
+          go test ./e2e/ -count=1 -v -timeout 30m -p=1 \
+            -run 'TestProfile'
 
   benchmark:
-    name: E2E Benchmarks
-    runs-on: blacksmith-12vcpu-macos-latest
-    timeout-minutes: 30
+    name: E2E Benchmarks (${{ matrix.model.id }})
+    needs: build
     if: github.event_name == 'pull_request'
     environment: benchmarks
+    runs-on: blacksmith-12vcpu-macos-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        model:
+          - { id: gemma-4-26b-qat-4bit, gb: "15.6 GB" }
+          - { id: gpt-oss-20b, gb: "12.1 GB" }
     env:
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       TESTBED_PROVIDER_CONFIG: debug
-      BENCHMARK_MD_PATH: /tmp/benchmark-results.md
-      RUNNER_DESC: macos-15 (M1 Virtual)
+      DARKBLOOM_PROVIDER_BINARY: /tmp/provider-artifact/darkbloom
+      MLX_METALLIB_PATH: /tmp/provider-artifact/mlx.metallib
+      TESTBED_MODEL: ${{ matrix.model.id }}
+      TESTBED_MODEL_GB: ${{ matrix.model.gb }}
+      BENCHMARK_MD_PATH: /tmp/benchmark-${{ matrix.model.id }}.md
+      RUNNER_DESC: macos-15 (M1 Virtual) — ${{ matrix.model.id }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: ./.github/actions/e2e-setup
         with:
-          submodules: recursive
-
-      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
-        with:
-          go-version-file: go.mod
-
-      - name: Install Postgres
-        run: brew install postgresql@16
-
-      - name: Build provider (Swift)
-        run: |
-          cd provider-swift
-          swift build -c debug
-
-      - name: Extract mlx.metallib
-        run: |
-          python3 -m venv /tmp/mlxvenv
-          /tmp/mlxvenv/bin/pip install 'mlx==0.31.2'
-          cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
-             provider-swift/.build/debug/mlx.metallib
-
-      - name: Download model
-        run: |
-          /tmp/mlxvenv/bin/pip install huggingface_hub
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/Qwen3.5-0.8B-MLX-4bit')"
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-3-270m-4bit')"
+          model: ${{ matrix.model.id }}
 
       - name: Run benchmarks
         run: |
-          export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
-          go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
+          go test ./e2e/ -count=1 -v -timeout 30m -p=1 \
             -run 'TestBenchmark'
 
-      - name: Post benchmark results
+      - name: Upload benchmark results
         if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: benchmark-md-${{ matrix.model.id }}
+          path: /tmp/benchmark-${{ matrix.model.id }}.md
+          retention-days: 1
+          if-no-files-found: warn
+
+  benchmark-report:
+    name: Benchmark Report
+    needs: benchmark
+    if: always() && github.event_name == 'pull_request'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - name: Download benchmark artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: benchmark-md-*
+          path: /tmp/benchmark-md
+          merge-multiple: true
+
+      - name: Combine benchmark reports
         run: |
-          if [ ! -f /tmp/benchmark-results.md ]; then
+          out=/tmp/benchmark-combined.md
+          {
+            echo "## E2E Benchmarks"
+            echo
+            echo "_Runner: macos-15 (M1 Virtual) · models: gemma-4-26b-qat-4bit, gpt-oss-20b_"
+          } > "$out"
+          found=0
+          for model in gemma-4-26b-qat-4bit gpt-oss-20b; do
+            {
+              echo
+              echo "### ${model}"
+              echo
+            } >> "$out"
+            f="/tmp/benchmark-md/benchmark-${model}.md"
+            if [ -f "$f" ]; then
+              found=1
+              cat "$f" >> "$out"
+            else
+              echo "_No benchmark results produced._" >> "$out"
+            fi
+          done
+          if [ "$found" = "0" ]; then
+            rm -f "$out"
+            echo "No benchmark results found; skipping PR comment"
+          fi
+
+      - name: Post benchmark results
+        run: |
+          if [ ! -f /tmp/benchmark-combined.md ]; then
             echo "No benchmark results file found"
             exit 0
           fi
-          BODY=$(cat /tmp/benchmark-results.md)
+          BODY=$(cat /tmp/benchmark-combined.md)
           gh pr comment ${{ github.event.pull_request.number }} \
             --body "$BODY" \
             --edit-last \
@@ -111,3 +273,4 @@ jobs:
             --body "$BODY"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}

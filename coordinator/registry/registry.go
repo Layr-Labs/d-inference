@@ -4582,10 +4582,12 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			}
 
 			// Per-model pooled remaining: byte-aware when the box is byte-
-			// reconstructable and this model's slot reports a KV rate, else token
-			// accounting — exactly pooledBudgetAdmits' branch. Cold/absent slots
-			// have no rate (map miss ⇒ 0), which lands on the token path just like
-			// the gate's cold-model path. Inert for single-KV/legacy boxes.
+			// reconstructable, else token accounting — exactly pooledBudgetAdmits'
+			// branch. Cold/absent slots have no rate (map miss ⇒ 0); on a byte-
+			// reconstructable pool they are priced at the box's max resident rate
+			// (the same cold-rate substitution the gate uses), so this feed stays
+			// equivalent to the gate on the cold path too. Inert for single-KV/
+			// legacy boxes.
 			pooledRemaining := pooledRemainingTokens(
 				poolSnap.pooledTokenBudget,
 				poolSnap.pendingMaxTokensAllModels,

@@ -1264,9 +1264,11 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	// load — so in-gap pending on a resident model must not be double-spendable
 	// by a cold request that skips the budget branch above. The reconstructed
 	// pool charges all-models coordinator pending plus this request; a cold
-	// model has no reported KV rate (snap.kvBytesPerToken == 0), so the check
-	// runs in token units. No-op for legacy providers with no budget slots at
-	// all (pool.total == 0).
+	// model has no reported KV rate (snap.kvBytesPerToken == 0), so on a
+	// byte-reconstructable pool it is priced conservatively in bytes at the
+	// box's max resident rate (pooledBudgetAdmits' cold-rate substitution),
+	// falling to token units only when the pool is not byte-reconstructable.
+	// No-op for legacy providers with no budget slots at all (pool.total == 0).
 	if !pooledBudgetAdmits(snap, requestTokens) {
 		return false
 	}

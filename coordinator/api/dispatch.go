@@ -217,6 +217,18 @@ func queueMaxTTFTMs(policy selfRoutePolicy, deadline time.Duration, hardReject b
 	return float64(deadline.Milliseconds())
 }
 
+// queueTTFTTargetMs returns the ADVISORY public TTFT target for queued requests.
+// Unlike queueMaxTTFTMs it is stamped in BOTH gate modes (it never drives hard
+// scheduler rejection); it only bounds the satisficing band so a soft-mode
+// queue drain can't spread onto an over-target box. Self-route / prefer-owner
+// routes get 0 (no public target).
+func queueTTFTTargetMs(policy selfRoutePolicy, deadline time.Duration) float64 {
+	if policy.enabled || policy.prefer {
+		return 0
+	}
+	return float64(deadline.Milliseconds())
+}
+
 // routingOutcomeKey returns a stable requestID + attempt identifier used for
 // telemetry updates. It prefers the explicit dispatch requestID, falling back
 // to the pending request's ID when the dispatch requestID has not been set yet.
@@ -778,6 +790,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			OwnerAccountID:         d.policy.ownerAccountID,
 			FreeSelfRoute:          d.policy.enabled,
 			MaxTTFTMs:              queueMaxTTFTMs(d.policy, d.deadline, d.s.ttftHardReject),
+			TTFTTargetMs:           queueTTFTTargetMs(d.policy, d.deadline),
 			MinDecodeTPS:           d.s.minDecodeTPS,
 			AcceptedCh:             make(chan struct{}, 1),
 			ChunkCh:                make(chan string, chunkBufferSize),

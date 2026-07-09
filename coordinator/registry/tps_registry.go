@@ -19,11 +19,16 @@ import (
 //     while the WHOLE box was uncontended. Feeds the quality-concurrency cap,
 //     which needs a static solo rate that cannot collapse under the very
 //     overload the cap exists to prevent.
+//   - prefillSamples (RecordPrefill/PrefillMedian, prefill_tps.go): observed
+//     per-request prefill EWMAs. Feeds the TTFT estimate's prefill rate for
+//     providers that don't (yet) report their own measurement — the
+//     prefill-honest replacement for the static decode×ratio chain.
 type TPSRegistry struct {
-	mu          sync.RWMutex
-	samples     map[tpsKey][]float64
-	soloSamples map[tpsKey][]float64
-	maxSamples  int
+	mu             sync.RWMutex
+	samples        map[tpsKey][]float64
+	soloSamples    map[tpsKey][]float64
+	prefillSamples map[tpsKey][]float64
+	maxSamples     int
 }
 
 type tpsKey struct {
@@ -33,9 +38,10 @@ type tpsKey struct {
 
 func NewTPSRegistry() *TPSRegistry {
 	return &TPSRegistry{
-		samples:     make(map[tpsKey][]float64),
-		soloSamples: make(map[tpsKey][]float64),
-		maxSamples:  50, // keep last 50 observations per model+chip
+		samples:        make(map[tpsKey][]float64),
+		soloSamples:    make(map[tpsKey][]float64),
+		prefillSamples: make(map[tpsKey][]float64),
+		maxSamples:     50, // keep last 50 observations per model+chip
 	}
 }
 

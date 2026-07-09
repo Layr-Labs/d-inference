@@ -383,6 +383,17 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		}
 	}
 	if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
+		// Prefill-fallback shadow: live routing still runs on the legacy fallback
+		// here, but measure whether the recalibrated fallback would have cleared the
+		// SAME deadline — i.e. the projected ttft_429 recovery the enforce flip
+		// delivers. Extra scan paid only in shadow mode.
+		if registry.PrefillFallbackModeValue() == registry.PrefillFallbackShadow {
+			recalTTFT, recalHas := s.registry.QuickCapacityCheckRecalibratedTTFT(model, p.estimatedPromptTokens, p.requestedMaxTokens, registry.RequestTraits{HasTools: p.hasTools}, p.requiresVision, p.allowedProviderSerials...)
+			// gate = whether this legacy ttft_too_slow actually sheds: hard gate =
+			// a real 429 the enforce flip would recover; soft gate (default) =
+			// the request is served anyway, so it is a near-miss, not a recovery.
+			s.emitPrefillFallbackShadow(model, !ttftTooSlow(recalTTFT, recalHas, ttftThreshold), s.ttftHardReject)
+		}
 		if !s.ttftHardReject {
 			// Soft TTFT gate (default): a provider passed every routing and
 			// capacity gate, and pr.MaxTTFTMs is left 0 in soft mode, so the

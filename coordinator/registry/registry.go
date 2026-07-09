@@ -147,6 +147,16 @@ type PendingRequest struct {
 	// <= MaxTTFTMs. Used by public inference routes to honor the public
 	// TTFT target. Self-route / prefer-owner requests leave this at 0.
 	MaxTTFTMs float64
+	// TTFTTargetMs is the ADVISORY public TTFT target in milliseconds. Unlike
+	// MaxTTFTMs it never drives hard scheduler rejection — it is stamped on
+	// public routes in BOTH gate modes (in hard mode it equals MaxTTFTMs; in the
+	// default soft mode MaxTTFTMs stays 0 but this carries the same deadline).
+	// Consumed only by the satisficing band (dormant by default) so that, in
+	// soft mode, a warm slow-prefill/long-prompt box already over the target is
+	// kept out of the load-spread band instead of weighted-randomly beating a
+	// fast box. 0 (self-route / prefer-owner / queue drains) = no target, and
+	// the band falls back to its cold-exclusion proxy. See satisficing_band.go.
+	TTFTTargetMs float64
 	// MinDecodeTPS is an optional per-request sustained-decode floor in tokens/sec
 	// (Routing v2 W2). When > 0, the scheduler PREFERS providers that would still
 	// deliver >= MinDecodeTPS to a newly admitted request (i.e. not overpack a
@@ -485,6 +495,21 @@ type Provider struct {
 
 	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
 	BackendCapacity *protocol.BackendCapacity
+
+	// lastRecordedPrefillTPS tracks, per model, the last observed_prefill_tps
+	// value this connection fed into the fleet prefill-median ring
+	// (tpsRegistry.RecordPrefill). Providers resend a PERSISTENT per-slot EWMA
+	// on every 30s heartbeat, so without this gate one cold-prefill measurement
+	// re-recorded five times would satisfy the ring's min-sample trust floor
+	// (EIGENINFERENCE_TTFT_PREFILL_MIN_SAMPLES) with a single real observation.
+	// A sample is recorded only when the reported value CHANGES — the honest
+	// "a new measurement folded into the EWMA" signal available on the wire
+	// (per-slot first-token counters advance on prefix-cache hits too, which
+	// the provider deliberately does not sample, so they over-count). Lazily
+	// allocated; per-connection like BackendCapacity (a reconnect records one
+	// fresh sample — bounded, and the ring's FIFO + median absorb it). Guarded
+	// by p.mu.
+	lastRecordedPrefillTPS map[string]float64
 
 	// Reputation tracking
 	Reputation Reputation
@@ -1102,7 +1127,34 @@ func (p *Provider) ReportedTokenBudgetMaxForModel(model string) int64 {
 	return 0
 }
 
-// maxConcurrency is the lock-free version (caller must hold p.mu).
+// maxConcurrency is the lock-free version (caller must hold p.mu; p.Version is
+// p.mu-guarded): the legacy cap chain, bounded by the v2 box-wide ceiling for
+// >=v2-floor providers.
+func (p *Provider) maxConcurrency() int {
+	return v2BoxCeilingClamp(p.Version, p.legacyMaxConcurrency())
+}
+
+// v2BoxCeilingClamp bounds a provider-level concurrency cap by the v2 box-wide
+// ceiling for >=EIGENINFERENCE_V2_VERSION_FLOOR providers. Engine V2 runs ONE
+// engine with a BOX-WIDE concurrent-request cap (productionMaxConcurrentRequests,
+// the v2 ceiling — see v2_capacity_clamp.go). The heartbeat clamp bounds each
+// SLOT's max_concurrency, but the provider-LEVEL valve (pendingCount() <
+// maxConcurrency(), aggregated across ALL models) is what enforces the box-wide
+// total: without this clamp, a >=floor box with multiple warm models admits
+// slots × ceiling in aggregate under the legacy token-budget valve of 24 —
+// exactly the over-admission the tripwire exists to prevent. Tightening only
+// (min, never a raise: a small box's hardware-derived cap of 2 stays 2), and a
+// no-op when the floor env is unset or the provider is below it
+// (providerAtOrAboveV2Floor is false for both).
+func v2BoxCeilingClamp(version string, cap int) int {
+	if providerAtOrAboveV2Floor(version) && cap > v2MaxConcurrencyCeiling {
+		return v2MaxConcurrencyCeiling
+	}
+	return cap
+}
+
+// legacyMaxConcurrency is the pre-v2 provider-level cap chain (token-budget
+// safety valve → hardware tiers). Callers must hold p.mu.
 //
 // Tier values were lowered in Phase 2 of the routing-algorithm rework
 // (was 4/8/16/24/32). The old caps were derived from "how many
@@ -1111,7 +1163,7 @@ func (p *Provider) ReportedTokenBudgetMaxForModel(model string) int64 {
 // per-request TPS collapses". Empirically this is much smaller than
 // the memory-derived ceiling. Pushing past it makes each request slow
 // without increasing fleet throughput.
-func (p *Provider) maxConcurrency() int {
+func (p *Provider) legacyMaxConcurrency() int {
 	if p.BackendCapacity == nil {
 		return DefaultMaxConcurrent
 	}
@@ -1219,6 +1271,17 @@ type Registry struct {
 	// it). Configured once at startup from EIGENINFERENCE_DEDICATED_MODELS; see
 	// SetDedicatedModels and dedicated_models.go. Guarded by r.mu.
 	dedicatedModels []string
+
+	// modelVersionFloors holds the per-model provider-version routing floors
+	// (pattern → minimum binary version; same substring matching as
+	// dedicatedModels). A model whose resolved build id matches a pattern routes
+	// and pre-warms ONLY onto providers at/above the paired version — the
+	// v0.7.5-migration defense that keeps re-slice-dependent models off binaries
+	// that would silently legacy-serve them. Empty = feature disabled (the
+	// default; retires to empty after fleet convergence). Configured once at
+	// startup from EIGENINFERENCE_MODEL_VERSION_FLOORS; see
+	// model_version_floors.go. Guarded by r.mu.
+	modelVersionFloors []ModelVersionFloor
 
 	// Quality-concurrency admission cap (see concurrency_cap.go). When enabled,
 	// the per-provider concurrency cap for a model is tightened from the flat
@@ -1420,6 +1483,11 @@ type Registry struct {
 	cacheAffinity        *cacheAffinityTracker
 	cacheAffinityBonusMs float64
 	warmPool             *warmPoolController
+	// serveCounter is the decaying per-provider recent-serve counter behind
+	// the satisficing band's inverse-recent-serves selection weight
+	// (satisficing_band.go). Fed on every successful reservation (flag-
+	// independent, so weights are warm when the band flips on); own lock.
+	serveCounter *recentServeCounter
 	// loadModelSender is a test seam for SendLoadModel. Nil uses the provider WebSocket.
 	loadModelSender func(providerID, modelID string) error
 
@@ -1430,6 +1498,13 @@ type Registry struct {
 	// restarts. Keyed by the device's Secure Enclave public key. Set once at
 	// startup; nil = no-op. Guarded by r.mu (set + read).
 	onHardUntrust func(seKey string)
+
+	// onV2ClampTrip is an optional hook fired (off the registry locks) whenever
+	// the version-keyed heartbeat sanity clamp corrects a >=v2-floor provider's
+	// reported slot max_concurrency (see v2_capacity_clamp.go). The api layer
+	// wires it to the Datadog silent-legacy-fallback tripwire counter. Set once
+	// at startup; nil = no-op. Guarded by r.mu (set + read).
+	onV2ClampTrip func(providerID, version, model string, reported int)
 }
 
 // pendingModelLoadTTL bounds how long an outstanding (or failed) load_model
@@ -1502,6 +1577,7 @@ func New(logger *slog.Logger) *Registry {
 		evictStrikes:                   make(map[string]int),
 		cacheAffinity:                  newCacheAffinityTracker(cacheAffinityTTL),
 		cacheAffinityBonusMs:           defaultCacheAffinityBonusMs,
+		serveCounter:                   newRecentServeCounter(),
 		logger:                         logger,
 	}
 }
@@ -1828,6 +1904,19 @@ func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minT
 	// build on a dedicated box. allowPrivate marks the owner self-route context,
 	// exempt like selfRouteOwner.
 	if !r.providerServesRoutableModelLocked(p, buildID, allowPrivate) {
+		return false
+	}
+	// Per-model provider-version floor (EIGENINFERENCE_MODEL_VERSION_FLOORS):
+	// alias routability must apply the same floor as the dispatch gate
+	// (providerPassesRoutingGatesLockedEx → providerBelowModelVersionFloorLocked)
+	// — otherwise a below-floor box advertising the Desired build makes
+	// ResolveModel/ResolveModelConstrained resolve to Desired, the candidate scan
+	// then finds ZERO eligible providers, and the request queues/dies against a
+	// build the fleet cannot serve instead of falling back to the alias's
+	// Previous build. Applied unconditionally — self-route included — matching
+	// the dispatch gate (a below-floor binary would MIS-SERVE the model, owner's
+	// box or not; model_version_floors.go).
+	if r.providerBelowModelVersionFloorLocked(p, buildID) {
 		return false
 	}
 	if r.dispatchLoadCooldownActiveLocked(p.ID, buildID, now) {
@@ -2345,9 +2434,13 @@ func (r *Registry) SetQueue(q *RequestQueue) {
 // ~3-4x current hardware ceilings (M2 Ultra is ~800 GB/s, MLX decode is ~120
 // tok/s, max Mac Studio RAM is 512 GB) so legitimate future hardware isn't
 // clamped unnecessarily.
+//
+// maxPrefillTPS (the prefill sanity ceiling) is declared as a var in
+// prefill_fallback.go (default defaultMaxPrefillTPS = 20000, above the measured
+// p90 17,707) so the ingest zeroing here, the registration clamp below, and the
+// routing cap in resolvePrefillTPS share one tunable ceiling.
 const (
 	maxDecodeTPS                    = 500.0
-	maxPrefillTPS                   = 5000.0
 	maxMemoryBandwidthGBs           = 2000.0
 	maxMemoryGB                     = 1024
 	maxMemoryGBFloat                = 1024.0
@@ -2444,7 +2537,9 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 		// would make the TTFT estimate over-optimistic (prefill looks instant) and
 		// the hard gate over-accept; zeroing it makes resolvePrefillTPS fall back to
 		// the conservative decode×ratio estimate until the provider reports a sane
-		// value (provider fix: only sample cold prefills).
+		// value (provider fix: only sample cold prefills). The ceiling now sits
+		// above the measured p90 (17,707 tok/s; see defaultMaxPrefillTPS) so a
+		// genuinely-fast cold prefill from a fixed provider survives ingest.
 		if math.IsNaN(s.ObservedPrefillTPS) || s.ObservedPrefillTPS < 0 || s.ObservedPrefillTPS > maxPrefillTPS {
 			logger.Warn("provider slot observed_prefill_tps out of range; ignoring (fall back to estimate)",
 				"provider_id", providerID, "model", s.Model, "reported", s.ObservedPrefillTPS)
@@ -2706,10 +2801,24 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 		return
 	}
 
+	// Version-keyed v2 concurrency clamp FIRST (so the tripwire records the
+	// provider's original report), then the general sanity clamp. A >=v2-floor
+	// provider heartbeating a legacy-scale chat-slot max_concurrency means the
+	// silent-legacy-fallback bug resurfaced: clamp to the v2 ceiling, log at
+	// ERROR, and fire the Datadog tripwire (hook invoked off the locks, below).
+	// Below-floor providers skip this pass entirely and keep today's behavior.
+	// providerVersion takes p.mu briefly (p.Version is set by the api layer
+	// post-registration under p.mu).
+	version := providerVersion(p)
+	v2Trips := clampV2MaxConcurrency(r.logger, id, version, msg.BackendCapacity)
+
 	// Clamp heartbeat-reported capacity and metrics so a malicious provider
 	// can't skew routing by reporting absurd values (e.g. TotalMemoryGB=1e9
 	// would drive gpuUtil to 0 and sidestep health penalties).
 	clampBackendCapacity(r.logger, id, msg.BackendCapacity)
+	// Tripwire counter for any v2-clamped slots — no locks held here (the hook
+	// may do I/O; same contract as the hard-untrust hook).
+	r.fireV2ClampTrips(id, version, v2Trips)
 	if v, changed := clampNonNeg(msg.SystemMetrics.MemoryPressure, 1.0); changed {
 		msg.SystemMetrics.MemoryPressure = v
 	}
@@ -2758,6 +2867,27 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 				if soloEligible && slot.NumRunning > 0 {
 					r.tpsRegistry.RecordSolo(slot.Model, chipClass, slot.ObservedDecodeTPS)
 				}
+			}
+			// Observed prefill feeds the per-(model, chip) prefill-median ring
+			// (prefill_tps.go) — the prefill-honest input to the TTFT estimate.
+			// Deliberately NOT solo-gated (prefill is per-request compute-bound;
+			// see prefill_tps.go for the full ingest-gating rationale). The value
+			// is post-clamp, so out-of-range garbage (the prefix-cache-hit EWMA
+			// overflow) was already zeroed and never reaches the ring. Gated on
+			// the value CHANGING since this connection's last recorded sample:
+			// the slot EWMA is persistent and resent every heartbeat, so an
+			// unchanged value is a re-report of an already-counted measurement,
+			// not a new observation — recording it would let one measurement
+			// satisfy the ring's min-sample floor after five idle ticks (see
+			// lastRecordedPrefillTPS).
+			if slot.ObservedPrefillTPS > 0 && p.lastRecordedPrefillTPS[slot.Model] != slot.ObservedPrefillTPS {
+				if p.lastRecordedPrefillTPS == nil {
+					p.lastRecordedPrefillTPS = make(map[string]float64)
+				}
+				p.lastRecordedPrefillTPS[slot.Model] = slot.ObservedPrefillTPS
+				// Keyed by chip CLASS (family+tier), NOT family — prefill spreads
+				// 3–4× across same-family tiers; see prefillChipClass.
+				r.tpsRegistry.RecordPrefill(slot.Model, prefillChipClass(p.Hardware), slot.ObservedPrefillTPS)
 			}
 		}
 	}
@@ -2981,12 +3111,26 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 			advertised[m.ID] = struct{}{}
 		}
 	}
+	version := p.Version // captured under p.mu for the version-floor check below
 	p.mu.Unlock()
 
 	var entries []protocol.DesiredModelEntry
 	for alias, t := range r.modelAliases {
 		if t.Desired == "" {
 			continue
+		}
+		// Per-model provider-version floor: do NOT steer a below-floor box toward
+		// the Desired build of a floored alias (e.g. gemma-4=0.7.5 during the v2
+		// migration). Routing will never use that box for the floored model, so a
+		// desired_models command would only make it prefetch/hard-swap away from a
+		// still-usable previous build into one it can't serve — wasting memory and
+		// removing fallback capacity (Codex review). Empty-version boxes fail every
+		// floor. No-op when the floor env is unset. Mirrors the routing/warm-pool
+		// enforcement points in model_version_floors.go.
+		if floor, ok := r.modelVersionFloorForLocked(t.Desired); ok {
+			if version == "" || CompareVersions(version, floor) < 0 {
+				continue
+			}
 		}
 		_, hasDesired := advertised[t.Desired]
 		_, hasPrevious := advertised[t.Previous]
@@ -3112,6 +3256,15 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 	if !r.providerServesRoutableModelLocked(p, model, false) {
 		return false
 	}
+	// Per-model provider-version floor: routing will never send the model to a
+	// below-floor (or version-less) box (providerPassesRoutingGatesLockedEx), so
+	// its warm slot must not suppress swap planning — otherwise one below-floor
+	// warm box makes the planner believe the model is covered and skip
+	// load_model to an eligible >=floor node, stranding queued requests until
+	// timeout. Mirrors the routing gate (model_version_floors.go).
+	if r.providerBelowModelVersionFloorLocked(p, model) {
+		return false
+	}
 	if p.BackendCapacity != nil {
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model == model {
@@ -3179,6 +3332,15 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 		return 0, false
 	}
 	if !r.providerServesRoutableModelLocked(p, model, false) {
+		return 0, false
+	}
+	// Per-model provider-version floor: never pick a below-floor (or
+	// version-less) box as a load_model target — routing will never send the
+	// model there (providerPassesRoutingGatesLockedEx), so the load would burn
+	// GPU memory on an unroutable warm slot while the queued demand keeps
+	// waiting. Mirrors providerHasWarmModelLocked and the warm-pool candidate
+	// gate (warmColdBelowVersionFloor).
+	if r.providerBelowModelVersionFloorLocked(p, model) {
 		return 0, false
 	}
 
@@ -4564,6 +4726,16 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		// Enumerate every model this provider serves.
 		for _, m := range p.Models {
 			if !r.modelAllowedByCatalogLocked(m) {
+				continue
+			}
+			// Apply the per-model provider-version floor here too: a below-floor
+			// box is unroutable for a floored model (providerPassesRoutingGates
+			// rejects it), so counting its slot in the public capacity feed would
+			// advertise RoutableProviders/CanAccept from boxes the preflight
+			// immediately 429s — luring upstream routers into traffic this
+			// coordinator cannot serve (Codex review). No-op when the floor env is
+			// unset. Holds r.mu (RLock) and p.mu, as the helper requires.
+			if r.providerBelowModelVersionFloorLocked(p, m.ID) {
 				continue
 			}
 			// Use the SAME quality-concurrency-capped headroom the routing/preflight

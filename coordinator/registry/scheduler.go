@@ -131,9 +131,18 @@ type routingSnapshot struct {
 	// (callers fall back to the kvCacheBytesPerToken default). Used by the
 	// servability predictor to estimate a cold provider's post-load token budget
 	// the same way the provider does, instead of the fixed default.
-	kvBytesPerToken    int64
-	fleetMedianTPS     float64
-	hasBackendCapacity bool // provider reports BackendCapacity; TTFT estimates are reliable
+	kvBytesPerToken int64
+	fleetMedianTPS  float64
+	// prefillMedianTPS / prefillMedianSamples are the per-(model, chip family)
+	// median of fleet-observed prefill EWMAs and its sample count
+	// (TPSRegistry.PrefillMedian, prefill_tps.go). When trusted (>= the
+	// min-sample floor) it replaces the static decode×ratio prefill estimate in
+	// prefillTPSForSnapshot for providers that don't report their own
+	// measurement — the prefill-honest TTFT input. 0/0 when no fleet samples
+	// exist for this (model, chip).
+	prefillMedianTPS     float64
+	prefillMedianSamples int
+	hasBackendCapacity   bool // provider reports BackendCapacity; TTFT estimates are reliable
 
 	// Engine-health (first-token wedge) signals, decoded from the slot's
 	// BackendSlotCapacity (see docs/reports/2026-06-22-cancel-root-cause-and-fix.md
@@ -403,6 +412,11 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 
 	pr.ProviderID = p.ID
 	p.addPendingLocked(pr)
+	// Feed the satisficing band's recent-serve counter on EVERY successful
+	// reservation (flag-independent): weights are already warm the moment the
+	// band flips on, and recording is selection-neutral while it's off. The
+	// counter has its own leaf lock; see satisficing_band.go.
+	r.serveCounter.record(p.ID)
 	// If this pair's capacity-reject cooldown just EXPIRED, this reservation is
 	// its single half-open probe: claim it here (r.mu write lock is held for the
 	// whole selection+reservation, so concurrent reservations serialize) so the
@@ -779,6 +793,33 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 	affinityProviderID := scan.affinityProviderID
 	candidateCount := scan.candidateCount
 
+	// Satisficing utilization band (EIGENINFERENCE_SATISFICING_BAND, default
+	// OFF — this block is dormant and selection below is byte-for-byte
+	// today's). Among candidates predicted to meet the request's SLO with
+	// margin (the band — the same TTFT/decode predicates the hard gates
+	// compute; see satisficing_band.go), pick weighted-random by inverse
+	// recent serves instead of cheapest-cost, so the idle majority of SLO-
+	// meeting boxes absorbs load the fastest tier otherwise monopolizes.
+	// Candidates outside the band never displace the cost path: an empty band
+	// falls through to the exact selection below. Cache affinity keeps its
+	// pin WITHIN the band (prefix-cache TTFT for repeat prefixes; a pinned
+	// consumer's turns are serial, so honoring the pin costs no spread).
+	if satisficingBandEnabled() {
+		if band := satisficingBandMembers(pool, pr); len(band) > 0 {
+			winner := r.pickSatisficingBandLocked(band)
+			if affinityProviderID != "" {
+				for _, c := range band {
+					if c.provider.ID == affinityProviderID {
+						winner = c
+						break
+					}
+				}
+			}
+			r.logRoutingDecision(model, pr, winner, candidateCount)
+			return winner, candidateCount, scan.capacityRejections, scan.tooLargeRejections, scan.visionRejections, scan.ttftRejections, scan.bestTTFTMs, scan.breakerRejected
+		}
+	}
+
 	var best *routingCandidate
 	for _, c := range pool {
 		if best == nil || c.costMs < best.costMs {
@@ -914,6 +955,13 @@ func (r *Registry) OwnedProviderSummary(accountID, model string, traits RequestT
 		// instead of proceeding into a dispatch that can only be rejected.
 		serves := r.providerServesOwnedRoutableModelLocked(p, model) &&
 			r.providerEligibleForTraitsLocked(p, model, traits) &&
+			// Per-model version floor: the dispatch gate applies it to
+			// self-route too (a below-floor binary would MIS-SERVE the model,
+			// owner's box or not — model_version_floors.go), so the preflight
+			// summary must agree or a below-floor owned box reads as
+			// "serves model", queues, and dies as machine_busy instead of
+			// failing fast with the real cause.
+			!r.providerBelowModelVersionFloorLocked(p, model) &&
 			(!requiresVision || r.providerServesVisionModelLocked(p, model, true)) &&
 			p.RuntimeVerified &&
 			r.providerSupportsPrivateTextLocked(p) &&
@@ -1069,6 +1117,14 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 	if !r.providerEligibleForTraitsLocked(p, model, traits) {
 		return false
 	}
+	// Per-model provider-version floor (EIGENINFERENCE_MODEL_VERSION_FLOORS):
+	// the model-scoped sibling of the trait floors above — a floored model
+	// (e.g. gemma-4=0.7.5 during the v2 migration) may only route to providers
+	// at/above the paired binary version; empty-version providers fail every
+	// floor. No-op when the env is unset. See model_version_floors.go.
+	if r.providerBelowModelVersionFloorLocked(p, model) {
+		return false
+	}
 	return true
 }
 
@@ -1162,6 +1218,10 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 	snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 	snap.availableOnDisk = !snap.modelLoaded
 	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
+	// Prefill medians are keyed by chip CLASS (family+tier), not family — prefill
+	// throughput spreads 3–4× across same-family tiers, so pooling them would
+	// over-admit a slow tier at the hard TTFT gate (see prefillChipClass).
+	snap.prefillMedianTPS, snap.prefillMedianSamples = r.tpsRegistry.PrefillMedian(model, prefillChipClass(p.Hardware))
 
 	// Gray-box budget clamp (budget_clamp.go): when a capacity-503 has proven
 	// the pair's live gate is rejecting, admission must not believe the
@@ -1598,23 +1658,22 @@ func resolveEffectiveTPS(snap routingSnapshot) float64 {
 }
 
 // resolvePrefillTPS returns the best available prefill TPS estimate for TTFT.
-// Fallback chain: measured per-slot observed prefill EWMA → snap.prefillTPS (the
-// resolvedPrefillTPS chain: registration benchmark → decode×prefillToDecodeRatio
-// ×12 fallback). This mirrors how resolveEffectiveTPS prefers the measured
-// decode rate over the static estimate. The result is clamped to maxPrefillTPS
-// so a single outlier heartbeat cannot collapse the TTFT estimate.
+// Preference order: measured per-slot observed prefill EWMA → the trusted
+// per-(model, chip) fleet prefill median (prefill_tps.go; the prefill-honest
+// transfer of REAL v0.7.5 measurements to boxes that don't report their own) →
+// (in PrefillFallbackEnforce mode) the data-derived fleet fallback anchor →
+// snap.prefillTPS (the resolvedPrefillTPS chain: registration benchmark →
+// decode×prefillToDecodeRatio). This mirrors how resolveEffectiveTPS prefers
+// measured decode rates over static estimates. The result is clamped to
+// maxPrefillTPS so a single outlier heartbeat cannot collapse the TTFT estimate.
 //
-// observedPrefillTPS stays 0 until providers ship the W1 measurement, so on
-// today's fleet this is a no-op that returns the existing ×12-chain value.
+// Until v0.7.5 providers populate observed_prefill_tps the medians stay empty,
+// so today's fleet sees: OFF default → the legacy sqrt(bandwidth)×ratio value
+// (~280 tok/s); ENFORCE → the recalibrated fallback (~6500 tok/s, the measured
+// prefill p50). As adoption ramps, per-(model, chip) medians take over — see
+// prefill_fallback.go (prefillTPSForSnapshot) for the full resolution order.
 func resolvePrefillTPS(snap routingSnapshot) float64 {
-	tps := snap.prefillTPS
-	if snap.observedPrefillTPS > 0 {
-		tps = snap.observedPrefillTPS
-	}
-	if tps > maxPrefillTPS {
-		tps = maxPrefillTPS
-	}
-	return tps
+	return prefillTPSForSnapshot(snap, prefillFallbackMode == PrefillFallbackEnforce)
 }
 
 // effectiveDecodeTPS scales the static decode TPS down by current
@@ -1707,7 +1766,11 @@ func resolvedModelTPSLocked(p *Provider, model string) (decodeTPS, prefillTPS fl
 // with the 5s+1ms/token TTFT deadline it estimated ~100 tok/s prefill (vs the
 // ~1000 tok/s the deadline implicitly assumes), so the TTFT gate wrongly
 // rejected warm, capable providers on any prompt above ~550 tokens. No provider
-// currently reports prefill_tps, so this fallback is the production path.
+// currently reports prefill_tps, so this fallback is the production path. Even 12×
+// is far too low against the MEASURED reality (real prefill p50 ≈ 6,500 tok/s vs
+// this chain's ~280 tok/s) — the data-derived replacement lives in
+// prefill_fallback.go (defaultPrefillFallbackTPS) and supersedes this chain when
+// PrefillFallbackEnforce is set.
 const defaultPrefillToDecodeRatio = 12.0
 
 // prefillToDecodeRatio is configured once at startup (via SetPrefillToDecodeRatio,
@@ -1992,20 +2055,32 @@ func (r *Registry) providerCanAdmitLockedEx(p *Provider, model string, traits Re
 //     a model that will never fit (the client would retry forever) — it should
 //     surface model_too_large / 503 instead.
 func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int) {
-	candidateCount, capacityRejections, modelTooLarge, _, _ = r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, false, allowedSerials...)
+	candidateCount, capacityRejections, modelTooLarge, _, _ = r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, false, false, allowedSerials...)
 	return candidateCount, capacityRejections, modelTooLarge
 }
 
 func (r *Registry) QuickCapacityCheckForRequest(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int) {
-	candidateCount, capacityRejections, modelTooLarge, _, _ = r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedSerials...)
+	candidateCount, capacityRejections, modelTooLarge, _, _ = r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, false, allowedSerials...)
 	return candidateCount, capacityRejections, modelTooLarge
 }
 
 func (r *Registry) QuickCapacityCheckWithTTFTForRequest(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int, bestTTFT time.Duration, hasTTFT bool) {
-	return r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedSerials...)
+	return r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, false, allowedSerials...)
 }
 
-func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int, bestTTFT time.Duration, hasTTFT bool) {
+// QuickCapacityCheckRecalibratedTTFT runs the preflight TTFT scan with the
+// prefill-fallback recalibration FORCED on (regardless of mode), returning the
+// best estimated TTFT and whether any candidate produced a reliable estimate. Used
+// ONLY by the prefill-fallback shadow path to measure projected ttft_429 recovery
+// WITHOUT changing live routing; callers gate it on
+// PrefillFallbackModeValue() == PrefillFallbackShadow, so the extra scan is paid
+// only during a staging window.
+func (r *Registry) QuickCapacityCheckRecalibratedTTFT(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (bestTTFT time.Duration, hasTTFT bool) {
+	_, _, _, bestTTFT, hasTTFT = r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, true, allowedSerials...)
+	return bestTTFT, hasTTFT
+}
+
+func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, recalibratePrefill bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int, bestTTFT time.Duration, hasTTFT bool) {
 	// Use a dummy PendingRequest with the caller's actual token estimates
 	// for the admission gate (freeMemoryAdmits).
 	if estimatedPromptTokens <= 0 {
@@ -2169,6 +2244,10 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 		snap.availableOnDisk = !snap.modelLoaded
 		snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
+		// Prefill medians are keyed by chip CLASS (family+tier), not family — must
+		// match the ingest + dispatch-snapshot key or the preflight bestTTFT would
+		// diverge from dispatch (see prefillChipClass).
+		snap.prefillMedianTPS, snap.prefillMedianSamples = r.tpsRegistry.PrefillMedian(model, prefillChipClass(p.Hardware))
 
 		// Gray-box budget clamp — same evaluation as snapshotProviderLockedEx
 		// (including the budgetless-snapshot hold for reconnecting sessions)
@@ -2202,6 +2281,9 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		candidateCount++
 		if snap.hasBackendCapacity {
 			ttft := estimatedTTFTFromSnapshot(snap, estimatedPromptTokens)
+			if recalibratePrefill {
+				ttft = estimatedRecalibratedTTFTFromSnapshot(snap, estimatedPromptTokens)
+			}
 			if !hasTTFT || ttft < bestTTFT {
 				bestTTFT = ttft
 				hasTTFT = true
@@ -2241,6 +2323,14 @@ func estimatedTTFTFromSnapshot(snap routingSnapshot, reqPromptTokens int) time.D
 // and this request's own prefill instead of treating active_token_budget_used as
 // a serial decode backlog.
 func ttftMsFromSnapshot(snap routingSnapshot, reqPromptTokens int) float64 {
+	return ttftMsFromSnapshotWithPrefill(snap, reqPromptTokens, resolvePrefillTPS(snap))
+}
+
+// ttftMsFromSnapshotWithPrefill is ttftMsFromSnapshot parametrized by the prefill
+// TPS to use, so the prefill-fallback shadow path (recalibratedTTFTMsFromSnapshot)
+// can compute the recalibrated estimate without changing the live prefill
+// resolution. prefillTPS <= 0 is floored to 1 tok/s.
+func ttftMsFromSnapshotWithPrefill(snap routingSnapshot, reqPromptTokens int, prefillTPS float64) float64 {
 	if !snap.hasBackendCapacity {
 		return 0
 	}
@@ -2248,7 +2338,6 @@ func ttftMsFromSnapshot(snap routingSnapshot, reqPromptTokens int) float64 {
 	if reqPromptTokens < 0 {
 		reqPromptTokens = 0
 	}
-	prefillTPS := resolvePrefillTPS(snap)
 	if prefillTPS <= 0 {
 		prefillTPS = 1.0
 	}

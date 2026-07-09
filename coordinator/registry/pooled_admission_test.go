@@ -642,6 +642,114 @@ func TestModelCapacitySnapshotByteModePooledClamp(t *testing.T) {
 	}
 }
 
+// TestPooledColdUnknownKVChargedInBytes is the cold unknown-KV regression: on a
+// byte-reconstructable mixed-KV box, a COLD request (its own model has no
+// resident slot, so snap.kvBytesPerToken == 0) must be priced CONSERVATIVELY in
+// bytes at the box's max resident rate, NOT collapse to token accounting that
+// under-charges a large-KV burst against the small-KV token view of the pool.
+// Fails without the maxKVBytesPerToken cold-rate substitution.
+func TestPooledColdUnknownKVChargedInBytes(t *testing.T) {
+	t.Run("mixed_kv_cold_priced_at_max_rate", func(t *testing.T) {
+		slots := []protocol.BackendSlotCapacity{
+			{Model: "big-kv", ActiveTokenBudgetMax: 10_000, KVBytesPerToken: 100_000},   // 1 GB view
+			{Model: "small-kv", ActiveTokenBudgetMax: 100_000, KVBytesPerToken: 10_000}, // same 1 GB
+		}
+		pool := providerPooledTokenBudget(slots)
+		if !pool.byteMode || pool.maxKVBytesPerToken != 100_000 {
+			t.Fatalf("pool byteMode=%v maxKVBytesPerToken=%d, want true / 100000", pool.byteMode, pool.maxKVBytesPerToken)
+		}
+		cold := routingSnapshot{
+			kvBytesPerToken:   0, // cold/absent slot
+			pendingBytesKnown: true,
+			pooledTokenBudget: pool,
+		}
+		// 50k tokens: token fallback would admit (50k ≤ 100k token pool); byte
+		// pricing at the 100 kB/token max rate = 5 GB ≫ 1 GB pool → reject.
+		if pooledBudgetAdmits(cold, 50_000) {
+			t.Fatal("cold large-KV request admitted via token fallback (5 GB into a 1 GB byte pool)")
+		}
+		// Control: 8k tokens = 0.8 GB fits the 1 GB byte pool.
+		if !pooledBudgetAdmits(cold, 8_000) {
+			t.Fatal("cold request rejected although 0.8 GB fits the 1 GB byte pool")
+		}
+		// Capacity feed mirrors the gate: 1 GB ÷ 100 kB/token = 10k tokens.
+		if rem := pooledRemainingTokens(pool, 0, 0, true, 0); rem != 10_000 {
+			t.Fatalf("cold pooledRemainingTokens = %d, want 10_000 (byte pool ÷ max rate)", rem)
+		}
+	})
+
+	// Single-KV byteMode box: a cold request priced at the sole resident rate is
+	// arithmetically identical to token accounting, so the boundary is unchanged.
+	t.Run("single_kv_cold_equals_token_boundary", func(t *testing.T) {
+		pool := providerPooledTokenBudget([]protocol.BackendSlotCapacity{
+			{Model: "m", ActiveTokenBudgetMax: 10_000, KVBytesPerToken: 50_000},
+		})
+		cold := routingSnapshot{kvBytesPerToken: 0, pendingBytesKnown: true, pooledTokenBudget: pool}
+		if !pooledBudgetAdmits(cold, 10_000) {
+			t.Fatal("cold request at the exact 10k boundary rejected (single-KV byte pricing changed the boundary)")
+		}
+		if pooledBudgetAdmits(cold, 10_001) {
+			t.Fatal("cold request past the 10k boundary admitted (single-KV budget loosened)")
+		}
+	})
+}
+
+// TestPooledRemainingTokensMatchesAdmits pins the equivalence the capacity feed
+// relies on: pooledBudgetAdmits(snap, n) admits IFF n <= pooledRemainingTokens(
+// pool, …, snap.kvBytesPerToken), across the byte path (known rate), the byte
+// COLD path (rate 0 → max resident rate substitution), token mode, and the
+// pending-unknown fall-through. Both must apply the SAME cold-rate substitution.
+func TestPooledRemainingTokensMatchesAdmits(t *testing.T) {
+	bytePool := providerPooledTokenBudget([]protocol.BackendSlotCapacity{
+		{Model: "big-kv", ActiveTokenBudgetMax: 10_000, KVBytesPerToken: 100_000},
+		{Model: "small-kv", ActiveTokenBudgetMax: 100_000, KVBytesPerToken: 10_000},
+	})
+	tokenPool := providerPooledTokenBudget([]protocol.BackendSlotCapacity{
+		{Model: "a", ActiveTokenBudgetMax: 10_000},
+		{Model: "b", ActiveTokenBudgetMax: 10_000},
+	})
+	cases := []struct {
+		name string
+		snap routingSnapshot
+	}{
+		{"byte_known_rate", routingSnapshot{
+			kvBytesPerToken: 100_000, pendingBytesKnown: true,
+			pendingMaxTokensAllModels: 20_000, pendingMaxBytesAllModels: 20_000 * 10_000,
+			pooledTokenBudget: bytePool,
+		}},
+		{"byte_cold_rate", routingSnapshot{
+			kvBytesPerToken: 0, pendingBytesKnown: true,
+			pendingMaxTokensAllModels: 10_000, pendingMaxBytesAllModels: 10_000 * 10_000,
+			pooledTokenBudget: bytePool,
+		}},
+		{"token_mode", routingSnapshot{
+			pendingMaxTokensAllModels: 4_000,
+			pooledTokenBudget:         tokenPool,
+		}},
+		{"byte_pending_unknown_falls_to_token", routingSnapshot{
+			kvBytesPerToken: 100_000, pendingBytesKnown: false,
+			pendingMaxTokensAllModels: 5_000,
+			pooledTokenBudget:         bytePool,
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rem := pooledRemainingTokens(
+				tc.snap.pooledTokenBudget,
+				tc.snap.pendingMaxTokensAllModels,
+				tc.snap.pendingMaxBytesAllModels,
+				tc.snap.pendingBytesKnown,
+				tc.snap.kvBytesPerToken,
+			)
+			for n := int64(1); n <= rem+50; n++ {
+				if admits, want := pooledBudgetAdmits(tc.snap, n), n <= rem; admits != want {
+					t.Fatalf("n=%d: pooledBudgetAdmits=%v, but (n<=rem=%d)=%v", n, admits, rem, want)
+				}
+			}
+		})
+	}
+}
+
 // TestFreeMemoryAdmitsLegacyProviderUnchanged: providers that report no token
 // budget (ActiveTokenBudgetMax == 0) never reach the budget branch — the
 // legacy memory-estimation path is untouched by the pooled fields.

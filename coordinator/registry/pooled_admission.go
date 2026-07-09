@@ -87,6 +87,13 @@ type pooledTokenBudget struct {
 	// KV rate, for normalizing coordinator-pending charges into bytes. Nil
 	// when no budget slot reports a rate.
 	kvBytesPerToken map[string]int64
+	// maxKVBytesPerToken is the largest clamped per-token KV rate across the
+	// budget slots. Only meaningful in byteMode (where every budget slot reports
+	// a positive rate, so it is > 0). It is the conservative rate used to price
+	// a COLD/absent request (one whose own model has no resident slot, so its
+	// rate is 0) in bytes rather than collapsing the whole byte-reconstructable
+	// pool to token accounting and under-charging a large-KV cold burst.
+	maxKVBytesPerToken int64
 }
 
 // providerPooledTokenBudget reconstructs the provider's pooled budget from its
@@ -129,6 +136,9 @@ func providerPooledTokenBudget(slots []protocol.BackendSlotCapacity) pooledToken
 			pool.kvBytesPerToken = make(map[string]int64, len(slots))
 		}
 		pool.kvBytesPerToken[slot.Model] = rate
+		if rate > pool.maxKVBytesPerToken {
+			pool.maxKVBytesPerToken = rate
+		}
 		pool.usedBytes += slotUsed * rate
 		pool.committedBytes += c * rate
 		// Per-slot free headroom in bytes; all slots see the same shared byte
@@ -159,22 +169,36 @@ func providerPooledTokenBudget(slots []protocol.BackendSlotCapacity) pooledToken
 // reported no pooled budget (legacy provider, or a snapshot built without
 // backend capacity) — no pooled constraint, the caller's other gates decide.
 //
-// The check runs in BYTES when the pool is byte-reconstructable (byteMode),
-// every pending charge was normalizable (snap.pendingBytesKnown), and the
-// incoming request's own KV rate is known (snap.kvBytesPerToken — this
-// model's slot; 0 for a cold/absent slot). Any gap falls back to token
-// accounting, which is byte-for-byte the legacy-provider behavior.
+// The check runs in BYTES when the pool is byte-reconstructable (byteMode) and
+// every pending charge was normalizable (snap.pendingBytesKnown). The incoming
+// request's own KV rate (snap.kvBytesPerToken — this model's slot) prices it;
+// when that is 0 (a cold/absent slot) the request is priced CONSERVATIVELY at
+// the box's max resident rate (pool.maxKVBytesPerToken) rather than collapsing
+// to token accounting, so a large-KV cold request on a mixed-KV box is not
+// under-charged against a token view of a byte-reconstructable pool. Token
+// accounting is used ONLY when the pool is not byte-reconstructable
+// (!byteMode) or a pending charge could not be normalized (!pendingBytesKnown)
+// — byte-for-byte the legacy-provider behavior.
 func pooledBudgetAdmits(snap routingSnapshot, requestTokens int64) bool {
 	pool := snap.pooledTokenBudget
 	if pool.total <= 0 {
 		return true
 	}
-	if pool.byteMode && snap.pendingBytesKnown && snap.kvBytesPerToken > 0 {
-		extra := snap.pendingMaxBytesAllModels - pool.committedBytes
-		if extra < 0 {
-			extra = 0
+	if pool.byteMode && snap.pendingBytesKnown {
+		reqRate := snap.kvBytesPerToken
+		if reqRate <= 0 {
+			// Cold/absent slot: price at the box's max resident rate. Guaranteed
+			// > 0 in byteMode; the guard covers the impossible 0 case by falling
+			// through to token accounting.
+			reqRate = pool.maxKVBytesPerToken
 		}
-		return pool.usedBytes+extra+requestTokens*snap.kvBytesPerToken <= pool.totalBytes
+		if reqRate > 0 {
+			extra := snap.pendingMaxBytesAllModels - pool.committedBytes
+			if extra < 0 {
+				extra = 0
+			}
+			return pool.usedBytes+extra+requestTokens*reqRate <= pool.totalBytes
+		}
 	}
 	extra := int64(snap.pendingMaxTokensAllModels) - pool.committed
 	if extra < 0 {
@@ -190,25 +214,34 @@ func pooledBudgetAdmits(snap routingSnapshot, requestTokens int64) bool {
 // snap.kvBytesPerToken) with the same inputs, so the public capacity feed
 // (/v1/models[/capacity]) cannot advertise pooled headroom the admission gate
 // refuses. Both branch identically: BYTES when the pool is byte-reconstructable
-// (byteMode), every pending charge normalized (pendingBytesKnown), and THIS
-// model's KV rate is known (modelRate > 0 — its resident slot; 0 for a
-// cold/absent slot, matching the gate's cold path); token accounting otherwise.
-// Returns -1 when the provider reports no pooled budget (total <= 0) — the "no
-// pooled constraint" sentinel that leaves the per-slot numbers unclamped.
+// (byteMode) and every pending charge normalized (pendingBytesKnown), pricing
+// this model at modelRate when its resident slot reports one (> 0) and at the
+// box's max resident rate (pool.maxKVBytesPerToken) for a cold/absent slot
+// (modelRate == 0) — the SAME cold-rate substitution pooledBudgetAdmits uses,
+// so the two stay equivalent. Token accounting ONLY when !byteMode or
+// !pendingBytesKnown. Returns -1 when the provider reports no pooled budget
+// (total <= 0) — the "no pooled constraint" sentinel that leaves the per-slot
+// numbers unclamped.
 func pooledRemainingTokens(pool pooledTokenBudget, pendingTokensAllModels int, pendingBytesAllModels int64, pendingBytesKnown bool, modelRate int64) int64 {
 	if pool.total <= 0 {
 		return -1
 	}
-	if pool.byteMode && pendingBytesKnown && modelRate > 0 {
-		extra := pendingBytesAllModels - pool.committedBytes
-		if extra < 0 {
-			extra = 0
+	if pool.byteMode && pendingBytesKnown {
+		rate := modelRate
+		if rate <= 0 {
+			rate = pool.maxKVBytesPerToken // cold/absent slot: box's max rate
 		}
-		remBytes := pool.totalBytes - pool.usedBytes - extra
-		if remBytes < 0 {
-			remBytes = 0
+		if rate > 0 {
+			extra := pendingBytesAllModels - pool.committedBytes
+			if extra < 0 {
+				extra = 0
+			}
+			remBytes := pool.totalBytes - pool.usedBytes - extra
+			if remBytes < 0 {
+				remBytes = 0
+			}
+			return remBytes / rate
 		}
-		return remBytes / modelRate
 	}
 	extra := int64(pendingTokensAllModels) - pool.committed
 	if extra < 0 {

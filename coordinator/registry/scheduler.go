@@ -1235,6 +1235,14 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 		return false
 	}
 	requestTokens := int64(reqPromptTokens) + int64(reqMaxTokens)
+	// Engine V2 keeps reporting a positive KV rate when its live fleet clamp
+	// drives this model's budget to zero. That is authoritative known-full
+	// capacity, not the legacy "budget unavailable" shape (both fields absent).
+	// Bind it before consulting co-resident pooled headroom: another model's
+	// positive budget cannot widen this model-local zero.
+	if knownZeroTokenBudget(snap.activeTokenBudgetMax, snap.kvBytesPerToken) {
+		return false
+	}
 	if snap.activeTokenBudgetMax > 0 {
 		// Include coordinator-side pending tokens not yet reflected in the
 		// provider's heartbeat. Avoid double-counting active/queued backend
@@ -1270,7 +1278,7 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	// byte-reconstructable pool it is priced conservatively in bytes at the
 	// bounded unknown-model default (resolvedPooledKVBytesPerToken),
 	// falling to token units only when the pool is not byte-reconstructable.
-	// No-op for legacy providers with no budget slots at all (pool.total == 0).
+	// No-op for legacy providers with neither budget nor KV-rate reports.
 	if !pooledBudgetAdmits(snap, requestTokens) {
 		return false
 	}

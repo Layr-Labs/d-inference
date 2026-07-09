@@ -18,8 +18,9 @@ import (
 // gap by admitting against the reconstructed whole-box pool with ALL models'
 // coordinator-pending tokens counted. Inert for single-model providers (the
 // pool reduces to the slot's own budget and the arithmetic matches the
-// per-slot check exactly) and for legacy providers that report no token
-// budget (total = 0).
+// per-slot check exactly). Legacy providers that report neither a token budget
+// nor a KV rate remain unconstrained; a modern slot with a positive KV rate and
+// a zero budget is authoritative known-zero capacity and must fail closed.
 //
 // Units: the shared pool is physically BYTES of unified memory, and
 // co-resident models spend it at different per-token rates
@@ -81,6 +82,15 @@ func resolvedPooledKVBytesPerToken(pool pooledTokenBudget, reportedRate int64) i
 	return clampKVBytesPerToken(rate)
 }
 
+// knownZeroTokenBudget distinguishes an authoritative zero from an omitted
+// legacy budget. Engine V2 reports KVBytesPerToken whenever it knows the model's
+// rate, including when its live fleet clamp leaves room for zero tokens. That
+// model-local zero must bind even if a co-resident model still has pooled
+// headroom.
+func knownZeroTokenBudget(maxTokens, kvBytesPerToken int64) bool {
+	return maxTokens <= 0 && clampKVBytesPerToken(kvBytesPerToken) > 0
+}
+
 // addPooledKVByteCharge adds tokens*rate without wrapping. An overflowed
 // pending charge must reject against every finite pool, so saturation at
 // MaxInt64 is both conservative and sufficient for admission/capacity math.
@@ -101,6 +111,11 @@ func addPooledKVByteCharge(total, tokens, rate int64) int64 {
 // carried in token units always and additionally in byte units when every
 // budget slot reports KVBytesPerToken (byteMode).
 type pooledTokenBudget struct {
+	// hasBudgetReport distinguishes an authoritative provider budget from the
+	// zero value used by legacy providers. Engine V2 can truthfully report
+	// ActiveTokenBudgetMax == 0 after its live fleet clamp while still reporting
+	// KVBytesPerToken > 0; that means known-full, not "budget unavailable."
+	hasBudgetReport bool
 	// used is Σ (ActiveTokenBudgetUsed + QueuedTokenBudget) across budget
 	// slots — reservations the provider itself reports as live.
 	used int64
@@ -136,20 +151,41 @@ type pooledTokenBudget struct {
 }
 
 // providerPooledTokenBudget reconstructs the provider's pooled budget from its
-// backend slots. Slots without a token budget (ActiveTokenBudgetMax <= 0) are
-// ignored and negative per-slot values floored, mirroring providerTokenBudget.
-// A nil/empty slice (or no budget slots at all) yields the zero value, which
-// pooledBudgetAdmits treats as "no pooled constraint".
+// backend slots. A legacy slot with neither a positive token budget nor a KV
+// rate is ignored. A positive KV rate is retained even when the token budget is
+// zero: Engine V2 uses that combination to report authoritative known-zero
+// capacity after its live fleet clamp. Only positive maxima contribute shared
+// headroom. Negative per-slot values are floored, mirroring providerTokenBudget.
+// A nil/empty or entirely legacy slice yields the unconstrained zero value.
 func providerPooledTokenBudget(slots []protocol.BackendSlotCapacity) pooledTokenBudget {
 	used, total := providerTokenBudget(slots)
 	pool := pooledTokenBudget{used: used, total: total, byteMode: true}
-	budgetSlots := 0
+	reportedSlots := 0
 	var sharedFreeBytes int64
 	for _, slot := range slots {
-		if slot.ActiveTokenBudgetMax <= 0 {
+		// Retain a reported rate before considering the token maximum. A v2
+		// slot can have a known rate and an authoritative zero max; pending,
+		// incoming, and capacity math must still agree on that model's rate.
+		rate := clampKVBytesPerToken(slot.KVBytesPerToken)
+		if slot.ActiveTokenBudgetMax <= 0 && rate <= 0 {
+			// True legacy/unknown slot: neither field carries a constraint.
 			continue
 		}
-		budgetSlots++
+		reportedSlots++
+		if rate <= 0 {
+			// A positive token budget without a KV rate keeps the exact legacy
+			// token-mode behavior for the whole provider.
+			pool.byteMode = false
+		} else {
+			if pool.kvBytesPerToken == nil {
+				pool.kvBytesPerToken = make(map[string]int64, len(slots))
+			}
+			pool.kvBytesPerToken[slot.Model] = rate
+			if rate > pool.maxResidentKVBytesPerToken {
+				pool.maxResidentKVBytesPerToken = rate
+			}
+		}
+
 		slotUsed := slot.ActiveTokenBudgetUsed + slot.QueuedTokenBudget
 		if slotUsed < 0 {
 			slotUsed = 0
@@ -161,32 +197,28 @@ func providerPooledTokenBudget(slots []protocol.BackendSlotCapacity) pooledToken
 		if c < 0 {
 			c = 0
 		}
-		pool.committed += c
-		// Clamp the raw rate ONCE (overflow guard, see maxKVBytesPerToken) and
-		// use the clamped value for the map store and every byte product below.
-		rate := clampKVBytesPerToken(slot.KVBytesPerToken)
-		if rate <= 0 {
-			// A budget slot without a KV rate makes byte reconstruction
-			// impossible for the whole pool (legacy provider build).
-			pool.byteMode = false
+		if rate > 0 {
+			// Live/committed use remains physical even when the current max is
+			// zero. Saturation makes malformed reports fail closed.
+			pool.usedBytes = addPooledKVByteCharge(pool.usedBytes, slotUsed, rate)
+			pool.committedBytes = addPooledKVByteCharge(pool.committedBytes, c, rate)
+		}
+		if slot.ActiveTokenBudgetMax <= 0 {
+			// Known-zero contributes no new headroom.
 			continue
 		}
-		if pool.kvBytesPerToken == nil {
-			pool.kvBytesPerToken = make(map[string]int64, len(slots))
+		pool.committed += c
+		if rate <= 0 {
+			continue
 		}
-		pool.kvBytesPerToken[slot.Model] = rate
-		if rate > pool.maxResidentKVBytesPerToken {
-			pool.maxResidentKVBytesPerToken = rate
-		}
-		pool.usedBytes += slotUsed * rate
-		pool.committedBytes += c * rate
 		// Per-slot free headroom in bytes; all slots see the same shared byte
 		// pool, so the largest is the live shared headroom (counted once).
-		if free := (slot.ActiveTokenBudgetMax - slotUsed) * rate; free > sharedFreeBytes {
+		if free := addPooledKVByteCharge(0, slot.ActiveTokenBudgetMax-slotUsed, rate); free > sharedFreeBytes {
 			sharedFreeBytes = free
 		}
 	}
-	if budgetSlots == 0 {
+	pool.hasBudgetReport = reportedSlots > 0
+	if !pool.hasBudgetReport {
 		pool.byteMode = false
 	}
 	// totalBytes mirrors the token path's total (providerTokenBudget: LIVE
@@ -195,7 +227,11 @@ func providerPooledTokenBudget(slots []protocol.BackendSlotCapacity) pooledToken
 	// pooledBudgetAdmits' extra); adding it into the pool total too would
 	// double-count a co-resident slot's not-yet-materialized future growth as
 	// extra physical KV capacity, letting an in-gap burst overcommit the box.
-	pool.totalBytes = pool.usedBytes + sharedFreeBytes
+	if pool.usedBytes > math.MaxInt64-sharedFreeBytes {
+		pool.totalBytes = math.MaxInt64
+	} else {
+		pool.totalBytes = pool.usedBytes + sharedFreeBytes
+	}
 	return pool
 }
 
@@ -204,9 +240,9 @@ func providerPooledTokenBudget(slots []protocol.BackendSlotCapacity) pooledToken
 // (snap.pendingMaxTokensAllModels / snap.pendingMaxBytesAllModels) are charged
 // against it. The subtraction of the committed baseline mirrors the per-slot
 // check's committedTokenBudget subtraction (avoid double-counting requests the
-// heartbeat already reflects), floored at zero. total <= 0 means the provider
-// reported no pooled budget (legacy provider, or a snapshot built without
-// backend capacity) — no pooled constraint, the caller's other gates decide.
+// heartbeat already reflects), floored at zero. hasBudgetReport=false means a
+// legacy provider (or a snapshot built without backend capacity) reported no
+// pooled constraint. An authoritative report whose total is zero is known-full.
 //
 // The check runs in BYTES when the pool is byte-reconstructable (byteMode) and
 // every pending charge was normalizable (snap.pendingBytesKnown). The single
@@ -217,8 +253,11 @@ func providerPooledTokenBudget(slots []protocol.BackendSlotCapacity) pooledToken
 // the snapshot predates/omits byte accumulation.
 func pooledBudgetAdmits(snap routingSnapshot, requestTokens int64) bool {
 	pool := snap.pooledTokenBudget
-	if pool.total <= 0 {
+	if !pool.hasBudgetReport {
 		return true
+	}
+	if pool.total <= 0 {
+		return requestTokens == 0
 	}
 	if pool.byteMode && snap.pendingBytesKnown {
 		reqRate := resolvedPooledKVBytesPerToken(pool, snap.kvBytesPerToken)
@@ -256,12 +295,15 @@ func pooledBudgetAdmits(snap routingSnapshot, requestTokens int64) bool {
 // this model through resolvedPooledKVBytesPerToken — the same known/default
 // policy pooledBudgetAdmits uses — so the two stay equivalent. Token accounting
 // only when !byteMode or !pendingBytesKnown. Returns -1 when the provider
-// reports no pooled budget
-// (total <= 0) — the "no pooled constraint" sentinel that leaves the per-slot
-// numbers unclamped.
+// reports no pooled budget (hasBudgetReport=false) — the "no pooled constraint"
+// sentinel that leaves the per-slot numbers unclamped. An authoritative zero
+// budget returns 0.
 func pooledRemainingTokens(pool pooledTokenBudget, pendingTokensAllModels int, pendingBytesAllModels int64, pendingBytesKnown bool, modelRate int64) int64 {
-	if pool.total <= 0 {
+	if !pool.hasBudgetReport {
 		return -1
+	}
+	if pool.total <= 0 {
+		return 0
 	}
 	if pool.byteMode && pendingBytesKnown {
 		rate := resolvedPooledKVBytesPerToken(pool, modelRate)

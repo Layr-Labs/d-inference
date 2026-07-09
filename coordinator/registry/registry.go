@@ -4499,6 +4499,9 @@ type providerCapSnap struct {
 	activeTokenBudgetMax  int64
 	activeTokenBudgetUsed int64
 	queuedTokenBudget     int64
+	// tokenBudgetKnownZero distinguishes an Engine V2 model whose positive KV
+	// rate makes max==0 authoritative from a legacy model that omitted both.
+	tokenBudgetKnownZero bool
 	// pooledBudgetRemaining is the provider's whole-box pooled token budget
 	// left after charging ALL models' coordinator-pending tokens — the same
 	// pool the admission gate (pooledBudgetAdmits) enforces, so this public
@@ -4629,6 +4632,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 					snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 					snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
 					snap.queuedTokenBudget = slot.QueuedTokenBudget
+					snap.tokenBudgetKnownZero = knownZeroTokenBudget(slot.ActiveTokenBudgetMax, slot.KVBytesPerToken)
 					snap.backlogTokens = float64(slot.MaxTokensPotential)
 					break
 				}
@@ -4695,7 +4699,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		// the -1 no-budget sentinel) counts as exhausted for every model on the
 		// box, cold ones included: the admission gate charges those against the
 		// shared pool too (freeMemoryAdmits' cold-slot pooled gate).
-		hasBudgetHeadroom := (s.activeTokenBudgetMax <= 0 ||
+		hasBudgetHeadroom := !s.tokenBudgetKnownZero && (s.activeTokenBudgetMax <= 0 ||
 			s.activeTokenBudgetUsed+s.queuedTokenBudget < s.activeTokenBudgetMax) &&
 			s.pooledBudgetRemaining != 0
 		if s.hasHeadroom && hasBudgetHeadroom {

@@ -51,6 +51,137 @@ func TestProviderPooledTokenBudgetClampsKVByteRate(t *testing.T) {
 	}
 }
 
+// TestPooledKnownZeroBudgetRejects distinguishes a modern Engine V2 slot whose
+// positive KV rate makes a zero budget authoritative from a legacy slot that
+// reports neither field. A live fleet clamp can truthfully drive the v2 token
+// budget to zero while KVBytesPerToken remains known; treating total==0 as the
+// legacy "no constraint" sentinel would fail open.
+func TestPooledKnownZeroBudgetRejects(t *testing.T) {
+	pool := providerPooledTokenBudget([]protocol.BackendSlotCapacity{
+		{Model: "known-full", ActiveTokenBudgetMax: 0, KVBytesPerToken: 800_000},
+	})
+	snap := routingSnapshot{
+		kvBytesPerToken:   800_000,
+		pendingBytesKnown: true,
+		pooledTokenBudget: pool,
+	}
+	if pooledBudgetAdmits(snap, 1) {
+		t.Fatal("known-zero Engine V2 budget admitted a request as if it were an unconstrained legacy slot")
+	}
+	if got := pooledRemainingTokens(pool, 0, 0, true, 800_000); got != 0 {
+		t.Fatalf("known-zero pooled remaining = %d, want 0", got)
+	}
+
+	legacy := providerPooledTokenBudget([]protocol.BackendSlotCapacity{{Model: "legacy"}})
+	legacySnap := routingSnapshot{pooledTokenBudget: legacy}
+	if !pooledBudgetAdmits(legacySnap, 1) {
+		t.Fatal("legacy slot with no budget or KV rate became constrained")
+	}
+	if got := pooledRemainingTokens(legacy, 0, 0, false, 0); got != -1 {
+		t.Fatalf("legacy pooled remaining = %d, want -1 no-constraint sentinel", got)
+	}
+}
+
+// TestPooledZeroBudgetResidentRateStaysSymmetric pins the mixed-slot case. A
+// resident v2 model can report a positive KV rate with a zero budget after the
+// live fleet clamp. Its rate must remain available even though the slot adds no
+// budget: pending aggregation, incoming admission, and ModelCapacitySnapshot
+// must all price that model at the same reported rate.
+func TestPooledZeroBudgetResidentRateStaysSymmetric(t *testing.T) {
+	const (
+		budgetedRate  = int64(10_000)
+		knownZeroRate = int64(800_000)
+	)
+	reg := New(testLogger())
+	p := makeSchedulerProvider(t, reg, "mixed-known-zero", gptossBuild, 93)
+	addAdvertisedModel(p, gemmaBuild)
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].State = "running"
+	p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 100_000
+	p.BackendCapacity.Slots[0].KVBytesPerToken = budgetedRate
+	p.BackendCapacity.Slots = append(p.BackendCapacity.Slots, protocol.BackendSlotCapacity{
+		Model:                gemmaBuild,
+		State:                "running",
+		ActiveTokenBudgetMax: 0,
+		KVBytesPerToken:      knownZeroRate,
+	})
+	pool := providerPooledTokenBudget(p.BackendCapacity.Slots)
+	p.mu.Unlock()
+
+	if got := pool.kvBytesPerToken[gemmaBuild]; got != knownZeroRate {
+		t.Fatalf("zero-budget resident KV rate = %d, want reported %d", got, knownZeroRate)
+	}
+
+	// Pending work for the zero-budget resident must use its real rate, not the
+	// 400 kB/token unknown-model default.
+	p.mu.Lock()
+	p.pendingReqs["known-zero-pending"] = &PendingRequest{
+		RequestID:          "known-zero-pending",
+		Model:              gemmaBuild,
+		RequestedMaxTokens: 1,
+	}
+	var pendingSnap routingSnapshot
+	fillSnapshotPendingAndPool(&pendingSnap, p, gemmaBuild)
+	delete(p.pendingReqs, "known-zero-pending")
+	p.mu.Unlock()
+	if !pendingSnap.pendingBytesKnown {
+		t.Fatal("zero-budget resident disabled byte accounting")
+	}
+	if got := pendingSnap.pendingMaxBytesAllModels; got != knownZeroRate {
+		t.Fatalf("zero-budget resident pending bytes = %d, want reported rate %d", got, knownZeroRate)
+	}
+
+	capacityForGemma := func() ModelCapacity {
+		t.Helper()
+		for _, capacity := range reg.ModelCapacitySnapshot() {
+			if capacity.ModelID == gemmaBuild {
+				return capacity
+			}
+		}
+		t.Fatalf("missing capacity row for %s", gemmaBuild)
+		return ModelCapacity{}
+	}
+
+	// The model-local zero is authoritative even while the co-resident model
+	// still exposes the full shared pool. The known-zero model must reject and
+	// stay non-routable; the positive-budget model remains usable.
+	if gemma := capacityForGemma(); gemma.Ready || gemma.RoutableProviders != 0 {
+		t.Fatalf("known-zero model with abundant pooled headroom = %+v, want not ready/routable", gemma)
+	}
+	if got := reg.ReserveProvider(gemmaBuild, &PendingRequest{
+		RequestID: "known-zero-probe", Model: gemmaBuild, RequestedMaxTokens: 1,
+	}); got != nil {
+		t.Fatalf("known-zero model admitted from co-resident pooled headroom on provider %q", got.ID)
+	}
+	if got := reg.ReserveProvider(gptossBuild, &PendingRequest{
+		RequestID: "positive-budget-probe", Model: gptossBuild, RequestedMaxTokens: 1,
+	}); got == nil {
+		t.Fatal("positive-budget co-resident was blocked by another model's known-zero budget")
+	} else {
+		got.RemovePending("positive-budget-probe")
+	}
+
+	// Leave 500 kB of the shared 1 GB pool. That fits one token only under the
+	// incorrect 400 kB default; the reported 800 kB rate yields zero capacity.
+	p.mu.Lock()
+	p.pendingReqs["small-kv-burst"] = &PendingRequest{
+		RequestID:          "small-kv-burst",
+		Model:              gptossBuild,
+		RequestedMaxTokens: 99_950,
+	}
+	p.mu.Unlock()
+
+	gemma := capacityForGemma()
+	if gemma.Ready || gemma.RoutableProviders != 0 {
+		t.Fatalf("zero-budget resident capacity = %+v, want not ready/routable with less than one reported-rate token left", gemma)
+	}
+	if got := reg.ReserveProvider(gemmaBuild, &PendingRequest{
+		RequestID: "probe", Model: gemmaBuild, RequestedMaxTokens: 1,
+	}); got != nil {
+		t.Fatalf("zero-budget resident admitted one 800 kB token into 500 kB headroom on provider %q", got.ID)
+	}
+}
+
 func TestProviderPooledTokenBudget(t *testing.T) {
 	cases := []struct {
 		name      string

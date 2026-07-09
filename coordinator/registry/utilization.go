@@ -124,11 +124,10 @@ func (n NetworkUtilization) Public() PublicNetworkUtilization {
 type FleetCapacity struct {
 	DecodeTPS  float64 // Σ per-provider rated decode tok/s (counted once)
 	BudgetUsed int64   // Σ per-provider committed (used+queued) token budget across slots
-	// BudgetTotal is Σ per-provider pooled token budget, where each provider's
-	// pool is its committed tokens plus the single shared KV headroom counted
-	// ONCE (slots on one machine share a unified-memory pool, so their reported
-	// per-slot maxes — each already committed+sharedHeadroom — are NOT additive).
-	// See providerTokenBudget for the reconstruction. BudgetUsed <= BudgetTotal.
+	// BudgetTotal is Σ per-provider pooled token budget. Legacy slot reports
+	// share one free-headroom view; v0.7.5+ slot reports are private re-sliced
+	// grants and add. See providerTokenBudgetForVersion. A live request may
+	// transiently leave BudgetUsed > BudgetTotal after a grant shrink.
 	BudgetTotal int64
 }
 
@@ -146,12 +145,10 @@ func (r *Registry) FleetCapacitySnapshot() FleetCapacity {
 			continue
 		}
 		fc.DecodeTPS += resolvedDecodeTPS(p)
-		// Reconstruct the provider's true pooled KV/token budget from its
-		// per-model slots. Slots on one machine share a single unified-memory
-		// pool, so their reported per-slot maxes are not additive; see
-		// providerTokenBudget.
+		// Reconstruct the provider's true pooled KV/token budget using the slot
+		// reporting layout shipped by its provider version.
 		if p.BackendCapacity != nil {
-			used, total := providerTokenBudget(p.BackendCapacity.Slots)
+			used, total := providerTokenBudgetForVersion(p.BackendCapacity.Slots, p.Version)
 			fc.BudgetUsed += used
 			fc.BudgetTotal += total
 		}
@@ -164,46 +161,49 @@ func (r *Registry) FleetCapacitySnapshot() FleetCapacity {
 // budget from its per-model backend slots, returning used and total token
 // budget for that single provider.
 //
-// A provider reports one slot per resident model, and each slot's
-// ActiveTokenBudgetMax is NOT a private per-slot cap: the provider computes it as
-// (that slot's own committed tokens) + the provider's SHARED live KV headroom,
-// where the headroom is a single unified-memory pool shared across every
-// co-resident model on the machine (provider side:
-// BatchScheduler+Telemetry.swift, tokenBudgetMax = activeTokenBudgetUsed +
-// sharedHeadroom; ProviderLoop.swift concatenates one slot per resident model
-// into the reported slots). So for two resident models A,B sharing headroom H:
-// maxA = usedA + H and maxB = usedB + H — the per-slot maxes are NOT additive,
-// and neither summing them nor taking the largest reconstructs the real pool.
+// Through v0.7.4, ActiveTokenBudgetMax is the slot's own commitment plus the
+// same shared live headroom every co-resident slot observes, so free headroom is
+// counted once. The v0.7.5 one-engine release instead reports the private grant
+// assigned by runtime KV re-slicing, so free grants add across slots. Both forms
+// reduce to the slot max on a single-model provider.
 //
-// The true pooled capacity is committed (which DOES add across slots, since each
-// model's reservations are distinct) plus the shared free headroom counted
-// exactly ONCE. All slots observe the same shared pool, so the largest observed
-// per-slot free is the live headroom. This makes used <= total by construction,
-// reduces exactly to the single slot's max for single-model providers, and
-// matches the per-model snapshot (registry.go) and the admission gate
-// (scheduler.go), which both treat each slot's budget independently.
-//
-// Slots that report no token budget (ActiveTokenBudgetMax <= 0) are ignored, and
-// negative per-slot committed values are floored at 0. A nil/empty slice (or a
-// provider whose slots all lack a budget) yields used=0, total=0.
+// In the legacy layout, slots without a positive maximum are ignored. In the
+// v0.7.5 private layout, a positive-rate known-zero slot contributes its live
+// use but no capacity, preserving an in-flight commitment after a grant shrink.
+// Negative values are floored. A nil/empty legacy slice yields used=0, total=0.
 func providerTokenBudget(slots []protocol.BackendSlotCapacity) (used, total int64) {
-	var committed, sharedFree int64
+	return providerTokenBudgetWithLayout(slots, sharedSlotHeadroom)
+}
+
+func providerTokenBudgetForVersion(slots []protocol.BackendSlotCapacity, version string) (used, total int64) {
+	return providerTokenBudgetWithLayout(slots, slotBudgetLayoutForVersion(version))
+}
+
+func providerTokenBudgetWithLayout(slots []protocol.BackendSlotCapacity, layout slotBudgetLayout) (used, total int64) {
+	var committed, pooledFree int64
+	var privateCapacity int64
 	for _, slot := range slots {
-		if slot.ActiveTokenBudgetMax <= 0 {
+		rate := clampKVBytesPerToken(slot.KVBytesPerToken)
+		if slot.ActiveTokenBudgetMax <= 0 && (layout != privateSlotGrants || rate <= 0) {
 			continue
 		}
-		slotCommitted := slot.ActiveTokenBudgetUsed + slot.QueuedTokenBudget
-		if slotCommitted < 0 {
-			slotCommitted = 0
+		slotCommitted := addNonnegativeSaturating(0, slot.ActiveTokenBudgetUsed)
+		slotCommitted = addNonnegativeSaturating(slotCommitted, slot.QueuedTokenBudget)
+		committed = addNonnegativeSaturating(committed, slotCommitted)
+		if layout == privateSlotGrants {
+			privateCapacity = addNonnegativeSaturating(
+				privateCapacity, slot.ActiveTokenBudgetMax)
+			continue
 		}
-		committed += slotCommitted
-		// Per-slot free headroom; all slots see the same shared pool, so the
-		// largest is the live shared headroom (counted once below).
-		if free := slot.ActiveTokenBudgetMax - slotCommitted; free > sharedFree {
-			sharedFree = free
+		free := slot.ActiveTokenBudgetMax - slotCommitted
+		if free > pooledFree {
+			pooledFree = free
 		}
 	}
-	return committed, committed + sharedFree
+	if layout == privateSlotGrants {
+		return committed, privateCapacity
+	}
+	return committed, addNonnegativeSaturating(committed, pooledFree)
 }
 
 // NetworkUtilizationSnapshot computes the fleet-wide utilization summary by

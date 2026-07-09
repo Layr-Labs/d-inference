@@ -320,6 +320,160 @@ func TestPooledAdmissionAllowsCoResidentWithinPool(t *testing.T) {
 	}
 }
 
+// TestPooledAdmissionV075PrivateGrantsPreserveCrossModelCapacity pins the
+// release boundary between the legacy scheduler's shared-headroom reports and
+// v0.7.5's one-engine re-sliced grants. In v0.7.5 each slot max is a private
+// engine ceiling, so two 10k slots expose 20k aggregate capacity while each
+// model still has its own 10k limit. Older providers report the same shared
+// headroom through every slot, so their two 10k views still represent one 10k
+// box-wide pool.
+func TestPooledAdmissionV075PrivateGrantsPreserveCrossModelCapacity(t *testing.T) {
+	configure := func(version, id string) (*Registry, *Provider) {
+		reg := New(testLogger())
+		p := makeSchedulerProvider(t, reg, id, gptossBuild, 93)
+		addAdvertisedModel(p, gemmaBuild)
+		p.mu.Lock()
+		p.Version = version
+		p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 10_000
+		p.BackendCapacity.Slots[0].KVBytesPerToken = 100_000
+		p.BackendCapacity.Slots = append(p.BackendCapacity.Slots, protocol.BackendSlotCapacity{
+			Model:                gemmaBuild,
+			State:                "running",
+			ActiveTokenBudgetMax: 10_000,
+			KVBytesPerToken:      100_000,
+		})
+		p.mu.Unlock()
+		return reg, p
+	}
+	reserve := func(reg *Registry, model, id string, tokens int) *Provider {
+		return reg.ReserveProvider(model, &PendingRequest{
+			RequestID:             id,
+			Model:                 model,
+			EstimatedPromptTokens: 100,
+			RequestedMaxTokens:    tokens - 100,
+		})
+	}
+
+	v075, _ := configure("0.7.5", "private-box")
+	if got := reserve(v075, gptossBuild, "private-a", 8_000); got == nil {
+		t.Fatal("v0.7.5 model A rejected despite fitting its private 10k grant")
+	}
+	if got := reserve(v075, gemmaBuild, "private-b", 8_000); got == nil {
+		t.Fatal("v0.7.5 model B rejected: private 10k grants were collapsed into one shared pool")
+	}
+	if got := reserve(v075, gemmaBuild, "private-b-overflow", 3_000); got != nil {
+		t.Fatalf("v0.7.5 model B exceeded its private 10k grant on provider %q", got.ID)
+	}
+
+	legacy, _ := configure("0.7.4", "shared-box-control")
+	if got := reserve(legacy, gptossBuild, "shared-a", 8_000); got == nil {
+		t.Fatal("v0.7.4 model A rejected despite fitting the shared 10k pool")
+	}
+	if got := reserve(legacy, gemmaBuild, "shared-b", 8_000); got != nil {
+		t.Fatalf("v0.7.4 model B double-spent the shared 10k pool on provider %q", got.ID)
+	}
+}
+
+func TestSlotBudgetLayoutForVersionHandlesReleaseSuffixes(t *testing.T) {
+	cases := []struct {
+		version string
+		want    slotBudgetLayout
+	}{
+		{version: "0.7.4", want: sharedSlotHeadroom},
+		{version: "0.7.5", want: privateSlotGrants},
+		{version: "0.7.5-dev.1", want: privateSlotGrants},
+		{version: "v0.7.5-rc1", want: privateSlotGrants},
+		{version: "0.7.5+build.9", want: privateSlotGrants},
+	}
+	for _, tc := range cases {
+		t.Run(tc.version, func(t *testing.T) {
+			if got := slotBudgetLayoutForVersion(tc.version); got != tc.want {
+				t.Fatalf("slotBudgetLayoutForVersion(%q) = %v, want %v", tc.version, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPrivateGrantPoolUsesCeilingsWhenLiveUseExceedsReslice(t *testing.T) {
+	const rate int64 = 100_000
+	tests := []struct {
+		name       string
+		slots      []protocol.BackendSlotCapacity
+		wantUsed   int64
+		wantTotal  int64
+		wantRemain int64
+	}{
+		{
+			name: "shrunken slot remains over its new ceiling",
+			slots: []protocol.BackendSlotCapacity{
+				{Model: "a", ActiveTokenBudgetMax: 5_000, ActiveTokenBudgetUsed: 8_000, KVBytesPerToken: rate},
+				{Model: "b", ActiveTokenBudgetMax: 5_000, KVBytesPerToken: rate},
+			},
+			wantUsed:   8_000,
+			wantTotal:  10_000,
+			wantRemain: 2_000,
+		},
+		{
+			name: "known-zero slot live use drains a co-resident grant",
+			slots: []protocol.BackendSlotCapacity{
+				{Model: "a", ActiveTokenBudgetMax: 0, ActiveTokenBudgetUsed: 3_000, KVBytesPerToken: rate},
+				{Model: "b", ActiveTokenBudgetMax: 5_000, KVBytesPerToken: rate},
+			},
+			wantUsed:   3_000,
+			wantTotal:  5_000,
+			wantRemain: 2_000,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := providerPooledTokenBudgetForVersion(tc.slots, "0.7.5")
+			if pool.used != tc.wantUsed || pool.total != tc.wantTotal {
+				t.Fatalf("token pool = {used:%d total:%d}, want {%d %d}",
+					pool.used, pool.total, tc.wantUsed, tc.wantTotal)
+			}
+			if pool.usedBytes != tc.wantUsed*rate || pool.totalBytes != tc.wantTotal*rate {
+				t.Fatalf("byte pool = {used:%d total:%d}, want {%d %d}",
+					pool.usedBytes, pool.totalBytes, tc.wantUsed*rate, tc.wantTotal*rate)
+			}
+			if got := pooledRemainingTokens(pool, 0, 0, true, rate); got != tc.wantRemain {
+				t.Fatalf("remaining = %d, want %d", got, tc.wantRemain)
+			}
+			snap := routingSnapshot{
+				kvBytesPerToken:   rate,
+				pendingBytesKnown: true,
+				pooledTokenBudget: pool,
+			}
+			if !pooledBudgetAdmits(snap, tc.wantRemain) {
+				t.Fatalf("rejected exact remaining capacity %d", tc.wantRemain)
+			}
+			if pooledBudgetAdmits(snap, tc.wantRemain+1) {
+				t.Fatalf("admitted past remaining capacity %d", tc.wantRemain)
+			}
+		})
+	}
+}
+
+func TestPrivateGrantPoolSaturatesUsedBudgetAddition(t *testing.T) {
+	pool := providerPooledTokenBudgetForVersion([]protocol.BackendSlotCapacity{{
+		Model:                 "overflow",
+		ActiveTokenBudgetMax:  math.MaxInt64,
+		ActiveTokenBudgetUsed: math.MaxInt64,
+		QueuedTokenBudget:     1,
+		KVBytesPerToken:       1,
+	}}, "0.7.5")
+	if pool.used != math.MaxInt64 || pool.usedBytes != math.MaxInt64 {
+		t.Fatalf("overflowed used budget = {tokens:%d bytes:%d}, want saturated MaxInt64",
+			pool.used, pool.usedBytes)
+	}
+	if pooledBudgetAdmits(routingSnapshot{
+		kvBytesPerToken:   1,
+		pendingBytesKnown: true,
+		pooledTokenBudget: pool,
+	}, 1) {
+		t.Fatal("overflowed live use left invented private-grant headroom")
+	}
+}
+
 // TestFreeMemoryAdmitsSingleModelUnchanged pins that the pooled check is
 // arithmetically inert for single-model providers: for one budget slot the
 // pool reduces to that slot's own budget and the admission boundary is

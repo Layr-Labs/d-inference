@@ -4505,11 +4505,9 @@ type providerCapSnap struct {
 	// pooledBudgetRemaining is the provider's whole-box pooled token budget
 	// left after charging ALL models' coordinator-pending tokens — the same
 	// pool the admission gate (pooledBudgetAdmits) enforces, so this public
-	// capacity feed cannot advertise per-slot headroom dispatch would reject:
-	// co-resident slots each re-report the ONE shared KV headroom, and an
-	// in-gap burst to model A is invisible to model B's slot fields until the
-	// next heartbeat. -1 = provider reports no pooled budget (legacy), which
-	// leaves the per-slot numbers unclamped.
+	// capacity feed cannot advertise per-slot headroom dispatch would reject.
+	// Reconstruction counts legacy shared headroom once and v0.7.5+ private
+	// grants additively. -1 means no pooled budget report.
 	pooledBudgetRemaining int64
 }
 
@@ -4683,10 +4681,9 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			if headroom < 0 {
 				headroom = 0
 			}
-			// Per-slot headroom cannot exceed the provider's pooled remaining:
-			// each co-resident slot re-reports the ONE shared KV headroom, so
-			// in-gap pending to another model already spent it. Without the
-			// clamp this surface advertises capacity pooledBudgetAdmits rejects.
+			// Per-slot headroom cannot exceed the provider's pooled remaining
+			// after all-model pending charges. Without the clamp this surface can
+			// advertise capacity pooledBudgetAdmits rejects.
 			if s.pooledBudgetRemaining >= 0 && headroom > s.pooledBudgetRemaining {
 				headroom = s.pooledBudgetRemaining
 			}
@@ -4698,7 +4695,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		// model appear immediately ready. An exhausted POOLED budget (0 — not
 		// the -1 no-budget sentinel) counts as exhausted for every model on the
 		// box, cold ones included: the admission gate charges those against the
-		// shared pool too (freeMemoryAdmits' cold-slot pooled gate).
+		// whole-box pool too (freeMemoryAdmits' cold-slot pooled gate).
 		hasBudgetHeadroom := !s.tokenBudgetKnownZero && (s.activeTokenBudgetMax <= 0 ||
 			s.activeTokenBudgetUsed+s.queuedTokenBudget < s.activeTokenBudgetMax) &&
 			s.pooledBudgetRemaining != 0

@@ -124,15 +124,18 @@ public actor StandaloneServer {
     struct V2TestHooks: Sendable {
         let physicalMemoryBytes: UInt64?
         let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
+        let beforeWeightLoad: (@Sendable (String) async throws -> Void)?
         let makeEngine: @Sendable (String, Int) throws -> any CBv2Engine
 
         init(
             physicalMemoryBytes: UInt64? = nil,
             emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
+            beforeWeightLoad: (@Sendable (String) async throws -> Void)? = nil,
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
         ) {
             self.physicalMemoryBytes = physicalMemoryBytes
             self.emitTelemetry = emitTelemetry
+            self.beforeWeightLoad = beforeWeightLoad
             self.makeEngine = makeEngine
         }
     }
@@ -175,8 +178,8 @@ public actor StandaloneServer {
         // operator-facing error and refuses to start when nothing remains.
         self.models = Self.filterSupported(models)
         self.kvBudget = GlobalKVCacheBudget()
-        // The on-disk KV tier is RETIRED (v0.7.5; RAM-only v2 prefix
-        // cache — T-041). Sweep the legacy directory at startup.
+        // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
+        // EngineV2 SSD data lives under the separate `darkbloom/kv2` root.
         LegacyKVCacheSweeper.sweep()
         // Pin the MLX memory ceiling before any model weights load on this path
         // (the coordinator path does this in ProviderLoop.startMemoryProtection).
@@ -307,6 +310,10 @@ public actor StandaloneServer {
 
     func debugSlotReservationCount(modelId: String) -> Int {
         slotReservations[modelId] ?? 0
+    }
+
+    func debugOutstandingKVReservationBytes() async -> UInt64 {
+        await kvBudget.outstandingReservedBytes()
     }
 
     /// The resident slot's engine KV grant in bytes (re-slice assertions).
@@ -923,6 +930,7 @@ public actor StandaloneServer {
         }
         isLoadingAny = true
 
+        let pendingLoadID = "pending-load:\(modelId)"
         modelsLoading.insert(modelId)
         do {
             try Task.checkCancellation()
@@ -935,6 +943,19 @@ public actor StandaloneServer {
                     headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
             )
             try Task.checkCancellation()
+
+            // Keep incoming weights visible to the process-wide KV ledger while
+            // loadContainer is suspended. Existing-model requests continue to
+            // serve during this await and must not reserve the same headroom.
+            let pendingLoadGiB = modelInfo.estimatedMemoryGb * 1_073_741_824
+            let pendingLoadBytes: UInt64 =
+                pendingLoadGiB.isFinite && pendingLoadGiB > 0
+                ? (pendingLoadGiB >= Double(UInt64.max) ? .max : UInt64(pendingLoadGiB))
+                : 0
+            await kvBudget.reservePendingLoad(
+                requestID: pendingLoadID, bytes: pendingLoadBytes)
+
+            try await v2TestHooks?.beforeWeightLoad?(modelId)
             // Hard-fail without Metal: CPU inference is not acceptable, and
             // with no legacy engine left this is a load failure, not a log
             // line (mirrors ProviderLoop.ensureModelLoaded).
@@ -957,6 +978,9 @@ public actor StandaloneServer {
                 container: newcomer.borrow(),
                 modelPath: modelPath,
                 fallbackDefaultMaxTokens: Self.slotDefaultMaxTokens)
+            // The loaded weights are now reflected in MLX memory, so transfer
+            // accounting from the pending estimate to the live memory snapshot.
+            await kvBudget.release(requestID: pendingLoadID)
             let tokenizer: TokenizerHandle = try await newcomer.borrow().perform { ctx in
                 TokenizerHandle(ctx.tokenizer)
             }
@@ -1064,6 +1088,9 @@ public actor StandaloneServer {
         } catch {
             modelsLoading.remove(modelId)
             isLoadingAny = false
+            // Idempotent when the reservation was never placed or was already
+            // handed off to MLX's live-memory view after a successful load.
+            await kvBudget.release(requestID: pendingLoadID)
             // Release pool buffers a failed load left behind.
             MLX.Memory.clearCache()
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {

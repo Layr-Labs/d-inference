@@ -77,17 +77,16 @@ type routingSnapshot struct {
 	// pendingMaxTokensAllModels is pendingMaxTokens WITHOUT the model filter:
 	// the token budgets of every coordinator-pending request on this provider,
 	// any model. Feeds the pooled-budget admission check (pooledBudgetAdmits)
-	// so co-resident models cannot double-spend the one shared KV pool inside
-	// the heartbeat gap.
+	// so co-resident models cannot double-spend shared legacy headroom and do
+	// not lose additive private-grant capacity on v0.7.5+ providers.
 	pendingMaxTokensAllModels int
 	// pendingMaxBytesAllModels is the byte-normalized analog: each pending
 	// request's token budget × its model's reported KVBytesPerToken. Valid
 	// only when pendingBytesKnown. A cold request without a reported model rate
 	// is charged at the bounded conservative default (see
 	// fillSnapshotPendingAndPool), so it cannot disable byte accounting for a
-	// reconstructable pool. Co-resident models spend the ONE shared pool at
-	// different per-token byte rates, so tokens are not a common unit across
-	// models (pooled_admission.go).
+	// reconstructable pool. Co-resident models have different per-token byte
+	// rates, so tokens are not a common unit across models (pooled_admission.go).
 	pendingMaxBytesAllModels int64
 	pendingBytesKnown        bool
 	backendRunning           int
@@ -114,7 +113,7 @@ type routingSnapshot struct {
 	activeTokenBudgetMax  int64
 	queuedTokenBudget     int64
 	// pooledTokenBudget is the provider's reconstructed whole-box token budget
-	// (all budget slots; shared headroom counted once — providerPooledTokenBudget).
+	// (all budget slots; layout selected from the provider release version).
 	// Zero value when the provider reports no backend capacity / no budget
 	// slots, which disables the pooled admission check.
 	pooledTokenBudget pooledTokenBudget
@@ -1255,12 +1254,10 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 		if snap.activeTokenBudgetUsed+snap.queuedTokenBudget+coordinatorExtra+requestTokens > snap.activeTokenBudgetMax {
 			return false
 		}
-		// The per-slot max still encodes this model's own context/KV ceiling, but
-		// it is NOT a private budget: co-resident slots share the box's ONE KV
-		// pool (each slot's max = own committed + the SAME shared headroom), so a
-		// burst admitted against model A within the heartbeat gap is invisible to
-		// model B's slot max until the next heartbeat. The request must therefore
-		// also fit the reconstructed whole-box pool with EVERY model's
+		// The per-slot max encodes this model's own context/KV ceiling. Through
+		// v0.7.4 each slot embeds the same shared headroom; v0.7.5+ reports a
+		// private re-sliced grant. The request must also fit the correctly
+		// reconstructed whole-box pool with EVERY model's
 		// coordinator-pending tokens charged — byte-normalized per slot KV rate
 		// when reported, since co-resident models spend the pool at different
 		// bytes/token (see pooled_admission.go). Reduces exactly to the per-slot
@@ -1269,9 +1266,8 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	}
 
 	// Cold-slot pooled gate: this model reports no budget slot (not loaded
-	// here), but when ANY resident slot reports a token budget the box still
-	// has its ONE shared KV pool, and this request lands in it after the
-	// load — so in-gap pending on a resident model must not be double-spendable
+	// here), but when ANY resident slot reports a token budget this request lands
+	// in the same box after load. In-gap pending on a resident model must not be double-spendable
 	// by a cold request that skips the budget branch above. The reconstructed
 	// pool charges all-models coordinator pending plus this request; a cold
 	// model has no reported KV rate (snap.kvBytesPerToken == 0), so on a
@@ -1351,7 +1347,8 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 // p.mu.
 func fillSnapshotPendingAndPool(snap *routingSnapshot, p *Provider, model string) {
 	if p.BackendCapacity != nil {
-		snap.pooledTokenBudget = providerPooledTokenBudget(p.BackendCapacity.Slots)
+		snap.pooledTokenBudget = providerPooledTokenBudgetForVersion(
+			p.BackendCapacity.Slots, p.Version)
 	}
 	bytesKnown := snap.pooledTokenBudget.byteMode
 	for _, pr := range p.pendingReqs {

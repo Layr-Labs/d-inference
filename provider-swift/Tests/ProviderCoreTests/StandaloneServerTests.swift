@@ -509,6 +509,55 @@ private final class StandaloneGrantRecorder: @unchecked Sendable {
     }
 }
 
+private struct StandalonePendingLoadObservation: Error {
+    let reservedBytes: UInt64
+}
+
+private func makeStandaloneFakeHFSnapshot(modelId: String) throws -> URL {
+    let cacheDir = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
+    let modelDir = cacheDir.appendingPathComponent(
+        "models--\(modelId.replacingOccurrences(of: "/", with: "--"))", isDirectory: true)
+    let snapshot = modelDir
+        .appendingPathComponent("snapshots", isDirectory: true)
+        .appendingPathComponent("main", isDirectory: true)
+    try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+    try Data("{}".utf8).write(to: snapshot.appendingPathComponent("config.json"))
+    return modelDir
+}
+
+@Test func standalonePendingLoadReservesWeightsBeforeAwaitingContainer() async throws {
+    let modelId = "darkbloom-tests/standalone-pending-\(UUID().uuidString.prefix(8))"
+    let fakeDir = try makeStandaloneFakeHFSnapshot(modelId: modelId)
+    defer { try? FileManager.default.removeItem(at: fakeDir) }
+
+    let estimatedMemoryGb = 0.25
+    let expectedBytes = UInt64(estimatedMemoryGb * 1_073_741_824)
+    let server = standaloneTestServer(models: [
+        ModelInfo(
+            id: modelId,
+            modelType: "gemma4",
+            quantization: "4bit",
+            sizeBytes: 1,
+            estimatedMemoryGb: estimatedMemoryGb)
+    ])
+    await server.setV2TestHooksForTesting(
+        StandaloneServer.V2TestHooks(
+            beforeWeightLoad: { _ in
+                throw StandalonePendingLoadObservation(
+                    reservedBytes: await server.debugOutstandingKVReservationBytes())
+            },
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+
+    do {
+        try await server.ensureModelLoaded(modelId)
+        Issue.record("expected the pre-weight-load observation to stop the fake load")
+    } catch let observation as StandalonePendingLoadObservation {
+        #expect(observation.reservedBytes == expectedBytes)
+    }
+    #expect(await server.debugOutstandingKVReservationBytes() == 0)
+}
+
 @Test func standaloneAcquireReturnsV2Entry() async throws {
     let server = standaloneTestServer(models: [
         ModelInfo(

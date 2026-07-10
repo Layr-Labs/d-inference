@@ -70,6 +70,36 @@ impl PostgresLedgerStub {
         "#
     }
 
+    /// Mark start_authorized without resizing (same-amount fund path).
+    /// Parameters: $1 job_id, $2 operation_key
+    pub fn mark_start_authorized_sql() -> &'static str {
+        r#"
+        WITH job AS (
+          SELECT job_id, state, terminal_disposition
+          FROM rust_coord.inference_jobs
+          WHERE job_id = $1
+          FOR UPDATE
+        ), guard AS (
+          SELECT 1 FROM job
+          WHERE terminal_disposition IS NULL
+            AND state = 'reserved'
+        ), mark AS (
+          UPDATE rust_coord.inference_jobs j
+          SET state = 'start_authorized',
+              updated_at = NOW()
+          WHERE j.job_id = $1
+            AND EXISTS (SELECT 1 FROM guard)
+          RETURNING j.job_id
+        ), op AS (
+          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
+          VALUES ($2, $1, 'start_authorize', 0)
+          ON CONFLICT (operation_key) DO NOTHING
+          RETURNING operation_key
+        )
+        SELECT job_id FROM mark
+        "#
+    }
+
     /// Resize reservation + mark start_authorized in one round-trip (plan §12).
     /// Parameters: $1 account, $2 job_id, $3 new_amount, $4 operation_key
     pub fn resize_and_authorize_sql() -> &'static str {
@@ -287,6 +317,16 @@ mod tests {
         assert!(sql.contains("resize_authorize"));
         assert!(sql.contains("FOR UPDATE"));
         assert!(sql.contains("financial_operations"));
+    }
+
+    #[test]
+    fn mark_start_authorized_sql_requires_reserved() {
+        let sql = PostgresLedgerStub::mark_start_authorized_sql();
+        assert!(sql.contains("rust_coord.inference_jobs"));
+        assert!(sql.contains("start_authorized"));
+        assert!(sql.contains("start_authorize"));
+        assert!(sql.contains("state = 'reserved'"));
+        assert!(sql.contains("FOR UPDATE"));
     }
 
     #[test]

@@ -569,15 +569,17 @@ async fn chat_completions(
                         OutboundCmd::Text(ack.to_string()),
                     );
                     if req.stream {
-                        // Stream through ChunkCheckpoint so billable tokens track
-                        // last-accepted sequence (plan §10.6).
+                        // Sequenced pipe → ChunkCheckpoint linearizes billable tokens.
+                        let (pipe, _reader) = crate::chunk_pipe::bounded_chunk_pipe(16, 64 * 1024);
                         let mut cp = ChunkCheckpoint::default();
                         let tokens = completion.completion_tokens.max(0) as u64;
-                        if let darkbloom_core::ChunkAccept::Accepted(next) =
-                            cp.accept(1, tokens, completion.terminal_digest.clone())
-                        {
-                            cp = next;
-                        }
+                        let _ = crate::stream_billing::pipe_and_checkpoint(
+                            &pipe,
+                            &mut cp,
+                            completion.content.as_bytes(),
+                            tokens,
+                            &completion.terminal_digest,
+                        );
                         let billable = cp.billable_completion_tokens() as i32;
                         let mut streamed = completion;
                         streamed.completion_tokens = billable;

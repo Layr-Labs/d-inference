@@ -16,6 +16,7 @@ pub mod provider_ws;
 pub mod recovery;
 pub mod request_task;
 pub mod sealed;
+pub mod stream_billing;
 pub mod telemetry;
 
 pub use abort::{abort_frame, abort_losing_hedge, cancel_attempt, cancel_frame};
@@ -30,6 +31,7 @@ pub use provider_session::{spawn_session, Lane, ProviderSessionHandle, SessionEr
 pub use recovery::{recover_undispatched, RecoveryAction};
 pub use request_task::{spawn_request_task, ControlEvent, RequestTaskHandle};
 pub use sealed::decrypt_request_body;
+pub use stream_billing::{accept_pipe_chunk, billable_cap_from_checkpoint, pipe_and_checkpoint};
 pub use telemetry::{bounded_telemetry, TelemetryEvent, TelemetrySink};
 
 pub fn version() -> &'static str {

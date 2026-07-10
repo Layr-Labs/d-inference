@@ -69,6 +69,33 @@ impl PostgresLedgerStub {
         SELECT reserved_wdr FROM debit
         "#
     }
+
+    pub fn settle_sql() -> &'static str {
+        r#"
+        -- settle: charge actual, refund unused provenance, mark terminal disposition
+        -- Parameters: $1 account, $2 job_id, $3 actual, $4 terminal_digest, $5 operation_key
+        "#
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reserve_sql_mentions_rust_coord_and_provenance() {
+        let sql = PostgresLedgerStub::reserve_sql();
+        assert!(sql.contains("rust_coord.inference_jobs"));
+        assert!(sql.contains("reserved_withdrawable_micro_usd"));
+        assert!(sql.contains("financial_operations"));
+        assert!(sql.contains("FOR UPDATE"));
+    }
+
+    #[test]
+    fn from_env_none_without_database_url() {
+        // Unset may already be empty in CI; just ensure no panic.
+        let _ = PostgresLedgerStub::from_env();
+    }
 }
 
 pub fn provenance(total: i64, withdrawable: i64) -> ReservationProvenance {

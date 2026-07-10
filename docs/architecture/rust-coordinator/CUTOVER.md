@@ -686,3 +686,10 @@ force-settle remain filter-scoped so foreign money is untouched, but foreign
 orphans no longer report `needs_adopt` after a filtered clear — subsequent
 force-settle/recover works without a separate adopt-jobs call.
 
+### Concurrent filtered clear conservation (DECISIONS #122)
+
+Concurrent clear-orphans/cutover-drain with disjoint `account` filters each
+adopt-all then settle only their lane; total settled equals orphan count and
+each ledger is conserved. Deposits to a foreign account during a filtered clear
+apply exactly once; the foreign hold can then be force-settled without adopt.
+

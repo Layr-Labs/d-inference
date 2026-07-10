@@ -1,0 +1,28 @@
+//! Golden JSON fixtures for protocol v2 frames.
+
+#[test]
+fn prepare_golden_parses() {
+    let raw = include_str!("fixtures/prepare.json");
+    let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(v["type"], "prepare");
+    assert_eq!(v["session_epoch"], 3);
+    assert_eq!(v["model"], "pilot-text-model");
+}
+
+#[test]
+fn prepared_golden_parses() {
+    let raw = include_str!("fixtures/prepared.json");
+    let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(v["type"], "prepared");
+    assert_eq!(v["lease_ttl_ms"], 15000);
+    assert_eq!(v["prefill_can_begin"], true);
+}
+
+#[test]
+fn terminal_golden_parses() {
+    let raw = include_str!("fixtures/provider_terminal.json");
+    let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(v["type"], "provider_terminal");
+    assert_eq!(v["outcome"], "completed");
+    assert_eq!(v["terminal_digest"], "sha256:terminal");
+}

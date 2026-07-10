@@ -50,6 +50,31 @@ pub fn apply_stripe_deposit(
     }
 }
 
+/// Documented SQL for durable Stripe deposit apply (mirrors apply_stripe_deposit).
+/// Parameters: $1 source, $2 event_id, $3 account, $4 total, $5 withdrawable, $6 payload_digest
+pub fn deposit_sql() -> &'static str {
+    r#"
+    WITH evt AS (
+      INSERT INTO rust_coord.external_events (source, event_id, payload_digest)
+      VALUES ($1, $2, $6)
+      ON CONFLICT (source, event_id) DO NOTHING
+      RETURNING source, event_id
+    ), credit AS (
+      UPDATE balances b
+      SET balance_micro_usd = b.balance_micro_usd + $4,
+          withdrawable_micro_usd = b.withdrawable_micro_usd + $5,
+          updated_at = NOW()
+      WHERE b.account_id = $3
+        AND EXISTS (SELECT 1 FROM evt)
+        AND $4::bigint > 0
+        AND $5::bigint >= 0
+        AND $5::bigint <= $4::bigint
+      RETURNING b.balance_micro_usd, b.withdrawable_micro_usd
+    )
+    SELECT balance_micro_usd, withdrawable_micro_usd FROM credit
+    "#
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +148,14 @@ mod tests {
         )
         .unwrap());
         assert_eq!(led.balance("a"), (50, 10));
+    }
+
+    #[test]
+    fn deposit_sql_is_idempotent_external_event() {
+        let sql = deposit_sql();
+        assert!(sql.contains("rust_coord.external_events"));
+        assert!(sql.contains("ON CONFLICT"));
+        assert!(sql.contains("balances"));
+        assert!(sql.contains("withdrawable_micro_usd"));
     }
 }

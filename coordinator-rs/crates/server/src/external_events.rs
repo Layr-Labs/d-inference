@@ -38,6 +38,12 @@ impl ExternalEventInbox {
             .contains(&(source.to_string(), event_id.to_string()))
     }
 
+    /// Remove a previously observed key (compensate after a failed side effect).
+    pub fn forget(&mut self, source: &str, event_id: &str) -> bool {
+        self.seen
+            .remove(&(source.to_string(), event_id.to_string()))
+    }
+
     pub fn len(&self) -> usize {
         self.seen.len()
     }

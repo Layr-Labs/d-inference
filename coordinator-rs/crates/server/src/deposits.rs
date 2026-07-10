@@ -16,6 +16,9 @@ pub enum DepositError {
 
 /// Apply a Stripe deposit once per `(source, event_id)`.
 /// Returns `true` if credit was applied, `false` on replay.
+///
+/// Kill-boundary: amounts are validated **before** observe so a failed credit
+/// cannot permanently consume the event id (mirrors one-txn Postgres apply).
 pub fn apply_stripe_deposit(
     inbox: &mut ExternalEventInbox,
     ledger: &mut MemoryLedger,
@@ -25,11 +28,26 @@ pub fn apply_stripe_deposit(
     total: i64,
     withdrawable: i64,
 ) -> Result<bool, DepositError> {
+    if total <= 0 || withdrawable < 0 {
+        return Err(DepositError::Ledger(LedgerError::InvalidAmount));
+    }
+    if withdrawable > total {
+        return Err(DepositError::Ledger(LedgerError::Conflict(
+            "withdrawable exceeds total credit".into(),
+        )));
+    }
     if !inbox.observe(source, event_id)? {
         return Ok(false);
     }
-    ledger.credit(account, total, withdrawable)?;
-    Ok(true)
+    match ledger.credit(account, total, withdrawable) {
+        Ok(()) => Ok(true),
+        Err(err) => {
+            // Should be unreachable after pre-validation; compensate observe
+            // so the event id is not permanently poisoned.
+            let _ = inbox.forget(source, event_id);
+            Err(DepositError::Ledger(err))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -71,5 +89,39 @@ mod tests {
         apply_stripe_deposit(&mut inbox, &mut led, "stripe", "e1", "a", 100, 50).unwrap();
         apply_stripe_deposit(&mut inbox, &mut led, "stripe", "e2", "a", 200, 100).unwrap();
         assert_eq!(led.balance("a"), (300, 150));
+    }
+
+    #[test]
+    fn invalid_amount_rejected_before_observe() {
+        let mut inbox = ExternalEventInbox::new();
+        let mut led = MemoryLedger::default();
+        assert!(matches!(
+            apply_stripe_deposit(&mut inbox, &mut led, "stripe", "bad", "a", -1, 0),
+            Err(DepositError::Ledger(LedgerError::InvalidAmount))
+        ));
+        assert!(matches!(
+            apply_stripe_deposit(&mut inbox, &mut led, "stripe", "bad2", "a", 100, 200),
+            Err(DepositError::Ledger(LedgerError::Conflict(_)))
+        ));
+        assert!(matches!(
+            apply_stripe_deposit(&mut inbox, &mut led, "stripe", "bad3", "a", 0, 0),
+            Err(DepositError::Ledger(LedgerError::InvalidAmount))
+        ));
+        // Event ids must not be consumed on validation failure.
+        assert!(!inbox.contains("stripe", "bad"));
+        assert!(!inbox.contains("stripe", "bad2"));
+        assert!(!inbox.contains("stripe", "bad3"));
+        // Same ids can still succeed after a valid amount.
+        assert!(apply_stripe_deposit(
+            &mut inbox,
+            &mut led,
+            "stripe",
+            "bad",
+            "a",
+            50,
+            10
+        )
+        .unwrap());
+        assert_eq!(led.balance("a"), (50, 10));
     }
 }

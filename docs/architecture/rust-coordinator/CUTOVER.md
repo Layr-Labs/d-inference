@@ -78,3 +78,9 @@ wired. Do **not** call `release` on start_authorized jobs.
 `apply_stripe_deposit` validates amounts **before** consuming the
 `(source, event_id)` key. If credit still fails after observe, `forget`
 restores the key so a retry can succeed. Durable shape: `deposit_sql()`.
+
+### Stream settle clamp (DECISIONS #23)
+
+`settle_capped` charges `min(actual, billable_cap, reserved)`. Ops
+`force_settle_held` uses the same clamp so an over-sized review amount
+never fail-closes a held job. SQL: `settle_capped_sql()` / `force_settle_sql()`.

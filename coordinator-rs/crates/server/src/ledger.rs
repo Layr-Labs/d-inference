@@ -61,10 +61,19 @@ pub struct AttemptRecord {
 }
 
 impl MemoryLedger {
-    pub fn credit(&mut self, account: &str, total: i64, withdrawable: i64) {
+    pub fn credit(&mut self, account: &str, total: i64, withdrawable: i64) -> Result<(), LedgerError> {
+        if total < 0 || withdrawable < 0 {
+            return Err(LedgerError::InvalidAmount);
+        }
+        if withdrawable > total {
+            return Err(LedgerError::Conflict(
+                "withdrawable exceeds total credit".into(),
+            ));
+        }
         let e = self.balances.entry(account.to_string()).or_insert((0, 0));
         e.0 += total;
         e.1 += withdrawable;
+        Ok(())
     }
 
     pub fn reserve(
@@ -273,8 +282,8 @@ mod tests {
     #[test]
     fn reserve_consumes_nonwithdrawable_first() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 10_000_000, 0);
-        led.credit("a", 5_000_000, 5_000_000);
+        led.credit("a", 10_000_000, 0).unwrap();
+        led.credit("a", 5_000_000, 5_000_000).unwrap();
         let res = led
             .reserve(OperationKey("op1".into()), "j1", "a", 12_000_000)
             .unwrap();
@@ -290,7 +299,7 @@ mod tests {
     #[test]
     fn reserve_idempotent_on_operation_key() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 5_000_000, 0);
+        led.credit("a", 5_000_000, 0).unwrap();
         let r1 = led
             .reserve(OperationKey("op".into()), "j", "a", 1_000_000)
             .unwrap();
@@ -304,7 +313,7 @@ mod tests {
     #[test]
     fn settle_refunds_unused_and_is_idempotent() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 10_000_000, 4_000_000);
+        led.credit("a", 10_000_000, 4_000_000).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 5_000_000)
             .unwrap();
         led.mark_start_authorized("j").unwrap();
@@ -327,7 +336,7 @@ mod tests {
     #[test]
     fn at_most_one_funded_start_per_job() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 1_000_000, 0);
+        led.credit("a", 1_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 100_000)
             .unwrap();
         led.mark_start_authorized("j").unwrap();
@@ -341,7 +350,7 @@ mod tests {
     #[test]
     fn settle_capped_respects_billable_cap() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 10_000_000, 0);
+        led.credit("a", 10_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 5_000_000)
             .unwrap();
         led.mark_start_authorized("j").unwrap();
@@ -363,7 +372,7 @@ mod tests {
     #[test]
     fn release_is_idempotent_on_operation_key() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 5_000_000, 0);
+        led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 2_000_000)
             .unwrap();
         assert!(led
@@ -380,7 +389,7 @@ mod tests {
     #[test]
     fn settle_rejects_conflicting_terminal_digest() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 5_000_000, 0);
+        led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r1".into()), "j1", "a", 1_000_000)
             .unwrap();
         led.mark_start_authorized("j1").unwrap();
@@ -400,7 +409,7 @@ mod tests {
     #[test]
     fn settle_same_job_digest_replay_is_idempotent() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 5_000_000, 0);
+        led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
         led.mark_start_authorized("j").unwrap();
@@ -422,7 +431,7 @@ mod tests {
     #[test]
     fn settle_rejects_actual_exceeding_reservation() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 5_000_000, 0);
+        led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
         led.mark_start_authorized("j").unwrap();
@@ -438,7 +447,7 @@ mod tests {
     #[test]
     fn reserve_fails_on_insufficient_balance() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 100_000, 0);
+        led.credit("a", 100_000, 0).unwrap();
         assert_eq!(
             led.reserve(OperationKey("r".into()), "j", "a", 100_001)
                 .unwrap_err(),
@@ -465,7 +474,7 @@ mod tests {
     #[test]
     fn release_unknown_job_is_noop() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 1_000_000, 0);
+        led.credit("a", 1_000_000, 0).unwrap();
         assert!(!led
             .release(OperationKey("rel".into()), "no-such-job", "a")
             .unwrap());
@@ -475,7 +484,7 @@ mod tests {
     #[test]
     fn settle_unknown_job_conflicts() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 1_000_000, 0);
+        led.credit("a", 1_000_000, 0).unwrap();
         assert!(matches!(
             led.settle(OperationKey("s".into()), "missing", "a", 1, "d"),
             Err(LedgerError::Conflict(_))
@@ -496,7 +505,7 @@ mod tests {
     #[test]
     fn release_after_settle_is_noop() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 5_000_000, 0);
+        led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
         led.mark_start_authorized("j").unwrap();
@@ -515,7 +524,7 @@ mod tests {
     #[test]
     fn settle_after_release_is_noop() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 5_000_000, 0);
+        led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
         assert!(led
@@ -532,7 +541,7 @@ mod tests {
     #[test]
     fn job_reserved_total_tracks_provenance_until_disposition() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 5_000_000, 2_000_000);
+        led.credit("a", 5_000_000, 2_000_000).unwrap();
         assert!(led.job_reserved_total("j").is_none());
         let res = led
             .reserve(OperationKey("r".into()), "j", "a", 3_000_000)
@@ -551,15 +560,15 @@ mod tests {
     #[test]
     fn credit_accumulates_total_and_withdrawable() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 1_000_000, 0);
-        led.credit("a", 500_000, 500_000);
+        led.credit("a", 1_000_000, 0).unwrap();
+        led.credit("a", 500_000, 500_000).unwrap();
         assert_eq!(led.balance("a"), (1_500_000, 500_000));
     }
 
     #[test]
     fn reserve_rejects_zero_or_negative_amount() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 1_000_000, 0);
+        led.credit("a", 1_000_000, 0).unwrap();
         assert_eq!(
             led.reserve(OperationKey("r0".into()), "j", "a", 0)
                 .unwrap_err(),
@@ -576,7 +585,7 @@ mod tests {
     #[test]
     fn settle_rejects_negative_actual() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 1_000_000, 0);
+        led.credit("a", 1_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 100_000)
             .unwrap();
         led.mark_start_authorized("j").unwrap();
@@ -590,7 +599,7 @@ mod tests {
     #[test]
     fn settle_capped_zero_billable_refunds_full_reservation() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 5_000_000, 0);
+        led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
         led.mark_start_authorized("j").unwrap();
@@ -612,7 +621,7 @@ mod tests {
     #[test]
     fn settle_exact_reservation_charges_full_amount() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 5_000_000, 1_000_000);
+        led.credit("a", 5_000_000, 1_000_000).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 2_000_000)
             .unwrap();
         // Non-wdr first: reserved_wdr = max(0, 2M - 4M) = 0
@@ -629,7 +638,7 @@ mod tests {
     #[test]
     fn settle_capped_never_exceeds_actual() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 5_000_000, 0);
+        led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
         led.mark_start_authorized("j").unwrap();
@@ -652,7 +661,7 @@ mod tests {
     fn reserve_can_consume_all_withdrawable() {
         let mut led = MemoryLedger::default();
         // Pure withdrawable balance (earnings).
-        led.credit("a", 2_000_000, 2_000_000);
+        led.credit("a", 2_000_000, 2_000_000).unwrap();
         let res = led
             .reserve(OperationKey("r".into()), "j", "a", 2_000_000)
             .unwrap();
@@ -670,7 +679,7 @@ mod tests {
     #[test]
     fn reserve_zero_withdrawable_when_non_wdr_covers_amount() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 5_000_000, 1_000_000); // 4M non-wdr, 1M wdr
+        led.credit("a", 5_000_000, 1_000_000).unwrap(); // 4M non-wdr, 1M wdr
         let res = led
             .reserve(OperationKey("r".into()), "j", "a", 3_000_000)
             .unwrap();
@@ -682,8 +691,8 @@ mod tests {
     fn settle_restores_unused_withdrawable_provenance_exactly() {
         let mut led = MemoryLedger::default();
         // 3M non-wdr + 2M wdr
-        led.credit("a", 3_000_000, 0);
-        led.credit("a", 2_000_000, 2_000_000);
+        led.credit("a", 3_000_000, 0).unwrap();
+        led.credit("a", 2_000_000, 2_000_000).unwrap();
         // Reserve 4M → consumes 3M non-wdr + 1M wdr
         let res = led
             .reserve(OperationKey("r".into()), "j", "a", 4_000_000)
@@ -704,8 +713,8 @@ mod tests {
     fn settle_consumes_reserved_withdrawable_when_charge_exceeds_non_wdr() {
         let mut led = MemoryLedger::default();
         // 1M non-wdr + 3M wdr
-        led.credit("a", 1_000_000, 0);
-        led.credit("a", 3_000_000, 3_000_000);
+        led.credit("a", 1_000_000, 0).unwrap();
+        led.credit("a", 3_000_000, 3_000_000).unwrap();
         // Reserve 3M → 1M non-wdr + 2M wdr reserved
         let res = led
             .reserve(OperationKey("r".into()), "j", "a", 3_000_000)
@@ -725,7 +734,7 @@ mod tests {
     #[test]
     fn active_job_count_tracks_multiple_concurrent_jobs() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 10_000_000, 0);
+        led.credit("a", 10_000_000, 0).unwrap();
         assert_eq!(led.active_job_count(), 0);
         led.reserve(OperationKey("r1".into()), "j1", "a", 1_000_000)
             .unwrap();
@@ -752,7 +761,7 @@ mod tests {
     #[test]
     fn settle_capped_negative_billable_cap_clamps_to_zero() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 5_000_000, 0);
+        led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
         led.mark_start_authorized("j").unwrap();
@@ -784,7 +793,7 @@ mod tests {
     #[test]
     fn job_funded_start_remains_true_after_settle() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 5_000_000, 0);
+        led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
         assert!(!led.job_funded_start("j"));
@@ -802,7 +811,7 @@ mod tests {
     fn job_funded_start_false_for_unknown_and_released() {
         let mut led = MemoryLedger::default();
         assert!(!led.job_funded_start("missing"));
-        led.credit("a", 5_000_000, 0);
+        led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
         assert!(!led.job_funded_start("j"));
@@ -816,7 +825,7 @@ mod tests {
     #[test]
     fn settle_empty_terminal_digest_still_binds_and_blocks_reuse() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 5_000_000, 0);
+        led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r1".into()), "j1", "a", 1_000_000)
             .unwrap();
         led.mark_start_authorized("j1").unwrap();
@@ -836,7 +845,7 @@ mod tests {
     #[test]
     fn reserve_idempotent_returns_existing_provenance() {
         let mut led = MemoryLedger::default();
-        led.credit("a", 5_000_000, 2_000_000);
+        led.credit("a", 5_000_000, 2_000_000).unwrap();
         let r1 = led
             .reserve(OperationKey("r".into()), "j", "a", 3_000_000)
             .unwrap();
@@ -849,5 +858,28 @@ mod tests {
         assert_eq!(r2.provenance.withdrawable.0, r1.provenance.withdrawable.0);
         // Balance unchanged by idempotent replay.
         assert_eq!(led.balance("a").0, 2_000_000);
+    }
+    #[test]
+    fn credit_rejects_negative_amounts() {
+        let mut led = MemoryLedger::default();
+        assert_eq!(
+            led.credit("a", -1, 0).unwrap_err(),
+            LedgerError::InvalidAmount
+        );
+        assert_eq!(
+            led.credit("a", 1_000_000, -1).unwrap_err(),
+            LedgerError::InvalidAmount
+        );
+        assert_eq!(led.balance("a"), (0, 0));
+    }
+
+    #[test]
+    fn credit_rejects_withdrawable_exceeding_total() {
+        let mut led = MemoryLedger::default();
+        assert!(matches!(
+            led.credit("a", 100, 101),
+            Err(LedgerError::Conflict(_))
+        ));
+        assert_eq!(led.balance("a"), (0, 0));
     }
 }

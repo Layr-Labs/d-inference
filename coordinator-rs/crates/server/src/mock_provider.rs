@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn mock_completion_conserves_money() {
         let mut led = MemoryLedger::default();
-        led.credit("acct", 1_000_000, 0);
+        led.credit("acct", 1_000_000, 0).unwrap();
         let permit = DispatchPermit {
             attempt: AttemptId::new("a1"),
             provider_id: "p1".into(),

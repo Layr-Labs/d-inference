@@ -9,7 +9,7 @@ fn concurrent_hedge_only_one_start_authorized() {
     let led = Arc::new(Mutex::new(MemoryLedger::default()));
     {
         let mut g = led.lock().unwrap();
-        g.credit("acct", 10_000_000, 0);
+        g.credit("acct", 10_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "job-1", "acct", 100_000)
             .unwrap();
     }

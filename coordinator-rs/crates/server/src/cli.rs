@@ -70,7 +70,7 @@ pub fn run_recovery(opts: RecoveryOpts) -> Result<(), String> {
         let led = Arc::new(Mutex::new(MemoryLedger::default()));
         {
             let mut g = led.lock().map_err(|e| e.to_string())?;
-            g.credit(&opts.demo_account, 1_000_000, 0);
+            g.credit(&opts.demo_account, 1_000_000, 0).unwrap();
             g.reserve(
                 crate::ledger::OperationKey(format!("reserve:{job}")),
                 &job,

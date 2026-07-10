@@ -43,7 +43,7 @@ async fn main() {
     let mut ledger = MemoryLedger::default();
     let pilot_account =
         std::env::var("DARKBLOOM_PILOT_ACCOUNT").unwrap_or_else(|_| "pilot-account".into());
-    ledger.credit(&pilot_account, 100_000_000, 0);
+    ledger.credit(&pilot_account, 100_000_000, 0).unwrap();
     let pilot_api_keys: Arc<Vec<String>> = Arc::new(
         std::env::var("DARKBLOOM_PILOT_API_KEYS")
             .unwrap_or_default()

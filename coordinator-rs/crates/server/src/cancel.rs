@@ -100,7 +100,7 @@ mod tests {
         let led = Arc::new(Mutex::new(MemoryLedger::default()));
         {
             let mut g = led.lock().unwrap();
-            g.credit("a", 1_000_000, 0);
+            g.credit("a", 1_000_000, 0).unwrap();
             g.reserve(OperationKey("r".into()), "j1", "a", 50_000)
                 .unwrap();
         }

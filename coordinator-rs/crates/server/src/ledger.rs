@@ -256,6 +256,14 @@ impl MemoryLedger {
         if job.disposition.is_some() {
             return Ok(false);
         }
+        // Once start is authorized, release is forbidden — must settle or
+        // recovery-review. Prevents concurrent mark_start/release from
+        // refunding a funded attempt.
+        if job.funded_start {
+            return Err(LedgerError::Conflict(format!(
+                "job {job_id} is start_authorized; cannot release"
+            )));
+        }
         let prov = job.provenance.clone();
         let e = self.balances.entry(account.to_string()).or_insert((0, 0));
         e.0 += prov.total.0;

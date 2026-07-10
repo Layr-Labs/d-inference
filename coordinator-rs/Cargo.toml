@@ -34,3 +34,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "=1.11.0", features = ["v4", "serde"] }
 arc-swap = "1"
 async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }

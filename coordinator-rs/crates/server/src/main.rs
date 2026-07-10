@@ -1,3 +1,4 @@
+use darkbloom_coordinator::cli::{parse_and_is_recovery, run_recovery};
 use darkbloom_coordinator::{router, spawn_fleet_actor, AppState, MemoryLedger, ModelCard};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -10,6 +11,15 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
         .json()
         .init();
+
+    let (is_recovery, confirm) = parse_and_is_recovery();
+    if is_recovery {
+        if let Err(err) = run_recovery(confirm) {
+            tracing::error!(%err, "recovery failed");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     let (fleet, _fleet_join) = spawn_fleet_actor();
     let mut ledger = MemoryLedger::default();

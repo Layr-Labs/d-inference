@@ -1,6 +1,7 @@
 //! Server library surface.
 
 pub mod chunk_pipe;
+pub mod cli;
 pub mod fleet_actor;
 pub mod http;
 pub mod ledger;

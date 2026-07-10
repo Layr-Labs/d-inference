@@ -221,10 +221,25 @@ impl PostgresLedgerStub {
           FROM calc c CROSS JOIN bal b
           WHERE c.delta <= 0 OR b.bal >= c.need
         ), op AS (
-          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-          SELECT $4, $2, 'resize_authorize', $3 FROM funds
+          INSERT INTO rust_coord.financial_operations (
+            operation_key, job_id, op_type, amount_micro_usd,
+            account_id, terminal_digest, billable_cap_micro_usd
+          )
+          SELECT $4, $2, 'resize_authorize', $3, $1, '', NULL FROM funds
           ON CONFLICT (operation_key) DO NOTHING
           RETURNING operation_key
+        ), op_row AS (
+          SELECT * FROM rust_coord.financial_operations WHERE operation_key = $4
+        ), op_ok AS (
+          SELECT 1 FROM op_row
+          WHERE job_id = $2
+            AND op_type = 'resize_authorize'
+            AND amount_micro_usd = $3
+            AND account_id = $1
+            AND COALESCE(terminal_digest, '') = ''
+            AND billable_cap_micro_usd IS NULL
+        ), op_conflict AS (
+          SELECT 1 FROM op_row WHERE NOT EXISTS (SELECT 1 FROM op_ok)
         ), debit AS (
           UPDATE balances b
           SET balance_micro_usd = CASE
@@ -239,6 +254,8 @@ impl PostgresLedgerStub {
           FROM funds f
           WHERE b.account_id = $1
             AND EXISTS (SELECT 1 FROM op)
+            AND EXISTS (SELECT 1 FROM op_ok)
+            AND NOT EXISTS (SELECT 1 FROM op_conflict)
           RETURNING f.old_wdr, f.add_wdr, f.refund_wdr, f.delta
         ), mark AS (
           UPDATE rust_coord.inference_jobs j
@@ -259,7 +276,10 @@ impl PostgresLedgerStub {
             AND NOT EXISTS (SELECT 1 FROM mark)
           RETURNING fo.operation_key
         )
-        SELECT reserved_total_micro_usd, reserved_withdrawable_micro_usd FROM mark
+        SELECT
+          (SELECT reserved_total_micro_usd FROM mark) AS reserved_total_micro_usd,
+          (SELECT reserved_withdrawable_micro_usd FROM mark) AS reserved_withdrawable_micro_usd,
+          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict
         "#
     }
 
@@ -825,6 +845,7 @@ mod tests {
             PostgresLedgerStub::force_settle_sql(),
             PostgresLedgerStub::release_sql(),
             PostgresLedgerStub::mark_start_authorized_sql(),
+            PostgresLedgerStub::resize_and_authorize_sql(),
         ] {
             assert!(
                 sql.contains("op_conflict") && sql.contains("param_conflict"),
@@ -886,7 +907,9 @@ mod tests {
         assert!(sql.contains("FOR UPDATE"));
         assert!(sql.contains("financial_operations"));
         assert!(sql.contains("account_id = $1"));
-        assert!(sql.contains("SELECT $4, $2, 'resize_authorize', $3 FROM funds"));
+        assert!(sql.contains("'resize_authorize'"));
+        assert!(sql.contains("op_ok"));
+        assert!(sql.contains("param_conflict"));
         assert!(sql.contains("EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));
         assert!(sql.contains("coordinator_epoch = $5"));

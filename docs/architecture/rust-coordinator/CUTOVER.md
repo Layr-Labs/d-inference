@@ -829,3 +829,9 @@ account/digest/cap onto `financial_operations` and return
 `param_conflict` on mismatched op-key reuse — completing #138 coverage
 for the remaining money CTEs.
 
+### Resize + deposit SQL param bind (DECISIONS #142)
+
+`resize_and_authorize_sql` and `deposit_sql` bind account/amount (and
+deposit digest/wdr via terminal_digest/billable_cap columns) and return
+`param_conflict` on mismatched op-key reuse.
+

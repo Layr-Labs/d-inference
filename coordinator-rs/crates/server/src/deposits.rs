@@ -99,10 +99,25 @@ pub fn deposit_sql() -> &'static str {
         updated_at = NOW()
       RETURNING balance_micro_usd, withdrawable_micro_usd
     ), op AS (
-      INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-      SELECT 'deposit:' || $1 || ':' || $2, '', 'deposit', $4 FROM credit
+      INSERT INTO rust_coord.financial_operations (
+        operation_key, job_id, op_type, amount_micro_usd,
+        account_id, terminal_digest, billable_cap_micro_usd
+      )
+      SELECT 'deposit:' || $1 || ':' || $2, '', 'deposit', $4, $3, $6, $5 FROM credit
       ON CONFLICT (operation_key) DO NOTHING
       RETURNING operation_key
+    ), op_row AS (
+      SELECT * FROM rust_coord.financial_operations
+      WHERE operation_key = 'deposit:' || $1 || ':' || $2
+    ), op_ok AS (
+      SELECT 1 FROM op_row
+      WHERE op_type = 'deposit'
+        AND amount_micro_usd = $4
+        AND account_id = $3
+        AND COALESCE(terminal_digest, '') = COALESCE($6, '')
+        AND billable_cap_micro_usd IS NOT DISTINCT FROM $5::bigint
+    ), op_conflict AS (
+      SELECT 1 FROM op_row WHERE NOT EXISTS (SELECT 1 FROM op_ok)
     ), outbox AS (
       INSERT INTO rust_coord.outbox (kind, payload, attempts)
       SELECT 'billing.deposit_applied',
@@ -117,12 +132,15 @@ pub fn deposit_sql() -> &'static str {
              0
       FROM credit
       WHERE EXISTS (SELECT 1 FROM op)
+        AND EXISTS (SELECT 1 FROM op_ok)
+        AND NOT EXISTS (SELECT 1 FROM op_conflict)
       RETURNING id
     )
     SELECT
       (SELECT balance_micro_usd FROM credit) AS balance_micro_usd,
       (SELECT withdrawable_micro_usd FROM credit) AS withdrawable_micro_usd,
-      (SELECT COUNT(*)::int FROM mismatch) AS mismatched
+      (SELECT COUNT(*)::int FROM mismatch) AS mismatched,
+      EXISTS (SELECT 1 FROM op_conflict) AS param_conflict
     "#
 }
 
@@ -271,6 +289,9 @@ mod tests {
         assert!(sql.contains("rust_coord.outbox"));
         assert!(sql.contains("billing.deposit_applied"));
         assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
+        assert!(sql.contains("op_ok"));
+        assert!(sql.contains("param_conflict"));
+        assert!(sql.contains("account_id"));
         assert!(sql.contains("mismatch"));
         assert!(sql.contains("IS DISTINCT FROM $6"));
         assert!(sql.contains("NOT EXISTS (SELECT 1 FROM mismatch)"));

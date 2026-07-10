@@ -1,6 +1,7 @@
 use darkbloom_coordinator::cli::{parse_and_is_recovery, run_recovery};
 use darkbloom_coordinator::{
-    router, spawn_fleet_actor, AppState, CoordinatorKeys, MemoryLedger, ModelCard, ProviderHub,
+    bounded_telemetry, router, spawn_fleet_actor, AppState, CoordinatorKeys, MemoryLedger,
+    ModelCard, ProviderHub,
 };
 use darkbloom_core::PlacementController;
 use std::net::SocketAddr;
@@ -55,6 +56,12 @@ async fn main() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
+    let (telemetry, mut telemetry_worker) = bounded_telemetry(1024);
+    tokio::spawn(async move {
+        while telemetry_worker.drain_one().await.is_some() {
+            // Best-effort drain; Datadog forwarder lands later.
+        }
+    });
     let state = AppState {
         fleet,
         hub,
@@ -67,6 +74,7 @@ async fn main() {
         }],
         ledger: Arc::new(Mutex::new(ledger)),
         placement: Arc::new(Mutex::new(PlacementController::default())),
+        telemetry: Arc::new(telemetry),
         pilot_account,
         pilot_api_keys,
         coordinator_epoch,

@@ -19,6 +19,7 @@ use crate::provider_hub::{OutboundCmd, ProviderHub, SharedHub};
 use crate::provider_ws::provider_ws;
 use crate::request_task::{spawn_request_task, ControlEvent};
 use crate::sealed::decrypt_request_body;
+use crate::telemetry::TelemetrySink;
 use darkbloom_core::{AttemptId, JobId, LeaseId, PlacementController};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -32,6 +33,7 @@ pub struct AppState {
     /// Pilot ledger (process-local). Postgres/SQLx replaces this in M4.
     pub ledger: Arc<Mutex<MemoryLedger>>,
     pub placement: Arc<Mutex<PlacementController>>,
+    pub telemetry: Arc<TelemetrySink>,
     pub pilot_account: String,
     /// Comma-separated pilot API keys (env DARKBLOOM_PILOT_API_KEYS). Empty = open.
     pub pilot_api_keys: Arc<Vec<String>>,
@@ -88,6 +90,23 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         let (b, w) = led.balance(&state.pilot_account);
         (b, w, led.active_job_count())
     };
+    let (placement_version, demand) = {
+        let p = state.placement.lock().await;
+        let demand: serde_json::Map<String, Value> = p
+            .desired()
+            .into_iter()
+            .map(|d| {
+                (
+                    d.model_id.clone(),
+                    json!({
+                        "target_replicas": d.target_replicas,
+                        "demand": p.demand_for(&d.model_id),
+                    }),
+                )
+            })
+            .collect();
+        (p.version().0, demand)
+    };
     let ready = active_jobs == 0;
     let status = if ready {
         StatusCode::OK
@@ -101,8 +120,11 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             "pilot_account_balance_micro_usd": bal,
             "pilot_account_withdrawable_micro_usd": wdr,
             "active_jobs": active_jobs,
+            "placement_version": placement_version,
+            "placement_demand": demand,
+            "telemetry_emitted": state.telemetry.emitted(),
+            "telemetry_dropped": state.telemetry.dropped(),
             "fleet_actor": "up",
-            "note": "full quiescence counters land with RequestTask tracking"
         })),
     )
 }
@@ -507,6 +529,10 @@ async fn chat_completions(
                 let mut p = state.placement.lock().await;
                 p.signal_demand(&req.model);
             }
+            state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
+                name: "admission.retry_after".into(),
+                tags: vec![("model".into(), req.model.clone())],
+            });
             (
             StatusCode::TOO_MANY_REQUESTS,
             [(

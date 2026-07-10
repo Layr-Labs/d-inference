@@ -63,6 +63,8 @@ async fn force_settle_batch_abort_reports_partial_then_cutover_resumes() {
     assert_eq!(v["action"], "force_settle_batch_aborted");
     assert_eq!(v["settled_count"], 1);
     assert_eq!(v["charged_micro_usd"], 0);
+    assert_eq!(v["active_jobs"], 1);
+    assert_eq!(v["held_start_authorized"], 1);
     assert_eq!(state.ledger.lock().await.active_job_count(), 1);
 
     ownership.acquire(Epoch(epoch + 10)).unwrap();

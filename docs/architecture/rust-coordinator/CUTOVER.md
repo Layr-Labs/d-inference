@@ -525,3 +525,10 @@ remaining orphans for adopt + cutover-drain.
 Batch abort responses include partial `settled`/`released` counts and amounts.
 Ops re-acquire ownership and run cutover-drain to clear the remainder.
 
+### Batch abort remaining ids + deposit/force race (DECISIONS #98)
+
+Batch abort also returns `remaining_active_job_ids` /
+`remaining_held_start_authorized_job_ids` for orphan discovery. Concurrent
+deposits and force-settle-batch conserve money (exactly one settle; balance =
+start + deposits).
+

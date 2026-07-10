@@ -112,13 +112,15 @@ fn invoke_admin_batch_job(job_id: &str) {
     }
 }
 
-/// Partial batch response when ownership is lost mid-loop (DECISIONS #97).
+/// Partial batch response when ownership is lost mid-loop (DECISIONS #97/#98).
 fn batch_ownership_lost_partial(
     batch: &str,
     completed: &[String],
     completed_key: &str,
     amount_key: &str,
     amount_total: i64,
+    remaining_active: &[String],
+    remaining_held: &[String],
 ) -> axum::response::Response {
     let mut body = serde_json::Map::new();
     body.insert(
@@ -133,6 +135,16 @@ fn batch_ownership_lost_partial(
     body.insert(completed_key.into(), json!(completed));
     body.insert(format!("{completed_key}_count"), json!(completed.len()));
     body.insert(amount_key.into(), json!(amount_total));
+    body.insert("remaining_active_job_ids".into(), json!(remaining_active));
+    body.insert(
+        "remaining_held_start_authorized_job_ids".into(),
+        json!(remaining_held),
+    );
+    body.insert("active_jobs".into(), json!(remaining_active.len()));
+    body.insert(
+        "held_start_authorized".into(),
+        json!(remaining_held.len()),
+    );
     (StatusCode::SERVICE_UNAVAILABLE, Json(Value::Object(body))).into_response()
 }
 
@@ -852,12 +864,18 @@ async fn admin_force_settle_batch(
         invoke_admin_batch_job(&job_id);
         // Re-check holding per job (DECISIONS #85/#96/#97).
         if require_holding(&state).is_err() {
+            let (remaining_active, remaining_held) = {
+                let led = state.ledger.lock().await;
+                (led.active_job_ids(), led.held_start_authorized_job_ids())
+            };
             return batch_ownership_lost_partial(
                 "force_settle_batch",
                 &settled,
                 "settled",
                 "charged_micro_usd",
                 charged_total,
+                &remaining_active,
+                &remaining_held,
             );
         }
         let epoch = state.ownership.epoch().0;
@@ -1130,12 +1148,18 @@ async fn admin_recover_undispatched_batch(
         invoke_admin_batch_job(&job_id);
         // Re-check holding per job (DECISIONS #85/#96/#97).
         if require_holding(&state).is_err() {
+            let (remaining_active, remaining_held) = {
+                let led = state.ledger.lock().await;
+                (led.active_job_ids(), led.held_start_authorized_job_ids())
+            };
             return batch_ownership_lost_partial(
                 "recover_undispatched_batch",
                 &released,
                 "released",
                 "refunded_micro_usd",
                 refund_total,
+                &remaining_active,
+                &remaining_held,
             );
         }
         let epoch = state.ownership.epoch().0;

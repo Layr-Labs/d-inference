@@ -34,6 +34,10 @@ func (s failingCreditStore) ReleaseInferenceReservation(accountID string, amount
 	return false, errors.New("forced reservation release failure")
 }
 
+func (s failingCreditStore) SettleInference(settlement *store.InferenceSettlement) (bool, error) {
+	return false, errors.New("forced settlement failure")
+}
+
 // TestIntegration_ConsumerBillingCharge verifies that a consumer's balance is
 // debited after a successful inference request. The charge amount should match
 // the pricing for the model and tokens used.

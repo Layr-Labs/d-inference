@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -98,7 +99,7 @@ func (s *Server) releaseInitialReservation(accountID, model string, amount, rese
 		return
 	}
 	start := time.Now()
-	applied, err := s.store.ReleaseInferenceReservation(
+	applied, err := s.releaseInferenceReservationWithRetry(
 		accountID, amount, reservedWithdrawable,
 		reservationFinalizationKey(reservationID), "reservation_refund:"+reservationID,
 	)
@@ -115,6 +116,30 @@ func (s *Server) releaseInitialReservation(accountID, model string, amount, rese
 	s.ddIncr("billing.reservation_refunds", tags)
 	s.ddIncr("billing.reservation_releases", append(tags, "reason:early"))
 	s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
+}
+
+func (s *Server) releaseInferenceReservationWithRetry(
+	accountID string,
+	amountMicroUSD, withdrawableMicroUSD int64,
+	operationKey, reference string,
+) (bool, error) {
+	var lastErr error
+	for attempt := range settlementRetryAttempts {
+		applied, err := s.store.ReleaseInferenceReservation(
+			accountID, amountMicroUSD, withdrawableMicroUSD, operationKey, reference,
+		)
+		if err == nil {
+			return applied, nil
+		}
+		lastErr = err
+		if errors.Is(err, store.ErrFinancialOperationConflict) {
+			return false, err
+		}
+		if attempt+1 < settlementRetryAttempts {
+			time.Sleep(time.Duration(attempt+1) * 50 * time.Millisecond)
+		}
+	}
+	return false, lastErr
 }
 
 func reservationFinalizationKey(reservationID string) string {

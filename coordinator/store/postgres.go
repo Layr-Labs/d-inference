@@ -269,14 +269,38 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			kind TEXT NOT NULL,
 			amount_micro_usd BIGINT NOT NULL,
 			withdrawable_micro_usd BIGINT NOT NULL,
-			claim_token TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			CHECK (kind IN ('reserve', 'release')),
 			CHECK (amount_micro_usd >= 0),
 			CHECK (withdrawable_micro_usd >= 0 AND withdrawable_micro_usd <= amount_micro_usd)
 		)`,
-		`ALTER TABLE balance_reservation_operations ADD COLUMN IF NOT EXISTS claim_token TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_balance_reservation_operations_account ON balance_reservation_operations(account_id, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS inference_settlements (
+			reservation_id TEXT PRIMARY KEY,
+			request_id TEXT NOT NULL,
+			consumer_account_id TEXT NOT NULL,
+			reserved_micro_usd BIGINT NOT NULL,
+			reserved_withdrawable_micro_usd BIGINT NOT NULL,
+			reservation_pre_debited BOOLEAN NOT NULL,
+			cost_micro_usd BIGINT NOT NULL,
+			provider_account_id TEXT NOT NULL DEFAULT '',
+			provider_id TEXT NOT NULL DEFAULT '',
+			provider_key TEXT NOT NULL DEFAULT '',
+			provider_payout_micro_usd BIGINT NOT NULL DEFAULT 0,
+			platform_fee_micro_usd BIGINT NOT NULL DEFAULT 0,
+			referrer_account_id TEXT NOT NULL DEFAULT '',
+			referral_reward_micro_usd BIGINT NOT NULL DEFAULT 0,
+			model TEXT NOT NULL,
+			public_model TEXT NOT NULL DEFAULT '',
+			key_id TEXT NOT NULL DEFAULT '',
+			prompt_tokens INTEGER NOT NULL,
+			completion_tokens INTEGER NOT NULL,
+			record_usage BOOLEAN NOT NULL,
+			request_location JSONB,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`ALTER TABLE inference_settlements ADD COLUMN IF NOT EXISTS reservation_pre_debited BOOLEAN NOT NULL DEFAULT TRUE`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_inference_settlements_request ON inference_settlements(request_id)`,
 		// Partial index for the public leaderboard/network-totals reward scans,
 		// which filter ledger_entries by reward entry_type across all accounts.
 		// Without it, each cache miss seq-scans the whole (multi-million-row)
@@ -3192,6 +3216,17 @@ func (s *PostgresStore) ApplyStripeDeposit(eventID, billingSessionID, checkoutSe
 		return &StripeDepositResult{Session: *session, Applied: false}, nil
 	}
 
+	if session.ReferralCode != "" {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO referrals (referred_account, referrer_code)
+			 SELECT $1, code FROM referrers
+			 WHERE code = $2 AND account_id <> $1
+			 ON CONFLICT (referred_account) DO NOTHING`,
+			session.AccountID, session.ReferralCode,
+		); err != nil {
+			return nil, fmt.Errorf("store: apply deposit referral: %w", err)
+		}
+	}
 	tag, err = tx.Exec(ctx,
 		`UPDATE billing_sessions
 		 SET external_id = $2, processed_event_id = $3, status = 'completed', completed_at = NOW()

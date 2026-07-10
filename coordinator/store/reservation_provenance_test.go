@@ -25,6 +25,14 @@ func TestInferenceReservationPreservesMixedProvenance(t *testing.T) {
 			if !applied || reservedWithdrawable != 20_000 {
 				t.Fatalf("reserve = withdrawable:%d applied:%t, want 20000/true", reservedWithdrawable, applied)
 			}
+			replayedWithdrawable, replayApplied, err := backend.ReserveInferenceBalance(accountID, 120_000, reservationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if replayApplied || replayedWithdrawable != reservedWithdrawable {
+				t.Fatalf("reserve replay = withdrawable:%d applied:%t, want %d/false",
+					replayedWithdrawable, replayApplied, reservedWithdrawable)
+			}
 			if balance, withdrawable := backend.GetBalanceWithWithdrawable(accountID); balance != 50_000 || withdrawable != 50_000 {
 				t.Fatalf("held balance = %d/%d, want 50000/50000", balance, withdrawable)
 			}

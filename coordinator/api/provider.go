@@ -116,6 +116,24 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("websocket accept failed", "error", err)
 		return
 	}
+	s.providerSessionMu.Lock()
+	if s.providerClosing {
+		s.providerSessionMu.Unlock()
+		_ = conn.Close(websocket.StatusGoingAway, "coordinator shutting down")
+		return
+	}
+	s.providerSessions.Add(1)
+	if s.providerConnections == nil {
+		s.providerConnections = make(map[*websocket.Conn]struct{})
+	}
+	s.providerConnections[conn] = struct{}{}
+	s.providerSessionMu.Unlock()
+	defer func() {
+		s.providerSessionMu.Lock()
+		delete(s.providerConnections, conn)
+		s.providerSessionMu.Unlock()
+		s.providerSessions.Done()
+	}()
 
 	// Raise the read limit to 10 MB. The default 32 KB is too small for
 	// large inference responses.
@@ -478,16 +496,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypeInferenceComplete:
 			completeMsg := msg.Payload.(*protocol.InferenceCompleteMessage)
-			// Completion settlement runs on a fixed, bounded worker pool. A full
-			// queue backpressures this provider reader instead of dropping money
-			// work or spawning an unbounded goroutine.
-			if s.completions == nil || !s.completions.submit(func() {
-				s.handleComplete(providerID, provider, completeMsg)
-			}) {
-				// A directly-constructed/closing Server still processes the
-				// terminal synchronously; financial work is never discarded.
-				s.handleComplete(providerID, provider, completeMsg)
-			}
+			s.enqueueCompletion(providerID, provider, completeMsg)
 
 		case protocol.TypeInferenceError:
 			errMsg := msg.Payload.(*protocol.InferenceErrorMessage)
@@ -1562,10 +1571,38 @@ func (s *Server) handleInferenceAccepted(provider *registry.Provider, msg *proto
 // could skew routing calibration. The value is advisory, never a security gate.
 const maxPlausibleDecodeTPS = 10000.0
 
+type claimedCompletion struct {
+	pending      *registry.PendingRequest
+	consumerGone bool
+}
+
+func (s *Server) enqueueCompletion(providerID string, provider *registry.Provider, msg *protocol.InferenceCompleteMessage) {
+	claimed := s.claimCompletion(providerID, provider, msg)
+	if claimed == nil {
+		return
+	}
+	task := func() {
+		s.handleClaimedComplete(providerID, provider, msg, claimed)
+	}
+	// Completion settlement runs on a fixed, bounded worker pool. The pending
+	// request is claimed before this potentially blocking submission, so a
+	// concurrent disconnect cannot erase an already-received terminal.
+	if s.completions == nil || !s.completions.submit(task) {
+		task()
+	}
+}
+
 func (s *Server) handleComplete(providerID string, provider *registry.Provider, msg *protocol.InferenceCompleteMessage) {
+	claimed := s.claimCompletion(providerID, provider, msg)
+	if claimed != nil {
+		s.handleClaimedComplete(providerID, provider, msg, claimed)
+	}
+}
+
+func (s *Server) claimCompletion(providerID string, provider *registry.Provider, msg *protocol.InferenceCompleteMessage) *claimedCompletion {
 	if provider == nil {
 		s.logger.Warn("complete from unregistered provider", "provider_id", providerID)
-		return
+		return nil
 	}
 	pr := provider.RemovePending(msg.RequestID)
 	// Clear any parked settlement record (consumer disconnected mid-stream):
@@ -1576,16 +1613,26 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	}
 	if pr == nil {
 		s.logger.Warn("complete for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
-		return
+		return nil
 	}
 	// The request is terminal — drop its memoized chunk-decryption key.
 	s.chunkKeys.forget(pr.SessionPrivKey)
+	return &claimedCompletion{pending: pr, consumerGone: parked != nil}
+}
+
+func (s *Server) handleClaimedComplete(
+	providerID string,
+	provider *registry.Provider,
+	msg *protocol.InferenceCompleteMessage,
+	claimed *claimedCompletion,
+) {
+	pr := claimed.pending
 	// A parked record means the consumer handler already returned: there is no
 	// channel reader, and registry.Disconnect may have already CLOSED the
 	// channels (park-before-remove leaves a window where the record is in both
 	// the pending map and the holder) — sending would panic. Billing still
 	// settles below; only the consumer signaling is skipped.
-	consumerGone := parked != nil
+	consumerGone := claimed.consumerGone
 	// After-commit client cancellation telemetry. The provider finished
 	// but the consumer had already disconnected mid-stream (partial_success /
 	// client_gone_after_commit). Metric-emit only — billing/settlement below is
@@ -1715,103 +1762,117 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		// log, settle as paid against the reservation.
 	}
 
-	billingFinalized := true
+	if pr.ReservedMicroUSD > 0 && totalCost > pr.ReservedMicroUSD {
+		// The pre-start reservation is the hard financial bound for every
+		// funded mode, including service holds. Provider-reported usage above
+		// it cannot create an extra debit or increase payout.
+		s.logger.Error("reported cost exceeds funded reservation — clamping",
+			"provider_id", providerID,
+			"request_id", msg.RequestID,
+			"reported_cost_micro_usd", totalCost,
+			"reserved_micro_usd", pr.ReservedMicroUSD,
+		)
+		s.ddIncr("billing.cost_clamped", []string{"model:" + pr.Model})
+		totalCost = pr.ReservedMicroUSD
+		providerPayout = payments.ProviderPayoutWithPercent(totalCost, feePercent)
+	}
 
-	// Settle billing against the pre-flight reservation. All balance
-	// mutations (overage charge, refund) happen inside the finalization
-	// gate so that a concurrent timeout/error refund path cannot race
-	// with the settlement here.
-	if pr.ServiceReservation && pr.ReservedMicroUSD > 0 {
-		var chargeErr error
-		finalized, _ := pr.FinalizeReservation(func() error {
-			if totalCost > 0 {
-				start := time.Now()
-				chargeErr = s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID)
-				s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:service_reservation_settle"})
-			}
-			s.releaseServiceReservation(pr, "finalize")
-			return nil
-		})
-		if !finalized {
-			billingFinalized = false
-			s.logger.Warn("skipping completion billing for already-finalized service reservation",
-				"provider_id", providerID,
-				"request_id", msg.RequestID,
-			)
-		} else if chargeErr != nil {
-			if errors.Is(chargeErr, store.ErrInsufficientBalance) {
-				s.logger.Warn("service reservation settlement failed (insufficient balance) — zeroing uncollected charge",
-					"consumer_key", pr.ConsumerKey,
-					"cost_micro_usd", totalCost,
-				)
-			} else {
-				s.logger.Error("service reservation settlement failed (DB error) — zeroing uncollected charge",
-					"consumer_key", pr.ConsumerKey,
-					"cost_micro_usd", totalCost,
-					"error", chargeErr,
-				)
-			}
-			totalCost = 0
-			providerPayout = 0
-			s.ddIncr("billing.uncollected_zeroed", []string{"model:" + pr.Model, "mode:service_hold"})
-		} else {
-			s.ddIncr("billing.reservation_finalize", []string{"model:" + pr.Model, "mode:service_hold", "outcome:charged"})
-			s.ddHistogram("billing.service_settlement_micro_usd", float64(totalCost), []string{"model:" + pr.Model})
-		}
-	} else if pr.ReservedMicroUSD > 0 {
-		if totalCost > pr.ReservedMicroUSD {
-			// The pre-start reservation is the hard financial bound. Provider
-			// usage above it is untrusted and cannot create a post-generation
-			// debit or increase payout.
-			s.logger.Error("reported cost exceeds funded reservation — clamping",
-				"provider_id", providerID,
-				"request_id", msg.RequestID,
-				"reported_cost_micro_usd", totalCost,
-				"reserved_micro_usd", pr.ReservedMicroUSD,
-			)
-			s.ddIncr("billing.cost_clamped", []string{"model:" + pr.Model})
-			totalCost = pr.ReservedMicroUSD
-			providerPayout = payments.ProviderPayoutWithPercent(totalCost, feePercent)
-		}
-		refund := pr.ReservedMicroUSD - totalCost
-		refundWithdrawable := min(refund, pr.ReservedWithdrawableMicroUSD)
+	settlementProvider := s.registry.GetProvider(providerID)
+	if settlementProvider == nil {
+		settlementProvider = provider
+	}
+	providerAccountID, providerPublicKey := "", ""
+	if settlementProvider != nil {
+		settlementProvider.Mu().Lock()
+		providerAccountID = settlementProvider.AccountID
+		providerPublicKey = settlementProvider.PublicKey
+		settlementProvider.Mu().Unlock()
+	}
+	platformFee := payments.PlatformFeeWithPercent(totalCost, feePercent)
+	referrerAccountID, referralReward := "", int64(0)
+	if platformFee > 0 && s.billing != nil && s.billing.Referral() != nil {
+		referrerAccountID, referralReward, platformFee =
+			s.billing.Referral().ResolveReferralReward(pr.ConsumerKey, platformFee)
+	}
+
+	billingFinalized := true
+	atomicSettlement := false
+
+	// Every funded completion commits its consumer refund/debit, provider
+	// earning, platform/referral allocations, and usage in one store
+	// transaction. The finalization guard serializes local terminal races; the
+	// durable reservation ID makes replay a no-op.
+	if pr.ReservedMicroUSD > 0 {
 		if pr.ReservationID == "" {
 			pr.ReservationID = pr.RequestID
+		}
+		var earning *store.ProviderEarning
+		if providerAccountID != "" && !freeSelfRoute && providerPayout > 0 {
+			earning = &store.ProviderEarning{
+				AccountID: providerAccountID, ProviderID: providerID,
+				ProviderKey: providerPublicKey, JobID: msg.RequestID,
+				Model: pr.Model, AmountMicroUSD: providerPayout,
+				PromptTokens:     msg.Usage.PromptTokens,
+				CompletionTokens: msg.Usage.CompletionTokens,
+				CreatedAt:        time.Now(),
+			}
+		}
+		var usage *store.UsageRecord
+		if !freeSelfRoute {
+			usage = &store.UsageRecord{
+				ProviderID: providerID, ConsumerKey: pr.ConsumerKey,
+				KeyID: pr.KeyID, Model: pr.Model, PublicModel: consumerModel(pr),
+				PromptTokens:     msg.Usage.PromptTokens,
+				CompletionTokens: msg.Usage.CompletionTokens,
+				RequestLocation:  pr.ConsumerLocation, RequestID: msg.RequestID,
+				CostMicroUSD: totalCost,
+			}
+		}
+		settlement := &store.InferenceSettlement{
+			ReservationID: pr.ReservationID, RequestID: msg.RequestID,
+			ConsumerAccountID:            pr.ConsumerKey,
+			ReservedMicroUSD:             pr.ReservedMicroUSD,
+			ReservedWithdrawableMicroUSD: pr.ReservedWithdrawableMicroUSD,
+			ReservationPreDebited:        !pr.ServiceReservation,
+			CostMicroUSD:                 totalCost, ProviderEarning: earning,
+			PlatformFeeMicroUSD:    platformFee,
+			ReferrerAccountID:      referrerAccountID,
+			ReferralRewardMicroUSD: referralReward,
+			Usage:                  usage,
 		}
 		start := time.Now()
 		financialApplied := false
 		finalized, finalizeErr := pr.FinalizeReservation(func() error {
 			var err error
-			financialApplied, err = s.store.ReleaseInferenceReservation(
-				pr.ConsumerKey,
-				refund,
-				refundWithdrawable,
-				reservationFinalizationKey(pr.ReservationID),
-				msg.RequestID,
-			)
+			financialApplied, err = s.settleInferenceWithRetry(settlement)
 			return err
 		})
 		switch {
 		case finalizeErr != nil:
 			billingFinalized = false
-			s.logger.Error("failed to finalize inference reservation",
+			s.logger.Error("atomic inference settlement failed",
 				"request_id", msg.RequestID,
-				"refund_micro_usd", refund,
-				"refund_withdrawable_micro_usd", refundWithdrawable,
+				"reservation_id", pr.ReservationID,
 				"error", finalizeErr,
 			)
-			s.ddIncr("billing.credit_failed", []string{"op:settlement_refund"})
+			s.ddIncr("billing.settlement_failed", []string{"model:" + pr.Model})
 		case !finalized || !financialApplied:
 			billingFinalized = false
-			s.logger.Warn("skipping completion billing for already-finalized reservation",
+			s.logger.Warn("skipping already-finalized inference settlement",
 				"provider_id", providerID,
 				"request_id", msg.RequestID,
 			)
 		default:
-			if refund > 0 {
+			atomicSettlement = true
+			if pr.ServiceReservation {
+				s.releaseServiceReservation(pr, "finalize")
+				s.ddHistogram("billing.service_settlement_micro_usd", float64(totalCost), []string{"model:" + pr.Model})
+			}
+			refund := pr.ReservedMicroUSD - totalCost
+			if !pr.ServiceReservation && refund > 0 {
 				s.ddHistogram("billing.settlement_refund_micro_usd", float64(refund), []string{"model:" + pr.Model})
 			}
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:settlement_refund"})
+			s.ddHistogram("store.settlement.latency_ms", float64(time.Since(start).Milliseconds()), []string{"mode:" + reservationMetricMode(pr.ServiceReservation)})
 		}
 	} else if !freeSelfRoute {
 		start := time.Now()
@@ -1864,7 +1925,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		// providers only ever serve free self-route, so this also keeps their
 		// traffic out of public stats. The owner still sees it via the in-memory
 		// RecordUsage above (their session/transparency view).
-		if !freeSelfRoute {
+		if !freeSelfRoute && !atomicSettlement {
 			s.store.RecordUsageFullWithPublicModel(providerID, pr.ConsumerKey, pr.KeyID, pr.Model, consumerModel(pr), msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
 		}
 
@@ -1934,36 +1995,26 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		s.ddCount("inference.completion_tokens_total", int64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
 		s.ddHistogram("inference.completion_tokens", float64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
 
-		// Resolve provider identity for payout.
-		p := s.registry.GetProvider(providerID)
-		if p == nil {
-			p = provider
-		}
-
-		// Compute platform fee (needs referral lookup before spawning goroutines).
-		platformFee := payments.PlatformFeeWithPercent(totalCost, feePercent)
-		if platformFee > 0 && s.billing != nil && s.billing.Referral() != nil {
-			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
-		}
-
-		// Credit the provider's linked account (if any).
-		if p != nil {
-			p.Mu().Lock()
-			accountID := p.AccountID
-			publicKey := p.PublicKey
-			p.Mu().Unlock()
-
+		if !atomicSettlement {
+			if referralReward > 0 {
+				if err := s.store.CreditWithdrawable(
+					referrerAccountID, referralReward,
+					store.LedgerReferralReward, msg.RequestID,
+				); err != nil {
+					s.logger.Error("failed to credit referral reward",
+						"request_id", msg.RequestID,
+						"error", err,
+					)
+				}
+			}
 			// Credit the provider only when there is an actual payout. A zero
-			// payout means either free self-route (consumer == provider account)
-			// or an uncollected charge (e.g. a self-route paid-fallback whose
-			// owner had no balance) — in both cases we must not record a
-			// (zero-value) earning row. Mirrors the platformFee > 0 guard below.
-			if accountID != "" && !freeSelfRoute && providerPayout > 0 {
+			// payout means either free self-route or an uncollected charge.
+			if providerAccountID != "" && !freeSelfRoute && providerPayout > 0 {
 				start := time.Now()
 				if err := s.store.CreditProviderAccount(&store.ProviderEarning{
-					AccountID:        accountID,
+					AccountID:        providerAccountID,
 					ProviderID:       providerID,
-					ProviderKey:      publicKey,
+					ProviderKey:      providerPublicKey,
 					JobID:            msg.RequestID,
 					Model:            pr.Model,
 					AmountMicroUSD:   providerPayout,
@@ -1973,7 +2024,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 				}); err != nil {
 					s.logger.Error("failed to credit linked provider account",
 						"provider_id", providerID,
-						"account_id", accountID,
+						"account_id", providerAccountID,
 						"request_id", msg.RequestID,
 						"error", err,
 					)
@@ -1981,20 +2032,41 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 				s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:provider_account_credit"})
 				s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
 			}
-		}
-
-		// Record platform fee.
-		if platformFee > 0 {
-			start := time.Now()
-			// Financial: a failed platform-fee credit drops revenue accounting. Never swallow it.
-			if err := s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID); err != nil {
-				s.logger.Error("failed to credit platform fee",
-					"request_id", msg.RequestID, "platform_fee_micro_usd", platformFee, "error", err)
-				s.ddIncr("billing.credit_failed", []string{"op:platform_fee"})
+			// Record platform fee.
+			if platformFee > 0 {
+				start := time.Now()
+				if err := s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID); err != nil {
+					s.logger.Error("failed to credit platform fee",
+						"request_id", msg.RequestID, "platform_fee_micro_usd", platformFee, "error", err)
+					s.ddIncr("billing.credit_failed", []string{"op:platform_fee"})
+				}
+				s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:platform_fee"})
+				s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
 			}
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:platform_fee"})
-			s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
+		} else {
+			if providerPayout > 0 {
+				s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
+			}
+			if platformFee > 0 {
+				s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
+			}
 		}
+	}
+
+	if !billingFinalized {
+		if !consumerGone && pr.ErrorCh != nil {
+			select {
+			case pr.ErrorCh <- protocol.InferenceErrorMessage{
+				Type: protocol.TypeInferenceError, RequestID: msg.RequestID,
+				Error:       "completion settlement pending; retry later",
+				StatusCode:  http.StatusServiceUnavailable,
+				ErrorReason: "settlement_pending",
+			}:
+			default:
+			}
+		}
+		s.registry.SetProviderIdle(providerID)
+		return
 	}
 
 	// Signal completion to the consumer response handler. This must happen

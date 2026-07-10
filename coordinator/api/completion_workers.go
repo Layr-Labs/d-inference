@@ -1,12 +1,17 @@
 package api
 
 import (
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/saferun"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+const settlementRetryAttempts = 3
 
 const (
 	defaultCompletionWorkers  = 16
@@ -111,4 +116,23 @@ func (p *completionWorkerPool) activeCount() int64 {
 		return 0
 	}
 	return p.active.Load()
+}
+
+func (s *Server) settleInferenceWithRetry(settlement *store.InferenceSettlement) (bool, error) {
+	var lastErr error
+	for attempt := range settlementRetryAttempts {
+		applied, err := s.store.SettleInference(settlement)
+		if err == nil {
+			return applied, nil
+		}
+		lastErr = err
+		if errors.Is(err, store.ErrInsufficientBalance) ||
+			errors.Is(err, store.ErrFinancialOperationConflict) {
+			return false, err
+		}
+		if attempt+1 < settlementRetryAttempts {
+			time.Sleep(time.Duration(attempt+1) * 50 * time.Millisecond)
+		}
+	}
+	return false, lastErr
 }

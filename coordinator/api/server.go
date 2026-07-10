@@ -49,6 +49,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
+	"nhooyr.io/websocket"
 )
 
 // apiKeyCacheEntry stores the authenticated key record for a single raw API
@@ -196,6 +197,10 @@ type Server struct {
 	// this is purely the coordinator's own HTTP-ingress drain. See drain.go.
 	httpInflight        atomic.Int64
 	coordinatorDraining atomic.Bool
+	providerSessionMu   sync.Mutex
+	providerSessions    sync.WaitGroup
+	providerClosing     bool
+	providerConnections map[*websocket.Conn]struct{}
 
 	// knownBinaryHashes is the set of accepted provider binary SHA-256 hashes.
 	// When binaryHashPolicyConfigured is true, providers whose binary hash is
@@ -703,6 +708,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		zombieCanceller:      newZombieStreamCanceller(),
 		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
 		routeTelemetry:       newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
+		providerConnections:  make(map[*websocket.Conn]struct{}),
 	}
 	s.registerDefaultGauges()
 	s.routes()
@@ -750,6 +756,20 @@ func (s *Server) submitTelemetry(name string, fn func()) {
 // Close drains correctness-critical completion work before stopping the
 // best-effort routing-telemetry sink. It is idempotent.
 func (s *Server) Close() {
+	s.providerSessionMu.Lock()
+	s.providerClosing = true
+	connections := make([]*websocket.Conn, 0, len(s.providerConnections))
+	for connection := range s.providerConnections {
+		connections = append(connections, connection)
+	}
+	s.providerSessionMu.Unlock()
+	for _, connection := range connections {
+		_ = connection.CloseNow()
+	}
+	for _, providerID := range s.registry.ProviderIDs() {
+		s.registry.Disconnect(providerID)
+	}
+	s.providerSessions.Wait()
 	if s.completions != nil {
 		s.completions.close()
 	}

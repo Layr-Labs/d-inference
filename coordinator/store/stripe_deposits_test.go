@@ -14,10 +14,14 @@ func TestApplyStripeDepositExactlyOnce(t *testing.T) {
 			sessionID := uniqueID("billing-session")
 			checkoutID := uniqueID("checkout-session")
 			eventID := uniqueID("stripe-event")
+			referralCode := "REF-" + uniqueID("CODE")
+			if err := backend.CreateReferrer(uniqueID("referrer"), referralCode); err != nil {
+				t.Fatal(err)
+			}
 			session := &BillingSession{
 				ID: sessionID, AccountID: accountID, PaymentMethod: "stripe",
 				Currency: "usd", AmountMicroUSD: 5_000_000,
-				ExternalID: checkoutID, Status: "pending",
+				ExternalID: checkoutID, Status: "pending", ReferralCode: referralCode,
 			}
 			if err := backend.CreateBillingSession(session); err != nil {
 				t.Fatal(err)
@@ -49,6 +53,9 @@ func TestApplyStripeDepositExactlyOnce(t *testing.T) {
 			}
 			if withdrawable := backend.GetWithdrawableBalance(accountID); withdrawable != 0 {
 				t.Fatalf("Stripe deposit became withdrawable: %d", withdrawable)
+			}
+			if code, err := backend.GetReferrerForAccount(accountID); err != nil || code != referralCode {
+				t.Fatalf("atomic referral = %q, %v; want %q", code, err, referralCode)
 			}
 			history := backend.LedgerHistory(accountID)
 			if len(history) != 1 || history[0].Type != LedgerStripeDeposit {

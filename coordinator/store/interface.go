@@ -95,6 +95,23 @@ type UsageRecord struct {
 	CreatedAt        time.Time         `json:"created_at,omitempty"`
 }
 
+// InferenceSettlement contains the complete frozen financial projection for
+// one funded Go-coordinator request. Prompt/response content is never stored.
+type InferenceSettlement struct {
+	ReservationID                string
+	RequestID                    string
+	ConsumerAccountID            string
+	ReservedMicroUSD             int64
+	ReservedWithdrawableMicroUSD int64
+	ReservationPreDebited        bool
+	CostMicroUSD                 int64
+	ProviderEarning              *ProviderEarning
+	PlatformFeeMicroUSD          int64
+	ReferrerAccountID            string
+	ReferralRewardMicroUSD       int64
+	Usage                        *UsageRecord
+}
+
 // maxTelemetryReadRows is the hard upper bound on rows returned by the routing
 // telemetry readers (InferenceRouteRecordsSince / RejectionRecordsSince). These
 // tables grow unbounded over time, so the readers always cap the result set

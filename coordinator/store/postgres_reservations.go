@@ -6,9 +6,15 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+type persistedReservationOperation struct {
+	accountID            string
+	kind                 string
+	amountMicroUSD       int64
+	withdrawableMicroUSD int64
+}
 
 func (s *PostgresStore) ReserveInferenceBalance(accountID string, amountMicroUSD int64, operationKey string) (int64, bool, error) {
 	if amountMicroUSD <= 0 || operationKey == "" {
@@ -16,76 +22,74 @@ func (s *PostgresStore) ReserveInferenceBalance(accountID string, amountMicroUSD
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	claimToken := uuid.NewString()
-	var reservedWithdrawable int64
-	var disposition string
-	err := s.pool.QueryRow(ctx, `
-		WITH claim AS (
-			INSERT INTO balance_reservation_operations
-				(operation_key, account_id, kind, amount_micro_usd, withdrawable_micro_usd, claim_token)
-			VALUES ($3, $1, 'reserve', $2, 0, $5)
-			ON CONFLICT (operation_key) DO UPDATE
-				SET operation_key = EXCLUDED.operation_key
-			RETURNING account_id, kind, amount_micro_usd, withdrawable_micro_usd,
-			          claim_token = $5 AS owns_claim
-		), current AS MATERIALIZED (
-			SELECT balances.balance_micro_usd, balances.withdrawable_micro_usd
-			FROM balances, claim
-			WHERE balances.account_id = $1 AND claim.owns_claim
-			FOR UPDATE OF balances
-		), debit AS (
-			UPDATE balances AS b
-			SET balance_micro_usd = b.balance_micro_usd - $2,
-			    withdrawable_micro_usd = b.withdrawable_micro_usd -
-			        GREATEST(0::bigint, $2 - (current.balance_micro_usd - current.withdrawable_micro_usd)),
-			    updated_at = NOW()
-			FROM current
-			WHERE b.account_id = $1 AND current.balance_micro_usd >= $2
-			RETURNING b.balance_micro_usd,
-			          GREATEST(0::bigint, $2 - (current.balance_micro_usd - current.withdrawable_micro_usd))
-			              AS withdrawable_micro_usd
-		), record_provenance AS (
-			UPDATE balance_reservation_operations AS operation
-			SET withdrawable_micro_usd = debit.withdrawable_micro_usd
-			FROM debit
-			WHERE operation.operation_key = $3 AND operation.claim_token = $5
-			RETURNING operation.withdrawable_micro_usd
-		), ledger AS (
-			INSERT INTO ledger_entries
-				(account_id, entry_type, amount_micro_usd, balance_after, reference)
-			SELECT $1, $4, -$2, balance_micro_usd, 'reserve:' || $3
-			FROM debit
-		)
-		SELECT withdrawable_micro_usd, 'applied' FROM debit
-		UNION ALL
-		SELECT withdrawable_micro_usd, 'replayed' FROM claim
-		WHERE NOT owns_claim AND account_id = $1 AND kind = 'reserve'
-		  AND amount_micro_usd = $2
-		UNION ALL
-		SELECT 0, 'conflict' FROM claim
-		WHERE NOT owns_claim
-		  AND (account_id <> $1 OR kind <> 'reserve' OR amount_micro_usd <> $2)
-		LIMIT 1`,
-		accountID, amountMicroUSD, operationKey, string(LedgerCharge), claimToken,
-	).Scan(&reservedWithdrawable, &disposition)
-	if errors.Is(err, pgx.ErrNoRows) {
-		if _, cleanupErr := s.pool.Exec(ctx,
-			`DELETE FROM balance_reservation_operations
-			 WHERE operation_key = $1 AND claim_token = $2`,
-			operationKey, claimToken,
-		); cleanupErr != nil {
-			return 0, false, fmt.Errorf("store: clean rejected inference reservation: %w", cleanupErr)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, false, fmt.Errorf("store: begin inference reservation: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := lockFinancialOperation(ctx, tx, operationKey); err != nil {
+		return 0, false, err
+	}
+	existing, found, err := reservationOperationTx(ctx, tx, operationKey)
+	if err != nil {
+		return 0, false, err
+	}
+	if found {
+		if existing.accountID != accountID || existing.kind != "reserve" ||
+			existing.amountMicroUSD != amountMicroUSD {
+			return 0, false, ErrFinancialOperationConflict
 		}
+		if err := tx.Commit(ctx); err != nil {
+			return 0, false, fmt.Errorf("store: commit reservation replay: %w", err)
+		}
+		return existing.withdrawableMicroUSD, false, nil
+	}
+
+	var balance, withdrawable int64
+	err = tx.QueryRow(ctx,
+		`SELECT balance_micro_usd, withdrawable_micro_usd
+		 FROM balances WHERE account_id = $1 FOR UPDATE`,
+		accountID,
+	).Scan(&balance, &withdrawable)
+	if errors.Is(err, pgx.ErrNoRows) || balance < amountMicroUSD {
 		return 0, false, ErrInsufficientBalance
 	}
 	if err != nil {
-		return 0, false, fmt.Errorf("store: reserve inference balance: %w", err)
+		return 0, false, fmt.Errorf("store: lock inference balance: %w", err)
 	}
-	if disposition == "conflict" {
-		return 0, false, ErrFinancialOperationConflict
+	reservedWithdrawable := max(int64(0), amountMicroUSD-(balance-withdrawable))
+	if reservedWithdrawable > withdrawable {
+		reservedWithdrawable = withdrawable
 	}
-	return reservedWithdrawable, disposition == "applied", nil
+	balanceAfter := balance - amountMicroUSD
+	if _, err := tx.Exec(ctx,
+		`UPDATE balances
+		 SET balance_micro_usd = $2,
+		     withdrawable_micro_usd = withdrawable_micro_usd - $3,
+		     updated_at = NOW()
+		 WHERE account_id = $1`,
+		accountID, balanceAfter, reservedWithdrawable,
+	); err != nil {
+		return 0, false, fmt.Errorf("store: debit inference reservation: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO ledger_entries
+			(account_id, entry_type, amount_micro_usd, balance_after, reference)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		accountID, string(LedgerCharge), -amountMicroUSD, balanceAfter, "reserve:"+operationKey,
+	); err != nil {
+		return 0, false, fmt.Errorf("store: record inference reservation: %w", err)
+	}
+	if err := insertReservationOperationTx(ctx, tx, operationKey, persistedReservationOperation{
+		accountID: accountID, kind: "reserve", amountMicroUSD: amountMicroUSD,
+		withdrawableMicroUSD: reservedWithdrawable,
+	}); err != nil {
+		return 0, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, false, fmt.Errorf("store: commit inference reservation: %w", err)
+	}
+	return reservedWithdrawable, true, nil
 }
 
 func (s *PostgresStore) ReleaseInferenceReservation(accountID string, amountMicroUSD, withdrawableMicroUSD int64, operationKey, reference string) (bool, error) {
@@ -94,54 +98,108 @@ func (s *PostgresStore) ReleaseInferenceReservation(accountID string, amountMicr
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("store: begin reservation release: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := lockFinancialOperation(ctx, tx, operationKey); err != nil {
+		return false, err
+	}
+	existing, found, err := reservationOperationTx(ctx, tx, operationKey)
+	if err != nil {
+		return false, err
+	}
+	if found {
+		if existing.accountID != accountID || existing.kind != "release" ||
+			existing.amountMicroUSD != amountMicroUSD ||
+			existing.withdrawableMicroUSD != withdrawableMicroUSD {
+			return false, ErrFinancialOperationConflict
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return false, fmt.Errorf("store: commit release replay: %w", err)
+		}
+		return false, nil
+	}
 
-	claimToken := uuid.NewString()
-	var disposition string
-	err := s.pool.QueryRow(ctx, `
-		WITH claim AS (
-			INSERT INTO balance_reservation_operations
-				(operation_key, account_id, kind, amount_micro_usd, withdrawable_micro_usd, claim_token)
-			VALUES ($4, $1, 'release', $2, $3, $7)
-			ON CONFLICT (operation_key) DO UPDATE
-				SET operation_key = EXCLUDED.operation_key
-			RETURNING account_id, kind, amount_micro_usd, withdrawable_micro_usd,
-			          claim_token = $7 AS owns_claim
-		), credit AS (
-			INSERT INTO balances
+	if amountMicroUSD > 0 {
+		var balanceAfter int64
+		err := tx.QueryRow(ctx,
+			`INSERT INTO balances
 				(account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
-			SELECT $1, $2, $3, NOW()
-			FROM claim
-			WHERE owns_claim AND $2 > 0
-			ON CONFLICT (account_id) DO UPDATE SET
+			 VALUES ($1, $2, $3, NOW())
+			 ON CONFLICT (account_id) DO UPDATE SET
 				balance_micro_usd = balances.balance_micro_usd + $2,
 				withdrawable_micro_usd = balances.withdrawable_micro_usd + $3,
 				updated_at = NOW()
-			RETURNING balance_micro_usd
-		), ledger AS (
-			INSERT INTO ledger_entries
+			 RETURNING balance_micro_usd`,
+			accountID, amountMicroUSD, withdrawableMicroUSD,
+		).Scan(&balanceAfter)
+		if err != nil {
+			return false, fmt.Errorf("store: restore inference reservation: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO ledger_entries
 				(account_id, entry_type, amount_micro_usd, balance_after, reference)
-			SELECT $1, $5, $2, balance_micro_usd, $6
-			FROM credit
-		)
-		SELECT 'applied' FROM claim WHERE owns_claim
-		UNION ALL
-		SELECT 'replayed' FROM claim
-		WHERE NOT owns_claim AND account_id = $1 AND kind = 'release'
-		  AND amount_micro_usd = $2 AND withdrawable_micro_usd = $3
-		UNION ALL
-		SELECT 'conflict' FROM claim
-		WHERE NOT owns_claim
-		  AND (account_id <> $1 OR kind <> 'release' OR amount_micro_usd <> $2
-		       OR withdrawable_micro_usd <> $3)
-		LIMIT 1`,
-		accountID, amountMicroUSD, withdrawableMicroUSD, operationKey,
-		string(LedgerRefund), reference, claimToken,
-	).Scan(&disposition)
+			 VALUES ($1, $2, $3, $4, $5)`,
+			accountID, string(LedgerRefund), amountMicroUSD, balanceAfter, reference,
+		); err != nil {
+			return false, fmt.Errorf("store: record reservation release: %w", err)
+		}
+	}
+	if err := insertReservationOperationTx(ctx, tx, operationKey, persistedReservationOperation{
+		accountID: accountID, kind: "release", amountMicroUSD: amountMicroUSD,
+		withdrawableMicroUSD: withdrawableMicroUSD,
+	}); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("store: commit reservation release: %w", err)
+	}
+	return true, nil
+}
+
+func lockFinancialOperation(ctx context.Context, tx pgx.Tx, operationKey string) error {
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		operationKey,
+	); err != nil {
+		return fmt.Errorf("store: lock financial operation: %w", err)
+	}
+	return nil
+}
+
+func reservationOperationTx(ctx context.Context, tx pgx.Tx, operationKey string) (persistedReservationOperation, bool, error) {
+	var operation persistedReservationOperation
+	err := tx.QueryRow(ctx,
+		`SELECT account_id, kind, amount_micro_usd, withdrawable_micro_usd
+		 FROM balance_reservation_operations
+		 WHERE operation_key = $1`,
+		operationKey,
+	).Scan(&operation.accountID, &operation.kind, &operation.amountMicroUSD, &operation.withdrawableMicroUSD)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return persistedReservationOperation{}, false, nil
+	}
 	if err != nil {
-		return false, fmt.Errorf("store: release inference reservation: %w", err)
+		return persistedReservationOperation{}, false, fmt.Errorf("store: read financial operation: %w", err)
 	}
-	if disposition == "conflict" {
-		return false, ErrFinancialOperationConflict
+	return operation, true, nil
+}
+
+func insertReservationOperationTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	operationKey string,
+	operation persistedReservationOperation,
+) error {
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO balance_reservation_operations
+			(operation_key, account_id, kind, amount_micro_usd, withdrawable_micro_usd)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		operationKey, operation.accountID, operation.kind,
+		operation.amountMicroUSD, operation.withdrawableMicroUSD,
+	); err != nil {
+		return fmt.Errorf("store: insert financial operation: %w", err)
 	}
-	return disposition == "applied", nil
+	return nil
 }

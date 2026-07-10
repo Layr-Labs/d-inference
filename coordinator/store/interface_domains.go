@@ -205,6 +205,11 @@ type LedgerStore interface {
 	// Stable operation-key replay is a no-op with applied=false.
 	ReleaseInferenceReservation(accountID string, amountMicroUSD, withdrawableMicroUSD int64, operationKey, reference string) (applied bool, err error)
 
+	// SettleInference atomically finalizes the reservation, refunds exact
+	// provenance, credits beneficiaries, and records canonical usage/earning
+	// projections. Stable reservation replay returns applied=false.
+	SettleInference(settlement *InferenceSettlement) (applied bool, err error)
+
 	// GetWithdrawableBalance returns the withdrawable balance in micro-USD.
 	GetWithdrawableBalance(accountID string) int64
 

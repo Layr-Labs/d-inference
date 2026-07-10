@@ -56,6 +56,7 @@ type MemoryStore struct {
 	ledgerEntries                []LedgerEntry
 	ledgerSeq                    int64 // auto-increment ID
 	balanceReservationOperations map[string]balanceReservationOperation
+	inferenceSettlements         map[string]*InferenceSettlement
 
 	// Referral system
 	referrersByCode    map[string]*Referrer // code → referrer
@@ -168,6 +169,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		withdrawable:                  make(map[string]int64),
 		ledgerEntries:                 make([]LedgerEntry, 0),
 		balanceReservationOperations:  make(map[string]balanceReservationOperation),
+		inferenceSettlements:          make(map[string]*InferenceSettlement),
 		referrersByCode:               make(map[string]*Referrer),
 		referrersByAccount:            make(map[string]*Referrer),
 		referrals:                     make(map[string]string),
@@ -1725,6 +1727,15 @@ func (s *MemoryStore) ApplyStripeDeposit(eventID, billingSessionID, checkoutSess
 		return nil, s.rejectStripeDepositLocked(eventID, "billing_session_not_pending")
 	}
 
+	if session.ReferralCode != "" {
+		if _, alreadyReferred := s.referrals[session.AccountID]; !alreadyReferred {
+			if referrer := s.referrersByCode[session.ReferralCode]; referrer != nil &&
+				referrer.AccountID != session.AccountID {
+				s.referrals[session.AccountID] = session.ReferralCode
+				s.referralCounts[session.ReferralCode]++
+			}
+		}
+	}
 	session.ExternalID = checkoutSessionID
 	session.ProcessedEventID = eventID
 	session.Status = "completed"

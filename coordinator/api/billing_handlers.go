@@ -191,15 +191,6 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	consumerKey := result.Session.AccountID
-	referralCode := result.Session.ReferralCode
-	if referralCode != "" {
-		// Best-effort: a failure here means the referrer is not credited for this
-		// deposit; never silently swallow it.
-		if err := s.billing.Referral().Apply(consumerKey, referralCode); err != nil {
-			s.logger.Error("stripe: failed to apply referral credit", "error", err)
-			s.ddIncr("billing.referral_apply_failed", nil)
-		}
-	}
 
 	s.logger.Info("stripe: deposit credited",
 		"consumer_key", consumerKey[:min(8, len(consumerKey))]+"...",

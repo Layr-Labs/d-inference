@@ -178,28 +178,13 @@ func (r *ReferralService) Stats(accountID string) (*ReferralStatsResponse, error
 //
 // Call this during inference billing, after calculating the platform fee.
 func (r *ReferralService) DistributeReferralReward(consumerKey string, platformFee int64, jobID string) int64 {
-	// Check if consumer was referred
-	referrerCode, err := r.store.GetReferrerForAccount(consumerKey)
-	if err != nil || referrerCode == "" {
-		return platformFee // no referrer, full platform fee
-	}
-
-	// Look up the referrer account
-	referrer, err := r.store.GetReferrerByCode(referrerCode)
-	if err != nil {
-		return platformFee // referrer not found, full platform fee
-	}
-
-	// Calculate referral reward: X% of platform fee
-	referralReward := platformFee * r.referralSharePercent / 100
+	referrerAccount, referralReward, remainingPlatformFee := r.ResolveReferralReward(consumerKey, platformFee)
 	if referralReward <= 0 {
 		return platformFee
 	}
-
-	// Credit the referrer
-	if err := r.store.CreditWithdrawable(referrer.AccountID, referralReward, store.LedgerReferralReward, jobID); err != nil {
+	if err := r.store.CreditWithdrawable(referrerAccount, referralReward, store.LedgerReferralReward, jobID); err != nil {
 		r.logger.Error("referral: failed to credit reward",
-			"referrer", truncateID(referrer.AccountID),
+			"referrer", truncateID(referrerAccount),
 			"reward", referralReward,
 			"error", err,
 		)
@@ -207,13 +192,31 @@ func (r *ReferralService) DistributeReferralReward(consumerKey string, platformF
 	}
 
 	r.logger.Debug("referral: reward distributed",
-		"referrer", truncateID(referrer.AccountID),
+		"referrer", truncateID(referrerAccount),
 		"consumer", truncateID(consumerKey),
 		"reward_micro_usd", referralReward,
 		"job_id", jobID,
 	)
 
-	return platformFee - referralReward
+	return remainingPlatformFee
+}
+
+// ResolveReferralReward freezes the beneficiary and split without moving
+// money, so callers can include the reward in a larger atomic settlement.
+func (r *ReferralService) ResolveReferralReward(consumerKey string, platformFee int64) (accountID string, reward, remainingPlatformFee int64) {
+	referrerCode, err := r.store.GetReferrerForAccount(consumerKey)
+	if err != nil || referrerCode == "" {
+		return "", 0, platformFee
+	}
+	referrer, err := r.store.GetReferrerByCode(referrerCode)
+	if err != nil {
+		return "", 0, platformFee
+	}
+	referralReward := platformFee * r.referralSharePercent / 100
+	if referralReward <= 0 {
+		return "", 0, platformFee
+	}
+	return referrer.AccountID, referralReward, platformFee - referralReward
 }
 
 // ReferralStatsResponse is the API response for referral statistics.

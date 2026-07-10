@@ -242,7 +242,7 @@ func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
 		return
 	}
 	extraWithdrawable := pr.ReservedWithdrawableMicroUSD - pr.BaseReservedWithdrawableMicroUSD
-	if _, err := s.store.ReleaseInferenceReservation(
+	if _, err := s.releaseInferenceReservationWithRetry(
 		pr.ConsumerKey, extra, extraWithdrawable,
 		reservationTopUpReleaseKey(pr), "reservation_extra_refund:"+pr.RequestID,
 	); err != nil {
@@ -1012,7 +1012,7 @@ func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference st
 		if pr.ReservationID == "" {
 			pr.ReservationID = pr.RequestID
 		}
-		_, err := s.store.ReleaseInferenceReservation(
+		_, err := s.releaseInferenceReservationWithRetry(
 			pr.ConsumerKey,
 			pr.ReservedMicroUSD,
 			pr.ReservedWithdrawableMicroUSD,

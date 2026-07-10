@@ -8,8 +8,10 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +20,31 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+type flakyInferenceSettlementStore struct {
+	store.Store
+	mu        sync.Mutex
+	remaining int
+	attempts  int
+}
+
+func (s *flakyInferenceSettlementStore) SettleInference(settlement *store.InferenceSettlement) (bool, error) {
+	s.mu.Lock()
+	s.attempts++
+	if s.remaining > 0 {
+		s.remaining--
+		s.mu.Unlock()
+		return false, errors.New("transient settlement failure")
+	}
+	s.mu.Unlock()
+	return s.Store.SettleInference(settlement)
+}
+
+func (s *flakyInferenceSettlementStore) Attempts() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attempts
+}
 
 func TestNonStreamingCompleteObjectWithoutUsageDoesNotReturnSuccessAfterRefund(t *testing.T) {
 	srv, _, ledger := billingTestServer(t)
@@ -177,6 +204,114 @@ func TestRefundReservedBalanceDoesNotFinalizeWhenCreditFails(t *testing.T) {
 	}
 	if ok := pr.MarkReservationFinalized(); !ok {
 		t.Fatal("reservation was finalized even though refund credit failed")
+	}
+}
+
+func TestCompletionRetriesAtomicSettlementWithoutPartialProjection(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	flaky := &flakyInferenceSettlementStore{Store: st, remaining: 2}
+	srv.store = flaky
+	const (
+		model         = "retry-settlement-model"
+		reservationID = "retry-settlement-reservation"
+		reserved      = int64(500)
+	)
+	initialBalance := ledger.Balance(testConsumerID)
+	reservedWithdrawable, _, err := st.ReserveInferenceBalance(
+		testConsumerID, reserved, reservationID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := srv.registry.Register("retry-settlement-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+	})
+	provider.Mu().Lock()
+	provider.AccountID = "retry-settlement-provider-account"
+	provider.Mu().Unlock()
+	pr := &registry.PendingRequest{
+		RequestID: "retry-settlement-attempt", ReservationID: reservationID,
+		Model: model, ConsumerKey: testConsumerID,
+		ReservedMicroUSD: reserved, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: reserved, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 1000}
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID, Usage: usage,
+	})
+	if flaky.Attempts() != settlementRetryAttempts {
+		t.Fatalf("settlement attempts = %d, want %d", flaky.Attempts(), settlementRetryAttempts)
+	}
+	if balance := ledger.Balance(testConsumerID); balance != initialBalance-250 {
+		t.Fatalf("consumer balance = %d, want %d", balance, initialBalance-250)
+	}
+	if payout := st.GetWithdrawableBalance("retry-settlement-provider-account"); payout != 250 {
+		t.Fatalf("provider payout = %d, want 250", payout)
+	}
+	if usageRows := st.UsageByConsumer(testConsumerID); len(usageRows) != 1 {
+		t.Fatalf("usage rows = %d, want 1", len(usageRows))
+	}
+}
+
+func TestCompletionSettlementFailureDoesNotSignalSuccessOrMoveBeneficiaryMoney(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	srv.store = failingCreditStore{Store: st}
+	const (
+		model         = "failed-settlement-model"
+		reservationID = "failed-settlement-reservation"
+		reserved      = int64(500)
+	)
+	initialBalance := ledger.Balance(testConsumerID)
+	reservedWithdrawable, _, err := st.ReserveInferenceBalance(
+		testConsumerID, reserved, reservationID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := srv.registry.Register("failed-settlement-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+	})
+	provider.Mu().Lock()
+	provider.AccountID = "failed-settlement-provider-account"
+	provider.Mu().Unlock()
+	pr := &registry.PendingRequest{
+		RequestID: "failed-settlement-attempt", ReservationID: reservationID,
+		Model: model, ConsumerKey: testConsumerID,
+		ReservedMicroUSD: reserved, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: reserved, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID,
+		Usage: protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 1000},
+	})
+	select {
+	case completion := <-pr.CompleteCh:
+		t.Fatalf("failed settlement signaled successful completion: %+v", completion)
+	default:
+	}
+	select {
+	case terminal := <-pr.ErrorCh:
+		if terminal.StatusCode != http.StatusServiceUnavailable ||
+			terminal.ErrorReason != "settlement_pending" {
+			t.Fatalf("settlement failure terminal = %+v", terminal)
+		}
+	default:
+		t.Fatal("failed settlement did not signal a retryable error")
+	}
+	if balance := ledger.Balance(testConsumerID); balance != initialBalance-reserved {
+		t.Fatalf("failed settlement changed held consumer balance to %d", balance)
+	}
+	if payout := st.GetWithdrawableBalance("failed-settlement-provider-account"); payout != 0 {
+		t.Fatalf("failed settlement paid provider %d", payout)
+	}
+	if pr.IsReservationFinalized() {
+		t.Fatal("failed settlement finalized the local reservation")
 	}
 }
 

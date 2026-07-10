@@ -1,12 +1,20 @@
 package api
 
 import (
+	"context"
 	"io"
 	"log/slog"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"nhooyr.io/websocket"
 )
 
 func TestCompletionWorkersBoundConcurrencyAndDrain(t *testing.T) {
@@ -122,5 +130,110 @@ func TestCompletionWorkersCloseIsIdempotent(t *testing.T) {
 	}
 	if pool.submit(func() {}) {
 		t.Fatal("closed pool accepted work")
+	}
+}
+
+func TestCompletionClaimsPendingBeforeQueueBackpressureAndDisconnect(t *testing.T) {
+	srv, store, ledger := billingTestServer(t)
+	srv.completions.close()
+	srv.completions = newCompletionWorkerPool(nil, 1, 1)
+	t.Cleanup(srv.completions.close)
+
+	releaseWorker := make(chan struct{})
+	workerStarted := make(chan struct{})
+	if !srv.completions.submit(func() {
+		close(workerStarted)
+		<-releaseWorker
+	}) {
+		t.Fatal("blocking task rejected")
+	}
+	<-workerStarted
+	if !srv.completions.submit(func() {}) {
+		t.Fatal("filler task rejected")
+	}
+
+	const (
+		model         = "claimed-completion-model"
+		reservationID = "claimed-completion-reservation"
+		reserved      = int64(500)
+	)
+	initialBalance := ledger.Balance(testConsumerID)
+	reservedWithdrawable, _, err := store.ReserveInferenceBalance(
+		testConsumerID, reserved, reservationID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := srv.registry.Register("claimed-completion-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+	})
+	pr := &registry.PendingRequest{
+		RequestID: "claimed-completion-attempt", ReservationID: reservationID,
+		Model: model, ConsumerKey: testConsumerID,
+		ReservedMicroUSD: reserved, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: reserved, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 1000}
+	enqueued := make(chan struct{})
+	go func() {
+		srv.enqueueCompletion(provider.ID, provider, &protocol.InferenceCompleteMessage{
+			Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID, Usage: usage,
+		})
+		close(enqueued)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for provider.GetPending(pr.RequestID) != nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if provider.GetPending(pr.RequestID) != nil {
+		t.Fatal("completion did not claim pending request before queue submission")
+	}
+	srv.registry.Disconnect(provider.ID)
+	close(releaseWorker)
+	select {
+	case <-enqueued:
+	case <-time.After(time.Second):
+		t.Fatal("completion enqueue remained blocked")
+	}
+	select {
+	case <-pr.CompleteCh:
+	case <-time.After(time.Second):
+		t.Fatal("claimed completion was lost after disconnect")
+	}
+	if balance := ledger.Balance(testConsumerID); balance != initialBalance-250 {
+		t.Fatalf("settled balance = %d, want %d", balance, initialBalance-250)
+	}
+}
+
+func TestServerCloseJoinsUnregisteredProviderWebSocketBeforeWorkers(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	server := httptest.NewServer(srv.Handler())
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	connection, _, err := websocket.Dial(
+		ctx,
+		"ws"+strings.TrimPrefix(server.URL, "http")+"/ws/provider",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+
+	closed := make(chan struct{})
+	go func() {
+		srv.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Server.Close did not join provider WebSocket producer")
 	}
 }

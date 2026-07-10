@@ -52,6 +52,22 @@ func (s *countingStore) ReserveInferenceBalance(accountID string, amountMicroUSD
 	return s.Store.ReserveInferenceBalance(accountID, amountMicroUSD, operationKey)
 }
 
+func (s *countingStore) SettleInference(settlement *store.InferenceSettlement) (bool, error) {
+	if !settlement.ReservationPreDebited {
+		if s.delay > 0 {
+			time.Sleep(s.delay)
+		}
+		s.mu.Lock()
+		s.debits++
+		err := s.debitErr
+		s.mu.Unlock()
+		if err != nil {
+			return false, err
+		}
+	}
+	return s.Store.SettleInference(settlement)
+}
+
 func (s *countingStore) DebitCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -207,5 +223,46 @@ func TestServiceReservationCompletionDebitsActualAndReleasesHold(t *testing.T) {
 	}
 	if got := st.GetBalance("svc-complete"); got != 1_000_000-expected {
 		t.Fatalf("balance = %d, want %d", got, 1_000_000-expected)
+	}
+}
+
+func TestServiceReservationCannotSettleAboveFundedHold(t *testing.T) {
+	srv, st := newReservationTestServer(t, ServerConfig{ServiceReservations: true}, nil)
+	createServiceUser(t, st, "svc-funded-cap")
+	if err := st.Credit("svc-funded-cap", 1_000_000, store.LedgerDeposit, "seed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetModelPrice("platform", "svc-cap-model", 10_000_000, 20_000_000); err != nil {
+		t.Fatal(err)
+	}
+	const hold int64 = 100_000
+	serviceMode, _, err := srv.reserveInitialBalance(
+		"svc-funded-cap", "svc-cap-model", hold, "reserve-svc-cap",
+	)
+	if err != nil || !serviceMode {
+		t.Fatalf("reserve serviceMode=%v err=%v", serviceMode, err)
+	}
+	provider := srv.registry.Register("svc-cap-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: "svc-cap-model", ModelType: "chat", Quantization: "4bit"}},
+	})
+	provider.Mu().Lock()
+	provider.AccountID = "svc-cap-provider-account"
+	provider.Mu().Unlock()
+	pr := &registry.PendingRequest{
+		RequestID: "svc-cap-attempt", Model: "svc-cap-model", ConsumerKey: "svc-funded-cap",
+		ReservedMicroUSD: hold, ServiceReservation: true,
+		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID,
+		Usage: protocol.UsageInfo{PromptTokens: 100_000, CompletionTokens: 100_000},
+	})
+	if balance := st.GetBalance("svc-funded-cap"); balance != 1_000_000-hold {
+		t.Fatalf("service balance = %d, want funded cap %d", balance, 1_000_000-hold)
+	}
+	if payout := st.GetWithdrawableBalance("svc-cap-provider-account"); payout != hold {
+		t.Fatalf("provider payout = %d, want funded cap %d", payout, hold)
 	}
 }

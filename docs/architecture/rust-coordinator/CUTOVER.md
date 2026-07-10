@@ -930,3 +930,17 @@ burn through `MAX_ATTEMPTS` in wall-clock seconds. Cutover
 `coordinator_epoch` mismatches the caller epoch — matching
 `MemoryLedger::reserve_with_epoch` OwnershipLost on stale replay.
 
+### Cutover-drain-all ready under money_fx (DECISIONS #158)
+
+`cutover-drain-all` holds `money_fx` across the ledger+outbox readiness
+snapshot (both early-exit and mid-round checks) so a concurrent settle
+cannot enqueue `inference.settled` between the two reads and produce a
+false `scoped_ready`.
+
+### Settle SQL cross-job digest conflict (DECISIONS #159)
+
+`settle_sql` / `settle_capped_sql` / `force_settle_sql` return
+`digest_conflict` when a fresh op claim fails digest insert because the
+terminal_digest is already bound to a different job — matching
+MemoryLedger Conflict (not silent no-op).
+

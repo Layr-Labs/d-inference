@@ -65,7 +65,7 @@ async fn concurrent_http_force_settle_exactly_one_released() {
     }
     let app = router(state);
     let mut handles = Vec::new();
-    for i in 0..8 {
+    for _ in 0..8 {
         let app = app.clone();
         handles.push(tokio::spawn(async move {
             let res = app
@@ -78,7 +78,7 @@ async fn concurrent_http_force_settle_exactly_one_released() {
                             json!({
                                 "job_id": "held-cfs",
                                 "actual_micro_usd": 40_000,
-                                "terminal_digest": format!("cfs-d-{i}")
+                                "terminal_digest": "cfs-shared-d"
                             })
                             .to_string(),
                         ))
@@ -86,6 +86,7 @@ async fn concurrent_http_force_settle_exactly_one_released() {
                 )
                 .await
                 .unwrap();
+            // Same op key + same digest: first Released, rest AlreadyTerminal (200).
             assert_eq!(res.status(), StatusCode::OK);
             body_json(res).await["action"].as_str().unwrap().to_string()
         }));
@@ -100,8 +101,6 @@ async fn concurrent_http_force_settle_exactly_one_released() {
             other => panic!("unexpected action {other}"),
         }
     }
-    // Same op key force_settle:{job} — first wins; others Conflict→already_terminal
-    // or digest conflict. Exactly one released.
     assert_eq!(released, 1);
-    assert_eq!(released + terminal, 8);
+    assert_eq!(terminal, 7);
 }

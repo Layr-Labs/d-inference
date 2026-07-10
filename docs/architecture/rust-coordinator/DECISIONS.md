@@ -87,6 +87,7 @@ Date: 2026-07-10
 | 78 | force-settle-batch | `POST /v1/admin/force-settle-batch` force-settles all held jobs (default actual=0 full refund); pair with recover-batch after adopt for mixed orphans |
 | 79 | clear-orphans one-shot | `POST /v1/admin/clear-orphans` runs adopt → recover reserved → force-settle held in one admin call for cutover drain |
 | 80 | CLI demo-clear-orphans | `--demo-clear-orphans` proves adopt→recover→force-settle on mixed reserved+held orphans restores balance |
+| 81 | orphan_summary + clear-orphans race | Quiescence `orphan_summary` counts needs_adopt/reserved/held. Concurrent clear-orphans conserves money; outbox must be acked for ready |
 
 ## Deleted Go mechanisms (do not port)
 

@@ -421,3 +421,11 @@ for cutover drain after re-acquire; use stepwise endpoints for partial triage.
 `recovery --demo-clear-orphans --confirm-same-release` dry-runs the same
 pipeline in-process for operator rehearsal without HTTP.
 
+### orphan_summary + clear-orphans race (DECISIONS #81)
+
+Quiescence includes `orphan_summary` (`needs_adopt_count`,
+`reserved_not_started_count`, `held_start_authorized_count`). Concurrent
+`clear-orphans` is money-safe (exactly one release/settle per job). After
+clear, critical outbox still blocks `ready` until acked — drain outbox before
+cutover.
+

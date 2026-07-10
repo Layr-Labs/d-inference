@@ -789,6 +789,30 @@ impl MemoryLedger {
         ids
     }
 
+    /// Counts for quiescence orphan_summary (DECISIONS #81).
+    pub fn orphan_summary_counts(&self, current_epoch: u64) -> (usize, usize, usize) {
+        let mut needs_adopt = 0usize;
+        let mut reserved = 0usize;
+        let mut held = 0usize;
+        for j in self.jobs.values() {
+            if j.disposition.is_some() {
+                continue;
+            }
+            if j.funded_start {
+                held += 1;
+            } else {
+                reserved += 1;
+            }
+            if j.fencing_epoch != 0
+                && current_epoch != 0
+                && j.fencing_epoch != current_epoch
+            {
+                needs_adopt += 1;
+            }
+        }
+        (needs_adopt, reserved, held)
+    }
+
     /// Jobs that are start_authorized but not yet disposed (held for review).
     pub fn held_start_authorized_count(&self) -> usize {
         self.jobs

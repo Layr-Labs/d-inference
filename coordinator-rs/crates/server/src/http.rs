@@ -760,14 +760,14 @@ async fn admin_force_settle(
             let ack = json!({
                 "type": "terminal_ack",
                 "job_id": req.job_id,
-                "attempt_id": "",
+                "attempt_id": "force-settle",
                 "lease_id": "",
                 "terminal_digest": digest,
                 "disposition": "force_settled",
             });
             terms.record_bound(
                 &req.job_id,
-                "",
+                "force-settle",
                 &digest,
                 "force_settled",
                 Some(ack),
@@ -923,13 +923,13 @@ async fn admin_force_settle_batch(
                     let ack = json!({
                         "type": "terminal_ack",
                         "job_id": job_id,
-                        "attempt_id": "",
+                        "attempt_id": "force-settle",
                         "lease_id": "",
                         "terminal_digest": digest,
                         "disposition": "force_settled",
                     });
                     terms.record_bound(
-                        &job_id, "", &digest, "force_settled", Some(ack), "", "",
+                        &job_id, "force-settle", &digest, "force_settled", Some(ack), "", "",
                     );
                 }
                 let mut box_ = state.outbox.lock().await;
@@ -1687,13 +1687,13 @@ async fn admin_clear_orphans(
                     let ack = json!({
                         "type": "terminal_ack",
                         "job_id": job_id,
-                        "attempt_id": "",
+                        "attempt_id": "force-settle",
                         "lease_id": "",
                         "terminal_digest": digest,
                         "disposition": "force_settled",
                     });
                     terms.record_bound(
-                        &job_id, "", &digest, "force_settled", Some(ack), "", "",
+                        &job_id, "force-settle", &digest, "force_settled", Some(ack), "", "",
                     );
                 }
                 let mut box_ = state.outbox.lock().await;

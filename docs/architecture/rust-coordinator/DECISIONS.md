@@ -110,6 +110,7 @@ Date: 2026-07-10
 | 101 | Adopt + cutover after clear abort | After clear-orphans steal abort, quiescence lists orphans without ownership; re-acquire + concurrent adopt-jobs ∥ cutover-drain reaches ready |
 | 102 | Explicit remaining-id settle + cancel vs force | After batch abort, adopt+force-settle explicit remaining ids clears holds. cancel-attempt never moves money while force-settle races |
 | 103 | Explicit remaining-id recover + deposit/drain | After recover-batch abort, adopt+recover explicit remaining ids. Concurrent deposits ∥ outbox-drain leave outbox empty |
+| 104 | Multi-account remaining settle + ingest ACK | Multi-account force-settle remaining ids refunds each owner. Force-settle records attempt_id=`force-settle` so terminal-ingest ACKs without double charge |
 
 ## Deleted Go mechanisms (do not port)
 

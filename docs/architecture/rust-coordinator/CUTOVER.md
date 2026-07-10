@@ -562,3 +562,10 @@ Same explicit-id path for reserved orphans via recover-undispatched-batch.
 Concurrent deposits with outbox-drain after recover leave outbox empty and
 conserve deposit credits.
 
+### Multi-account remaining settle + ingest ACK (DECISIONS #104)
+
+Multi-account force-settle of remaining ids refunds each job owner. Force-settle
+disposition rows use attempt_id `force-settle` (non-empty) so
+`/v1/admin/terminal-ingest` can ACK without MissingIdentity / double charge.
+held-review-batch concurrent with recover-batch never releases held jobs.
+

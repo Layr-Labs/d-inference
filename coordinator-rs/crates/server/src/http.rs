@@ -254,7 +254,7 @@ async fn release_job_with_outbox(
 
 async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Warm-plane inventory — expand as workers land.
-    let (bal, wdr, active_jobs, active_job_ids, held_start_authorized, held_job_ids) = {
+    let (bal, wdr, active_jobs, active_job_ids, active_jobs_detail, held_start_authorized, held_job_ids) = {
         let led = state.ledger.lock().await;
         let (b, w) = led.balance(&state.pilot_account);
         (
@@ -262,6 +262,7 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             w,
             led.active_job_count(),
             led.active_job_ids(),
+            led.active_jobs_detail(),
             led.held_start_authorized_count(),
             led.held_start_authorized_job_ids(),
         )
@@ -304,6 +305,7 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             "pilot_account_withdrawable_micro_usd": wdr,
             "active_jobs": active_jobs,
             "active_job_ids": active_job_ids,
+            "active_jobs_detail": active_jobs_detail,
             "held_start_authorized": held_start_authorized,
             "held_start_authorized_job_ids": held_job_ids,
             "placement_version": placement_version,

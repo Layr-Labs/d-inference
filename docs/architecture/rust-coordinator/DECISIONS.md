@@ -82,6 +82,7 @@ Date: 2026-07-10
 | 73 | Wait-steal adopt-force-settle e2e | After terminal-wait ownership steal, quiescence lists orphan → adopt-jobs → force-settle clears hold. `adopt_all_fencing_epoch_sql` documents bulk SQL |
 | 74 | Stream wait-steal + adopt-jobs edges | Stream=true wait-steal follows same adopt→force-settle path. Bulk adopt supports explicit `job_ids` with partial failure; concurrent adopt-jobs is idempotent |
 | 75 | CLI adopt-recover demo | `recovery --demo-adopt-recover-job` proves old-epoch recover fails, adopt rebinds, new-epoch recover refunds |
+| 76 | Quiescence active_jobs_detail + CLI adopt-force-settle | Quiescence lists per-job `fencing_epoch` / `funded_start` / reserved amounts. CLI `--demo-adopt-force-settle-job` proves adopt then force-settle for held orphans |
 
 ## Deleted Go mechanisms (do not port)
 

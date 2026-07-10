@@ -221,16 +221,17 @@ impl PostgresLedgerStub {
 
     /// The SQL that will back settle once SQLx is wired (mirrors MemoryLedger.settle).
     /// Parameters: $1 account, $2 job_id, $3 actual, $4 terminal_digest, $5 operation_key,
-    ///             $6 attempt_id, $7 lease_id, $8 se_signature
+    ///             $6 attempt_id, $7 lease_id, $8 se_signature, $9 fencing_epoch
     /// Op claim gates digest + money (DECISIONS #32/#33): reused op keys cannot move funds.
     /// Digest/op inserts are gated on guard so failed settles cannot poison digests/op keys.
     /// Outbox insert gated on mark (DECISIONS #37/#38).
+    /// Fencing epoch must match (or job unbound=0) — DECISIONS #52.
     pub fn settle_sql() -> &'static str {
         r#"
         WITH job AS (
           SELECT job_id, account_id, reserved_total_micro_usd AS reserved,
                  reserved_withdrawable_micro_usd AS reserved_wdr,
-                 terminal_disposition
+                 terminal_disposition, coordinator_epoch
           FROM rust_coord.inference_jobs
           WHERE job_id = $2
             AND account_id = $1
@@ -240,6 +241,7 @@ impl PostgresLedgerStub {
           WHERE terminal_disposition IS NULL
             AND $3::bigint >= 0
             AND $3::bigint <= reserved
+            AND (coordinator_epoch = 0 OR coordinator_epoch = $9::bigint)
         ), op AS (
           INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
           SELECT $5, $2, 'settle', $3 FROM guard
@@ -306,15 +308,16 @@ impl PostgresLedgerStub {
 
     /// Settle-capped SQL: charge = LEAST(actual, billable_cap, reserved) (DECISIONS #23).
     /// Parameters: $1 account, $2 job_id, $3 actual, $4 billable_cap, $5 terminal_digest,
-    ///             $6 operation_key, $7 attempt_id, $8 lease_id, $9 se_signature
+    ///             $6 operation_key, $7 attempt_id, $8 lease_id, $9 se_signature, $10 fencing_epoch
     /// Op claim gates digest + money so reused op keys cannot move funds (DECISIONS #33).
     /// Outbox insert gated on mark (DECISIONS #37/#38).
+    /// Fencing epoch must match (or job unbound=0) — DECISIONS #52.
     pub fn settle_capped_sql() -> &'static str {
         r#"
         WITH job AS (
           SELECT job_id, account_id, reserved_total_micro_usd AS reserved,
                  reserved_withdrawable_micro_usd AS reserved_wdr,
-                 terminal_disposition
+                 terminal_disposition, coordinator_epoch
           FROM rust_coord.inference_jobs
           WHERE job_id = $2
             AND account_id = $1
@@ -327,6 +330,7 @@ impl PostgresLedgerStub {
           ) AS amount
           FROM job j
           WHERE j.terminal_disposition IS NULL
+            AND (j.coordinator_epoch = 0 OR j.coordinator_epoch = $10::bigint)
         ), op AS (
           INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
           SELECT $6, $2, 'settle_capped', c.amount FROM charge c
@@ -396,13 +400,13 @@ impl PostgresLedgerStub {
     /// Force-settle SQL for start_authorized held jobs (mirrors recovery::force_settle_held).
     /// Requires state = start_authorized and no terminal yet (DECISIONS #16/#17).
     /// Parameters: $1 account, $2 job_id, $3 actual, $4 terminal_digest, $5 operation_key,
-    ///             $6 attempt_id, $7 lease_id, $8 se_signature
+    ///             $6 attempt_id, $7 lease_id, $8 se_signature, $9 fencing_epoch
     pub fn force_settle_sql() -> &'static str {
         r#"
         WITH job AS (
           SELECT job_id, account_id, reserved_total_micro_usd AS reserved,
                  reserved_withdrawable_micro_usd AS reserved_wdr,
-                 terminal_disposition, state
+                 terminal_disposition, state, coordinator_epoch
           FROM rust_coord.inference_jobs
           WHERE job_id = $2
             AND account_id = $1
@@ -411,6 +415,7 @@ impl PostgresLedgerStub {
           SELECT 1 FROM job
           WHERE terminal_disposition IS NULL
             AND state = 'start_authorized'
+            AND (coordinator_epoch = 0 OR coordinator_epoch = $9::bigint)
         ), charge AS (
           SELECT LEAST(GREATEST(0, $3::bigint), j.reserved) AS amount
           FROM job j
@@ -483,14 +488,15 @@ impl PostgresLedgerStub {
     }
 
     /// Release SQL for reserved-but-not-start_authorized jobs (mirrors MemoryLedger.release).
-    /// Parameters: $1 account, $2 job_id, $3 operation_key
+    /// Parameters: $1 account, $2 job_id, $3 operation_key, $4 fencing_epoch
     /// Op claim gates credit/mark so reused op keys cannot refund (DECISIONS #33).
+    /// Fencing epoch must match (or job unbound=0) — DECISIONS #52.
     pub fn release_sql() -> &'static str {
         r#"
         WITH job AS (
           SELECT job_id, account_id, reserved_total_micro_usd AS reserved,
                  reserved_withdrawable_micro_usd AS reserved_wdr,
-                 terminal_disposition, state
+                 terminal_disposition, state, coordinator_epoch
           FROM rust_coord.inference_jobs
           WHERE job_id = $2
             AND account_id = $1
@@ -500,6 +506,7 @@ impl PostgresLedgerStub {
           SELECT 1 FROM job
           WHERE terminal_disposition IS NULL
             AND state <> 'start_authorized'
+            AND (coordinator_epoch = 0 OR coordinator_epoch = $4::bigint)
         ), op AS (
           INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
           SELECT $3, $2, 'release', j.reserved FROM job j
@@ -592,6 +599,7 @@ mod tests {
         assert!(sql.contains("rust_coord.outbox"));
         assert!(sql.contains("inference.settled"));
         assert!(sql.contains("FROM mark"));
+        assert!(sql.contains("coordinator_epoch = $9"));
     }
 
     #[test]
@@ -611,6 +619,7 @@ mod tests {
         assert!(sql.contains("cleanup_op"));
         assert!(sql.contains("rust_coord.outbox"));
         assert!(sql.contains("inference.settled"));
+        assert!(sql.contains("coordinator_epoch = $10"));
     }
 
     #[test]
@@ -633,6 +642,7 @@ mod tests {
         assert!(sql.contains("cleanup_op"));
         assert!(sql.contains("rust_coord.outbox"));
         assert!(sql.contains("inference.settled"));
+        assert!(sql.contains("coordinator_epoch = $9"));
     }
 
     #[test]
@@ -649,6 +659,7 @@ mod tests {
         assert!(sql.contains("rust_coord.outbox"));
         assert!(sql.contains("inference.released"));
         assert!(sql.contains("FROM mark m"));
+        assert!(sql.contains("coordinator_epoch = $4"));
     }
 
     #[test]

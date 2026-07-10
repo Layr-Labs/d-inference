@@ -243,7 +243,8 @@ terminal ingest can surface attestation material without moving money again.
 
 ### Job fencing epoch bind (DECISIONS #52)
 
-Jobs bind the coordinator fencing epoch at reserve. Later settle/release/resize
-paths call `require_fencing_epoch` so a re-acquired coordinator with a new
-epoch cannot mutate an older job's money. Durable SQL column lands with SQLx.
+Jobs bind the coordinator fencing epoch at reserve (`bind_fencing_epoch` /
+`reserve_sql` `$5`). Later settle/release/resize paths call
+`require_fencing_epoch` (and SQL guards `coordinator_epoch = $N OR 0`) so a
+re-acquired coordinator with a new epoch cannot mutate an older job's money.
 

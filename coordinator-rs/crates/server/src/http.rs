@@ -112,6 +112,21 @@ fn invoke_admin_batch_job(job_id: &str) {
     }
 }
 
+/// Remaining orphan ids for abort responses. When `account_filter` is set, scope
+/// to that account so ops do not chase foreign jobs (DECISIONS #105).
+fn remaining_ids_for_abort(
+    led: &crate::ledger::MemoryLedger,
+    account_filter: Option<&str>,
+) -> (Vec<String>, Vec<String>) {
+    match account_filter {
+        Some(acct) => (
+            led.active_job_ids_for_account(acct),
+            led.held_start_authorized_job_ids_for_account(acct),
+        ),
+        None => (led.active_job_ids(), led.held_start_authorized_job_ids()),
+    }
+}
+
 /// Partial batch response when ownership is lost mid-loop (DECISIONS #97/#98).
 fn batch_ownership_lost_partial(
     batch: &str,
@@ -866,7 +881,7 @@ async fn admin_force_settle_batch(
         if require_holding(&state).is_err() {
             let (remaining_active, remaining_held) = {
                 let led = state.ledger.lock().await;
-                (led.active_job_ids(), led.held_start_authorized_job_ids())
+                remaining_ids_for_abort(&led, account_filter.as_deref())
             };
             return batch_ownership_lost_partial(
                 "force_settle_batch",
@@ -1150,7 +1165,7 @@ async fn admin_recover_undispatched_batch(
         if require_holding(&state).is_err() {
             let (remaining_active, remaining_held) = {
                 let led = state.ledger.lock().await;
-                (led.active_job_ids(), led.held_start_authorized_job_ids())
+                remaining_ids_for_abort(&led, account_filter.as_deref())
             };
             return batch_ownership_lost_partial(
                 "recover_undispatched_batch",
@@ -1543,7 +1558,7 @@ async fn admin_clear_orphans(
     if require_holding(&state).is_err() {
         let (remaining_active, remaining_held) = {
             let led = state.ledger.lock().await;
-            (led.active_job_ids(), led.held_start_authorized_job_ids())
+            remaining_ids_for_abort(&led, account_filter.as_deref())
         };
         return ownership_lost_partial(
             "after_adopt",
@@ -1569,7 +1584,7 @@ async fn admin_clear_orphans(
             if require_holding(&state).is_err() {
                 let (remaining_active, remaining_held) = {
                     let led = state.ledger.lock().await;
-                    (led.active_job_ids(), led.held_start_authorized_job_ids())
+                    remaining_ids_for_abort(&led, account_filter.as_deref())
                 };
                 return ownership_lost_partial(
                     "during_recover",
@@ -1616,7 +1631,7 @@ async fn admin_clear_orphans(
     if require_holding(&state).is_err() {
         let (remaining_active, remaining_held) = {
             let led = state.ledger.lock().await;
-            (led.active_job_ids(), led.held_start_authorized_job_ids())
+            remaining_ids_for_abort(&led, account_filter.as_deref())
         };
         return ownership_lost_partial(
             "after_recover",
@@ -1642,7 +1657,7 @@ async fn admin_clear_orphans(
             if require_holding(&state).is_err() {
                 let (remaining_active, remaining_held) = {
                     let led = state.ledger.lock().await;
-                    (led.active_job_ids(), led.held_start_authorized_job_ids())
+                    remaining_ids_for_abort(&led, account_filter.as_deref())
                 };
                 return ownership_lost_partial(
                     "during_force_settle",

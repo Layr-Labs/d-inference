@@ -159,12 +159,12 @@ pub fn record_released_disposition(store: &mut MemoryTerminalStore, job_id: &str
     let ack = json!({
         "type": "terminal_ack",
         "job_id": job_id,
-        "attempt_id": "",
+        "attempt_id": "release",
         "lease_id": "",
         "terminal_digest": digest,
         "disposition": "released",
     });
-    store.record_bound(job_id, "", &digest, "released", Some(ack), "", "");
+    store.record_bound(job_id, "release", &digest, "released", Some(ack), "", "");
 }
 
 /// ACK a replayed v2 terminal using stored disposition. Never settles/releases.

@@ -752,6 +752,18 @@ impl MemoryLedger {
         ids
     }
 
+    /// Active job ids owned by `account` (DECISIONS #105 account-scoped abort).
+    pub fn active_job_ids_for_account(&self, account: &str) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .jobs
+            .iter()
+            .filter(|(_, j)| j.disposition.is_none() && j.account_id == account)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
     /// Per-job orphan inventory for quiescence (DECISIONS #76/#77).
     /// `current_epoch` is the live ownership epoch (0 when not holding).
     pub fn active_jobs_detail(&self, current_epoch: u64) -> Vec<serde_json::Value> {
@@ -827,11 +839,28 @@ impl MemoryLedger {
     }
 
     pub fn held_start_authorized_job_ids(&self) -> Vec<String> {
-        self.jobs
+        let mut ids: Vec<String> = self
+            .jobs
             .iter()
             .filter(|(_, j)| j.disposition.is_none() && j.funded_start)
             .map(|(id, _)| id.clone())
-            .collect()
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// Held start_authorized job ids owned by `account` (DECISIONS #105).
+    pub fn held_start_authorized_job_ids_for_account(&self, account: &str) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .jobs
+            .iter()
+            .filter(|(_, j)| {
+                j.disposition.is_none() && j.funded_start && j.account_id == account
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids
     }
 }
 

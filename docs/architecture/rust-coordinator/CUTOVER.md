@@ -569,3 +569,10 @@ disposition rows use attempt_id `force-settle` (non-empty) so
 `/v1/admin/terminal-ingest` can ACK without MissingIdentity / double charge.
 held-review-batch concurrent with recover-batch never releases held jobs.
 
+### Account-scoped abort remaining + release attempt_id (DECISIONS #105)
+
+When batch recover/force-settle or clear-orphans abort mid-flight with an
+`account` filter, `remaining_active_job_ids` /
+`remaining_held_start_authorized_job_ids` list only that account's orphans.
+Released dispositions use attempt_id `release` (parity with force-settle).
+

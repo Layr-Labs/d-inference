@@ -2848,6 +2848,9 @@ func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
 
 	if err := creditTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
 		return err
@@ -2900,6 +2903,9 @@ func (s *PostgresStore) CreditWithdrawable(accountID string, amountMicroUSD int6
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
 
 	if err := creditWithdrawableTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
 		return err
@@ -2924,6 +2930,9 @@ func (s *PostgresStore) CreditWithdrawableOnce(accountID string, amountMicroUSD 
 		return false, fmt.Errorf("store: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return false, err
+	}
 
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, string(entryType)+":"+reference); err != nil {
 		return false, fmt.Errorf("store: advisory lock: %w", err)
@@ -2955,13 +2964,16 @@ func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	// Single-statement CTE: debit balance, cap withdrawable, insert ledger
-	// entry -- all in one round trip. The old implementation used 5 sequential
-	// round trips (BEGIN + 2 UPDATEs + INSERT + COMMIT) which paid full
-	// network latency to Postgres on each hop (~200ms × 5 = 1s+).
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin debit: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
 	var balanceAfter int64
-	err := s.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		WITH debit AS (
 			UPDATE balances
 			SET balance_micro_usd = balance_micro_usd - $2,
@@ -2983,7 +2995,7 @@ func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType 
 		}
 		return fmt.Errorf("debit: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // MigrateAccountBalance moves the full balance (and withdrawable subset) from
@@ -3080,6 +3092,9 @@ func (s *PostgresStore) DebitWithdrawable(accountID string, amountMicroUSD int64
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
 
 	var balanceAfter int64
 	err = tx.QueryRow(ctx,
@@ -4893,10 +4908,20 @@ func (s *PostgresStore) ListProviderPayouts() ([]ProviderPayout, error) {
 
 // SettleProviderPayout marks a provider payout as settled.
 func (s *PostgresStore) SettleProviderPayout(id int64) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	tag, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin settle provider payout: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx,
 		`UPDATE provider_payouts
 		 SET settled = TRUE
 		 WHERE id = $1 AND settled = FALSE`,
@@ -4908,8 +4933,7 @@ func (s *PostgresStore) SettleProviderPayout(id int64) error {
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("provider payout %d not found or already settled", id)
 	}
-
-	return nil
+	return tx.Commit(ctx)
 }
 
 // CreditProviderAccount atomically credits a linked provider account and records
@@ -4931,6 +4955,14 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin provider account credit: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
 
 	// The earning CTE is the idempotency gate: ON CONFLICT (job_id) DO NOTHING
 	// means a retried settlement (same job_id) inserts nothing and RETURNS no
@@ -4938,7 +4970,7 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 	// — no balance bump, no ledger row, no summary bump. The outer COALESCE keeps
 	// the query returning exactly one row even on a duplicate.
 	var balanceAfter int64
-	err := s.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		WITH earning AS (
 			INSERT INTO provider_earnings (
 				account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
@@ -4992,7 +5024,7 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 	if err != nil {
 		return fmt.Errorf("store: credit provider account: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // CreditProviderWallet atomically credits an unlinked provider wallet and
@@ -5016,6 +5048,9 @@ func (s *PostgresStore) CreditProviderWallet(payout *ProviderPayout) error {
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
 
 	if err := creditWithdrawableTx(ctx, tx, payout.ProviderAddress, payout.AmountMicroUSD, LedgerPayout, payout.JobID, payout.Timestamp); err != nil {
 		return err

@@ -588,3 +588,9 @@ ops know which scope the remaining ids apply to.
 optional `account` filter. Review never moves money; adopt+force-settle for one
 account leaves foreign orphans (quiescence ready=false).
 
+### Outbox-drain mid-flight ownership fence (DECISIONS #108)
+
+`POST /v1/admin/outbox-drain` re-checks OwnershipGate between entries. On steal,
+returns `outbox_drain_aborted` with partial `acked_count`; remaining entries
+stay retryable until re-acquire + drain.
+

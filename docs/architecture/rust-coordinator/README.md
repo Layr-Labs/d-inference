@@ -60,9 +60,9 @@ debits/credits target the shared Go `balances` table for continuity;
 | `POST /v1/admin/recover-undispatched` | Release reserved-not-started jobs (`inference.released` outbox) |
 | `POST /v1/admin/recover-undispatched-batch` | Bulk-release reserved-not-started jobs after adopt |
 | `POST /v1/admin/held-review` | Classify held start_authorized jobs (no money move) |
-| `POST /v1/admin/held-review-batch` | Bulk classify held jobs (no money move) |
+| `POST /v1/admin/held-review-batch` | Bulk classify held jobs (no money move; optional `account`) |
 | `POST /v1/admin/adopt-job` | Rebind orphaned job fencing epoch after ownership re-acquire |
-| `POST /v1/admin/adopt-jobs` | Bulk-rebind all (or listed) active job fencing epochs |
+| `POST /v1/admin/adopt-jobs` | Bulk-rebind all (or listed / account-scoped) active job fencing epochs |
 | `POST /v1/admin/cancel-attempt` | Cancel start_authorized attempt (no money release) |
 
 Smoke provider: `coordinator-rs/scripts/mock_provider_ws.py`

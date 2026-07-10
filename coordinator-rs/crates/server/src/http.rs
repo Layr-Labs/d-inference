@@ -72,6 +72,13 @@ static ADMIN_BATCH_JOB_HOOK: std::sync::Mutex<Option<Arc<dyn Fn(&str) + Send + S
 /// Serializes tests that install ADMIN_BATCH_JOB_HOOK.
 static ADMIN_BATCH_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Test-only: invoked after each outbox entry is acked during drain (DECISIONS #108).
+static OUTBOX_DRAIN_ENTRY_HOOK: std::sync::Mutex<Option<Arc<dyn Fn(&str) + Send + Sync>>> =
+    std::sync::Mutex::new(None);
+
+/// Serializes tests that install OUTBOX_DRAIN_ENTRY_HOOK.
+static OUTBOX_DRAIN_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Install/clear the clear-orphans phase hook (tests only).
 pub fn set_clear_orphans_phase_hook(hook: Option<Arc<dyn Fn(&str) + Send + Sync>>) {
     *CLEAR_ORPHANS_PHASE_HOOK.lock().unwrap() = hook;
@@ -96,6 +103,18 @@ pub fn lock_admin_batch_hook_tests() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|p| p.into_inner())
 }
 
+/// Install/clear the outbox-drain per-entry hook (tests only).
+pub fn set_outbox_drain_entry_hook(hook: Option<Arc<dyn Fn(&str) + Send + Sync>>) {
+    *OUTBOX_DRAIN_ENTRY_HOOK.lock().unwrap() = hook;
+}
+
+/// Hold while installing/using the outbox-drain entry hook (tests only).
+pub fn lock_outbox_drain_hook_tests() -> std::sync::MutexGuard<'static, ()> {
+    OUTBOX_DRAIN_HOOK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+}
+
 fn invoke_clear_orphans_phase(phase: &str) {
     if let Ok(guard) = CLEAR_ORPHANS_PHASE_HOOK.lock() {
         if let Some(hook) = guard.as_ref() {
@@ -108,6 +127,14 @@ fn invoke_admin_batch_job(job_id: &str) {
     if let Ok(guard) = ADMIN_BATCH_JOB_HOOK.lock() {
         if let Some(hook) = guard.as_ref() {
             hook(job_id);
+        }
+    }
+}
+
+fn invoke_outbox_drain_entry(kind: &str) {
+    if let Ok(guard) = OUTBOX_DRAIN_ENTRY_HOOK.lock() {
+        if let Some(hook) = guard.as_ref() {
+            hook(kind);
         }
     }
 }
@@ -1854,6 +1881,7 @@ fn ownership_lost_partial(
 
 /// Pilot cutover: claim+ack all outbox entries so quiescence can become ready
 /// (DECISIONS #82). Requires ownership + pilot key. Does not move money.
+/// Re-checks ownership between entries; aborts with partial acks on steal (#108).
 async fn admin_outbox_drain(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
@@ -1864,10 +1892,45 @@ async fn admin_outbox_drain(
     if let Err(resp) = require_holding(&state) {
         return resp;
     }
-    let (acked, kinds) = {
-        let mut box_ = state.outbox.lock().await;
-        box_.drain_ack_all()
-    };
+    let mut kinds = Vec::new();
+    loop {
+        if require_holding(&state).is_err() {
+            let (pending, retryable, active) = {
+                let box_ = state.outbox.lock().await;
+                let led = state.ledger.lock().await;
+                (box_.len(), box_.pending_under_retry_cap(), led.active_job_count())
+            };
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": {
+                        "message": "ownership lost during outbox-drain",
+                        "type": "invalid_request_error",
+                        "code": "ownership_lost"
+                    },
+                    "action": "outbox_drain_aborted",
+                    "acked_count": kinds.len(),
+                    "kinds": kinds,
+                    "outbox_pending": pending,
+                    "outbox_retryable": retryable,
+                    "active_jobs": active,
+                    "ready": false,
+                })),
+            )
+                .into_response();
+        }
+        let next = {
+            let mut box_ = state.outbox.lock().await;
+            box_.drain_ack_one()
+        };
+        match next {
+            Some(kind) => {
+                invoke_outbox_drain_entry(&kind);
+                kinds.push(kind);
+            }
+            None => break,
+        }
+    }
     let (pending, retryable, active) = {
         let box_ = state.outbox.lock().await;
         let led = state.ledger.lock().await;
@@ -1878,7 +1941,7 @@ async fn admin_outbox_drain(
         StatusCode::OK,
         Json(json!({
             "action": "outbox_drained",
-            "acked_count": acked,
+            "acked_count": kinds.len(),
             "kinds": kinds,
             "outbox_pending": pending,
             "outbox_retryable": retryable,

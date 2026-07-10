@@ -172,19 +172,24 @@ impl Outbox {
     /// Returns (acked_count, kinds). Does not requeue.
     pub fn drain_ack_all(&mut self) -> (usize, Vec<String>) {
         let mut kinds = Vec::new();
-        while let Some(e) = self.try_claim() {
-            kinds.push(e.kind.clone());
-            let _ = self.ack_done(e.id);
-        }
-        // Also ack any pre-existing in-flight (e.g. critical left by worker).
-        let inflight_ids: Vec<u64> = self.in_flight.keys().copied().collect();
-        for id in inflight_ids {
-            if let Some(e) = self.in_flight.get(&id) {
-                kinds.push(e.kind.clone());
-            }
-            let _ = self.ack_done(id);
+        while let Some(kind) = self.drain_ack_one() {
+            kinds.push(kind);
         }
         (kinds.len(), kinds)
+    }
+
+    /// Claim+ack a single pending entry, or ack one pre-existing in-flight.
+    /// Returns the kind when an entry was drained, else None when empty.
+    pub fn drain_ack_one(&mut self) -> Option<String> {
+        if let Some(e) = self.try_claim() {
+            let kind = e.kind.clone();
+            let _ = self.ack_done(e.id);
+            return Some(kind);
+        }
+        let id = self.in_flight.keys().next().copied()?;
+        let kind = self.in_flight.get(&id).map(|e| e.kind.clone())?;
+        let _ = self.ack_done(id);
+        Some(kind)
     }
 }
 

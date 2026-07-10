@@ -19,6 +19,7 @@ Date: 2026-07-10
 | 10 | Emergency Go before Rust reconcile | No |
 | 11 | Prepare hedge | p95 prepare trigger; ETA miss vs remaining TTFT; 5% global budget |
 | 12 | Binary payload header | Fixed 64-byte header + ciphertext |
+| 13 | Half-open recovery admits | `AdmitRequest.allow_half_open_probe`; general traffic stays Healthy\|Suspect only |
 
 ## Deleted Go mechanisms (do not port)
 

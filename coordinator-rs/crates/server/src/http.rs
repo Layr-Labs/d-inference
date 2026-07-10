@@ -1121,16 +1121,48 @@ async fn chat_completions(
                             lease: lease.clone(),
                         });
                         // Live settle requires a real provider_terminal (DECISIONS #44).
-                        match state
-                            .hub
-                            .wait_terminal(
-                                &permit.provider_id,
-                                attempt.as_str(),
-                                std::time::Duration::from_secs(30),
-                            )
-                            .await
-                        {
-                            Ok(v) => v,
+                        // Abort wait if ownership is stolen mid-flight (DECISIONS #65).
+                        let terminal_wait = state.hub.wait_terminal(
+                            &permit.provider_id,
+                            attempt.as_str(),
+                            std::time::Duration::from_secs(30),
+                        );
+                        let ownership_watch = {
+                            let gate = state.ownership.clone();
+                            async move {
+                                loop {
+                                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                                    if gate.assert_holding().is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        };
+                        match tokio::select! {
+                            res = terminal_wait => res.map(Some),
+                            _ = ownership_watch => Ok(None),
+                        } {
+                            Ok(Some(v)) => v,
+                            Ok(None) => {
+                                state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
+                                    name: "inference.ownership_lost_held".into(),
+                                    tags: vec![
+                                        ("model".into(), permit.model.clone()),
+                                        ("provider".into(), permit.provider_id.clone()),
+                                    ],
+                                });
+                                return (
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    Json(json!({
+                                        "error": {
+                                            "message": "ownership lost while awaiting provider terminal; reservation held for review",
+                                            "type": "server_error",
+                                            "code": "ownership_lost"
+                                        }
+                                    })),
+                                )
+                                    .into_response();
+                            }
                             Err(err) => {
                                 state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
                                     name: "inference.terminal_timeout_held".into(),

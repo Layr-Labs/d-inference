@@ -324,3 +324,9 @@ match CLI/recovery; side effects stay on the HTTP path.
 `POST /v1/admin/deposits` re-asserts ownership holding immediately before
 `apply_stripe_deposit`, matching other money-moving admin routes.
 
+### Live wait aborts on ownership steal (DECISIONS #65)
+
+Live chat `select!`s between `wait_terminal` and an ownership poll. If the
+gate is released mid-wait, return `ownership_lost` and leave the reservation
+`start_authorized` held — never settle after a mid-wait fencing loss.
+

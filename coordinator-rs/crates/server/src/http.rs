@@ -7,6 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use http_body_util::BodyExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -109,11 +110,16 @@ pub fn router(state: AppState) -> Router {
             post(admin_recover_undispatched_batch),
         )
         .route("/v1/admin/held-review", post(admin_held_review))
+        .route(
+            "/v1/admin/held-review-batch",
+            post(admin_held_review_batch),
+        )
         .route("/v1/admin/terminal-ingest", post(admin_terminal_ingest))
         .route("/v1/admin/adopt-job", post(admin_adopt_job))
         .route("/v1/admin/adopt-jobs", post(admin_adopt_jobs))
         .route("/v1/admin/clear-orphans", post(admin_clear_orphans))
         .route("/v1/admin/outbox-drain", post(admin_outbox_drain))
+        .route("/v1/admin/cutover-drain", post(admin_cutover_drain))
         .route("/v1/admin/cancel-attempt", post(admin_cancel_attempt))
         .fallback(unsupported)
         .with_state(Arc::new(state))
@@ -1178,6 +1184,87 @@ async fn admin_held_review(
         .into_response()
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct AdminHeldReviewBatchRequest {
+    /// Optional explicit ids; empty/omitted = all held start_authorized (DECISIONS #91).
+    #[serde(default)]
+    job_ids: Vec<String>,
+}
+
+/// Bulk classify held jobs without moving money (DECISIONS #91).
+async fn admin_held_review_batch(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AdminHeldReviewBatchRequest>,
+) -> impl IntoResponse {
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
+    }
+    let ids = {
+        let led = state.ledger.lock().await;
+        if req.job_ids.is_empty() {
+            led.held_start_authorized_job_ids()
+        } else {
+            req.job_ids.clone()
+        }
+    };
+    let mut reviews = Vec::new();
+    let mut held_for_review = 0usize;
+    let mut skipped = 0usize;
+    let mut already_terminal = 0usize;
+    {
+        let led = state.ledger.lock().await;
+        for job_id in ids {
+            let classified = crate::recovery::classify_held_job(&led, &job_id);
+            let action = match classified {
+                crate::recovery::RecoveryAction::HeldForReview => {
+                    held_for_review += 1;
+                    "held_for_review"
+                }
+                crate::recovery::RecoveryAction::Skipped => {
+                    skipped += 1;
+                    "skipped"
+                }
+                crate::recovery::RecoveryAction::AlreadyTerminal
+                | crate::recovery::RecoveryAction::Released => {
+                    already_terminal += 1;
+                    "already_terminal"
+                }
+            };
+            let reserved = led.job_reserved_total(&job_id).map(|m| m.0).unwrap_or(0);
+            let account = led.job_account_id(&job_id).unwrap_or_default();
+            reviews.push(json!({
+                "job_id": job_id,
+                "action": action,
+                "account_id": account,
+                "reserved_micro_usd": reserved,
+            }));
+        }
+    }
+    let (bal, held, active) = {
+        let led = state.ledger.lock().await;
+        (
+            led.balance(&state.pilot_account).0,
+            led.held_start_authorized_count(),
+            led.active_job_count(),
+        )
+    };
+    (
+        StatusCode::OK,
+        Json(json!({
+            "action": "held_review_batch",
+            "reviews": reviews,
+            "held_for_review_count": held_for_review,
+            "skipped_count": skipped,
+            "already_terminal_count": already_terminal,
+            "balance_micro_usd": bal,
+            "held_start_authorized": held,
+            "active_jobs": active,
+        })),
+    )
+        .into_response()
+}
+
 #[derive(Debug, Deserialize)]
 struct AdminAdoptJobRequest {
     job_id: String,
@@ -1605,6 +1692,84 @@ async fn admin_outbox_drain(
             "outbox_retryable": retryable,
             "active_jobs": active,
             "ready": ready,
+        })),
+    )
+        .into_response()
+}
+
+/// One-shot cutover: clear-orphans then outbox-drain (DECISIONS #91).
+/// Aborts without draining if clear-orphans returns non-OK (e.g. ownership_lost).
+async fn admin_cutover_drain(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AdminClearOrphansRequest>,
+) -> axum::response::Response {
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
+    }
+    if let Err(resp) = require_holding(&state) {
+        return resp;
+    }
+
+    let clear = admin_clear_orphans(State(state.clone()), headers.clone(), Json(req))
+        .await
+        .into_response();
+    let clear_status = clear.status();
+    let clear_bytes = match clear.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": {
+                        "message": "failed to read clear-orphans body",
+                        "type": "server_error",
+                        "code": "cutover_drain_failed"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+    let clear_json: Value = serde_json::from_slice(&clear_bytes).unwrap_or(json!({}));
+    if clear_status != StatusCode::OK {
+        return (clear_status, Json(clear_json)).into_response();
+    }
+
+    let drain = admin_outbox_drain(State(state.clone()), headers)
+        .await
+        .into_response();
+    let drain_status = drain.status();
+    let drain_bytes = match drain.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": {
+                        "message": "failed to read outbox-drain body",
+                        "type": "server_error",
+                        "code": "cutover_drain_failed"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+    let drain_json: Value = serde_json::from_slice(&drain_bytes).unwrap_or(json!({}));
+    if drain_status != StatusCode::OK {
+        return (drain_status, Json(drain_json)).into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "action": "cutover_drained",
+            "clear_orphans": clear_json,
+            "outbox_drain": drain_json,
+            "ready": drain_json.get("ready").and_then(|v| v.as_bool()).unwrap_or(false),
+            "active_jobs": drain_json.get("active_jobs").cloned().unwrap_or(json!(0)),
+            "outbox_retryable": drain_json.get("outbox_retryable").cloned().unwrap_or(json!(0)),
         })),
     )
         .into_response()

@@ -18,9 +18,11 @@ The Rust pilot **never proxies** to Go. Excluded production surfaces return
 | `POST /v1/admin/force-settle-batch` | Supported (bulk force-settle held jobs) |
 | `POST /v1/admin/clear-orphans` | Supported (one-shot adopt → recover → force-settle) |
 | `POST /v1/admin/outbox-drain` | Supported (claim+ack all outbox for cutover ready) |
+| `POST /v1/admin/cutover-drain` | Supported (clear-orphans then outbox-drain) |
 | `POST /v1/admin/recover-undispatched` | Supported (release reserved-not-started) |
 | `POST /v1/admin/recover-undispatched-batch` | Supported (bulk release reserved-not-started) |
 | `POST /v1/admin/held-review` | Supported (classify held jobs; no money move) |
+| `POST /v1/admin/held-review-batch` | Supported (bulk classify held jobs; no money move) |
 | `POST /v1/admin/adopt-job` | Supported (rebind fencing epoch after ownership re-acquire) |
 | `POST /v1/admin/adopt-jobs` | Supported (bulk rebind active job fencing epochs) |
 | `POST /v1/admin/cancel-attempt` | Supported (cancel start_authorized; no money release) |

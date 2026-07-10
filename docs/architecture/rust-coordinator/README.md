@@ -56,9 +56,11 @@ debits/credits target the shared Go `balances` table for continuity;
 | `POST /v1/admin/force-settle-batch` | Bulk force-settle held jobs (default full refund) |
 | `POST /v1/admin/clear-orphans` | One-shot adopt → recover → force-settle |
 | `POST /v1/admin/outbox-drain` | Claim+ack all outbox entries (cutover ready) |
+| `POST /v1/admin/cutover-drain` | One-shot clear-orphans then outbox-drain |
 | `POST /v1/admin/recover-undispatched` | Release reserved-not-started jobs (`inference.released` outbox) |
 | `POST /v1/admin/recover-undispatched-batch` | Bulk-release reserved-not-started jobs after adopt |
 | `POST /v1/admin/held-review` | Classify held start_authorized jobs (no money move) |
+| `POST /v1/admin/held-review-batch` | Bulk classify held jobs (no money move) |
 | `POST /v1/admin/adopt-job` | Rebind orphaned job fencing epoch after ownership re-acquire |
 | `POST /v1/admin/adopt-jobs` | Bulk-rebind all (or listed) active job fencing epochs |
 | `POST /v1/admin/cancel-attempt` | Cancel start_authorized attempt (no money release) |

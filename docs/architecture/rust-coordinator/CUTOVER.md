@@ -484,3 +484,9 @@ Concurrent Stripe deposits and clear-orphans conserve money: each deposit
 event applies once; reserved/held orphans clear exactly once; final balance
 equals start + sum(deposits).
 
+### held-review-batch + cutover-drain (DECISIONS #91)
+
+`POST /v1/admin/held-review-batch` classifies held jobs without moving money.
+`POST /v1/admin/cutover-drain` is the one-shot ops path: clear-orphans →
+outbox-drain → `ready` (aborts without drain if clear returns non-OK).
+

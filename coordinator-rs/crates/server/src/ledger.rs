@@ -914,4 +914,45 @@ mod tests {
         led.credit("a", 0, 0).unwrap();
         assert_eq!(led.balance("a"), (1_000_000, 0));
     }
+
+    #[test]
+    fn settle_exact_withdrawable_only_charge_leaves_non_wdr_intact() {
+        let mut led = MemoryLedger::default();
+        // Pure withdrawable earnings.
+        led.credit("a", 4_000_000, 4_000_000).unwrap();
+        let res = led
+            .reserve(OperationKey("r".into()), "j", "a", 3_000_000)
+            .unwrap();
+        assert_eq!(res.provenance.withdrawable.0, 3_000_000);
+        assert_eq!(led.balance("a"), (1_000_000, 1_000_000));
+        led.mark_start_authorized("j").unwrap();
+        // Charge exactly the reserved withdrawable amount.
+        assert!(led
+            .settle(OperationKey("s".into()), "j", "a", 3_000_000, "d-wonly")
+            .unwrap());
+        // Full charge of reserved wdr → no refund; leftover account wdr untouched.
+        assert_eq!(led.balance("a"), (1_000_000, 1_000_000));
+        assert_eq!(led.active_job_count(), 0);
+    }
+
+    #[test]
+    fn settle_capped_equal_actual_and_cap() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 2_000_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        assert!(led
+            .settle_capped(
+                OperationKey("s".into()),
+                "j",
+                "a",
+                750_000,
+                750_000,
+                "d-eq"
+            )
+            .unwrap());
+        // reserved 2M, charged 750k → refund 1.25M → bal = 5M-2M+1.25M = 4.25M
+        assert_eq!(led.balance("a").0, 4_250_000);
+    }
 }

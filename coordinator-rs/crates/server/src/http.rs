@@ -54,6 +54,9 @@ pub struct AppState {
     pub outbox: Arc<Mutex<Outbox>>,
     /// Terminal disposition store for replay ACK without double settle.
     pub terminals: Arc<Mutex<MemoryTerminalStore>>,
+    /// Serializes money mutations with their critical outbox/terminal side
+    /// effects against quiescence snapshots (DECISIONS #136).
+    pub money_fx: Arc<Mutex<()>>,
 }
 
 /// Test hook: invoked with phase name during clear-orphans (DECISIONS #85).
@@ -440,6 +443,9 @@ async fn release_job_with_outbox(
 }
 
 async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Hold money_fx for the whole snapshot so we cannot observe a ledger
+    // after settle but before critical outbox/terminal recording (DECISIONS #136).
+    let _money_fx = state.money_fx.lock().await;
     // Warm-plane inventory — expand as workers land.
     let ownership_epoch = state.ownership.epoch().0;
     let ownership_holding = state.ownership.holding();
@@ -511,7 +517,8 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     };
     let late_terminals = state.terminals.lock().await.late_count();
     // Quiescent only when no active jobs and the outbox is fully empty —
-    // retry-exhausted rows still block ready (DECISIONS #133).
+    // retry-exhausted rows still block ready (DECISIONS #133). money_fx is
+    // held above so mid-settle side effects cannot race this snapshot (#136).
     let ready = active_jobs == 0 && outbox_pending == 0;
     let needs_adopt = orphan_summary
         .get("needs_adopt_count")
@@ -693,56 +700,62 @@ async fn admin_deposit(
         return resp;
     }
 
+    // Hold money_fx across credit + critical outbox so quiescence cannot
+    // observe a funded account without the side effect (DECISIONS #136).
     let applied = {
-        let mut inbox = state.external_events.lock().await;
-        let mut ledger = state.ledger.lock().await;
-        match apply_stripe_deposit(
-            &mut inbox,
-            &mut ledger,
-            &req.source,
-            &req.event_id,
-            &account,
-            req.amount_micro_usd,
-            req.withdrawable_micro_usd,
-        ) {
-            Ok(applied) => applied,
-            Err(err) => {
-                let (status, code) = match &err {
-                    crate::deposits::DepositError::External(
-                        crate::external_events::ExternalEventError::Conflict(_),
-                    ) => (StatusCode::CONFLICT, "deposit_payload_conflict"),
-                    _ => (StatusCode::BAD_REQUEST, "deposit_failed"),
-                };
-                return (
-                    status,
-                    Json(json!({
-                        "error": {
-                            "message": format!("{err}"),
-                            "type": "invalid_request_error",
-                            "code": code
-                        }
-                    })),
-                )
-                    .into_response();
+        let _fx = state.money_fx.lock().await;
+        let applied = {
+            let mut inbox = state.external_events.lock().await;
+            let mut ledger = state.ledger.lock().await;
+            match apply_stripe_deposit(
+                &mut inbox,
+                &mut ledger,
+                &req.source,
+                &req.event_id,
+                &account,
+                req.amount_micro_usd,
+                req.withdrawable_micro_usd,
+            ) {
+                Ok(applied) => applied,
+                Err(err) => {
+                    let (status, code) = match &err {
+                        crate::deposits::DepositError::External(
+                            crate::external_events::ExternalEventError::Conflict(_),
+                        ) => (StatusCode::CONFLICT, "deposit_payload_conflict"),
+                        _ => (StatusCode::BAD_REQUEST, "deposit_failed"),
+                    };
+                    return (
+                        status,
+                        Json(json!({
+                            "error": {
+                                "message": format!("{err}"),
+                                "type": "invalid_request_error",
+                                "code": code
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
             }
+        };
+        if applied {
+            let mut box_ = state.outbox.lock().await;
+            box_
+                .enqueue_critical(
+                    "billing.deposit_applied",
+                    &json!({
+                        "source": req.source,
+                        "event_id": req.event_id,
+                        "account": account,
+                        "amount_micro_usd": req.amount_micro_usd,
+                        "withdrawable_micro_usd": req.withdrawable_micro_usd,
+                    })
+                    .to_string(),
+                )
+                .expect("critical outbox enqueue must not fail for valid kind");
         }
+        applied
     };
-    if applied {
-        let mut box_ = state.outbox.lock().await;
-        box_
-            .enqueue_critical(
-                "billing.deposit_applied",
-                &json!({
-                    "source": req.source,
-                    "event_id": req.event_id,
-                    "account": account,
-                    "amount_micro_usd": req.amount_micro_usd,
-                    "withdrawable_micro_usd": req.withdrawable_micro_usd,
-                })
-                .to_string(),
-            )
-            .expect("critical outbox enqueue must not fail for valid kind");
-    }
     let (bal, wdr, status, outbox_retryable) = {
         let ledger = state.ledger.lock().await;
         let box_ = state.outbox.lock().await;
@@ -821,6 +834,8 @@ async fn admin_force_settle(
         return resp;
     }
 
+    // Hold money_fx across settle + terminal/outbox (DECISIONS #136).
+    let _fx = state.money_fx.lock().await;
     let (action, charged, account) = {
         let mut led = state.ledger.lock().await;
         let Some(job_acct) = led.job_account_id(&req.job_id) else {
@@ -928,6 +943,8 @@ async fn admin_force_settle(
             .to_string(),
         );
     }
+
+    drop(_fx);
 
     let (bal, status) = {
         let led = state.ledger.lock().await;

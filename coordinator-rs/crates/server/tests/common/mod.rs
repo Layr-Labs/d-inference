@@ -40,6 +40,7 @@ pub fn pilot_app_state(holding: bool) -> AppState {
         external_events: Arc::new(Mutex::new(ExternalEventInbox::new())),
         outbox: Arc::new(Mutex::new(Outbox::default())),
         terminals: Arc::new(Mutex::new(MemoryTerminalStore::new())),
+        money_fx: Arc::new(Mutex::new(())),
     }
 }
 

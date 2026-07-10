@@ -142,6 +142,7 @@ Date: 2026-07-10
 | 133 | Exhausted outbox blocks ready | Quiescence/cutover ready requires `outbox.len()==0` (not only retryable); admin drain force-acks retry-exhausted rows; report `outbox_blocked` |
 | 134 | Mock settle fenced on ownership | `complete_authorized_job` settles via `settle_capped_fenced`; epoch mismatch leaves job held and returns ownership_lost |
 | 135 | Outbox-drain epoch fence | Drain binds to start fencing epoch; re-checks under outbox lock; SQL ack/drain gated on holder+epoch so steal/re-acquire cannot drop critical side effects |
+| 136 | Money-fx barrier for quiescence | `AppState.money_fx` serializes deposit/force-settle money+outbox against quiescence snapshots so ready cannot observe settle without the critical side effect |
 
 ## Deleted Go mechanisms (do not port)
 

@@ -161,6 +161,7 @@ async fn main() {
         external_events: Arc::new(Mutex::new(ExternalEventInbox::new())),
         outbox: outbox_for_state,
         terminals: Arc::new(Mutex::new(MemoryTerminalStore::new())),
+        money_fx: Arc::new(Mutex::new(())),
     };
 
     let app = router(state);

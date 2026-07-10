@@ -51,6 +51,9 @@ enum Commands {
         /// In-memory demo: multi-account cutover loop then outbox drain.
         #[arg(long)]
         demo_cutover_drain_all: bool,
+        /// In-memory demo: cutover_status remaining-accounts chaining after steal.
+        #[arg(long)]
+        demo_remaining_accounts: bool,
         /// In-memory demo: apply a Stripe deposit event (idempotent).
         #[arg(long)]
         demo_deposit_event: Option<String>,
@@ -73,6 +76,7 @@ pub fn parse_and_is_recovery() -> RecoveryOpts {
             demo_clear_orphans: false,
             demo_cutover_drain: false,
             demo_cutover_drain_all: false,
+            demo_remaining_accounts: false,
             demo_deposit_event: None,
             demo_account: String::new(),
         },
@@ -86,6 +90,7 @@ pub fn parse_and_is_recovery() -> RecoveryOpts {
             demo_clear_orphans,
             demo_cutover_drain,
             demo_cutover_drain_all,
+            demo_remaining_accounts,
             demo_deposit_event,
             demo_account,
         }) => RecoveryOpts {
@@ -99,6 +104,7 @@ pub fn parse_and_is_recovery() -> RecoveryOpts {
             demo_clear_orphans,
             demo_cutover_drain,
             demo_cutover_drain_all,
+            demo_remaining_accounts,
             demo_deposit_event,
             demo_account,
         },
@@ -116,6 +122,7 @@ pub struct RecoveryOpts {
     pub demo_clear_orphans: bool,
     pub demo_cutover_drain: bool,
     pub demo_cutover_drain_all: bool,
+    pub demo_remaining_accounts: bool,
     pub demo_deposit_event: Option<String>,
     pub demo_account: String,
 }
@@ -487,6 +494,127 @@ pub fn run_recovery(opts: RecoveryOpts) -> Result<(), String> {
             ));
         }
         tracing::info!(new_epoch, acked, "recovery cutover-drain-all demo complete");
+        return Ok(());
+    }
+    if opts.demo_remaining_accounts {
+        // DECISIONS #132: prove cutover_status remaining-accounts chaining after steal.
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let old_epoch = 1u64;
+        let new_epoch = 2u64;
+        {
+            let mut g = led.lock().map_err(|e| e.to_string())?;
+            g.credit("ra-a", 300_000, 0).unwrap();
+            g.credit("ra-b", 300_000, 0).unwrap();
+            for (id, acct, held) in [
+                ("ra-a1", "ra-a", true),
+                ("ra-a2", "ra-a", false),
+                ("ra-b1", "ra-b", true),
+            ] {
+                g.reserve_with_epoch(
+                    crate::ledger::OperationKey(format!("reserve:{id}")),
+                    id,
+                    acct,
+                    50_000,
+                    old_epoch,
+                )
+                .map_err(|e| e.to_string())?;
+                if held {
+                    g.mark_start_authorized_fenced(old_epoch, id, acct)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        let before = {
+            let g = led.lock().map_err(|e| e.to_string())?;
+            g.cutover_status(new_epoch)
+        };
+        if before.needs_adopt_count != 3 {
+            return Err(format!(
+                "expected needs_adopt=3 after steal, got {}",
+                before.needs_adopt_count
+            ));
+        }
+        if before.accounts_needing_cutover != ["ra-a".to_string(), "ra-b".to_string()] {
+            return Err(format!(
+                "expected accounts [ra-a,ra-b], got {:?}",
+                before.accounts_needing_cutover
+            ));
+        }
+        {
+            let mut g = led.lock().map_err(|e| e.to_string())?;
+            for id in ["ra-a1", "ra-a2", "ra-b1"] {
+                g.adopt_fencing_epoch(id, new_epoch)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        let after_adopt = {
+            let g = led.lock().map_err(|e| e.to_string())?;
+            g.cutover_status(new_epoch)
+        };
+        if after_adopt.needs_adopt_count != 0 {
+            return Err(format!(
+                "expected needs_adopt=0 after adopt, got {}",
+                after_adopt.needs_adopt_count
+            ));
+        }
+        if after_adopt.accounts_needing_cutover.len() != 2 {
+            return Err(format!(
+                "expected 2 accounts after adopt, got {:?}",
+                after_adopt.accounts_needing_cutover
+            ));
+        }
+        // Clear each remaining account's jobs using cutover_status account list.
+        for acct in after_adopt.accounts_needing_cutover {
+            let jobs = {
+                let g = led.lock().map_err(|e| e.to_string())?;
+                g.active_job_ids_for_account(&acct)
+            };
+            for job in jobs {
+                let funded = {
+                    let g = led.lock().map_err(|e| e.to_string())?;
+                    g.job_funded_start(&job)
+                };
+                let action = if funded {
+                    force_settle_held_fenced(
+                        &led,
+                        new_epoch,
+                        &job,
+                        &acct,
+                        0,
+                        &format!("ra-{job}"),
+                    )?
+                } else {
+                    recover_undispatched_fenced(&led, new_epoch, &job, &acct)?
+                };
+                if action != RecoveryAction::Released
+                    && action != RecoveryAction::AlreadyTerminal
+                {
+                    return Err(format!("unexpected clear {job}: {action:?}"));
+                }
+            }
+        }
+        let done = {
+            let g = led.lock().map_err(|e| e.to_string())?;
+            g.cutover_status(new_epoch)
+        };
+        if !done.accounts_needing_cutover.is_empty() || done.active_jobs != 0 {
+            return Err(format!(
+                "expected empty remaining after clear, got accounts={:?} active={}",
+                done.accounts_needing_cutover, done.active_jobs
+            ));
+        }
+        let (bal_a, bal_b) = {
+            let g = led.lock().map_err(|e| e.to_string())?;
+            (g.balance("ra-a").0, g.balance("ra-b").0)
+        };
+        if bal_a != 300_000 || bal_b != 300_000 {
+            return Err(format!("expected bals restored, got {bal_a}/{bal_b}"));
+        }
+        tracing::info!(
+            new_epoch,
+            before_adopt = before.needs_adopt_count,
+            "recovery remaining-accounts demo complete"
+        );
         return Ok(());
     }
     if let Some(job) = opts.demo_force_settle_job {

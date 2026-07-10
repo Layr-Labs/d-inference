@@ -140,10 +140,6 @@ fn invoke_outbox_drain_entry(kind: &str) {
 }
 
 /// Account ids with active orphans (DECISIONS #112/#114).
-fn accounts_needing_cutover_from(led: &crate::ledger::MemoryLedger, epoch: u64) -> Vec<String> {
-    led.accounts_needing_cutover(epoch)
-}
-
 fn filter_accounts(
     accounts: Vec<String>,
     allowlist: Option<&std::collections::HashSet<String>>,
@@ -453,7 +449,7 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     } else {
         0
     };
-    let (bal, wdr, active_jobs, active_job_ids, active_jobs_detail, held_start_authorized, held_job_ids, orphan_summary, orphan_summary_by_account) = {
+    let (bal, wdr, active_jobs, active_job_ids, active_jobs_detail, held_start_authorized, held_job_ids, orphan_summary, orphan_summary_by_account, accounts_needing_cutover) = {
         let led = state.ledger.lock().await;
         let (b, w) = led.balance(&state.pilot_account);
         let (needs_adopt, reserved, held) = led.orphan_summary_counts(detail_epoch);
@@ -469,6 +465,7 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 })
             })
             .collect();
+        let accounts = led.cutover_status(detail_epoch).accounts_needing_cutover;
         (
             b,
             w,
@@ -483,6 +480,7 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 "held_start_authorized_count": held,
             }),
             by_acct,
+            accounts,
         )
     };
     let (placement_version, demand) = {
@@ -526,27 +524,6 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     } else {
         "not-ready"
     };
-    // Accounts with any active orphans — ops can target cutover-drain per account (DECISIONS #112).
-    let accounts_needing_cutover: Vec<String> = orphan_summary_by_account
-        .iter()
-        .filter_map(|row| {
-            let reserved = row
-                .get("reserved_not_started_count")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let held = row
-                .get("held_start_authorized_count")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            if reserved + held > 0 {
-                row.get("account")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
     let status = if ready {
         StatusCode::OK
     } else {
@@ -2251,11 +2228,9 @@ async fn admin_cutover_drain(
         }
     };
     let drain_json: Value = serde_json::from_slice(&drain_bytes).unwrap_or(json!({}));
-    let (remaining_accounts, needs_adopt) = {
+    let status = {
         let led = state.ledger.lock().await;
-        let epoch = state.ownership.epoch().0;
-        let (na, _, _) = led.orphan_summary_counts(epoch);
-        (accounts_needing_cutover_from(&led, epoch), na)
+        led.cutover_status(state.ownership.epoch().0)
     };
     if drain_status != StatusCode::OK {
         // Clear already committed — surface both phases so ops can resume with
@@ -2273,9 +2248,9 @@ async fn admin_cutover_drain(
                 "clear_orphans": clear_json,
                 "outbox_drain": drain_json,
                 "ready": false,
-                "accounts_needing_cutover": remaining_accounts,
-                "needs_adopt_count": needs_adopt,
-                "active_jobs": clear_json.get("active_jobs").cloned().unwrap_or(json!(0)),
+                "accounts_needing_cutover": status.accounts_needing_cutover,
+                "needs_adopt_count": status.needs_adopt_count,
+                "active_jobs": status.active_jobs,
                 "outbox_retryable": drain_json.get("outbox_retryable").cloned().unwrap_or(json!(0)),
                 "acked_count": drain_json.get("acked_count").cloned().unwrap_or(json!(0)),
             })),
@@ -2287,7 +2262,7 @@ async fn admin_cutover_drain(
         .get("ready")
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
-        && remaining_accounts.is_empty();
+        && status.accounts_needing_cutover.is_empty();
     (
         StatusCode::OK,
         Json(json!({
@@ -2295,9 +2270,9 @@ async fn admin_cutover_drain(
             "clear_orphans": clear_json,
             "outbox_drain": drain_json,
             "ready": ready,
-            "accounts_needing_cutover": remaining_accounts,
-            "needs_adopt_count": needs_adopt,
-            "active_jobs": drain_json.get("active_jobs").cloned().unwrap_or(json!(0)),
+            "accounts_needing_cutover": status.accounts_needing_cutover,
+            "needs_adopt_count": status.needs_adopt_count,
+            "active_jobs": status.active_jobs,
             "outbox_retryable": drain_json.get("outbox_retryable").cloned().unwrap_or(json!(0)),
         })),
     )
@@ -2361,14 +2336,13 @@ async fn admin_cutover_drain_all(
         if require_holding(&state).is_err() {
             let (remaining, needs_adopt) = {
                 let led = state.ledger.lock().await;
-                let epoch = state.ownership.epoch().0;
-                let (na, _, _) = led.orphan_summary_counts(epoch);
+                let status = led.cutover_status(state.ownership.epoch().0);
                 (
                     filter_accounts(
-                        accounts_needing_cutover_from(&led, epoch),
+                        status.accounts_needing_cutover.clone(),
                         allowlist.as_ref(),
                     ),
-                    na,
+                    status.needs_adopt_count,
                 )
             };
             return (
@@ -2394,9 +2368,9 @@ async fn admin_cutover_drain_all(
 
         let accounts = {
             let led = state.ledger.lock().await;
-            let epoch = state.ownership.epoch().0;
             filter_accounts(
-                accounts_needing_cutover_from(&led, epoch),
+                led.cutover_status(state.ownership.epoch().0)
+                    .accounts_needing_cutover,
                 allowlist.as_ref(),
             )
         };
@@ -2409,9 +2383,8 @@ async fn admin_cutover_drain_all(
         if accounts.is_empty() && outbox_retryable == 0 {
             let (all_remaining, needs_adopt) = {
                 let led = state.ledger.lock().await;
-                let epoch = state.ownership.epoch().0;
-                let (na, _, _) = led.orphan_summary_counts(epoch);
-                (accounts_needing_cutover_from(&led, epoch), na)
+                let status = led.cutover_status(state.ownership.epoch().0);
+                (status.accounts_needing_cutover, status.needs_adopt_count)
             };
             return (
                 StatusCode::OK,
@@ -2463,9 +2436,8 @@ async fn admin_cutover_drain_all(
             if drain_status != StatusCode::OK {
                 let (remaining, needs_adopt) = {
                     let led = state.ledger.lock().await;
-                    let epoch = state.ownership.epoch().0;
-                    let (na, _, _) = led.orphan_summary_counts(epoch);
-                    (accounts_needing_cutover_from(&led, epoch), na)
+                    let status = led.cutover_status(state.ownership.epoch().0);
+                    (status.accounts_needing_cutover, status.needs_adopt_count)
                 };
                 return (
                     drain_status,
@@ -2495,9 +2467,8 @@ async fn admin_cutover_drain_all(
             if require_holding(&state).is_err() {
                 let (remaining, needs_adopt) = {
                     let led = state.ledger.lock().await;
-                    let epoch = state.ownership.epoch().0;
-                    let (na, _, _) = led.orphan_summary_counts(epoch);
-                    (accounts_needing_cutover_from(&led, epoch), na)
+                    let status = led.cutover_status(state.ownership.epoch().0);
+                    (status.accounts_needing_cutover, status.needs_adopt_count)
                 };
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -2556,9 +2527,8 @@ async fn admin_cutover_drain_all(
             if cut_status != StatusCode::OK {
                 let (remaining, needs_adopt) = {
                     let led = state.ledger.lock().await;
-                    let epoch = state.ownership.epoch().0;
-                    let (na, _, _) = led.orphan_summary_counts(epoch);
-                    (accounts_needing_cutover_from(&led, epoch), na)
+                    let status = led.cutover_status(state.ownership.epoch().0);
+                    (status.accounts_needing_cutover, status.needs_adopt_count)
                 };
                 rounds.push(json!({
                     "round": round,
@@ -2601,9 +2571,9 @@ async fn admin_cutover_drain_all(
         // Re-check within the same round so max_rounds=1 can still finish (DECISIONS #118).
         let accounts_after = {
             let led = state.ledger.lock().await;
-            let epoch = state.ownership.epoch().0;
             filter_accounts(
-                accounts_needing_cutover_from(&led, epoch),
+                led.cutover_status(state.ownership.epoch().0)
+                    .accounts_needing_cutover,
                 allowlist.as_ref(),
             )
         };
@@ -2614,9 +2584,8 @@ async fn admin_cutover_drain_all(
         if accounts_after.is_empty() && outbox_after == 0 {
             let (all_remaining, needs_adopt) = {
                 let led = state.ledger.lock().await;
-                let epoch = state.ownership.epoch().0;
-                let (na, _, _) = led.orphan_summary_counts(epoch);
-                (accounts_needing_cutover_from(&led, epoch), na)
+                let status = led.cutover_status(state.ownership.epoch().0);
+                (status.accounts_needing_cutover, status.needs_adopt_count)
             };
             return (
                 StatusCode::OK,
@@ -2643,7 +2612,7 @@ async fn admin_cutover_drain_all(
             // No progress this round — refuse to spin until max_rounds (DECISIONS #118).
             let needs_adopt = {
                 let led = state.ledger.lock().await;
-                led.orphan_summary_counts(state.ownership.epoch().0).0
+                led.cutover_status(state.ownership.epoch().0).needs_adopt_count
             };
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -2671,13 +2640,12 @@ async fn admin_cutover_drain_all(
     let (remaining, needs_adopt, outbox_retryable, active) = {
         let led = state.ledger.lock().await;
         let box_ = state.outbox.lock().await;
-        let epoch = state.ownership.epoch().0;
-        let (na, _, _) = led.orphan_summary_counts(epoch);
+        let status = led.cutover_status(state.ownership.epoch().0);
         (
-            accounts_needing_cutover_from(&led, epoch),
-            na,
+            status.accounts_needing_cutover,
+            status.needs_adopt_count,
             box_.pending_under_retry_cap(),
-            led.active_job_count(),
+            status.active_jobs,
         )
     };
     (

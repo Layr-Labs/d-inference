@@ -93,7 +93,7 @@ impl PostgresLedgerStub {
           RETURNING j.job_id
         ), op AS (
           INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-          VALUES ($2, $1, 'start_authorize', 0)
+          SELECT $2, $1, 'start_authorize', 0 FROM mark
           ON CONFLICT (operation_key) DO NOTHING
           RETURNING operation_key
         )
@@ -111,12 +111,12 @@ impl PostgresLedgerStub {
                  terminal_disposition, state, account_id
           FROM rust_coord.inference_jobs
           WHERE job_id = $2
+            AND account_id = $1
           FOR UPDATE
         ), guard AS (
           SELECT 1 FROM job
           WHERE terminal_disposition IS NULL
             AND state = 'reserved'
-            AND account_id = $1
             AND $3::bigint > 0
         ), bal AS (
           SELECT balance_micro_usd AS bal, withdrawable_micro_usd AS wdr
@@ -169,7 +169,7 @@ impl PostgresLedgerStub {
           RETURNING j.job_id, j.reserved_total_micro_usd, j.reserved_withdrawable_micro_usd
         ), op AS (
           INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-          VALUES ($4, $2, 'resize_authorize', $3)
+          SELECT $4, $2, 'resize_authorize', $3 FROM mark
           ON CONFLICT (operation_key) DO NOTHING
           RETURNING operation_key
         )
@@ -496,6 +496,8 @@ mod tests {
         assert!(sql.contains("resize_authorize"));
         assert!(sql.contains("FOR UPDATE"));
         assert!(sql.contains("financial_operations"));
+        assert!(sql.contains("account_id = $1"));
+        assert!(sql.contains("SELECT $4, $2, 'resize_authorize', $3 FROM mark"));
     }
 
     #[test]
@@ -506,6 +508,7 @@ mod tests {
         assert!(sql.contains("start_authorize"));
         assert!(sql.contains("state = 'reserved'"));
         assert!(sql.contains("FOR UPDATE"));
+        assert!(sql.contains("SELECT $2, $1, 'start_authorize', 0 FROM mark"));
     }
 
     #[test]

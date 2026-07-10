@@ -30,9 +30,17 @@ type TerminalStore interface {
 	RecordLateTerminal(ctx context.Context, t TerminalIngest) error
 }
 
-// IngestTerminalACKs a replayed v2 terminal using the Rust disposition tables.
+// DigestTerminalLookup is an optional extension for digest-only fallback
+// when settle wrote an empty or drifted attempt_id (DECISIONS #25).
+type DigestTerminalLookup interface {
+	LookupRustTerminalByDigest(ctx context.Context, digest string) (*TerminalDisposition, error)
+}
+
+// IngestTerminal ACKs a replayed v2 terminal using the Rust disposition tables.
 // Returns the ACK payload the coordinator should send to the provider.
 // Never settles or releases funds — that already happened under Rust (or is review_pending).
+// Prefers (attempt_id, digest); falls back to digest-only when the store also
+// implements DigestTerminalLookup (DECISIONS #25).
 func IngestTerminal(ctx context.Context, store TerminalStore, t TerminalIngest) (json.RawMessage, error) {
 	if t.AttemptID == "" || t.TerminalDigest == "" {
 		return nil, fmt.Errorf("ownership: terminal ingest missing attempt/digest")
@@ -40,6 +48,14 @@ func IngestTerminal(ctx context.Context, store TerminalStore, t TerminalIngest) 
 	disp, err := store.LookupRustTerminal(ctx, t.AttemptID, t.TerminalDigest)
 	if err != nil {
 		return nil, err
+	}
+	if disp == nil {
+		if dl, ok := store.(DigestTerminalLookup); ok {
+			disp, err = dl.LookupRustTerminalByDigest(ctx, t.TerminalDigest)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	if disp != nil {
 		if len(disp.AckPayload) > 0 {

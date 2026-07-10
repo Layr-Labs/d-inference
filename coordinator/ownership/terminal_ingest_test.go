@@ -7,12 +7,20 @@ import (
 )
 
 type memTerminalStore struct {
-	byKey map[string]*TerminalDisposition
-	late  []TerminalIngest
+	byKey    map[string]*TerminalDisposition
+	byDigest map[string]*TerminalDisposition
+	late     []TerminalIngest
 }
 
 func (m *memTerminalStore) LookupRustTerminal(ctx context.Context, attemptID, digest string) (*TerminalDisposition, error) {
 	return m.byKey[attemptID+"|"+digest], nil
+}
+
+func (m *memTerminalStore) LookupRustTerminalByDigest(ctx context.Context, digest string) (*TerminalDisposition, error) {
+	if m.byDigest == nil {
+		return nil, nil
+	}
+	return m.byDigest[digest], nil
 }
 
 func (m *memTerminalStore) RecordLateTerminal(ctx context.Context, t TerminalIngest) error {
@@ -56,5 +64,28 @@ func TestIngestTerminal_UnknownIsLate(t *testing.T) {
 	}
 	if len(st.late) != 1 {
 		t.Fatal("expected late record")
+	}
+}
+
+func TestIngestTerminal_DigestOnlyFallback(t *testing.T) {
+	st := &memTerminalStore{
+		byKey: map[string]*TerminalDisposition{},
+		byDigest: map[string]*TerminalDisposition{
+			"d-empty": {Disposition: "settled"},
+		},
+	}
+	out, err := IngestTerminal(context.Background(), st, TerminalIngest{
+		JobID: "j", AttemptID: "real-attempt", TerminalDigest: "d-empty",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	if got["disposition"] != "settled" {
+		t.Fatalf("expected settled via digest fallback, got %v", got)
+	}
+	if len(st.late) != 0 {
+		t.Fatal("must not record late when digest fallback hits")
 	}
 }

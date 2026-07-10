@@ -1634,7 +1634,7 @@ func (s *Server) enqueueCompletion(providerID string, provider *registry.Provide
 			return
 		}
 	}
-	claimed := s.claimCompletion(providerID, provider, msg)
+	claimed := s.claimCompletion(providerID, provider, msg, fenced)
 	if claimed == nil {
 		return
 	}
@@ -1664,13 +1664,18 @@ func (s *Server) enqueueCompletion(providerID string, provider *registry.Provide
 }
 
 func (s *Server) handleComplete(providerID string, provider *registry.Provider, msg *protocol.InferenceCompleteMessage) {
-	claimed := s.claimCompletion(providerID, provider, msg)
+	claimed := s.claimCompletion(providerID, provider, msg, nil)
 	if claimed != nil {
 		s.handleClaimedComplete(providerID, provider, msg, claimed)
 	}
 }
 
-func (s *Server) claimCompletion(providerID string, provider *registry.Provider, msg *protocol.InferenceCompleteMessage) *claimedCompletion {
+func (s *Server) claimCompletion(
+	providerID string,
+	provider *registry.Provider,
+	msg *protocol.InferenceCompleteMessage,
+	fenced *registry.PendingRequest,
+) *claimedCompletion {
 	if provider == nil {
 		s.logger.Warn("complete from unregistered provider", "provider_id", providerID)
 		return nil
@@ -1685,13 +1690,21 @@ func (s *Server) claimCompletion(providerID string, provider *registry.Provider,
 	if pr == nil {
 		pr = parked
 	}
+	consumerGone := parked != nil
+	if pr == nil && fenced != nil {
+		// Consumer cleanup may remove the terminal-fenced request while the
+		// durable completion intent is being committed. The fenced pointer is
+		// still authoritative and must be settled without a channel reader.
+		pr = fenced
+		consumerGone = true
+	}
 	if pr == nil {
 		s.logger.Warn("complete for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
 		return nil
 	}
 	// The request is terminal — drop its memoized chunk-decryption key.
 	s.chunkKeys.forget(pr.SessionPrivKey)
-	return &claimedCompletion{pending: pr, consumerGone: parked != nil}
+	return &claimedCompletion{pending: pr, consumerGone: consumerGone}
 }
 
 func (s *Server) handleClaimedComplete(

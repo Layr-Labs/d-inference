@@ -23,6 +23,21 @@ type transientSettlementStore struct {
 	attempted chan struct{}
 }
 
+type blockingCompletionIntentStore struct {
+	store.Store
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingCompletionIntentStore) RecordInferenceCompletionIntent(
+	intent *store.InferenceCompletionIntent,
+) error {
+	s.once.Do(func() { close(s.started) })
+	<-s.release
+	return s.Store.RecordInferenceCompletionIntent(intent)
+}
+
 func (s transientSettlementStore) SettleInference(*store.InferenceSettlement) (store.InferenceSettlementDisposition, error) {
 	select {
 	case s.attempted <- struct{}{}:
@@ -223,6 +238,70 @@ func TestCompletionClaimsPendingBeforeQueueBackpressureAndDisconnect(t *testing.
 	}
 	if balance := ledger.Balance(testConsumerID); balance != initialBalance-250 {
 		t.Fatalf("settled balance = %d, want %d", balance, initialBalance-250)
+	}
+}
+
+func TestCompletionUsesFencedPointerWhenCleanupRemovesPendingDuringIntentCommit(t *testing.T) {
+	srv, backing, ledger := billingTestServer(t)
+	blocking := &blockingCompletionIntentStore{
+		Store: backing, started: make(chan struct{}), release: make(chan struct{}),
+	}
+	srv.store = blocking
+	const (
+		model         = "intent-race-model"
+		reservationID = "intent-race-reservation"
+		reserved      = int64(500)
+	)
+	initialBalance := ledger.Balance(testConsumerID)
+	reservedWithdrawable, _, err := backing.ReserveInferenceBalance(
+		testConsumerID, reserved, reservationID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := srv.registry.Register("intent-race-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+	})
+	pr := &registry.PendingRequest{
+		RequestID: "intent-race-attempt", ReservationID: reservationID,
+		Model: model, ConsumerKey: testConsumerID,
+		ReservedMicroUSD: reserved, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: reserved, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+	done := make(chan struct{})
+	go func() {
+		srv.enqueueCompletion(provider.ID, provider, &protocol.InferenceCompleteMessage{
+			Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID,
+			Usage: protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 1000},
+		})
+		close(done)
+	}()
+	select {
+	case <-blocking.started:
+	case <-time.After(time.Second):
+		t.Fatal("completion intent did not start")
+	}
+	if removed := provider.RemovePending(pr.RequestID); removed != pr {
+		t.Fatal("cleanup did not remove fenced pending request")
+	}
+	if srv.refundReservedBalance(pr, "post_terminal_sweep") {
+		t.Fatal("cleanup refunded terminal-fenced request")
+	}
+	close(blocking.release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("completion did not settle via fenced pointer")
+	}
+	deadline := time.Now().Add(time.Second)
+	for ledger.Balance(testConsumerID) != initialBalance-250 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if balance := ledger.Balance(testConsumerID); balance != initialBalance-250 {
+		t.Fatalf("fenced completion balance = %d, want %d", balance, initialBalance-250)
 	}
 }
 

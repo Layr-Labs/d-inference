@@ -11,10 +11,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+use crate::crypto_keys::CoordinatorKeys;
 use crate::fleet_actor::FleetHandle;
 use crate::ledger::MemoryLedger;
 use crate::mock_provider::{complete_authorized_job, openai_chat_response};
-use crate::provider_hub::{ProviderHub, SharedHub};
+use crate::provider_hub::{OutboundCmd, ProviderHub, SharedHub};
 use crate::provider_ws::provider_ws;
 use crate::request_task::{spawn_request_task, ControlEvent};
 use darkbloom_core::{AttemptId, JobId, LeaseId};
@@ -25,7 +26,7 @@ use uuid::Uuid;
 pub struct AppState {
     pub fleet: FleetHandle,
     pub hub: SharedHub,
-    pub encryption_kid: String,
+    pub keys: Arc<CoordinatorKeys>,
     pub models: Vec<ModelCard>,
     /// Pilot ledger (process-local). Postgres/SQLx replaces this in M4.
     pub ledger: Arc<Mutex<MemoryLedger>>,
@@ -128,11 +129,7 @@ async fn readyz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 async fn encryption_key(State(state): State<Arc<AppState>>) -> Json<Value> {
-    Json(json!({
-        "kid": state.encryption_kid,
-        "algorithm": "x25519-xsalsa20-poly1305",
-        "note": "pilot stub — real key material wired in M3 trust path"
-    }))
+    Json(state.keys.encryption_key_json())
 }
 
 async fn list_models(State(state): State<Arc<AppState>>) -> Json<Value> {
@@ -419,6 +416,24 @@ async fn chat_completions(
                         lease: lease.clone(),
                     });
                     let _ = task.apply(ControlEvent::FinalizeDone);
+                    // Terminal ACK after durable disposition (plan §12.8).
+                    let ack = json!({
+                        "type": "terminal_ack",
+                        "job_id": completion.job_id,
+                        "attempt_id": completion.attempt_id,
+                        "lease_id": lease.as_str(),
+                        "session_epoch": 0,
+                        "coordinator_epoch": state.coordinator_epoch,
+                        "dispatch_nonce": dispatch_nonce,
+                        "request_digest": request_digest,
+                        "terminal_digest": completion.terminal_digest,
+                        "disposition": "settled",
+                    });
+                    // Best-effort: provider may already be gone.
+                    let _ = state.hub.attach_send_best_effort(
+                        &permit.provider_id,
+                        OutboundCmd::Text(ack.to_string()),
+                    );
                     if req.stream {
                         let chunk = openai_chat_response(&completion, true);
                         let done = json!({"id": completion.job_id, "object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});

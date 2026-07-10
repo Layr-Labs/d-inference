@@ -3,6 +3,7 @@
 pub mod abort;
 pub mod chunk_pipe;
 pub mod cli;
+pub mod crypto_keys;
 pub mod fleet_actor;
 pub mod http;
 pub mod ledger;
@@ -15,6 +16,7 @@ pub mod request_task;
 
 pub use abort::{abort_frame, abort_losing_hedge};
 pub use chunk_pipe::{bounded_chunk_pipe, ChunkPipe, PipeError};
+pub use crypto_keys::CoordinatorKeys;
 pub use fleet_actor::{spawn_fleet_actor, FleetError, FleetHandle};
 pub use http::{router, AppState, ModelCard};
 pub use ledger::{MemoryLedger, OperationKey, ReservationProvenance};

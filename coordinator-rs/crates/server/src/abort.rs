@@ -3,7 +3,9 @@
 use serde_json::{json, Value};
 use std::time::Duration;
 
-use crate::provider_hub::{HubError, ProviderHub, SharedHub};
+use crate::provider_hub::{HubError, SharedHub};
+#[cfg(test)]
+use crate::provider_hub::ProviderHub;
 
 pub fn abort_frame(
     job_id: &str,

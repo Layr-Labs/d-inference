@@ -1,6 +1,6 @@
 use darkbloom_coordinator::cli::{parse_and_is_recovery, run_recovery};
 use darkbloom_coordinator::{
-    router, spawn_fleet_actor, AppState, MemoryLedger, ModelCard, ProviderHub,
+    router, spawn_fleet_actor, AppState, CoordinatorKeys, MemoryLedger, ModelCard, ProviderHub,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -25,10 +25,22 @@ async fn main() {
 
     let (fleet, _fleet_join) = spawn_fleet_actor();
     let hub = ProviderHub::new();
+    let kid = std::env::var("DARKBLOOM_ENCRYPTION_KID").unwrap_or_else(|_| "dev".into());
+    let keys = if let Ok(seed_b64) = std::env::var("DARKBLOOM_COORDINATOR_SEED_B64") {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(seed_b64.trim())
+            .expect("DARKBLOOM_COORDINATOR_SEED_B64 must be 32-byte base64");
+        let mut seed = [0u8; 32];
+        assert_eq!(bytes.len(), 32, "seed must be 32 bytes");
+        seed.copy_from_slice(&bytes);
+        CoordinatorKeys::from_seed(seed, kid)
+    } else {
+        CoordinatorKeys::generate(kid)
+    };
     let mut ledger = MemoryLedger::default();
     let pilot_account =
         std::env::var("DARKBLOOM_PILOT_ACCOUNT").unwrap_or_else(|_| "pilot-account".into());
-    // Seed pilot balance ($100) so mock settle path can charge.
     ledger.credit(&pilot_account, 100_000_000, 0);
     let pilot_api_keys: Arc<Vec<String>> = Arc::new(
         std::env::var("DARKBLOOM_PILOT_API_KEYS")
@@ -45,7 +57,7 @@ async fn main() {
     let state = AppState {
         fleet,
         hub,
-        encryption_kid: std::env::var("DARKBLOOM_ENCRYPTION_KID").unwrap_or_else(|_| "dev".into()),
+        keys,
         models: vec![ModelCard {
             id: std::env::var("DARKBLOOM_PILOT_MODEL")
                 .unwrap_or_else(|_| "pilot-text-model".into()),

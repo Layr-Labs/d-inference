@@ -29,3 +29,6 @@ arc-swap = { workspace = true }
 futures-util = "0.3"
 async-trait = { workspace = true }
 clap = { workspace = true }
+crypto_box = { workspace = true }
+zeroize = { workspace = true }
+base64 = "0.22"

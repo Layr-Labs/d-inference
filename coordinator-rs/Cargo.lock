@@ -324,8 +324,10 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "axum",
+ "base64",
  "bytes",
  "clap",
+ "crypto_box",
  "darkbloom-core",
  "darkbloom-protocol",
  "futures-util",
@@ -338,6 +340,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

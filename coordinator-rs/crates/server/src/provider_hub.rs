@@ -81,6 +81,16 @@ impl ProviderHub {
         );
     }
 
+    /// Fire-and-forget outbound (e.g. terminal_ack). No waiter.
+    pub fn attach_send_best_effort(&self, provider_id: &str, cmd: OutboundCmd) {
+        // Use try_lock to avoid blocking the HTTP path if the hub is busy.
+        if let Ok(g) = self.inner.try_lock() {
+            if let Some(conn) = g.get(provider_id) {
+                let _ = conn.outbound.try_send(cmd);
+            }
+        }
+    }
+
     pub async fn detach(&self, provider_id: &str, session_epoch: u64) {
         let mut g = self.inner.lock().await;
         if let Some(conn) = g.get(provider_id) {

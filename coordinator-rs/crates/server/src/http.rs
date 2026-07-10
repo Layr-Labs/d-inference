@@ -489,21 +489,22 @@ async fn chat_completions(
                         });
                     }
                     Err(err) => {
-                        // Start-authorized: do not redispatch; await terminal/review.
-                        // For pilot mock path, release reservation on start failure.
-                        let mut ledger = state.ledger.lock().await;
-                        let _ = ledger.release(
-                            crate::ledger::OperationKey(format!("release:{}", job_id.as_str())),
-                            job_id.as_str(),
-                            &state.pilot_account,
-                        );
+                        // Start-authorized: do not release or redispatch.
+                        // Leave the job held for recovery/review (DECISIONS #16).
+                        state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
+                            name: "inference.start_failed_held".into(),
+                            tags: vec![
+                                ("model".into(), permit.model.clone()),
+                                ("provider".into(), permit.provider_id.clone()),
+                            ],
+                        });
                         return (
                             StatusCode::BAD_GATEWAY,
                             Json(json!({
                                 "error": {
-                                    "message": format!("start failed: {err}"),
+                                    "message": format!("start failed: {err}; reservation held for review"),
                                     "type": "server_error",
-                                    "code": "provider_start_failed"
+                                    "code": "provider_start_failed_held"
                                 }
                             })),
                         )

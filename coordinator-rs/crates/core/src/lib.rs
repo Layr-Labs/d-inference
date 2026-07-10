@@ -12,9 +12,9 @@ pub mod ids;
 pub mod lease;
 pub mod request;
 
-pub use admission::{AdmissionDecision, CapacityReason, RejectionReason};
+pub use admission::{AdmissionDecision, CapacityReason, DispatchPermit, RejectionReason};
 pub use fleet::{AdmitRequest, FleetState, ProviderSnapshot};
-pub use health::HealthState;
+pub use health::{HealthMachine, HealthState};
 pub use ids::{AttemptId, CoordinatorEpoch, JobId, LeaseId, MicroUsd, SessionEpoch};
 pub use lease::{LeaseError, LeaseEvent, LeaseState};
 pub use request::{RequestEvent, RequestState};

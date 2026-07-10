@@ -14,6 +14,7 @@ pub enum HealthState {
 #[derive(Debug, Clone)]
 pub struct HealthMachine {
     pub state: HealthState,
+    #[allow(clippy::option_instant)]
     pub quarantine_until: Option<Instant>,
 }
 

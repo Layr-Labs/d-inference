@@ -1,5 +1,4 @@
-use axum::{routing::get, Json, Router};
-use serde_json::{json, Value};
+use darkbloom_coordinator::{router, spawn_fleet_actor, AppState, ModelCard};
 use std::net::SocketAddr;
 use tracing_subscriber::EnvFilter;
 
@@ -10,21 +9,33 @@ async fn main() {
         .json()
         .init();
 
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/readyz", get(readyz));
+    let (fleet, _fleet_join) = spawn_fleet_actor();
+    let state = AppState {
+        fleet,
+        encryption_kid: std::env::var("DARKBLOOM_ENCRYPTION_KID").unwrap_or_else(|_| "dev".into()),
+        models: vec![ModelCard {
+            id: std::env::var("DARKBLOOM_PILOT_MODEL")
+                .unwrap_or_else(|_| "pilot-text-model".into()),
+            object: "model".into(),
+            owned_by: "darkbloom".into(),
+        }],
+    };
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
-    tracing::info!(%addr, "darkbloom-coordinator listening (warm-plane stub)");
+    let app = router(state);
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8080);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    tracing::info!(%addr, "darkbloom-coordinator warm plane listening");
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
-    axum::serve(listener, app).await.expect("serve");
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .expect("serve");
 }
 
-async fn health() -> Json<Value> {
-    Json(json!({ "status": "ok", "coordinator": "rust", "phase": "m1-scaffold" }))
-}
-
-async fn readyz() -> Json<Value> {
-    // Milestone 3 will require FleetActor + DB ownership + settlement workers.
-    Json(json!({ "ready": false, "reason": "scaffold_only" }))
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+    tracing::info!("shutdown signal received");
 }

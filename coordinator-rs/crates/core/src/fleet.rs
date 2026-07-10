@@ -31,7 +31,7 @@ pub struct AdmitRequest {
     pub permit_ttl: Duration,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct FleetState {
     pub providers: HashMap<String, ProviderSnapshot>,
 }

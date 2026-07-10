@@ -17,6 +17,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 bytes = { workspace = true }
+# uuid already via workspace
 tokio = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }

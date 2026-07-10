@@ -19,8 +19,21 @@ coordinator-rs/
 ## Build
 
 ```bash
+make coordinator-rs          # test + build
 cd coordinator-rs && cargo test --workspace
 ```
+
+## Migrations (external — never at process startup)
+
+```bash
+# Requires EIGENINFERENCE_DATABASE_URL
+make migrate
+# or:
+cd coordinator && go run ./cmd/migrate -dir ../coordinator-rs/migrations
+```
+
+SQL lives in `coordinator-rs/migrations/` (`rust_coord` schema). The Go
+`ownership` gate refuses unsafe startup when active Rust work is present.
 
 ## Ops docs
 

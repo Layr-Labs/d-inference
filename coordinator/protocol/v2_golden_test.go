@@ -141,3 +141,25 @@ func TestV2Goldens_ModelLifecycle(t *testing.T) {
 		}
 	}
 }
+
+func TestV2Goldens_StructuredError(t *testing.T) {
+	dir := goldenDir(t)
+	b, err := os.ReadFile(filepath.Join(dir, "structured_error.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pm ProviderMessage
+	if err := json.Unmarshal(b, &pm); err != nil {
+		t.Fatal(err)
+	}
+	if pm.Type != TypeStructuredError {
+		t.Fatalf("type=%q", pm.Type)
+	}
+	msg, ok := pm.Payload.(*StructuredErrorMessage)
+	if !ok {
+		t.Fatalf("payload=%T", pm.Payload)
+	}
+	if msg.Class != "security" {
+		t.Fatalf("class=%q", msg.Class)
+	}
+}

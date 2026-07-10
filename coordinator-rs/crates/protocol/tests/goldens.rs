@@ -84,3 +84,12 @@ fn model_gone_golden_parses() {
     assert_eq!(v["type"], "model_gone");
     assert_eq!(v["state_revision"], 43);
 }
+
+#[test]
+fn structured_error_golden_parses() {
+    let raw = include_str!("fixtures/structured_error.json");
+    let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(v["type"], "structured_error");
+    assert_eq!(v["class"], "security");
+    assert_eq!(v["retryable"], false);
+}

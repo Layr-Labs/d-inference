@@ -1748,6 +1748,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	})
 	if !ok {
 		refundReservation()
+		// Token-rate admission is intentionally NOT refunded: this matches every
+		// other post-admission validation failure and makes blocked/invalid URL
+		// probes consume the caller's input/output token quota.
 		return
 	}
 

@@ -106,6 +106,7 @@ func testMeta() mediaResolveMeta {
 func TestResolveRemoteMediaInlinesOnSuccess(t *testing.T) {
 	cfg := mediafetch.DefaultConfig()
 	cfg.AllowPrivateIPs = true
+	cfg.AllowNonStandardPorts = true
 	s := minimalMediaServer(cfg)
 
 	media := httptest.NewServer(pngHandler(t, nil))
@@ -159,6 +160,7 @@ func TestResolveRemoteMediaNilResolverPassthrough(t *testing.T) {
 func TestResolveRemoteMediaFailureWrites400(t *testing.T) {
 	cfg := mediafetch.DefaultConfig()
 	cfg.AllowPrivateIPs = true
+	cfg.AllowNonStandardPorts = true
 	s := minimalMediaServer(cfg)
 
 	// Origin serves HTML behind a lying image Content-Type header.
@@ -192,6 +194,7 @@ func TestResolveRemoteMediaFailureWrites400(t *testing.T) {
 func TestGateSealedRejectsRemoteWithoutFetching(t *testing.T) {
 	cfg := mediafetch.DefaultConfig()
 	cfg.AllowPrivateIPs = true
+	cfg.AllowNonStandardPorts = true
 	s := minimalMediaServer(cfg)
 
 	var hits int32
@@ -339,8 +342,11 @@ func errType(t *testing.T, body []byte) string {
 }
 
 func TestChatCompletionsRemoteMediaSSRFBlocked(t *testing.T) {
-	srv, _ := testServer(t) // env-default resolver: enabled, AllowPrivateIPs=false (strict)
+	srv, _ := testServer(t)
 	makeVisionRoutableProvider(t, srv.registry, "vision-ssrf", "test")
+	cfg := mediafetch.DefaultConfig()
+	cfg.AllowNonStandardPorts = true // isolate connect-time loopback blocking from the port gate
+	srv.mediaResolver = mediafetch.NewResolver(cfg, srv.logger)
 
 	media := httptest.NewServer(pngHandler(t, nil))
 	defer media.Close()
@@ -364,6 +370,7 @@ func TestChatCompletionsRemoteMediaSuccessInlines(t *testing.T) {
 	makeVisionRoutableProvider(t, srv.registry, "vision-ok", "test")
 	cfg := mediafetch.DefaultConfig()
 	cfg.AllowPrivateIPs = true // loopback httptest origin
+	cfg.AllowNonStandardPorts = true
 	srv.mediaResolver = mediafetch.NewResolver(cfg, srv.logger)
 
 	var hits int32
@@ -426,6 +433,7 @@ func TestPreludeDefersRemoteMediaResolution(t *testing.T) {
 	srv, _ := testServer(t)
 	cfg := mediafetch.DefaultConfig()
 	cfg.AllowPrivateIPs = true
+	cfg.AllowNonStandardPorts = true
 	srv.mediaResolver = mediafetch.NewResolver(cfg, srv.logger)
 
 	var hits int32

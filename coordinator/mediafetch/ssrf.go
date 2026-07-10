@@ -28,16 +28,19 @@ var blockedMetadataV4 = netip.MustParseAddr("169.254.169.254")
 
 // blockedPrefixes are ranges that net/netip's IsPrivate/IsLoopback/IsLinkLocal/
 // IsGlobalUnicast helpers do NOT classify as non-global — so without this
-// explicit list they would be (wrongly) allowed. The critical ones are NAT64
-// (64:ff9b::/96 synthesizes IPv4 destinations: 64:ff9b::7f00:1 == 127.0.0.1, a
-// loopback-via-IPv6 SSRF bypass) and CGNAT/RFC6598 (100.64.0.0/10, reachable
-// internal infra in cloud VPCs / k8s overlays). The rest are benchmarking,
-// documentation, IETF-assignment, and reserved ranges that are never a legitimate
-// public media origin. NAT64 is denied outright (our coordinator hosts are
-// dual-stack and never need NAT64 traversal — fail closed).
+// explicit list they would be (wrongly) allowed. The critical ones are IPv6
+// transition mechanisms that embed or tunnel IPv4 destinations — NAT64, 6to4,
+// Teredo, and the deprecated 6to4 relay anycast — because an embedded loopback,
+// metadata, or RFC1918 address can bypass an IPv4-only deny policy if the host
+// has the corresponding tunnel configured. CGNAT/RFC6598 is also denied because
+// it commonly reaches internal cloud/VPC overlays. The rest are benchmarking,
+// documentation, IETF-assignment, deprecated site-local, and reserved ranges
+// that are never a legitimate public media origin. Transition space is denied
+// outright; coordinator hosts are dual-stack and never need it — fail closed.
 var blockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("100.64.0.0/10"),   // CGNAT / RFC 6598 shared address space
 	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments (RFC 6890)
+	netip.MustParsePrefix("192.88.99.0/24"),  // deprecated 6to4 relay anycast (RFC 7526)
 	netip.MustParsePrefix("192.0.2.0/24"),    // TEST-NET-1 (documentation)
 	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking (RFC 2544)
 	netip.MustParsePrefix("198.51.100.0/24"), // TEST-NET-2 (documentation)
@@ -45,8 +48,12 @@ var blockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("240.0.0.0/4"),     // reserved / future use (incl. 255.255.255.255)
 	netip.MustParsePrefix("64:ff9b::/96"),    // NAT64 well-known prefix (RFC 6052)
 	netip.MustParsePrefix("64:ff9b:1::/48"),  // NAT64 local-use prefix (RFC 8215)
+	netip.MustParsePrefix("::/96"),           // deprecated IPv4-compatible IPv6 (e.g. ::127.0.0.1)
+	netip.MustParsePrefix("2001::/32"),       // Teredo (RFC 4380; embeds IPv4 endpoints)
+	netip.MustParsePrefix("2002::/16"),       // 6to4 (RFC 3056; embeds an IPv4 destination)
 	netip.MustParsePrefix("2001:db8::/32"),   // IPv6 documentation (RFC 3849)
 	netip.MustParsePrefix("100::/64"),        // IPv6 discard-only (RFC 6666)
+	netip.MustParsePrefix("fec0::/10"),       // deprecated IPv6 site-local space (RFC 3879)
 }
 
 // ipAllowed reports whether dialing ip is permitted under the SSRF policy.

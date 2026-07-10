@@ -5,18 +5,21 @@ package mediafetch
 // them: an explicit allowlist of formats the provider's decoders (CoreImage for
 // images, AVFoundation for video) support, a part-kind cross-check (an image_url
 // part must be an image, a video_url part a video), and a header-only megapixel
-// cap for stdlib-decodable images (pixel-bomb defense, mirroring the provider's
-// own pre-raster gate). HTML, SVG (scriptable), archives, executables, and
-// anything else outside the allowlist is rejected.
+// cap for every accepted image format (pixel-bomb defense, mirroring the
+// provider's own pre-raster gate). HTML, SVG (scriptable), archives, standalone
+// executables, and anything else outside the allowlist is rejected; trailing
+// bytes in an otherwise-valid media container are never executed here.
 
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"image"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"math"
 	"net/http"
 	"strings"
 )
@@ -84,7 +87,7 @@ func sniffMediaType(data []byte) (mime string, kind mediaKind, ok bool) {
 func isQuickTime(data []byte) bool {
 	return len(data) >= 12 &&
 		bytes.Equal(data[4:8], []byte("ftyp")) &&
-		bytes.HasPrefix(data[8:12], []byte("qt"))
+		bytes.Equal(data[8:12], []byte("qt  "))
 }
 
 // validateFetchedMedia enforces the post-download structural policy for one
@@ -111,13 +114,12 @@ func (r *Resolver) validateFetchedMedia(declared mediaKind, data []byte) (string
 }
 
 // enforceImagePixelCap rejects decompression/pixel bombs by reading ONLY the
-// image header (never a full decode) for formats the Go stdlib can parse
-// (JPEG/PNG/GIF). WebP/BMP have no stdlib header decoder and rely on the
-// provider's own pre-raster pixel cap (the authoritative second layer); GIF is
-// checked on its logical-screen size (per-frame bombs are likewise the
-// provider's aggregate caps' job). A header that its own sniffed format cannot
-// parse is rejected outright: the provider's decoder would fail on it anyway,
-// so failing fast here saves a dispatch.
+// image header (never a full decode). JPEG/PNG/GIF use stdlib DecodeConfig;
+// WebP and BMP use their documented header layouts below. GIF is checked on its
+// logical-screen size (per-frame bombs are likewise the provider's aggregate
+// caps' job). A header that its own sniffed format cannot parse is rejected
+// outright: the provider's decoder would fail on it anyway, so failing fast here
+// saves a dispatch.
 func (r *Resolver) enforceImagePixelCap(mime string, data []byte) error {
 	maxMP := r.cfg.MaxImageMegapixels
 	if maxMP <= 0 {
@@ -134,21 +136,117 @@ func (r *Resolver) enforceImagePixelCap(mime string, data []byte) error {
 		cfg, err = png.DecodeConfig(bytes.NewReader(data))
 	case "image/gif":
 		cfg, err = gif.DecodeConfig(bytes.NewReader(data))
+	case "image/webp":
+		cfg.Width, cfg.Height, err = webPDimensions(data)
+	case "image/bmp":
+		cfg.Width, cfg.Height, err = bmpDimensions(data)
 	default:
-		return nil
+		err = fmt.Errorf("unsupported image mime %q", mime)
 	}
 	if err != nil {
 		return &Error{Status: http.StatusBadRequest, Code: "media_invalid_type",
 			Public:   "a media URL returned an image with an unreadable header",
 			Internal: fmt.Sprintf("%s header decode: %v", mime, err)}
 	}
-	pixels := int64(cfg.Width) * int64(cfg.Height)
-	if pixels > int64(maxMP)*1_000_000 {
+	maxPixels := int64(maxMP)
+	if maxPixels > math.MaxInt64/1_000_000 {
+		maxPixels = math.MaxInt64
+	} else {
+		maxPixels *= 1_000_000
+	}
+	width, height := int64(cfg.Width), int64(cfg.Height)
+	if width <= 0 || height <= 0 {
+		return &Error{Status: http.StatusBadRequest, Code: "media_invalid_type",
+			Public:   "a media URL returned an image with invalid dimensions",
+			Internal: fmt.Sprintf("%s dimensions %dx%d", mime, cfg.Width, cfg.Height)}
+	}
+	// Compare by division BEFORE multiplying: OS/2 BMP dimensions are uint32
+	// and can otherwise overflow int64 when multiplied (e.g. 0xffffffff² wraps
+	// negative and would bypass a naive pixels > maxPixels check).
+	if width > maxPixels/height {
 		return &Error{Status: http.StatusRequestEntityTooLarge, Code: "media_too_large",
 			Public:   fmt.Sprintf("an image exceeds the maximum decoded size of %d megapixels", maxMP),
-			Internal: fmt.Sprintf("%s %dx%d = %d px > %d MP cap", mime, cfg.Width, cfg.Height, pixels, maxMP)}
+			Internal: fmt.Sprintf("%s %dx%d exceeds %d MP cap", mime, cfg.Width, cfg.Height, maxMP)}
 	}
 	return nil
+}
+
+// webPDimensions reads the canvas/frame dimensions from each standardized WebP
+// bitstream form without decoding pixels: VP8X (extended), VP8L (lossless), and
+// VP8 (lossy key frame). See the WebP container specification §2–4.
+func webPDimensions(data []byte) (int, int, error) {
+	if len(data) < 20 || !bytes.Equal(data[0:4], []byte("RIFF")) || !bytes.Equal(data[8:12], []byte("WEBP")) {
+		return 0, 0, fmt.Errorf("invalid WebP RIFF header")
+	}
+	switch string(data[12:16]) {
+	case "VP8X":
+		if len(data) < 30 || binary.LittleEndian.Uint32(data[16:20]) < 10 {
+			return 0, 0, fmt.Errorf("truncated VP8X header")
+		}
+		width := 1 + int(data[24]) + int(data[25])<<8 + int(data[26])<<16
+		height := 1 + int(data[27]) + int(data[28])<<8 + int(data[29])<<16
+		return width, height, nil
+	case "VP8L":
+		if len(data) < 25 || data[20] != 0x2f {
+			return 0, 0, fmt.Errorf("truncated VP8L header")
+		}
+		width := 1 + int(data[21]) + (int(data[22])&0x3f)<<8
+		height := 1 + int(data[22]>>6) + int(data[23])<<2 + (int(data[24])&0x0f)<<10
+		return width, height, nil
+	case "VP8 ":
+		if len(data) < 30 || !bytes.Equal(data[23:26], []byte{0x9d, 0x01, 0x2a}) {
+			return 0, 0, fmt.Errorf("invalid VP8 key-frame header")
+		}
+		width := int(binary.LittleEndian.Uint16(data[26:28]) & 0x3fff)
+		height := int(binary.LittleEndian.Uint16(data[28:30]) & 0x3fff)
+		if width == 0 || height == 0 {
+			return 0, 0, fmt.Errorf("zero-sized VP8 frame")
+		}
+		return width, height, nil
+	default:
+		return 0, 0, fmt.Errorf("unsupported WebP chunk %q", data[12:16])
+	}
+}
+
+// bmpDimensions reads dimensions from the OS/2 BITMAPCOREHEADER (12 bytes) or
+// Windows BITMAPINFOHEADER-family DIB headers (>=40 bytes). Negative Windows
+// heights indicate top-down row order; their absolute value is the canvas size.
+func bmpDimensions(data []byte) (int, int, error) {
+	if len(data) < 26 || !bytes.Equal(data[0:2], []byte("BM")) {
+		return 0, 0, fmt.Errorf("truncated BMP header")
+	}
+	dibSize := binary.LittleEndian.Uint32(data[14:18])
+	if dibSize == 12 {
+		width := int(binary.LittleEndian.Uint16(data[18:20]))
+		height := int(binary.LittleEndian.Uint16(data[20:22]))
+		if width == 0 || height == 0 {
+			return 0, 0, fmt.Errorf("zero-sized BMP canvas")
+		}
+		return width, height, nil
+	}
+	// OS/2 2.x defines a 64-byte header plus a legal 16-byte short form. Both
+	// store unsigned 32-bit dimensions at the same offsets as Windows headers.
+	if dibSize == 16 || dibSize == 64 {
+		width64 := uint64(binary.LittleEndian.Uint32(data[18:22]))
+		height64 := uint64(binary.LittleEndian.Uint32(data[22:26]))
+		maxInt := uint64(^uint(0) >> 1)
+		if width64 == 0 || height64 == 0 || width64 > maxInt || height64 > maxInt {
+			return 0, 0, fmt.Errorf("invalid OS/2 BMP dimensions %dx%d", width64, height64)
+		}
+		return int(width64), int(height64), nil
+	}
+	if dibSize < 40 {
+		return 0, 0, fmt.Errorf("unsupported BMP DIB header size %d", dibSize)
+	}
+	width64 := int64(int32(binary.LittleEndian.Uint32(data[18:22])))
+	height64 := int64(int32(binary.LittleEndian.Uint32(data[22:26])))
+	if height64 < 0 {
+		height64 = -height64
+	}
+	if width64 <= 0 || height64 <= 0 || width64 > int64(^uint(0)>>1) || height64 > int64(^uint(0)>>1) {
+		return 0, 0, fmt.Errorf("invalid BMP dimensions %dx%d", width64, height64)
+	}
+	return int(width64), int(height64), nil
 }
 
 // toDataURI encodes fetched media as a standard base64 data: URI.

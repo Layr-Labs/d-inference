@@ -2416,6 +2416,7 @@ threats:
     affected_files:
       - coordinator/mediafetch/ssrf.go
       - coordinator/mediafetch/fetch.go
+      - coordinator/mediafetch/budget.go
       - coordinator/mediafetch/sniff.go
       - coordinator/mediafetch/resolver.go
       - coordinator/api/media_resolve.go
@@ -2424,38 +2425,48 @@ threats:
           Connect-time IP deny policy in net.Dialer.Control — runs on the
           post-DNS-resolution address of EVERY dial including each redirect hop
           (DNS-rebinding/TOCTOU-proof). Denies loopback, RFC1918, link-local
-          (incl. 169.254.169.254 cloud metadata), CGNAT, NAT64 (64:ff9b::/96
-          synthesized loopback bypass), IPv4-mapped IPv6, multicast, unspecified,
+          (incl. 169.254.169.254 cloud metadata), CGNAT, IPv4-mapped IPv6, and
+          IPv6 transition/compatibility spaces that can embed/tunnel denied IPv4
+          destinations (IPv4-compatible ::/96, NAT64, 6to4, Teredo, deprecated
+          6to4 relay anycast), plus deprecated site-local, multicast, unspecified,
           benchmarking/documentation/reserved ranges, and anything not
           global-unicast (mediafetch/ssrf.go ipAllowed, fail-closed).
         status: implemented
       - description: >
-          URL policy: http/https schemes only, no embedded credentials, redirect
-          depth capped at 3 with per-hop re-validation, optional operator domain
-          blocklist (EIGENINFERENCE_MEDIA_FETCH_BLOCKLIST_DOMAINS).
+          URL policy: http/https schemes only, standard web ports only (HTTP 80,
+          HTTPS 443; non-standard ports require the explicit dev/test override
+          EIGENINFERENCE_MEDIA_FETCH_ALLOW_NONSTANDARD_PORTS), no embedded
+          credentials, redirect depth capped at 3 with per-hop re-validation,
+          optional operator domain blocklist
+          (EIGENINFERENCE_MEDIA_FETCH_BLOCKLIST_DOMAINS).
         status: implemented
       - description: >
           Content policy: data: URI built from magic-byte sniffing (never the
           Content-Type header); explicit allowlist of provider-decodable formats
           (JPEG/PNG/GIF/WebP/BMP; MP4/QuickTime) — HTML/SVG/executables/WebM fail
           closed; declared part kind must match sniffed kind (image_url must be an
-          image); header-only megapixel cap for stdlib-decodable images mirrors the
-          provider's pre-raster pixel gate. Provider decode-time caps (pixels,
-          bytes, duration, frames) remain the authoritative second layer.
+          image); header-only megapixel parsing covers every accepted image format
+          (stdlib DecodeConfig for JPEG/PNG/GIF, explicit VP8/VP8L/VP8X and BMP DIB
+          parsing for WebP/BMP) and mirrors the provider's pre-raster pixel gate.
+          Provider decode-time caps (pixels, bytes, duration, frames) remain the
+          authoritative second layer.
         status: implemented
       - description: >
-          Resource bounds: per-file (8 MiB) and per-request (10 MiB) raw byte caps
-          enforced via io.LimitReader (Content-Length is only a pre-check), no
-          transparent decompression (gzip bombs), per-request part cap (8) and
-          worker cap (4), process-wide fetch semaphore (32), per-fetch (15s) and
-          whole-step (25s) deadlines, and the post-inline body re-check against the
-          16 MiB sealed-frame budget.
+          Resource bounds: per-file (8 MiB) cap via io.LimitReader plus one SHARED
+          per-request byte budget enforced during every concurrent read (10 MiB +
+          one overflow-sentinel byte, rather than checking only after each response
+          returns); Content-Length is only a pre-check. No transparent decompression
+          (gzip bombs), per-request part cap (8) and worker cap (4), process-wide
+          fetch semaphore (32), per-fetch (15s) and whole-step (25s) deadlines, and
+          the post-inline body re-check against the 16 MiB sealed-frame budget.
         status: implemented
       - description: >
           Cost gating: fetching runs AFTER token-rate admission, the balance
           reservation, and the catalog check (consumer.go phase-2 call site), so an
           unauthenticated, unfunded, or over-quota request can never drive
-          coordinator egress. The reservation is refunded on fetch failure.
+          coordinator egress. The monetary reservation is refunded on fetch
+          failure; token-rate admission is deliberately retained, matching other
+          post-admission validation failures, so failed URL probes consume quota.
         status: implemented
       - description: >
           Sealed requests are never fetched: a sender-sealed payload carrying a
@@ -2471,8 +2482,9 @@ threats:
         status: implemented
       - description: >
           Residual (accepted): the blocked/allowed distinction plus timing still
-          leaks coarse reachability of public origins from the coordinator's
-          egress IP; origins learn the coordinator fetches on behalf of requests.
+          leaks coarse reachability of public HTTP/HTTPS origins on ports 80/443
+          from the coordinator's egress IP; origins learn the coordinator fetches
+          on behalf of requests.
           Operators can disable the feature per deployment via
           EIGENINFERENCE_MEDIA_FETCH_ENABLED=false (restores the pre-dispatch 400).
         status: implemented
@@ -2481,6 +2493,8 @@ threats:
     detection_hint: >
       Any change that adds a coordinator-side fetch of a consumer-supplied URL
       outside coordinator/mediafetch, weakens ipAllowed (new allowlisted range,
-      Is4In6 unmapping removed), lifts DisableCompression, trusts the response
-      Content-Type header, moves resolveRemoteMedia before the balance
-      reservation, or fetches for sealed requests must be treated as high severity.
+      Is4In6 unmapping or transition-space denies removed), permits non-standard
+      ports by default, lifts DisableCompression, removes the shared read-time byte
+      budget, trusts the response Content-Type header, skips image-header dimension
+      parsing, moves resolveRemoteMedia before the balance reservation, or fetches
+      for sealed requests must be treated as high severity.

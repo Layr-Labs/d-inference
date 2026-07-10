@@ -3,6 +3,7 @@ package mediafetch
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -30,7 +31,8 @@ func pngPrefix(total int) []byte {
 // devConfig returns a Config usable against httptest (loopback) servers.
 func devConfig() Config {
 	c := DefaultConfig()
-	c.AllowPrivateIPs = true // httptest binds 127.0.0.1
+	c.AllowPrivateIPs = true       // httptest binds 127.0.0.1
+	c.AllowNonStandardPorts = true // httptest chooses an ephemeral port
 	return c
 }
 
@@ -242,6 +244,23 @@ func TestResolveDisabledRejectsRemote(t *testing.T) {
 	mustErr(t, parsed, r, http.StatusBadRequest, "remote_media_disabled")
 }
 
+func TestResolveNonStandardPortRejectedBeforeDial(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Write(validPNG(t))
+	}))
+	defer srv.Close()
+
+	cfg := DefaultConfig()
+	cfg.AllowPrivateIPs = true // isolate the port policy
+	r := NewResolver(cfg, nil)
+	mustErr(t, chatBody(imagePartObj(srv.URL+"/cat.png")), r, http.StatusForbidden, "media_blocked")
+	if n := atomic.LoadInt32(&hits); n != 0 {
+		t.Fatalf("non-standard port rejection must happen before dial; origin hits=%d", n)
+	}
+}
+
 func TestResolveTooManyParts(t *testing.T) {
 	srv := serveBytes(validPNG(t))
 	defer srv.Close()
@@ -330,7 +349,8 @@ func TestResolveSSRFBlocksLoopback(t *testing.T) {
 	defer srv.Close()
 	// Strict policy: the httptest server is on 127.0.0.1, so the dial Control
 	// hook must refuse it.
-	cfg := DefaultConfig() // AllowPrivateIPs=false
+	cfg := DefaultConfig()           // AllowPrivateIPs=false
+	cfg.AllowNonStandardPorts = true // isolate the dial-time IP policy from the port gate
 	r := NewResolver(cfg, nil)
 	mustErr(t, chatBody(imagePartObj(srv.URL+"/x.png")), r, http.StatusForbidden, "media_blocked")
 }
@@ -342,6 +362,36 @@ func TestResolveRedirectToDisallowedScheme(t *testing.T) {
 	defer srv.Close()
 	r := NewResolver(devConfig(), nil) // allow loopback so the first hop dials
 	mustErr(t, chatBody(imagePartObj(srv.URL+"/redir")), r, http.StatusBadRequest, "media_invalid_scheme")
+}
+
+func TestResolveRedirectToNonStandardPortBlockedBeforeSecondDial(t *testing.T) {
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://target.test:8080/media.png", http.StatusFound)
+	}))
+	defer redirect.Close()
+	redirectAddr := strings.TrimPrefix(redirect.URL, "http://")
+
+	cfg := DefaultConfig() // standard ports only
+	r := NewResolver(cfg, nil)
+	var targetDials int32
+	transport := &http.Transport{
+		DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			switch address {
+			case "origin.test:80":
+				return (&net.Dialer{}).DialContext(ctx, network, redirectAddr)
+			case "target.test:8080":
+				atomic.AddInt32(&targetDials, 1)
+			}
+			return nil, net.UnknownNetworkError(address)
+		},
+	}
+	r.client = &http.Client{Transport: transport, CheckRedirect: redirectGuard(cfg)}
+
+	mustErr(t, chatBody(imagePartObj("http://origin.test/start")), r, http.StatusForbidden, "media_blocked")
+	if n := atomic.LoadInt32(&targetDials); n != 0 {
+		t.Fatalf("redirect to non-standard port was dialed %d time(s); must be rejected first", n)
+	}
 }
 
 func TestResolveRedirectLoopDepthCap(t *testing.T) {
@@ -418,5 +468,12 @@ func TestConfigSanitized(t *testing.T) {
 	}
 	if (Config{MaxImageMegapixels: -5}).sanitized().MaxImageMegapixels != DefaultMaxImageMegapixels {
 		t.Error("negative MaxImageMegapixels must clamp to the default")
+	}
+}
+
+func TestConfigFromEnvNonStandardPortOverride(t *testing.T) {
+	t.Setenv(envAllowOtherPorts, "true")
+	if !ConfigFromEnv().AllowNonStandardPorts {
+		t.Error("explicit non-standard-port dev/test override was not read")
 	}
 }

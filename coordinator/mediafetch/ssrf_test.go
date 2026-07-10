@@ -40,16 +40,23 @@ func TestIPAllowed(t *testing.T) {
 
 		// Ranges the stdlib helpers report as global-unicast but must still be
 		// blocked (these slip past IsPrivate/IsGlobalUnicast).
-		{"64:ff9b::7f00:1", false, false}, // NAT64 of 127.0.0.1 (loopback bypass)
-		{"64:ff9b::a00:1", false, false},  // NAT64 of 10.0.0.1
-		{"64:ff9b:1::1", false, false},    // NAT64 local-use prefix
-		{"100.64.0.1", false, false},      // CGNAT / RFC 6598
-		{"100.127.255.1", false, false},   // CGNAT upper bound
-		{"198.18.0.1", false, false},      // benchmarking
-		{"192.0.2.5", false, false},       // TEST-NET-1
-		{"240.0.0.1", false, false},       // reserved
-		{"255.255.255.255", false, false}, // broadcast (in 240/4)
-		{"2001:db8::1", false, false},     // IPv6 documentation
+		{"64:ff9b::7f00:1", false, false},                         // NAT64 of 127.0.0.1 (loopback bypass)
+		{"64:ff9b::a00:1", false, false},                          // NAT64 of 10.0.0.1
+		{"64:ff9b:1::1", false, false},                            // NAT64 local-use prefix
+		{"::7f00:1", false, false},                                // IPv4-compatible 127.0.0.1
+		{"::a00:1", false, false},                                 // IPv4-compatible 10.0.0.1
+		{"2002:7f00:1::1", false, false},                          // 6to4 embedding 127.0.0.1
+		{"2002:a9fe:a9fe::1", false, false},                       // 6to4 embedding metadata 169.254.169.254
+		{"2001:0000:4136:e378:8000:63bf:3fff:fdd2", false, false}, // Teredo
+		{"100.64.0.1", false, false},                              // CGNAT / RFC 6598
+		{"100.127.255.1", false, false},                           // CGNAT upper bound
+		{"198.18.0.1", false, false},                              // benchmarking
+		{"192.0.2.5", false, false},                               // TEST-NET-1
+		{"240.0.0.1", false, false},                               // reserved
+		{"255.255.255.255", false, false},                         // broadcast (in 240/4)
+		{"2001:db8::1", false, false},                             // IPv6 documentation
+		{"192.88.99.1", false, false},                             // deprecated 6to4 relay anycast
+		{"fec0::1", false, false},                                 // deprecated IPv6 site-local
 
 		// allowPrivate (dev/test) permits private/loopback but still blocks the
 		// unspecified address.
@@ -66,7 +73,8 @@ func TestIPAllowed(t *testing.T) {
 }
 
 func TestValidateURL(t *testing.T) {
-	blocklist := map[string]bool{"evil.com": true}
+	cfg := DefaultConfig()
+	cfg.BlocklistDomains = map[string]bool{"evil.com": true}
 	cases := []struct {
 		raw     string
 		wantErr error // nil = allowed
@@ -74,6 +82,10 @@ func TestValidateURL(t *testing.T) {
 		{"https://example.com/cat.jpg", nil},
 		{"http://example.com", nil},
 		{"HTTPS://Example.com/x", nil},
+		{"http://example.com:80/x", nil},
+		{"https://example.com:443/x", nil},
+		{"http://example.com:8080/x", errBlockedHost},
+		{"https://example.com:8443/x", errBlockedHost},
 		{"ftp://example.com/x", errBlockedScheme},
 		{"file:///etc/passwd", errBlockedScheme},
 		{"gopher://example.com", errBlockedScheme},
@@ -87,13 +99,22 @@ func TestValidateURL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("url.Parse(%q): %v", c.raw, err)
 		}
-		got := validateURL(u, blocklist)
+		got := validateURL(u, cfg)
 		switch {
 		case c.wantErr == nil && got != nil:
 			t.Errorf("validateURL(%q) = %v, want nil", c.raw, got)
 		case c.wantErr != nil && !errors.Is(got, c.wantErr):
 			t.Errorf("validateURL(%q) = %v, want errors.Is %v", c.raw, got, c.wantErr)
 		}
+	}
+
+	cfg.AllowNonStandardPorts = true
+	u, err := url.Parse("http://example.com:8080/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateURL(u, cfg); err != nil {
+		t.Errorf("AllowNonStandardPorts=true must allow controlled dev/test origins: %v", err)
 	}
 }
 

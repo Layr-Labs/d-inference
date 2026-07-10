@@ -17,7 +17,7 @@
 //
 //   - SSRF: scheme allowlist, no embedded credentials, optional domain
 //     blocklist, and a connect-time IP deny policy (loopback/private/link-local/
-//     metadata/CGNAT/NAT64/reserved) enforced in the dialer Control hook, which
+//     metadata/CGNAT/IPv6-transition/reserved) enforced in the dialer Control hook,
 //     runs on the post-DNS-resolution address of EVERY dial including each
 //     redirect hop — DNS-rebinding-proof (ssrf.go).
 //   - Content: the data: URI is built from the SNIFFED type (magic bytes), never
@@ -25,12 +25,12 @@
 //     (CoreImage / AVFoundation) actually support are inlined; an image_url part
 //     must sniff as an image and a video_url part as a video; HTML/SVG/scripts/
 //     executables/polyglots fail the allowlist (sniff.go).
-//   - Bombs: per-file and per-request byte caps enforced with io.LimitReader
+//   - Bombs: per-file and shared per-request byte caps enforced while reading
 //     (Content-Length is only a pre-check), no transparent decompression, and a
-//     header-only megapixel cap for stdlib-decodable images mirroring the
-//     provider's own pre-raster pixel gate (fetch.go, sniff.go). The provider's
-//     decode-time caps (pixels, bytes, video duration/frames) remain the second,
-//     authoritative layer.
+//     header-only megapixel cap for every accepted image format mirroring the
+//     provider's own pre-raster pixel gate (fetch.go, budget.go, sniff.go). The
+//     provider's decode-time caps (pixels, bytes, video duration/frames) remain
+//     the second, authoritative layer.
 //   - Resource use: per-request part count/concurrency caps, a process-wide
 //     fetch semaphore, and per-fetch + whole-step deadlines.
 //
@@ -50,17 +50,18 @@ import (
 
 // Environment variable names (EIGENINFERENCE_ prefix, per coordinator/env).
 const (
-	envEnabled        = env.EnvPrefix + "_MEDIA_FETCH_ENABLED"
-	envMaxFileBytes   = env.EnvPrefix + "_MEDIA_FETCH_MAX_FILE_BYTES"
-	envMaxTotalBytes  = env.EnvPrefix + "_MEDIA_FETCH_MAX_TOTAL_BYTES"
-	envMaxParts       = env.EnvPrefix + "_MEDIA_FETCH_MAX_PARTS"
-	envTimeoutMS      = env.EnvPrefix + "_MEDIA_FETCH_TIMEOUT_MS"
-	envTotalDeadline  = env.EnvPrefix + "_MEDIA_FETCH_TOTAL_DEADLINE_MS"
-	envConcurrency    = env.EnvPrefix + "_MEDIA_FETCH_CONCURRENCY"
-	envGlobalConc     = env.EnvPrefix + "_MEDIA_FETCH_GLOBAL_CONCURRENCY"
-	envMaxMegapixels  = env.EnvPrefix + "_MEDIA_FETCH_MAX_IMAGE_MEGAPIXELS"
-	envBlocklist      = env.EnvPrefix + "_MEDIA_FETCH_BLOCKLIST_DOMAINS"
-	envAllowPrivateIP = env.EnvPrefix + "_MEDIA_FETCH_ALLOW_PRIVATE_IPS"
+	envEnabled         = env.EnvPrefix + "_MEDIA_FETCH_ENABLED"
+	envMaxFileBytes    = env.EnvPrefix + "_MEDIA_FETCH_MAX_FILE_BYTES"
+	envMaxTotalBytes   = env.EnvPrefix + "_MEDIA_FETCH_MAX_TOTAL_BYTES"
+	envMaxParts        = env.EnvPrefix + "_MEDIA_FETCH_MAX_PARTS"
+	envTimeoutMS       = env.EnvPrefix + "_MEDIA_FETCH_TIMEOUT_MS"
+	envTotalDeadline   = env.EnvPrefix + "_MEDIA_FETCH_TOTAL_DEADLINE_MS"
+	envConcurrency     = env.EnvPrefix + "_MEDIA_FETCH_CONCURRENCY"
+	envGlobalConc      = env.EnvPrefix + "_MEDIA_FETCH_GLOBAL_CONCURRENCY"
+	envMaxMegapixels   = env.EnvPrefix + "_MEDIA_FETCH_MAX_IMAGE_MEGAPIXELS"
+	envBlocklist       = env.EnvPrefix + "_MEDIA_FETCH_BLOCKLIST_DOMAINS"
+	envAllowPrivateIP  = env.EnvPrefix + "_MEDIA_FETCH_ALLOW_PRIVATE_IPS"
+	envAllowOtherPorts = env.EnvPrefix + "_MEDIA_FETCH_ALLOW_NONSTANDARD_PORTS"
 )
 
 // Defaults. The byte caps are reconciled against the COORDINATOR's own 16 MiB
@@ -84,7 +85,7 @@ const (
 	DefaultTotalDeadline            = 25 * time.Second
 	DefaultConcurrency              = 4   // per-request fetch workers
 	DefaultGlobalConcurrency        = 32  // process-wide in-flight fetch cap
-	DefaultMaxImageMegapixels       = 100 // header-decoded image pixel cap (stdlib-decodable formats)
+	DefaultMaxImageMegapixels       = 100 // header-decoded image pixel cap (all accepted image formats)
 )
 
 // Config controls remote media resolution. The zero value is not usable; build
@@ -112,8 +113,8 @@ type Config struct {
 	// unbounded number of outbound sockets from the coordinator.
 	GlobalConcurrency int
 	// MaxImageMegapixels caps decoded image dimensions (width×height), checked
-	// from the image HEADER only (never a full decode) for stdlib-decodable
-	// formats (JPEG/PNG/GIF). 0 disables the coordinator-side check; the
+	// from the image HEADER only (never a full decode) for every accepted format
+	// (JPEG/PNG/GIF/WebP/BMP). 0 disables the coordinator-side check; the
 	// provider's own pre-raster pixel cap still applies.
 	MaxImageMegapixels int
 	// BlocklistDomains is an optional set of lowercased hostnames to reject
@@ -123,22 +124,28 @@ type Config struct {
 	// AllowPrivateIPs disables the private/loopback/link-local/metadata IP deny
 	// policy. Default false. Set true only in dev/tests (httptest binds 127.0.0.1).
 	AllowPrivateIPs bool
+	// AllowNonStandardPorts permits explicit ports other than 80 for HTTP and
+	// 443 for HTTPS. Default false: limiting public origins to standard web ports
+	// prevents the coordinator from becoming a public-network port scanner. Set
+	// true only for controlled dev/test origins.
+	AllowNonStandardPorts bool
 }
 
 // DefaultConfig returns the production defaults (feature enabled).
 func DefaultConfig() Config {
 	return Config{
-		Enabled:            true,
-		MaxFileBytes:       DefaultMaxFileBytes,
-		MaxTotalBytes:      DefaultMaxTotalBytes,
-		MaxParts:           DefaultMaxParts,
-		FetchTimeout:       DefaultTimeout,
-		TotalDeadline:      DefaultTotalDeadline,
-		Concurrency:        DefaultConcurrency,
-		GlobalConcurrency:  DefaultGlobalConcurrency,
-		MaxImageMegapixels: DefaultMaxImageMegapixels,
-		BlocklistDomains:   map[string]bool{},
-		AllowPrivateIPs:    false,
+		Enabled:               true,
+		MaxFileBytes:          DefaultMaxFileBytes,
+		MaxTotalBytes:         DefaultMaxTotalBytes,
+		MaxParts:              DefaultMaxParts,
+		FetchTimeout:          DefaultTimeout,
+		TotalDeadline:         DefaultTotalDeadline,
+		Concurrency:           DefaultConcurrency,
+		GlobalConcurrency:     DefaultGlobalConcurrency,
+		MaxImageMegapixels:    DefaultMaxImageMegapixels,
+		BlocklistDomains:      map[string]bool{},
+		AllowPrivateIPs:       false,
+		AllowNonStandardPorts: false,
 	}
 }
 
@@ -157,6 +164,7 @@ func ConfigFromEnv() Config {
 	c.MaxImageMegapixels = env.EnvInt(envMaxMegapixels, c.MaxImageMegapixels)
 	c.BlocklistDomains = parseBlocklist(env.EnvOr(envBlocklist, ""))
 	c.AllowPrivateIPs = env.EnvBool(envAllowPrivateIP, c.AllowPrivateIPs)
+	c.AllowNonStandardPorts = env.EnvBool(envAllowOtherPorts, c.AllowNonStandardPorts)
 	return c.sanitized()
 }
 

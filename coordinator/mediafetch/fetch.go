@@ -57,13 +57,13 @@ func redirectGuard(cfg Config) func(req *http.Request, via []*http.Request) erro
 		if len(via) >= maxRedirects {
 			return fmt.Errorf("%w: too many redirects (>%d)", errBlockedHost, maxRedirects)
 		}
-		return validateURL(req.URL, cfg.BlocklistDomains)
+		return validateURL(req.URL, cfg)
 	}
 }
 
-// validateURL enforces the scheme allowlist, rejects embedded userinfo, and
-// applies the domain blocklist. IP-level SSRF is enforced at dial time.
-func validateURL(u *url.URL, blocklist map[string]bool) error {
+// validateURL enforces the scheme + port allowlists, rejects embedded userinfo,
+// and applies the domain blocklist. IP-level SSRF is enforced at dial time.
+func validateURL(u *url.URL, cfg Config) error {
 	scheme := strings.ToLower(u.Scheme)
 	if scheme != "http" && scheme != "https" {
 		return fmt.Errorf("%w: %q (only http/https)", errBlockedScheme, u.Scheme)
@@ -74,7 +74,14 @@ func validateURL(u *url.URL, blocklist map[string]bool) error {
 	if u.Host == "" {
 		return fmt.Errorf("%w: empty host", errBlockedHost)
 	}
-	return hostAllowed(u.Host, blocklist)
+	if !cfg.AllowNonStandardPorts {
+		port := u.Port()
+		if (scheme == "http" && port != "" && port != "80") ||
+			(scheme == "https" && port != "" && port != "443") {
+			return fmt.Errorf("%w: non-standard %s port %q is not allowed", errBlockedHost, scheme, port)
+		}
+	}
+	return hostAllowed(u.Host, cfg.BlocklistDomains)
 }
 
 // isRemoteMediaURL reports whether s is an http(s) URL (as opposed to an inline
@@ -92,13 +99,13 @@ func isRemoteMediaURL(s string) bool {
 // the content structurally (allowlist, declared-kind match, pixel cap), and
 // returns the bytes plus sniffed MIME type. The per-fetch timeout is applied via
 // ctx so it is independent of the request TTFT deadline.
-func (r *Resolver) fetchOne(ctx context.Context, ref mediaRef, maxBytes int64) (*fetchedMedia, error) {
+func (r *Resolver) fetchOne(ctx context.Context, ref mediaRef, maxBytes int64, totalBudget *byteBudget) (*fetchedMedia, error) {
 	u, err := url.Parse(strings.TrimSpace(ref.url))
 	if err != nil {
 		return nil, &Error{Status: http.StatusBadRequest, Code: "invalid_media_url",
 			Public: "a media URL could not be parsed", Internal: fmt.Sprintf("parse %q: %v", ref.url, err)}
 	}
-	if err := validateURL(u, r.cfg.BlocklistDomains); err != nil {
+	if err := validateURL(u, r.cfg); err != nil {
 		return nil, classifyURLError(err)
 	}
 
@@ -135,8 +142,18 @@ func (r *Resolver) fetchOne(ctx context.Context, ref mediaRef, maxBytes int64) (
 
 	// Read at most maxBytes+1 so we can detect overflow without buffering more —
 	// the LimitReader (not the header) is the enforced cap.
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	// Layer the per-file reader under the SHARED per-request budget. The shared
+	// budget allows only MaxTotalBytes+1 bytes across all concurrent fetches, so
+	// four 8 MiB responses can never transiently retain 32 MiB before the 10 MiB
+	// aggregate check notices. The +1 byte distinguishes exactly-at-cap EOF from
+	// overflow without buffering more than one byte past the aggregate limit.
+	data, err := io.ReadAll(totalBudget.reader(io.LimitReader(resp.Body, maxBytes+1)))
 	if err != nil {
+		if errors.Is(err, errAggregateBudgetExceeded) {
+			return nil, &Error{Status: http.StatusRequestEntityTooLarge, Code: "media_too_large",
+				Public:   "combined media exceeds the maximum allowed size for one request",
+				Internal: fmt.Sprintf("aggregate body exceeded cap %d", totalBudget.limit)}
+		}
 		return nil, classifyFetchError(err)
 	}
 	if int64(len(data)) > maxBytes {

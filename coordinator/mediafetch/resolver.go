@@ -151,6 +151,7 @@ func (r *Resolver) fetchAll(ctx context.Context, refs []mediaRef) ([]*fetchedMed
 	}
 
 	sem := make(chan struct{}, r.cfg.Concurrency)
+	totalBudget := newByteBudget(r.cfg.MaxTotalBytes)
 	var wg sync.WaitGroup
 	for i, ref := range refs {
 		wg.Add(1)
@@ -174,7 +175,7 @@ func (r *Resolver) fetchAll(ctx context.Context, refs []mediaRef) ([]*fetchedMed
 				return
 			}
 
-			m, e := r.fetchOne(ctx, ref, r.cfg.MaxFileBytes)
+			m, e := r.fetchOne(ctx, ref, r.cfg.MaxFileBytes, totalBudget)
 			if e != nil {
 				r.logger.Warn("media fetch rejected", "error", e)
 				fail(e)
@@ -185,7 +186,7 @@ func (r *Resolver) fetchAll(ctx context.Context, refs []mediaRef) ([]*fetchedMed
 			totalBytes += int64(len(m.data))
 			total := totalBytes // snapshot under lock; other goroutines keep writing totalBytes
 			mu.Unlock()
-			if total > r.cfg.MaxTotalBytes {
+			if total > r.cfg.MaxTotalBytes { // invariant backstop; budget.go enforces during reads
 				fail(&Error{Status: http.StatusRequestEntityTooLarge, Code: "media_too_large",
 					Public:   "combined media exceeds the maximum allowed size for one request",
 					Internal: fmt.Sprintf("aggregate %d > MaxTotalBytes %d", total, r.cfg.MaxTotalBytes)})

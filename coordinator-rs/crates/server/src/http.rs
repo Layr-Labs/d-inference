@@ -471,6 +471,14 @@ async fn chat_completions(
                         lease: lease.clone(),
                     });
                     let _ = task.apply(ControlEvent::FinalizeDone);
+                    state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
+                        name: "inference.settled".into(),
+                        tags: vec![
+                            ("model".into(), completion.model.clone()),
+                            ("mode".into(), completion.mode.clone()),
+                            ("provider".into(), completion.provider_id.clone()),
+                        ],
+                    });
                     // Terminal ACK after durable disposition (plan §12.8).
                     let ack = json!({
                         "type": "terminal_ack",

@@ -707,3 +707,10 @@ without a separate quiescence poll after a filtered clear.
 adopt). Ops can chain adopt → cutover-drain-all, or account-filtered batch
 settle/recover → next account, without a quiescence round-trip.
 
+### Abort responses list remaining accounts (DECISIONS #125)
+
+clear-orphans and batch recover/force-settle abort responses include
+`accounts_needing_cutover` + `needs_adopt_count` alongside remaining job ids.
+After re-acquire, ops can feed the abort account list into cutover-drain-all
+without a quiescence poll.
+

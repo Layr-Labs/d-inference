@@ -173,15 +173,37 @@ fn remaining_ids_for_abort(
     }
 }
 
-/// Partial batch response when ownership is lost mid-loop (DECISIONS #97/#98/#105).
+/// Job ids + global cutover accounts for abort responses (DECISIONS #125).
+struct AbortRemainders {
+    active: Vec<String>,
+    held: Vec<String>,
+    accounts: Vec<String>,
+    needs_adopt: usize,
+}
+
+fn abort_remainders(
+    led: &crate::ledger::MemoryLedger,
+    account_filter: Option<&str>,
+    epoch: u64,
+) -> AbortRemainders {
+    let (active, held) = remaining_ids_for_abort(led, account_filter);
+    let (needs_adopt, _, _) = led.orphan_summary_counts(epoch);
+    AbortRemainders {
+        active,
+        held,
+        accounts: accounts_needing_cutover_from(led, epoch),
+        needs_adopt,
+    }
+}
+
+/// Partial batch response when ownership is lost mid-loop (DECISIONS #97/#98/#105/#125).
 fn batch_ownership_lost_partial(
     batch: &str,
     completed: &[String],
     completed_key: &str,
     amount_key: &str,
     amount_total: i64,
-    remaining_active: &[String],
-    remaining_held: &[String],
+    rem: &AbortRemainders,
     account_filter: Option<&str>,
 ) -> axum::response::Response {
     let mut body = serde_json::Map::new();
@@ -197,16 +219,15 @@ fn batch_ownership_lost_partial(
     body.insert(completed_key.into(), json!(completed));
     body.insert(format!("{completed_key}_count"), json!(completed.len()));
     body.insert(amount_key.into(), json!(amount_total));
-    body.insert("remaining_active_job_ids".into(), json!(remaining_active));
+    body.insert("remaining_active_job_ids".into(), json!(rem.active));
     body.insert(
         "remaining_held_start_authorized_job_ids".into(),
-        json!(remaining_held),
+        json!(rem.held),
     );
-    body.insert("active_jobs".into(), json!(remaining_active.len()));
-    body.insert(
-        "held_start_authorized".into(),
-        json!(remaining_held.len()),
-    );
+    body.insert("active_jobs".into(), json!(rem.active.len()));
+    body.insert("held_start_authorized".into(), json!(rem.held.len()));
+    body.insert("accounts_needing_cutover".into(), json!(rem.accounts));
+    body.insert("needs_adopt_count".into(), json!(rem.needs_adopt));
     if let Some(acct) = account_filter {
         body.insert("account_filter".into(), json!(acct));
     }
@@ -967,9 +988,9 @@ async fn admin_force_settle_batch(
         invoke_admin_batch_job(&job_id);
         // Re-check holding per job (DECISIONS #85/#96/#97).
         if require_holding(&state).is_err() {
-            let (remaining_active, remaining_held) = {
+            let rem = {
                 let led = state.ledger.lock().await;
-                remaining_ids_for_abort(&led, account_filter.as_deref())
+                abort_remainders(&led, account_filter.as_deref(), state.ownership.epoch().0)
             };
             return batch_ownership_lost_partial(
                 "force_settle_batch",
@@ -977,8 +998,7 @@ async fn admin_force_settle_batch(
                 "settled",
                 "charged_micro_usd",
                 charged_total,
-                &remaining_active,
-                &remaining_held,
+                &rem,
                 account_filter.as_deref(),
             );
         }
@@ -1013,9 +1033,9 @@ async fn admin_force_settle_batch(
                 }
                 Err(crate::ledger::LedgerError::OwnershipLost) => {
                     drop(led);
-                    let (remaining_active, remaining_held) = {
+                    let rem = {
                         let led = state.ledger.lock().await;
-                        remaining_ids_for_abort(&led, account_filter.as_deref())
+                        abort_remainders(&led, account_filter.as_deref(), state.ownership.epoch().0)
                     };
                     return batch_ownership_lost_partial(
                         "force_settle_batch",
@@ -1023,8 +1043,7 @@ async fn admin_force_settle_batch(
                         "settled",
                         "charged_micro_usd",
                         charged_total,
-                        &remaining_active,
-                        &remaining_held,
+                        &rem,
                         account_filter.as_deref(),
                     );
                 }
@@ -1275,9 +1294,9 @@ async fn admin_recover_undispatched_batch(
         invoke_admin_batch_job(&job_id);
         // Re-check holding per job (DECISIONS #85/#96/#97).
         if require_holding(&state).is_err() {
-            let (remaining_active, remaining_held) = {
+            let rem = {
                 let led = state.ledger.lock().await;
-                remaining_ids_for_abort(&led, account_filter.as_deref())
+                abort_remainders(&led, account_filter.as_deref(), state.ownership.epoch().0)
             };
             return batch_ownership_lost_partial(
                 "recover_undispatched_batch",
@@ -1285,8 +1304,7 @@ async fn admin_recover_undispatched_batch(
                 "released",
                 "refunded_micro_usd",
                 refund_total,
-                &remaining_active,
-                &remaining_held,
+                &rem,
                 account_filter.as_deref(),
             );
         }
@@ -1312,9 +1330,9 @@ async fn admin_recover_undispatched_batch(
                 }
                 Err(crate::ledger::LedgerError::OwnershipLost) => {
                     drop(led);
-                    let (remaining_active, remaining_held) = {
+                    let rem = {
                         let led = state.ledger.lock().await;
-                        remaining_ids_for_abort(&led, account_filter.as_deref())
+                        abort_remainders(&led, account_filter.as_deref(), state.ownership.epoch().0)
                     };
                     return batch_ownership_lost_partial(
                         "recover_undispatched_batch",
@@ -1322,8 +1340,7 @@ async fn admin_recover_undispatched_batch(
                         "released",
                         "refunded_micro_usd",
                         refund_total,
-                        &remaining_active,
-                        &remaining_held,
+                        &rem,
                         account_filter.as_deref(),
                     );
                 }
@@ -1750,9 +1767,9 @@ async fn admin_clear_orphans(
 
     // Re-check holding before money moves (DECISIONS #85).
     if require_holding(&state).is_err() {
-        let (remaining_active, remaining_held) = {
+        let rem = {
             let led = state.ledger.lock().await;
-            remaining_ids_for_abort(&led, account_filter.as_deref())
+            abort_remainders(&led, account_filter.as_deref(), state.ownership.epoch().0)
         };
         return ownership_lost_partial(
             "after_adopt",
@@ -1761,8 +1778,7 @@ async fn admin_clear_orphans(
             &[],
             0,
             0,
-            &remaining_active,
-            &remaining_held,
+            &rem,
             account_filter.as_deref(),
         );
     }
@@ -1777,9 +1793,9 @@ async fn admin_clear_orphans(
         };
         for job_id in ids {
             if require_holding(&state).is_err() {
-                let (remaining_active, remaining_held) = {
+                let rem = {
                     let led = state.ledger.lock().await;
-                    remaining_ids_for_abort(&led, account_filter.as_deref())
+                    abort_remainders(&led, account_filter.as_deref(), state.ownership.epoch().0)
                 };
                 return ownership_lost_partial(
                     "during_recover",
@@ -1788,8 +1804,7 @@ async fn admin_clear_orphans(
                     &[],
                     refund_total,
                     0,
-                    &remaining_active,
-                    &remaining_held,
+                    &rem,
                     account_filter.as_deref(),
                 );
             }
@@ -1813,9 +1828,13 @@ async fn admin_clear_orphans(
             };
             let refunded = match refunded {
                 Err(()) => {
-                    let (remaining_active, remaining_held) = {
+                    let rem = {
                         let led = state.ledger.lock().await;
-                        remaining_ids_for_abort(&led, account_filter.as_deref())
+                        abort_remainders(
+                            &led,
+                            account_filter.as_deref(),
+                            state.ownership.epoch().0,
+                        )
                     };
                     return ownership_lost_partial(
                         "during_recover",
@@ -1824,8 +1843,7 @@ async fn admin_clear_orphans(
                         &[],
                         refund_total,
                         0,
-                        &remaining_active,
-                        &remaining_held,
+                        &rem,
                         account_filter.as_deref(),
                     );
                 }
@@ -1846,9 +1864,9 @@ async fn admin_clear_orphans(
     invoke_clear_orphans_phase("after_recover");
 
     if require_holding(&state).is_err() {
-        let (remaining_active, remaining_held) = {
+        let rem = {
             let led = state.ledger.lock().await;
-            remaining_ids_for_abort(&led, account_filter.as_deref())
+            abort_remainders(&led, account_filter.as_deref(), state.ownership.epoch().0)
         };
         return ownership_lost_partial(
             "after_recover",
@@ -1857,8 +1875,7 @@ async fn admin_clear_orphans(
             &[],
             refund_total,
             0,
-            &remaining_active,
-            &remaining_held,
+            &rem,
             account_filter.as_deref(),
         );
     }
@@ -1873,9 +1890,9 @@ async fn admin_clear_orphans(
         };
         for job_id in ids {
             if require_holding(&state).is_err() {
-                let (remaining_active, remaining_held) = {
+                let rem = {
                     let led = state.ledger.lock().await;
-                    remaining_ids_for_abort(&led, account_filter.as_deref())
+                    abort_remainders(&led, account_filter.as_deref(), state.ownership.epoch().0)
                 };
                 return ownership_lost_partial(
                     "during_force_settle",
@@ -1884,8 +1901,7 @@ async fn admin_clear_orphans(
                     &settled,
                     refund_total,
                     charged_total,
-                    &remaining_active,
-                    &remaining_held,
+                    &rem,
                     account_filter.as_deref(),
                 );
             }
@@ -1918,9 +1934,13 @@ async fn admin_clear_orphans(
             };
             let charged = match charged {
                 Err(()) => {
-                    let (remaining_active, remaining_held) = {
+                    let rem = {
                         let led = state.ledger.lock().await;
-                        remaining_ids_for_abort(&led, account_filter.as_deref())
+                        abort_remainders(
+                            &led,
+                            account_filter.as_deref(),
+                            state.ownership.epoch().0,
+                        )
                     };
                     return ownership_lost_partial(
                         "during_force_settle",
@@ -1929,8 +1949,7 @@ async fn admin_clear_orphans(
                         &settled,
                         refund_total,
                         charged_total,
-                        &remaining_active,
-                        &remaining_held,
+                        &rem,
                         account_filter.as_deref(),
                     );
                 }
@@ -2007,7 +2026,8 @@ async fn admin_clear_orphans(
         .into_response()
 }
 
-/// Partial clear-orphans response when ownership is lost mid-flight (DECISIONS #85/#100/#105).
+/// Partial clear-orphans response when ownership is lost mid-flight
+/// (DECISIONS #85/#100/#105/#125).
 fn ownership_lost_partial(
     phase: &str,
     adopted: &[String],
@@ -2015,8 +2035,7 @@ fn ownership_lost_partial(
     settled: &[String],
     refund_total: i64,
     charged_total: i64,
-    remaining_active: &[String],
-    remaining_held: &[String],
+    rem: &AbortRemainders,
     account_filter: Option<&str>,
 ) -> axum::response::Response {
     (
@@ -2038,10 +2057,12 @@ fn ownership_lost_partial(
             "settled_count": settled.len(),
             "settled": settled,
             "charged_micro_usd": charged_total,
-            "remaining_active_job_ids": remaining_active,
-            "remaining_held_start_authorized_job_ids": remaining_held,
-            "active_jobs": remaining_active.len(),
-            "held_start_authorized": remaining_held.len(),
+            "remaining_active_job_ids": rem.active,
+            "remaining_held_start_authorized_job_ids": rem.held,
+            "active_jobs": rem.active.len(),
+            "held_start_authorized": rem.held.len(),
+            "accounts_needing_cutover": rem.accounts,
+            "needs_adopt_count": rem.needs_adopt,
         })),
     )
         .into_response()

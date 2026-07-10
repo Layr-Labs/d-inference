@@ -128,6 +128,7 @@ Date: 2026-07-10
 | 119 | clear-orphans/batch abort on ledger OwnershipLost | Fencing mismatch no longer silently skipped — clear-orphans and batch recover/force-settle abort with ownership_lost |
 | 120 | Adopt then cutover-drain-all after fencing | Quiescence hints `adopt-jobs then cutover-drain-all` when needs_adopt>0. Adopt→cutover-drain-all clears after fencing abort |
 | 121 | Filtered clear adopts all for fencing | Account-filtered clear-orphans/cutover-drain rebinds fencing for ALL active jobs; money moves stay filter-scoped |
+| 122 | Concurrent filtered clear conservation | Concurrent account-filtered clear/cutover on disjoint tenants conserve money; deposits during filtered clear conserve |
 
 ## Deleted Go mechanisms (do not port)
 

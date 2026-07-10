@@ -1,5 +1,15 @@
 //! Pure state and policy for the Rust coordinator.
 
+pub mod deadline;
+pub mod fleet;
+pub mod ids;
+pub mod money;
+pub mod pricing;
+pub mod request;
+pub mod terminal;
+pub mod tokens;
+pub mod traits;
+
 /// Compatibility boundary exported by the pure core.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProtocolSupport {

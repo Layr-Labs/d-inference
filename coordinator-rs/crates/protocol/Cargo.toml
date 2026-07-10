@@ -8,7 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+base64 = "0.22.1"
 bytes = "1.12.1"
+crypto_box = { version = "0.9.1", features = ["salsa20"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.150", features = ["raw_value"] }
 thiserror = "2.0.18"
@@ -19,3 +21,4 @@ workspace = true
 [dev-dependencies]
 base64 = "0.22.1"
 crypto_box = { version = "0.9.1", features = ["salsa20"] }
+proptest = "1.11.0"

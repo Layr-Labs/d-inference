@@ -1,12 +1,16 @@
-//! Versioned wire contracts shared by the Rust coordinator and Swift provider.
+//! Versioned wire contracts shared by the coordinator and provider.
 
+#![forbid(unsafe_code)]
+
+pub mod crypto;
+pub mod error;
+pub mod limits;
 pub mod raw_json;
+pub mod v1;
+pub mod v2;
 
-/// The deployed JSON WebSocket protocol.
-pub const PROTOCOL_V1_MAJOR: u16 = 1;
-
-/// The prepared-lease and binary-payload protocol under migration.
-pub const PROTOCOL_V2_MAJOR: u16 = 2;
-
-/// Fixed header length for protocol-v2 encrypted payload frames.
-pub const V2_BINARY_HEADER_LEN: usize = 192;
+pub use error::{CryptoError, ProtocolError, TerminalError};
+pub use limits::{
+    MAX_V2_BINARY_FRAME_LEN, MAX_V2_CIPHERTEXT_LEN, PROTOCOL_V1_MAJOR, PROTOCOL_V2_MAJOR,
+    V2_BINARY_HEADER_LEN,
+};

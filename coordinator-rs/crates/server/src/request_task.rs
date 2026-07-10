@@ -243,6 +243,40 @@ mod tests {
         task.apply(ControlEvent::FinalizeDone).unwrap();
         assert_eq!(task.state, RequestState::Finished);
     }
+
+    #[tokio::test]
+    async fn prepare_expired_returns_to_admitting() {
+        let (_handle, mut task) = spawn_request_task(JobId::new("j-exp"), Duration::from_secs(30));
+        let attempt = AttemptId::new("a1");
+        let lease = LeaseId::new("l1");
+        let permit = DispatchPermit {
+            attempt: attempt.clone(),
+            provider_id: "p".into(),
+            model: "m".into(),
+            expires_after: Duration::from_secs(2),
+        };
+        task.apply(ControlEvent::Reserved {
+            job: JobId::new("j-exp"),
+        })
+        .unwrap();
+        task.apply(ControlEvent::Admitted {
+            attempt: attempt.clone(),
+            permit,
+        })
+        .unwrap();
+        task.apply(ControlEvent::Prepared {
+            attempt: attempt.clone(),
+            lease: lease.clone(),
+        })
+        .unwrap();
+        assert!(matches!(
+            task.state,
+            RequestState::FundingPrepared { .. }
+        ));
+        task.apply(ControlEvent::PrepareExpired).unwrap();
+        assert_eq!(task.state, RequestState::Admitting);
+        assert!(!task.funded_start);
+    }
 }
 
 #[cfg(test)]

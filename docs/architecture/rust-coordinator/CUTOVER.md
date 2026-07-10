@@ -622,3 +622,11 @@ orphans) so ops can target `cutover-drain?account=…`. Charged
 `actual_micro_usd` on account-filtered cutover clamps per hold and leaves
 foreign tenants untouched.
 
+### Ops loop accounts_needing_cutover (DECISIONS #113)
+
+Canonical multi-tenant drain: poll quiescence → for each
+`accounts_needing_cutover` call account-filtered cutover-drain → if accounts
+empty but not ready, outbox-drain → repeat until ready. Outbox-only state has
+empty accounts list and `cutover_hint=outbox-drain`. Deposits to a foreign
+account concurrent with filtered cutover conserve both ledgers.
+

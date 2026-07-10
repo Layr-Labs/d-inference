@@ -246,6 +246,10 @@ impl MemoryLedger {
         self.jobs.get(job_id).map(|j| j.provenance.total)
     }
 
+    pub fn attempt(&self, attempt_id: &str) -> Option<&AttemptRecord> {
+        self.attempts.get(attempt_id)
+    }
+
     pub fn active_job_count(&self) -> usize {
         self.jobs
             .values()
@@ -458,5 +462,26 @@ mod tests {
             .release(OperationKey("rel".into()), "no-such-job", "a")
             .unwrap());
         assert_eq!(led.balance("a").0, 1_000_000);
+    }
+
+    #[test]
+    fn settle_unknown_job_conflicts() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 1_000_000, 0);
+        assert!(matches!(
+            led.settle(OperationKey("s".into()), "missing", "a", 1, "d"),
+            Err(LedgerError::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn record_attempt_is_retrievable() {
+        let mut led = MemoryLedger::default();
+        led.record_attempt("att-1", "job-1", "prov-1", "started");
+        let a = led.attempt("att-1").expect("attempt");
+        assert_eq!(a.job_id, "job-1");
+        assert_eq!(a.provider_id, "prov-1");
+        assert_eq!(a.state, "started");
+        assert!(led.attempt("missing").is_none());
     }
 }

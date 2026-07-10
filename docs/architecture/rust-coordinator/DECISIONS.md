@@ -65,6 +65,7 @@ Date: 2026-07-10
 | 56 | Fenced money API wrappers | `settle_capped_fenced` / `settle_capped_as_fenced` / `release_fenced` / `resize_and_authorize_fenced` / `mark_start_authorized_fenced` call `require_fencing_epoch` inside the ledger before mutating money. HTTP chat/admin paths use these so a forgotten route-level check cannot settle after steal |
 | 57 | Live SE signature on disposition | Live `provider_terminal.se_signature` is copied onto `MockCompletion` and persisted via `record_bound`; replay ingest with a mismatched SE signature returns `disposition=conflict` |
 | 58 | Force-settle records disposition | Admin `force-settle` calls `record_bound` with `force_settled` so provider reconnect ingest ACKs without recording late |
+| 59 | Fenced recovery helpers | `force_settle_held_fenced` / `recover_undispatched_fenced` require matching fencing epoch before money moves. Unfenced wrappers pass epoch `0` (unbound jobs only). CLI demos bind epoch via `reserve_with_epoch` |
 
 ## Deleted Go mechanisms (do not port)
 

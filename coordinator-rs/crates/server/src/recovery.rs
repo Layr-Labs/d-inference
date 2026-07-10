@@ -20,6 +20,17 @@ pub fn recover_undispatched(
     job_id: &str,
     account: &str,
 ) -> Result<RecoveryAction, String> {
+    recover_undispatched_fenced(ledger, 0, job_id, account)
+}
+
+/// Like `recover_undispatched` but refuses when fencing epoch mismatches (DECISIONS #59).
+/// Pass `fencing_epoch=0` only for unbound jobs (legacy tests / demos without epoch bind).
+pub fn recover_undispatched_fenced(
+    ledger: &Arc<Mutex<MemoryLedger>>,
+    fencing_epoch: u64,
+    job_id: &str,
+    account: &str,
+) -> Result<RecoveryAction, String> {
     let mut g = ledger.lock().map_err(|e| e.to_string())?;
     if g.job_disposition(job_id).is_some() {
         return Ok(RecoveryAction::AlreadyTerminal);
@@ -31,7 +42,8 @@ pub fn recover_undispatched(
     if g.active_job_count() == 0 && g.job_reserved_total(job_id).is_none() {
         return Ok(RecoveryAction::AlreadyTerminal);
     }
-    match g.release(
+    match g.release_fenced(
+        fencing_epoch,
         OperationKey(format!("recovery_release:{job_id}")),
         job_id,
         account,
@@ -51,6 +63,18 @@ pub fn force_settle_held(
     actual: i64,
     terminal_digest: &str,
 ) -> Result<RecoveryAction, String> {
+    force_settle_held_fenced(ledger, 0, job_id, account, actual, terminal_digest)
+}
+
+/// Like `force_settle_held` but refuses when fencing epoch mismatches (DECISIONS #59).
+pub fn force_settle_held_fenced(
+    ledger: &Arc<Mutex<MemoryLedger>>,
+    fencing_epoch: u64,
+    job_id: &str,
+    account: &str,
+    actual: i64,
+    terminal_digest: &str,
+) -> Result<RecoveryAction, String> {
     let mut g = ledger.lock().map_err(|e| e.to_string())?;
     if g.job_disposition(job_id).is_some() {
         return Ok(RecoveryAction::AlreadyTerminal);
@@ -63,7 +87,8 @@ pub fn force_settle_held(
     }
     // Clamp via settle_capped so ops amounts above reservation never fail-close.
     let reserved = g.job_reserved_total(job_id).map(|m| m.0).unwrap_or(0);
-    match g.settle_capped_as(
+    match g.settle_capped_as_fenced(
+        fencing_epoch,
         OperationKey(format!("force_settle:{job_id}")),
         job_id,
         account,
@@ -312,5 +337,45 @@ mod tests {
         led.mark_start_authorized("j1", "a").unwrap();
         assert_eq!(led.held_start_authorized_count(), 1);
         assert_eq!(led.held_start_authorized_job_ids(), vec!["j1".to_string()]);
+    }
+
+    #[test]
+    fn force_settle_held_fenced_refuses_wrong_epoch() {
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        {
+            let mut g = led.lock().unwrap();
+            g.credit("a", 1_000_000, 0).unwrap();
+            g.reserve_with_epoch(OperationKey("r".into()), "j1", "a", 100_000, 7)
+                .unwrap();
+            g.mark_start_authorized_fenced(7, "j1", "a").unwrap();
+        }
+        let err = force_settle_held_fenced(&led, 9, "j1", "a", 40_000, "force-ep")
+            .unwrap_err();
+        assert!(err.contains("ownership"), "err={err}");
+        assert_eq!(led.lock().unwrap().held_start_authorized_count(), 1);
+        assert_eq!(
+            force_settle_held_fenced(&led, 7, "j1", "a", 40_000, "force-ep").unwrap(),
+            RecoveryAction::Released
+        );
+        assert_eq!(led.lock().unwrap().balance("a").0, 960_000);
+    }
+
+    #[test]
+    fn recover_undispatched_fenced_refuses_wrong_epoch() {
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        {
+            let mut g = led.lock().unwrap();
+            g.credit("a", 1_000_000, 0).unwrap();
+            g.reserve_with_epoch(OperationKey("r".into()), "j1", "a", 100_000, 3)
+                .unwrap();
+        }
+        let err = recover_undispatched_fenced(&led, 8, "j1", "a").unwrap_err();
+        assert!(err.contains("ownership"), "err={err}");
+        assert_eq!(led.lock().unwrap().active_job_count(), 1);
+        assert_eq!(
+            recover_undispatched_fenced(&led, 3, "j1", "a").unwrap(),
+            RecoveryAction::Released
+        );
+        assert_eq!(led.lock().unwrap().balance("a").0, 1_000_000);
     }
 }

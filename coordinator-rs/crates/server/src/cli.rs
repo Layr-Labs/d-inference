@@ -7,7 +7,8 @@ use crate::deposits::apply_stripe_deposit;
 use crate::external_events::ExternalEventInbox;
 use crate::ledger::MemoryLedger;
 use crate::recovery::{
-    force_settle_held, recover_start_authorized_held, recover_undispatched, RecoveryAction,
+    force_settle_held_fenced, recover_start_authorized_held, recover_undispatched_fenced,
+    RecoveryAction,
 };
 
 #[derive(Parser, Debug)]
@@ -129,20 +130,23 @@ pub fn run_recovery(opts: RecoveryOpts) -> Result<(), String> {
     }
     if let Some(job) = opts.demo_force_settle_job {
         let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let epoch = 1u64;
         {
             let mut g = led.lock().map_err(|e| e.to_string())?;
             g.credit(&opts.demo_account, 1_000_000, 0).unwrap();
-            g.reserve(
+            g.reserve_with_epoch(
                 crate::ledger::OperationKey(format!("reserve:{job}")),
                 &job,
                 &opts.demo_account,
                 100_000,
+                epoch,
             )
             .map_err(|e| e.to_string())?;
-            g.mark_start_authorized(&job, &opts.demo_account)
+            g.mark_start_authorized_fenced(epoch, &job, &opts.demo_account)
                 .map_err(|e| e.to_string())?;
         }
-        let action = force_settle_held(&led, &job, &opts.demo_account, 40_000, "force-demo-d")?;
+        let action =
+            force_settle_held_fenced(&led, epoch, &job, &opts.demo_account, 40_000, "force-demo-d")?;
         tracing::info!(?action, job, "recovery force-settle demo complete");
         if action != RecoveryAction::Released {
             return Err(format!("expected Released (settled), got {action:?}"));
@@ -183,18 +187,20 @@ pub fn run_recovery(opts: RecoveryOpts) -> Result<(), String> {
     }
     if let Some(job) = opts.demo_job {
         let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let epoch = 1u64;
         {
             let mut g = led.lock().map_err(|e| e.to_string())?;
             g.credit(&opts.demo_account, 1_000_000, 0).unwrap();
-            g.reserve(
+            g.reserve_with_epoch(
                 crate::ledger::OperationKey(format!("reserve:{job}")),
                 &job,
                 &opts.demo_account,
                 100_000,
+                epoch,
             )
             .map_err(|e| e.to_string())?;
         }
-        let action = recover_undispatched(&led, &job, &opts.demo_account)?;
+        let action = recover_undispatched_fenced(&led, epoch, &job, &opts.demo_account)?;
         tracing::info!(?action, job, "recovery demo complete");
         if action != RecoveryAction::Released {
             return Err(format!("expected Released, got {action:?}"));

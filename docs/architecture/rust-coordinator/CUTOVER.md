@@ -288,3 +288,10 @@ via `record_bound`. Replay ingest with a mismatched SE signature returns
 Admin `force-settle` persists a `force_settled` disposition via `record_bound`
 so a reconnecting provider's terminal ingest ACKs without recording late.
 
+### Fenced recovery helpers (DECISIONS #59)
+
+`force_settle_held_fenced` / `recover_undispatched_fenced` refuse with
+ownership loss when the job's fencing epoch does not match. Legacy unfenced
+wrappers pass epoch `0` (safe only for unbound jobs). CLI demos bind epoch
+at reserve time.
+

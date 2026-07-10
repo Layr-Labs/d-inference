@@ -17,6 +17,7 @@ The Rust pilot **never proxies** to Go. Excluded production surfaces return
 | `POST /v1/admin/force-settle` | Supported (ops clear start_authorized hold) |
 | `POST /v1/admin/recover-undispatched` | Supported (release reserved-not-started) |
 | `POST /v1/admin/held-review` | Supported (classify held jobs; no money move) |
+| `POST /v1/admin/adopt-job` | Supported (rebind fencing epoch after ownership re-acquire) |
 | Stripe deposit/withdraw/Connect (prod webhooks) | Unsupported (use pilot admin deposits for inbox tests) |
 | Privy / API-key CRUD | Unsupported (pilot keys via env) |
 | Device auth / enroll / MDM | Unsupported |

@@ -18,7 +18,8 @@ Status: prepared — **human-gated**. Do not run against production.
 - `/v1/chat/completions` (stream + non-stream)
 - `/ws/provider` registration / heartbeat / prepare / start
 - `/v1/admin/quiescence`, `/v1/admin/deposits`, `/v1/admin/terminal-ingest`,
-  `/v1/admin/force-settle`, `/v1/admin/recover-undispatched`, `/v1/admin/held-review`
+  `/v1/admin/force-settle`, `/v1/admin/recover-undispatched`, `/v1/admin/held-review`,
+  `/v1/admin/adopt-job`
 - Mock provider: `coordinator-rs/scripts/mock_provider_ws.py`
 - Self-route first, then pre-funded paid
 

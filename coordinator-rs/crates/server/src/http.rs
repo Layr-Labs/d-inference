@@ -83,6 +83,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/admin/held-review", post(admin_held_review))
         .route("/v1/admin/terminal-ingest", post(admin_terminal_ingest))
+        .route("/v1/admin/adopt-job", post(admin_adopt_job))
         .fallback(unsupported)
         .with_state(Arc::new(state))
 }
@@ -154,6 +155,30 @@ fn require_admin(
             .into_response());
     }
     Ok(())
+}
+
+/// Poll until ownership is lost (DECISIONS #65/#66).
+async fn watch_ownership_lost(gate: Arc<OwnershipGate>) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        if gate.assert_holding().is_err() {
+            break;
+        }
+    }
+}
+
+fn ownership_lost_held_response(message: &str) -> axum::response::Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "error": {
+                "message": message,
+                "type": "server_error",
+                "code": "ownership_lost"
+            }
+        })),
+    )
+        .into_response()
 }
 
 /// Money-mutation fencing: re-check ownership at every ledger boundary (DECISIONS #47).
@@ -744,6 +769,59 @@ async fn admin_held_review(
         .into_response()
 }
 
+#[derive(Debug, Deserialize)]
+struct AdminAdoptJobRequest {
+    job_id: String,
+}
+
+/// Rebind an orphaned job to the current fencing epoch after ownership re-acquire
+/// (DECISIONS #66). Does not move money — follow with recover/force-settle.
+async fn admin_adopt_job(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AdminAdoptJobRequest>,
+) -> impl IntoResponse {
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
+    }
+    if let Err(resp) = require_nonempty_job_id(&req.job_id) {
+        return resp;
+    }
+    if let Err(resp) = require_holding(&state) {
+        return resp;
+    }
+    let epoch = state.ownership.epoch().0;
+    let (prev, current) = {
+        let mut led = state.ledger.lock().await;
+        match led.adopt_fencing_epoch(&req.job_id, epoch) {
+            Ok(prev) => (prev, epoch),
+            Err(err) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": {
+                            "message": format!("{err}"),
+                            "type": "invalid_request_error",
+                            "code": "adopt_job_failed"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    };
+    (
+        StatusCode::OK,
+        Json(json!({
+            "action": "adopted",
+            "job_id": req.job_id,
+            "previous_fencing_epoch": prev,
+            "fencing_epoch": current,
+        })),
+    )
+        .into_response()
+}
+
 async fn readyz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     if let Err(err) = state.ownership.assert_holding() {
         return (
@@ -1127,20 +1205,9 @@ async fn chat_completions(
                             attempt.as_str(),
                             std::time::Duration::from_secs(30),
                         );
-                        let ownership_watch = {
-                            let gate = state.ownership.clone();
-                            async move {
-                                loop {
-                                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-                                    if gate.assert_holding().is_err() {
-                                        break;
-                                    }
-                                }
-                            }
-                        };
                         match tokio::select! {
                             res = terminal_wait => res.map(Some),
-                            _ = ownership_watch => Ok(None),
+                            _ = watch_ownership_lost(state.ownership.clone()) => Ok(None),
                         } {
                             Ok(Some(v)) => v,
                             Ok(None) => {
@@ -1151,17 +1218,9 @@ async fn chat_completions(
                                         ("provider".into(), permit.provider_id.clone()),
                                     ],
                                 });
-                                return (
-                                    StatusCode::SERVICE_UNAVAILABLE,
-                                    Json(json!({
-                                        "error": {
-                                            "message": "ownership lost while awaiting provider terminal; reservation held for review",
-                                            "type": "server_error",
-                                            "code": "ownership_lost"
-                                        }
-                                    })),
-                                )
-                                    .into_response();
+                                return ownership_lost_held_response(
+                                    "ownership lost while awaiting provider terminal; reservation held for review",
+                                );
                             }
                             Err(err) => {
                                 state.telemetry.try_emit(crate::telemetry::TelemetryEvent {

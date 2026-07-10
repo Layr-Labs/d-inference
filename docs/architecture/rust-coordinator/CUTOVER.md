@@ -330,3 +330,10 @@ Live chat `select!`s between `wait_terminal` and an ownership poll. If the
 gate is released mid-wait, return `ownership_lost` and leave the reservation
 `start_authorized` held — never settle after a mid-wait fencing loss.
 
+### Adopt job fencing after re-acquire (DECISIONS #66)
+
+After ownership re-acquire with a new epoch, orphaned jobs still bound to the
+old epoch cannot be recovered/force-settled. `POST /v1/admin/adopt-job`
+rebinds `fencing_epoch` to the current owner (no money move); ops then call
+recover or force-settle.
+

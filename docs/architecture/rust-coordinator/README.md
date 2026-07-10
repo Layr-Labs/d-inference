@@ -55,5 +55,6 @@ debits/credits target the shared Go `balances` table for continuity;
 | `POST /v1/admin/force-settle` | Ops clear start_authorized hold (`force_settled`) |
 | `POST /v1/admin/recover-undispatched` | Release reserved-not-started jobs (`inference.released` outbox) |
 | `POST /v1/admin/held-review` | Classify held start_authorized jobs (no money move) |
+| `POST /v1/admin/adopt-job` | Rebind orphaned job fencing epoch after ownership re-acquire |
 
 Smoke provider: `coordinator-rs/scripts/mock_provider_ws.py`

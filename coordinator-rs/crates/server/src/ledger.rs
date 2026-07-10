@@ -240,6 +240,27 @@ impl MemoryLedger {
         Ok(())
     }
 
+    /// Rebind an active job to the current coordinator fencing epoch (DECISIONS #66).
+    /// Used after ownership re-acquire so orphaned jobs can be recovered/force-settled.
+    pub fn adopt_fencing_epoch(&mut self, job_id: &str, epoch: u64) -> Result<u64, LedgerError> {
+        let job = self
+            .jobs
+            .get_mut(job_id)
+            .ok_or_else(|| LedgerError::Conflict("unknown job".into()))?;
+        if job.disposition.is_some() {
+            return Err(LedgerError::Conflict(format!(
+                "job {job_id} already disposed"
+            )));
+        }
+        let prev = job.fencing_epoch;
+        job.fencing_epoch = epoch;
+        Ok(prev)
+    }
+
+    pub fn job_fencing_epoch(&self, job_id: &str) -> Option<u64> {
+        self.jobs.get(job_id).map(|j| j.fencing_epoch)
+    }
+
     /// Mark `start_authorized` only when `account` owns the job (DECISIONS #24/#31).
     pub fn mark_start_authorized(
         &mut self,
@@ -1800,6 +1821,29 @@ mod tests {
         assert!(matches!(
             led.reserve_with_epoch(OperationKey("r".into()), "j", "a", 100_000, 9),
             Err(LedgerError::OwnershipLost)
+        ));
+    }
+
+    #[test]
+    fn adopt_fencing_epoch_rebinds_active_job() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve_with_epoch(OperationKey("r".into()), "j", "a", 100_000, 3)
+            .unwrap();
+        assert_eq!(led.job_fencing_epoch("j"), Some(3));
+        assert_eq!(led.adopt_fencing_epoch("j", 10).unwrap(), 3);
+        assert_eq!(led.job_fencing_epoch("j"), Some(10));
+        assert!(led.require_fencing_epoch("j", 10).is_ok());
+        assert!(matches!(
+            led.require_fencing_epoch("j", 3),
+            Err(LedgerError::OwnershipLost)
+        ));
+        // Disposed jobs cannot be adopted.
+        led.release_fenced(10, OperationKey("rel".into()), "j", "a")
+            .unwrap();
+        assert!(matches!(
+            led.adopt_fencing_epoch("j", 11),
+            Err(LedgerError::Conflict(_))
         ));
     }
 

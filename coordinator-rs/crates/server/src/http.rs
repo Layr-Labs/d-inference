@@ -74,6 +74,7 @@ pub fn router(state: AppState) -> Router {
         .route("/ws/provider", get(provider_ws))
         .route("/v1/admin/quiescence", get(quiescence))
         .route("/v1/admin/deposits", post(admin_deposit))
+        .route("/v1/admin/force-settle", post(admin_force_settle))
         .route("/v1/admin/terminal-ingest", post(admin_terminal_ingest))
         .fallback(unsupported)
         .with_state(Arc::new(state))
@@ -390,6 +391,153 @@ async fn admin_deposit(
             "event_id": req.event_id,
             "balance_micro_usd": bal,
             "withdrawable_micro_usd": wdr,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminForceSettleRequest {
+    job_id: String,
+    /// Micro-USD charge; clamped to reservation (DECISIONS #17/#23).
+    actual_micro_usd: i64,
+    #[serde(default)]
+    terminal_digest: Option<String>,
+    #[serde(default)]
+    account: Option<String>,
+}
+
+/// Ops force-settle for a start_authorized held job (DECISIONS #17).
+/// Clears the hold so quiescence can become ready after review.
+async fn admin_force_settle(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AdminForceSettleRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = state.ownership.assert_holding() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": {
+                    "message": format!("{err}"),
+                    "type": "server_error",
+                    "code": "ownership_lost"
+                }
+            })),
+        )
+            .into_response();
+    }
+    if let Err(status) = authorize_pilot(&state, &headers) {
+        return (
+            status,
+            Json(json!({
+                "error": {
+                    "message": "invalid pilot api key",
+                    "type": "invalid_request_error",
+                    "code": "invalid_api_key"
+                }
+            })),
+        )
+            .into_response();
+    }
+    if req.job_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": "job_id required",
+                    "type": "invalid_request_error",
+                    "code": "invalid_job_id"
+                }
+            })),
+        )
+            .into_response();
+    }
+    if req.actual_micro_usd < 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": "actual_micro_usd must be >= 0",
+                    "type": "invalid_request_error",
+                    "code": "invalid_amount"
+                }
+            })),
+        )
+            .into_response();
+    }
+    let account = req
+        .account
+        .unwrap_or_else(|| state.pilot_account.clone());
+    let digest = req
+        .terminal_digest
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| format!("force-settle:{}", req.job_id));
+
+    let (action, charged) = {
+        let mut led = state.ledger.lock().await;
+        if !led.job_funded_start(&req.job_id) {
+            ("skipped".to_string(), 0_i64)
+        } else if led.job_reserved_total(&req.job_id).is_none() {
+            ("already_terminal".to_string(), 0_i64)
+        } else {
+            let reserved = led.job_reserved_total(&req.job_id).map(|m| m.0).unwrap_or(0);
+            let charge = req.actual_micro_usd.min(reserved).max(0);
+            match led.settle_capped_as(
+                crate::ledger::OperationKey(format!("force_settle:{}", req.job_id)),
+                &req.job_id,
+                &account,
+                req.actual_micro_usd,
+                reserved,
+                &digest,
+                "force_settled",
+            ) {
+                Ok(true) => ("released".to_string(), charge),
+                Ok(false) => ("already_terminal".to_string(), 0),
+                Err(err) => {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(json!({
+                            "error": {
+                                "message": format!("{err}"),
+                                "type": "invalid_request_error",
+                                "code": "force_settle_failed"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    };
+
+    if action == "released" {
+        let mut box_ = state.outbox.lock().await;
+        let _ = box_.enqueue_critical(
+            "inference.settled",
+            &json!({
+                "job_id": req.job_id,
+                "terminal_digest": digest,
+                "charged_micro_usd": charged,
+                "disposition": "force_settled",
+            })
+            .to_string(),
+        );
+    }
+
+    let (bal, held) = {
+        let led = state.ledger.lock().await;
+        (led.balance(&account).0, led.held_start_authorized_count())
+    };
+    (
+        StatusCode::OK,
+        Json(json!({
+            "action": action,
+            "job_id": req.job_id,
+            "account": account,
+            "terminal_digest": digest,
+            "balance_micro_usd": bal,
+            "held_start_authorized": held,
         })),
     )
         .into_response()

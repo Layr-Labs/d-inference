@@ -155,3 +155,9 @@ Durable `deposit_sql` enqueues `billing.deposit_applied` gated on credit+op.
 `settle_sql` / `settle_capped_sql` / `force_settle_sql` enqueue `inference.settled`
 gated on mark so money and the side effect commit in one transaction.
 
+### Admin force-settle HTTP (DECISIONS #39)
+
+`POST /v1/admin/force-settle` clears start_authorized held jobs after ops review
+(ownership + pilot key). Idempotent replay returns `already_terminal`. Critical
+outbox enqueue keeps quiescence blocked until drain.
+

@@ -1129,3 +1129,173 @@ async fn deposit_critical_outbox_extends_when_full() {
     assert_eq!(qv["ready"], false);
     assert_eq!(qv["outbox_retryable"], 2);
 }
+
+#[tokio::test]
+async fn admin_force_settle_clears_held_job() {
+    let state = test_state(true);
+    let outbox = state.outbox.clone();
+    {
+        let mut led = state.ledger.lock().await;
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-afs".into()),
+            "held-afs",
+            "pilot-account",
+            200_000,
+        )
+        .unwrap();
+        led.mark_start_authorized("held-afs", "pilot-account")
+            .unwrap();
+    }
+    let app = router(state);
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/force-settle")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "held-afs",
+                        "actual_micro_usd": 50_000,
+                        "terminal_digest": "force-afs-d"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["action"], "released");
+    assert_eq!(v["held_start_authorized"], 0);
+    // 1M - 200k + 150k refund = 950k
+    assert_eq!(v["balance_micro_usd"], 950_000);
+    assert_eq!(outbox.lock().await.len(), 1);
+
+    let q = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/quiescence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Outbox still pending — not ready until drained.
+    assert_eq!(q.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body_json(q).await["held_start_authorized"], 0);
+}
+
+#[tokio::test]
+async fn admin_force_settle_without_ownership_returns_503() {
+    let app = router(test_state(false));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/force-settle")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "j",
+                        "actual_micro_usd": 1
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body_json(res).await["error"]["code"], "ownership_lost");
+}
+
+#[tokio::test]
+async fn admin_force_settle_skips_when_not_authorized() {
+    let state = test_state(true);
+    {
+        let mut led = state.ledger.lock().await;
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-skip".into()),
+            "reserved-only",
+            "pilot-account",
+            100_000,
+        )
+        .unwrap();
+    }
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/force-settle")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "reserved-only",
+                        "actual_micro_usd": 10_000
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(body_json(res).await["action"], "skipped");
+}
+
+#[tokio::test]
+async fn admin_force_settle_idempotent_replay() {
+    let state = test_state(true);
+    {
+        let mut led = state.ledger.lock().await;
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-idemp".into()),
+            "held-idemp",
+            "pilot-account",
+            100_000,
+        )
+        .unwrap();
+        led.mark_start_authorized("held-idemp", "pilot-account")
+            .unwrap();
+    }
+    let app = router(state);
+    let body = json!({
+        "job_id": "held-idemp",
+        "actual_micro_usd": 40_000,
+        "terminal_digest": "force-idemp-d"
+    })
+    .to_string();
+    let res1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/force-settle")
+                .header("content-type", "application/json")
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res1.status(), StatusCode::OK);
+    assert_eq!(body_json(res1).await["action"], "released");
+
+    let res2 = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/force-settle")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res2.status(), StatusCode::OK);
+    assert_eq!(body_json(res2).await["action"], "already_terminal");
+}

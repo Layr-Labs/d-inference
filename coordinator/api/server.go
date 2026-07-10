@@ -40,6 +40,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/mediafetch"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
@@ -423,6 +424,15 @@ type Server struct {
 	// Server built directly (e.g. &Server{} in tests) leaves it nil, and
 	// submitTelemetry falls back to a per-write saferun.Go in that case.
 	routeTelemetry *telemetrySink
+
+	// mediaResolver fetches remote http(s) image_url/video_url links into
+	// inline base64 data: URIs before the request body is E2E-encrypted to a
+	// provider, so consumers can pass links instead of pre-encoding media
+	// client-side (media_resolve.go). The coordinator is the single SSRF
+	// chokepoint; the provider still only ever sees data: URIs. Set by
+	// NewServer from env; nil (e.g. a &Server{} built directly in tests)
+	// behaves as disabled and falls back to the legacy pre-dispatch rejection.
+	mediaResolver *mediafetch.Resolver
 }
 
 // SetRateLimiter configures the per-account rate limiter applied to
@@ -709,6 +719,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		zombieCanceller:      newZombieStreamCanceller(),
 		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
 		routeTelemetry:       newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
+		mediaResolver:        mediafetch.NewResolver(mediafetch.ConfigFromEnv(), logger),
 	}
 	s.registerDefaultGauges()
 	s.routes()

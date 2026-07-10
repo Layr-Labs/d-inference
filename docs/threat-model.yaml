@@ -2392,3 +2392,95 @@ threats:
     detection_hint: >
       Every new chip/model or macOS release needs GPU-load correlation and full
       engage/release/restore hardware validation before support is claimed.
+
+  # ── TB-001: Coordinator-side remote media fetching (mediafetch) ──
+
+  - id: T-049
+    trust_boundary: TB-001
+    stride: Spoofing
+    title: SSRF / resource abuse via consumer-supplied remote media URLs
+    description: >
+      The coordinator fetches remote http(s) image_url/video_url links from chat
+      completion requests and inlines them as base64 data: URIs before sealing the
+      body to a provider (coordinator/mediafetch, api/media_resolve.go; default ON,
+      EIGENINFERENCE_MEDIA_FETCH_ENABLED kill switch). This makes the coordinator —
+      the TEE control plane — issue attacker-chosen outbound HTTP requests: the
+      classic SSRF surface (internal services, cloud metadata, DNS rebinding,
+      redirect laundering), plus resource abuse (decompression/pixel bombs, slow
+      origins, fetch storms) and a privacy side channel (the URL's origin observes
+      coordinator egress correlated with a request). The provider-side data:-only
+      guard is unchanged, so providers never fetch anything (their SSRF posture is
+      not affected).
+    adversaries: [ADV-002, ADV-003]
+    affected_assets: [A-001]
+    affected_files:
+      - coordinator/mediafetch/ssrf.go
+      - coordinator/mediafetch/fetch.go
+      - coordinator/mediafetch/sniff.go
+      - coordinator/mediafetch/resolver.go
+      - coordinator/api/media_resolve.go
+    mitigations:
+      - description: >
+          Connect-time IP deny policy in net.Dialer.Control — runs on the
+          post-DNS-resolution address of EVERY dial including each redirect hop
+          (DNS-rebinding/TOCTOU-proof). Denies loopback, RFC1918, link-local
+          (incl. 169.254.169.254 cloud metadata), CGNAT, NAT64 (64:ff9b::/96
+          synthesized loopback bypass), IPv4-mapped IPv6, multicast, unspecified,
+          benchmarking/documentation/reserved ranges, and anything not
+          global-unicast (mediafetch/ssrf.go ipAllowed, fail-closed).
+        status: implemented
+      - description: >
+          URL policy: http/https schemes only, no embedded credentials, redirect
+          depth capped at 3 with per-hop re-validation, optional operator domain
+          blocklist (EIGENINFERENCE_MEDIA_FETCH_BLOCKLIST_DOMAINS).
+        status: implemented
+      - description: >
+          Content policy: data: URI built from magic-byte sniffing (never the
+          Content-Type header); explicit allowlist of provider-decodable formats
+          (JPEG/PNG/GIF/WebP/BMP; MP4/QuickTime) — HTML/SVG/executables/WebM fail
+          closed; declared part kind must match sniffed kind (image_url must be an
+          image); header-only megapixel cap for stdlib-decodable images mirrors the
+          provider's pre-raster pixel gate. Provider decode-time caps (pixels,
+          bytes, duration, frames) remain the authoritative second layer.
+        status: implemented
+      - description: >
+          Resource bounds: per-file (8 MiB) and per-request (10 MiB) raw byte caps
+          enforced via io.LimitReader (Content-Length is only a pre-check), no
+          transparent decompression (gzip bombs), per-request part cap (8) and
+          worker cap (4), process-wide fetch semaphore (32), per-fetch (15s) and
+          whole-step (25s) deadlines, and the post-inline body re-check against the
+          16 MiB sealed-frame budget.
+        status: implemented
+      - description: >
+          Cost gating: fetching runs AFTER token-rate admission, the balance
+          reservation, and the catalog check (consumer.go phase-2 call site), so an
+          unauthenticated, unfunded, or over-quota request can never drive
+          coordinator egress. The reservation is refunded on fetch failure.
+        status: implemented
+      - description: >
+          Sealed requests are never fetched: a sender-sealed payload carrying a
+          remote media URL is rejected pre-billing with a clear error
+          (gateRemoteMediaPreDispatch) — fetching would generate origin-observable
+          egress correlated with a payload the sender chose to seal.
+        status: implemented
+      - description: >
+          Consumer-facing fetch errors carry only generic messages (media_blocked,
+          media_too_large, …); the URL/host/cause is logged server-side only, so
+          the API cannot be used as a fine-grained internal-network oracle beyond
+          the allowed/blocked bit.
+        status: implemented
+      - description: >
+          Residual (accepted): the blocked/allowed distinction plus timing still
+          leaks coarse reachability of public origins from the coordinator's
+          egress IP; origins learn the coordinator fetches on behalf of requests.
+          Operators can disable the feature per deployment via
+          EIGENINFERENCE_MEDIA_FETCH_ENABLED=false (restores the pre-dispatch 400).
+        status: implemented
+    open_findings: []
+    severity: high
+    detection_hint: >
+      Any change that adds a coordinator-side fetch of a consumer-supplied URL
+      outside coordinator/mediafetch, weakens ipAllowed (new allowlisted range,
+      Is4In6 unmapping removed), lifts DisableCompression, trusts the response
+      Content-Type header, moves resolveRemoteMedia before the balance
+      reservation, or fetches for sealed requests must be treated as high severity.

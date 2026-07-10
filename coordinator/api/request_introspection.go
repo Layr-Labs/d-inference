@@ -8,6 +8,14 @@ package api
 // state; the pre-dispatch media-URL rejection (rejectRemoteMediaURLs) hangs
 // off *Server only to record rejection telemetry. Split out of consumer.go
 // to keep the request-handling orchestrator thin.
+//
+// Remote-media flow note: on the chat-completions surface the media resolver
+// (media_resolve.go / coordinator/mediafetch) FETCHES remote image_url/video_url
+// links and inlines them as data: URIs, so rejectRemoteMediaURLs only fires
+// there when the resolver is disabled, the request is sender-sealed, or a
+// remote reference sits in a shape the resolver does not fetch (see
+// gateRemoteMediaPreDispatch). The generic (completions + Anthropic) surface
+// keeps the unconditional rejection.
 
 import (
 	"encoding/json"
@@ -438,10 +446,26 @@ func (s *Server) rejectRemoteMediaURLs(w http.ResponseWriter, r *http.Request, p
 	if ok {
 		return false
 	}
-	shown := badRef
-	if len(shown) > 200 {
-		shown = shown[:200] + "…"
+	s.writeRemoteMediaRejection(w, r, parsed, model, publicModel, hasTools,
+		"image/video input must be an inline base64 data: URI (e.g. \"data:image/jpeg;base64,…\"); "+
+			"remote http(s):// and file:// media URLs are not supported on this endpoint. Got: "+truncateMediaRef(badRef))
+	return true
+}
+
+// truncateMediaRef bounds a consumer-supplied media reference for inclusion in
+// an error message (URLs can be data: URIs megabytes long).
+func truncateMediaRef(ref string) string {
+	if len(ref) > 200 {
+		return ref[:200] + "…"
 	}
+	return ref
+}
+
+// writeRemoteMediaRejection records + writes the standard pre-dispatch remote
+// media 400 (identical telemetry shape for every remote-media rejection path:
+// legacy data:-only, sealed-request, and unfetchable-shape — see
+// gateRemoteMediaPreDispatch in media_resolve.go).
+func (s *Server) writeRemoteMediaRejection(w http.ResponseWriter, r *http.Request, parsed map[string]any, model, publicModel string, hasTools bool, message string) {
 	stream, _ := parsed["stream"].(bool)
 	s.recordRejection(rejectionInfo{
 		r:               r,
@@ -458,11 +482,7 @@ func (s *Server) rejectRemoteMediaURLs(w http.ResponseWriter, r *http.Request, p
 		params:          rejectionSamplingParams(parsed),
 	})
 	s.ddIncr("inference.media_remote_url_rejected", []string{"model:" + model})
-	writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
-		"image/video input must be an inline base64 data: URI (e.g. \"data:image/jpeg;base64,…\"); "+
-			"remote http(s):// and file:// media URLs are not supported on this end-to-end-encrypted endpoint. Got: "+shown,
-		withParam("messages")))
-	return true
+	writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", message, withParam("messages")))
 }
 
 // requestHasTools reports whether the request carries a non-empty top-level

@@ -453,14 +453,20 @@ func (pr *PendingRequest) MarkRouteOutcomeFinalized() bool {
 }
 
 type RequestTiming struct {
-	ReceivedAt   time.Time // handler entry
-	ParsedAt     time.Time // after parse + validate
-	ReservedAt   time.Time // after balance reservation
-	RoutedAt     time.Time // after provider selection (including queue wait)
-	EncryptedAt  time.Time // after E2E encryption
-	QueuedAt     time.Time // set when request enters the queue
-	DispatchedAt time.Time // set when request is sent to provider via WebSocket
-	FirstChunkAt time.Time // set when first inference chunk (incl. held boilerplate) arrives from provider
+	ReceivedAt time.Time // handler entry
+	ParsedAt   time.Time // after parse + validate
+	ReservedAt time.Time // after balance reservation
+	// MediaFetchedAt is set when remote media URLs were fetched and inlined
+	// post-reservation (api.resolveRemoteMedia); zero when the request needed
+	// no fetches. It sits between ReservedAt and RoutedAt in the lifecycle and
+	// anchors the route segment so a multi-second media download is reported as
+	// media_fetch time, not routing time.
+	MediaFetchedAt time.Time
+	RoutedAt       time.Time // after provider selection (including queue wait)
+	EncryptedAt    time.Time // after E2E encryption
+	QueuedAt       time.Time // set when request enters the queue
+	DispatchedAt   time.Time // set when request is sent to provider via WebSocket
+	FirstChunkAt   time.Time // set when first inference chunk (incl. held boilerplate) arrives from provider
 	// FirstContentAt is set when the first CONTENT-bearing chunk is committed to
 	// the client — i.e. excluding role-only / lifecycle boilerplate the dispatch
 	// loop holds back. The reputation latency sample uses this so a provider that

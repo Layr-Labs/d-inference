@@ -1548,9 +1548,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		input != nil && len(messages) == 0, policy, allowedProviderSerials) {
 		return
 	}
-	// Reject remote/non-data: media URLs pre-dispatch (the provider VLM path is
-	// data:-only): one clean 400 instead of dispatching and 400ing across the fleet.
-	if s.rejectRemoteMediaURLs(w, r, parsed, model, publicModel, requiresVision, hasTools) {
+	// Remote media URL gate (phase 1, pre-billing). With the media resolver
+	// enabled (default), remote http(s) image_url/video_url links are fetched
+	// and inlined as data: URIs AFTER the balance reservation (resolveRemoteMedia
+	// below); here we fail fast only the cases that must never fetch: sealed
+	// requests, remote refs in shapes the resolver doesn't handle, and the
+	// resolver-disabled fallback (the legacy one-clean-400, the provider VLM
+	// path being data:-only).
+	if s.gateRemoteMediaPreDispatch(w, r, parsed, model, publicModel, requiresVision, hasTools) {
 		return
 	}
 
@@ -1721,6 +1726,28 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		})
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", publicModel), withParam("model")))
+		return
+	}
+
+	// Resolve remote http(s) image_url/video_url links into inline base64 data:
+	// URIs (phase 2 — see media_resolve.go) — AFTER token admission, the balance
+	// reservation, and the catalog check, so network I/O is gated behind the
+	// cost gates: an authenticated but unfunded/over-quota request (or one for a
+	// nonexistent model) can never drive coordinator-side fetches. The token &
+	// routing estimates above count media parts flatly (300/1500 per part), so
+	// they don't need the inlined bytes; the billing reservation is refunded on
+	// any failure. parsed is mutated in place, so the alias-fallback re-marshals
+	// below keep the inlined media.
+	rawBody, ok = s.resolveRemoteMedia(w, r, rawBody, parsed, timing, mediaResolveMeta{
+		model:                 model,
+		publicModel:           publicModel,
+		stream:                stream,
+		estimatedPromptTokens: estimatedPromptTokens,
+		requestedMaxTokens:    requestedMaxTokens,
+		hasTools:              hasTools,
+	})
+	if !ok {
+		refundReservation()
 		return
 	}
 

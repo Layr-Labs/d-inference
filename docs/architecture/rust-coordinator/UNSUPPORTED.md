@@ -16,7 +16,8 @@ The Rust pilot **never proxies** to Go. Excluded production surfaces return
 | Privy / API-key CRUD | Unsupported (pilot keys via env) |
 | Device auth / enroll / MDM | Unsupported |
 | Vision / tools / Anthropic messages | Unsupported |
-| Completions (legacy) | Unsupported |
+| Completions (legacy `/v1/completions`) | Explicit 501 |
+| Anthropic `/v1/messages` | Explicit 501 |
 | Releases / installer / catalog admin | Unsupported |
 | Invites / referrals / rewards / stats | Unsupported |
 | Telemetry ingest / admin writes | Unsupported |

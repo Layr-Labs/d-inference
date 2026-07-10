@@ -20,7 +20,7 @@ pub mod telemetry;
 
 pub use abort::{abort_frame, abort_losing_hedge, cancel_attempt, cancel_frame};
 pub use cancel::{cancel_before_or_after_content, CancelOutcome};
-pub use chunk_pipe::{bounded_chunk_pipe, ChunkPipe, PipeError};
+pub use chunk_pipe::{bounded_chunk_pipe, ChunkPipe, ChunkPipeReader, PipeError, SequencedChunk};
 pub use crypto_keys::CoordinatorKeys;
 pub use fleet_actor::{spawn_fleet_actor, FleetError, FleetHandle};
 pub use http::{router, AppState, ModelCard};

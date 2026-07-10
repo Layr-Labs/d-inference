@@ -1938,12 +1938,16 @@ async fn admin_clear_orphans(
     let report_account = account_filter
         .clone()
         .unwrap_or_else(|| state.pilot_account.clone());
-    let (bal, active, held) = {
+    let (bal, active, held, accounts_needing, needs_adopt) = {
         let led = state.ledger.lock().await;
+        let epoch = state.ownership.epoch().0;
+        let (na, _, _) = led.orphan_summary_counts(epoch);
         (
             led.balance(&report_account).0,
             led.active_job_count(),
             led.held_start_authorized_count(),
+            accounts_needing_cutover_from(&led, epoch),
+            na,
         )
     };
     (
@@ -1963,6 +1967,8 @@ async fn admin_clear_orphans(
             "balance_micro_usd": bal,
             "active_jobs": active,
             "held_start_authorized": held,
+            "accounts_needing_cutover": accounts_needing,
+            "needs_adopt_count": needs_adopt,
         })),
     )
         .into_response()

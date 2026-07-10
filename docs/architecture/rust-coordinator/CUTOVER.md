@@ -693,3 +693,9 @@ adopt-all then settle only their lane; total settled equals orphan count and
 each ledger is conserved. Deposits to a foreign account during a filtered clear
 apply exactly once; the foreign hold can then be force-settled without adopt.
 
+### clear-orphans returns remaining accounts (DECISIONS #123)
+
+`POST /v1/admin/clear-orphans` success includes `accounts_needing_cutover` and
+`needs_adopt_count` so ops can chain the next account (or cutover-drain-all)
+without a separate quiescence poll after a filtered clear.
+

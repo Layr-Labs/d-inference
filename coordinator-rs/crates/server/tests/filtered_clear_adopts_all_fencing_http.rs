@@ -76,6 +76,8 @@ async fn filtered_clear_adopts_foreign_fencing_without_money_move() {
     assert_eq!(v["adopted_count"], 3);
     assert_eq!(v["settled_count"], 1);
     assert_eq!(v["released_count"], 0);
+    assert_eq!(v["needs_adopt_count"], 0);
+    assert_eq!(v["accounts_needing_cutover"], json!(["quinn"]));
     assert_eq!(state.ledger.lock().await.balance("piper").0, 250_000);
     // quinn still reserved/held — no money move.
     assert_eq!(state.ledger.lock().await.balance("quinn").0, 170_000);

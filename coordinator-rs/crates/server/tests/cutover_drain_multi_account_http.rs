@@ -172,8 +172,5 @@ async fn cutover_drain_account_filter_leaves_foreign_jobs() {
         )
         .await
         .unwrap();
-    assert_eq!(
-        body_json(res).await["cutover_hint"],
-        "adopt-jobs then cutover-drain-all"
-    );
+    assert_eq!(body_json(res).await["cutover_hint"], "cutover-drain-all");
 }

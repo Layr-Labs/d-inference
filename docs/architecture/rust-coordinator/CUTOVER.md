@@ -678,3 +678,11 @@ When `needs_adopt_count>0`, quiescence `cutover_hint` is
 which only adopts its filter) then cutover-drain-all. Single-job and batch
 force-settle without adopt return `ownership_lost`.
 
+### Filtered clear adopts all for fencing (DECISIONS #121)
+
+Account-filtered `clear-orphans` / `cutover-drain` always rebinds fencing for
+every active job (adopt phase ignores `account` filter). Recover and
+force-settle remain filter-scoped so foreign money is untouched, but foreign
+orphans no longer report `needs_adopt` after a filtered clear — subsequent
+force-settle/recover works without a separate adopt-jobs call.
+

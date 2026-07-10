@@ -1698,7 +1698,8 @@ async fn admin_clear_orphans(
     let account_filter = req.account.clone();
     let epoch = state.ownership.epoch().0;
 
-    // 1) Adopt all active jobs to current epoch.
+    // 1) Adopt ALL active jobs to current epoch (fencing only — DECISIONS #121).
+    // Account filter scopes money moves below, not fencing rebind.
     let mut adopted = Vec::new();
     {
         let ids = {
@@ -1707,11 +1708,6 @@ async fn admin_clear_orphans(
         };
         let mut led = state.ledger.lock().await;
         for job_id in ids {
-            if let Some(ref filter) = account_filter {
-                if led.job_account_id(&job_id).as_deref() != Some(filter.as_str()) {
-                    continue;
-                }
-            }
             if led.adopt_fencing_epoch(&job_id, epoch).is_ok() {
                 adopted.push(job_id);
             }

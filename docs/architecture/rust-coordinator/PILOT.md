@@ -16,14 +16,16 @@ Status: prepared — **human-gated**. Do not run against production.
 
 - `/health`, `/readyz`, `/v1/encryption-key`, `/v1/models`
 - `/v1/chat/completions` (stream + non-stream)
-- `/ws/provider` registration / heartbeat
-- Mock or dual-stack prepare/start once Swift v2 ships
+- `/ws/provider` registration / heartbeat / prepare / start
+- `/v1/admin/quiescence`, `/v1/admin/deposits`, `/v1/admin/terminal-ingest`
+- Mock provider: `coordinator-rs/scripts/mock_provider_ws.py`
 - Self-route first, then pre-funded paid
 
 ## Excluded (must return unsupported, never proxy to Go)
 
-Stripe deposits/withdrawals, Privy admin, vision/tools, multi-model placement,
-releases/installer, enrollment, invites, referrals, admin writes, public stats.
+Production Stripe webhooks (pilot uses `/v1/admin/deposits` only), Privy admin,
+vision/tools, multi-model placement, releases/installer, enrollment, invites,
+referrals, public stats.
 
 ## Success gates (from architecture §23.3)
 

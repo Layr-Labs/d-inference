@@ -5,22 +5,14 @@ mod common;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::{body_json, pilot_app_state};
-use darkbloom_coordinator::{router, set_admin_batch_job_hook};
+use darkbloom_coordinator::{lock_admin_batch_hook_tests, router, set_admin_batch_job_hook};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tower::ServiceExt;
-
-static HOOK_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-fn lock_hook() -> std::sync::MutexGuard<'static, ()> {
-    HOOK_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-}
 
 #[tokio::test]
 async fn force_settle_batch_aborts_after_first_job_on_steal() {
-    let _guard = lock_hook();
+    let _guard = lock_admin_batch_hook_tests();
     set_admin_batch_job_hook(None);
     let state = pilot_app_state(true);
     let ownership = state.ownership.clone();
@@ -81,7 +73,7 @@ async fn force_settle_batch_aborts_after_first_job_on_steal() {
 
 #[tokio::test]
 async fn recover_batch_aborts_after_first_job_on_steal() {
-    let _guard = lock_hook();
+    let _guard = lock_admin_batch_hook_tests();
     set_admin_batch_job_hook(None);
     let state = pilot_app_state(true);
     let ownership = state.ownership.clone();

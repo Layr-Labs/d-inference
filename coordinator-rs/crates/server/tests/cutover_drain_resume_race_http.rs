@@ -5,15 +5,13 @@ mod common;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::{body_json, pilot_app_state};
-use darkbloom_coordinator::{router, set_clear_orphans_phase_hook, Epoch};
-use std::sync::{Arc, Mutex};
+use darkbloom_coordinator::{lock_clear_orphans_hook_tests, router, set_clear_orphans_phase_hook, Epoch};
+use std::sync::Arc;
 use tower::ServiceExt;
-
-static HOOK_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::test]
 async fn resume_cutover_drain_after_midflight_steal() {
-    let _guard = HOOK_TEST_LOCK.lock().unwrap();
+    let _guard = lock_clear_orphans_hook_tests();
     let state = pilot_app_state(true);
     let ownership = state.ownership.clone();
     let epoch0 = ownership.epoch().0;
@@ -105,6 +103,9 @@ async fn resume_cutover_drain_after_midflight_steal() {
 
 #[tokio::test]
 async fn concurrent_cutover_drain_conserves_money_and_is_idempotent() {
+    // Hold hook lock so a parallel steal-hook test cannot fire into this clear path.
+    let _guard = lock_clear_orphans_hook_tests();
+    set_clear_orphans_phase_hook(None);
     let state = pilot_app_state(true);
     let epoch0 = state.ownership.epoch().0;
     {

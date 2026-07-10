@@ -62,18 +62,38 @@ static CLEAR_ORPHANS_PHASE_HOOK: std::sync::Mutex<
     Option<Arc<dyn Fn(&str) + Send + Sync>>,
 > = std::sync::Mutex::new(None);
 
+/// Serializes tests that install CLEAR_ORPHANS_PHASE_HOOK (cross-binary races).
+static CLEAR_ORPHANS_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Test hook: invoked with job_id before each batch money move (DECISIONS #96).
 static ADMIN_BATCH_JOB_HOOK: std::sync::Mutex<Option<Arc<dyn Fn(&str) + Send + Sync>>> =
     std::sync::Mutex::new(None);
+
+/// Serializes tests that install ADMIN_BATCH_JOB_HOOK.
+static ADMIN_BATCH_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Install/clear the clear-orphans phase hook (tests only).
 pub fn set_clear_orphans_phase_hook(hook: Option<Arc<dyn Fn(&str) + Send + Sync>>) {
     *CLEAR_ORPHANS_PHASE_HOOK.lock().unwrap() = hook;
 }
 
+/// Hold while installing/using the clear-orphans phase hook (tests only).
+pub fn lock_clear_orphans_hook_tests() -> std::sync::MutexGuard<'static, ()> {
+    CLEAR_ORPHANS_HOOK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+}
+
 /// Install/clear the admin batch per-job hook (tests only).
 pub fn set_admin_batch_job_hook(hook: Option<Arc<dyn Fn(&str) + Send + Sync>>) {
     *ADMIN_BATCH_JOB_HOOK.lock().unwrap() = hook;
+}
+
+/// Hold while installing/using the admin batch job hook (tests only).
+pub fn lock_admin_batch_hook_tests() -> std::sync::MutexGuard<'static, ()> {
+    ADMIN_BATCH_HOOK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
 }
 
 fn invoke_clear_orphans_phase(phase: &str) {

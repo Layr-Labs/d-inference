@@ -2,10 +2,11 @@ package api
 
 // Per-request dispatch state machine for the consumer inference path.
 //
-// This file holds the speculative TTFT-aware dispatch loop that handleChatCompletions
-// drives: it picks a provider (or queues), waits for the first CONTENT chunk with a
-// speculative backup race, fails over invisibly on provider error/timeout up to
-// maxDispatchAttempts, and commits exactly once. It is a PURELY STRUCTURAL extraction
+// This file holds the TTFT-aware dispatch loop that handleChatCompletions
+// drives: it picks a provider (or queues), waits for the first CONTENT chunk,
+// fails over invisibly on provider error/timeout up to maxDispatchAttempts, and
+// commits exactly once. Free requests may retain the legacy speculative race;
+// paid and service-reserved requests are always sequential. It is a structural extraction
 // of what previously lived inline in consumer.go — every select arm, timer Stop/Reset,
 // channel-close+ErrorCh grace window, heldChunks cap, liveness extension, speculative
 // race (backup dispatch / cancel-loser / skipBackup), refund-exactly-once, breaker
@@ -107,6 +108,10 @@ type dispatchState struct {
 	timing                 *registry.RequestTiming
 	deadline               time.Duration
 	speculativeAt          time.Duration
+	// allowSpeculation is true only for requests that cannot move money. The
+	// runtime guard also checks the concrete reservation fields, so an
+	// incorrectly constructed paid request still cannot launch a second start.
+	allowSpeculation bool
 	// modelMaxContext is the model's context window (0 = unknown), used by
 	// shouldStopFailover/classifyRejection to tell a fleet-wide context overflow
 	// apart from a memory-pressured provider's shrunk KV budget when a "batch token
@@ -175,6 +180,10 @@ type dispatchState struct {
 // the most recently failed provider's binary version.
 func (d *dispatchState) traits() registry.RequestTraits {
 	return registry.RequestTraits{HasTools: d.hasTools, AvoidVersion: d.lastFailedVersion}
+}
+
+func (d *dispatchState) speculationAllowed() bool {
+	return d.allowSpeculation && d.reservedMicroUSD <= 0 && !d.serviceReservation
 }
 
 // envTTFTTerminalReject is the kill switch for the terminal TTFT-rejection fix.
@@ -1208,6 +1217,13 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 
 		case <-speculativeTimer.C:
 			deadlineTimer.Stop()
+			if !d.speculationAllowed() {
+				s.ddIncr("inference.speculative_suppressed", []string{
+					"model:" + d.model,
+					"mode:" + reservationMetricMode(d.serviceReservation),
+				})
+				return d.waitNoBackup()
+			}
 			return d.runSpeculative()
 
 		case <-deadlineTimer.C:
@@ -1260,6 +1276,9 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 // alone (no backup available) or race primary vs backup. Returns the same outcome
 // set as waitFirstChunk.
 func (d *dispatchState) runSpeculative() dispatchOutcome {
+	if !d.speculationAllowed() {
+		return d.waitNoBackup()
+	}
 	s := d.s
 	r := d.r
 	provider := d.provider

@@ -1486,16 +1486,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Dispatch to a provider with speculative TTFT-aware dispatch. On the
-	// first attempt we dispatch to the best provider (primary), and start a
-	// speculative timer at 50% of the TTFT deadline. If the primary hasn't
-	// produced a first chunk by the speculative timer, a backup provider is
-	// dispatched in parallel and both race. If the primary fails outright
-	// (error before the speculative timer), up to maxDispatchAttempts
-	// sequential retries are performed without speculation.
+	// Dispatch to a provider with TTFT-aware dispatch. Paid and service-reserved
+	// requests are strictly sequential: start-stage speculation gave two attempt
+	// IDs independent settlement guards over one logical reservation. Free
+	// self-route (and billing-disabled development) may retain the legacy
+	// first-content race. Provider failures still receive bounded sequential
+	// pre-content retries.
 	//
 	// No HTTP response is written until a provider starts generating, so
-	// retries and speculative dispatch are invisible to the consumer.
+	// retries and any free-only speculative dispatch are invisible to the consumer.
 	// Dispatch is driven by the per-request state machine in dispatch.go: it
 	// picks a provider (or queues), runs the speculative TTFT-aware first-chunk
 	// wait with an invisible backup race + failover up to maxDispatchAttempts,
@@ -1573,6 +1572,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		timing:                 timing,
 		deadline:               deadline,
 		speculativeAt:          time.Duration(float64(deadline) * speculativeTimerRatio),
+		allowSpeculation:       s.billing == nil || policy.enabled,
 		modelMaxContext:        modelMaxContext,
 		refundReservation:      refundReservation,
 		// Track providers that failed during retry so we don't dispatch to them again.

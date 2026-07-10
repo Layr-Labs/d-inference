@@ -3,6 +3,7 @@
 //! Runtime actor mailbox lands in Milestone 3; this module is the decision core.
 
 use crate::admission::{AdmissionDecision, CapacityReason, DispatchPermit, RejectionReason};
+use crate::calibration::TtftCalibrator;
 use crate::health::HealthMachine;
 use crate::ids::AttemptId;
 use crate::trust::TrustState;
@@ -36,6 +37,7 @@ pub struct AdmitRequest {
 #[derive(Debug, Default, Clone)]
 pub struct FleetState {
     pub providers: HashMap<String, ProviderSnapshot>,
+    pub calibrator: TtftCalibrator,
 }
 
 impl FleetState {
@@ -43,14 +45,17 @@ impl FleetState {
         self.providers.insert(snap.provider_id.clone(), snap);
     }
 
-    /// One admission operation: hard gates → score → prepare permit.
+    pub fn record_ttft_sample(&mut self, model_id: &str, predicted_ms: f64, actual_ms: f64) {
+        self.calibrator.record(model_id, predicted_ms, actual_ms);
+    }
+
+    /// One admission operation: hard gates → calibrated score → prepare permit.
     pub fn admit(&self, req: &AdmitRequest) -> AdmissionDecision {
         let mut candidates: Vec<&ProviderSnapshot> = self
             .providers
             .values()
             .filter(|p| !req.exclude_providers.contains(&p.provider_id))
             .filter(|p| {
-                // Prefer epoch-fenced TrustState when it has been applied; else legacy bools.
                 if p.trust.trust_epoch.0 > 0 {
                     p.trust.publicly_routable()
                 } else {
@@ -63,7 +68,6 @@ impl FleetState {
             .collect();
 
         if candidates.is_empty() {
-            // Distinguish quarantine-only vs no warm.
             let any_quarantined = self.providers.values().any(|p| {
                 !req.exclude_providers.contains(&p.provider_id)
                     && p.ready_models.contains(&req.model)
@@ -80,11 +84,13 @@ impl FleetState {
             };
         }
 
+        let corr = self.calibrator.correction(&req.model);
         candidates.sort_by(|a, b| {
-            let sa = a.predicted_first_content_ms + a.predicted_decode_ms;
-            let sb = b.predicted_first_content_ms + b.predicted_decode_ms;
+            let sa = a.predicted_first_content_ms * corr + a.predicted_decode_ms;
+            let sb = b.predicted_first_content_ms * corr + b.predicted_decode_ms;
             sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
         });
+        // Fix Equal via python after write
 
         let best = candidates[0];
         AdmissionDecision::Prepare(DispatchPermit {
@@ -178,5 +184,29 @@ mod tests {
                 reason: RejectionReason::Quarantined
             }
         ));
+    }
+
+    #[test]
+    fn calibration_can_reorder_candidates() {
+        let mut fleet = FleetState::default();
+        // A predicts 100, B predicts 120 — without calibration A wins.
+        fleet.upsert(base("a", "m", 100.0));
+        fleet.upsert(base("b", "m", 120.0));
+        // But A's predictions were systematically low (actual 2x) → correction 2.0
+        // calibrated A=200, B=120 → B wins.
+        for _ in 0..20 {
+            fleet.record_ttft_sample("m", 100.0, 200.0);
+        }
+        let decision = fleet.admit(&AdmitRequest {
+            model: "m".into(),
+            attempt: AttemptId::new("a3"),
+            exclude_providers: HashSet::new(),
+            require_tools: false,
+            permit_ttl: Duration::from_secs(2),
+        });
+        match decision {
+            AdmissionDecision::Prepare(p) => assert_eq!(p.provider_id, "b"),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 }

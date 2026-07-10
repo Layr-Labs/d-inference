@@ -3,6 +3,7 @@
 #![deny(unsafe_code)]
 
 pub mod admission;
+pub mod calibration;
 pub mod fleet;
 pub mod health;
 pub mod hedge;
@@ -14,6 +15,7 @@ pub mod terminal_journal;
 pub mod trust;
 
 pub use admission::{AdmissionDecision, CapacityReason, DispatchPermit, RejectionReason};
+pub use calibration::TtftCalibrator;
 pub use fleet::{AdmitRequest, FleetState, ProviderSnapshot};
 pub use health::{HealthMachine, HealthState};
 pub use hedge::{HedgeBudget, HedgePolicy};

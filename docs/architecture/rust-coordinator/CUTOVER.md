@@ -117,3 +117,9 @@ inserts that op key on successful credit so forget cannot undo a landed deposit.
 
 Quiescence `ready` requires `outbox_retryable == 0`. Deposit enqueue (and
 requeue after failed delivery) keeps the coordinator not-ready until drain.
+
+### Quiescence without ownership (DECISIONS #30)
+
+`/v1/admin/quiescence` stays readable when not holding so cutover ops can
+observe drain state (`ownership_holding=false`). Mutating admin routes
+(deposits, terminal-ingest) still require ownership.

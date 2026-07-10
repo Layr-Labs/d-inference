@@ -591,9 +591,6 @@ async fn admin_force_settle(
         )
             .into_response();
     }
-    let account = req
-        .account
-        .unwrap_or_else(|| state.pilot_account.clone());
     let digest = req
         .terminal_digest
         .filter(|d| !d.is_empty())
@@ -604,8 +601,40 @@ async fn admin_force_settle(
         return resp;
     }
 
-    let (action, charged) = {
+    let (action, charged, account) = {
         let mut led = state.ledger.lock().await;
+        let Some(job_acct) = led.job_account_id(&req.job_id) else {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": {
+                        "message": format!("unknown job {}", req.job_id),
+                        "type": "invalid_request_error",
+                        "code": "unknown_job"
+                    }
+                })),
+            )
+                .into_response();
+        };
+        let account = match &req.account {
+            Some(a) if a != &job_acct => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": {
+                            "message": format!(
+                                "account mismatch: job owned by {job_acct}, got {a}"
+                            ),
+                            "type": "invalid_request_error",
+                            "code": "account_mismatch"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+            Some(a) => a.clone(),
+            None => job_acct, // DECISIONS #89: default to job owner
+        };
         let reserved = led.job_reserved_total(&req.job_id).map(|m| m.0).unwrap_or(0);
         let charge = req.actual_micro_usd.min(reserved).max(0);
         match force_settle_held_on(
@@ -616,10 +645,12 @@ async fn admin_force_settle(
             req.actual_micro_usd,
             &digest,
         ) {
-            Ok(RecoveryAction::Released) => ("released".to_string(), charge),
-            Ok(RecoveryAction::AlreadyTerminal) => ("already_terminal".to_string(), 0),
+            Ok(RecoveryAction::Released) => ("released".to_string(), charge, account),
+            Ok(RecoveryAction::AlreadyTerminal) => {
+                ("already_terminal".to_string(), 0, account)
+            }
             Ok(RecoveryAction::Skipped) | Ok(RecoveryAction::HeldForReview) => {
-                ("skipped".to_string(), 0)
+                ("skipped".to_string(), 0, account)
             }
             Err(err) => {
                 let (status, code) = match &err {
@@ -880,17 +911,46 @@ async fn admin_recover_undispatched(
     if let Err(resp) = require_nonempty_job_id(&req.job_id) {
         return resp;
     }
-    let account = req
-        .account
-        .unwrap_or_else(|| state.pilot_account.clone());
 
     // Re-check holding immediately before money move (DECISIONS #47/#63).
     if let Err(resp) = require_holding(&state) {
         return resp;
     }
 
-    let (action, refunded) = {
+    let (action, refunded, account) = {
         let mut led = state.ledger.lock().await;
+        let Some(job_acct) = led.job_account_id(&req.job_id) else {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": {
+                        "message": format!("unknown job {}", req.job_id),
+                        "type": "invalid_request_error",
+                        "code": "unknown_job"
+                    }
+                })),
+            )
+                .into_response();
+        };
+        let account = match &req.account {
+            Some(a) if a != &job_acct => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": {
+                            "message": format!(
+                                "account mismatch: job owned by {job_acct}, got {a}"
+                            ),
+                            "type": "invalid_request_error",
+                            "code": "account_mismatch"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+            Some(a) => a.clone(),
+            None => job_acct, // DECISIONS #89: default to job owner
+        };
         let reserved = led.job_reserved_total(&req.job_id).map(|m| m.0).unwrap_or(0);
         match recover_undispatched_on(
             &mut led,
@@ -898,10 +958,12 @@ async fn admin_recover_undispatched(
             &req.job_id,
             &account,
         ) {
-            Ok(RecoveryAction::Released) => ("released".to_string(), Some(reserved)),
-            Ok(RecoveryAction::AlreadyTerminal) => ("already_terminal".to_string(), None),
+            Ok(RecoveryAction::Released) => ("released".to_string(), Some(reserved), account),
+            Ok(RecoveryAction::AlreadyTerminal) => {
+                ("already_terminal".to_string(), None, account)
+            }
             Ok(RecoveryAction::Skipped) | Ok(RecoveryAction::HeldForReview) => {
-                ("skipped".to_string(), None)
+                ("skipped".to_string(), None, account)
             }
             Err(err) => {
                 let (status, code) = match &err {

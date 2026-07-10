@@ -95,6 +95,7 @@ Date: 2026-07-10
 | 86 | Quiescence cutover_hint | Quiescence returns `cutover_hint` (`ready` / `clear-orphans then outbox-drain` / `outbox-drain` / …) for ops drain guidance |
 | 87 | Resume after mid-flight abort + drain SQL | After clear-orphans abort on steal, re-acquire → clear-orphans → outbox-drain reaches ready. `drain_ack_all_sql` documents durable drain |
 | 88 | Per-job account on clear/batch | clear-orphans / recover-batch / force-settle-batch use each job's `account_id` for money moves; optional `account` filters |
+| 89 | Single-job admin defaults to job owner | `/v1/admin/recover-undispatched` and `/force-settle` omit-account → job owner; explicit mismatch → `account_mismatch` |
 
 ## Deleted Go mechanisms (do not port)
 

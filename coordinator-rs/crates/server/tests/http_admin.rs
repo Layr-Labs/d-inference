@@ -1897,7 +1897,7 @@ async fn admin_force_settle_wrong_account_returns_conflict() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::CONFLICT);
-    assert_eq!(body_json(res).await["error"]["code"], "force_settle_failed");
+    assert_eq!(body_json(res).await["error"]["code"], "account_mismatch");
 }
 
 #[tokio::test]
@@ -1935,7 +1935,7 @@ async fn admin_recover_undispatched_wrong_account_returns_conflict() {
     assert_eq!(res.status(), StatusCode::CONFLICT);
     assert_eq!(
         body_json(res).await["error"]["code"],
-        "recover_undispatched_failed"
+        "account_mismatch"
     );
 }
 

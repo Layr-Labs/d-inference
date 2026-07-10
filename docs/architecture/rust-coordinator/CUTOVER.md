@@ -471,3 +471,10 @@ clear-orphans and batch recover/force-settle refund/charge the job's own
 `account_id` (not a single caller account). Optional request `account` filters
 to that owner only — prevents silent no-ops when pilot account ≠ job owner.
 
+### Single-job admin defaults to job owner (DECISIONS #89)
+
+`POST /v1/admin/recover-undispatched` and `POST /v1/admin/force-settle` resolve
+the job's `account_id` when `account` is omitted. An explicit mismatched
+`account` returns 409 `account_mismatch` (never refunds/charges the wrong
+ledger).
+

@@ -42,3 +42,13 @@ SQL lives in `coordinator-rs/migrations/` (`rust_coord` schema). The Go
 - [CUTOVER.md](./CUTOVER.md) — Milestones 7–8 cutover/rollback
 - [UNSUPPORTED.md](./UNSUPPORTED.md) — pilot route matrix
 - Contracts: [contracts/](./contracts/)
+
+## Pilot admin surfaces (warm plane)
+
+| Route | Purpose |
+| --- | --- |
+| `GET /v1/admin/quiescence` | Drain inventory (jobs, outbox, late terminals, ownership) |
+| `POST /v1/admin/deposits` | Idempotent Stripe-inbox apply (`ExternalEventInbox`) |
+| `POST /v1/admin/terminal-ingest` | Replay ACK / late record (never double-settles) |
+
+Smoke provider: `coordinator-rs/scripts/mock_provider_ws.py`

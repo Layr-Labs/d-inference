@@ -21,8 +21,9 @@ name: Release Provider Bundle (Swift)
 #   - vX.Y.Z-swift     -> accepted alias while the migration is in progress
 #   - vX.Y.Z-swift.N   -> accepted alias while the migration is in progress
 #
-# Repo secrets use DEV_/PROD_ prefixes so both environments live at repo
-# level without needing GitHub environments:
+# Repo secrets use DEV_/PROD_ prefixes so both environments can remain at
+# repo level. The release job still binds the resolved GitHub environment so
+# production tags must pass the environment's deployment protection rules:
 #   DEV_R2_ACCESS_KEY_ID  / PROD_R2_ACCESS_KEY_ID
 #   DEV_R2_SECRET_ACCESS_KEY / PROD_R2_SECRET_ACCESS_KEY
 #   DEV_R2_ENDPOINT       / PROD_R2_ENDPOINT
@@ -102,6 +103,7 @@ jobs:
     name: Build, sign, notarize, upload, register
     needs: [resolve-env]
     runs-on: blacksmith-12vcpu-macos-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
 
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
@@ -556,8 +558,14 @@ jobs:
           cp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/$ENCLAVE_NAME"
           cp "$APP/Contents/MacOS/mlx.metallib" "$STAGE/bin/mlx.metallib"
 
-          # Two artifact shapes: zip for notarization, tar.gz for distribution.
-          ditto -c -k --keepParent "$STAGE" /tmp/darkbloom-notarize.zip
+          # Notarize only the canonical app. The flat bin/ copies exist solely
+          # for coordinator artifact verification and inherit signatures that
+          # are valid only in the app-bundle context, so they are not valid
+          # notarization inputs on their own.
+          ditto -c -k --keepParent "$APP" /tmp/darkbloom-notarize.zip
+
+          # The distribution tar retains both shapes: install.sh uses the app,
+          # while the coordinator hashes the regular file at bin/darkbloom.
           tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$STAGE" .
           tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
           echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
@@ -573,20 +581,48 @@ jobs:
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 15m
+            --wait --timeout 15m \
+            --output-format json | tee /tmp/notary-result.json
 
-          # Staple per Mach-O. Re-tar after stapling so the distribution
-          # tarball ships stapled binaries (avoids a network round trip on
-          # first launch with strict Gatekeeper). Staple both the flat bin/
-          # layout AND the .app bundle copies — both are independent files
-          # now (no symlinks) so each needs its own ticket.
+          read -r NOTARY_ID NOTARY_STATUS < <(python3 - <<'PY'
+          import json
+
+          with open('/tmp/notary-result.json', encoding='utf-8') as result_file:
+              result = json.load(result_file)
+
+          submission_id = result.get('id')
+          status = result.get('status')
+          if not submission_id or not status:
+              raise SystemExit('notarytool result is missing id or status')
+          print(submission_id, status)
+          PY
+          )
+
+          if [ "$NOTARY_STATUS" != "Accepted" ]; then
+            echo "::error::Apple notarization $NOTARY_ID finished with status $NOTARY_STATUS (expected Accepted)"
+            if ! xcrun notarytool log "$NOTARY_ID" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID"; then
+              echo "::warning::Could not retrieve Apple's rejection log for $NOTARY_ID"
+            fi
+            exit 1
+          fi
+
+          # Stapler supports executable bundles, not individual Mach-O files.
+          # Require an attached ticket and a local Gatekeeper acceptance before
+          # the distribution artifact can be rebuilt or uploaded.
           STAGE="${{ steps.bundle.outputs.stage }}"
           APP="$STAGE/Darkbloom.app"
-          xcrun stapler staple "$STAGE/bin/$CLI_NAME" || true
-          xcrun stapler staple "$STAGE/bin/$ENCLAVE_NAME" || true
-          xcrun stapler staple "$APP/Contents/MacOS/$CLI_NAME" || true
-          xcrun stapler staple "$APP/Contents/MacOS/$ENCLAVE_NAME" || true
-          xcrun stapler staple "$APP" || true
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+          spctl --assess --type execute --verbose=4 "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          # Stapling the bundle must not change the executable bytes registered
+          # with the coordinator and verified by provider self-update.
+          cmp "$STAGE/bin/$CLI_NAME" "$APP/Contents/MacOS/$CLI_NAME"
+          cmp "$STAGE/bin/$ENCLAVE_NAME" "$APP/Contents/MacOS/$ENCLAVE_NAME"
 
           tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "${{ steps.bundle.outputs.stage }}" .
           tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt

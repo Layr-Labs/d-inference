@@ -319,3 +319,8 @@ clamping cannot drift between HTTP and in-process recovery.
 persists `released` disposition + critical outbox. Classification and fencing
 match CLI/recovery; side effects stay on the HTTP path.
 
+### Deposit money-boundary holding re-check (DECISIONS #64)
+
+`POST /v1/admin/deposits` re-asserts ownership holding immediately before
+`apply_stripe_deposit`, matching other money-moving admin routes.
+

@@ -389,6 +389,12 @@ async fn admin_deposit(
     let account = req
         .account
         .unwrap_or_else(|| state.pilot_account.clone());
+
+    // Re-check holding immediately before money move (DECISIONS #47/#64).
+    if let Err(resp) = require_holding(&state) {
+        return resp;
+    }
+
     let applied = {
         let mut inbox = state.external_events.lock().await;
         let mut ledger = state.ledger.lock().await;

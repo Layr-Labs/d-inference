@@ -70,6 +70,7 @@ Date: 2026-07-10
 | 61 | Cancel release records disposition | Pre-start cancel release calls `record_released_disposition` (same digest as #60) when a terminal store is provided — parity with recover/prepare-fail releases |
 | 62 | Admin force-settle via recovery core | `admin_force_settle` calls `force_settle_held_on` (shared with CLI/recovery) so HTTP and recovery cannot drift on disposition-first / fencing / clamp semantics |
 | 63 | Admin recover via recovery core | `admin_recover_undispatched` calls `recover_undispatched_on` then records disposition + critical outbox — same classification/fencing as CLI/recovery |
+| 64 | Deposit money-boundary holding re-check | `admin_deposit` re-asserts `OwnershipGate` immediately before `apply_stripe_deposit` so a steal between auth and credit cannot fund an account |
 
 ## Deleted Go mechanisms (do not port)
 

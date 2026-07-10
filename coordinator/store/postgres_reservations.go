@@ -206,10 +206,6 @@ func (s *PostgresStore) RecoverStaleInferenceReservations(before time.Time) (int
 		       SELECT 1 FROM inference_settlement_reviews
 		       WHERE reservation_id = reserve.operation_key
 		   )
-		   AND NOT EXISTS (
-		       SELECT 1 FROM inference_completion_intents
-		       WHERE reservation_id = reserve.operation_key
-		   )
 		 ORDER BY reserve.created_at
 		 LIMIT 100`,
 		before,
@@ -250,19 +246,26 @@ func (s *PostgresStore) RecoverStaleInferenceReservations(before time.Time) (int
 		} else if found {
 			continue
 		}
-		var terminalOwned bool
+		var reviewPending bool
 		if err := tx.QueryRow(ctx,
 			`SELECT EXISTS (
 				SELECT 1 FROM inference_settlement_reviews WHERE reservation_id = $1
-				UNION ALL
+			)`,
+			reservation.operationKey,
+		).Scan(&reviewPending); err != nil {
+			return 0, fmt.Errorf("store: recheck settlement review: %w", err)
+		}
+		if reviewPending {
+			continue
+		}
+		var hasCompletionIntent bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (
 				SELECT 1 FROM inference_completion_intents WHERE reservation_id = $1
 			)`,
 			reservation.operationKey,
-		).Scan(&terminalOwned); err != nil {
-			return 0, fmt.Errorf("store: recheck terminal ownership: %w", err)
-		}
-		if terminalOwned {
-			continue
+		).Scan(&hasCompletionIntent); err != nil {
+			return 0, fmt.Errorf("store: recheck completion intent: %w", err)
 		}
 		topups, err := staleReservationTopUps(ctx, tx, reservation.operationKey)
 		if err != nil {
@@ -294,6 +297,27 @@ func (s *PostgresStore) RecoverStaleInferenceReservations(before time.Time) (int
 				withdrawableMicroUSD: topup.withdrawableMicroUSD,
 			}); err != nil {
 				return 0, err
+			}
+		}
+		if hasCompletionIntent {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO inference_settlement_reviews
+					(reservation_id, request_id, reason, payload)
+				 SELECT reservation_id, request_id,
+				        'completion_intent_refunded_during_recovery',
+				        to_jsonb(inference_completion_intents)
+				 FROM inference_completion_intents
+				 WHERE reservation_id = $1
+				 ON CONFLICT (reservation_id) DO NOTHING`,
+				reservation.operationKey,
+			); err != nil {
+				return 0, fmt.Errorf("store: preserve recovered completion review: %w", err)
+			}
+			if _, err := tx.Exec(ctx,
+				`DELETE FROM inference_completion_intents WHERE reservation_id = $1`,
+				reservation.operationKey,
+			); err != nil {
+				return 0, fmt.Errorf("store: clear recovered completion intent: %w", err)
 			}
 		}
 		released++

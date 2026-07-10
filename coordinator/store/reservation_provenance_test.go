@@ -280,7 +280,7 @@ func TestPostgresStaleRecoveryPreservesReviewPendingReservation(t *testing.T) {
 	}
 }
 
-func TestPostgresStaleRecoveryPreservesReceivedCompletionIntent(t *testing.T) {
+func TestPostgresRecoveryRefundsAndReviewsReceivedCompletionIntent(t *testing.T) {
 	backend := testPostgresStore(t)
 	const (
 		accountID     = "intent-reservation-account"
@@ -311,10 +311,22 @@ func TestPostgresStaleRecoveryPreservesReceivedCompletionIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recovered != 0 {
-		t.Fatalf("received terminal reservation recovered as orphan: %d", recovered)
+	if recovered != 1 {
+		t.Fatalf("received terminal recovery count = %d, want 1", recovered)
 	}
-	if balance := backend.GetBalance(accountID); balance != 50_000 {
-		t.Fatalf("completion-intent balance = %d, want held 50000", balance)
+	if balance := backend.GetBalance(accountID); balance != 100_000 {
+		t.Fatalf("completion-intent recovery balance = %d, want refunded 100000", balance)
+	}
+	var reviews, intents int
+	if err := backend.pool.QueryRow(t.Context(),
+		`SELECT
+			(SELECT COUNT(*) FROM inference_settlement_reviews WHERE reservation_id = $1),
+			(SELECT COUNT(*) FROM inference_completion_intents WHERE reservation_id = $1)`,
+		reservationID,
+	).Scan(&reviews, &intents); err != nil {
+		t.Fatal(err)
+	}
+	if reviews != 1 || intents != 0 {
+		t.Fatalf("recovery review/intents = %d/%d, want 1/0", reviews, intents)
 	}
 }

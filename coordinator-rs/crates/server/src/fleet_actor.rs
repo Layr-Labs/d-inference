@@ -60,6 +60,19 @@ impl FleetHandle {
             .try_send(FleetCommand::Upsert(snap))
             .map_err(|_| FleetError::MailboxFull)
     }
+
+    pub async fn remove(
+        &self,
+        provider_id: String,
+        session_epoch: u64,
+    ) -> Result<(), FleetError> {
+        self.lifecycle_tx
+            .try_send(FleetCommand::Remove {
+                provider_id,
+                session_epoch,
+            })
+            .map_err(|_| FleetError::MailboxFull)
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

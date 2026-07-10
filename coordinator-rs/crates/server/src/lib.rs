@@ -4,6 +4,7 @@ pub mod fleet_actor;
 pub mod http;
 pub mod ledger;
 pub mod provider_session;
+pub mod provider_ws;
 
 pub use fleet_actor::{spawn_fleet_actor, FleetError, FleetHandle};
 pub use http::{router, AppState, ModelCard};

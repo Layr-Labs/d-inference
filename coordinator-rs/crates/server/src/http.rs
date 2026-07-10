@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::fleet_actor::FleetHandle;
+use crate::provider_ws::provider_ws;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -34,6 +35,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/encryption-key", get(encryption_key))
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/ws/provider", get(provider_ws))
         .fallback(unsupported)
         .with_state(Arc::new(state))
 }

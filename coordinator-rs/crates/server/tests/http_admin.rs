@@ -205,6 +205,32 @@ async fn readyz_fails_without_ownership() {
 }
 
 #[tokio::test]
+async fn chat_without_provider_returns_429() {
+    let app = router(test_state(true));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "pilot-text-model",
+                        "messages": [{"role":"user","content":"hi"}],
+                        "stream": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+    let v = body_json(res).await;
+    assert_eq!(v["error"]["type"], "rate_limit_exceeded");
+}
+
+#[tokio::test]
 async fn list_models_returns_pilot_card() {
     let app = router(test_state(true));
     let res = app

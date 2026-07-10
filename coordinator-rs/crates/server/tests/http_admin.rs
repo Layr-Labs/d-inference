@@ -626,3 +626,29 @@ async fn responses_route_shares_chat_handler_429_without_provider() {
     let v = body_json(res).await;
     assert_eq!(v["error"]["type"], "rate_limit_exceeded");
 }
+
+#[tokio::test]
+async fn responses_without_ownership_returns_503() {
+    let app = router(test_state(false));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "pilot-text-model",
+                        "messages": [{"role":"user","content":"hi"}],
+                        "stream": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let v = body_json(res).await;
+    assert_eq!(v["error"]["code"], "ownership_lost");
+}

@@ -2437,7 +2437,8 @@ threats:
           HTTPS 443; non-standard ports require the explicit dev/test override
           EIGENINFERENCE_MEDIA_FETCH_ALLOW_NONSTANDARD_PORTS), no embedded
           credentials, redirect depth capped at 3 with per-hop re-validation,
-          optional operator domain blocklist
+          optional operator domain blocklist that applies at DNS-label boundaries
+          to each listed domain and all of its subdomains
           (EIGENINFERENCE_MEDIA_FETCH_BLOCKLIST_DOMAINS).
         status: implemented
       - description: >
@@ -2455,18 +2456,23 @@ threats:
           Resource bounds: per-file (8 MiB) cap via io.LimitReader plus one SHARED
           per-request byte budget enforced during every concurrent read (10 MiB +
           one overflow-sentinel byte, rather than checking only after each response
-          returns); Content-Length is only a pre-check. No transparent decompression
-          (gzip bombs), per-request part cap (8) and worker cap (4), process-wide
-          fetch semaphore (32), per-fetch (15s) and whole-step (25s) deadlines, and
-          the post-inline body re-check against the 16 MiB sealed-frame budget.
+          returns); duplicate canonical URLs are fetched/accounted once and rewritten
+          at every request location, while the pre-dedup target/part cap (8) prevents
+          duplicate base64 expansion abuse. Content-Length is only a pre-check. No
+          transparent decompression (gzip bombs), per-request worker cap (4),
+          process-wide fetch semaphore (32), per-fetch (15s) and whole-step (25s)
+          deadlines, and the post-inline body re-check against the 16 MiB
+          sealed-frame budget.
         status: implemented
       - description: >
           Cost gating: fetching runs AFTER token-rate admission, the balance
-          reservation, and the catalog check (consumer.go phase-2 call site), so an
-          unauthenticated, unfunded, or over-quota request can never drive
-          coordinator egress. The monetary reservation is refunded on fetch
-          failure; token-rate admission is deliberately retained, matching other
-          post-admission validation failures, so failed URL probes consume quota.
+          reservation, and the catalog check (consumer.go phase-2 call site). The
+          balance reservation uses the greater of the raw-byte billing bound and
+          the media-aware 300/1500-soft-token estimate, so a caller funded only for
+          the short URL cannot drive egress and fail after inlining. The monetary
+          reservation is refunded on fetch failure; token-rate admission is
+          deliberately retained, matching other post-admission validation failures,
+          so failed URL probes consume quota.
         status: implemented
       - description: >
           Sealed requests are never fetched: a sender-sealed payload carrying a
@@ -2476,9 +2482,11 @@ threats:
         status: implemented
       - description: >
           Consumer-facing fetch errors carry only generic messages (media_blocked,
-          media_too_large, …); the URL/host/cause is logged server-side only, so
-          the API cannot be used as a fine-grained internal-network oracle beyond
-          the allowed/blocked bit.
+          media_too_large, …). Coordinator logs record stable code/status fields
+          only; request URLs, hosts, query strings, fragments, credentials, and
+          wrapped network errors are never logged because presigned media URLs
+          commonly contain secrets. The API cannot be used as a fine-grained
+          internal-network oracle beyond the allowed/blocked bit.
         status: implemented
       - description: >
           Residual (accepted): the blocked/allowed distinction plus timing still
@@ -2486,7 +2494,8 @@ threats:
           from the coordinator's egress IP; origins learn the coordinator fetches
           on behalf of requests.
           Operators can disable the feature per deployment via
-          EIGENINFERENCE_MEDIA_FETCH_ENABLED=false (restores the pre-dispatch 400).
+          EIGENINFERENCE_MEDIA_FETCH_ENABLED=false (authoritatively restores the
+          pre-dispatch 400, regardless of the legacy vision-rejection flag).
         status: implemented
     open_findings: []
     severity: high

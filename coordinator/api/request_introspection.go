@@ -439,7 +439,18 @@ func visionRejectRemoteEnabled() bool {
 // media part carries a remote/non-inline URL, mirroring the provider's data:-only
 // contract. Pre-dispatch — no provider is contacted. handled=true => caller returns.
 func (s *Server) rejectRemoteMediaURLs(w http.ResponseWriter, r *http.Request, parsed map[string]any, model, publicModel string, requiresVision, hasTools bool) (handled bool) {
-	if !requiresVision || !visionRejectRemoteEnabled() {
+	if !visionRejectRemoteEnabled() {
+		return false
+	}
+	return s.rejectRemoteMediaURLsAlways(w, r, parsed, model, publicModel, requiresVision, hasTools)
+}
+
+// rejectRemoteMediaURLsAlways is the authoritative data:-only fallback used
+// when EIGENINFERENCE_MEDIA_FETCH_ENABLED=false. Unlike the legacy C4 wrapper
+// above, it deliberately ignores DARKBLOOM_VISION_REJECT_REMOTE_URLS: disabling
+// fetch must never re-enable dispatch-then-provider-400 behavior.
+func (s *Server) rejectRemoteMediaURLsAlways(w http.ResponseWriter, r *http.Request, parsed map[string]any, model, publicModel string, requiresVision, hasTools bool) (handled bool) {
+	if !requiresVision {
 		return false
 	}
 	badRef, ok := validateMediaParts(parsed)

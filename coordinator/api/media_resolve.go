@@ -23,6 +23,7 @@ package api
 //     The caller refunds the reservation on failure.
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -40,15 +41,14 @@ func (s *Server) gateRemoteMediaPreDispatch(w http.ResponseWriter, r *http.Reque
 		return false
 	}
 	if s.mediaResolver == nil || !s.mediaResolver.Enabled() {
-		// Resolver off → the legacy pre-dispatch rejection (which respects its
-		// own DARKBLOOM_VISION_REJECT_REMOTE_URLS kill switch).
-		return s.rejectRemoteMediaURLs(w, r, parsed, model, publicModel, requiresVision, hasTools)
+		// Resolver off means authoritative rollback to the data:-only contract;
+		// the older DARKBLOOM_VISION_REJECT_REMOTE_URLS switch must not override it.
+		return s.rejectRemoteMediaURLsAlways(w, r, parsed, model, publicModel, requiresVision, hasTools)
 	}
-	fetchable := mediafetch.RemoteMediaURLs(parsed)
 	// Sender-sealed requests are never fetched: the sender opted into sealing
 	// the payload to the coordinator, and a fetch would leak request-correlated
 	// egress to the URL's origin. Reject with a clear next step.
-	if len(fetchable) > 0 && isSealedRequest(r) {
+	if mediafetch.HasRemoteMedia(parsed) && isSealedRequest(r) {
 		s.writeRemoteMediaRejection(w, r, parsed, model, publicModel, hasTools,
 			"sealed requests must send media as an inline base64 data: URI (e.g. \"data:image/jpeg;base64,…\"); "+
 				"remote image_url/video_url links are not fetched for sealed payloads — inline the media or disable request sealing")
@@ -58,7 +58,7 @@ func (s *Server) gateRemoteMediaPreDispatch(w http.ResponseWriter, r *http.Reque
 	// source blocks, Responses input_image parts, file:// and other schemes)
 	// keeps today's clean 400: dispatching it would either 400 across the fleet
 	// or be silently dropped by the provider (an image-blind answer).
-	if badRef, ok := firstUnfetchableRemoteRef(parsed, fetchable); !ok {
+	if badRef, ok := firstUnfetchableRemoteRef(parsed); !ok {
 		s.writeRemoteMediaRejection(w, r, parsed, model, publicModel, hasTools,
 			"this media reference is not fetchable on this endpoint; send it as an OpenAI-style image_url/video_url http(s) link "+
 				"or as an inline base64 data: URI (e.g. \"data:image/jpeg;base64,…\"). Got: "+truncateMediaRef(badRef))
@@ -68,12 +68,14 @@ func (s *Server) gateRemoteMediaPreDispatch(w http.ResponseWriter, r *http.Reque
 }
 
 // firstUnfetchableRemoteRef returns ok=false with the first remote/non-inline
-// media reference that the mediafetch resolver will NOT fetch — i.e. a remote
-// ref whose URL is not in the resolver's fetchable set (non-OpenAI part shapes,
-// non-http(s) schemes) — across both the messages[] and Responses input[]
-// surfaces. Mirrors validateMediaParts' fail-open stance on unreadable shapes.
-func firstUnfetchableRemoteRef(parsed map[string]any, fetchable map[string]bool) (badRef string, ok bool) {
-	check := func(content any) (string, bool) {
+// media reference that the mediafetch resolver will NOT fetch based on that
+// part's own shape and location (not URL equality with another part). OpenAI
+// image_url/video_url http(s) parts are fetchable only under messages[];
+// Anthropic/input_* shapes, non-http(s) schemes, and every Responses input[]
+// media ref remain unsupported. Mirrors validateMediaParts' fail-open stance on
+// unreadable shapes.
+func firstUnfetchableRemoteRef(parsed map[string]any) (badRef string, ok bool) {
+	check := func(content any, allowFetchableShape bool) (string, bool) {
 		parts, isArr := content.([]any)
 		if !isArr {
 			return "", true
@@ -87,7 +89,10 @@ func firstUnfetchableRemoteRef(parsed map[string]any, fetchable map[string]bool)
 			if !isMedia || ref == "" {
 				continue
 			}
-			if !isInlineDataURI(ref) && !fetchable[ref] {
+			if !isInlineDataURI(ref) {
+				if allowFetchableShape && mediafetch.IsFetchableRemotePart(pm) {
+					continue
+				}
 				return ref, false
 			}
 		}
@@ -96,7 +101,7 @@ func firstUnfetchableRemoteRef(parsed map[string]any, fetchable map[string]bool)
 	if msgs, isArr := parsed["messages"].([]any); isArr {
 		for _, m := range msgs {
 			if mm, isMap := m.(map[string]any); isMap {
-				if ref, good := check(mm["content"]); !good {
+				if ref, good := check(mm["content"], true); !good {
 					return ref, false
 				}
 			}
@@ -105,7 +110,7 @@ func firstUnfetchableRemoteRef(parsed map[string]any, fetchable map[string]bool)
 	if input, isArr := parsed["input"].([]any); isArr {
 		for _, it := range input {
 			if im, isMap := it.(map[string]any); isMap {
-				if ref, good := check(im["content"]); !good {
+				if ref, good := check(im["content"], false); !good {
 					return ref, false
 				}
 			}
@@ -143,14 +148,22 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 	start := time.Now()
 	res, err := s.mediaResolver.Resolve(r.Context(), parsed)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			// The client is gone. The caller still refunds the monetary reservation,
+			// but there is no response to write and no rejection/timeout telemetry to
+			// emit: this was not an origin failure.
+			return nil, false
+		}
 		var me *mediafetch.Error
 		if !errors.As(err, &me) {
 			me = &mediafetch.Error{Status: http.StatusBadGateway, Code: "media_fetch_failed",
-				Public: "failed to fetch remote media", Internal: err.Error()}
+				Public: "failed to fetch remote media", Internal: "unexpected resolver error"}
 		}
-		// Internal carries the URL/host/cause for operators; the consumer gets
-		// only the generic Public message (no internal host/DNS leakage).
-		s.logger.Warn("remote media rejected", "code", me.Code, "status", me.Status, "detail", me.Internal)
+		// Never log Internal here: media URLs often contain presigned credentials,
+		// and wrapped network errors can reproduce the full URL. mediafetch.Error
+		// keeps Internal non-sensitive as defense in depth, but the API log needs
+		// only stable structured fields.
+		s.logger.Warn("remote media rejected", "code", me.Code, "status", me.Status)
 		s.mediaFetchRejected(w, r, parsed, meta, me.Status, me.Code, me.Public)
 		return nil, false
 	}

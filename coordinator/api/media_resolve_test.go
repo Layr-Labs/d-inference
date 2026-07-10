@@ -16,6 +16,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // --- helpers ----------------------------------------------------------------
@@ -157,6 +158,23 @@ func TestResolveRemoteMediaNilResolverPassthrough(t *testing.T) {
 	}
 }
 
+func TestResolveRemoteMediaClientCancellationWritesNoRejection(t *testing.T) {
+	s := minimalMediaServer(mediafetch.DefaultConfig())
+	raw, parsed := chatBodyBytes(t, "https://example.com/cancelled.png")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := plainReq().WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	out, ok := s.resolveRemoteMedia(w, req, raw, parsed, &registry.RequestTiming{}, testMeta())
+	if ok || out != nil {
+		t.Fatal("client cancellation must stop resolution")
+	}
+	if w.Body.Len() != 0 {
+		t.Fatalf("client cancellation wrote a rejection body: %s", w.Body.String())
+	}
+}
+
 func TestResolveRemoteMediaFailureWrites400(t *testing.T) {
 	cfg := mediafetch.DefaultConfig()
 	cfg.AllowPrivateIPs = true
@@ -186,6 +204,30 @@ func TestResolveRemoteMediaFailureWrites400(t *testing.T) {
 	// The consumer-facing message must not echo the internal origin host.
 	if strings.Contains(w.Body.String(), "127.0.0.1") {
 		t.Errorf("error body leaks the origin host: %s", w.Body.String())
+	}
+}
+
+func TestResolveRemoteMediaNeverLogsPresignedURLSecrets(t *testing.T) {
+	cfg := mediafetch.DefaultConfig()
+	cfg.AllowPrivateIPs = true
+	cfg.AllowNonStandardPorts = true
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	s := &Server{logger: logger, mediaResolver: mediafetch.NewResolver(cfg, logger)}
+
+	media := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "missing", http.StatusNotFound)
+	}))
+	defer media.Close()
+	const secret = "X-Amz-Signature=do-not-log-this-secret"
+	raw, parsed := chatBodyBytes(t, media.URL+"/private.png?"+secret)
+	w := httptest.NewRecorder()
+
+	if out, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, &registry.RequestTiming{}, testMeta()); ok || out != nil {
+		t.Fatal("upstream 404 must fail media resolution")
+	}
+	if got := logs.String(); strings.Contains(got, secret) || strings.Contains(got, media.URL) || strings.Contains(got, "/private.png") {
+		t.Fatalf("logs contain request URL or secret: %s", got)
 	}
 }
 
@@ -270,12 +312,15 @@ func TestGateDisabledFallsBackToLegacyReject(t *testing.T) {
 		t.Errorf("status = %d, want 400", w.Code)
 	}
 
-	// The legacy path keeps honoring its own kill switch: with rejection also
-	// disabled, the request flows through (old dispatch-then-provider-400).
+	// The new kill switch is authoritative: the legacy rejection flag cannot
+	// turn fetch-disabled rollback into dispatch-then-provider-400.
 	t.Setenv("DARKBLOOM_VISION_REJECT_REMOTE_URLS", "false")
 	w2 := httptest.NewRecorder()
-	if s.gateRemoteMediaPreDispatch(w2, plainReq(), parsed, "test", "test", true, false) {
-		t.Fatal("legacy kill switch off: gate must not handle the request")
+	if !s.gateRemoteMediaPreDispatch(w2, plainReq(), parsed, "test", "test", true, false) {
+		t.Fatal("fetch-disabled gate must reject regardless of the legacy flag")
+	}
+	if w2.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w2.Code)
 	}
 }
 
@@ -302,22 +347,32 @@ func TestFirstUnfetchableRemoteRef(t *testing.T) {
 
 	// All refs fetchable → ok.
 	body := mk(openaiRemote, inline)
-	if ref, ok := firstUnfetchableRemoteRef(body, mediafetch.RemoteMediaURLs(body)); !ok {
+	if ref, ok := firstUnfetchableRemoteRef(body); !ok {
 		t.Errorf("fetchable-only body flagged %q", ref)
 	}
 	// Anthropic remote next to a fetchable OpenAI part → flagged.
 	body = mk(openaiRemote, anthropicRemote)
-	if ref, ok := firstUnfetchableRemoteRef(body, mediafetch.RemoteMediaURLs(body)); ok || ref != "https://x/b.png" {
+	if ref, ok := firstUnfetchableRemoteRef(body); ok || ref != "https://x/b.png" {
 		t.Errorf("anthropic remote must be flagged; got (%q,%v)", ref, ok)
+	}
+	// URL equality must not make an unsupported shape fetchable: each part is
+	// judged by its own shape/location.
+	sharedURL := "https://x/shared.png"
+	body = mk(
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": sharedURL}},
+		map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": sharedURL}},
+	)
+	if ref, ok := firstUnfetchableRemoteRef(body); ok || ref != sharedURL {
+		t.Errorf("same-URL unsupported block must be flagged; got (%q,%v)", ref, ok)
 	}
 	// file:// scheme in an OpenAI part: not collected by the resolver → flagged.
 	body = mk(fileScheme)
-	if ref, ok := firstUnfetchableRemoteRef(body, mediafetch.RemoteMediaURLs(body)); ok || ref != "file:///etc/passwd" {
+	if ref, ok := firstUnfetchableRemoteRef(body); ok || ref != "file:///etc/passwd" {
 		t.Errorf("file:// must be flagged; got (%q,%v)", ref, ok)
 	}
 	// Responses input[] surface is walked too.
 	body = map[string]any{"input": []any{map[string]any{"content": []any{anthropicRemote}}}}
-	if _, ok := firstUnfetchableRemoteRef(body, nil); ok {
+	if _, ok := firstUnfetchableRemoteRef(body); ok {
 		t.Error("input[] remote refs must be flagged")
 	}
 }
@@ -339,6 +394,54 @@ func errType(t *testing.T, body []byte) string {
 		return resp.Error.Code
 	}
 	return resp.Error.Type
+}
+
+func TestChatCompletionsRemoteMediaRequiresMediaAwareBalanceBeforeFetch(t *testing.T) {
+	srv, st := testBillingServer(t)
+	makeVisionRoutableProvider(t, srv.registry, "vision-balance", "test")
+	cfg := mediafetch.DefaultConfig()
+	cfg.AllowPrivateIPs = true
+	cfg.AllowNonStandardPorts = true
+	srv.mediaResolver = mediafetch.NewResolver(cfg, srv.logger)
+	// Make the prompt-token difference visible above the universal minimum fee.
+	if err := st.SetModelPrice("platform", "test", 1_000_000, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	var hits int32
+	media := httptest.NewServer(pngHandler(t, &hits))
+	defer media.Close()
+	_, parsed := chatBodyBytes(t, media.URL+"/private.png")
+	parsed["max_tokens"] = 1
+	body, err := json.Marshal(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	estimated := estimatePromptTokens(parsed)
+	billing := estimateBillingPromptTokens(parsed)
+	if estimated <= billing {
+		t.Fatalf("test setup requires media estimate > URL-byte bound; estimated=%d billing=%d", estimated, billing)
+	}
+	urlOnlyCost := srv.reservationCost("test", billing, 1)
+	mediaAwareCost := srv.reservationCost("test", estimated, 1)
+	if mediaAwareCost <= urlOnlyCost {
+		t.Fatalf("test setup requires distinct costs; URL=%d media=%d", urlOnlyCost, mediaAwareCost)
+	}
+	if err := st.Credit(testConsumerID, urlOnlyCost, store.LedgerDeposit, "media-prefetch-floor"); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402; body=%s", w.Code, w.Body.String())
+	}
+	if n := atomic.LoadInt32(&hits); n != 0 {
+		t.Fatalf("insufficient media-aware balance triggered %d origin fetch(es); want 0", n)
+	}
 }
 
 func TestChatCompletionsRemoteMediaSSRFBlocked(t *testing.T) {

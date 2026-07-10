@@ -139,9 +139,11 @@ func dialControl(allowPrivate bool) func(network, address string, c syscall.RawC
 }
 
 // hostAllowed validates a URL host string (the "host" or "host:port" from a
-// parsed URL) against the optional domain blocklist. The IP-level deny policy is
-// enforced at dial time by the Control hook; this catches name-based blocklist
-// entries (and IP-literal hosts that match a blocklist entry) up front.
+// parsed URL) against the optional domain blocklist. A domain entry blocks both
+// itself and every subdomain at a label boundary (evil.com blocks
+// img.evil.com, never notevil.com). The IP-level deny policy is enforced at dial
+// time by the Control hook; this catches name-based blocklist entries (and
+// IP-literal hosts that match a blocklist entry) up front.
 func hostAllowed(host string, blocklist map[string]bool) error {
 	h := host
 	if hp, _, err := net.SplitHostPort(host); err == nil {
@@ -155,8 +157,10 @@ func hostAllowed(host string, blocklist map[string]bool) error {
 	if h == "" {
 		return fmt.Errorf("%w: empty host", errBlockedHost)
 	}
-	if len(blocklist) > 0 && blocklist[h] {
-		return fmt.Errorf("%w: %q is blocklisted", errBlockedHost, h)
+	for blocked := range blocklist {
+		if h == blocked || strings.HasSuffix(h, "."+blocked) {
+			return fmt.Errorf("%w: destination matches blocklist", errBlockedHost)
+		}
 	}
 	return nil
 }

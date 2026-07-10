@@ -58,7 +58,13 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 		return 0, false, false
 	}
 	consumerKey := consumerKeyFromContext(r.Context())
-	reservedMicroUSD = s.reservationCost(p.model, p.billingPromptTokens, p.requestedMaxTokens)
+	// Normally the byte-count billing bound dominates the routing estimate. A
+	// remote media URL is the exception: its short URL is rewritten after this
+	// gate into hundreds/thousands of vision soft tokens. Reserve against the
+	// larger bound so a low-balance caller cannot trigger coordinator egress and
+	// only then fail the platform-price balance check.
+	reservationPromptTokens := max(p.billingPromptTokens, p.estimatedPromptTokens)
+	reservedMicroUSD = s.reservationCost(p.model, reservationPromptTokens, p.requestedMaxTokens)
 	// Per-key spend cap (phase 1) — checked before the reservation so a capped
 	// key never debits the account ledger.
 	if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {

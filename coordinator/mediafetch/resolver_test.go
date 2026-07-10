@@ -3,6 +3,7 @@ package mediafetch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -196,6 +197,16 @@ func TestResolveTextOnlyNoOp(t *testing.T) {
 	}
 }
 
+func TestResolvePreservesClientCancellation(t *testing.T) {
+	r := NewResolver(DefaultConfig(), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := r.Resolve(ctx, chatBody(imagePartObj("https://example.com/cancelled.png")))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Resolve error = %v, want context.Canceled", err)
+	}
+}
+
 func TestResolveMultipleImages(t *testing.T) {
 	img := validPNG(t)
 	var hits int32
@@ -217,6 +228,97 @@ func TestResolveMultipleImages(t *testing.T) {
 	}
 	if res.Count != 3 || atomic.LoadInt32(&hits) != 3 {
 		t.Fatalf("Count=%d hits=%d, want 3/3", res.Count, hits)
+	}
+}
+
+func TestResolveDuplicateURLFetchesOnce(t *testing.T) {
+	img := validPNG(t)
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Write(img)
+	}))
+	defer srv.Close()
+
+	r := NewResolver(devConfig(), nil)
+	parsed := chatBody(
+		imagePartObj(srv.URL+"/same.png#first"),
+		imagePartStr("  "+srv.URL+"/same.png#second  "),
+		imagePartObj(srv.URL+"/same.png"),
+	)
+	res, err := r.Resolve(context.Background(), parsed)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Count != 1 || res.Bytes != int64(len(img)) || atomic.LoadInt32(&hits) != 1 {
+		t.Fatalf("Count=%d Bytes=%d hits=%d, want 1/%d/1", res.Count, res.Bytes, hits, len(img))
+	}
+	want := firstImageURL(t, parsed, 0)
+	for i := 0; i < 3; i++ {
+		if got := firstImageURL(t, parsed, i); got != want || !strings.HasPrefix(got, "data:image/png;base64,") {
+			t.Errorf("part %d = %.40q, want shared inlined data URI", i, got)
+		}
+	}
+}
+
+func TestResolveDuplicateTargetsStillRespectPartCap(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Write(validPNG(t))
+	}))
+	defer srv.Close()
+
+	cfg := devConfig()
+	cfg.MaxParts = 2
+	r := NewResolver(cfg, nil)
+	parsed := chatBody(
+		imagePartObj(srv.URL+"/same.png#one"),
+		imagePartObj(srv.URL+"/same.png#two"),
+		imagePartObj(srv.URL+"/same.png#three"),
+	)
+	mustErr(t, parsed, r, http.StatusBadRequest, "too_many_media_parts")
+	if n := atomic.LoadInt32(&hits); n != 0 {
+		t.Fatalf("over-limit duplicate targets triggered %d fetch(es); want 0", n)
+	}
+}
+
+func TestResolveSameURLWithConflictingKindsRejectsBeforeFetch(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Write(validPNG(t))
+	}))
+	defer srv.Close()
+
+	r := NewResolver(devConfig(), nil)
+	parsed := chatBody(imagePartObj(srv.URL+"/same#image"), videoPartObj(srv.URL+"/same#video"))
+	mustErr(t, parsed, r, http.StatusBadRequest, "media_kind_mismatch")
+	if n := atomic.LoadInt32(&hits); n != 0 {
+		t.Fatalf("conflicting kinds triggered %d fetch(es); want 0", n)
+	}
+}
+
+func TestGroupMediaRefsCanonicalizesEquivalentTargets(t *testing.T) {
+	refs := []mediaRef{
+		{url: "HTTPS://Example.COM:443/a.png#one", kind: kindImage},
+		{url: "https://example.com/a.png#two", kind: kindImage},
+	}
+	fetches, err := groupMediaRefs(refs)
+	if err != nil {
+		t.Fatalf("groupMediaRefs: %v", err)
+	}
+	if len(fetches) != 1 || fetches[0].request.url != "https://example.com/a.png" || len(fetches[0].targets) != 2 {
+		t.Fatalf("canonical groups = %+v, want one https://example.com/a.png group with two targets", fetches)
+	}
+
+	// Query strings are application-semantic and must remain distinct.
+	fetches, err = groupMediaRefs([]mediaRef{
+		{url: "https://example.com/a.png?v=1", kind: kindImage},
+		{url: "https://example.com/a.png?v=2", kind: kindImage},
+	})
+	if err != nil || len(fetches) != 2 {
+		t.Fatalf("query-distinct groups = %d, err=%v; want 2", len(fetches), err)
 	}
 }
 
@@ -404,21 +506,24 @@ func TestResolveRedirectLoopDepthCap(t *testing.T) {
 	mustErr(t, chatBody(imagePartObj(srv.URL+"/start")), r, http.StatusForbidden, "media_blocked")
 }
 
-func TestHasRemoteMediaAndRemoteMediaURLs(t *testing.T) {
+func TestHasRemoteMediaAndFetchablePart(t *testing.T) {
 	withRemote := chatBody(imagePartObj("https://example.com/a.png"), videoPartObj("https://example.com/v.mp4"))
 	if !HasRemoteMedia(withRemote) {
 		t.Error("HasRemoteMedia = false for a remote image_url")
 	}
-	urls := RemoteMediaURLs(withRemote)
-	if !urls["https://example.com/a.png"] || !urls["https://example.com/v.mp4"] || len(urls) != 2 {
-		t.Errorf("RemoteMediaURLs = %v, want both remote refs", urls)
+	parts := withRemote["messages"].([]any)[0].(map[string]any)["content"].([]any)
+	for i, part := range parts {
+		if !IsFetchableRemotePart(part.(map[string]any)) {
+			t.Errorf("part %d must be fetchable", i)
+		}
 	}
 	withData := chatBody(imagePartObj("data:image/png;base64,iVBORw0KGgo="))
 	if HasRemoteMedia(withData) {
 		t.Error("HasRemoteMedia = true for an inline data: URI")
 	}
-	if RemoteMediaURLs(withData) != nil {
-		t.Error("RemoteMediaURLs must be nil for inline-only bodies")
+	inlinePart := withData["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if IsFetchableRemotePart(inlinePart) {
+		t.Error("inline data URI must not be classified as a fetchable remote part")
 	}
 	textOnly := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hi"}}}
 	if HasRemoteMedia(textOnly) {
@@ -431,6 +536,9 @@ func TestHasRemoteMediaAndRemoteMediaURLs(t *testing.T) {
 	})
 	if HasRemoteMedia(anthropic) {
 		t.Error("Anthropic source blocks must not be collected as fetchable")
+	}
+	if IsFetchableRemotePart(anthropic["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)) {
+		t.Error("Anthropic source block must not be classified as fetchable")
 	}
 }
 

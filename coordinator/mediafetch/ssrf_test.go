@@ -93,6 +93,8 @@ func TestValidateURL(t *testing.T) {
 		{"https://evil.com/x", errBlockedHost},              // blocklisted domain
 		{"https://EVIL.com/x", errBlockedHost},              // blocklist is case-insensitive
 		{"https://evil.com:8443/x", errBlockedHost},         // blocklist ignores port
+		{"https://images.evil.com/x", errBlockedHost},       // subdomain inherits parent block
+		{"https://not-evil.com/x", nil},                     // suffix without label boundary is unrelated
 	}
 	for _, c := range cases {
 		u, err := url.Parse(c.raw)

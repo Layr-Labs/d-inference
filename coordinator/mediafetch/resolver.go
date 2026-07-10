@@ -8,15 +8,21 @@ package mediafetch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 )
 
 // Error is a typed resolution failure carrying the HTTP status + OpenAI-style
-// error code to return to the consumer, a Public (safe) message, and an Internal
-// detail (may contain the URL/host) for server-side logs only.
+// error code to return to the consumer, a Public message, and a non-sensitive
+// Internal diagnostic. Internal MUST NOT contain the request URL, host, query,
+// fragment, credentials, or wrapped errors that may reproduce them: presigned
+// media URLs commonly carry secrets and Error() may be logged by callers.
 type Error struct {
 	Status   int
 	Code     string
@@ -76,6 +82,15 @@ type mediaRef struct {
 	kind mediaKind
 }
 
+// mediaFetch groups every mutable request location that references the same
+// trimmed remote URL. The URL is downloaded once, then one data: URI is written
+// to every target. A URL reused across image_url and video_url is rejected before
+// network I/O because one byte stream cannot satisfy both declared media kinds.
+type mediaFetch struct {
+	request mediaRef
+	targets []mediaRef
+}
+
 // Resolve walks an OpenAI-compatible request body (parsed JSON) for image_url /
 // video_url content parts whose value is an http(s) URL, fetches each one under
 // the SSRF + size + format policy, and replaces it in place with an inline data:
@@ -96,34 +111,102 @@ func (r *Resolver) Resolve(ctx context.Context, parsed map[string]any) (Result, 
 			Public:   "remote media URLs are not enabled on this endpoint; send media as an inline base64 data: URI",
 			Internal: "feature disabled via config"}
 	}
+	// Cap request locations BEFORE URL deduplication. Each target is rewritten
+	// with the full base64 data URI, so allowing unbounded duplicate targets would
+	// turn one bounded fetch into an oversized allocation/marshal DoS.
 	if len(refs) > r.cfg.MaxParts {
 		return Result{}, &Error{Status: http.StatusBadRequest, Code: "too_many_media_parts",
-			Public:   fmt.Sprintf("too many remote media items (%d); the maximum is %d", len(refs), r.cfg.MaxParts),
-			Internal: fmt.Sprintf("%d refs > MaxParts %d", len(refs), r.cfg.MaxParts)}
+			Public:   fmt.Sprintf("too many remote media parts (%d); the maximum is %d", len(refs), r.cfg.MaxParts),
+			Internal: fmt.Sprintf("%d remote targets > MaxParts %d", len(refs), r.cfg.MaxParts)}
+	}
+	fetches, err := groupMediaRefs(refs)
+	if err != nil {
+		return Result{}, err
 	}
 
 	// Bound the whole resolution step (independent of the request TTFT deadline).
 	resolveCtx, cancel := context.WithTimeout(ctx, r.cfg.TotalDeadline)
 	defer cancel()
 
-	fetched, totalBytes, err := r.fetchAll(resolveCtx, refs)
+	fetched, totalBytes, err := r.fetchAll(resolveCtx, fetches)
 	if err != nil {
 		return Result{}, err
 	}
 
 	// All fetches succeeded — apply mutations atomically.
-	for i, ref := range refs {
-		ref.set[ref.key] = toDataURI(fetched[i])
+	for i, fetch := range fetches {
+		dataURI := toDataURI(fetched[i])
+		for _, target := range fetch.targets {
+			target.set[target.key] = dataURI
+		}
 	}
-	return Result{Changed: true, Count: len(refs), Bytes: totalBytes}, nil
+	return Result{Changed: true, Count: len(fetches), Bytes: totalBytes}, nil
+}
+
+func groupMediaRefs(refs []mediaRef) ([]mediaFetch, error) {
+	fetches := make([]mediaFetch, 0, len(refs))
+	byURL := make(map[string]int, len(refs))
+	for _, ref := range refs {
+		canonical, err := canonicalMediaURL(ref.url)
+		if err != nil {
+			return nil, err
+		}
+		ref.url = canonical
+		if i, exists := byURL[ref.url]; exists {
+			if fetches[i].request.kind != ref.kind {
+				return nil, &Error{Status: http.StatusBadRequest, Code: "media_kind_mismatch",
+					Public:   "the same remote media URL cannot be used as both image_url and video_url",
+					Internal: "one URL declared with conflicting media kinds"}
+			}
+			fetches[i].targets = append(fetches[i].targets, ref)
+			continue
+		}
+		byURL[ref.url] = len(fetches)
+		fetches = append(fetches, mediaFetch{request: ref, targets: []mediaRef{ref}})
+	}
+	return fetches, nil
+}
+
+// canonicalMediaURL normalizes components that do not change the on-the-wire
+// request target, so each target is fetched and kind-checked once: fragments are
+// never sent by HTTP, scheme/host are case-insensitive, and explicit default
+// ports are equivalent to omission. Path escaping and query order are preserved
+// because origins can assign them application-specific semantics.
+func canonicalMediaURL(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", &Error{Status: http.StatusBadRequest, Code: "invalid_media_url",
+			Public: "a media URL could not be parsed", Internal: "URL parse failed"}
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	hostname := u.Hostname()
+	if !strings.Contains(hostname, ":") {
+		hostname = strings.ToLower(hostname)
+	}
+	port := u.Port()
+	if (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
+		port = ""
+	}
+	switch {
+	case hostname == "":
+		u.Host = ""
+	case port != "":
+		u.Host = net.JoinHostPort(hostname, port)
+	case strings.Contains(hostname, ":"):
+		u.Host = "[" + hostname + "]"
+	default:
+		u.Host = hostname
+	}
+	u.Fragment = ""
+	return u.String(), nil
 }
 
 // fetchAll fetches every ref with bounded concurrency (per-request worker cap +
 // the process-wide semaphore), enforcing the per-request aggregate byte cap. On
 // the first error all remaining work is cancelled and the error is returned
 // (atomic: the caller inlines nothing on failure).
-func (r *Resolver) fetchAll(ctx context.Context, refs []mediaRef) ([]*fetchedMedia, int64, error) {
-	out := make([]*fetchedMedia, len(refs))
+func (r *Resolver) fetchAll(ctx context.Context, fetches []mediaFetch) ([]*fetchedMedia, int64, error) {
+	out := make([]*fetchedMedia, len(fetches))
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -146,6 +229,10 @@ func (r *Resolver) fetchAll(ctx context.Context, refs []mediaRef) ([]*fetchedMed
 	// preserved; otherwise (parent deadline / client disconnect) the timeout error
 	// stands, and out[i] is never left nil for Resolve to dereference in toDataURI.
 	ctxCancelled := func() {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			fail(context.Canceled)
+			return
+		}
 		fail(&Error{Status: http.StatusRequestTimeout, Code: "media_fetch_timeout",
 			Public: "media fetching did not complete in time", Internal: ctx.Err().Error()})
 	}
@@ -153,9 +240,9 @@ func (r *Resolver) fetchAll(ctx context.Context, refs []mediaRef) ([]*fetchedMed
 	sem := make(chan struct{}, r.cfg.Concurrency)
 	totalBudget := newByteBudget(r.cfg.MaxTotalBytes)
 	var wg sync.WaitGroup
-	for i, ref := range refs {
+	for i, fetch := range fetches {
 		wg.Add(1)
-		go func(i int, ref mediaRef) {
+		go func(i int, fetch mediaFetch) {
 			defer wg.Done()
 			// Per-request worker slot.
 			select {
@@ -175,9 +262,14 @@ func (r *Resolver) fetchAll(ctx context.Context, refs []mediaRef) ([]*fetchedMed
 				return
 			}
 
-			m, e := r.fetchOne(ctx, ref, r.cfg.MaxFileBytes, totalBudget)
+			m, e := r.fetchOne(ctx, fetch.request, r.cfg.MaxFileBytes, totalBudget)
 			if e != nil {
-				r.logger.Warn("media fetch rejected", "error", e)
+				var me *Error
+				if errors.As(e, &me) {
+					r.logger.Warn("media fetch rejected", "code", me.Code, "status", me.Status)
+				} else {
+					r.logger.Warn("media fetch rejected", "code", "unknown")
+				}
 				fail(e)
 				return
 			}
@@ -193,7 +285,7 @@ func (r *Resolver) fetchAll(ctx context.Context, refs []mediaRef) ([]*fetchedMed
 				return
 			}
 			out[i] = m
-		}(i, ref)
+		}(i, fetch)
 	}
 	wg.Wait()
 
@@ -210,20 +302,19 @@ func HasRemoteMedia(parsed map[string]any) bool {
 	return len(collectMediaRefs(parsed)) > 0
 }
 
-// RemoteMediaURLs returns the set of remote http(s) URLs this package would
-// fetch from parsed. The API layer uses it to detect remote references in
-// OTHER (non-fetchable) part shapes — e.g. Anthropic source blocks — which must
-// keep today's pre-dispatch rejection instead of sailing through image-blind.
-func RemoteMediaURLs(parsed map[string]any) map[string]bool {
-	refs := collectMediaRefs(parsed)
-	if len(refs) == 0 {
-		return nil
+// IsFetchableRemotePart reports whether pm is an OpenAI image_url/video_url part
+// carrying an http(s) URL in a shape Resolve can mutate. It deliberately judges
+// the part's shape/location, not just its URL string: an unsupported Anthropic
+// source block remains unsupported even when another OpenAI part uses the same
+// URL.
+func IsFetchableRemotePart(pm map[string]any) bool {
+	typ, _ := pm["type"].(string)
+	key, kind, ok := mediaKeyForType(typ)
+	if !ok {
+		return false
 	}
-	out := make(map[string]bool, len(refs))
-	for _, ref := range refs {
-		out[ref.url] = true
-	}
-	return out
+	_, ok = mediaRefFromPart(pm, key, kind)
+	return ok
 }
 
 // collectMediaRefs walks messages[].content[] for OpenAI-shaped image_url /

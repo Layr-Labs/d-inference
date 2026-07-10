@@ -600,3 +600,29 @@ async fn quiescence_reports_ownership_and_empty_outbox() {
     assert_eq!(v["external_events_seen"], 0);
     assert_eq!(v["late_terminals"], 0);
 }
+
+#[tokio::test]
+async fn responses_route_shares_chat_handler_429_without_provider() {
+    let app = router(test_state(true));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "pilot-text-model",
+                        "messages": [{"role":"user","content":"hi"}],
+                        "stream": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+    let v = body_json(res).await;
+    assert_eq!(v["error"]["type"], "rate_limit_exceeded");
+}

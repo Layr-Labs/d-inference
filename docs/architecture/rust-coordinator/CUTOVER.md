@@ -106,3 +106,9 @@ row is newly created — job_id conflict never drains balances.
 
 Ops force-settle records disposition `force_settled` (distinct from `settled`)
 in both MemoryLedger and SQL for audit.
+
+### Deposit forget SQL (DECISIONS #28)
+
+Durable `forget_sql` deletes the external_events row only when no
+`deposit:source:event_id` financial_operations row exists. `deposit_sql`
+inserts that op key on successful credit so forget cannot undo a landed deposit.

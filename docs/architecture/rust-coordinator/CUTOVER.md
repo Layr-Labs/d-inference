@@ -65,6 +65,9 @@ darkbloom-coordinator recovery --confirm-same-release --demo-held-job JOB
 
 # Force-settle a review amount and clear the hold
 darkbloom-coordinator recovery --confirm-same-release --demo-force-settle-job JOB
+
+# Idempotent Stripe deposit apply (DECISIONS #22)
+darkbloom-coordinator recovery --confirm-same-release --demo-deposit-event evt_id
 ```
 
 Production force-settle uses `force_settle_held` against Postgres once SQLx is

@@ -3,6 +3,8 @@
 use clap::{Parser, Subcommand};
 use std::sync::{Arc, Mutex};
 
+use crate::deposits::apply_stripe_deposit;
+use crate::external_events::ExternalEventInbox;
 use crate::ledger::MemoryLedger;
 use crate::recovery::{
     force_settle_held, recover_start_authorized_held, recover_undispatched, RecoveryAction,
@@ -33,6 +35,9 @@ enum Commands {
         /// In-memory demo: force-settle a start_authorized held job.
         #[arg(long)]
         demo_force_settle_job: Option<String>,
+        /// In-memory demo: apply a Stripe deposit event (idempotent).
+        #[arg(long)]
+        demo_deposit_event: Option<String>,
         #[arg(long, default_value = "pilot-account")]
         demo_account: String,
     },
@@ -47,6 +52,7 @@ pub fn parse_and_is_recovery() -> RecoveryOpts {
             demo_job: None,
             demo_held_job: None,
             demo_force_settle_job: None,
+            demo_deposit_event: None,
             demo_account: String::new(),
         },
         Some(Commands::Recovery {
@@ -54,6 +60,7 @@ pub fn parse_and_is_recovery() -> RecoveryOpts {
             demo_job,
             demo_held_job,
             demo_force_settle_job,
+            demo_deposit_event,
             demo_account,
         }) => RecoveryOpts {
             enabled: true,
@@ -61,6 +68,7 @@ pub fn parse_and_is_recovery() -> RecoveryOpts {
             demo_job,
             demo_held_job,
             demo_force_settle_job,
+            demo_deposit_event,
             demo_account,
         },
     }
@@ -72,6 +80,7 @@ pub struct RecoveryOpts {
     pub demo_job: Option<String>,
     pub demo_held_job: Option<String>,
     pub demo_force_settle_job: Option<String>,
+    pub demo_deposit_event: Option<String>,
     pub demo_account: String,
 }
 
@@ -81,6 +90,42 @@ pub fn run_recovery(opts: RecoveryOpts) -> Result<(), String> {
             "recovery requires --confirm-same-release (plan §26.2: same-release artifact only)"
                 .into(),
         );
+    }
+    if let Some(event_id) = opts.demo_deposit_event {
+        let mut inbox = ExternalEventInbox::new();
+        let mut led = MemoryLedger::default();
+        let applied = apply_stripe_deposit(
+            &mut inbox,
+            &mut led,
+            "stripe",
+            &event_id,
+            &opts.demo_account,
+            250_000,
+            50_000,
+        )
+        .map_err(|e| e.to_string())?;
+        if !applied {
+            return Err("expected first deposit apply".into());
+        }
+        let replay = apply_stripe_deposit(
+            &mut inbox,
+            &mut led,
+            "stripe",
+            &event_id,
+            &opts.demo_account,
+            250_000,
+            50_000,
+        )
+        .map_err(|e| e.to_string())?;
+        if replay {
+            return Err("expected replay to be a no-op".into());
+        }
+        let (bal, wdr) = led.balance(&opts.demo_account);
+        if bal != 250_000 || wdr != 50_000 {
+            return Err(format!("expected bal=250000 wdr=50000, got {bal}/{wdr}"));
+        }
+        tracing::info!(%event_id, bal, wdr, "recovery deposit demo complete");
+        return Ok(());
     }
     if let Some(job) = opts.demo_force_settle_job {
         let led = Arc::new(Mutex::new(MemoryLedger::default()));
@@ -157,7 +202,7 @@ pub fn run_recovery(opts: RecoveryOpts) -> Result<(), String> {
         return Ok(());
     }
     let url = std::env::var("DATABASE_URL").map_err(|_| {
-        "DATABASE_URL required for recovery mode (or pass --demo-job / --demo-held-job / --demo-force-settle-job for in-memory dry-run)"
+        "DATABASE_URL required for recovery mode (or pass --demo-job / --demo-held-job / --demo-force-settle-job / --demo-deposit-event for in-memory dry-run)"
             .to_string()
     })?;
     tracing::info!(%url, "recovery mode: would probe rust_coord and settle/release (SQLx not linked in this build)");

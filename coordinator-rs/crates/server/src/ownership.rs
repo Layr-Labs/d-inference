@@ -191,5 +191,21 @@ mod tests {
         assert!(acquire_sql().contains("fencing_epoch"));
         assert!(heartbeat_sql().contains("heartbeat_at"));
         assert!(release_sql().contains("holder = ''"));
+        // Heartbeat/release must bind both holder and fencing_epoch (no stale steal).
+        assert!(heartbeat_sql().contains("holder = $1 AND fencing_epoch = $2"));
+        assert!(release_sql().contains("holder = $1 AND fencing_epoch = $2"));
+        // Acquire may steal only when unheld or heartbeat expired.
+        assert!(acquire_sql().contains("heartbeat_at < NOW() - INTERVAL '30 seconds'"));
+        assert!(acquire_sql().contains("fencing_epoch = fencing_epoch + 1"));
+    }
+
+    #[test]
+    fn release_clears_holding_flag() {
+        let g = Gate::new(false);
+        g.acquire(Epoch(7)).unwrap();
+        assert!(g.holding());
+        g.release();
+        assert!(!g.holding());
+        assert_eq!(g.assert_holding(), Err(OwnershipError::OwnershipLost));
     }
 }

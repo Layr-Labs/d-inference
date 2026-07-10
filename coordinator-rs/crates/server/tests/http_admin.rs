@@ -797,3 +797,96 @@ async fn admin_terminal_ingest_digest_fallback_acks_settled() {
     assert_eq!(v["disposition"], "settled");
     assert_eq!(v["type"], "terminal_ack");
 }
+
+#[tokio::test]
+async fn admin_deposit_rejects_withdrawable_exceeding_total() {
+    let app = router(test_state(true));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/deposits")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "event_id": "evt_wdr_over",
+                        "amount_micro_usd": 100_000,
+                        "withdrawable_micro_usd": 200_000
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let v = body_json(res).await;
+    assert_eq!(v["error"]["code"], "deposit_failed");
+}
+
+#[tokio::test]
+async fn deposit_outbox_blocks_quiescence_until_drained() {
+    let state = test_state(true);
+    let outbox = state.outbox.clone();
+    let app = router(state);
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/deposits")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "event_id": "evt_outbox_q",
+                        "amount_micro_usd": 50_000,
+                        "withdrawable_micro_usd": 0
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(outbox.lock().await.len(), 1);
+
+    let q1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/quiescence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(q1.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let v1 = body_json(q1).await;
+    assert_eq!(v1["ready"], false);
+    assert_eq!(v1["outbox_retryable"], 1);
+
+    // Drain like the background worker: claim + ack.
+    {
+        let mut box_ = outbox.lock().await;
+        let entry = box_.try_claim().expect("pending outbox entry");
+        box_.ack_done(entry.id);
+    }
+    assert!(outbox.lock().await.is_empty());
+
+    let q2 = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/quiescence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(q2.status(), StatusCode::OK);
+    let v2 = body_json(q2).await;
+    assert_eq!(v2["ready"], true);
+    assert_eq!(v2["outbox_retryable"], 0);
+}

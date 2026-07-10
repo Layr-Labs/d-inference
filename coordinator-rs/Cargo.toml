@@ -1,0 +1,68 @@
+[workspace]
+resolver = "2"
+members = ["crates/protocol", "crates/core", "crates/server"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+# Async runtime and framework
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "limit", "timeout", "set-header"] }
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+bytes = { version = "1", features = ["serde"] }
+base64 = "0.22"
+
+# Database
+sqlx = { version = "0.8", default-features = false, features = [
+    "postgres",
+    "runtime-tokio-rustls",
+    "macros",
+    "migrate",
+    "chrono",
+    "uuid",
+    "json",
+] }
+
+# Cryptography (Go/Swift NaCl Box + Secure Enclave P-256 compatibility)
+crypto_box = { version = "0.9", features = ["std"] }
+p256 = { version = "0.13", features = ["ecdsa"] }
+sha2 = "0.10"
+rand = "0.8"
+secrecy = "0.10"
+zeroize = { version = "1", features = ["derive"] }
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Utilities
+arc-swap = "1"
+thiserror = "2"
+anyhow = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Dev / test
+proptest = "1"
+tokio-tungstenite = "0.24"
+
+# Internal crates
+darkbloom-protocol = { path = "crates/protocol" }
+darkbloom-core = { path = "crates/core" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

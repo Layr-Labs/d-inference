@@ -1,0 +1,49 @@
+[package]
+name = "darkbloom-server"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "coordinator-rs"
+path = "src/main.rs"
+
+[dependencies]
+darkbloom-protocol = { workspace = true }
+darkbloom-core = { workspace = true }
+
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+futures = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+base64 = { workspace = true }
+
+sqlx = { workspace = true }
+
+crypto_box = { workspace = true }
+p256 = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+secrecy = { workspace = true }
+zeroize = { workspace = true }
+
+reqwest = { workspace = true }
+
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+arc-swap = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio-tungstenite = { workspace = true }

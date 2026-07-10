@@ -32,7 +32,9 @@ make migrate
 cd coordinator && go run ./cmd/migrate -dir ../coordinator-rs/migrations
 ```
 
-SQL lives in `coordinator-rs/migrations/` (`rust_coord` schema). The Go
+SQL lives in `coordinator-rs/migrations/` (`rust_coord` schema). Money
+debits/credits target the shared Go `balances` table for continuity;
+`rust_coord.*` owns jobs/attempts/terminals/outbox/ownership. The Go
 `ownership` gate refuses unsafe startup when active Rust work is present.
 
 ## Ops docs

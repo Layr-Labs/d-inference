@@ -40,6 +40,7 @@ impl PostgresLedgerStub {
     }
 
     /// The SQL that will back reserve once SQLx is wired (mirrors MemoryLedger).
+    /// Debits the shared Go `balances` table (not rust_coord.*) for money continuity.
     pub fn reserve_sql() -> &'static str {
         r#"
         WITH pre AS (

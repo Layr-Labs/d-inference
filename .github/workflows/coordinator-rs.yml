@@ -1,0 +1,37 @@
+name: Coordinator Rust
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "coordinator-rs/**"
+      - ".github/workflows/coordinator-rs.yml"
+      - "mise.toml"
+  pull_request:
+    paths:
+      - "coordinator-rs/**"
+      - ".github/workflows/coordinator-rs.yml"
+      - "mise.toml"
+
+jobs:
+  test:
+    name: coordinator-rs
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: coordinator-rs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85.0"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: coordinator-rs
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace

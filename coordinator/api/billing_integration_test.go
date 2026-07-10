@@ -30,6 +30,10 @@ func (s failingCreditStore) Credit(accountID string, amountMicroUSD int64, entry
 	return errors.New("forced credit failure")
 }
 
+func (s failingCreditStore) CreditReservationRelease(accountID string, totalMicroUSD, withdrawableMicroUSD int64, entryType store.LedgerEntryType, reference string) error {
+	return errors.New("forced credit failure")
+}
+
 // TestIntegration_ConsumerBillingCharge verifies that a consumer's balance is
 // debited after a successful inference request. The charge amount should match
 // the pricing for the model and tokens used.

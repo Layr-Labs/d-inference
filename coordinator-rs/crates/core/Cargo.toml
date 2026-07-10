@@ -1,0 +1,15 @@
+[package]
+name = "darkbloom-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Pure domain types, reducers, admission, and health state machines"
+
+[dependencies]
+darkbloom-protocol = { path = "../protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+

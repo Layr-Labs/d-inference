@@ -50,12 +50,12 @@ type balanceReservationParams struct {
 // service-account reservation. The post-inference charge refunds any unused
 // portion; the routing estimate is kept separate so capacity checks aren't
 // over-inflated.
-func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request, parsed map[string]any, p balanceReservationParams) (reservedMicroUSD int64, serviceReservation bool, handled bool) {
+func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request, parsed map[string]any, p balanceReservationParams) (reservedMicroUSD int64, reservedWithdrawable int64, serviceReservation bool, handled bool) {
 	// Self-route is free: skip the pre-flight balance reservation and the
 	// per-key spend cap entirely. A zero-balance owner must never be blocked
 	// from running on their own machine, and a self_route_only key never spends.
 	if s.billing == nil || p.policy.enabled {
-		return 0, false, false
+		return 0, 0, false, false
 	}
 	consumerKey := consumerKeyFromContext(r.Context())
 	reservedMicroUSD = s.reservationCost(p.model, p.billingPromptTokens, p.requestedMaxTokens)
@@ -79,10 +79,10 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 			params:                rejectionSamplingParams(parsed),
 		})
 		writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
-		return reservedMicroUSD, false, true
+		return reservedMicroUSD, 0, false, true
 	}
 	var err error
-	serviceReservation, err = s.reserveInitialBalance(consumerKey, p.model, reservedMicroUSD)
+	serviceReservation, reservedWithdrawable, err = s.reserveInitialBalance(consumerKey, p.model, reservedMicroUSD)
 	if err != nil {
 		if errors.Is(err, store.ErrInsufficientBalance) {
 			s.recordRejection(rejectionInfo{
@@ -107,9 +107,9 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 			s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
 			s.writeServiceUnavailable(w, p.model)
 		}
-		return reservedMicroUSD, serviceReservation, true
+		return reservedMicroUSD, reservedWithdrawable, serviceReservation, true
 	}
-	return reservedMicroUSD, serviceReservation, false
+	return reservedMicroUSD, reservedWithdrawable, serviceReservation, false
 }
 
 // inferenceAdmissionParams bundles the per-request inputs the shared routing

@@ -712,34 +712,35 @@ func (s *Server) dispatchOneProvider(
 		// inference_complete immediately is correlated to the right route row.
 		// Setting it after the send (on the dispatch goroutine) would race the
 		// provider WS reader goroutine's handleComplete read of pr.Attempt.
-		Attempt:                attempt,
-		Model:                  model,
-		PublicModel:            publicModel,
-		ConsumerKey:            consumerKey,
-		KeyID:                  keyIDFromContext(r.Context()),
-		KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
-		KeyLimitReset:          keyLimitResetFromContext(r.Context()),
-		ConsumerLocation:       consumerLocation,
-		IsResponsesAPI:         isResponsesAPI,
-		EstimatedPromptTokens:  estimatedPromptTokens,
-		RequiresVision:         requiresVision,
-		Traits:                 traits,
-		RequestedMaxTokens:     requestedMaxTokens,
-		TokenAdmission:         tokenAdmission,
-		CacheAffinityKey:       cacheAffinityKey,
-		ReservedMicroUSD:       reservedMicroUSD,
-		BaseReservedMicroUSD:   reservedMicroUSD,
-		ServiceReservation:     serviceReservation,
-		AllowedProviderSerials: allowedProviderSerials,
-		SelfRouteOnly:          policy.enabled,
-		PreferOwner:            policy.prefer,
-		OwnerAccountID:         policy.ownerAccountID,
-		FreeSelfRoute:          policy.enabled,
-		AcceptedCh:             make(chan struct{}, 1),
-		ChunkCh:                make(chan string, chunkBufferSize),
-		CompleteCh:             make(chan protocol.UsageInfo, 1),
-		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
-		Timing:                 timing,
+		Attempt:                      attempt,
+		Model:                        model,
+		PublicModel:                  publicModel,
+		ConsumerKey:                  consumerKey,
+		KeyID:                        keyIDFromContext(r.Context()),
+		KeyLimitMicroUSD:             keyLimitMicroFromContext(r.Context()),
+		KeyLimitReset:                keyLimitResetFromContext(r.Context()),
+		ConsumerLocation:             consumerLocation,
+		IsResponsesAPI:               isResponsesAPI,
+		EstimatedPromptTokens:        estimatedPromptTokens,
+		RequiresVision:               requiresVision,
+		Traits:                       traits,
+		RequestedMaxTokens:           requestedMaxTokens,
+		TokenAdmission:               tokenAdmission,
+		CacheAffinityKey:             cacheAffinityKey,
+		ReservedMicroUSD:             reservedMicroUSD,
+		BaseReservedMicroUSD:         reservedMicroUSD,
+		ReservedWithdrawableMicroUSD: 0, // stamped by dispatchState.bindJobSettlement
+		ServiceReservation:           serviceReservation,
+		AllowedProviderSerials:       allowedProviderSerials,
+		SelfRouteOnly:                policy.enabled,
+		PreferOwner:                  policy.prefer,
+		OwnerAccountID:               policy.ownerAccountID,
+		FreeSelfRoute:                policy.enabled,
+		AcceptedCh:                   make(chan struct{}, 1),
+		ChunkCh:                      make(chan string, chunkBufferSize),
+		CompleteCh:                   make(chan protocol.UsageInfo, 1),
+		ErrorCh:                      make(chan protocol.InferenceErrorMessage, 1),
+		Timing:                       timing,
 	}
 
 	// Public inference routes (not self-route / prefer-owner) enforce the
@@ -1000,7 +1001,13 @@ func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference st
 			s.releaseServiceReservation(pr, "refund")
 			return nil
 		}
-		return s.store.Credit(pr.ConsumerKey, pr.ReservedMicroUSD, store.LedgerRefund, reference)
+		return s.store.CreditReservationRelease(
+			pr.ConsumerKey,
+			pr.ReservedMicroUSD,
+			pr.ReservedWithdrawableMicroUSD,
+			store.LedgerRefund,
+			reference,
+		)
 	})
 	if err != nil {
 		s.logger.Error("failed to refund reservation",
@@ -1383,7 +1390,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Pre-flight balance reservation + per-key spend cap (see
 	// reserveInferenceBalance). Self-route and a nil billing backend are free.
-	reservedMicroUSD, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
+	reservedMicroUSD, reservedWithdrawable, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
 		model:                 model,
 		publicModel:           publicModel,
 		billingPromptTokens:   billingPromptTokens,
@@ -1400,10 +1407,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	timing.ReservedAt = time.Now()
 
 	// Refund reservation on early errors (before inference starts).
+	// JobSettlementGate ensures a speculative backup completion cannot settle
+	// after this refund (or after the winning attempt settles).
+	jobSettlement := registry.NewJobSettlementGate()
 	refundReservation := func() {
-		if reservedMicroUSD > 0 {
-			s.releaseInitialReservation(consumerKeyFromContext(r.Context()), model, reservedMicroUSD, serviceReservation)
+		if reservedMicroUSD <= 0 {
+			return
 		}
+		_, _ = jobSettlement.Finalize(func() error {
+			s.releaseInitialReservation(consumerKeyFromContext(r.Context()), model, reservedMicroUSD, reservedWithdrawable, serviceReservation)
+			return nil
+		})
 	}
 
 	// Reject requests for models not in the catalog.
@@ -1561,6 +1575,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		reservedMicroUSD:       reservedMicroUSD,
 		tokenAdmission:         tokenAdmission,
 		serviceReservation:     serviceReservation,
+		reservedWithdrawable:   reservedWithdrawable,
+		jobSettlement:          jobSettlement,
 		estimatedPromptTokens:  estimatedPromptTokens,
 		requestedMaxTokens:     requestedMaxTokens,
 		requiresVision:         requiresVision,
@@ -3295,7 +3311,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// reserveInferenceBalance). Self-route and a nil billing backend are free.
 	consumerKey := consumerKeyFromContext(r.Context())
 	consumerLocation := s.requestLocation(r)
-	reservedMicroUSD, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
+	reservedMicroUSD, reservedWithdrawable, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
 		model:                 model,
 		publicModel:           publicModel,
 		billingPromptTokens:   billingPromptTokens,
@@ -3311,7 +3327,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 	refundReservation := func() {
 		if reservedMicroUSD > 0 {
-			s.releaseInitialReservation(consumerKey, model, reservedMicroUSD, serviceReservation)
+			s.releaseInitialReservation(consumerKey, model, reservedMicroUSD, reservedWithdrawable, serviceReservation)
 		}
 	}
 	timing.ReservedAt = time.Now()
@@ -3390,17 +3406,18 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		RequiresVision:         requiresVision,
 		CacheAffinityKey:       cacheAffinityKey,
 		// Single-attempt path: no retry loop, so no AvoidVersion to thread.
-		Traits:               registry.RequestTraits{HasTools: hasTools},
-		RequestedMaxTokens:   requestedMaxTokens,
-		TokenAdmission:       tokenAdmission,
-		ReservedMicroUSD:     reservedMicroUSD,
-		BaseReservedMicroUSD: reservedMicroUSD,
-		ServiceReservation:   serviceReservation,
-		AcceptedCh:           make(chan struct{}, 1),
-		ChunkCh:              make(chan string, chunkBufferSize),
-		CompleteCh:           make(chan protocol.UsageInfo, 1),
-		ErrorCh:              make(chan protocol.InferenceErrorMessage, 1),
-		Timing:               timing,
+		Traits:                       registry.RequestTraits{HasTools: hasTools},
+		RequestedMaxTokens:           requestedMaxTokens,
+		TokenAdmission:               tokenAdmission,
+		ReservedMicroUSD:             reservedMicroUSD,
+		BaseReservedMicroUSD:         reservedMicroUSD,
+		ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ServiceReservation:           serviceReservation,
+		AcceptedCh:                   make(chan struct{}, 1),
+		ChunkCh:                      make(chan string, chunkBufferSize),
+		CompleteCh:                   make(chan protocol.UsageInfo, 1),
+		ErrorCh:                      make(chan protocol.InferenceErrorMessage, 1),
+		Timing:                       timing,
 	}
 
 	// Public inference routes (not self-route / prefer-owner) enforce the

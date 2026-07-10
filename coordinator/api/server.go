@@ -284,6 +284,8 @@ type Server struct {
 	settlements *settlementHolder
 	// settleGrace overrides defaultTerminalSettleGrace (tests set it small).
 	settleGrace time.Duration
+	// completionWorkers bounds inference_complete settlement fan-out (M0.5).
+	completionWorkers *completionWorkers
 	// zombieCanceller throttles cancels for chunks on abandoned streams. See zombie_stream.go.
 	zombieCanceller *zombieStreamCanceller
 
@@ -695,6 +697,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		codeAttestThrottle:   newCodeAttestThrottle(),
 		trustReuseCache:      newTrustReuseCache(),
 		settlements:          newSettlementHolder(),
+		completionWorkers:    newCompletionWorkers(defaultCompletionWorkers, logger),
 		zombieCanceller:      newZombieStreamCanceller(),
 		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
 		routeTelemetry:       newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
@@ -737,6 +740,17 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 func (s *Server) submitTelemetry(name string, fn func()) {
 	if s.routeTelemetry != nil {
 		s.routeTelemetry.submit(fn)
+		return
+	}
+	saferun.Go(s.logger, name, fn)
+}
+
+// submitCompletion runs inference_complete settlement on the bounded worker
+// pool (M0.5). Falls back to saferun.Go when the pool was not constructed
+// (direct &Server{} in tests).
+func (s *Server) submitCompletion(name string, fn func()) {
+	if s.completionWorkers != nil {
+		s.completionWorkers.Submit(name, fn)
 		return
 	}
 	saferun.Go(s.logger, name, fn)
@@ -1882,6 +1896,7 @@ func (s *Server) routes() {
 	// (admin key OR Privy admin). Registered before the /v1/ catch-all. Note:
 	// /readyz stays unauthenticated. See drain.go (DAR-327 Phase 1).
 	s.mux.HandleFunc("POST /v1/admin/drain", s.requireAuth(s.handleAdminDrain))
+	s.mux.HandleFunc("GET /v1/admin/quiescence", s.requireAuth(s.handleAdminQuiescence))
 
 	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
 	// Browse as JSON or stream a CSV/NDJSON download for offline analysis.

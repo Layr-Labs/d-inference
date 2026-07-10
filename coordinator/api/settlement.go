@@ -28,6 +28,16 @@ func newSettlementHolder() *settlementHolder {
 	return &settlementHolder{pending: make(map[string]*registry.PendingRequest)}
 }
 
+// Len returns how many disconnected requests are parked awaiting a terminal.
+func (h *settlementHolder) Len() int {
+	if h == nil {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.pending)
+}
+
 // hold stores pr under its request id and schedules onExpiry(pr) after grace if
 // it has not been claimed by then. onExpiry runs at most once for a held record.
 func (h *settlementHolder) hold(pr *registry.PendingRequest, grace time.Duration, onExpiry func(*registry.PendingRequest)) {

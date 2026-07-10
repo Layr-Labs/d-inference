@@ -54,7 +54,14 @@ func NewLedger(s store.Store) *Ledger {
 // Charge debits a consumer's balance for inference. Returns an error if
 // the consumer has insufficient funds.
 func (l *Ledger) Charge(consumerID string, amountMicroUSD int64, jobID string) error {
-	return l.store.Debit(consumerID, amountMicroUSD, store.LedgerCharge, jobID)
+	_, err := l.ChargeReservation(consumerID, amountMicroUSD, jobID)
+	return err
+}
+
+// ChargeReservation debits a consumer and returns how much of the debit came
+// from the withdrawable subset (nonwithdrawable credit is consumed first).
+func (l *Ledger) ChargeReservation(consumerID string, amountMicroUSD int64, jobID string) (reservedWithdrawable int64, err error) {
+	return l.store.DebitReservation(consumerID, amountMicroUSD, store.LedgerCharge, jobID)
 }
 
 // Balance returns the current balance for a consumer in micro-USD.

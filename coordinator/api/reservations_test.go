@@ -25,6 +25,11 @@ type countingStore struct {
 }
 
 func (s *countingStore) Debit(accountID string, amountMicroUSD int64, entryType store.LedgerEntryType, reference string) error {
+	_, err := s.DebitReservation(accountID, amountMicroUSD, entryType, reference)
+	return err
+}
+
+func (s *countingStore) DebitReservation(accountID string, amountMicroUSD int64, entryType store.LedgerEntryType, reference string) (int64, error) {
 	if s.delay > 0 {
 		time.Sleep(s.delay)
 	}
@@ -33,9 +38,9 @@ func (s *countingStore) Debit(accountID string, amountMicroUSD int64, entryType 
 	err := s.debitErr
 	s.mu.Unlock()
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return s.Store.Debit(accountID, amountMicroUSD, entryType, reference)
+	return s.Store.DebitReservation(accountID, amountMicroUSD, entryType, reference)
 }
 
 func (s *countingStore) DebitCount() int {
@@ -68,7 +73,7 @@ func TestServiceReservationDisabledUsesLedgerDebit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	serviceMode, err := srv.reserveInitialBalance("svc-disabled", "model", 100_000)
+	serviceMode, _, err := srv.reserveInitialBalance("svc-disabled", "model", 100_000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +99,7 @@ func TestServiceReservationConcurrentAvoidsDebitHotRow(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			serviceMode, err := srv.reserveInitialBalance("svc-hotrow", "model", 100_000)
+			serviceMode, _, err := srv.reserveInitialBalance("svc-hotrow", "model", 100_000)
 			if err != nil {
 				errs <- err
 				return
@@ -122,7 +127,7 @@ func TestNormalConsumerStillUsesSynchronousDebit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	serviceMode, err := srv.reserveInitialBalance("consumer", "model", 100_000)
+	serviceMode, _, err := srv.reserveInitialBalance("consumer", "model", 100_000)
 	if !errors.Is(err, store.ErrInsufficientBalance) {
 		t.Fatalf("err = %v, want ErrInsufficientBalance", err)
 	}
@@ -140,7 +145,7 @@ func TestServiceReservationRefundReleasesHoldWithoutCredit(t *testing.T) {
 	if err := st.Credit("svc-refund", 1_000_000, store.LedgerDeposit, "seed"); err != nil {
 		t.Fatal(err)
 	}
-	serviceMode, err := srv.reserveInitialBalance("svc-refund", "model", 250_000)
+	serviceMode, _, err := srv.reserveInitialBalance("svc-refund", "model", 250_000)
 	if err != nil || !serviceMode {
 		t.Fatalf("reserve serviceMode=%v err=%v", serviceMode, err)
 	}
@@ -166,7 +171,7 @@ func TestServiceReservationCompletionDebitsActualAndReleasesHold(t *testing.T) {
 	if err := st.SetModelPrice("platform", "svc-model", 1_000_000, 2_000_000); err != nil {
 		t.Fatal(err)
 	}
-	serviceMode, err := srv.reserveInitialBalance("svc-complete", "svc-model", 500_000)
+	serviceMode, _, err := srv.reserveInitialBalance("svc-complete", "svc-model", 500_000)
 	if err != nil || !serviceMode {
 		t.Fatalf("reserve serviceMode=%v err=%v", serviceMode, err)
 	}

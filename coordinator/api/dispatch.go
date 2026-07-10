@@ -85,15 +85,19 @@ type dispatchState struct {
 	s *Server
 
 	// ---- immutable inputs (set once) ----
-	w                      http.ResponseWriter
-	r                      *http.Request
-	model                  string
-	publicModel            string
-	rawBody                []byte
-	consumerKey            string
-	consumerLocation       *store.ProviderLocation
-	reservedMicroUSD       int64
-	serviceReservation     bool
+	w                    http.ResponseWriter
+	r                    *http.Request
+	model                string
+	publicModel          string
+	rawBody              []byte
+	consumerKey          string
+	consumerLocation     *store.ProviderLocation
+	reservedMicroUSD     int64
+	reservedWithdrawable int64
+	serviceReservation   bool
+	// jobSettlement is shared by every attempt (including speculative backup)
+	// so only one attempt can settle or refund the base reservation.
+	jobSettlement          *registry.JobSettlementGate
 	estimatedPromptTokens  int
 	requestedMaxTokens     int
 	tokenAdmission         registry.TokenAdmission
@@ -646,6 +650,19 @@ func (d *dispatchState) emitClientGone(phase string) {
 	d.s.emitClientGone(d.model, d.estimatedPromptTokens, providerChipFamily(d.provider), phase)
 }
 
+// bindJobSettlement attaches the logical-request settlement gate and
+// withdrawable provenance to an attempt so speculative primary/backup share
+// one financial finalization authority and exact refund semantics.
+func (d *dispatchState) bindJobSettlement(pr *registry.PendingRequest) {
+	if d == nil || pr == nil {
+		return
+	}
+	pr.JobSettlement = d.jobSettlement
+	if pr.ReservedWithdrawableMicroUSD == 0 && d.reservedWithdrawable > 0 {
+		pr.ReservedWithdrawableMicroUSD = d.reservedWithdrawable
+	}
+}
+
 // dispatchPrimary selects (and, when no idle provider exists on the first
 // attempt, queues + dispatches) the primary provider for this attempt. It is the
 // extraction of the original loop's dispatch-primary block (incl. the queue path).
@@ -677,6 +694,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			d.recordRoutingDecisionFor(provider, pr, routeRequestID, routeAttempt, decision, "", "")
 		},
 	)
+	d.bindJobSettlement(d.pr)
 	d.dispatchErr = dispatchErr
 	d.dispatchErrCode = dispatchErrCode
 	if !routeRecorded {
@@ -752,37 +770,39 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// No idle provider — try queueing.
 		d.requestID = uuid.New().String()
 		queuePR := &registry.PendingRequest{
-			RequestID:              d.requestID,
-			Attempt:                d.attempt,
-			Model:                  d.model,
-			PublicModel:            d.publicModel,
-			ConsumerKey:            d.consumerKey,
-			KeyID:                  keyIDFromContext(r.Context()),
-			KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
-			KeyLimitReset:          keyLimitResetFromContext(r.Context()),
-			ConsumerLocation:       d.consumerLocation,
-			IsResponsesAPI:         d.isResponsesAPI,
-			EstimatedPromptTokens:  d.estimatedPromptTokens,
-			RequiresVision:         d.requiresVision,
-			Traits:                 d.traits(),
-			RequestedMaxTokens:     d.requestedMaxTokens,
-			TokenAdmission:         d.tokenAdmission,
-			ReservedMicroUSD:       d.reservedMicroUSD,
-			BaseReservedMicroUSD:   d.reservedMicroUSD,
-			ServiceReservation:     d.serviceReservation,
-			AllowedProviderSerials: d.allowedProviderSerials,
-			CacheAffinityKey:       d.cacheAffinityKey,
-			SelfRouteOnly:          d.policy.enabled,
-			PreferOwner:            d.policy.prefer,
-			OwnerAccountID:         d.policy.ownerAccountID,
-			FreeSelfRoute:          d.policy.enabled,
-			MaxTTFTMs:              queueMaxTTFTMs(d.policy, d.deadline, d.s.ttftHardReject),
-			MinDecodeTPS:           d.s.minDecodeTPS,
-			AcceptedCh:             make(chan struct{}, 1),
-			ChunkCh:                make(chan string, chunkBufferSize),
-			CompleteCh:             make(chan protocol.UsageInfo, 1),
-			ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
-			Timing:                 d.timing,
+			RequestID:                    d.requestID,
+			Attempt:                      d.attempt,
+			Model:                        d.model,
+			PublicModel:                  d.publicModel,
+			ConsumerKey:                  d.consumerKey,
+			KeyID:                        keyIDFromContext(r.Context()),
+			KeyLimitMicroUSD:             keyLimitMicroFromContext(r.Context()),
+			KeyLimitReset:                keyLimitResetFromContext(r.Context()),
+			ConsumerLocation:             d.consumerLocation,
+			IsResponsesAPI:               d.isResponsesAPI,
+			EstimatedPromptTokens:        d.estimatedPromptTokens,
+			RequiresVision:               d.requiresVision,
+			Traits:                       d.traits(),
+			RequestedMaxTokens:           d.requestedMaxTokens,
+			TokenAdmission:               d.tokenAdmission,
+			ReservedMicroUSD:             d.reservedMicroUSD,
+			BaseReservedMicroUSD:         d.reservedMicroUSD,
+			ReservedWithdrawableMicroUSD: d.reservedWithdrawable,
+			ServiceReservation:           d.serviceReservation,
+			JobSettlement:                d.jobSettlement,
+			AllowedProviderSerials:       d.allowedProviderSerials,
+			CacheAffinityKey:             d.cacheAffinityKey,
+			SelfRouteOnly:                d.policy.enabled,
+			PreferOwner:                  d.policy.prefer,
+			OwnerAccountID:               d.policy.ownerAccountID,
+			FreeSelfRoute:                d.policy.enabled,
+			MaxTTFTMs:                    queueMaxTTFTMs(d.policy, d.deadline, d.s.ttftHardReject),
+			MinDecodeTPS:                 d.s.minDecodeTPS,
+			AcceptedCh:                   make(chan struct{}, 1),
+			ChunkCh:                      make(chan string, chunkBufferSize),
+			CompleteCh:                   make(chan protocol.UsageInfo, 1),
+			ErrorCh:                      make(chan protocol.InferenceErrorMessage, 1),
+			Timing:                       d.timing,
 		}
 		queuedReq := &registry.QueuedRequest{
 			RequestID:  d.requestID,
@@ -1317,6 +1337,7 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 				d.recordRoutingDecisionFor(provider, pr, "", d.attempt, decision, "", "")
 			},
 		)
+		d.bindJobSettlement(backupPR)
 	}
 
 	if backupProvider == nil {

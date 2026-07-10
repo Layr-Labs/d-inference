@@ -1,0 +1,27 @@
+[package]
+name = "darkbloom-coordinator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Axum server, FleetActor, ProviderSession, ledger, and binary entrypoint"
+
+[[bin]]
+name = "darkbloom-coordinator"
+path = "src/main.rs"
+
+[dependencies]
+darkbloom-protocol = { path = "../protocol" }
+darkbloom-core = { path = "../core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+arc-swap = { workspace = true }

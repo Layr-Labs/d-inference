@@ -146,6 +146,7 @@ func checkoutMetadata(metadata map[string]string) map[string]string {
 
 // WebhookEvent represents a parsed Stripe webhook event.
 type WebhookEvent struct {
+	ID   string          `json:"id"`
 	Type string          `json:"type"`
 	Data json.RawMessage `json:"data"`
 }

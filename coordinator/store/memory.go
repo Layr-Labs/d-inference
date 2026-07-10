@@ -58,6 +58,10 @@ type MemoryStore struct {
 	// Billing sessions
 	billingSessions map[string]*BillingSession // sessionID → session
 
+	// Stripe deposit inbox (event ID → checkout session external ID)
+	stripeExternalEvents map[string]string // eventID → externalID
+	stripeCheckoutEvents map[string]string // externalID → eventID
+
 	// Custom pricing
 	modelPrices map[string]ModelPrice // "accountID:model" → price
 
@@ -162,6 +166,8 @@ func NewMemory(scfg Config) *MemoryStore {
 		referrals:                     make(map[string]string),
 		referralCounts:                make(map[string]int),
 		billingSessions:               make(map[string]*BillingSession),
+		stripeExternalEvents:          make(map[string]string),
+		stripeCheckoutEvents:          make(map[string]string),
 		modelPrices:                   make(map[string]ModelPrice),
 		modelRegistry:                 make(map[string]*ModelRegistryEntry),
 		modelAliases:                  make(map[string]*ModelAlias),
@@ -1298,14 +1304,39 @@ func (s *MemoryStore) DebitWithdrawable(accountID string, amountMicroUSD int64, 
 // Debit subtracts micro-USD from an account. Returns ErrInsufficientBalance
 // if the account has insufficient funds.
 func (s *MemoryStore) Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	_, err := s.DebitReservation(accountID, amountMicroUSD, entryType, reference)
+	return err
+}
+
+// DebitReservation debits total balance and records withdrawable provenance.
+// Nonwithdrawable credit (balance - withdrawable) is consumed first.
+func (s *MemoryStore) DebitReservation(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.balances[accountID] < amountMicroUSD {
-		return ErrInsufficientBalance
+		return 0, ErrInsufficientBalance
+	}
+
+	bal := s.balances[accountID]
+	wdr := s.withdrawable[accountID]
+	nonWithdrawable := bal - wdr
+	if nonWithdrawable < 0 {
+		nonWithdrawable = 0
+	}
+	reservedWithdrawable := amountMicroUSD - nonWithdrawable
+	if reservedWithdrawable < 0 {
+		reservedWithdrawable = 0
+	}
+	if reservedWithdrawable > wdr {
+		reservedWithdrawable = wdr
 	}
 
 	s.balances[accountID] -= amountMicroUSD
+	s.withdrawable[accountID] -= reservedWithdrawable
+	if s.withdrawable[accountID] < 0 {
+		s.withdrawable[accountID] = 0
+	}
 	if s.withdrawable[accountID] > s.balances[accountID] {
 		s.withdrawable[accountID] = s.balances[accountID]
 	}
@@ -1319,6 +1350,24 @@ func (s *MemoryStore) Debit(accountID string, amountMicroUSD int64, entryType Le
 		Reference:      reference,
 		CreatedAt:      time.Now(),
 	})
+	return reservedWithdrawable, nil
+}
+
+// CreditReservationRelease restores exact total and withdrawable provenance.
+func (s *MemoryStore) CreditReservationRelease(accountID string, totalMicroUSD, withdrawableMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	if totalMicroUSD < 0 || withdrawableMicroUSD < 0 {
+		return fmt.Errorf("negative reservation release")
+	}
+	if withdrawableMicroUSD > totalMicroUSD {
+		return fmt.Errorf("withdrawable provenance exceeds total")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.creditLocked(accountID, totalMicroUSD, entryType, reference, time.Now())
+	s.withdrawable[accountID] += withdrawableMicroUSD
+	if s.withdrawable[accountID] > s.balances[accountID] {
+		s.withdrawable[accountID] = s.balances[accountID]
+	}
 	return nil
 }
 
@@ -1548,11 +1597,77 @@ func (s *MemoryStore) CompleteBillingSession(sessionID string) error {
 	return nil
 }
 
+// ApplyStripeDeposit credits a Stripe Checkout deposit exactly once.
+func (s *MemoryStore) ApplyStripeDeposit(eventID, externalID, accountID, billingSessionID string, amountMicroUSD int64, entryType LedgerEntryType) (bool, error) {
+	if eventID == "" {
+		return false, fmt.Errorf("stripe event id required")
+	}
+	if accountID == "" {
+		return false, fmt.Errorf("account id required")
+	}
+	if amountMicroUSD <= 0 {
+		return false, fmt.Errorf("deposit amount must be positive")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.stripeExternalEvents[eventID]; ok {
+		return false, nil
+	}
+	if externalID != "" {
+		if _, ok := s.stripeCheckoutEvents[externalID]; ok {
+			return false, nil
+		}
+		for _, session := range s.billingSessions {
+			if session.ExternalID == externalID && session.Status == "completed" {
+				return false, nil
+			}
+		}
+	}
+	if billingSessionID != "" {
+		bs, ok := s.billingSessions[billingSessionID]
+		if !ok {
+			return false, fmt.Errorf("billing session %q not found", billingSessionID)
+		}
+		if bs.Status == "completed" {
+			return false, nil
+		}
+		if bs.AccountID != accountID {
+			return false, fmt.Errorf("billing session account mismatch")
+		}
+		if bs.AmountMicroUSD != amountMicroUSD {
+			return false, fmt.Errorf("billing session amount mismatch")
+		}
+		if externalID != "" && bs.ExternalID != "" && bs.ExternalID != externalID {
+			return false, fmt.Errorf("billing session external id mismatch")
+		}
+	}
+
+	s.creditLocked(accountID, amountMicroUSD, entryType, "stripe:"+externalID, time.Now())
+	s.stripeExternalEvents[eventID] = externalID
+	if externalID != "" {
+		s.stripeCheckoutEvents[externalID] = eventID
+	}
+	if billingSessionID != "" {
+		now := time.Now()
+		bs := s.billingSessions[billingSessionID]
+		bs.Status = "completed"
+		bs.CompletedAt = &now
+		if externalID != "" {
+			bs.ExternalID = externalID
+		}
+	}
+	return true, nil
+}
+
 // IsExternalIDProcessed returns true if a completed billing session with this external ID exists.
 func (s *MemoryStore) IsExternalIDProcessed(externalID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
+	if _, ok := s.stripeCheckoutEvents[externalID]; ok {
+		return true
+	}
 	for _, session := range s.billingSessions {
 		if session.ExternalID == externalID && session.Status == "completed" {
 			return true

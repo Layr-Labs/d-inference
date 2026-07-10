@@ -165,25 +165,31 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 
 	amountMicroUSD := session.Object.AmountTotal * 10_000
 
-	if err := s.billing.CreditDeposit(consumerKey, amountMicroUSD, store.LedgerStripeDeposit,
-		"stripe:"+session.Object.ID); err != nil {
-		s.logger.Error("stripe: credit balance failed", "error", err)
+	applied, err := s.billing.Store().ApplyStripeDeposit(
+		event.ID,
+		session.Object.ID,
+		consumerKey,
+		billingSessionID,
+		amountMicroUSD,
+		store.LedgerStripeDeposit,
+	)
+	if err != nil {
+		s.logger.Error("stripe: apply deposit failed", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-
-	if billingSessionID != "" {
-		// Best-effort: the deposit is already credited above, but a failure here
-		// leaves the session marked incomplete (and replayable). Surface it.
-		if err := s.billing.Store().CompleteBillingSession(billingSessionID); err != nil {
-			s.logger.Error("stripe: failed to mark billing session complete",
-				"billing_session_id", billingSessionID, "error", err)
-			s.ddIncr("billing.session_complete_failed", nil)
-		}
+	if !applied {
+		s.logger.Info("stripe: deposit already applied",
+			"event_id", event.ID,
+			"checkout_session", session.Object.ID,
+		)
+		w.WriteHeader(http.StatusOK)
+		return
 	}
+
 	if referralCode != "" {
 		// Best-effort: a failure here means the referrer is not credited for this
-		// deposit; never silently swallow it.
+		// deposit; never silently swallow it. Deposit itself is already durable.
 		if err := s.billing.Referral().Apply(consumerKey, referralCode); err != nil {
 			s.logger.Error("stripe: failed to apply referral credit", "error", err)
 			s.ddIncr("billing.referral_apply_failed", nil)
@@ -193,6 +199,7 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("stripe: deposit credited",
 		"consumer_key", consumerKey[:min(8, len(consumerKey))]+"...",
 		"amount_micro_usd", amountMicroUSD,
+		"event_id", event.ID,
 	)
 	w.WriteHeader(http.StatusOK)
 }

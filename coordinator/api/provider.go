@@ -478,12 +478,14 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypeInferenceComplete:
 			completeMsg := msg.Payload.(*protocol.InferenceCompleteMessage)
-			// Run completion handling (billing settlement) off the read loop.
-			// Billing does synchronous DB calls (GetModelPrice, Credit, Charge)
-			// that can block for seconds under DB pressure. If the read loop is
-			// blocked, attestation challenge responses can't be read from the
-			// WebSocket, causing challenge timeouts and provider derouting.
-			saferun.Go(s.logger, "handleComplete", func() {
+			// Run completion handling (billing settlement) off the read loop on a
+			// bounded worker pool (M0.5). Billing does synchronous DB calls
+			// (GetModelPrice, Credit, Charge) that can block for seconds under DB
+			// pressure. If the read loop is blocked, attestation challenge
+			// responses can't be read from the WebSocket, causing challenge
+			// timeouts and provider derouting. The pool prevents unbounded
+			// goroutine growth under completion storms while never dropping work.
+			s.submitCompletion("handleComplete", func() {
 				s.handleComplete(providerID, provider, completeMsg)
 			})
 
@@ -1820,9 +1822,21 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			providerPayout = payments.ProviderPayoutWithPercent(totalCost, feePercent)
 		} else if totalCost < pr.ReservedMicroUSD {
 			refund := pr.ReservedMicroUSD - totalCost
+			nonWithdrawableReserved := pr.ReservedMicroUSD - pr.ReservedWithdrawableMicroUSD
+			if nonWithdrawableReserved < 0 {
+				nonWithdrawableReserved = 0
+			}
+			consumedWithdrawable := totalCost - nonWithdrawableReserved
+			if consumedWithdrawable < 0 {
+				consumedWithdrawable = 0
+			}
+			if consumedWithdrawable > pr.ReservedWithdrawableMicroUSD {
+				consumedWithdrawable = pr.ReservedWithdrawableMicroUSD
+			}
+			refundWithdrawable := pr.ReservedWithdrawableMicroUSD - consumedWithdrawable
 			start := time.Now()
 			// Financial: a failed refund over-charges the consumer. Never swallow it.
-			if err := s.store.Credit(pr.ConsumerKey, refund, store.LedgerRefund, msg.RequestID); err != nil {
+			if err := s.store.CreditReservationRelease(pr.ConsumerKey, refund, refundWithdrawable, store.LedgerRefund, msg.RequestID); err != nil {
 				s.logger.Error("failed to credit settlement refund to consumer",
 					"request_id", msg.RequestID, "refund_micro_usd", refund, "error", err)
 				s.ddIncr("billing.credit_failed", []string{"op:settlement_refund"})

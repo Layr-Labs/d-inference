@@ -191,6 +191,16 @@ type LedgerStore interface {
 	// Debit subtracts micro-USD from an account. Returns error if insufficient funds.
 	Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
 
+	// DebitReservation debits total balance by amountMicroUSD and records how
+	// much of that debit came from the withdrawable subset (nonwithdrawable
+	// credit is consumed first). Callers must pass the returned
+	// reservedWithdrawable to CreditReservationRelease on refund/settle.
+	DebitReservation(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) (reservedWithdrawable int64, err error)
+
+	// CreditReservationRelease restores a prior DebitReservation exactly:
+	// total balance += totalMicroUSD and withdrawable += withdrawableMicroUSD.
+	CreditReservationRelease(accountID string, totalMicroUSD, withdrawableMicroUSD int64, entryType LedgerEntryType, reference string) error
+
 	// GetWithdrawableBalance returns the withdrawable balance in micro-USD.
 	GetWithdrawableBalance(accountID string) int64
 
@@ -263,6 +273,13 @@ type BillingStore interface {
 
 	// CompleteBillingSession marks a session as completed and sets the completion time.
 	CompleteBillingSession(sessionID string) error
+
+	// ApplyStripeDeposit credits a Stripe Checkout deposit exactly once.
+	// Idempotency keys are both the Stripe event ID and the Checkout Session ID
+	// (externalID). Concurrent deliveries and crash-after-credit replays return
+	// applied=false without double-crediting. When billingSessionID is non-empty
+	// the matching billing session is marked completed in the same transaction.
+	ApplyStripeDeposit(eventID, externalID, accountID, billingSessionID string, amountMicroUSD int64, entryType LedgerEntryType) (applied bool, err error)
 
 	// IsExternalIDProcessed returns true if a billing session with this external ID
 	// has already been completed. Used to prevent double-crediting the same on-chain tx.

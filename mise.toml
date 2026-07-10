@@ -2,6 +2,9 @@
 # Coordinator (Go control plane). Source of truth: go.mod `go 1.25.0`.
 go = "1.25.0"
 
+# Rust coordinator (coordinator-rs/).
+rust = "1.85.0"
+
 # Console UI (Next.js 16 / React 19). Matches `node-version: '22'` in
 # .github/workflows/ci.yml.
 node = "22"

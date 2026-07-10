@@ -39,6 +39,20 @@ func (m *serviceReservationManager) Reserve(accountID string, amount int64) erro
 	return nil
 }
 
+// OutstandingTotal returns the sum of all in-memory service holds.
+func (m *serviceReservationManager) OutstandingTotal() int64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var total int64
+	for _, v := range m.outstanding {
+		total += v
+	}
+	return total
+}
+
 func (m *serviceReservationManager) Release(accountID string, amount int64) {
 	if m == nil || !m.enabled || amount <= 0 {
 		return
@@ -64,29 +78,30 @@ func (s *Server) useServiceReservation(accountID string) bool {
 	return s.serviceReservations != nil && s.serviceReservations.Enabled() && s.isServiceConsumer(accountID)
 }
 
-func (s *Server) reserveInitialBalance(accountID, model string, amount int64) (bool, error) {
-	serviceMode := s.useServiceReservation(accountID)
+func (s *Server) reserveInitialBalance(accountID, model string, amount int64) (serviceMode bool, reservedWithdrawable int64, err error) {
+	serviceMode = s.useServiceReservation(accountID)
 	start := time.Now()
 	if serviceMode {
 		if err := s.serviceReservations.Reserve(accountID, amount); err != nil {
 			s.ddIncr("billing.reservations", []string{"model:" + model, "mode:service_hold", "outcome:rejected"})
-			return true, err
+			return true, 0, err
 		}
 		s.ddIncr("billing.reservations", []string{"model:" + model, "mode:service_hold", "outcome:reserved"})
 		s.ddHistogram("billing.reserved_micro_usd", float64(amount), []string{"model:" + model, "mode:service_hold"})
-		return true, nil
+		return true, 0, nil
 	}
-	if err := s.ledger.Charge(accountID, amount, "reserve:"+accountID); err != nil {
+	reservedWithdrawable, err = s.ledger.ChargeReservation(accountID, amount, "reserve:"+accountID)
+	if err != nil {
 		s.ddIncr("billing.reservations", []string{"model:" + model, "mode:ledger", "outcome:rejected"})
-		return false, err
+		return false, 0, err
 	}
 	s.ddIncr("billing.reservations", []string{"model:" + model, "mode:ledger", "outcome:reserved"})
 	s.ddHistogram("billing.reserved_micro_usd", float64(amount), []string{"model:" + model, "mode:ledger"})
 	s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reserve"})
-	return false, nil
+	return false, reservedWithdrawable, nil
 }
 
-func (s *Server) releaseInitialReservation(accountID, model string, amount int64, serviceMode bool) {
+func (s *Server) releaseInitialReservation(accountID, model string, amount, reservedWithdrawable int64, serviceMode bool) {
 	if amount <= 0 {
 		return
 	}
@@ -97,7 +112,7 @@ func (s *Server) releaseInitialReservation(accountID, model string, amount int64
 		return
 	}
 	start := time.Now()
-	_ = s.store.Credit(accountID, amount, store.LedgerRefund, "reservation_refund")
+	_ = s.store.CreditReservationRelease(accountID, amount, reservedWithdrawable, store.LedgerRefund, "reservation_refund")
 	s.ddIncr("billing.reservation_refunds", tags)
 	s.ddIncr("billing.reservation_releases", append(tags, "reason:early"))
 	s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})

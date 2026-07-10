@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/protocol",
+    "crates/core",
+    "crates/server",
+]
+default-members = [
+    "crates/protocol",
+    "crates/core",
+    "crates/server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+bytes = "1"
+zeroize = { version = "1", features = ["derive"] }
+crypto_box = "0.9"
+rand = "0.8"
+tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+axum = { version = "0.8.1", features = ["ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "limit"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "=1.11.0", features = ["v4", "serde"] }
+arc-swap = "1"

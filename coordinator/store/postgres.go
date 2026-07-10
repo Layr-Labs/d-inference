@@ -679,15 +679,23 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// Withdrawable balance — tracks the withdrawable subset of balance_micro_usd.
 		`ALTER TABLE balances ADD COLUMN IF NOT EXISTS withdrawable_micro_usd BIGINT NOT NULL DEFAULT 0`,
 
-		// Backfill withdrawable from ledger history: sum earnings minus
-		// successful withdrawals. Idempotent — only updates rows where
-		// withdrawable is still 0 (first deploy) so it won't overwrite
-		// live values on restart.
-		`UPDATE balances b SET withdrawable_micro_usd = GREATEST(0, COALESCE((
-			SELECT SUM(amount_micro_usd) FROM ledger_entries
-			WHERE account_id = b.account_id
-			  AND entry_type IN ('payout', 'referral_reward', 'admin_reward', 'stripe_payout')
-		), 0)) WHERE b.withdrawable_micro_usd = 0`,
+		// Stripe webhook inbox — exact-once deposit application keyed by event ID.
+		`CREATE TABLE IF NOT EXISTS stripe_external_events (
+			event_id TEXT PRIMARY KEY,
+			external_id TEXT NOT NULL DEFAULT '',
+			account_id TEXT NOT NULL DEFAULT '',
+			amount_micro_usd BIGINT NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_stripe_external_events_checkout
+			ON stripe_external_events(external_id) WHERE external_id <> ''`,
+
+		// One-shot schema markers — gate destructive/idempotent-but-dangerous
+		// startup backfills so they never re-run on every boot.
+		`CREATE TABLE IF NOT EXISTS schema_one_shots (
+			name TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 
 		// Materialized usage totals — eliminates full-table scan of usage
 		// on every stats cache miss.  Single counter row incremented
@@ -2674,37 +2682,105 @@ func (s *PostgresStore) CreditWithdrawableOnce(accountID string, amountMicroUSD 
 
 // Debit subtracts micro-USD from an account. Returns error if insufficient funds.
 func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	_, err := s.DebitReservation(accountID, amountMicroUSD, entryType, reference)
+	return err
+}
+
+// DebitReservation debits total balance and records withdrawable provenance.
+// Nonwithdrawable credit (balance - withdrawable) is consumed first.
+func (s *PostgresStore) DebitReservation(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) (int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Single-statement CTE: debit balance, cap withdrawable, insert ledger
-	// entry -- all in one round trip. The old implementation used 5 sequential
-	// round trips (BEGIN + 2 UPDATEs + INSERT + COMMIT) which paid full
-	// network latency to Postgres on each hop (~200ms × 5 = 1s+).
-	var balanceAfter int64
-	err := s.pool.QueryRow(ctx, `
-		WITH debit AS (
-			UPDATE balances
-			SET balance_micro_usd = balance_micro_usd - $2,
-			    withdrawable_micro_usd = LEAST(withdrawable_micro_usd, balance_micro_usd - $2),
-			    updated_at = NOW()
-			WHERE account_id = $1 AND balance_micro_usd >= $2
-			RETURNING balance_micro_usd
-		), ledger AS (
-			INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
-			SELECT $1, $3, -$2, balance_micro_usd, $4
-			FROM debit
-		)
-		SELECT balance_micro_usd FROM debit`,
-		accountID, amountMicroUSD, string(entryType), reference,
-	).Scan(&balanceAfter)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("debit reservation begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var bal, wdr int64
+	err = tx.QueryRow(ctx,
+		`SELECT balance_micro_usd, withdrawable_micro_usd FROM balances WHERE account_id = $1 FOR UPDATE`,
+		accountID,
+	).Scan(&bal, &wdr)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrInsufficientBalance
+			return 0, ErrInsufficientBalance
 		}
-		return fmt.Errorf("debit: %w", err)
+		return 0, fmt.Errorf("debit reservation lock: %w", err)
 	}
-	return nil
+	if bal < amountMicroUSD {
+		return 0, ErrInsufficientBalance
+	}
+
+	nonWithdrawable := bal - wdr
+	if nonWithdrawable < 0 {
+		nonWithdrawable = 0
+	}
+	reservedWithdrawable := amountMicroUSD - nonWithdrawable
+	if reservedWithdrawable < 0 {
+		reservedWithdrawable = 0
+	}
+	if reservedWithdrawable > wdr {
+		reservedWithdrawable = wdr
+	}
+
+	var balanceAfter int64
+	err = tx.QueryRow(ctx, `
+		UPDATE balances
+		SET balance_micro_usd = balance_micro_usd - $2,
+		    withdrawable_micro_usd = withdrawable_micro_usd - $3,
+		    updated_at = NOW()
+		WHERE account_id = $1
+		RETURNING balance_micro_usd`,
+		accountID, amountMicroUSD, reservedWithdrawable,
+	).Scan(&balanceAfter)
+	if err != nil {
+		return 0, fmt.Errorf("debit reservation update: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
+		VALUES ($1, $2, $3, $4, $5)`,
+		accountID, string(entryType), -amountMicroUSD, balanceAfter, reference,
+	); err != nil {
+		return 0, fmt.Errorf("debit reservation ledger: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("debit reservation commit: %w", err)
+	}
+	return reservedWithdrawable, nil
+}
+
+// CreditReservationRelease restores exact total and withdrawable provenance.
+func (s *PostgresStore) CreditReservationRelease(accountID string, totalMicroUSD, withdrawableMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	if totalMicroUSD < 0 || withdrawableMicroUSD < 0 {
+		return fmt.Errorf("negative reservation release")
+	}
+	if withdrawableMicroUSD > totalMicroUSD {
+		return fmt.Errorf("withdrawable provenance exceeds total")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err := creditTx(ctx, tx, accountID, totalMicroUSD, entryType, reference, time.Time{}); err != nil {
+		return err
+	}
+	if withdrawableMicroUSD > 0 {
+		if _, err := tx.Exec(ctx, `
+			UPDATE balances
+			SET withdrawable_micro_usd = LEAST(balance_micro_usd, withdrawable_micro_usd + $2),
+			    updated_at = NOW()
+			WHERE account_id = $1`, accountID, withdrawableMicroUSD); err != nil {
+			return fmt.Errorf("store: restore withdrawable: %w", err)
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // MigrateAccountBalance moves the full balance (and withdrawable subset) from
@@ -3037,14 +3113,118 @@ func (s *PostgresStore) CompleteBillingSession(sessionID string) error {
 	return nil
 }
 
+// ApplyStripeDeposit credits a Stripe Checkout deposit exactly once, keyed by
+// both Stripe event ID and Checkout Session ID.
+func (s *PostgresStore) ApplyStripeDeposit(eventID, externalID, accountID, billingSessionID string, amountMicroUSD int64, entryType LedgerEntryType) (bool, error) {
+	if eventID == "" {
+		return false, fmt.Errorf("stripe event id required")
+	}
+	if accountID == "" {
+		return false, fmt.Errorf("account id required")
+	}
+	if amountMicroUSD <= 0 {
+		return false, fmt.Errorf("deposit amount must be positive")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("store: begin stripe deposit tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO stripe_external_events (event_id, external_id, account_id, amount_micro_usd)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (event_id) DO NOTHING`,
+		eventID, externalID, accountID, amountMicroUSD,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: insert stripe event: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	if externalID != "" {
+		var exists bool
+		err = tx.QueryRow(ctx, `
+			SELECT EXISTS(
+				SELECT 1 FROM stripe_external_events
+				WHERE external_id = $1 AND event_id <> $2
+			) OR EXISTS(
+				SELECT 1 FROM billing_sessions
+				WHERE external_id = $1 AND status = 'completed'
+			)`, externalID, eventID,
+		).Scan(&exists)
+		if err != nil {
+			return false, fmt.Errorf("store: check stripe checkout idempotency: %w", err)
+		}
+		if exists {
+			return false, nil
+		}
+	}
+
+	if billingSessionID != "" {
+		var status, sessAccount, sessExternal string
+		var sessAmount int64
+		err = tx.QueryRow(ctx, `
+			SELECT status, account_id, amount_micro_usd, external_id
+			FROM billing_sessions WHERE id = $1 FOR UPDATE`, billingSessionID,
+		).Scan(&status, &sessAccount, &sessAmount, &sessExternal)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return false, fmt.Errorf("billing session %q not found", billingSessionID)
+			}
+			return false, fmt.Errorf("store: lock billing session: %w", err)
+		}
+		if status == "completed" {
+			return false, nil
+		}
+		if sessAccount != accountID {
+			return false, fmt.Errorf("billing session account mismatch")
+		}
+		if sessAmount != amountMicroUSD {
+			return false, fmt.Errorf("billing session amount mismatch")
+		}
+		if externalID != "" && sessExternal != "" && sessExternal != externalID {
+			return false, fmt.Errorf("billing session external id mismatch")
+		}
+	}
+
+	if err := creditTx(ctx, tx, accountID, amountMicroUSD, entryType, "stripe:"+externalID, time.Time{}); err != nil {
+		return false, err
+	}
+
+	if billingSessionID != "" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE billing_sessions
+			SET status = 'completed', completed_at = NOW(),
+			    external_id = CASE WHEN $2 <> '' THEN $2 ELSE external_id END
+			WHERE id = $1 AND status = 'pending'`, billingSessionID, externalID); err != nil {
+			return false, fmt.Errorf("store: complete billing session: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("store: commit stripe deposit: %w", err)
+	}
+	return true, nil
+}
+
 // IsExternalIDProcessed returns true if a completed billing session with this external ID exists.
 func (s *PostgresStore) IsExternalIDProcessed(externalID string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var count int
-	_ = s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM billing_sessions WHERE external_id = $1 AND status = 'completed'`,
+	_ = s.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT 1 FROM billing_sessions WHERE external_id = $1 AND status = 'completed'
+			UNION ALL
+			SELECT 1 FROM stripe_external_events WHERE external_id = $1
+		) t`,
 		externalID,
 	).Scan(&count)
 	return count > 0

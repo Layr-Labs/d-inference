@@ -6,8 +6,9 @@ target/
 
 .next/
 
-# Rust
+# Rust — ignore nested scratch crates, but commit the coordinator-rs lockfile.
 Cargo.lock
+!coordinator-rs/Cargo.lock
 
 # Go
 coordinator/bin/
@@ -91,3 +92,4 @@ docs/RUNBOOK.md
 
 # also match a .build symlink (not just the dir)
 .build
+.worktrees/

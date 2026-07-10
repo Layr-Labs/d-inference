@@ -186,7 +186,17 @@ type PendingRequest struct {
 	BaseReservedMicroUSD int64
 	// ServiceReservation marks a trusted service account request whose pre-router
 	// admission used an in-memory hold instead of a synchronous ledger debit.
-	ServiceReservation    bool
+	ServiceReservation bool
+	// ReservedWithdrawableMicroUSD is how much of ReservedMicroUSD was taken
+	// from the withdrawable subset at reservation time (nonwithdrawable credit
+	// is consumed first). Release/settle must restore this provenance exactly.
+	ReservedWithdrawableMicroUSD int64
+	// JobSettlement is shared by every attempt of one logical consumer request
+	// (primary + speculative backup). When set, FinalizeReservation uses this
+	// gate so two attempt IDs cannot both settle the shared base reservation.
+	// Nil means legacy per-attempt finalization (tests / single-attempt paths).
+	JobSettlement *JobSettlementGate
+
 	reservationMu         sync.Mutex
 	reservationFinalized  bool
 	routeOutcomeMu        sync.Mutex
@@ -350,10 +360,59 @@ func (a TokenAdmission) TracksOutput() bool {
 	return a.AccountOutputLimited || a.KeyOutputLimited
 }
 
+// JobSettlementGate is the single financial finalization authority for one
+// logical request. Speculative primary/backup attempts share one gate so only
+// one attempt can settle or refund the shared base reservation.
+type JobSettlementGate struct {
+	mu        sync.Mutex
+	finalized bool
+}
+
+// NewJobSettlementGate returns an unlocked settlement gate for a logical job.
+func NewJobSettlementGate() *JobSettlementGate {
+	return &JobSettlementGate{}
+}
+
+// Finalize runs settle once. A second caller gets (false, nil) without running
+// settle. If settle returns an error the gate stays open for retry.
+func (g *JobSettlementGate) Finalize(settle func() error) (bool, error) {
+	if g == nil {
+		if settle != nil {
+			if err := settle(); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.finalized {
+		return false, nil
+	}
+	if settle != nil {
+		if err := settle(); err != nil {
+			return false, err
+		}
+	}
+	g.finalized = true
+	return true, nil
+}
+
+// IsFinalized reports whether the logical job reservation was already settled
+// or refunded.
+func (g *JobSettlementGate) IsFinalized() bool {
+	if g == nil {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.finalized
+}
+
 // MarkReservationFinalized returns true only for the first settlement or refund
 // of a pre-flight balance reservation. It prevents a terminal provider error
 // racing with a late completion from crediting or refunding the same reservation
-// twice.
+// twice. When JobSettlement is set, the gate is shared across speculative attempts.
 func (pr *PendingRequest) MarkReservationFinalized() bool {
 	ok, _ := pr.FinalizeReservation(nil)
 	return ok
@@ -363,6 +422,9 @@ func (pr *PendingRequest) MarkReservationFinalized() bool {
 // settled or refunded (so a late terminal must not re-settle or be counted
 // as a fresh client cancellation).
 func (pr *PendingRequest) IsReservationFinalized() bool {
+	if pr.JobSettlement != nil {
+		return pr.JobSettlement.IsFinalized()
+	}
 	pr.reservationMu.Lock()
 	defer pr.reservationMu.Unlock()
 	return pr.reservationFinalized
@@ -371,7 +433,11 @@ func (pr *PendingRequest) IsReservationFinalized() bool {
 // FinalizeReservation runs settle while holding the reservation finalization
 // lock and marks the reservation finalized only if settle succeeds. It returns
 // false when another terminal path already finalized the reservation.
+// Speculative primary/backup attempts that share JobSettlement cannot both win.
 func (pr *PendingRequest) FinalizeReservation(settle func() error) (bool, error) {
+	if pr.JobSettlement != nil {
+		return pr.JobSettlement.Finalize(settle)
+	}
 	pr.reservationMu.Lock()
 	defer pr.reservationMu.Unlock()
 	if pr.reservationFinalized {
@@ -4436,6 +4502,20 @@ type FleetSnapshot struct {
 	Connected  int
 	Idle       int
 	QueueDepth int
+}
+
+// PendingAttemptCount returns the total number of in-flight provider attempts
+// across all connected providers. Used by the quiescence endpoint.
+func (r *Registry) PendingAttemptCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	total := 0
+	for _, p := range r.providers {
+		p.mu.Lock()
+		total += len(p.pendingReqs)
+		p.mu.Unlock()
+	}
+	return total
 }
 
 // Snapshot returns aggregate counts for /metrics gauges. Cheap enough

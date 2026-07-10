@@ -1,0 +1,18 @@
+[package]
+name = "darkbloom-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Provider/coordinator wire protocol types and crypto compatibility"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }
+zeroize = { workspace = true }
+crypto_box = { workspace = true }
+rand = { workspace = true }
+base64 = "0.22"
+

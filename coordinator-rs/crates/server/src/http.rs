@@ -75,6 +75,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/quiescence", get(quiescence))
         .route("/v1/admin/deposits", post(admin_deposit))
         .route("/v1/admin/force-settle", post(admin_force_settle))
+        .route(
+            "/v1/admin/recover-undispatched",
+            post(admin_recover_undispatched),
+        )
         .route("/v1/admin/terminal-ingest", post(admin_terminal_ingest))
         .fallback(unsupported)
         .with_state(Arc::new(state))
@@ -538,6 +542,111 @@ async fn admin_force_settle(
             "terminal_digest": digest,
             "balance_micro_usd": bal,
             "held_start_authorized": held,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminRecoverUndispatchedRequest {
+    job_id: String,
+    #[serde(default)]
+    account: Option<String>,
+}
+
+/// Release a reserved-but-not-start_authorized job (DECISIONS #16 recovery path).
+/// Refuses start_authorized jobs — those require force-settle.
+async fn admin_recover_undispatched(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AdminRecoverUndispatchedRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = state.ownership.assert_holding() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": {
+                    "message": format!("{err}"),
+                    "type": "server_error",
+                    "code": "ownership_lost"
+                }
+            })),
+        )
+            .into_response();
+    }
+    if let Err(status) = authorize_pilot(&state, &headers) {
+        return (
+            status,
+            Json(json!({
+                "error": {
+                    "message": "invalid pilot api key",
+                    "type": "invalid_request_error",
+                    "code": "invalid_api_key"
+                }
+            })),
+        )
+            .into_response();
+    }
+    if req.job_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": "job_id required",
+                    "type": "invalid_request_error",
+                    "code": "invalid_job_id"
+                }
+            })),
+        )
+            .into_response();
+    }
+    let account = req
+        .account
+        .unwrap_or_else(|| state.pilot_account.clone());
+
+    let action = {
+        let mut led = state.ledger.lock().await;
+        if led.job_funded_start(&req.job_id) {
+            "skipped"
+        } else if led.job_reserved_total(&req.job_id).is_none() {
+            "already_terminal"
+        } else {
+            match led.release(
+                crate::ledger::OperationKey(format!("recovery_release:{}", req.job_id)),
+                &req.job_id,
+                &account,
+            ) {
+                Ok(true) => "released",
+                Ok(false) => "already_terminal",
+                Err(err) => {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(json!({
+                            "error": {
+                                "message": format!("{err}"),
+                                "type": "invalid_request_error",
+                                "code": "recover_undispatched_failed"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    };
+
+    let (bal, active) = {
+        let led = state.ledger.lock().await;
+        (led.balance(&account).0, led.active_job_count())
+    };
+    (
+        StatusCode::OK,
+        Json(json!({
+            "action": action,
+            "job_id": req.job_id,
+            "account": account,
+            "balance_micro_usd": bal,
+            "active_jobs": active,
         })),
     )
         .into_response()

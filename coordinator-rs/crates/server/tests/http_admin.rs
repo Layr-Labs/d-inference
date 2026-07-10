@@ -1299,3 +1299,152 @@ async fn admin_force_settle_idempotent_replay() {
     assert_eq!(res2.status(), StatusCode::OK);
     assert_eq!(body_json(res2).await["action"], "already_terminal");
 }
+
+#[tokio::test]
+async fn admin_recover_undispatched_releases_reserved() {
+    let state = test_state(true);
+    {
+        let mut led = state.ledger.lock().await;
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-undisp".into()),
+            "undisp-1",
+            "pilot-account",
+            150_000,
+        )
+        .unwrap();
+    }
+    let app = router(state);
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/recover-undispatched")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "job_id": "undisp-1" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["action"], "released");
+    assert_eq!(v["active_jobs"], 0);
+    assert_eq!(v["balance_micro_usd"], 1_000_000);
+
+    let q = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/quiescence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(q.status(), StatusCode::OK);
+    assert_eq!(body_json(q).await["ready"], true);
+}
+
+#[tokio::test]
+async fn admin_recover_undispatched_skips_start_authorized() {
+    let state = test_state(true);
+    {
+        let mut led = state.ledger.lock().await;
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-auth".into()),
+            "auth-1",
+            "pilot-account",
+            100_000,
+        )
+        .unwrap();
+        led.mark_start_authorized("auth-1", "pilot-account").unwrap();
+    }
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/recover-undispatched")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "job_id": "auth-1" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["action"], "skipped");
+    assert_eq!(v["active_jobs"], 1);
+}
+
+#[tokio::test]
+async fn admin_recover_undispatched_without_ownership_returns_503() {
+    let app = router(test_state(false));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/recover-undispatched")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "job_id": "j" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body_json(res).await["error"]["code"], "ownership_lost");
+}
+
+#[tokio::test]
+async fn admin_force_settle_then_recover_already_terminal() {
+    let state = test_state(true);
+    {
+        let mut led = state.ledger.lock().await;
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-combo".into()),
+            "combo-1",
+            "pilot-account",
+            100_000,
+        )
+        .unwrap();
+        led.mark_start_authorized("combo-1", "pilot-account").unwrap();
+    }
+    let app = router(state);
+    let fs = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/force-settle")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "combo-1",
+                        "actual_micro_usd": 25_000,
+                        "terminal_digest": "combo-d"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(body_json(fs).await["action"], "released");
+
+    let rec = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/recover-undispatched")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "job_id": "combo-1" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rec.status(), StatusCode::OK);
+    assert_eq!(body_json(rec).await["action"], "already_terminal");
+}

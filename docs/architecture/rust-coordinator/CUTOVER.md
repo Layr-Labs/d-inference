@@ -161,3 +161,8 @@ gated on mark so money and the side effect commit in one transaction.
 (ownership + pilot key). Idempotent replay returns `already_terminal`. Critical
 outbox enqueue keeps quiescence blocked until drain.
 
+### Admin recover-undispatched HTTP (DECISIONS #40)
+
+`POST /v1/admin/recover-undispatched` releases reserved-not-started jobs.
+start_authorized jobs are skipped — use force-settle instead.
+

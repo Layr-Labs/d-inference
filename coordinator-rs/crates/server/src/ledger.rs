@@ -122,6 +122,51 @@ impl MemoryLedger {
         Ok(())
     }
 
+    /// Durable deposit credit with financial_operations param bind (DECISIONS #145).
+    /// Op key = `deposit:{source}:{event_id}` — mirrors deposit_sql.
+    /// Returns `true` if credited, `false` on identical op-key replay.
+    pub fn credit_deposit(
+        &mut self,
+        source: &str,
+        event_id: &str,
+        account: &str,
+        total: i64,
+        withdrawable: i64,
+        payload_digest: &str,
+    ) -> Result<bool, LedgerError> {
+        if total <= 0 || withdrawable < 0 {
+            return Err(LedgerError::InvalidAmount);
+        }
+        if withdrawable > total {
+            return Err(LedgerError::Conflict(
+                "withdrawable exceeds total credit".into(),
+            ));
+        }
+        if source.is_empty() || event_id.is_empty() {
+            return Err(LedgerError::Conflict(
+                "deposit source and event_id required".into(),
+            ));
+        }
+        let key = format!("deposit:{source}:{event_id}");
+        let record = OperationRecord {
+            op_type: "deposit",
+            job_id: String::new(),
+            account: account.to_string(),
+            amount: total,
+            digest: Some(payload_digest.to_string()),
+            billable_cap: Some(withdrawable),
+        };
+        match self.claim_op(&key, record)? {
+            OpClaim::Replay => return Ok(false),
+            OpClaim::Fresh => {}
+        }
+        if let Err(err) = self.credit(account, total, withdrawable) {
+            self.unclaim_op(&key);
+            return Err(err);
+        }
+        Ok(true)
+    }
+
     pub fn reserve(
         &mut self,
         op: OperationKey,

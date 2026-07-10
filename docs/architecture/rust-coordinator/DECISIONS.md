@@ -151,6 +151,7 @@ Date: 2026-07-10
 | 142 | Resize + deposit SQL param bind | resize_and_authorize + deposit_sql bind account/amount(/digest/wdr) and surface `param_conflict` |
 | 143 | Recover under money_fx | Single-job `recover-undispatched` holds `money_fx` across release + disposition/outbox |
 | 144 | Release op amount bind | MemoryLedger `release` stores reserved amount in OperationRecord (SQL `j.reserved` parity) |
+| 145 | Deposit claim_op | MemoryLedger `credit_deposit` claims `deposit:{source}:{event_id}` with account/amount/wdr/digest bind; `apply_stripe_deposit` uses it |
 
 ## Deleted Go mechanisms (do not port)
 

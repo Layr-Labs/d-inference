@@ -846,3 +846,10 @@ the release and disposition/outbox enqueue (parity with batch/clear paths).
 `OperationRecord` so mismatched op-key reuse conflicts — matching
 `release_sql`'s `amount_micro_usd = j.reserved` check.
 
+### Deposit claim_op (DECISIONS #145)
+
+`MemoryLedger::credit_deposit` claims `deposit:{source}:{event_id}` with
+account/amount/withdrawable/digest bound on the OperationRecord (SQL
+`deposit_sql` parity). `apply_stripe_deposit` credits via this path so
+bypassing the inbox cannot silently double-credit the same deposit key.
+

@@ -47,11 +47,10 @@ pub fn apply_stripe_deposit(
     if !inbox.observe(source, event_id, &digest)? {
         return Ok(false);
     }
-    match ledger.credit(account, total, withdrawable) {
-        Ok(()) => Ok(true),
+    match ledger.credit_deposit(source, event_id, account, total, withdrawable, &digest) {
+        Ok(applied) => Ok(applied),
         Err(err) => {
-            // Should be unreachable after pre-validation; compensate observe
-            // so the event id is not permanently poisoned.
+            // Compensate observe so the event id is not permanently poisoned.
             let _ = inbox.forget(source, event_id);
             Err(DepositError::Ledger(err))
         }
@@ -174,6 +173,29 @@ mod tests {
         )
         .unwrap());
         assert_eq!(led.balance("a"), (1_000_000, 1_000_000));
+    }
+
+    #[test]
+    fn credit_deposit_op_key_binds_params_without_inbox() {
+        // DECISIONS #145: MemoryLedger deposit claim_op mirrors deposit_sql.
+        let mut led = MemoryLedger::default();
+        let digest = deposit_payload_digest("a", 100_000, 40_000);
+        assert!(led
+            .credit_deposit("stripe", "evt_bind", "a", 100_000, 40_000, &digest)
+            .unwrap());
+        assert_eq!(led.balance("a"), (100_000, 40_000));
+        // Identical replay is no-op.
+        assert!(!led
+            .credit_deposit("stripe", "evt_bind", "a", 100_000, 40_000, &digest)
+            .unwrap());
+        assert_eq!(led.balance("a"), (100_000, 40_000));
+        // Mismatched params on same op key → Conflict (no double credit).
+        let bad = deposit_payload_digest("a", 100_000, 50_000);
+        assert!(matches!(
+            led.credit_deposit("stripe", "evt_bind", "a", 100_000, 50_000, &bad),
+            Err(LedgerError::Conflict(_))
+        ));
+        assert_eq!(led.balance("a"), (100_000, 40_000));
     }
 
     #[test]

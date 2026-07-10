@@ -1532,16 +1532,20 @@ async fn admin_held_review_batch(
             }));
         }
     }
-    let (bal, held, active) = {
+    let (bal, held, active, accounts, needs_adopt) = {
         let led = state.ledger.lock().await;
         let report = account_filter
             .as_ref()
             .map(|s| s.as_str())
             .unwrap_or(state.pilot_account.as_str());
+        let epoch = state.ownership.epoch().0;
+        let (na, _, _) = led.orphan_summary_counts(epoch);
         (
             led.balance(report).0,
             led.held_start_authorized_count(),
             led.active_job_count(),
+            accounts_needing_cutover_from(&led, epoch),
+            na,
         )
     };
     (
@@ -1556,6 +1560,8 @@ async fn admin_held_review_batch(
             "balance_micro_usd": bal,
             "held_start_authorized": held,
             "active_jobs": active,
+            "accounts_needing_cutover": accounts,
+            "needs_adopt_count": needs_adopt,
         })),
     )
         .into_response()
@@ -2084,10 +2090,18 @@ async fn admin_outbox_drain(
     let mut kinds = Vec::new();
     loop {
         if require_holding(&state).is_err() {
-            let (pending, retryable, active) = {
+            let (pending, retryable, active, accounts, needs_adopt) = {
                 let box_ = state.outbox.lock().await;
                 let led = state.ledger.lock().await;
-                (box_.len(), box_.pending_under_retry_cap(), led.active_job_count())
+                let epoch = state.ownership.epoch().0;
+                let (na, _, _) = led.orphan_summary_counts(epoch);
+                (
+                    box_.len(),
+                    box_.pending_under_retry_cap(),
+                    led.active_job_count(),
+                    accounts_needing_cutover_from(&led, epoch),
+                    na,
+                )
             };
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -2103,6 +2117,8 @@ async fn admin_outbox_drain(
                     "outbox_pending": pending,
                     "outbox_retryable": retryable,
                     "active_jobs": active,
+                    "accounts_needing_cutover": accounts,
+                    "needs_adopt_count": needs_adopt,
                     "ready": false,
                 })),
             )
@@ -2120,12 +2136,20 @@ async fn admin_outbox_drain(
             None => break,
         }
     }
-    let (pending, retryable, active) = {
+    let (pending, retryable, active, accounts, needs_adopt) = {
         let box_ = state.outbox.lock().await;
         let led = state.ledger.lock().await;
-        (box_.len(), box_.pending_under_retry_cap(), led.active_job_count())
+        let epoch = state.ownership.epoch().0;
+        let (na, _, _) = led.orphan_summary_counts(epoch);
+        (
+            box_.len(),
+            box_.pending_under_retry_cap(),
+            led.active_job_count(),
+            accounts_needing_cutover_from(&led, epoch),
+            na,
+        )
     };
-    let ready = active == 0 && retryable == 0;
+    let ready = active == 0 && retryable == 0 && accounts.is_empty();
     (
         StatusCode::OK,
         Json(json!({
@@ -2135,6 +2159,8 @@ async fn admin_outbox_drain(
             "outbox_pending": pending,
             "outbox_retryable": retryable,
             "active_jobs": active,
+            "accounts_needing_cutover": accounts,
+            "needs_adopt_count": needs_adopt,
             "ready": ready,
         })),
     )
@@ -2201,14 +2227,11 @@ async fn admin_cutover_drain(
         }
     };
     let drain_json: Value = serde_json::from_slice(&drain_bytes).unwrap_or(json!({}));
-    let remaining_accounts = {
+    let (remaining_accounts, needs_adopt) = {
         let led = state.ledger.lock().await;
-        let epoch = if state.ownership.holding() {
-            state.ownership.epoch().0
-        } else {
-            0
-        };
-        accounts_needing_cutover_from(&led, epoch)
+        let epoch = state.ownership.epoch().0;
+        let (na, _, _) = led.orphan_summary_counts(epoch);
+        (accounts_needing_cutover_from(&led, epoch), na)
     };
     if drain_status != StatusCode::OK {
         // Clear already committed — surface both phases so ops can resume with
@@ -2227,6 +2250,7 @@ async fn admin_cutover_drain(
                 "outbox_drain": drain_json,
                 "ready": false,
                 "accounts_needing_cutover": remaining_accounts,
+                "needs_adopt_count": needs_adopt,
                 "active_jobs": clear_json.get("active_jobs").cloned().unwrap_or(json!(0)),
                 "outbox_retryable": drain_json.get("outbox_retryable").cloned().unwrap_or(json!(0)),
                 "acked_count": drain_json.get("acked_count").cloned().unwrap_or(json!(0)),
@@ -2248,6 +2272,7 @@ async fn admin_cutover_drain(
             "outbox_drain": drain_json,
             "ready": ready,
             "accounts_needing_cutover": remaining_accounts,
+            "needs_adopt_count": needs_adopt,
             "active_jobs": drain_json.get("active_jobs").cloned().unwrap_or(json!(0)),
             "outbox_retryable": drain_json.get("outbox_retryable").cloned().unwrap_or(json!(0)),
         })),

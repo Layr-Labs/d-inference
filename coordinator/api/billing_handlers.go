@@ -142,6 +142,11 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid signature", http.StatusBadRequest)
 		return
 	}
+	if event.ID == "" {
+		s.logger.Error("stripe: webhook event ID missing")
+		http.Error(w, "missing event ID", http.StatusBadRequest)
+		return
+	}
 
 	if event.Type != "checkout.session.completed" {
 		w.WriteHeader(http.StatusOK)

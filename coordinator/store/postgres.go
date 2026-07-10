@@ -263,6 +263,20 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger_entries(account_id, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS balance_reservation_operations (
+			operation_key TEXT PRIMARY KEY,
+			account_id TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			amount_micro_usd BIGINT NOT NULL,
+			withdrawable_micro_usd BIGINT NOT NULL,
+			claim_token TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			CHECK (kind IN ('reserve', 'release')),
+			CHECK (amount_micro_usd >= 0),
+			CHECK (withdrawable_micro_usd >= 0 AND withdrawable_micro_usd <= amount_micro_usd)
+		)`,
+		`ALTER TABLE balance_reservation_operations ADD COLUMN IF NOT EXISTS claim_token TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_balance_reservation_operations_account ON balance_reservation_operations(account_id, created_at DESC)`,
 		// Partial index for the public leaderboard/network-totals reward scans,
 		// which filter ledger_entries by reward entry_type across all accounts.
 		// Without it, each cache miss seq-scans the whole (multi-million-row)

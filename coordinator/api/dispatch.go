@@ -86,28 +86,30 @@ type dispatchState struct {
 	s *Server
 
 	// ---- immutable inputs (set once) ----
-	w                      http.ResponseWriter
-	r                      *http.Request
-	model                  string
-	publicModel            string
-	rawBody                []byte
-	consumerKey            string
-	consumerLocation       *store.ProviderLocation
-	reservedMicroUSD       int64
-	serviceReservation     bool
-	estimatedPromptTokens  int
-	requestedMaxTokens     int
-	tokenAdmission         registry.TokenAdmission
-	requiresVision         bool
-	hasTools               bool
-	isResponsesAPI         bool
-	stream                 bool
-	policy                 selfRoutePolicy
-	allowedProviderSerials []string
-	cacheAffinityKey       string
-	timing                 *registry.RequestTiming
-	deadline               time.Duration
-	speculativeAt          time.Duration
+	w                            http.ResponseWriter
+	r                            *http.Request
+	model                        string
+	publicModel                  string
+	rawBody                      []byte
+	consumerKey                  string
+	consumerLocation             *store.ProviderLocation
+	reservedMicroUSD             int64
+	reservedWithdrawableMicroUSD int64
+	reservationID                string
+	serviceReservation           bool
+	estimatedPromptTokens        int
+	requestedMaxTokens           int
+	tokenAdmission               registry.TokenAdmission
+	requiresVision               bool
+	hasTools                     bool
+	isResponsesAPI               bool
+	stream                       bool
+	policy                       selfRoutePolicy
+	allowedProviderSerials       []string
+	cacheAffinityKey             string
+	timing                       *registry.RequestTiming
+	deadline                     time.Duration
+	speculativeAt                time.Duration
 	// allowSpeculation is true only for requests that cannot move money. The
 	// runtime guard also checks the concrete reservation fields, so an
 	// incorrectly constructed paid request still cannot launch a second start.
@@ -673,6 +675,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 	routeAttempt := attempt
 	d.provider, d.pr, decision, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
 		r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
+		d.reservedWithdrawableMicroUSD, d.reservationID,
 		d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 		d.traits(),
 		d.allowedProviderSerials, d.isResponsesAPI, d.policy, d.timing, d.serviceReservation, d.cacheAffinityKey, d.excludeProviders,
@@ -761,37 +764,40 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// No idle provider — try queueing.
 		d.requestID = uuid.New().String()
 		queuePR := &registry.PendingRequest{
-			RequestID:              d.requestID,
-			Attempt:                d.attempt,
-			Model:                  d.model,
-			PublicModel:            d.publicModel,
-			ConsumerKey:            d.consumerKey,
-			KeyID:                  keyIDFromContext(r.Context()),
-			KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
-			KeyLimitReset:          keyLimitResetFromContext(r.Context()),
-			ConsumerLocation:       d.consumerLocation,
-			IsResponsesAPI:         d.isResponsesAPI,
-			EstimatedPromptTokens:  d.estimatedPromptTokens,
-			RequiresVision:         d.requiresVision,
-			Traits:                 d.traits(),
-			RequestedMaxTokens:     d.requestedMaxTokens,
-			TokenAdmission:         d.tokenAdmission,
-			ReservedMicroUSD:       d.reservedMicroUSD,
-			BaseReservedMicroUSD:   d.reservedMicroUSD,
-			ServiceReservation:     d.serviceReservation,
-			AllowedProviderSerials: d.allowedProviderSerials,
-			CacheAffinityKey:       d.cacheAffinityKey,
-			SelfRouteOnly:          d.policy.enabled,
-			PreferOwner:            d.policy.prefer,
-			OwnerAccountID:         d.policy.ownerAccountID,
-			FreeSelfRoute:          d.policy.enabled,
-			MaxTTFTMs:              queueMaxTTFTMs(d.policy, d.deadline, d.s.ttftHardReject),
-			MinDecodeTPS:           d.s.minDecodeTPS,
-			AcceptedCh:             make(chan struct{}, 1),
-			ChunkCh:                make(chan string, chunkBufferSize),
-			CompleteCh:             make(chan protocol.UsageInfo, 1),
-			ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
-			Timing:                 d.timing,
+			RequestID:                        d.requestID,
+			Attempt:                          d.attempt,
+			Model:                            d.model,
+			PublicModel:                      d.publicModel,
+			ConsumerKey:                      d.consumerKey,
+			KeyID:                            keyIDFromContext(r.Context()),
+			KeyLimitMicroUSD:                 keyLimitMicroFromContext(r.Context()),
+			KeyLimitReset:                    keyLimitResetFromContext(r.Context()),
+			ConsumerLocation:                 d.consumerLocation,
+			IsResponsesAPI:                   d.isResponsesAPI,
+			EstimatedPromptTokens:            d.estimatedPromptTokens,
+			RequiresVision:                   d.requiresVision,
+			Traits:                           d.traits(),
+			RequestedMaxTokens:               d.requestedMaxTokens,
+			TokenAdmission:                   d.tokenAdmission,
+			ReservedMicroUSD:                 d.reservedMicroUSD,
+			ReservedWithdrawableMicroUSD:     d.reservedWithdrawableMicroUSD,
+			ReservationID:                    d.reservationID,
+			BaseReservedMicroUSD:             d.reservedMicroUSD,
+			BaseReservedWithdrawableMicroUSD: d.reservedWithdrawableMicroUSD,
+			ServiceReservation:               d.serviceReservation,
+			AllowedProviderSerials:           d.allowedProviderSerials,
+			CacheAffinityKey:                 d.cacheAffinityKey,
+			SelfRouteOnly:                    d.policy.enabled,
+			PreferOwner:                      d.policy.prefer,
+			OwnerAccountID:                   d.policy.ownerAccountID,
+			FreeSelfRoute:                    d.policy.enabled,
+			MaxTTFTMs:                        queueMaxTTFTMs(d.policy, d.deadline, d.s.ttftHardReject),
+			MinDecodeTPS:                     d.s.minDecodeTPS,
+			AcceptedCh:                       make(chan struct{}, 1),
+			ChunkCh:                          make(chan string, chunkBufferSize),
+			CompleteCh:                       make(chan protocol.UsageInfo, 1),
+			ErrorCh:                          make(chan protocol.InferenceErrorMessage, 1),
+			Timing:                           d.timing,
 		}
 		queuedReq := &registry.QueuedRequest{
 			RequestID:  d.requestID,
@@ -1319,6 +1325,7 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 
 		backupProvider, backupPR, _, backupErr, backupErrCode = s.dispatchOneProvider(
 			r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
+			d.reservedWithdrawableMicroUSD, d.reservationID,
 			d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 			d.traits(),
 			d.allowedProviderSerials, d.isResponsesAPI, d.policy,

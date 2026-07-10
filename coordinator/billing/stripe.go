@@ -228,10 +228,6 @@ func (p *StripeProcessor) VerifyWebhookSignature(payload []byte, sigHeader strin
 	if err := json.Unmarshal(payload, &event); err != nil {
 		return nil, fmt.Errorf("stripe: parse webhook payload: %w", err)
 	}
-	if event.ID == "" {
-		return nil, errors.New("stripe: webhook event ID missing")
-	}
-
 	return &event, nil
 }
 

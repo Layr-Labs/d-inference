@@ -34,20 +34,28 @@ type keySpend struct {
 	days     map[string]int64 // "2006-01-02" (UTC) → micro-USD
 }
 
+type balanceReservationOperation struct {
+	accountID            string
+	kind                 string
+	amountMicroUSD       int64
+	withdrawableMicroUSD int64
+}
+
 const keySpendRetentionDays = 40
 
 // MemoryStore manages API keys, usage records, payments, and balances in memory.
 type MemoryStore struct {
-	mu            sync.RWMutex
-	keyRecords    map[string]*APIKey // raw key → record (metadata + limits)
-	keysByID      map[string]string  // public key ID → raw key
-	keySpend      map[string]*keySpend
-	usage         []UsageRecord
-	payments      []PaymentRecord
-	balances      map[string]int64 // accountID → micro-USD
-	withdrawable  map[string]int64 // accountID → withdrawable micro-USD (subset of balance)
-	ledgerEntries []LedgerEntry
-	ledgerSeq     int64 // auto-increment ID
+	mu                           sync.RWMutex
+	keyRecords                   map[string]*APIKey // raw key → record (metadata + limits)
+	keysByID                     map[string]string  // public key ID → raw key
+	keySpend                     map[string]*keySpend
+	usage                        []UsageRecord
+	payments                     []PaymentRecord
+	balances                     map[string]int64 // accountID → micro-USD
+	withdrawable                 map[string]int64 // accountID → withdrawable micro-USD (subset of balance)
+	ledgerEntries                []LedgerEntry
+	ledgerSeq                    int64 // auto-increment ID
+	balanceReservationOperations map[string]balanceReservationOperation
 
 	// Referral system
 	referrersByCode    map[string]*Referrer // code → referrer
@@ -159,6 +167,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		balances:                      make(map[string]int64),
 		withdrawable:                  make(map[string]int64),
 		ledgerEntries:                 make([]LedgerEntry, 0),
+		balanceReservationOperations:  make(map[string]balanceReservationOperation),
 		referrersByCode:               make(map[string]*Referrer),
 		referrersByAccount:            make(map[string]*Referrer),
 		referrals:                     make(map[string]string),
@@ -1345,6 +1354,75 @@ func (s *MemoryStore) Debit(accountID string, amountMicroUSD int64, entryType Le
 		CreatedAt:      time.Now(),
 	})
 	return nil
+}
+
+func (s *MemoryStore) ReserveInferenceBalance(accountID string, amountMicroUSD int64, operationKey string) (int64, bool, error) {
+	if amountMicroUSD <= 0 || operationKey == "" {
+		return 0, false, ErrFinancialOperationConflict
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.balanceReservationOperations[operationKey]; ok {
+		if existing.kind != "reserve" || existing.accountID != accountID ||
+			existing.amountMicroUSD != amountMicroUSD {
+			return 0, false, ErrFinancialOperationConflict
+		}
+		return existing.withdrawableMicroUSD, false, nil
+	}
+	balance := s.balances[accountID]
+	if balance < amountMicroUSD {
+		return 0, false, ErrInsufficientBalance
+	}
+	withdrawable := s.withdrawable[accountID]
+	nonwithdrawable := balance - withdrawable
+	if nonwithdrawable < 0 {
+		nonwithdrawable = 0
+	}
+	reservedWithdrawable := amountMicroUSD - nonwithdrawable
+	if reservedWithdrawable < 0 {
+		reservedWithdrawable = 0
+	}
+	if reservedWithdrawable > withdrawable {
+		reservedWithdrawable = withdrawable
+	}
+	s.balances[accountID] -= amountMicroUSD
+	s.withdrawable[accountID] -= reservedWithdrawable
+	s.ledgerSeq++
+	s.ledgerEntries = append(s.ledgerEntries, LedgerEntry{
+		ID: s.ledgerSeq, AccountID: accountID, Type: LedgerCharge,
+		AmountMicroUSD: -amountMicroUSD, BalanceAfter: s.balances[accountID],
+		Reference: "reserve:" + operationKey, CreatedAt: time.Now(),
+	})
+	s.balanceReservationOperations[operationKey] = balanceReservationOperation{
+		accountID: accountID, kind: "reserve", amountMicroUSD: amountMicroUSD,
+		withdrawableMicroUSD: reservedWithdrawable,
+	}
+	return reservedWithdrawable, true, nil
+}
+
+func (s *MemoryStore) ReleaseInferenceReservation(accountID string, amountMicroUSD, withdrawableMicroUSD int64, operationKey, reference string) (bool, error) {
+	if amountMicroUSD < 0 || withdrawableMicroUSD < 0 || withdrawableMicroUSD > amountMicroUSD || operationKey == "" {
+		return false, ErrFinancialOperationConflict
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.balanceReservationOperations[operationKey]; ok {
+		if existing.kind != "release" || existing.accountID != accountID ||
+			existing.amountMicroUSD != amountMicroUSD ||
+			existing.withdrawableMicroUSD != withdrawableMicroUSD {
+			return false, ErrFinancialOperationConflict
+		}
+		return false, nil
+	}
+	if amountMicroUSD > 0 {
+		s.creditLocked(accountID, amountMicroUSD, LedgerRefund, reference, time.Now())
+		s.withdrawable[accountID] += withdrawableMicroUSD
+	}
+	s.balanceReservationOperations[operationKey] = balanceReservationOperation{
+		accountID: accountID, kind: "release", amountMicroUSD: amountMicroUSD,
+		withdrawableMicroUSD: withdrawableMicroUSD,
+	}
+	return true, nil
 }
 
 // MigrateAccountBalance moves the full balance (and its withdrawable subset)

@@ -241,8 +241,19 @@ func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
 	if extra <= 0 {
 		return
 	}
-	_ = s.store.Credit(pr.ConsumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+pr.RequestID)
+	extraWithdrawable := pr.ReservedWithdrawableMicroUSD - pr.BaseReservedWithdrawableMicroUSD
+	if _, err := s.store.ReleaseInferenceReservation(
+		pr.ConsumerKey, extra, extraWithdrawable,
+		reservationTopUpReleaseKey(pr), "reservation_extra_refund:"+pr.RequestID,
+	); err != nil {
+		s.logger.Error("failed to refund provider-specific reservation top-up",
+			"request_id", pr.RequestID,
+			"error", err,
+		)
+		return
+	}
 	pr.ReservedMicroUSD = pr.BaseReservedMicroUSD
+	pr.ReservedWithdrawableMicroUSD = pr.BaseReservedWithdrawableMicroUSD
 	s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + pr.Model})
 }
 
@@ -683,6 +694,8 @@ func (s *Server) dispatchOneProvider(
 	consumerKey string,
 	consumerLocation *store.ProviderLocation,
 	reservedMicroUSD int64,
+	reservedWithdrawableMicroUSD int64,
+	reservationID string,
 	estimatedPromptTokens int,
 	requestedMaxTokens int,
 	tokenAdmission registry.TokenAdmission,
@@ -712,34 +725,37 @@ func (s *Server) dispatchOneProvider(
 		// inference_complete immediately is correlated to the right route row.
 		// Setting it after the send (on the dispatch goroutine) would race the
 		// provider WS reader goroutine's handleComplete read of pr.Attempt.
-		Attempt:                attempt,
-		Model:                  model,
-		PublicModel:            publicModel,
-		ConsumerKey:            consumerKey,
-		KeyID:                  keyIDFromContext(r.Context()),
-		KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
-		KeyLimitReset:          keyLimitResetFromContext(r.Context()),
-		ConsumerLocation:       consumerLocation,
-		IsResponsesAPI:         isResponsesAPI,
-		EstimatedPromptTokens:  estimatedPromptTokens,
-		RequiresVision:         requiresVision,
-		Traits:                 traits,
-		RequestedMaxTokens:     requestedMaxTokens,
-		TokenAdmission:         tokenAdmission,
-		CacheAffinityKey:       cacheAffinityKey,
-		ReservedMicroUSD:       reservedMicroUSD,
-		BaseReservedMicroUSD:   reservedMicroUSD,
-		ServiceReservation:     serviceReservation,
-		AllowedProviderSerials: allowedProviderSerials,
-		SelfRouteOnly:          policy.enabled,
-		PreferOwner:            policy.prefer,
-		OwnerAccountID:         policy.ownerAccountID,
-		FreeSelfRoute:          policy.enabled,
-		AcceptedCh:             make(chan struct{}, 1),
-		ChunkCh:                make(chan string, chunkBufferSize),
-		CompleteCh:             make(chan protocol.UsageInfo, 1),
-		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
-		Timing:                 timing,
+		Attempt:                          attempt,
+		Model:                            model,
+		PublicModel:                      publicModel,
+		ConsumerKey:                      consumerKey,
+		KeyID:                            keyIDFromContext(r.Context()),
+		KeyLimitMicroUSD:                 keyLimitMicroFromContext(r.Context()),
+		KeyLimitReset:                    keyLimitResetFromContext(r.Context()),
+		ConsumerLocation:                 consumerLocation,
+		IsResponsesAPI:                   isResponsesAPI,
+		EstimatedPromptTokens:            estimatedPromptTokens,
+		RequiresVision:                   requiresVision,
+		Traits:                           traits,
+		RequestedMaxTokens:               requestedMaxTokens,
+		TokenAdmission:                   tokenAdmission,
+		CacheAffinityKey:                 cacheAffinityKey,
+		ReservedMicroUSD:                 reservedMicroUSD,
+		ReservedWithdrawableMicroUSD:     reservedWithdrawableMicroUSD,
+		ReservationID:                    reservationID,
+		BaseReservedMicroUSD:             reservedMicroUSD,
+		BaseReservedWithdrawableMicroUSD: reservedWithdrawableMicroUSD,
+		ServiceReservation:               serviceReservation,
+		AllowedProviderSerials:           allowedProviderSerials,
+		SelfRouteOnly:                    policy.enabled,
+		PreferOwner:                      policy.prefer,
+		OwnerAccountID:                   policy.ownerAccountID,
+		FreeSelfRoute:                    policy.enabled,
+		AcceptedCh:                       make(chan struct{}, 1),
+		ChunkCh:                          make(chan string, chunkBufferSize),
+		CompleteCh:                       make(chan protocol.UsageInfo, 1),
+		ErrorCh:                          make(chan protocol.InferenceErrorMessage, 1),
+		Timing:                           timing,
 	}
 
 	// Public inference routes (not self-route / prefer-owner) enforce the
@@ -833,14 +849,7 @@ func (s *Server) dispatchOneProvider(
 	// reserveAdditionalForProvider may have added. The caller's
 	// refundReservation only covers the base reservation.
 	refundExtra := func() {
-		extra := pr.ReservedMicroUSD - reservedMicroUSD
-		if extra > 0 {
-			start := time.Now()
-			_ = s.store.Credit(consumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+requestID)
-			s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + model})
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_extra_refund"})
-			pr.ReservedMicroUSD = reservedMicroUSD
-		}
+		s.refundProviderExtra(pr)
 	}
 
 	// E2E encryption
@@ -1000,7 +1009,17 @@ func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference st
 			s.releaseServiceReservation(pr, "refund")
 			return nil
 		}
-		return s.store.Credit(pr.ConsumerKey, pr.ReservedMicroUSD, store.LedgerRefund, reference)
+		if pr.ReservationID == "" {
+			pr.ReservationID = pr.RequestID
+		}
+		_, err := s.store.ReleaseInferenceReservation(
+			pr.ConsumerKey,
+			pr.ReservedMicroUSD,
+			pr.ReservedWithdrawableMicroUSD,
+			reservationFinalizationKey(pr.ReservationID),
+			reference,
+		)
+		return err
 	})
 	if err != nil {
 		s.logger.Error("failed to refund reservation",
@@ -1120,10 +1139,17 @@ func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provi
 		}
 	}
 	extra := required - pr.ReservedMicroUSD
-	if err := s.ledger.Charge(pr.ConsumerKey, extra, "reserve:"+pr.ConsumerKey); err != nil {
+	if pr.ReservationID == "" {
+		pr.ReservationID = pr.RequestID
+	}
+	addedWithdrawable, _, err := s.store.ReserveInferenceBalance(
+		pr.ConsumerKey, extra, reservationTopUpKey(pr),
+	)
+	if err != nil {
 		return pr.ReservedMicroUSD, err
 	}
 	pr.ReservedMicroUSD = required
+	pr.ReservedWithdrawableMicroUSD += addedWithdrawable
 	s.ddHistogram("billing.reserved_micro_usd", float64(required), []string{"model:" + pr.Model})
 	return required, nil
 }
@@ -1383,7 +1409,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Pre-flight balance reservation + per-key spend cap (see
 	// reserveInferenceBalance). Self-route and a nil billing backend are free.
-	reservedMicroUSD, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
+	reservedMicroUSD, reservedWithdrawableMicroUSD, reservationID, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
 		model:                 model,
 		publicModel:           publicModel,
 		billingPromptTokens:   billingPromptTokens,
@@ -1402,7 +1428,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Refund reservation on early errors (before inference starts).
 	refundReservation := func() {
 		if reservedMicroUSD > 0 {
-			s.releaseInitialReservation(consumerKeyFromContext(r.Context()), model, reservedMicroUSD, serviceReservation)
+			s.releaseInitialReservation(
+				consumerKeyFromContext(r.Context()), model,
+				reservedMicroUSD, reservedWithdrawableMicroUSD,
+				reservationID, serviceReservation,
+			)
 		}
 	}
 
@@ -1549,32 +1579,34 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	d := &dispatchState{
-		s:                      s,
-		w:                      w,
-		r:                      r,
-		model:                  model,
-		publicModel:            publicModel,
-		rawBody:                rawBody,
-		consumerKey:            consumerKey,
-		consumerLocation:       consumerLocation,
-		reservedMicroUSD:       reservedMicroUSD,
-		tokenAdmission:         tokenAdmission,
-		serviceReservation:     serviceReservation,
-		estimatedPromptTokens:  estimatedPromptTokens,
-		requestedMaxTokens:     requestedMaxTokens,
-		requiresVision:         requiresVision,
-		hasTools:               hasTools,
-		isResponsesAPI:         isResponsesAPI,
-		stream:                 stream,
-		policy:                 policy,
-		allowedProviderSerials: allowedProviderSerials,
-		cacheAffinityKey:       cacheAffinityKey,
-		timing:                 timing,
-		deadline:               deadline,
-		speculativeAt:          time.Duration(float64(deadline) * speculativeTimerRatio),
-		allowSpeculation:       s.billing == nil || policy.enabled,
-		modelMaxContext:        modelMaxContext,
-		refundReservation:      refundReservation,
+		s:                            s,
+		w:                            w,
+		r:                            r,
+		model:                        model,
+		publicModel:                  publicModel,
+		rawBody:                      rawBody,
+		consumerKey:                  consumerKey,
+		consumerLocation:             consumerLocation,
+		reservedMicroUSD:             reservedMicroUSD,
+		reservedWithdrawableMicroUSD: reservedWithdrawableMicroUSD,
+		reservationID:                reservationID,
+		tokenAdmission:               tokenAdmission,
+		serviceReservation:           serviceReservation,
+		estimatedPromptTokens:        estimatedPromptTokens,
+		requestedMaxTokens:           requestedMaxTokens,
+		requiresVision:               requiresVision,
+		hasTools:                     hasTools,
+		isResponsesAPI:               isResponsesAPI,
+		stream:                       stream,
+		policy:                       policy,
+		allowedProviderSerials:       allowedProviderSerials,
+		cacheAffinityKey:             cacheAffinityKey,
+		timing:                       timing,
+		deadline:                     deadline,
+		speculativeAt:                time.Duration(float64(deadline) * speculativeTimerRatio),
+		allowSpeculation:             s.billing == nil || policy.enabled,
+		modelMaxContext:              modelMaxContext,
+		refundReservation:            refundReservation,
 		// Track providers that failed during retry so we don't dispatch to them again.
 		excludeProviders: make(map[string]struct{}),
 	}
@@ -3295,7 +3327,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// reserveInferenceBalance). Self-route and a nil billing backend are free.
 	consumerKey := consumerKeyFromContext(r.Context())
 	consumerLocation := s.requestLocation(r)
-	reservedMicroUSD, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
+	reservedMicroUSD, reservedWithdrawableMicroUSD, reservationID, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
 		model:                 model,
 		publicModel:           publicModel,
 		billingPromptTokens:   billingPromptTokens,
@@ -3311,7 +3343,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 	refundReservation := func() {
 		if reservedMicroUSD > 0 {
-			s.releaseInitialReservation(consumerKey, model, reservedMicroUSD, serviceReservation)
+			s.releaseInitialReservation(
+				consumerKey, model,
+				reservedMicroUSD, reservedWithdrawableMicroUSD,
+				reservationID, serviceReservation,
+			)
 		}
 	}
 	timing.ReservedAt = time.Now()
@@ -3390,17 +3426,20 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		RequiresVision:         requiresVision,
 		CacheAffinityKey:       cacheAffinityKey,
 		// Single-attempt path: no retry loop, so no AvoidVersion to thread.
-		Traits:               registry.RequestTraits{HasTools: hasTools},
-		RequestedMaxTokens:   requestedMaxTokens,
-		TokenAdmission:       tokenAdmission,
-		ReservedMicroUSD:     reservedMicroUSD,
-		BaseReservedMicroUSD: reservedMicroUSD,
-		ServiceReservation:   serviceReservation,
-		AcceptedCh:           make(chan struct{}, 1),
-		ChunkCh:              make(chan string, chunkBufferSize),
-		CompleteCh:           make(chan protocol.UsageInfo, 1),
-		ErrorCh:              make(chan protocol.InferenceErrorMessage, 1),
-		Timing:               timing,
+		Traits:                           registry.RequestTraits{HasTools: hasTools},
+		RequestedMaxTokens:               requestedMaxTokens,
+		TokenAdmission:                   tokenAdmission,
+		ReservedMicroUSD:                 reservedMicroUSD,
+		ReservedWithdrawableMicroUSD:     reservedWithdrawableMicroUSD,
+		ReservationID:                    reservationID,
+		BaseReservedMicroUSD:             reservedMicroUSD,
+		BaseReservedWithdrawableMicroUSD: reservedWithdrawableMicroUSD,
+		ServiceReservation:               serviceReservation,
+		AcceptedCh:                       make(chan struct{}, 1),
+		ChunkCh:                          make(chan string, chunkBufferSize),
+		CompleteCh:                       make(chan protocol.UsageInfo, 1),
+		ErrorCh:                          make(chan protocol.InferenceErrorMessage, 1),
+		Timing:                           timing,
 	}
 
 	// Public inference routes (not self-route / prefer-owner) enforce the
@@ -3421,14 +3460,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// the difference between pr.ReservedMicroUSD and the original
 	// reservedMicroUSD.
 	refundExtra := func() {
-		extra := pr.ReservedMicroUSD - reservedMicroUSD
-		if extra > 0 {
-			start := time.Now()
-			_ = s.store.Credit(consumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+requestID)
-			s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + model})
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_extra_refund"})
-			pr.ReservedMicroUSD = reservedMicroUSD
-		}
+		s.refundProviderExtra(pr)
 	}
 
 	var provider *registry.Provider

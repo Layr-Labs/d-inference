@@ -31,8 +31,9 @@ var ErrInsufficientBalance = errors.New("insufficient balance or account not fou
 var ErrNotFound = errors.New("not found")
 
 var (
-	ErrStripeDepositMismatch = errors.New("Stripe deposit does not match its local billing order")
-	ErrStripeDepositConflict = errors.New("Stripe deposit event identity conflict")
+	ErrStripeDepositMismatch      = errors.New("Stripe deposit does not match its local billing order")
+	ErrStripeDepositConflict      = errors.New("Stripe deposit event identity conflict")
+	ErrFinancialOperationConflict = errors.New("financial operation key reused with different parameters")
 )
 
 // Store is the union of every storage-domain sub-interface (defined in

@@ -177,6 +177,12 @@ type PendingRequest struct {
 	// The post-inference charge adjusts for the difference between the
 	// actual cost and this reservation, preventing billing race conditions.
 	ReservedMicroUSD int64
+	// ReservationID is the stable financial operation identity shared by every
+	// sequential attempt for this logical request.
+	ReservationID string
+	// ReservedWithdrawableMicroUSD records exactly how much of the hold came
+	// from withdrawable earnings so release can restore provenance.
+	ReservedWithdrawableMicroUSD int64
 	// BaseReservedMicroUSD is the shared base reservation (platform price)
 	// charged once per request. ReservedMicroUSD may exceed it after a
 	// provider-specific top-up; the difference (the per-attempt "extra") must
@@ -184,6 +190,9 @@ type PendingRequest struct {
 	// timeout). The base itself is refunded once globally or settled by the
 	// winning attempt.
 	BaseReservedMicroUSD int64
+	// BaseReservedWithdrawableMicroUSD is the provenance component of the
+	// shared base reservation. Attempt-specific top-ups are tracked above it.
+	BaseReservedWithdrawableMicroUSD int64
 	// ServiceReservation marks a trusted service account request whose pre-router
 	// admission used an in-memory hold instead of a synchronous ledger debit.
 	ServiceReservation    bool

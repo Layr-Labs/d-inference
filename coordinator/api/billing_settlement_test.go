@@ -180,10 +180,10 @@ func TestRefundReservedBalanceDoesNotFinalizeWhenCreditFails(t *testing.T) {
 	}
 }
 
-// TestOverageChargeBeforeClamp verifies that when a provider's actual cost
-// exceeds the pre-flight reservation, the coordinator attempts to charge the
-// consumer the overage before falling back to the hard clamp.
-func TestOverageChargeBeforeClamp(t *testing.T) {
+// TestReportedCostCannotExceedFundedReservation verifies that provider-reported
+// usage can never create a post-generation debit or payout above the durable
+// pre-start funding bound.
+func TestReportedCostCannotExceedFundedReservation(t *testing.T) {
 	srv, st, ledger := billingTestServer(t)
 
 	model := "overage-test-model"
@@ -231,15 +231,12 @@ func TestOverageChargeBeforeClamp(t *testing.T) {
 		Usage:     usage,
 	})
 
-	// The overage should have been charged successfully, so the consumer
-	// pays the full actual cost (reservation + overage), not the clamped
-	// reservation amount.
-	expectedPayout := payments.ProviderPayout(actualCost)
+	expectedPayout := payments.ProviderPayout(reservedAmount)
 	if got := st.GetWithdrawableBalance(accountID); got != expectedPayout {
-		t.Errorf("provider payout = %d, want %d (full actual cost payout)", got, expectedPayout)
+		t.Errorf("provider payout = %d, want funded cap %d", got, expectedPayout)
 	}
-	if got := ledger.Balance(consumerID); got != initialBalance-actualCost {
-		t.Errorf("consumer balance = %d, want %d (charged full actual cost)", got, initialBalance-actualCost)
+	if got := ledger.Balance(consumerID); got != initialBalance-reservedAmount {
+		t.Errorf("consumer balance = %d, want funded cap %d", got, initialBalance-reservedAmount)
 	}
 }
 

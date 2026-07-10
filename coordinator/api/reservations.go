@@ -64,29 +64,30 @@ func (s *Server) useServiceReservation(accountID string) bool {
 	return s.serviceReservations != nil && s.serviceReservations.Enabled() && s.isServiceConsumer(accountID)
 }
 
-func (s *Server) reserveInitialBalance(accountID, model string, amount int64) (bool, error) {
+func (s *Server) reserveInitialBalance(accountID, model string, amount int64, reservationID string) (bool, int64, error) {
 	serviceMode := s.useServiceReservation(accountID)
 	start := time.Now()
 	if serviceMode {
 		if err := s.serviceReservations.Reserve(accountID, amount); err != nil {
 			s.ddIncr("billing.reservations", []string{"model:" + model, "mode:service_hold", "outcome:rejected"})
-			return true, err
+			return true, 0, err
 		}
 		s.ddIncr("billing.reservations", []string{"model:" + model, "mode:service_hold", "outcome:reserved"})
 		s.ddHistogram("billing.reserved_micro_usd", float64(amount), []string{"model:" + model, "mode:service_hold"})
-		return true, nil
+		return true, 0, nil
 	}
-	if err := s.ledger.Charge(accountID, amount, "reserve:"+accountID); err != nil {
+	reservedWithdrawable, _, err := s.store.ReserveInferenceBalance(accountID, amount, reservationID)
+	if err != nil {
 		s.ddIncr("billing.reservations", []string{"model:" + model, "mode:ledger", "outcome:rejected"})
-		return false, err
+		return false, 0, err
 	}
 	s.ddIncr("billing.reservations", []string{"model:" + model, "mode:ledger", "outcome:reserved"})
 	s.ddHistogram("billing.reserved_micro_usd", float64(amount), []string{"model:" + model, "mode:ledger"})
 	s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reserve"})
-	return false, nil
+	return false, reservedWithdrawable, nil
 }
 
-func (s *Server) releaseInitialReservation(accountID, model string, amount int64, serviceMode bool) {
+func (s *Server) releaseInitialReservation(accountID, model string, amount, reservedWithdrawable int64, reservationID string, serviceMode bool) {
 	if amount <= 0 {
 		return
 	}
@@ -97,10 +98,35 @@ func (s *Server) releaseInitialReservation(accountID, model string, amount int64
 		return
 	}
 	start := time.Now()
-	_ = s.store.Credit(accountID, amount, store.LedgerRefund, "reservation_refund")
+	applied, err := s.store.ReleaseInferenceReservation(
+		accountID, amount, reservedWithdrawable,
+		reservationFinalizationKey(reservationID), "reservation_refund:"+reservationID,
+	)
+	if err != nil {
+		s.logger.Error("failed to release initial reservation",
+			"reservation_id", reservationID,
+			"error", err,
+		)
+		return
+	}
+	if !applied {
+		return
+	}
 	s.ddIncr("billing.reservation_refunds", tags)
 	s.ddIncr("billing.reservation_releases", append(tags, "reason:early"))
 	s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
+}
+
+func reservationFinalizationKey(reservationID string) string {
+	return "finalize:" + reservationID
+}
+
+func reservationTopUpKey(pr *registry.PendingRequest) string {
+	return "topup:" + pr.ReservationID + ":" + pr.RequestID + ":" + pr.ProviderID
+}
+
+func reservationTopUpReleaseKey(pr *registry.PendingRequest) string {
+	return "topup-release:" + pr.ReservationID + ":" + pr.RequestID + ":" + pr.ProviderID
 }
 
 func (s *Server) releaseServiceReservation(pr *registry.PendingRequest, reason string) {

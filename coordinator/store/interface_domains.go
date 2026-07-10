@@ -196,6 +196,15 @@ type LedgerStore interface {
 	// Debit subtracts micro-USD from an account. Returns error if insufficient funds.
 	Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
 
+	// ReserveInferenceBalance atomically debits a request hold and returns the
+	// amount sourced from withdrawable funds. Stable operation-key replay is a
+	// no-op with applied=false.
+	ReserveInferenceBalance(accountID string, amountMicroUSD int64, operationKey string) (reservedWithdrawable int64, applied bool, err error)
+
+	// ReleaseInferenceReservation restores exact total/withdrawable provenance.
+	// Stable operation-key replay is a no-op with applied=false.
+	ReleaseInferenceReservation(accountID string, amountMicroUSD, withdrawableMicroUSD int64, operationKey, reference string) (applied bool, err error)
+
 	// GetWithdrawableBalance returns the withdrawable balance in micro-USD.
 	GetWithdrawableBalance(accountID string) int64
 

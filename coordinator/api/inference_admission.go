@@ -26,6 +26,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/google/uuid"
 )
 
 // balanceReservationParams bundles the inputs to the shared pre-flight balance
@@ -50,15 +51,16 @@ type balanceReservationParams struct {
 // service-account reservation. The post-inference charge refunds any unused
 // portion; the routing estimate is kept separate so capacity checks aren't
 // over-inflated.
-func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request, parsed map[string]any, p balanceReservationParams) (reservedMicroUSD int64, serviceReservation bool, handled bool) {
+func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request, parsed map[string]any, p balanceReservationParams) (reservedMicroUSD, reservedWithdrawableMicroUSD int64, reservationID string, serviceReservation, handled bool) {
 	// Self-route is free: skip the pre-flight balance reservation and the
 	// per-key spend cap entirely. A zero-balance owner must never be blocked
 	// from running on their own machine, and a self_route_only key never spends.
 	if s.billing == nil || p.policy.enabled {
-		return 0, false, false
+		return 0, 0, "", false, false
 	}
 	consumerKey := consumerKeyFromContext(r.Context())
 	reservedMicroUSD = s.reservationCost(p.model, p.billingPromptTokens, p.requestedMaxTokens)
+	reservationID = uuid.NewString()
 	// Per-key spend cap (phase 1) — checked before the reservation so a capped
 	// key never debits the account ledger.
 	if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
@@ -79,10 +81,12 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 			params:                rejectionSamplingParams(parsed),
 		})
 		writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
-		return reservedMicroUSD, false, true
+		return reservedMicroUSD, 0, reservationID, false, true
 	}
 	var err error
-	serviceReservation, err = s.reserveInitialBalance(consumerKey, p.model, reservedMicroUSD)
+	serviceReservation, reservedWithdrawableMicroUSD, err = s.reserveInitialBalance(
+		consumerKey, p.model, reservedMicroUSD, reservationID,
+	)
 	if err != nil {
 		if errors.Is(err, store.ErrInsufficientBalance) {
 			s.recordRejection(rejectionInfo{
@@ -107,9 +111,9 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 			s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
 			s.writeServiceUnavailable(w, p.model)
 		}
-		return reservedMicroUSD, serviceReservation, true
+		return reservedMicroUSD, reservedWithdrawableMicroUSD, reservationID, serviceReservation, true
 	}
-	return reservedMicroUSD, serviceReservation, false
+	return reservedMicroUSD, reservedWithdrawableMicroUSD, reservationID, serviceReservation, false
 }
 
 // inferenceAdmissionParams bundles the per-request inputs the shared routing

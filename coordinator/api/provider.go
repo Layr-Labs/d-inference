@@ -1757,77 +1757,58 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			s.ddHistogram("billing.service_settlement_micro_usd", float64(totalCost), []string{"model:" + pr.Model})
 		}
 	} else if pr.ReservedMicroUSD > 0 {
-		if !pr.MarkReservationFinalized() {
+		if totalCost > pr.ReservedMicroUSD {
+			// The pre-start reservation is the hard financial bound. Provider
+			// usage above it is untrusted and cannot create a post-generation
+			// debit or increase payout.
+			s.logger.Error("reported cost exceeds funded reservation — clamping",
+				"provider_id", providerID,
+				"request_id", msg.RequestID,
+				"reported_cost_micro_usd", totalCost,
+				"reserved_micro_usd", pr.ReservedMicroUSD,
+			)
+			s.ddIncr("billing.cost_clamped", []string{"model:" + pr.Model})
+			totalCost = pr.ReservedMicroUSD
+			providerPayout = payments.ProviderPayoutWithPercent(totalCost, feePercent)
+		}
+		refund := pr.ReservedMicroUSD - totalCost
+		refundWithdrawable := min(refund, pr.ReservedWithdrawableMicroUSD)
+		if pr.ReservationID == "" {
+			pr.ReservationID = pr.RequestID
+		}
+		start := time.Now()
+		financialApplied := false
+		finalized, finalizeErr := pr.FinalizeReservation(func() error {
+			var err error
+			financialApplied, err = s.store.ReleaseInferenceReservation(
+				pr.ConsumerKey,
+				refund,
+				refundWithdrawable,
+				reservationFinalizationKey(pr.ReservationID),
+				msg.RequestID,
+			)
+			return err
+		})
+		switch {
+		case finalizeErr != nil:
+			billingFinalized = false
+			s.logger.Error("failed to finalize inference reservation",
+				"request_id", msg.RequestID,
+				"refund_micro_usd", refund,
+				"refund_withdrawable_micro_usd", refundWithdrawable,
+				"error", finalizeErr,
+			)
+			s.ddIncr("billing.credit_failed", []string{"op:settlement_refund"})
+		case !finalized || !financialApplied:
 			billingFinalized = false
 			s.logger.Warn("skipping completion billing for already-finalized reservation",
 				"provider_id", providerID,
 				"request_id", msg.RequestID,
 			)
-		} else if totalCost > pr.ReservedMicroUSD {
-			// Actual cost exceeds reservation (e.g. provider custom
-			// pricing above platform rate). Attempt to charge the
-			// consumer the difference. Cap overage at the reservation
-			// amount as a fraud circuit-breaker — a provider cannot
-			// bill more than 2x the pre-flight estimate.
-			overage := totalCost - pr.ReservedMicroUSD
-			if overage > pr.ReservedMicroUSD {
-				s.logger.Error("overage exceeds reservation cap — clamping",
-					"provider_id", providerID,
-					"request_id", msg.RequestID,
-					"reported_cost_micro_usd", totalCost,
-					"reserved_micro_usd", pr.ReservedMicroUSD,
-					"uncapped_overage_micro_usd", overage,
-				)
-				s.ddIncr("billing.cost_clamped", []string{"model:" + pr.Model})
-				overage = pr.ReservedMicroUSD
-				totalCost = pr.ReservedMicroUSD * 2
+		default:
+			if refund > 0 {
+				s.ddHistogram("billing.settlement_refund_micro_usd", float64(refund), []string{"model:" + pr.Model})
 			}
-			if err := s.ledger.Charge(pr.ConsumerKey, overage, "overage:"+msg.RequestID); err != nil {
-				// Overage charge failed — clamp to reservation so
-				// the provider still gets paid something.
-				if errors.Is(err, store.ErrInsufficientBalance) {
-					s.logger.Warn("overage charge failed (insufficient balance) — clamping to reservation",
-						"provider_id", providerID,
-						"request_id", msg.RequestID,
-						"reported_cost_micro_usd", totalCost,
-						"reserved_micro_usd", pr.ReservedMicroUSD,
-						"overage_micro_usd", overage,
-					)
-				} else {
-					s.logger.Error("overage charge failed (DB error) — clamping to reservation",
-						"provider_id", providerID,
-						"request_id", msg.RequestID,
-						"reported_cost_micro_usd", totalCost,
-						"reserved_micro_usd", pr.ReservedMicroUSD,
-						"overage_micro_usd", overage,
-						"error", err,
-					)
-				}
-				s.ddIncr("billing.cost_clamped", []string{"model:" + pr.Model})
-				totalCost = pr.ReservedMicroUSD
-			} else {
-				s.logger.Info("overage charged to consumer",
-					"provider_id", providerID,
-					"request_id", msg.RequestID,
-					"overage_micro_usd", overage,
-					"total_cost_micro_usd", totalCost,
-				)
-				s.ddIncr("billing.overage_charged", []string{"model:" + pr.Model})
-				s.ddHistogram("billing.overage_micro_usd", float64(overage), []string{"model:" + pr.Model})
-				pr.ReservedMicroUSD = totalCost
-			}
-			// Recompute payout after potential clamp.
-			providerPayout = payments.ProviderPayoutWithPercent(totalCost, feePercent)
-		} else if totalCost < pr.ReservedMicroUSD {
-			refund := pr.ReservedMicroUSD - totalCost
-			start := time.Now()
-			// Financial: a failed refund over-charges the consumer. Never swallow it.
-			if err := s.store.Credit(pr.ConsumerKey, refund, store.LedgerRefund, msg.RequestID); err != nil {
-				s.logger.Error("failed to credit settlement refund to consumer",
-					"request_id", msg.RequestID, "refund_micro_usd", refund, "error", err)
-				s.ddIncr("billing.credit_failed", []string{"op:settlement_refund"})
-			}
-			s.ddHistogram("billing.settlement_refund_micro_usd", float64(refund), []string{"model:" + pr.Model})
 			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:settlement_refund"})
 		}
 	} else if !freeSelfRoute {

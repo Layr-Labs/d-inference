@@ -124,6 +124,7 @@ Date: 2026-07-10
 | 115 | cutover-drain-all one-shot multi-tenant | `POST /v1/admin/cutover-drain-all` loops accounts then outbox until ready; aborts on steal; quiescence hint prefers it |
 | 116 | cutover-drain-all allowlist + races | Optional `accounts` allowlist scopes cutover; concurrent drain-all and deposits conserve; idempotent when ready |
 | 117 | CLI demo-cutover-drain-all | `--demo-cutover-drain-all` clears multi-account reserved+held orphans then drains outbox |
+| 118 | cutover-drain-all allowlist edges + mid-round ready | Disjoint concurrent allowlists conserve. max_rounds=1 clears multi-tenant via mid-round ready check. No-progress abort if accounts unchanged |
 
 ## Deleted Go mechanisms (do not port)
 

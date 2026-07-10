@@ -2402,6 +2402,67 @@ async fn admin_cutover_drain_all(
             "accounts": accounts,
             "results": round_results,
         }));
+
+        // Re-check within the same round so max_rounds=1 can still finish (DECISIONS #118).
+        let accounts_after = {
+            let led = state.ledger.lock().await;
+            let epoch = state.ownership.epoch().0;
+            filter_accounts(
+                accounts_needing_cutover_from(&led, epoch),
+                allowlist.as_ref(),
+            )
+        };
+        let outbox_after = {
+            let box_ = state.outbox.lock().await;
+            box_.pending_under_retry_cap()
+        };
+        if accounts_after.is_empty() && outbox_after == 0 {
+            let all_remaining = {
+                let led = state.ledger.lock().await;
+                accounts_needing_cutover_from(&led, state.ownership.epoch().0)
+            };
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "action": "cutover_drain_all",
+                    "ready": all_remaining.is_empty(),
+                    "scoped_ready": true,
+                    "rounds_run": round + 1,
+                    "rounds": rounds,
+                    "accounts_cleared": accounts_cleared,
+                    "accounts_needing_cutover": all_remaining,
+                    "account_allowlist": req.accounts,
+                    "outbox_retryable": 0,
+                })),
+            )
+                .into_response();
+        }
+        if accounts_after.is_empty() && outbox_after > 0 {
+            // Fall through to next round which will take the outbox-only branch.
+            continue;
+        }
+        if accounts_after == accounts {
+            // No progress this round — refuse to spin until max_rounds (DECISIONS #118).
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": {
+                        "message": "cutover-drain-all made no progress clearing accounts",
+                        "type": "server_error",
+                        "code": "cutover_drain_all_no_progress"
+                    },
+                    "action": "cutover_drain_all_aborted",
+                    "phase": "no_progress",
+                    "round": round,
+                    "rounds": rounds,
+                    "accounts_cleared": accounts_cleared,
+                    "accounts_needing_cutover": accounts_after,
+                    "account_allowlist": req.accounts,
+                    "ready": false,
+                })),
+            )
+                .into_response();
+        }
     }
 
     let (remaining, outbox_retryable, active) = {

@@ -657,3 +657,11 @@ drain conserve balances. Idempotent when already quiescent (`rounds_run=0`).
 multi-account adopt→recover/force-settle loop then outbox drain, restoring
 each tenant balance.
 
+### cutover-drain-all allowlist edges + mid-round ready (DECISIONS #118)
+
+Concurrent disjoint allowlist cutover-drain-all calls conserve each ledger.
+`max_rounds=1` still reaches ready because readiness is re-checked after the
+account-cutover phase within the same round. If an account-cutover round leaves
+the same non-empty account set, abort with `cutover_drain_all_no_progress`.
+Unknown allowlist entries yield `scoped_ready` without touching foreign orphans.
+

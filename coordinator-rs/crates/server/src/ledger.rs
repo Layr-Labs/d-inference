@@ -830,6 +830,36 @@ impl MemoryLedger {
         (needs_adopt, reserved, held)
     }
 
+    /// Per-account orphan counts for multi-tenant cutover (DECISIONS #110).
+    /// Returns sorted `(account_id, needs_adopt, reserved_not_started, held)`.
+    pub fn orphan_summary_by_account(
+        &self,
+        current_epoch: u64,
+    ) -> Vec<(String, usize, usize, usize)> {
+        use std::collections::BTreeMap;
+        let mut map: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
+        for j in self.jobs.values() {
+            if j.disposition.is_some() {
+                continue;
+            }
+            let entry = map.entry(j.account_id.clone()).or_insert((0, 0, 0));
+            if j.funded_start {
+                entry.2 += 1;
+            } else {
+                entry.1 += 1;
+            }
+            if j.fencing_epoch != 0
+                && current_epoch != 0
+                && j.fencing_epoch != current_epoch
+            {
+                entry.0 += 1;
+            }
+        }
+        map.into_iter()
+            .map(|(acct, (a, r, h))| (acct, a, r, h))
+            .collect()
+    }
+
     /// Jobs that are start_authorized but not yet disposed (held for review).
     pub fn held_start_authorized_count(&self) -> usize {
         self.jobs

@@ -116,6 +116,7 @@ Date: 2026-07-10
 | 107 | Account filter on held-review + adopt-jobs | held-review-batch / adopt-jobs accept `account` scope. Concurrent review ∥ force-settle never double-charges |
 | 108 | Outbox-drain mid-flight ownership fence | outbox-drain re-checks ownership per entry; abort returns partial acked_count; resume drains remainder |
 | 109 | cutover-drain preserves clear on drain abort | When clear succeeds but outbox-drain aborts mid-flight, response includes `clear_orphans` + partial drain; resume via outbox-drain or cutover-drain |
+| 110 | Quiescence orphan_summary_by_account | Quiescence lists per-account orphan counts. Deposits ∥ cutover drain-abort conserve balance after resume |
 
 ## Deleted Go mechanisms (do not port)
 

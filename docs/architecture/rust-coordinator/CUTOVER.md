@@ -594,3 +594,17 @@ account leaves foreign orphans (quiescence ready=false).
 returns `outbox_drain_aborted` with partial `acked_count`; remaining entries
 stay retryable until re-acquire + drain.
 
+### cutover-drain preserves clear on drain abort (DECISIONS #109)
+
+When clear-orphans succeeds but outbox-drain aborts mid-flight, cutover-drain
+returns `cutover_drain_aborted` / `phase=outbox_drain` with the full
+`clear_orphans` body plus partial drain stats. Money is already restored;
+ops resume with outbox-drain (or cutover-drain again). Quiescence
+`cutover_hint=outbox-drain`.
+
+### Quiescence orphan_summary_by_account (DECISIONS #110)
+
+`GET /v1/admin/quiescence` includes `orphan_summary_by_account` with per-account
+needs_adopt / reserved / held counts for multi-tenant cutover. Concurrent
+deposits during cutover drain-abort still conserve once ownership is restored.
+

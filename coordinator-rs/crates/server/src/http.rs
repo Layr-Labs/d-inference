@@ -416,10 +416,22 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     } else {
         0
     };
-    let (bal, wdr, active_jobs, active_job_ids, active_jobs_detail, held_start_authorized, held_job_ids, orphan_summary) = {
+    let (bal, wdr, active_jobs, active_job_ids, active_jobs_detail, held_start_authorized, held_job_ids, orphan_summary, orphan_summary_by_account) = {
         let led = state.ledger.lock().await;
         let (b, w) = led.balance(&state.pilot_account);
         let (needs_adopt, reserved, held) = led.orphan_summary_counts(detail_epoch);
+        let by_acct: Vec<Value> = led
+            .orphan_summary_by_account(detail_epoch)
+            .into_iter()
+            .map(|(account, needs_adopt, reserved, held)| {
+                json!({
+                    "account": account,
+                    "needs_adopt_count": needs_adopt,
+                    "reserved_not_started_count": reserved,
+                    "held_start_authorized_count": held,
+                })
+            })
+            .collect();
         (
             b,
             w,
@@ -433,6 +445,7 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 "reserved_not_started_count": reserved,
                 "held_start_authorized_count": held,
             }),
+            by_acct,
         )
     };
     let (placement_version, demand) = {
@@ -491,6 +504,7 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             "active_job_ids": active_job_ids,
             "active_jobs_detail": active_jobs_detail,
             "orphan_summary": orphan_summary,
+            "orphan_summary_by_account": orphan_summary_by_account,
             "held_start_authorized": held_start_authorized,
             "held_start_authorized_job_ids": held_job_ids,
             "placement_version": placement_version,

@@ -532,3 +532,9 @@ Batch abort also returns `remaining_active_job_ids` /
 deposits and force-settle-batch conserve money (exactly one settle; balance =
 start + deposits).
 
+### Deposit/recover + held-review vs force (DECISIONS #99)
+
+Concurrent deposits and recover-undispatched-batch conserve money. Concurrent
+held-review-batch with force-settle-batch never lets review move money; settle
+wins exactly once.
+

@@ -406,4 +406,20 @@ mod tests {
         // reserved 1M, charged 400k → refund 600k → bal = 5M-1M+600k = 4.6M
         assert_eq!(led.balance("a").0, 4_600_000);
     }
+
+    #[test]
+    fn settle_rejects_actual_exceeding_reservation() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0);
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        assert!(matches!(
+            led.settle(OperationKey("s".into()), "j", "a", 1_000_001, "d-over"),
+            Err(LedgerError::Conflict(_))
+        ));
+        // Balance still held in reservation (not settled, not released).
+        assert_eq!(led.balance("a").0, 4_000_000);
+        assert_eq!(led.active_job_count(), 1);
+    }
 }

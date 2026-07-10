@@ -38,3 +38,27 @@ func TestGate_AllowsWhenNoRustActive(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestGate_EpochFencingMonotonicAcquire(t *testing.T) {
+	g := NewGate(false)
+	if err := g.Acquire(1); err != nil {
+		t.Fatal(err)
+	}
+	if g.Epoch() != 1 {
+		t.Fatalf("epoch=%d", g.Epoch())
+	}
+	// Re-acquire with a higher epoch (blue/green handoff simulation).
+	if err := g.Acquire(5); err != nil {
+		t.Fatal(err)
+	}
+	if g.Epoch() != 5 || !g.Holding() {
+		t.Fatalf("epoch=%d holding=%v", g.Epoch(), g.Holding())
+	}
+	g.Release()
+	if g.Holding() {
+		t.Fatal("expected not holding after Release")
+	}
+	if err := g.AssertHolding(); err != ErrOwnershipLost {
+		t.Fatalf("err=%v", err)
+	}
+}

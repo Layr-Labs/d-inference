@@ -446,3 +446,10 @@ Proven path: steal → quiescence `needs_adopt` → clear-orphans → outbox-dra
 `ready=true`. Optional `actual_micro_usd` on clear-orphans charges held jobs
 (clamped to reserved) instead of full refund.
 
+### Clear-orphans mid-flight ownership fence (DECISIONS #85)
+
+`clear-orphans` and batch recover/force-settle re-assert OwnershipGate before
+each money-moving phase/job. Mid-flight steal returns 503 `ownership_lost`
+with partial progress (`adopted`/`released`/`settled` counts) and does not
+continue charging/refunding under a stolen fence.
+

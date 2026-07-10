@@ -55,6 +55,25 @@ pub struct AppState {
     pub terminals: Arc<Mutex<MemoryTerminalStore>>,
 }
 
+/// Test hook: invoked with phase name during clear-orphans (DECISIONS #85).
+/// Production leaves this unset. Tests may release ownership mid-flight.
+static CLEAR_ORPHANS_PHASE_HOOK: std::sync::Mutex<
+    Option<Arc<dyn Fn(&str) + Send + Sync>>,
+> = std::sync::Mutex::new(None);
+
+/// Install/clear the clear-orphans phase hook (tests only).
+pub fn set_clear_orphans_phase_hook(hook: Option<Arc<dyn Fn(&str) + Send + Sync>>) {
+    *CLEAR_ORPHANS_PHASE_HOOK.lock().unwrap() = hook;
+}
+
+fn invoke_clear_orphans_phase(phase: &str) {
+    if let Ok(guard) = CLEAR_ORPHANS_PHASE_HOOK.lock() {
+        if let Some(hook) = guard.as_ref() {
+            hook(phase);
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModelCard {
     pub id: String,
@@ -702,7 +721,7 @@ async fn admin_force_settle_batch(
     let account = req
         .account
         .unwrap_or_else(|| state.pilot_account.clone());
-    let epoch = state.ownership.epoch().0;
+    let mut epoch = state.ownership.epoch().0;
 
     let ids = {
         let led = state.ledger.lock().await;
@@ -719,6 +738,11 @@ async fn admin_force_settle_batch(
     let mut charged_total = 0_i64;
 
     for job_id in ids {
+        // Re-check holding per job (DECISIONS #85).
+        if let Err(resp) = require_holding(&state) {
+            return resp;
+        }
+        epoch = state.ownership.epoch().0;
         let digest = format!("force-settle-batch:{job_id}");
         let (action, charged) = {
             let mut led = state.ledger.lock().await;
@@ -927,7 +951,7 @@ async fn admin_recover_undispatched_batch(
     let account = req
         .account
         .unwrap_or_else(|| state.pilot_account.clone());
-    let epoch = state.ownership.epoch().0;
+    let mut epoch = state.ownership.epoch().0;
 
     let mut released = Vec::new();
     let mut skipped = Vec::new();
@@ -944,6 +968,11 @@ async fn admin_recover_undispatched_batch(
     };
 
     for job_id in ids {
+        // Re-check holding per job (DECISIONS #85).
+        if let Err(resp) = require_holding(&state) {
+            return resp;
+        }
+        epoch = state.ownership.epoch().0;
         let (action, refunded) = {
             let mut led = state.ledger.lock().await;
             let reserved = led.job_reserved_total(&job_id).map(|m| m.0).unwrap_or(0);
@@ -1205,7 +1234,7 @@ async fn admin_clear_orphans(
     let account = req
         .account
         .unwrap_or_else(|| state.pilot_account.clone());
-    let epoch = state.ownership.epoch().0;
+    let mut epoch = state.ownership.epoch().0;
 
     // 1) Adopt all active jobs to current epoch.
     let mut adopted = Vec::new();
@@ -1221,6 +1250,21 @@ async fn admin_clear_orphans(
             }
         }
     }
+    invoke_clear_orphans_phase("after_adopt");
+
+    // Re-check holding before money moves (DECISIONS #85).
+    if let Err(resp) = require_holding(&state) {
+        return ownership_lost_partial(
+            "after_adopt",
+            &adopted,
+            &[],
+            &[],
+            0,
+            0,
+            resp,
+        );
+    }
+    epoch = state.ownership.epoch().0;
 
     // 2) Recover reserved-not-started.
     let mut released = Vec::new();
@@ -1231,6 +1275,18 @@ async fn admin_clear_orphans(
             led.reserved_not_started_job_ids()
         };
         for job_id in ids {
+            if let Err(resp) = require_holding(&state) {
+                return ownership_lost_partial(
+                    "during_recover",
+                    &adopted,
+                    &released,
+                    &[],
+                    refund_total,
+                    0,
+                    resp,
+                );
+            }
+            epoch = state.ownership.epoch().0;
             let refunded = {
                 let mut led = state.ledger.lock().await;
                 let reserved = led.job_reserved_total(&job_id).map(|m| m.0).unwrap_or(0);
@@ -1251,6 +1307,20 @@ async fn admin_clear_orphans(
             }
         }
     }
+    invoke_clear_orphans_phase("after_recover");
+
+    if let Err(resp) = require_holding(&state) {
+        return ownership_lost_partial(
+            "after_recover",
+            &adopted,
+            &released,
+            &[],
+            refund_total,
+            0,
+            resp,
+        );
+    }
+    epoch = state.ownership.epoch().0;
 
     // 3) Force-settle remaining holds.
     let mut settled = Vec::new();
@@ -1261,6 +1331,18 @@ async fn admin_clear_orphans(
             led.held_start_authorized_job_ids()
         };
         for job_id in ids {
+            if let Err(resp) = require_holding(&state) {
+                return ownership_lost_partial(
+                    "during_force_settle",
+                    &adopted,
+                    &released,
+                    &settled,
+                    refund_total,
+                    charged_total,
+                    resp,
+                );
+            }
+            epoch = state.ownership.epoch().0;
             let digest = format!("clear-orphans:{job_id}");
             let charged = {
                 let mut led = state.ledger.lock().await;
@@ -1334,6 +1416,39 @@ async fn admin_clear_orphans(
             "balance_micro_usd": bal,
             "active_jobs": active,
             "held_start_authorized": held,
+        })),
+    )
+        .into_response()
+}
+
+/// Partial clear-orphans response when ownership is lost mid-flight (DECISIONS #85).
+fn ownership_lost_partial(
+    phase: &str,
+    adopted: &[String],
+    released: &[String],
+    settled: &[String],
+    refund_total: i64,
+    charged_total: i64,
+    _holding_resp: axum::response::Response,
+) -> axum::response::Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "error": {
+                "message": format!("ownership lost during clear-orphans ({phase})"),
+                "type": "invalid_request_error",
+                "code": "ownership_lost"
+            },
+            "action": "clear_orphans_aborted",
+            "phase": phase,
+            "adopted_count": adopted.len(),
+            "adopted": adopted,
+            "released_count": released.len(),
+            "released": released,
+            "refunded_micro_usd": refund_total,
+            "settled_count": settled.len(),
+            "settled": settled,
+            "charged_micro_usd": charged_total,
         })),
     )
         .into_response()

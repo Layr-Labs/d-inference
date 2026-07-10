@@ -57,6 +57,8 @@ type MemoryStore struct {
 	ledgerSeq                    int64 // auto-increment ID
 	balanceReservationOperations map[string]balanceReservationOperation
 	inferenceSettlements         map[string]*InferenceSettlement
+	inferenceSettlementReviews   map[string]*InferenceSettlement
+	inferenceSettlementReasons   map[string]string
 
 	// Referral system
 	referrersByCode    map[string]*Referrer // code → referrer
@@ -170,6 +172,8 @@ func NewMemory(scfg Config) *MemoryStore {
 		ledgerEntries:                 make([]LedgerEntry, 0),
 		balanceReservationOperations:  make(map[string]balanceReservationOperation),
 		inferenceSettlements:          make(map[string]*InferenceSettlement),
+		inferenceSettlementReviews:    make(map[string]*InferenceSettlement),
+		inferenceSettlementReasons:    make(map[string]string),
 		referrersByCode:               make(map[string]*Referrer),
 		referrersByAccount:            make(map[string]*Referrer),
 		referrals:                     make(map[string]string),

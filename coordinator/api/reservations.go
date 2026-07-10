@@ -95,7 +95,7 @@ func (s *Server) reserveInferenceBalanceWithRetry(
 	operationKey string,
 ) (int64, bool, error) {
 	var lastErr error
-	for attempt := range settlementRetryAttempts {
+	for attempt := 0; ; attempt++ {
 		reservedWithdrawable, applied, err := s.store.ReserveInferenceBalance(
 			accountID, amountMicroUSD, operationKey,
 		)
@@ -107,11 +107,12 @@ func (s *Server) reserveInferenceBalanceWithRetry(
 			errors.Is(err, store.ErrFinancialOperationConflict) {
 			return 0, false, err
 		}
-		if attempt+1 < settlementRetryAttempts {
-			time.Sleep(time.Duration(attempt+1) * 50 * time.Millisecond)
+		if !errors.Is(err, store.ErrCommitOutcomeUnknown) &&
+			attempt+1 >= settlementRetryAttempts {
+			return 0, false, lastErr
 		}
+		time.Sleep(time.Duration(min(attempt+1, 100)) * 50 * time.Millisecond)
 	}
-	return 0, false, lastErr
 }
 
 func (s *Server) releaseInitialReservation(accountID, model string, amount, reservedWithdrawable int64, reservationID string, serviceMode bool) {
@@ -149,23 +150,18 @@ func (s *Server) releaseInferenceReservationWithRetry(
 	amountMicroUSD, withdrawableMicroUSD int64,
 	operationKey, reference string,
 ) (bool, error) {
-	var lastErr error
-	for attempt := range settlementRetryAttempts {
+	for attempt := 0; ; attempt++ {
 		applied, err := s.store.ReleaseInferenceReservation(
 			accountID, amountMicroUSD, withdrawableMicroUSD, operationKey, reference,
 		)
 		if err == nil {
 			return applied, nil
 		}
-		lastErr = err
-		if errors.Is(err, store.ErrFinancialOperationConflict) {
+		if store.IsPermanentFinancialError(err) {
 			return false, err
 		}
-		if attempt+1 < settlementRetryAttempts {
-			time.Sleep(time.Duration(attempt+1) * 50 * time.Millisecond)
-		}
+		time.Sleep(time.Duration(min(attempt+1, 100)) * 50 * time.Millisecond)
 	}
-	return false, lastErr
 }
 
 func reservationFinalizationKey(reservationID string) string {

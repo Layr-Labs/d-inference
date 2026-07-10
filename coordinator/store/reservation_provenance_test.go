@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestInferenceReservationPreservesMixedProvenance(t *testing.T) {
@@ -194,5 +195,87 @@ func TestRejectedReservationOperationCanRetryAfterFunding(t *testing.T) {
 				t.Fatalf("balance = %d, want 10000", balance)
 			}
 		})
+	}
+}
+
+func TestPostgresRecoversStaleBaseAndTopUpReservations(t *testing.T) {
+	backend := testPostgresStore(t)
+	const accountID = "stale-reservation-account"
+	if err := backend.Credit(accountID, 100_000, LedgerStripeDeposit, "deposit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.CreditWithdrawable(accountID, 50_000, LedgerPayout, "earning"); err != nil {
+		t.Fatal(err)
+	}
+	const reservationID = "stale-reservation"
+	if _, _, err := backend.ReserveInferenceBalance(accountID, 100_000, reservationID); err != nil {
+		t.Fatal(err)
+	}
+	const topupKey = "topup:stale-reservation:attempt:provider"
+	if _, _, err := backend.ReserveInferenceBalance(accountID, 20_000, topupKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.pool.Exec(
+		t.Context(),
+		`UPDATE balance_reservation_operations
+		 SET created_at = NOW() - INTERVAL '1 hour'
+		 WHERE operation_key IN ($1, $2)`,
+		reservationID, topupKey,
+	); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := backend.RecoverStaleInferenceReservations(time.Now().Add(-20 * time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1", recovered)
+	}
+	if balance, withdrawable := backend.GetBalanceWithWithdrawable(accountID); balance != 150_000 || withdrawable != 50_000 {
+		t.Fatalf("recovered balance = %d/%d, want 150000/50000", balance, withdrawable)
+	}
+	recovered, err = backend.RecoverStaleInferenceReservations(time.Now().Add(-20 * time.Minute))
+	if err != nil || recovered != 0 {
+		t.Fatalf("recovery replay = %d, %v; want 0", recovered, err)
+	}
+}
+
+func TestPostgresStaleRecoveryPreservesReviewPendingReservation(t *testing.T) {
+	backend := testPostgresStore(t)
+	const (
+		accountID     = "review-reservation-account"
+		reservationID = "review-reservation"
+	)
+	if err := backend.Credit(accountID, 100_000, LedgerStripeDeposit, "deposit"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := backend.ReserveInferenceBalance(accountID, 50_000, reservationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.pool.Exec(
+		t.Context(),
+		`UPDATE balance_reservation_operations
+		 SET created_at = NOW() - INTERVAL '1 hour'
+		 WHERE operation_key = $1`,
+		reservationID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.RecordInferenceSettlementReview(&InferenceSettlement{
+		ReservationID: reservationID, RequestID: "review-request",
+		ConsumerAccountID: accountID, ReservedMicroUSD: 50_000,
+		ReservationPreDebited: true,
+	}, "invalid provider terminal"); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := backend.RecoverStaleInferenceReservations(time.Now().Add(-20 * time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 0 {
+		t.Fatalf("review-pending reservation recovered automatically: %d", recovered)
+	}
+	if balance := backend.GetBalance(accountID); balance != 50_000 {
+		t.Fatalf("review-pending balance = %d, want held 50000", balance)
 	}
 }

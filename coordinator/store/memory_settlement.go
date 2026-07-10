@@ -132,3 +132,30 @@ func cloneInferenceSettlement(settlement *InferenceSettlement) *InferenceSettlem
 	}
 	return &cp
 }
+
+func (s *MemoryStore) RecordInferenceSettlementReview(
+	settlement *InferenceSettlement,
+	reason string,
+) error {
+	if settlement == nil || settlement.ReservationID == "" ||
+		settlement.RequestID == "" || reason == "" {
+		return ErrFinancialOperationConflict
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing := s.inferenceSettlementReviews[settlement.ReservationID]; existing != nil {
+		if existing.RequestID != settlement.RequestID {
+			return ErrFinancialOperationConflict
+		}
+		return nil
+	}
+	s.inferenceSettlementReviews[settlement.ReservationID] = cloneInferenceSettlement(settlement)
+	s.inferenceSettlementReasons[settlement.ReservationID] = reason
+	return nil
+}
+
+func (s *MemoryStore) RecoverStaleInferenceReservations(_ time.Time) (int, error) {
+	// The memory store has no restart persistence, so it cannot contain holds
+	// orphaned by a previous process.
+	return 0, nil
+}

@@ -210,6 +210,14 @@ type LedgerStore interface {
 	// projections. Stable reservation replay returns applied=false.
 	SettleInference(settlement *InferenceSettlement) (InferenceSettlementDisposition, error)
 
+	// RecordInferenceSettlementReview durably retains a terminal whose immutable
+	// financial command was rejected as permanently invalid.
+	RecordInferenceSettlementReview(settlement *InferenceSettlement, reason string) error
+
+	// RecoverStaleInferenceReservations releases old durable holds that have no
+	// settlement, review, or prior release disposition.
+	RecoverStaleInferenceReservations(before time.Time) (released int, err error)
+
 	// GetWithdrawableBalance returns the withdrawable balance in micro-USD.
 	GetWithdrawableBalance(accountID string) int64
 

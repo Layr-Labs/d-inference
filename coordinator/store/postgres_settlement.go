@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -9,6 +10,40 @@ import (
 
 	"github.com/jackc/pgx/v5"
 )
+
+func (s *PostgresStore) RecordInferenceSettlementReview(
+	settlement *InferenceSettlement,
+	reason string,
+) error {
+	if settlement == nil || settlement.ReservationID == "" ||
+		settlement.RequestID == "" || reason == "" {
+		return ErrFinancialOperationConflict
+	}
+	payload, err := json.Marshal(settlement)
+	if err != nil {
+		return fmt.Errorf("store: encode settlement review: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO inference_settlement_reviews
+			(reservation_id, request_id, reason, payload)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (reservation_id) DO UPDATE SET
+			reason = EXCLUDED.reason,
+			payload = EXCLUDED.payload,
+			updated_at = NOW()
+		 WHERE inference_settlement_reviews.request_id = EXCLUDED.request_id`,
+		settlement.ReservationID, settlement.RequestID, reason, payload,
+	)
+	if err != nil {
+		return fmt.Errorf("store: record settlement review: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrFinancialOperationConflict
+	}
+	return nil
+}
 
 type persistedInferenceSettlement struct {
 	requestID                    string

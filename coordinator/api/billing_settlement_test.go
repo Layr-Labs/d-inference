@@ -9,6 +9,7 @@ package api
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -381,8 +382,100 @@ func TestCompletionSettlementFailureDoesNotSignalSuccessOrMoveBeneficiaryMoney(t
 	if payout := st.GetWithdrawableBalance("failed-settlement-provider-account"); payout != 0 {
 		t.Fatalf("failed settlement paid provider %d", payout)
 	}
-	if pr.IsReservationFinalized() {
-		t.Fatal("failed settlement finalized the local reservation")
+	if !pr.IsReservationFinalized() {
+		t.Fatal("durable review did not fence the local reservation")
+	}
+}
+
+func TestInvalidProviderUsageReleasesReservationWithoutPayout(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	const (
+		model         = "invalid-usage-model"
+		reservationID = "invalid-usage-reservation"
+		reserved      = int64(500)
+	)
+	initialBalance := ledger.Balance(testConsumerID)
+	reservedWithdrawable, _, err := st.ReserveInferenceBalance(
+		testConsumerID, reserved, reservationID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := srv.registry.Register("invalid-usage-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+	})
+	provider.Mu().Lock()
+	provider.AccountID = "invalid-usage-provider-account"
+	provider.Mu().Unlock()
+	pr := &registry.PendingRequest{
+		RequestID: "invalid-usage-attempt", ReservationID: reservationID,
+		Model: model, ConsumerKey: testConsumerID, RequestedMaxTokens: 100,
+		ReservedMicroUSD: reserved, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: reserved, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID,
+		Usage: protocol.UsageInfo{PromptTokens: int(math.MaxInt32) + 1, CompletionTokens: 10},
+	})
+	if balance := ledger.Balance(testConsumerID); balance != initialBalance {
+		t.Fatalf("invalid usage left consumer charged: balance=%d want=%d", balance, initialBalance)
+	}
+	if payout := st.GetWithdrawableBalance("invalid-usage-provider-account"); payout != 0 {
+		t.Fatalf("invalid usage paid provider %d", payout)
+	}
+	select {
+	case terminal := <-pr.ErrorCh:
+		if terminal.ErrorReason != "invalid_provider_usage" {
+			t.Fatalf("terminal = %+v", terminal)
+		}
+	default:
+		t.Fatal("invalid usage did not produce error terminal")
+	}
+}
+
+func TestProviderCompletionUsageIsCappedAtFundedOutputBound(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	const (
+		model         = "capped-usage-model"
+		reservationID = "capped-usage-reservation"
+		reserved      = int64(500)
+	)
+	initialBalance := ledger.Balance(testConsumerID)
+	reservedWithdrawable, _, err := st.ReserveInferenceBalance(
+		testConsumerID, reserved, reservationID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := srv.registry.Register("capped-usage-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+	})
+	provider.Mu().Lock()
+	provider.AccountID = "capped-usage-provider-account"
+	provider.Mu().Unlock()
+	pr := &registry.PendingRequest{
+		RequestID: "capped-usage-attempt", ReservationID: reservationID,
+		Model: model, ConsumerKey: testConsumerID, RequestedMaxTokens: 10,
+		ReservedMicroUSD: reserved, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: reserved, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID,
+		Usage: protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 100},
+	})
+	expectedCost := payments.CalculateCost(model, 1000, 10)
+	if balance := ledger.Balance(testConsumerID); balance != initialBalance-expectedCost {
+		t.Fatalf("consumer balance = %d, want %d", balance, initialBalance-expectedCost)
+	}
+	rows := st.UsageByConsumer(testConsumerID)
+	if len(rows) != 1 || rows[0].CompletionTokens != 10 {
+		t.Fatalf("capped usage rows = %+v", rows)
 	}
 }
 

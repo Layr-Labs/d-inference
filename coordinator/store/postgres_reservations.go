@@ -40,7 +40,7 @@ func (s *PostgresStore) ReserveInferenceBalance(accountID string, amountMicroUSD
 			return 0, false, ErrFinancialOperationConflict
 		}
 		if err := tx.Commit(ctx); err != nil {
-			return 0, false, fmt.Errorf("store: commit reservation replay: %w", err)
+			return 0, false, fmt.Errorf("store: commit reservation replay: %v: %w", err, ErrCommitOutcomeUnknown)
 		}
 		return existing.withdrawableMicroUSD, false, nil
 	}
@@ -51,11 +51,14 @@ func (s *PostgresStore) ReserveInferenceBalance(accountID string, amountMicroUSD
 		 FROM balances WHERE account_id = $1 FOR UPDATE`,
 		accountID,
 	).Scan(&balance, &withdrawable)
-	if errors.Is(err, pgx.ErrNoRows) || balance < amountMicroUSD {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, ErrInsufficientBalance
 	}
 	if err != nil {
 		return 0, false, fmt.Errorf("store: lock inference balance: %w", err)
+	}
+	if balance < amountMicroUSD {
+		return 0, false, ErrInsufficientBalance
 	}
 	reservedWithdrawable := max(int64(0), amountMicroUSD-(balance-withdrawable))
 	if reservedWithdrawable > withdrawable {
@@ -87,7 +90,7 @@ func (s *PostgresStore) ReserveInferenceBalance(accountID string, amountMicroUSD
 		return 0, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, false, fmt.Errorf("store: commit inference reservation: %w", err)
+		return 0, false, fmt.Errorf("store: commit inference reservation: %v: %w", err, ErrCommitOutcomeUnknown)
 	}
 	return reservedWithdrawable, true, nil
 }
@@ -117,7 +120,7 @@ func (s *PostgresStore) ReleaseInferenceReservation(accountID string, amountMicr
 			return false, ErrFinancialOperationConflict
 		}
 		if err := tx.Commit(ctx); err != nil {
-			return false, fmt.Errorf("store: commit release replay: %w", err)
+			return false, fmt.Errorf("store: commit release replay: %v: %w", err, ErrCommitOutcomeUnknown)
 		}
 		return false, nil
 	}
@@ -154,9 +157,169 @@ func (s *PostgresStore) ReleaseInferenceReservation(accountID string, amountMicr
 		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("store: commit reservation release: %w", err)
+		return false, fmt.Errorf("store: commit reservation release: %v: %w", err, ErrCommitOutcomeUnknown)
 	}
 	return true, nil
+}
+
+func (s *PostgresStore) RecoverStaleInferenceReservations(before time.Time) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("store: begin stale reservation recovery: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx,
+		`SELECT operation_key, account_id, amount_micro_usd, withdrawable_micro_usd
+		 FROM balance_reservation_operations AS reserve
+		 WHERE reserve.kind = 'reserve'
+		   AND reserve.operation_key NOT LIKE 'topup:%'
+		   AND reserve.created_at < $1
+		   AND NOT EXISTS (
+		       SELECT 1 FROM balance_reservation_operations AS final
+		       WHERE final.operation_key = 'finalize:' || reserve.operation_key
+		   )
+		   AND NOT EXISTS (
+		       SELECT 1 FROM inference_settlements
+		       WHERE reservation_id = reserve.operation_key
+		   )
+		   AND NOT EXISTS (
+		       SELECT 1 FROM inference_settlement_reviews
+		       WHERE reservation_id = reserve.operation_key
+		   )
+		 ORDER BY reserve.created_at
+		 LIMIT 100`,
+		before,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: find stale reservations: %w", err)
+	}
+	type staleReservation struct {
+		operationKey, accountID              string
+		amountMicroUSD, withdrawableMicroUSD int64
+	}
+	var stale []staleReservation
+	for rows.Next() {
+		var reservation staleReservation
+		if err := rows.Scan(
+			&reservation.operationKey, &reservation.accountID,
+			&reservation.amountMicroUSD, &reservation.withdrawableMicroUSD,
+		); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("store: scan stale reservation: %w", err)
+		}
+		stale = append(stale, reservation)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("store: iterate stale reservations: %w", err)
+	}
+	rows.Close()
+
+	released := 0
+	for _, reservation := range stale {
+		finalizationKey := "finalize:" + reservation.operationKey
+		if err := lockFinancialOperation(ctx, tx, finalizationKey); err != nil {
+			return 0, err
+		}
+		if _, found, err := reservationOperationTx(ctx, tx, finalizationKey); err != nil {
+			return 0, err
+		} else if found {
+			continue
+		}
+		var reviewPending bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (
+				SELECT 1 FROM inference_settlement_reviews WHERE reservation_id = $1
+			)`,
+			reservation.operationKey,
+		).Scan(&reviewPending); err != nil {
+			return 0, fmt.Errorf("store: recheck settlement review: %w", err)
+		}
+		if reviewPending {
+			continue
+		}
+		topups, err := staleReservationTopUps(ctx, tx, reservation.operationKey)
+		if err != nil {
+			return 0, err
+		}
+		total := reservation.amountMicroUSD
+		totalWithdrawable := reservation.withdrawableMicroUSD
+		for _, topup := range topups {
+			total += topup.amountMicroUSD
+			totalWithdrawable += topup.withdrawableMicroUSD
+		}
+		if err := creditBalanceTx(
+			ctx, tx, reservation.accountID, total, totalWithdrawable,
+			LedgerRefund, "stale_reservation_recovery:"+reservation.operationKey,
+		); err != nil {
+			return 0, err
+		}
+		if err := insertReservationOperationTx(ctx, tx, finalizationKey, persistedReservationOperation{
+			accountID: reservation.accountID, kind: "release",
+			amountMicroUSD: total, withdrawableMicroUSD: totalWithdrawable,
+		}); err != nil {
+			return 0, err
+		}
+		for _, topup := range topups {
+			releaseKey := "topup-release:" + topup.operationKey[len("topup:"):]
+			if err := insertReservationOperationTx(ctx, tx, releaseKey, persistedReservationOperation{
+				accountID: reservation.accountID, kind: "release",
+				amountMicroUSD:       topup.amountMicroUSD,
+				withdrawableMicroUSD: topup.withdrawableMicroUSD,
+			}); err != nil {
+				return 0, err
+			}
+		}
+		released++
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("store: commit stale reservation recovery: %v: %w", err, ErrCommitOutcomeUnknown)
+	}
+	return released, nil
+}
+
+func staleReservationTopUps(
+	ctx context.Context,
+	tx pgx.Tx,
+	reservationID string,
+) ([]persistedReservationOperationWithKey, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT operation_key, account_id, kind, amount_micro_usd, withdrawable_micro_usd
+		 FROM balance_reservation_operations AS topup
+		 WHERE topup.kind = 'reserve'
+		   AND topup.operation_key LIKE 'topup:' || $1 || ':%'
+		   AND NOT EXISTS (
+		       SELECT 1 FROM balance_reservation_operations AS released
+		       WHERE released.operation_key =
+		             'topup-release:' || substring(topup.operation_key FROM 7)
+		   )
+		 ORDER BY topup.operation_key
+		 FOR UPDATE`,
+		reservationID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: find stale reservation top-ups: %w", err)
+	}
+	defer rows.Close()
+	var operations []persistedReservationOperationWithKey
+	for rows.Next() {
+		var operation persistedReservationOperationWithKey
+		if err := rows.Scan(
+			&operation.operationKey, &operation.accountID, &operation.kind,
+			&operation.amountMicroUSD, &operation.withdrawableMicroUSD,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan stale reservation top-up: %w", err)
+		}
+		operations = append(operations, operation)
+	}
+	return operations, rows.Err()
+}
+
+type persistedReservationOperationWithKey struct {
+	operationKey string
+	persistedReservationOperation
 }
 
 func lockFinancialOperation(ctx context.Context, tx pgx.Tx, operationKey string) error {

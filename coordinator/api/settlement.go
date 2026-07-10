@@ -50,8 +50,13 @@ func (h *settlementHolder) hold(pr *registry.PendingRequest, grace time.Duration
 	}
 	h.mu.Lock()
 	if h.closed {
+		h.active++
 		h.mu.Unlock()
 		onExpiry(pr)
+		h.mu.Lock()
+		h.active--
+		h.cond.Broadcast()
+		h.mu.Unlock()
 		return
 	}
 	entry := &heldSettlement{pending: pr, onExpiry: onExpiry}

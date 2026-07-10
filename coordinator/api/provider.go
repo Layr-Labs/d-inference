@@ -29,7 +29,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -1571,6 +1571,25 @@ func (s *Server) handleInferenceAccepted(provider *registry.Provider, msg *proto
 // could skew routing calibration. The value is advisory, never a security gate.
 const maxPlausibleDecodeTPS = 10000.0
 
+func boundedProviderUsage(pr *registry.PendingRequest, usage protocol.UsageInfo) (protocol.UsageInfo, bool, bool) {
+	if usage.PromptTokens < 0 || usage.CompletionTokens < 0 ||
+		usage.ReasoningTokens < 0 || usage.PromptTokens > math.MaxInt32 ||
+		usage.CompletionTokens > math.MaxInt32 {
+		return protocol.UsageInfo{}, true, false
+	}
+	capped := false
+	if pr != nil && pr.RequestedMaxTokens > 0 &&
+		usage.CompletionTokens > pr.RequestedMaxTokens {
+		usage.CompletionTokens = pr.RequestedMaxTokens
+		capped = true
+	}
+	if usage.ReasoningTokens > usage.CompletionTokens {
+		usage.ReasoningTokens = usage.CompletionTokens
+		capped = true
+	}
+	return usage, false, capped
+}
+
 type claimedCompletion struct {
 	pending      *registry.PendingRequest
 	consumerGone bool
@@ -1630,6 +1649,25 @@ func (s *Server) handleClaimedComplete(
 	claimed *claimedCompletion,
 ) {
 	pr := claimed.pending
+	boundedUsage, invalidUsage, usageCapped := boundedProviderUsage(pr, msg.Usage)
+	if invalidUsage {
+		s.logger.Error("provider reported invalid token usage",
+			"provider_id", providerID,
+			"request_id", msg.RequestID,
+		)
+		s.ddIncr("billing.invalid_provider_usage", []string{"model:" + pr.Model})
+		s.registry.RecordJobFailure(providerID)
+	}
+	if usageCapped {
+		s.logger.Warn("provider usage exceeded funded output bound — capping",
+			"provider_id", providerID,
+			"request_id", msg.RequestID,
+			"completion_tokens", msg.Usage.CompletionTokens,
+			"funded_completion_tokens", boundedUsage.CompletionTokens,
+		)
+		s.ddIncr("billing.provider_usage_capped", []string{"model:" + pr.Model})
+	}
+	msg.Usage = boundedUsage
 	// A parked record means the consumer handler already returned: there is no
 	// channel reader, and registry.Disconnect may have already CLOSED the
 	// channels (park-before-remove leaves a window where the record is in both
@@ -1683,9 +1721,11 @@ func (s *Server) handleClaimedComplete(
 	// dispatch.writeCommittedResponse), because that goroutine owns pr.Timing;
 	// reading it from this provider read-loop goroutine would race the dispatch
 	// writes. Passing 0 latency counts the success without touching the EWMA.
-	s.registry.RecordJobSuccess(providerID, 0)
-	// Serving this model proves the pair can load — lift any cool-down early.
-	s.registry.ClearDispatchLoadCooldown(providerID, pr.Model)
+	if !invalidUsage {
+		s.registry.RecordJobSuccess(providerID, 0)
+		// Serving this model proves the pair can load — lift any cool-down early.
+		s.registry.ClearDispatchLoadCooldown(providerID, pr.Model)
+	}
 
 	// Resolve the consumer once: platform-fee override (nil = global default)
 	// and whether this is a wholesale/service channel (e.g. OpenRouter). A
@@ -1720,6 +1760,9 @@ func (s *Server) handleClaimedComplete(
 		totalCost = payments.CalculateCostWithOverridesNoMinimum(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
 	} else {
 		totalCost = payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
+	}
+	if invalidUsage {
+		totalCost = 0
 	}
 
 	providerPayout := payments.ProviderPayoutWithPercent(totalCost, feePercent)
@@ -1821,7 +1864,7 @@ func (s *Server) handleClaimedComplete(
 			}
 		}
 		var usage *store.UsageRecord
-		if !freeSelfRoute {
+		if !freeSelfRoute && !invalidUsage {
 			usage = &store.UsageRecord{
 				ProviderID: providerID, ConsumerKey: pr.ConsumerKey,
 				KeyID: pr.KeyID, Model: pr.Model, PublicModel: consumerModel(pr),
@@ -1859,6 +1902,14 @@ func (s *Server) handleClaimedComplete(
 				"error", finalizeErr,
 			)
 			s.ddIncr("billing.settlement_failed", []string{"model:" + pr.Model})
+		case financialDisposition == store.InferenceSettlementReviewPending:
+			billingFinalized = false
+			s.logger.Error("inference settlement moved to durable review",
+				"provider_id", providerID,
+				"request_id", msg.RequestID,
+				"reservation_id", pr.ReservationID,
+			)
+			s.ddIncr("billing.settlement_review_pending", []string{"model:" + pr.Model})
 		case !finalized || !financialDisposition.IsSettled():
 			billingFinalized = false
 			s.logger.Warn("skipping already-finalized inference settlement",
@@ -1908,7 +1959,7 @@ func (s *Server) handleClaimedComplete(
 		s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:charge"})
 	}
 
-	if billingFinalized {
+	if billingFinalized && !invalidUsage {
 		// Record in-memory usage (for current session queries).
 		s.ledger.RecordUsage(pr.ConsumerKey, payments.UsageEntry{
 			JobID:            msg.RequestID,
@@ -2054,6 +2105,22 @@ func (s *Server) handleClaimedComplete(
 				s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
 			}
 		}
+	}
+
+	if invalidUsage {
+		if !consumerGone && pr.ErrorCh != nil {
+			select {
+			case pr.ErrorCh <- protocol.InferenceErrorMessage{
+				Type: protocol.TypeInferenceError, RequestID: msg.RequestID,
+				Error:       "provider returned invalid token usage",
+				StatusCode:  http.StatusBadGateway,
+				ErrorReason: "invalid_provider_usage",
+			}:
+			default:
+			}
+		}
+		s.registry.SetProviderIdle(providerID)
+		return
 	}
 
 	if !billingFinalized {

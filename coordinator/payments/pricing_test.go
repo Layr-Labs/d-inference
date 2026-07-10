@@ -1,8 +1,22 @@
 package payments
 
 import (
+	"math"
 	"testing"
 )
+
+func TestCalculateCostSaturatesInsteadOfOverflowing(t *testing.T) {
+	got := CalculateCostWithOverrides(
+		"model", math.MaxInt, math.MaxInt,
+		math.MaxInt64, math.MaxInt64, true,
+	)
+	if got != math.MaxInt64 {
+		t.Fatalf("overflowing cost = %d, want MaxInt64", got)
+	}
+	if got := CalculateCostWithOverrides("model", -1, -1, math.MaxInt64, math.MaxInt64, true); got < 0 {
+		t.Fatalf("negative usage produced negative cost %d", got)
+	}
+}
 
 func TestFallbackPricesForAnyModel(t *testing.T) {
 	// Without DB-configured prices, all models get the fallback defaults.

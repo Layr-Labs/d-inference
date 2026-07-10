@@ -132,6 +132,19 @@ func main() {
 		})
 	}
 
+	// Recover durable Go reservations orphaned by a prior process crash. The
+	// cutoff exceeds the maximum normal inference lifetime; active/reviewed/
+	// settled reservations are excluded transactionally by the store.
+	const staleReservationAge = 20 * time.Minute
+	recovered, err := st.RecoverStaleInferenceReservations(time.Now().Add(-staleReservationAge))
+	if err != nil {
+		logger.Error("failed to recover stale inference reservations", "error", err)
+		os.Exit(1)
+	}
+	if recovered > 0 {
+		logger.Warn("recovered stale inference reservations", "count", recovered)
+	}
+
 	// Reconcile provider sessions left open by a previous coordinator process
 	// (durable uptime history). Best-effort + time-bounded — neither an error nor
 	// a slow/unresponsive DB must block startup. Only sessions whose last

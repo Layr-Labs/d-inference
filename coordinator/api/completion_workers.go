@@ -1,7 +1,6 @@
 package api
 
 import (
-	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -124,9 +123,27 @@ func (s *Server) settleInferenceWithRetry(settlement *store.InferenceSettlement)
 		if err == nil {
 			return disposition, nil
 		}
-		if errors.Is(err, store.ErrInsufficientBalance) ||
-			errors.Is(err, store.ErrFinancialOperationConflict) {
-			return "", err
+		if store.IsPermanentFinancialError(err) {
+			s.recordSettlementReviewWithRetry(settlement, err)
+			return store.InferenceSettlementReviewPending, nil
+		}
+		delay := time.Duration(min(attempt+1, 100)) * 50 * time.Millisecond
+		time.Sleep(delay)
+	}
+}
+
+func (s *Server) recordSettlementReviewWithRetry(
+	settlement *store.InferenceSettlement,
+	settlementErr error,
+) {
+	reason := settlementErr.Error()
+	if len(reason) > 1024 {
+		reason = reason[:1024]
+	}
+	for attempt := 0; ; attempt++ {
+		err := s.store.RecordInferenceSettlementReview(settlement, reason)
+		if err == nil {
+			return
 		}
 		delay := time.Duration(min(attempt+1, 100)) * 50 * time.Millisecond
 		time.Sleep(delay)

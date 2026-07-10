@@ -36,6 +36,7 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 		"ledger_entries",
 		"balance_reservation_operations",
 		"inference_settlements",
+		"inference_settlement_reviews",
 		"billing_sessions",
 		"stripe_deposit_events",
 		"users",

@@ -301,6 +301,15 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`ALTER TABLE inference_settlements ADD COLUMN IF NOT EXISTS reservation_pre_debited BOOLEAN NOT NULL DEFAULT TRUE`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_inference_settlements_request ON inference_settlements(request_id)`,
+		`CREATE TABLE IF NOT EXISTS inference_settlement_reviews (
+			reservation_id TEXT PRIMARY KEY,
+			request_id TEXT NOT NULL,
+			reason TEXT NOT NULL,
+			payload JSONB NOT NULL,
+			status TEXT NOT NULL DEFAULT 'review_pending',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 		// Partial index for the public leaderboard/network-totals reward scans,
 		// which filter ledger_entries by reward entry_type across all accounts.
 		// Without it, each cache miss seq-scans the whole (multi-million-row)

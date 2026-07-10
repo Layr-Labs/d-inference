@@ -1,6 +1,7 @@
 package payments
 
 import (
+	"math"
 	"strconv"
 	"strings"
 )
@@ -63,17 +64,17 @@ func OutputPricePerMillion(_ string) int64 {
 // job. Both input (prompt) and output (completion) tokens are billed.
 // A minimum charge of $0.0001 (100 micro-USD) applies to every request.
 func CalculateCost(model string, promptTokens, completionTokens int) int64 {
-	inputRate := InputPricePerMillion(model)
-	outputRate := OutputPricePerMillion(model)
+	return calculateCost(model, promptTokens, completionTokens, 0, 0, false, true)
+}
 
-	inputCost := int64(promptTokens) * inputRate / 1_000_000
-	outputCost := int64(completionTokens) * outputRate / 1_000_000
-	cost := inputCost + outputCost
-
-	if cost < minimumChargeMicroUSD {
-		cost = minimumChargeMicroUSD
+func boundedTokenCost(tokens int, rate int64) int64 {
+	if tokens <= 0 || rate <= 0 {
+		return 0
 	}
-	return cost
+	if int64(tokens) > math.MaxInt64/rate {
+		return math.MaxInt64
+	}
+	return int64(tokens) * rate / 1_000_000
 }
 
 // CalculateCostWithOverrides is like CalculateCost but uses custom per-account
@@ -102,9 +103,14 @@ func calculateCost(model string, promptTokens, completionTokens int, customInput
 		outputRate = OutputPricePerMillion(model)
 	}
 
-	inputCost := int64(promptTokens) * inputRate / 1_000_000
-	outputCost := int64(completionTokens) * outputRate / 1_000_000
-	cost := inputCost + outputCost
+	inputCost := boundedTokenCost(promptTokens, inputRate)
+	outputCost := boundedTokenCost(completionTokens, outputRate)
+	cost := inputCost
+	if outputCost > math.MaxInt64-cost {
+		cost = math.MaxInt64
+	} else {
+		cost += outputCost
+	}
 
 	if applyMinimum {
 		if cost < minimumChargeMicroUSD {

@@ -34,6 +34,7 @@ var (
 	ErrStripeDepositMismatch      = errors.New("Stripe deposit does not match its local billing order")
 	ErrStripeDepositConflict      = errors.New("Stripe deposit event identity conflict")
 	ErrFinancialOperationConflict = errors.New("financial operation key reused with different parameters")
+	ErrCommitOutcomeUnknown       = errors.New("database commit outcome unknown")
 )
 
 // Store is the union of every storage-domain sub-interface (defined in
@@ -118,6 +119,7 @@ const (
 	InferenceSettlementApplied         InferenceSettlementDisposition = "applied"
 	InferenceSettlementReplayed        InferenceSettlementDisposition = "replayed"
 	InferenceSettlementAlreadyReleased InferenceSettlementDisposition = "already_released"
+	InferenceSettlementReviewPending   InferenceSettlementDisposition = "review_pending"
 )
 
 func (d InferenceSettlementDisposition) IsSettled() bool {

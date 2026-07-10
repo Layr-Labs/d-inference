@@ -699,16 +699,6 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// Withdrawable balance — tracks the withdrawable subset of balance_micro_usd.
 		`ALTER TABLE balances ADD COLUMN IF NOT EXISTS withdrawable_micro_usd BIGINT NOT NULL DEFAULT 0`,
 
-		// Backfill withdrawable from ledger history: sum earnings minus
-		// successful withdrawals. Idempotent — only updates rows where
-		// withdrawable is still 0 (first deploy) so it won't overwrite
-		// live values on restart.
-		`UPDATE balances b SET withdrawable_micro_usd = GREATEST(0, COALESCE((
-			SELECT SUM(amount_micro_usd) FROM ledger_entries
-			WHERE account_id = b.account_id
-			  AND entry_type IN ('payout', 'referral_reward', 'admin_reward', 'stripe_payout')
-		), 0)) WHERE b.withdrawable_micro_usd = 0`,
-
 		// Materialized usage totals — eliminates full-table scan of usage
 		// on every stats cache miss.  Single counter row incremented
 		// atomically by RecordUsage / RecordUsageWithCostAndLocation.

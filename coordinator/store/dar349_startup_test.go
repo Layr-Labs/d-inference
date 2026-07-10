@@ -29,6 +29,37 @@ func TestMigrate_NoBootTimeProviderEarningsDedupe(t *testing.T) {
 	}
 }
 
+func TestMigrate_NoWithdrawableBalanceBackfill(t *testing.T) {
+	src, err := os.ReadFile("postgres.go")
+	if err != nil {
+		t.Fatalf("read postgres.go: %v", err)
+	}
+	if bytes.Contains(src, []byte("UPDATE balances b SET withdrawable_micro_usd")) {
+		t.Fatal("unsafe withdrawable reconstruction returned to serving startup; use the offline reconciliation report")
+	}
+}
+
+func TestMigrate_DoesNotReclassifyLaterDepositsAsWithdrawable(t *testing.T) {
+	s := testPostgresStore(t)
+	accountID := uniqueID("withdrawable-restart")
+	if err := s.CreditWithdrawable(accountID, 100_000, LedgerPayout, "earned"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DebitWithdrawable(accountID, 100_000, LedgerStripePayout, "withdrawn"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Credit(accountID, 50_000, LedgerStripeDeposit, "later-deposit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	balance, withdrawable := s.GetBalanceWithWithdrawable(accountID)
+	if balance != 50_000 || withdrawable != 0 {
+		t.Fatalf("restart changed balance provenance: total=%d withdrawable=%d, want 50000/0", balance, withdrawable)
+	}
+}
+
 // TestProviderEarningsJobIndex_BootSafe verifies the safe replacement: startup
 // builds a valid partial unique index on provider_earnings(job_id) without a
 // dedupe DELETE, migrate() is re-entrant, and the index backs the idempotent

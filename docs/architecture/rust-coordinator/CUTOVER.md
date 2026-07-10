@@ -800,3 +800,19 @@ section that also records the terminal disposition and enqueues
 `inference.settled`. `release_job_with_outbox` holds the same barrier.
 Holding `money_fx` blocks chat settle until release.
 
+### SQL financial op param bind (DECISIONS #138)
+
+Migration `0003_financial_op_params.sql` adds `account_id`,
+`terminal_digest`, and `billable_cap_micro_usd` to
+`rust_coord.financial_operations`. Reserve/settle/settle_capped SQL CTEs
+insert those params and return `param_conflict` when a reused operation
+key does not match — matching MemoryLedger `OperationRecord` semantics
+(DECISIONS #34) so SQLx cannot silently no-op a mismatched replay.
+
+### Batch money under money_fx (DECISIONS #139)
+
+`force-settle-batch` and `recover-undispatched-batch` acquire `money_fx`
+per job around the ledger money move and the terminal/outbox side effect,
+so quiescence cannot observe a settled/released job without the critical
+outbox entry.
+

@@ -1047,6 +1047,8 @@ async fn admin_force_settle_batch(
         }
         let epoch = state.ownership.epoch().0;
         let digest = format!("force-settle-batch:{job_id}");
+        // Per-job money_fx so quiescence cannot race settle vs outbox (DECISIONS #139).
+        let _fx = state.money_fx.lock().await;
         let (action, charged) = {
             let mut led = state.ledger.lock().await;
             let Some(job_acct) = led.job_account_id(&job_id) else {
@@ -1353,6 +1355,8 @@ async fn admin_recover_undispatched_batch(
             );
         }
         let epoch = state.ownership.epoch().0;
+        // Per-job money_fx so quiescence cannot race release vs outbox (DECISIONS #139).
+        let _fx = state.money_fx.lock().await;
         let (action, refunded) = {
             let mut led = state.ledger.lock().await;
             let Some(job_acct) = led.job_account_id(&job_id) else {

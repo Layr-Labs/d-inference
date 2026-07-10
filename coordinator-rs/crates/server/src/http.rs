@@ -139,6 +139,15 @@ fn invoke_outbox_drain_entry(kind: &str) {
     }
 }
 
+/// Account ids with active orphans (DECISIONS #112/#114).
+fn accounts_needing_cutover_from(led: &crate::ledger::MemoryLedger, epoch: u64) -> Vec<String> {
+    led.orphan_summary_by_account(epoch)
+        .into_iter()
+        .filter(|(_, _a, reserved, held)| *reserved + *held > 0)
+        .map(|(acct, _, _, _)| acct)
+        .collect()
+}
+
 /// Remaining orphan ids for abort responses. When `account_filter` is set, scope
 /// to that account so ops do not chase foreign jobs (DECISIONS #105).
 fn remaining_ids_for_abort(
@@ -2048,6 +2057,15 @@ async fn admin_cutover_drain(
         }
     };
     let drain_json: Value = serde_json::from_slice(&drain_bytes).unwrap_or(json!({}));
+    let remaining_accounts = {
+        let led = state.ledger.lock().await;
+        let epoch = if state.ownership.holding() {
+            state.ownership.epoch().0
+        } else {
+            0
+        };
+        accounts_needing_cutover_from(&led, epoch)
+    };
     if drain_status != StatusCode::OK {
         // Clear already committed — surface both phases so ops can resume with
         // outbox-drain only (DECISIONS #109).
@@ -2064,6 +2082,7 @@ async fn admin_cutover_drain(
                 "clear_orphans": clear_json,
                 "outbox_drain": drain_json,
                 "ready": false,
+                "accounts_needing_cutover": remaining_accounts,
                 "active_jobs": clear_json.get("active_jobs").cloned().unwrap_or(json!(0)),
                 "outbox_retryable": drain_json.get("outbox_retryable").cloned().unwrap_or(json!(0)),
                 "acked_count": drain_json.get("acked_count").cloned().unwrap_or(json!(0)),
@@ -2072,13 +2091,19 @@ async fn admin_cutover_drain(
             .into_response();
     }
 
+    let ready = drain_json
+        .get("ready")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        && remaining_accounts.is_empty();
     (
         StatusCode::OK,
         Json(json!({
             "action": "cutover_drained",
             "clear_orphans": clear_json,
             "outbox_drain": drain_json,
-            "ready": drain_json.get("ready").and_then(|v| v.as_bool()).unwrap_or(false),
+            "ready": ready,
+            "accounts_needing_cutover": remaining_accounts,
             "active_jobs": drain_json.get("active_jobs").cloned().unwrap_or(json!(0)),
             "outbox_retryable": drain_json.get("outbox_retryable").cloned().unwrap_or(json!(0)),
         })),

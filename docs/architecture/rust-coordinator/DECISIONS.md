@@ -120,6 +120,7 @@ Date: 2026-07-10
 | 111 | Account-filtered cutover-drain + by_account | Account-scoped cutover-drain clears one tenant; foreign remains in orphan_summary_by_account. Concurrent per-account cutover conserves |
 | 112 | accounts_needing_cutover + charged filter | Quiescence lists `accounts_needing_cutover`. Charged account-filtered cutover-drain clamps per hold |
 | 113 | Ops loop accounts_needing_cutover | Quiescence→per-account cutover→outbox-drain converges to ready. Outbox-only: accounts list empty. Foreign deposits ∥ filtered cutover conserve |
+| 114 | cutover-drain returns remaining accounts | Success/abort cutover-drain responses include `accounts_needing_cutover` for the next ops loop iteration |
 
 ## Deleted Go mechanisms (do not port)
 

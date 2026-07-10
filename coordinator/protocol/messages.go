@@ -164,6 +164,9 @@ type RegisterMessage struct {
 	RuntimeHash         string               `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (MLX-Swift)
 	TemplateHashes      map[string]string    `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
 	PrivacyCapabilities *PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
+
+	// Protocol v2 capability negotiation. Omitted by v1 providers.
+	ProtocolCapabilities *ProtocolCapabilities `json:"protocol_capabilities,omitempty"`
 }
 
 // PrivacyCapabilities describes the provider's privacy invariants at registration time.
@@ -675,6 +678,62 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg ModelsUpdateMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal models_update: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypePrepared:
+		var msg PreparedMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal prepared: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeStarted:
+		var msg StartedMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal started: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeAborted:
+		var msg AbortedMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal aborted: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeCancelled:
+		var msg CancelledMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal cancelled: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeProviderTerminal:
+		var msg ProviderTerminalMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal provider_terminal: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeStructuredError:
+		var msg StructuredErrorMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal structured_error: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeModelReady:
+		var msg ModelReadyMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal model_ready: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeModelGone:
+		var msg ModelGoneMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal model_gone: %w", err)
 		}
 		pm.Payload = &msg
 

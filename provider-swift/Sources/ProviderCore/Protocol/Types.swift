@@ -294,6 +294,72 @@ public struct EncryptedPayload: Codable, Sendable, Equatable {
     }
 }
 
+/// Protocol v2 capability negotiation advertised at registration.
+/// Omitted by v1 providers; when present and `supportsV2` is true the
+/// coordinator may send prepare/start/abort frames.
+public struct ProtocolCapabilities: Codable, Sendable, Equatable {
+    public var protocolMajor: Int
+    public var protocolMinor: Int
+    public var preparedLeases: Bool
+    public var startAuthorization: Bool
+    public var structuredErrors: Bool
+    public var startAck: Bool
+    public var abortAck: Bool
+    public var cancelAck: Bool
+    public var durableTerminals: Bool
+    public var modelLifecycleEvents: Bool
+    public var binaryPayloadFrames: Bool
+    public var processGeneration: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case protocolMajor = "protocol_major"
+        case protocolMinor = "protocol_minor"
+        case preparedLeases = "prepared_leases"
+        case startAuthorization = "start_authorization"
+        case structuredErrors = "structured_errors"
+        case startAck = "start_ack"
+        case abortAck = "abort_ack"
+        case cancelAck = "cancel_ack"
+        case durableTerminals = "durable_terminals"
+        case modelLifecycleEvents = "model_lifecycle_events"
+        case binaryPayloadFrames = "binary_payload_frames"
+        case processGeneration = "process_generation"
+    }
+
+    public init(
+        protocolMajor: Int = 2,
+        protocolMinor: Int = 0,
+        preparedLeases: Bool = false,
+        startAuthorization: Bool = false,
+        structuredErrors: Bool = false,
+        startAck: Bool = false,
+        abortAck: Bool = false,
+        cancelAck: Bool = false,
+        durableTerminals: Bool = false,
+        modelLifecycleEvents: Bool = false,
+        binaryPayloadFrames: Bool = false,
+        processGeneration: Int64 = 0
+    ) {
+        self.protocolMajor = protocolMajor
+        self.protocolMinor = protocolMinor
+        self.preparedLeases = preparedLeases
+        self.startAuthorization = startAuthorization
+        self.structuredErrors = structuredErrors
+        self.startAck = startAck
+        self.abortAck = abortAck
+        self.cancelAck = cancelAck
+        self.durableTerminals = durableTerminals
+        self.modelLifecycleEvents = modelLifecycleEvents
+        self.binaryPayloadFrames = binaryPayloadFrames
+        self.processGeneration = processGeneration
+    }
+
+    /// True when the provider can run the prepare/fund/start path.
+    public var supportsV2: Bool {
+        protocolMajor >= 2 && preparedLeases && startAuthorization && durableTerminals
+    }
+}
+
 public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     public var textBackendInprocess: Bool
     public var textProxyDisabled: Bool

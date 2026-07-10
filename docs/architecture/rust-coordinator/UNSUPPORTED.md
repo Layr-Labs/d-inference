@@ -13,6 +13,7 @@ The Rust pilot **never proxies** to Go. Excluded production surfaces return
 | `GET /ws/provider` | Supported (register/heartbeat/prepare/start) |
 | `GET /v1/admin/quiescence` | Supported (pilot inventory) |
 | `POST /v1/admin/deposits` | Supported (pilot Stripe-inbox apply; not production webhook) |
+| `POST /v1/admin/terminal-ingest` | Supported (replay ACK / late record; never double-settles) |
 | Stripe deposit/withdraw/Connect (prod webhooks) | Unsupported (use pilot admin deposits for inbox tests) |
 | Privy / API-key CRUD | Unsupported (pilot keys via env) |
 | Device auth / enroll / MDM | Unsupported |

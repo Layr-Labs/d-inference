@@ -120,6 +120,52 @@ async fn chat_rejects_when_ownership_lost() {
 }
 
 #[tokio::test]
+async fn terminal_ingest_known_and_late() {
+    let state = test_state(true);
+    {
+        let mut terms = state.terminals.lock().await;
+        terms.record("a1", "d1", "settled", None);
+    }
+    let app = router(state);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/admin/terminal-ingest")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "job_id": "j1",
+                "attempt_id": "a1",
+                "terminal_digest": "d1"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["disposition"], "settled");
+    assert_eq!(v["type"], "terminal_ack");
+
+    let req2 = Request::builder()
+        .method("POST")
+        .uri("/v1/admin/terminal-ingest")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "job_id": "j2",
+                "attempt_id": "a2",
+                "terminal_digest": "unknown"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let res2 = app.oneshot(req2).await.unwrap();
+    assert_eq!(res2.status(), StatusCode::OK);
+    let v2 = body_json(res2).await;
+    assert_eq!(v2["disposition"], "late");
+}
+
+#[tokio::test]
 async fn admin_deposit_rejects_invalid_pilot_key() {
     let mut state = test_state(true);
     state.pilot_api_keys = Arc::new(vec!["good-key".into()]);

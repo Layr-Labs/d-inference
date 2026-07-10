@@ -24,7 +24,7 @@ use crate::provider_ws::provider_ws;
 use crate::request_task::{spawn_request_task, ControlEvent};
 use crate::sealed::decrypt_request_body;
 use crate::telemetry::TelemetrySink;
-use crate::terminal_ingest::MemoryTerminalStore;
+use crate::terminal_ingest::{ingest_terminal, MemoryTerminalStore, TerminalIngest};
 use darkbloom_core::{ChunkCheckpoint, AttemptId, JobId, LeaseId, PlacementController};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -74,6 +74,7 @@ pub fn router(state: AppState) -> Router {
         .route("/ws/provider", get(provider_ws))
         .route("/v1/admin/quiescence", get(quiescence))
         .route("/v1/admin/deposits", post(admin_deposit))
+        .route("/v1/admin/terminal-ingest", post(admin_terminal_ingest))
         .fallback(unsupported)
         .with_state(Arc::new(state))
 }
@@ -194,6 +195,75 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "coordinator": "rust" }))
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminTerminalIngestRequest {
+    job_id: String,
+    attempt_id: String,
+    terminal_digest: String,
+    #[serde(default)]
+    se_signature: String,
+    #[serde(default)]
+    outcome: String,
+}
+
+/// Replay ACK for a provider terminal without moving money (plan §4.6).
+async fn admin_terminal_ingest(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AdminTerminalIngestRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = state.ownership.assert_holding() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": {
+                    "message": format!("{err}"),
+                    "type": "server_error",
+                    "code": "ownership_lost"
+                }
+            })),
+        )
+            .into_response();
+    }
+    if let Err(status) = authorize_pilot(&state, &headers) {
+        return (
+            status,
+            Json(json!({
+                "error": {
+                    "message": "invalid pilot api key",
+                    "type": "invalid_request_error",
+                    "code": "invalid_api_key"
+                }
+            })),
+        )
+            .into_response();
+    }
+    let mut store = state.terminals.lock().await;
+    match ingest_terminal(
+        &mut store,
+        TerminalIngest {
+            job_id: req.job_id,
+            attempt_id: req.attempt_id,
+            terminal_digest: req.terminal_digest,
+            se_signature: req.se_signature,
+            outcome: req.outcome,
+        },
+    ) {
+        Ok(ack) => (StatusCode::OK, Json(ack)).into_response(),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": format!("{err}"),
+                    "type": "invalid_request_error",
+                    "code": "terminal_ingest_failed"
+                }
+            })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]

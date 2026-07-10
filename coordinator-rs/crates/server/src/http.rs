@@ -944,16 +944,11 @@ async fn admin_force_settle(
         );
     }
 
-    let (bal, held, active, accounts, needs_adopt) = {
+    let (bal, status) = {
         let led = state.ledger.lock().await;
-        let epoch = state.ownership.epoch().0;
-        let (na, _, _) = led.orphan_summary_counts(epoch);
         (
             led.balance(&account).0,
-            led.held_start_authorized_count(),
-            led.active_job_count(),
-            accounts_needing_cutover_from(&led, epoch),
-            na,
+            led.cutover_status(state.ownership.epoch().0),
         )
     };
     (
@@ -965,10 +960,10 @@ async fn admin_force_settle(
             "terminal_digest": digest,
             "charged_micro_usd": charged,
             "balance_micro_usd": bal,
-            "held_start_authorized": held,
-            "active_jobs": active,
-            "accounts_needing_cutover": accounts,
-            "needs_adopt_count": needs_adopt,
+            "held_start_authorized": status.held_start_authorized,
+            "active_jobs": status.active_jobs,
+            "accounts_needing_cutover": status.accounts_needing_cutover,
+            "needs_adopt_count": status.needs_adopt_count,
         })),
     )
         .into_response()
@@ -1139,16 +1134,11 @@ async fn admin_force_settle_batch(
     let report_account = account_filter
         .clone()
         .unwrap_or_else(|| state.pilot_account.clone());
-    let (bal, held, active, accounts_needing, needs_adopt) = {
+    let (bal, status) = {
         let led = state.ledger.lock().await;
-        let epoch = state.ownership.epoch().0;
-        let (na, _, _) = led.orphan_summary_counts(epoch);
         (
             led.balance(&report_account).0,
-            led.held_start_authorized_count(),
-            led.active_job_count(),
-            accounts_needing_cutover_from(&led, epoch),
-            na,
+            led.cutover_status(state.ownership.epoch().0),
         )
     };
     (
@@ -1164,10 +1154,10 @@ async fn admin_force_settle_batch(
             "failed_count": failed.len(),
             "charged_micro_usd": charged_total,
             "balance_micro_usd": bal,
-            "held_start_authorized": held,
-            "active_jobs": active,
-            "accounts_needing_cutover": accounts_needing,
-            "needs_adopt_count": needs_adopt,
+            "held_start_authorized": status.held_start_authorized,
+            "active_jobs": status.active_jobs,
+            "accounts_needing_cutover": status.accounts_needing_cutover,
+            "needs_adopt_count": status.needs_adopt_count,
         })),
     )
         .into_response()
@@ -1279,16 +1269,11 @@ async fn admin_recover_undispatched(
         let _ = box_.enqueue_released(&req.job_id, &account, amount);
     }
 
-    let (bal, active, held, accounts, needs_adopt) = {
+    let (bal, status) = {
         let led = state.ledger.lock().await;
-        let epoch = state.ownership.epoch().0;
-        let (na, _, _) = led.orphan_summary_counts(epoch);
         (
             led.balance(&account).0,
-            led.active_job_count(),
-            led.held_start_authorized_count(),
-            accounts_needing_cutover_from(&led, epoch),
-            na,
+            led.cutover_status(state.ownership.epoch().0),
         )
     };
     (
@@ -1298,10 +1283,10 @@ async fn admin_recover_undispatched(
             "job_id": req.job_id,
             "account": account,
             "balance_micro_usd": bal,
-            "active_jobs": active,
-            "held_start_authorized": held,
-            "accounts_needing_cutover": accounts,
-            "needs_adopt_count": needs_adopt,
+            "active_jobs": status.active_jobs,
+            "held_start_authorized": status.held_start_authorized,
+            "accounts_needing_cutover": status.accounts_needing_cutover,
+            "needs_adopt_count": status.needs_adopt_count,
         })),
     )
         .into_response()
@@ -1430,16 +1415,11 @@ async fn admin_recover_undispatched_batch(
     let report_account = account_filter
         .clone()
         .unwrap_or_else(|| state.pilot_account.clone());
-    let (bal, active, held, accounts_needing, needs_adopt) = {
+    let (bal, status) = {
         let led = state.ledger.lock().await;
-        let epoch = state.ownership.epoch().0;
-        let (na, _, _) = led.orphan_summary_counts(epoch);
         (
             led.balance(&report_account).0,
-            led.active_job_count(),
-            led.held_start_authorized_count(),
-            accounts_needing_cutover_from(&led, epoch),
-            na,
+            led.cutover_status(state.ownership.epoch().0),
         )
     };
     (
@@ -1455,10 +1435,10 @@ async fn admin_recover_undispatched_batch(
             "failed_count": failed.len(),
             "refunded_micro_usd": refund_total,
             "balance_micro_usd": bal,
-            "active_jobs": active,
-            "held_start_authorized": held,
-            "accounts_needing_cutover": accounts_needing,
-            "needs_adopt_count": needs_adopt,
+            "active_jobs": status.active_jobs,
+            "held_start_authorized": status.held_start_authorized,
+            "accounts_needing_cutover": status.accounts_needing_cutover,
+            "needs_adopt_count": status.needs_adopt_count,
         })),
     )
         .into_response()
@@ -1482,7 +1462,7 @@ async fn admin_held_review(
         return resp;
     }
 
-    let (action, bal, held, reserved, active, accounts, needs_adopt, account) = {
+    let (action, bal, reserved, account, status) = {
         let led = state.ledger.lock().await;
         let classified = crate::recovery::classify_held_job(&led, &req.job_id);
         let action = match classified {
@@ -1491,20 +1471,16 @@ async fn admin_held_review(
             crate::recovery::RecoveryAction::AlreadyTerminal => "already_terminal",
             crate::recovery::RecoveryAction::Released => "already_terminal",
         };
-        let epoch = state.ownership.epoch().0;
-        let (na, _, _) = led.orphan_summary_counts(epoch);
         let account = led
             .job_account_id(&req.job_id)
             .unwrap_or_else(|| state.pilot_account.clone());
+        let status = led.cutover_status(state.ownership.epoch().0);
         (
             action,
             led.balance(&account).0,
-            led.held_start_authorized_count(),
             led.job_reserved_total(&req.job_id).map(|m| m.0).unwrap_or(0),
-            led.active_job_count(),
-            accounts_needing_cutover_from(&led, epoch),
-            na,
             account,
+            status,
         )
     };
     (
@@ -1515,10 +1491,10 @@ async fn admin_held_review(
             "account": account,
             "reserved_micro_usd": reserved,
             "balance_micro_usd": bal,
-            "held_start_authorized": held,
-            "active_jobs": active,
-            "accounts_needing_cutover": accounts,
-            "needs_adopt_count": needs_adopt,
+            "held_start_authorized": status.held_start_authorized,
+            "active_jobs": status.active_jobs,
+            "accounts_needing_cutover": status.accounts_needing_cutover,
+            "needs_adopt_count": status.needs_adopt_count,
         })),
     )
         .into_response()
@@ -1600,20 +1576,15 @@ async fn admin_held_review_batch(
             }));
         }
     }
-    let (bal, held, active, accounts, needs_adopt) = {
+    let (bal, status) = {
         let led = state.ledger.lock().await;
         let report = account_filter
             .as_ref()
             .map(|s| s.as_str())
             .unwrap_or(state.pilot_account.as_str());
-        let epoch = state.ownership.epoch().0;
-        let (na, _, _) = led.orphan_summary_counts(epoch);
         (
             led.balance(report).0,
-            led.held_start_authorized_count(),
-            led.active_job_count(),
-            accounts_needing_cutover_from(&led, epoch),
-            na,
+            led.cutover_status(state.ownership.epoch().0),
         )
     };
     (
@@ -1626,10 +1597,10 @@ async fn admin_held_review_batch(
             "skipped_count": skipped,
             "already_terminal_count": already_terminal,
             "balance_micro_usd": bal,
-            "held_start_authorized": held,
-            "active_jobs": active,
-            "accounts_needing_cutover": accounts,
-            "needs_adopt_count": needs_adopt,
+            "held_start_authorized": status.held_start_authorized,
+            "active_jobs": status.active_jobs,
+            "accounts_needing_cutover": status.accounts_needing_cutover,
+            "needs_adopt_count": status.needs_adopt_count,
         })),
     )
         .into_response()
@@ -1657,20 +1628,10 @@ async fn admin_adopt_job(
         return resp;
     }
     let epoch = state.ownership.epoch().0;
-    let (prev, current, accounts, needs_adopt, active, held) = {
+    let (prev, current, status) = {
         let mut led = state.ledger.lock().await;
         match led.adopt_fencing_epoch(&req.job_id, epoch) {
-            Ok(prev) => {
-                let (na, _, _) = led.orphan_summary_counts(epoch);
-                (
-                    prev,
-                    epoch,
-                    accounts_needing_cutover_from(&led, epoch),
-                    na,
-                    led.active_job_count(),
-                    led.held_start_authorized_count(),
-                )
-            }
+            Ok(prev) => (prev, epoch, led.cutover_status(epoch)),
             Err(err) => {
                 return (
                     StatusCode::CONFLICT,
@@ -1693,10 +1654,10 @@ async fn admin_adopt_job(
             "job_id": req.job_id,
             "previous_fencing_epoch": prev,
             "fencing_epoch": current,
-            "accounts_needing_cutover": accounts,
-            "needs_adopt_count": needs_adopt,
-            "active_jobs": active,
-            "held_start_authorized": held,
+            "accounts_needing_cutover": status.accounts_needing_cutover,
+            "needs_adopt_count": status.needs_adopt_count,
+            "active_jobs": status.active_jobs,
+            "held_start_authorized": status.held_start_authorized,
         })),
     )
         .into_response()
@@ -2159,17 +2120,13 @@ async fn admin_outbox_drain(
     let mut kinds = Vec::new();
     loop {
         if require_holding(&state).is_err() {
-            let (pending, retryable, active, accounts, needs_adopt) = {
+            let (pending, retryable, status) = {
                 let box_ = state.outbox.lock().await;
                 let led = state.ledger.lock().await;
-                let epoch = state.ownership.epoch().0;
-                let (na, _, _) = led.orphan_summary_counts(epoch);
                 (
                     box_.len(),
                     box_.pending_under_retry_cap(),
-                    led.active_job_count(),
-                    accounts_needing_cutover_from(&led, epoch),
-                    na,
+                    led.cutover_status(state.ownership.epoch().0),
                 )
             };
             return (
@@ -2185,9 +2142,9 @@ async fn admin_outbox_drain(
                     "kinds": kinds,
                     "outbox_pending": pending,
                     "outbox_retryable": retryable,
-                    "active_jobs": active,
-                    "accounts_needing_cutover": accounts,
-                    "needs_adopt_count": needs_adopt,
+                    "active_jobs": status.active_jobs,
+                    "accounts_needing_cutover": status.accounts_needing_cutover,
+                    "needs_adopt_count": status.needs_adopt_count,
                     "ready": false,
                 })),
             )
@@ -2205,20 +2162,18 @@ async fn admin_outbox_drain(
             None => break,
         }
     }
-    let (pending, retryable, active, accounts, needs_adopt) = {
+    let (pending, retryable, status) = {
         let box_ = state.outbox.lock().await;
         let led = state.ledger.lock().await;
-        let epoch = state.ownership.epoch().0;
-        let (na, _, _) = led.orphan_summary_counts(epoch);
         (
             box_.len(),
             box_.pending_under_retry_cap(),
-            led.active_job_count(),
-            accounts_needing_cutover_from(&led, epoch),
-            na,
+            led.cutover_status(state.ownership.epoch().0),
         )
     };
-    let ready = active == 0 && retryable == 0 && accounts.is_empty();
+    let ready = status.active_jobs == 0
+        && retryable == 0
+        && status.accounts_needing_cutover.is_empty();
     (
         StatusCode::OK,
         Json(json!({
@@ -2227,9 +2182,9 @@ async fn admin_outbox_drain(
             "kinds": kinds,
             "outbox_pending": pending,
             "outbox_retryable": retryable,
-            "active_jobs": active,
-            "accounts_needing_cutover": accounts,
-            "needs_adopt_count": needs_adopt,
+            "active_jobs": status.active_jobs,
+            "accounts_needing_cutover": status.accounts_needing_cutover,
+            "needs_adopt_count": status.needs_adopt_count,
             "ready": ready,
         })),
     )
@@ -2835,16 +2790,9 @@ async fn admin_cancel_attempt(
         }
     }
 
-    let (held, active, accounts, needs_adopt) = {
+    let status = {
         let led = state.ledger.lock().await;
-        let epoch = state.ownership.epoch().0;
-        let (na, _, _) = led.orphan_summary_counts(epoch);
-        (
-            led.held_start_authorized_count(),
-            led.active_job_count(),
-            accounts_needing_cutover_from(&led, epoch),
-            na,
-        )
+        led.cutover_status(state.ownership.epoch().0)
     };
     (
         StatusCode::OK,
@@ -2853,10 +2801,10 @@ async fn admin_cancel_attempt(
             "job_id": req.job_id,
             "attempt_id": req.attempt_id,
             "reserved_micro_usd": reserved,
-            "held_start_authorized": held,
-            "active_jobs": active,
-            "accounts_needing_cutover": accounts,
-            "needs_adopt_count": needs_adopt,
+            "held_start_authorized": status.held_start_authorized,
+            "active_jobs": status.active_jobs,
+            "accounts_needing_cutover": status.accounts_needing_cutover,
+            "needs_adopt_count": status.needs_adopt_count,
         })),
     )
         .into_response()

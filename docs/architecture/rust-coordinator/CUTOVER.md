@@ -743,3 +743,16 @@ before retrying.
 `outbox_retryable` / active / held counts so funding during cutover can
 chain into cutover-drain-all without a quiescence poll.
 
+### CutoverStatus helper + deposit∥clear race (DECISIONS #130)
+
+`MemoryLedger::cutover_status` / `accounts_needing_cutover` centralize the
+admin remaining-account snapshot (used by abort remainders, deposits,
+clear-orphans, adopt-jobs, terminal-ingest). Concurrent deposits ∥
+clear-orphans conserve money; deposit remaining fields empty after cutover.
+
+### Admin paths use CutoverStatus (DECISIONS #131)
+
+Single-job and batch force-settle / recover / held-review, adopt-job,
+cancel-attempt, and outbox-drain success/abort all populate remaining
+fields from `cutover_status` so ops see one consistent snapshot shape.
+

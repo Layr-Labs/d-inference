@@ -1860,6 +1860,8 @@ async fn admin_clear_orphans(
                 );
             }
             let epoch = state.ownership.epoch().0;
+            // Per-job money_fx across release + disposition/outbox (DECISIONS #140).
+            let _fx = state.money_fx.lock().await;
             let refunded = {
                 let mut led = state.ledger.lock().await;
                 let Some(job_acct) = led.job_account_id(&job_id) else {
@@ -1958,6 +1960,8 @@ async fn admin_clear_orphans(
             }
             let epoch = state.ownership.epoch().0;
             let digest = format!("clear-orphans:{job_id}");
+            // Per-job money_fx across settle + disposition/outbox (DECISIONS #140).
+            let _fx = state.money_fx.lock().await;
             let charged = {
                 let mut led = state.ledger.lock().await;
                 let Some(job_acct) = led.job_account_id(&job_id) else {

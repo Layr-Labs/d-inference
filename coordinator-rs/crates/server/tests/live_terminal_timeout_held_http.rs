@@ -11,7 +11,6 @@ use darkbloom_coordinator::{InboundReply, OutboundCmd};
 use darkbloom_core::{HealthMachine, ProviderSnapshot, TrustState};
 use serde_json::json;
 use std::collections::HashSet;
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use tower::ServiceExt;
 

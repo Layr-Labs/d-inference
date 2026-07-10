@@ -166,3 +166,8 @@ outbox enqueue keeps quiescence blocked until drain.
 `POST /v1/admin/recover-undispatched` releases reserved-not-started jobs.
 start_authorized jobs are skipped — use force-settle instead.
 
+
+### Admin held-review HTTP (DECISIONS #41)
+
+`POST /v1/admin/held-review` classifies start_authorized holds without moving
+money. Use force-settle to clear after ops review.

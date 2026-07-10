@@ -79,6 +79,7 @@ pub fn router(state: AppState) -> Router {
             "/v1/admin/recover-undispatched",
             post(admin_recover_undispatched),
         )
+        .route("/v1/admin/held-review", post(admin_held_review))
         .route("/v1/admin/terminal-ingest", post(admin_terminal_ingest))
         .fallback(unsupported)
         .with_state(Arc::new(state))
@@ -649,6 +650,88 @@ async fn admin_recover_undispatched(
             "account": account,
             "balance_micro_usd": bal,
             "active_jobs": active,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminHeldReviewRequest {
+    job_id: String,
+}
+
+/// Classify a start_authorized held job without moving money (DECISIONS #16/#41).
+async fn admin_held_review(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AdminHeldReviewRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = state.ownership.assert_holding() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": {
+                    "message": format!("{err}"),
+                    "type": "server_error",
+                    "code": "ownership_lost"
+                }
+            })),
+        )
+            .into_response();
+    }
+    if let Err(status) = authorize_pilot(&state, &headers) {
+        return (
+            status,
+            Json(json!({
+                "error": {
+                    "message": "invalid pilot api key",
+                    "type": "invalid_request_error",
+                    "code": "invalid_api_key"
+                }
+            })),
+        )
+            .into_response();
+    }
+    if req.job_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": "job_id required",
+                    "type": "invalid_request_error",
+                    "code": "invalid_job_id"
+                }
+            })),
+        )
+            .into_response();
+    }
+
+    let (action, bal, held, reserved) = {
+        let led = state.ledger.lock().await;
+        let action = if led.job_disposition(&req.job_id).is_some()
+            || led.job_reserved_total(&req.job_id).is_none()
+        {
+            "already_terminal"
+        } else if !led.job_funded_start(&req.job_id) {
+            "skipped"
+        } else {
+            "held_for_review"
+        };
+        (
+            action,
+            led.balance(&state.pilot_account).0,
+            led.held_start_authorized_count(),
+            led.job_reserved_total(&req.job_id).map(|m| m.0).unwrap_or(0),
+        )
+    };
+    (
+        StatusCode::OK,
+        Json(json!({
+            "action": action,
+            "job_id": req.job_id,
+            "reserved_micro_usd": reserved,
+            "balance_micro_usd": bal,
+            "held_start_authorized": held,
         })),
     )
         .into_response()

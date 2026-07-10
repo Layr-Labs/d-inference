@@ -47,6 +47,7 @@ Date: 2026-07-10
 | 38 | Settle SQL outbox atomicity | `settle_sql` / `settle_capped_sql` / `force_settle_sql` insert `inference.settled` into `rust_coord.outbox` gated on `mark` so settlement and the durable side effect commit together |
 | 39 | Admin force-settle HTTP | `POST /v1/admin/force-settle` (ownership + pilot key) clears start_authorized holds via settle_capped_as(`force_settled`); enqueues critical outbox; idempotent replay returns already_terminal |
 | 40 | Admin recover-undispatched HTTP | `POST /v1/admin/recover-undispatched` releases reserved-not-started jobs; skips start_authorized (must use force-settle) |
+| 41 | Admin held-review HTTP | `POST /v1/admin/held-review` classifies start_authorized holds without moving money (`held_for_review` / `skipped` / `already_terminal`) |
 
 ## Deleted Go mechanisms (do not port)
 

@@ -1448,3 +1448,201 @@ async fn admin_force_settle_then_recover_already_terminal() {
     assert_eq!(rec.status(), StatusCode::OK);
     assert_eq!(body_json(rec).await["action"], "already_terminal");
 }
+
+#[tokio::test]
+async fn admin_held_review_classifies_without_moving_money() {
+    let state = test_state(true);
+    {
+        let mut led = state.ledger.lock().await;
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-hr".into()),
+            "held-hr",
+            "pilot-account",
+            175_000,
+        )
+        .unwrap();
+        led.mark_start_authorized("held-hr", "pilot-account").unwrap();
+    }
+    let app = router(state);
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/held-review")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "job_id": "held-hr" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["action"], "held_for_review");
+    assert_eq!(v["reserved_micro_usd"], 175_000);
+    assert_eq!(v["held_start_authorized"], 1);
+    assert_eq!(v["balance_micro_usd"], 825_000);
+
+    let fs = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/force-settle")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "held-hr",
+                        "actual_micro_usd": 25_000,
+                        "terminal_digest": "hr-force-d"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(body_json(fs).await["action"], "released");
+}
+
+#[tokio::test]
+async fn admin_held_review_after_force_settle_already_terminal() {
+    let state = test_state(true);
+    {
+        let mut led = state.ledger.lock().await;
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-hr2".into()),
+            "held-hr2",
+            "pilot-account",
+            100_000,
+        )
+        .unwrap();
+        led.mark_start_authorized("held-hr2", "pilot-account").unwrap();
+    }
+    let app = router(state);
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/force-settle")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "held-hr2",
+                        "actual_micro_usd": 10_000,
+                        "terminal_digest": "hr2-d"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/held-review")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "job_id": "held-hr2" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(body_json(res).await["action"], "already_terminal");
+}
+
+#[tokio::test]
+async fn admin_force_settle_drain_outbox_makes_quiescence_ready() {
+    let state = test_state(true);
+    let outbox = state.outbox.clone();
+    {
+        let mut led = state.ledger.lock().await;
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-drain".into()),
+            "held-drain",
+            "pilot-account",
+            100_000,
+        )
+        .unwrap();
+        led.mark_start_authorized("held-drain", "pilot-account")
+            .unwrap();
+    }
+    let app = router(state);
+    let fs = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/force-settle")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "held-drain",
+                        "actual_micro_usd": 30_000,
+                        "terminal_digest": "drain-d"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(body_json(fs).await["action"], "released");
+    assert_eq!(outbox.lock().await.len(), 1);
+
+    let q1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/quiescence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(q1.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body_json(q1).await["outbox_retryable"], 1);
+
+    {
+        let mut box_ = outbox.lock().await;
+        let e = box_.try_claim().unwrap();
+        let _ = box_.ack_done(e.id);
+    }
+
+    let q2 = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/quiescence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(q2.status(), StatusCode::OK);
+    let v = body_json(q2).await;
+    assert_eq!(v["ready"], true);
+    assert_eq!(v["held_start_authorized"], 0);
+    assert_eq!(v["outbox_retryable"], 0);
+}
+
+#[tokio::test]
+async fn admin_held_review_without_ownership_returns_503() {
+    let app = router(test_state(false));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/held-review")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "job_id": "j" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body_json(res).await["error"]["code"], "ownership_lost");
+}

@@ -120,7 +120,8 @@ func firstUnfetchableRemoteRef(parsed map[string]any) (badRef string, ok bool) {
 }
 
 // mediaResolveMeta carries the request descriptors resolveRemoteMedia needs to
-// record rejection telemetry with the same fidelity as the surrounding gates.
+// record rejection telemetry with the same fidelity as the surrounding gates,
+// plus the self-route context used to gate egress on serve-ability.
 type mediaResolveMeta struct {
 	model                 string
 	publicModel           string
@@ -128,6 +129,15 @@ type mediaResolveMeta struct {
 	estimatedPromptTokens int
 	requestedMaxTokens    int
 	hasTools              bool
+	requiresVision        bool
+	// selfRoute (exclusive X-Darkbloom-Route: self) skips the balance
+	// reservation, so the monetary cost gate that otherwise precedes a fetch is
+	// absent. ownerAccountID is the caller's owned-provider set. resolveRemoteMedia
+	// confirms the owner can actually serve the request BEFORE any fetch, so a
+	// user with no linked/online/capable machine can't drive coordinator egress
+	// and only then receive the self-route-unavailable error.
+	selfRoute      bool
+	ownerAccountID string
 }
 
 // resolveRemoteMedia is phase 2 (post-reservation): it fetches remote media
@@ -143,6 +153,20 @@ type mediaResolveMeta struct {
 func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawBody []byte, parsed map[string]any, timing *registry.RequestTiming, meta mediaResolveMeta) ([]byte, bool) {
 	if s.mediaResolver == nil || !s.mediaResolver.Enabled() {
 		return rawBody, true
+	}
+
+	// Self-route skips the balance reservation, so nothing has yet gated egress
+	// on serve-ability. Before fetching, confirm the owner has an online machine
+	// that can serve this request; otherwise a user with no linked/offline/
+	// incapable machine could drive up to the media-fetch caps of coordinator
+	// egress and only then get the self-route error. Only runs when a fetch would
+	// actually happen (remote media present); selfRouteUnavailable writes its own
+	// terminal response. The later runInferenceAdmission re-checks (idempotent).
+	if meta.selfRoute && mediafetch.HasRemoteMedia(parsed) {
+		if s.selfRouteUnavailable(w, r, meta.ownerAccountID, meta.model,
+			registry.RequestTraits{HasTools: meta.hasTools}, meta.requiresVision) {
+			return nil, false
+		}
 	}
 
 	start := time.Now()

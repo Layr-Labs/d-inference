@@ -1745,6 +1745,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		estimatedPromptTokens: estimatedPromptTokens,
 		requestedMaxTokens:    requestedMaxTokens,
 		hasTools:              hasTools,
+		requiresVision:        requiresVision,
+		selfRoute:             policy.enabled,
+		ownerAccountID:        policy.ownerAccountID,
 	})
 	if !ok {
 		refundReservation()

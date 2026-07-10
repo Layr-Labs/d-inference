@@ -2436,9 +2436,11 @@ threats:
           URL policy: http/https schemes only, standard web ports only (HTTP 80,
           HTTPS 443; non-standard ports require the explicit dev/test override
           EIGENINFERENCE_MEDIA_FETCH_ALLOW_NONSTANDARD_PORTS), no embedded
-          credentials, redirect depth capped at 3 with per-hop re-validation,
-          optional operator domain blocklist that applies at DNS-label boundaries
-          to each listed domain and all of its subdomains
+          credentials, redirect depth capped at 3 with per-hop re-validation and
+          the auto-populated Referer stripped on every hop (a presigned origin URL
+          in the query string never leaks to a redirect target), optional operator
+          domain blocklist that applies at DNS-label boundaries to each listed
+          domain and all of its subdomains
           (EIGENINFERENCE_MEDIA_FETCH_BLOCKLIST_DOMAINS).
         status: implemented
       - description: >
@@ -2469,10 +2471,14 @@ threats:
           reservation, and the catalog check (consumer.go phase-2 call site). The
           balance reservation uses the greater of the raw-byte billing bound and
           the media-aware 300/1500-soft-token estimate, so a caller funded only for
-          the short URL cannot drive egress and fail after inlining. The monetary
-          reservation is refunded on fetch failure; token-rate admission is
-          deliberately retained, matching other post-admission validation failures,
-          so failed URL probes consume quota.
+          the short URL cannot drive egress and fail after inlining. Exclusive
+          self-route skips the balance reservation, so resolveRemoteMedia first
+          runs the self-route serve-ability check (selfRouteUnavailable) before any
+          fetch — a caller with no linked/online/capable machine gets the
+          self-route error without driving egress. The monetary reservation is
+          refunded on fetch failure; token-rate admission is deliberately retained,
+          matching other post-admission validation failures, so failed URL probes
+          consume quota.
         status: implemented
       - description: >
           Sealed requests are never fetched: a sender-sealed payload carrying a

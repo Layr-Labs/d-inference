@@ -54,6 +54,12 @@ func newHTTPClient(cfg Config) *http.Client {
 // validated independently by the dialer Control hook. Depth is capped.
 func redirectGuard(cfg Config) func(req *http.Request, via []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
+		// Strip the Referer Go's client auto-populates from the previous hop.
+		// The previous URL can be a presigned S3/R2/GCS link whose query string
+		// carries the signature; without this a cross-host redirect would leak
+		// that signed URL to the redirect target, defeating the URL-secrecy the
+		// rest of this package preserves.
+		req.Header.Del("Referer")
 		if len(via) >= maxRedirects {
 			return fmt.Errorf("%w: too many redirects (>%d)", errBlockedHost, maxRedirects)
 		}

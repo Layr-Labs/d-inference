@@ -377,6 +377,35 @@ func TestFirstUnfetchableRemoteRef(t *testing.T) {
 	}
 }
 
+func TestResolveRemoteMediaSelfRouteUnavailableSkipsFetch(t *testing.T) {
+	srv, _ := testServer(t) // real registry + store, no linked providers
+	cfg := mediafetch.DefaultConfig()
+	cfg.AllowPrivateIPs = true
+	cfg.AllowNonStandardPorts = true
+	srv.mediaResolver = mediafetch.NewResolver(cfg, srv.logger)
+
+	var hits int32
+	media := httptest.NewServer(pngHandler(t, &hits))
+	defer media.Close()
+
+	raw, parsed := chatBodyBytes(t, media.URL+"/cat.png")
+	w := httptest.NewRecorder()
+	meta := mediaResolveMeta{
+		model: "test", publicModel: "test", requiresVision: true,
+		selfRoute: true, ownerAccountID: "owner-with-no-machine",
+	}
+	out, ok := srv.resolveRemoteMedia(w, plainReq(), raw, parsed, &registry.RequestTiming{}, meta)
+	if ok || out != nil {
+		t.Fatal("self-route with no serving machine must not resolve media")
+	}
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (no_linked_machine)", w.Code)
+	}
+	if n := atomic.LoadInt32(&hits); n != 0 {
+		t.Fatalf("unserviceable self-route triggered %d origin fetch(es); want 0", n)
+	}
+}
+
 // --- full HTTP path through srv.Handler() ------------------------------------
 
 func errType(t *testing.T, body []byte) string {

@@ -506,6 +506,35 @@ func TestResolveRedirectLoopDepthCap(t *testing.T) {
 	mustErr(t, chatBody(imagePartObj(srv.URL+"/start")), r, http.StatusForbidden, "media_blocked")
 }
 
+func TestResolveRedirectStripsRefererToPreventSignedURLLeak(t *testing.T) {
+	img := validPNG(t)
+	var gotReferer string
+	var sawSecond int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&sawSecond, 1)
+		gotReferer = r.Header.Get("Referer")
+		w.Write(img)
+	}))
+	defer target.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/real.png", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	r := NewResolver(devConfig(), nil)
+	// A presigned-style signature in the query must not reach the redirect target.
+	parsed := chatBody(imagePartObj(origin.URL + "/signed.png?X-Amz-Signature=leak-me"))
+	if _, err := r.Resolve(context.Background(), parsed); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if atomic.LoadInt32(&sawSecond) != 1 {
+		t.Fatalf("redirect target hit %d time(s), want 1", sawSecond)
+	}
+	if gotReferer != "" {
+		t.Errorf("redirect target saw Referer %q; signed origin URL must not leak", gotReferer)
+	}
+}
+
 func TestHasRemoteMediaAndFetchablePart(t *testing.T) {
 	withRemote := chatBody(imagePartObj("https://example.com/a.png"), videoPartObj("https://example.com/v.mp4"))
 	if !HasRemoteMedia(withRemote) {

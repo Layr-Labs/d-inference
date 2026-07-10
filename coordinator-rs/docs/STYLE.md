@@ -96,8 +96,8 @@ Apply in order. All rules are subordinate to the non-goals at the bottom.
 1. **File length.** Non-test code: soft cap **300** lines, hard cap **500** lines
    (excluding any trailing `#[cfg(test)] mod tests` block). Any source file over 500
    MUST be split; 300–500 should be split unless it is one cohesive `match`/state table.
-   Test files (`crates/*/tests/*.rs` and `*_support/`): soft cap 800; split by scenario
-   family when larger.
+   Test files (`crates/*/tests/it/**/*.rs`, including `support/`): soft cap 800; split by
+   scenario family when larger.
 2. **Directory conversion.** When splitting `foo.rs`, create `foo/` with `mod.rs` and
    move the code into sibling files — never leave `foo.rs` next to `foo/`. Reuse the
    existing sibling files of the module first (e.g. `request_task/types.rs`) before
@@ -136,9 +136,25 @@ Apply in order. All rules are subordinate to the non-goals at the bottom.
    `//! Invariant: <what must always hold>.`
 10. **Tests placement.** Unit tests: `#[cfg(test)] mod tests` at the bottom of the file
     whose code they exercise — when splitting a file, each extracted sibling takes its own
-    tests with it. Integration/black-box tests: one feature per file in
-    `crates/<crate>/tests/`, shared harness code in `tests/<name>_support/mod.rs` (already
-    the pattern — keep it). Property tests stay in dedicated `*_properties.rs` files.
+    tests with it. Integration/black-box tests: **one binary per crate**, rooted at
+    `crates/<crate>/tests/it/main.rs`. `main.rs` holds only the `//!` test map (module →
+    what it proves) and the `mod` declarations. Inside `it/`:
+    - One domain = one directory module with a one-sentence `//!` in its `mod.rs`
+      (`it/request/`, `it/crypto/`); one scenario family = one file inside it. A new test
+      area starts as a single file directly under `it/` and is promoted to a directory
+      module when it grows a second scenario-family file or domain-local fixtures.
+    - Property tests stay in dedicated `properties.rs` files within their domain module.
+    - Shared harness code lives in `tests/it/support/`, declared as a plain module
+      (`mod support;` in `main.rs`, referenced as `crate::support::…`). Never use
+      `#[path = "..."]` includes and never a `tests/common/` recompiled per binary — the
+      single binary makes both obsolete.
+    - Proptest regression seeds follow their tests. With a `main.rs`-rooted binary,
+      proptest's default `SourceParallel` persistence walks up from the test source file
+      to the directory containing `main.rs` and writes seeds to a parallel tree:
+      seeds for `tests/it/<module>/<file>.rs` live in
+      `tests/proptest-regressions/<module>/<file>.txt`. When moving a property test,
+      move its seed file to the matching path in the same change (a corrupt-line probe —
+      `proptest: <path>: unparsable line, ignoring` — confirms the file is being read).
 11. **Formatting.** Run `cargo fmt` with default settings; do NOT introduce `rustfmt.toml`
     during the decomposition (anchor's `imports_granularity = "One"` style is a possible
     separate follow-up, but mixing a whole-tree reformat into the split diffs makes them

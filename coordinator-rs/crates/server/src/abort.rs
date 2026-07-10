@@ -92,3 +92,56 @@ mod tests {
             .unwrap();
     }
 }
+
+pub fn cancel_frame(
+    job_id: &str,
+    attempt_id: &str,
+    lease_id: &str,
+    session_epoch: u64,
+    coordinator_epoch: u64,
+    dispatch_nonce: &str,
+    request_digest: &str,
+) -> Value {
+    json!({
+        "type": "cancel",
+        "job_id": job_id,
+        "attempt_id": attempt_id,
+        "lease_id": lease_id,
+        "session_epoch": session_epoch,
+        "coordinator_epoch": coordinator_epoch,
+        "dispatch_nonce": dispatch_nonce,
+        "request_digest": request_digest,
+    })
+}
+
+/// Post-start cancel; awaits cancelled ACK when provider is connected.
+pub async fn cancel_attempt(
+    hub: &SharedHub,
+    provider_id: &str,
+    job_id: &str,
+    attempt_id: &str,
+    lease_id: &str,
+    coordinator_epoch: u64,
+    dispatch_nonce: &str,
+    request_digest: &str,
+) -> Result<(), HubError> {
+    let frame = cancel_frame(
+        job_id,
+        attempt_id,
+        lease_id,
+        0,
+        coordinator_epoch,
+        dispatch_nonce,
+        request_digest,
+    );
+    // Reuse abort wait path by sending cancel and accepting Cancelled reply via abort()?
+    // ProviderHub::abort only accepts Aborted|Cancelled — send via abort channel semantics.
+    match hub
+        .abort(provider_id, attempt_id, frame, Duration::from_secs(5))
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(HubError::NotConnected) => Ok(()),
+        Err(e) => Err(e),
+    }
+}

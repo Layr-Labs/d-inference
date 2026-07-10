@@ -2,7 +2,7 @@
 //!
 //! Memory-backed for tests; Postgres SKIP LOCKED lands with SQLx.
 
-use crate::ledger::{MemoryLedger, OperationKey};
+use crate::ledger::{LedgerError, MemoryLedger, OperationKey};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +24,6 @@ pub fn recover_undispatched(
 }
 
 /// Like `recover_undispatched` but refuses when fencing epoch mismatches (DECISIONS #59).
-/// Pass `fencing_epoch=0` only for unbound jobs (legacy tests / demos without epoch bind).
 pub fn recover_undispatched_fenced(
     ledger: &Arc<Mutex<MemoryLedger>>,
     fencing_epoch: u64,
@@ -32,11 +31,20 @@ pub fn recover_undispatched_fenced(
     account: &str,
 ) -> Result<RecoveryAction, String> {
     let mut g = ledger.lock().map_err(|e| e.to_string())?;
+    recover_undispatched_on(&mut g, fencing_epoch, job_id, account).map_err(|e| e.to_string())
+}
+
+/// Core recover path for callers that already hold the ledger lock (DECISIONS #59/#62).
+pub fn recover_undispatched_on(
+    g: &mut MemoryLedger,
+    fencing_epoch: u64,
+    job_id: &str,
+    account: &str,
+) -> Result<RecoveryAction, LedgerError> {
     if g.job_disposition(job_id).is_some() {
         return Ok(RecoveryAction::AlreadyTerminal);
     }
     if g.job_funded_start(job_id) {
-        // start_authorized — must not auto-redispatch or auto-release in pilot.
         return Ok(RecoveryAction::Skipped);
     }
     if g.active_job_count() == 0 && g.job_reserved_total(job_id).is_none() {
@@ -47,15 +55,13 @@ pub fn recover_undispatched_fenced(
         OperationKey(format!("recovery_release:{job_id}")),
         job_id,
         account,
-    ) {
-        Ok(true) => Ok(RecoveryAction::Released),
-        Ok(false) => Ok(RecoveryAction::AlreadyTerminal),
-        Err(e) => Err(e.to_string()),
+    )? {
+        true => Ok(RecoveryAction::Released),
+        false => Ok(RecoveryAction::AlreadyTerminal),
     }
 }
 
 /// Explicit ops review settle for a start_authorized held job (DECISIONS #16).
-/// Charges `actual` (capped by reservation) and clears the hold.
 pub fn force_settle_held(
     ledger: &Arc<Mutex<MemoryLedger>>,
     job_id: &str,
@@ -76,6 +82,19 @@ pub fn force_settle_held_fenced(
     terminal_digest: &str,
 ) -> Result<RecoveryAction, String> {
     let mut g = ledger.lock().map_err(|e| e.to_string())?;
+    force_settle_held_on(&mut g, fencing_epoch, job_id, account, actual, terminal_digest)
+        .map_err(|e| e.to_string())
+}
+
+/// Core force-settle path for callers that already hold the ledger lock (DECISIONS #59/#62).
+pub fn force_settle_held_on(
+    g: &mut MemoryLedger,
+    fencing_epoch: u64,
+    job_id: &str,
+    account: &str,
+    actual: i64,
+    terminal_digest: &str,
+) -> Result<RecoveryAction, LedgerError> {
     if g.job_disposition(job_id).is_some() {
         return Ok(RecoveryAction::AlreadyTerminal);
     }
@@ -85,7 +104,6 @@ pub fn force_settle_held_fenced(
     if g.active_job_count() == 0 || g.job_reserved_total(job_id).is_none() {
         return Ok(RecoveryAction::AlreadyTerminal);
     }
-    // Clamp via settle_capped so ops amounts above reservation never fail-close.
     let reserved = g.job_reserved_total(job_id).map(|m| m.0).unwrap_or(0);
     match g.settle_capped_as_fenced(
         fencing_epoch,
@@ -96,10 +114,9 @@ pub fn force_settle_held_fenced(
         reserved,
         terminal_digest,
         "force_settled",
-    ) {
-        Ok(true) => Ok(RecoveryAction::Released), // settled — reuse Released as "cleared"
-        Ok(false) => Ok(RecoveryAction::AlreadyTerminal),
-        Err(e) => Err(e.to_string()),
+    )? {
+        true => Ok(RecoveryAction::Released),
+        false => Ok(RecoveryAction::AlreadyTerminal),
     }
 }
 

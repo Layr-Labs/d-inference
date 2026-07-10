@@ -22,6 +22,7 @@ use crate::ownership::Gate as OwnershipGate;
 use crate::provider_hub::{OutboundCmd, ProviderHub, SharedHub, StartResult};
 use crate::provider_ws::provider_ws;
 use crate::request_task::{spawn_request_task, ControlEvent};
+use crate::recovery::{force_settle_held_on, RecoveryAction};
 use crate::sealed::decrypt_request_body;
 use crate::telemetry::TelemetrySink;
 use crate::terminal_ingest::{ingest_terminal, MemoryTerminalStore, TerminalIngest};
@@ -503,47 +504,40 @@ async fn admin_force_settle(
 
     let (action, charged) = {
         let mut led = state.ledger.lock().await;
-        if led.job_disposition(&req.job_id).is_some() {
-            ("already_terminal".to_string(), 0_i64)
-        } else if !led.job_funded_start(&req.job_id) {
-            ("skipped".to_string(), 0_i64)
-        } else if led.job_reserved_total(&req.job_id).is_none() {
-            ("already_terminal".to_string(), 0_i64)
-        } else {
-            let reserved = led.job_reserved_total(&req.job_id).map(|m| m.0).unwrap_or(0);
-            let charge = req.actual_micro_usd.min(reserved).max(0);
-            match led.settle_capped_as_fenced(
-                state.ownership.epoch().0,
-                crate::ledger::OperationKey(format!("force_settle:{}", req.job_id)),
-                &req.job_id,
-                &account,
-                req.actual_micro_usd,
-                reserved,
-                &digest,
-                "force_settled",
-            ) {
-                Ok(true) => ("released".to_string(), charge),
-                Ok(false) => ("already_terminal".to_string(), 0),
-                Err(err) => {
-                    let (status, code) = match &err {
-                        crate::ledger::LedgerError::OwnershipLost => (
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "ownership_lost",
-                        ),
-                        _ => (StatusCode::CONFLICT, "force_settle_failed"),
-                    };
-                    return (
-                        status,
-                        Json(json!({
-                            "error": {
-                                "message": format!("{err}"),
-                                "type": "invalid_request_error",
-                                "code": code
-                            }
-                        })),
-                    )
-                        .into_response();
-                }
+        let reserved = led.job_reserved_total(&req.job_id).map(|m| m.0).unwrap_or(0);
+        let charge = req.actual_micro_usd.min(reserved).max(0);
+        match force_settle_held_on(
+            &mut led,
+            state.ownership.epoch().0,
+            &req.job_id,
+            &account,
+            req.actual_micro_usd,
+            &digest,
+        ) {
+            Ok(RecoveryAction::Released) => ("released".to_string(), charge),
+            Ok(RecoveryAction::AlreadyTerminal) => ("already_terminal".to_string(), 0),
+            Ok(RecoveryAction::Skipped) | Ok(RecoveryAction::HeldForReview) => {
+                ("skipped".to_string(), 0)
+            }
+            Err(err) => {
+                let (status, code) = match &err {
+                    crate::ledger::LedgerError::OwnershipLost => (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "ownership_lost",
+                    ),
+                    _ => (StatusCode::CONFLICT, "force_settle_failed"),
+                };
+                return (
+                    status,
+                    Json(json!({
+                        "error": {
+                            "message": format!("{err}"),
+                            "type": "invalid_request_error",
+                            "code": code
+                        }
+                    })),
+                )
+                    .into_response();
             }
         }
     };

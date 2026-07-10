@@ -307,3 +307,9 @@ Pre-start cancel uses the shared `record_released_disposition` helper (same
 digest as #60) when a terminal store is supplied, so cancel refunds are
 ingestable like recover/prepare-fail releases.
 
+### Admin force-settle via recovery core (DECISIONS #62)
+
+`POST /v1/admin/force-settle` calls `force_settle_held_on` — the same core as
+CLI/recovery — so disposition-first classification, fencing, and reservation
+clamping cannot drift between HTTP and in-process recovery.
+

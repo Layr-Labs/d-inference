@@ -56,6 +56,15 @@ impl HealthMachine {
     pub fn admits_general_traffic(&self) -> bool {
         matches!(self.state, HealthState::Healthy | HealthState::Suspect)
     }
+
+    /// Half-open allows a single probe admit (plan §11.6). Callers must
+    /// treat success via `on_success` and failure via `on_fault`.
+    pub fn admits_probe(&self) -> bool {
+        matches!(
+            self.state,
+            HealthState::Healthy | HealthState::Suspect | HealthState::HalfOpen
+        )
+    }
 }
 
 #[cfg(test)]
@@ -73,7 +82,23 @@ mod tests {
         assert!(!h.admits_general_traffic());
         h.tick(t0 + Duration::from_secs(2));
         assert_eq!(h.state, HealthState::HalfOpen);
+        assert!(!h.admits_general_traffic());
+        assert!(h.admits_probe());
         h.on_success();
         assert_eq!(h.state, HealthState::Healthy);
+        assert!(h.admits_general_traffic());
+    }
+
+    #[test]
+    fn half_open_fault_requarantines() {
+        let mut h = HealthMachine::healthy();
+        let t0 = Instant::now();
+        h.on_fault(t0, Duration::from_millis(1));
+        h.on_fault(t0, Duration::from_millis(1));
+        h.tick(t0 + Duration::from_secs(1));
+        assert_eq!(h.state, HealthState::HalfOpen);
+        h.on_fault(t0 + Duration::from_secs(1), Duration::from_secs(60));
+        assert_eq!(h.state, HealthState::QuarantinedUntil);
+        assert!(!h.admits_probe());
     }
 }

@@ -435,3 +435,8 @@ cutover.
 (pilot cutover). Cutover sequence: clear-orphans → outbox-drain → quiescence
 `ready=true`.
 
+### Outbox-drain race + deposit/clear conservation (DECISIONS #83)
+
+Concurrent outbox-drain acks each entry exactly once. Deposit during orphan
+hold then clear-orphans refunds reservations atop the deposit (money conserved).
+

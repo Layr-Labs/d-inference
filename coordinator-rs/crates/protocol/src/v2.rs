@@ -205,4 +205,10 @@ mod binary_payload_tests {
         assert_eq!(decoded, hdr);
         assert_eq!(ct, b"cipher");
     }
+
+    #[test]
+    fn frame_chunk_constant_is_two() {
+        assert_eq!(BinaryPayloadHeader::FRAME_CHUNK, 2);
+        assert_eq!(BINARY_PAYLOAD_HEADER_LEN, 64);
+    }
 }

@@ -384,6 +384,28 @@ async fn chat_completions(
             let use_live = match &prepare_result {
                 Ok(_) => true,
                 Err(crate::provider_hub::HubError::NotConnected) => false,
+                Err(crate::provider_hub::HubError::Timeout) => {
+                    let mut ledger = state.ledger.lock().await;
+                    let _ = ledger.release(
+                        crate::ledger::OperationKey(format!("release:{}", job_id.as_str())),
+                        job_id.as_str(),
+                        &state.pilot_account,
+                    );
+                    let _ = task.apply(ControlEvent::PrepareExpired);
+                    let mut p = state.placement.lock().await;
+                    p.signal_demand(&req.model);
+                    return (
+                        StatusCode::GATEWAY_TIMEOUT,
+                        Json(json!({
+                            "error": {
+                                "message": "prepare timed out; lease expired",
+                                "type": "timeout",
+                                "code": "prepare_expired"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
                 Err(err) => {
                     let mut ledger = state.ledger.lock().await;
                     let _ = ledger.release(

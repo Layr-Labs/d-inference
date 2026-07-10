@@ -647,4 +647,34 @@ mod tests {
         // reserved 1M, charged 300k → refund 700k → bal = 5M-1M+700k = 4.7M
         assert_eq!(led.balance("a").0, 4_700_000);
     }
+
+    #[test]
+    fn reserve_can_consume_all_withdrawable() {
+        let mut led = MemoryLedger::default();
+        // Pure withdrawable balance (earnings).
+        led.credit("a", 2_000_000, 2_000_000);
+        let res = led
+            .reserve(OperationKey("r".into()), "j", "a", 2_000_000)
+            .unwrap();
+        assert!(res.applied);
+        assert_eq!(res.provenance.total.0, 2_000_000);
+        assert_eq!(res.provenance.withdrawable.0, 2_000_000);
+        assert_eq!(led.balance("a"), (0, 0));
+        // Release restores withdrawable exactly.
+        assert!(led
+            .release(OperationKey("rel".into()), "j", "a")
+            .unwrap());
+        assert_eq!(led.balance("a"), (2_000_000, 2_000_000));
+    }
+
+    #[test]
+    fn reserve_zero_withdrawable_when_non_wdr_covers_amount() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 1_000_000); // 4M non-wdr, 1M wdr
+        let res = led
+            .reserve(OperationKey("r".into()), "j", "a", 3_000_000)
+            .unwrap();
+        assert_eq!(res.provenance.withdrawable.0, 0);
+        assert_eq!(led.balance("a"), (2_000_000, 1_000_000));
+    }
 }

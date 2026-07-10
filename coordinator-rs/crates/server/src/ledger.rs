@@ -346,4 +346,21 @@ mod tests {
         // reserved 5M, charged 1M → refund 4M → bal 10M-5M+4M = 9M
         assert_eq!(led.balance("a").0, 9_000_000);
     }
+
+    #[test]
+    fn release_is_idempotent_on_operation_key() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0);
+        led.reserve(OperationKey("r".into()), "j", "a", 2_000_000)
+            .unwrap();
+        assert!(led
+            .release(OperationKey("rel".into()), "j", "a")
+            .unwrap());
+        assert_eq!(led.balance("a").0, 5_000_000);
+        // Second release with same op key is a no-op.
+        assert!(!led
+            .release(OperationKey("rel".into()), "j", "a")
+            .unwrap());
+        assert_eq!(led.balance("a").0, 5_000_000);
+    }
 }

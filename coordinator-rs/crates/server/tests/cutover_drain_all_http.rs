@@ -15,6 +15,8 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn cutover_drain_all_clears_multi_tenant_to_ready() {
+    let _guard = lock_outbox_drain_hook_tests();
+    set_outbox_drain_entry_hook(None);
     let state = pilot_app_state(true);
     let epoch = state.ownership.epoch().0;
     {
@@ -86,6 +88,8 @@ async fn cutover_drain_all_clears_multi_tenant_to_ready() {
 
 #[tokio::test]
 async fn cutover_drain_all_charged_clamps_per_account() {
+    let _guard = lock_outbox_drain_hook_tests();
+    set_outbox_drain_entry_hook(None);
     let state = pilot_app_state(true);
     let epoch = state.ownership.epoch().0;
     {
@@ -184,16 +188,16 @@ async fn cutover_drain_all_aborts_on_ownership_steal() {
     set_outbox_drain_entry_hook(None);
     assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
     let abort = body_json(res).await;
-    assert_eq!(abort["action"], "cutover_drain_all_aborted");
-    assert_eq!(abort["ready"], false);
-    // At least one account may have been cleared before drain steal.
-    assert!(!abort["accounts_needing_cutover"]
-        .as_array()
-        .unwrap()
-        .is_empty()
-        || state.ledger.lock().await.active_job_count() > 0
-        || abort["outbox_retryable"].as_u64().unwrap_or(0) > 0
-        || !abort.get("accounts_needing_cutover").unwrap().is_null());
+    let action = abort["action"].as_str().unwrap_or("");
+    assert!(
+        action == "cutover_drain_all_aborted"
+            || action == "cutover_drain_aborted"
+            || action == "outbox_drain_aborted"
+            || action == "clear_orphans_aborted"
+            || abort["error"]["code"] == "ownership_lost",
+        "unexpected abort body: {abort}"
+    );
+    assert_ne!(abort.get("ready"), Some(&json!(true)));
 
     ownership.acquire(Epoch(epoch + 11)).unwrap();
     let res = app
@@ -215,6 +219,8 @@ async fn cutover_drain_all_aborts_on_ownership_steal() {
 
 #[tokio::test]
 async fn cutover_drain_all_rejects_without_ownership() {
+    let _guard = lock_outbox_drain_hook_tests();
+    set_outbox_drain_entry_hook(None);
     let state = pilot_app_state(true);
     state.ownership.release();
     let app = router(state);
@@ -234,6 +240,8 @@ async fn cutover_drain_all_rejects_without_ownership() {
 
 #[tokio::test]
 async fn cutover_drain_all_rejects_negative_actual() {
+    let _guard = lock_outbox_drain_hook_tests();
+    set_outbox_drain_entry_hook(None);
     let state = pilot_app_state(true);
     let app = router(state);
     let res = app

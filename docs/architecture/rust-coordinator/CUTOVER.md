@@ -944,3 +944,17 @@ false `scoped_ready`.
 terminal_digest is already bound to a different job — matching
 MemoryLedger Conflict (not silent no-op).
 
+### Cutover-drain-all atomic ready fields (DECISIONS #160)
+
+`cutover-drain-all` computes scoped accounts, outbox length, and
+`all_remaining`/`needs_adopt` inside one `money_fx` critical section.
+There is no post-snapshot naked ledger re-read that could observe a
+settled job while missing its `inference.settled` outbox entry.
+
+### Money SQL epoch_conflict (DECISIONS #161)
+
+settle / settle_capped / force_settle / release / mark_start / resize SQL
+all surface `epoch_conflict` when the job row's fencing epoch mismatches
+the caller — matching reserve #157. Settle job CTEs also SELECT `state`
+so the start_authorized guard is valid SQL.
+

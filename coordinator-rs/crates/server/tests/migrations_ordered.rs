@@ -28,6 +28,10 @@ fn rust_coord_migrations_are_ordered_and_additive() {
         names.iter().any(|n| n.contains("late_terminals")),
         "expected late_terminals migration: {names:?}"
     );
+    assert!(
+        names.iter().any(|n| n.contains("financial_op_params")),
+        "expected financial_op_params migration: {names:?}"
+    );
     let mut sorted = names.clone();
     sorted.sort();
     assert_eq!(names, sorted, "migration filenames must sort lexicographically");

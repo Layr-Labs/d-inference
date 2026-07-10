@@ -793,3 +793,10 @@ force-settle money+terminal+outbox, and across the entire quiescence
 snapshot. Quiescence cannot observe a funded/settled ledger without the
 matching critical side effect still being recorded.
 
+### Chat settle under money_fx (DECISIONS #137)
+
+Chat completions defer mock/live settle into one `money_fx` critical
+section that also records the terminal disposition and enqueues
+`inference.settled`. `release_job_with_outbox` holds the same barrier.
+Holding `money_fx` blocks chat settle until release.
+

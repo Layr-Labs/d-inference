@@ -144,6 +144,7 @@ Date: 2026-07-10
 | 135 | Outbox-drain epoch fence | Drain binds to start fencing epoch; re-checks under outbox lock; SQL ack/drain gated on holder+epoch so steal/re-acquire cannot drop critical side effects |
 | 136 | Money-fx barrier for quiescence | `AppState.money_fx` serializes deposit/force-settle money+outbox against quiescence snapshots so ready cannot observe settle without the critical side effect |
 | 137 | Chat settle under money_fx | Chat/mock/live settle deferred into a single money_fx section with terminal+outbox; release_job_with_outbox also holds the barrier |
+| 138 | SQL financial op param bind | Migration `0003` adds account/digest/cap columns; reserve/settle/settle_capped SQL surface `param_conflict` on mismatched op-key reuse (MemoryLedger #34 parity) |
 
 ## Deleted Go mechanisms (do not port)
 

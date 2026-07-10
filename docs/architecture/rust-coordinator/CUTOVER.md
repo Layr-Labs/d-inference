@@ -550,3 +550,9 @@ After clear-orphans aborts on steal, quiescence without ownership still lists
 orphans and hints `cutover-drain`. Re-acquire then concurrent adopt-jobs with
 cutover-drain reaches ready with conserved balance.
 
+### Explicit remaining-id settle + cancel vs force (DECISIONS #102)
+
+Ops can pass `remaining_held_start_authorized_job_ids` from a batch abort into
+`adopt-jobs` / `force-settle-batch` to clear only those orphans. Concurrent
+`cancel-attempt` never refunds/charges while force-settle settles exactly once.
+

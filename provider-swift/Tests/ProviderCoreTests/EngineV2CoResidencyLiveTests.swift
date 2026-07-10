@@ -64,7 +64,19 @@ struct EngineV2CoResidencyLiveTests {
             ],
             config: ProviderConfig(
                 provider: ProviderSettings(name: "coresidency-live", memoryReserveGB: Self.reserveGiB),
-                backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 3),
+                // PINNED contiguous: this drill asserts the LEDGER
+                // shrink/serve/regrow arithmetic, which is identical on the
+                // paged backend (paged re-slices are ledger-only). Under
+                // paged-by-default, gpt-oss's lone-slot grant would be
+                // physically committed as slabs (~the full fleet budget on
+                // this box) and the later gemma load correctly FAILS CLOSED
+                // at the post-load headroom guard — the designed v1 paged
+                // co-residency behavior, but not what this test measures.
+                // Meaningful paged co-residency at these scales needs the
+                // pool-resize follow-up.
+                backend: BackendSettings(
+                    idleTimeoutMins: 0, maxModelSlots: 3,
+                    engineV2KVBackend: "contiguous"),
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
             )
         )

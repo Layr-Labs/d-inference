@@ -660,11 +660,17 @@ impl MemoryLedger {
         job_id: &str,
         account: &str,
     ) -> Result<bool, LedgerError> {
+        // Bind amount to reserved total (SQL release_sql stores j.reserved — DECISIONS #144).
+        let reserved = self
+            .jobs
+            .get(job_id)
+            .map(|j| j.provenance.total.0)
+            .unwrap_or(0);
         let record = OperationRecord {
             op_type: "release",
             job_id: job_id.to_string(),
             account: account.to_string(),
-            amount: 0,
+            amount: reserved,
             digest: None,
             billable_cap: None,
         };
@@ -1032,6 +1038,26 @@ mod tests {
             .release(OperationKey("rel".into()), "j", "a")
             .unwrap());
         assert_eq!(led.balance("a").0, 5_000_000);
+    }
+
+    #[test]
+    fn release_op_key_binds_reserved_amount() {
+        // DECISIONS #144: MemoryLedger stores reserved amount like release_sql.
+        let mut led = MemoryLedger::default();
+        led.credit("a", 10_000_000, 0).unwrap();
+        led.reserve(OperationKey("r1".into()), "j1", "a", 1_000_000)
+            .unwrap();
+        assert!(led
+            .release(OperationKey("rel-shared".into()), "j1", "a")
+            .unwrap());
+        led.reserve(OperationKey("r2".into()), "j2", "a", 2_000_000)
+            .unwrap();
+        // Same op key, different reserved amount → Conflict (not silent replay).
+        assert!(matches!(
+            led.release(OperationKey("rel-shared".into()), "j2", "a"),
+            Err(LedgerError::Conflict(_))
+        ));
+        assert_eq!(led.balance("a").0, 9_000_000); // j2 still reserved
     }
 
     #[test]

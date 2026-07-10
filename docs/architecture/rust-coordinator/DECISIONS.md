@@ -148,6 +148,9 @@ Date: 2026-07-10
 | 139 | Batch money under money_fx | force-settle-batch / recover-undispatched-batch hold `money_fx` per job across settle/release + terminal/outbox |
 | 140 | Clear-orphans under money_fx | clear-orphans recover + force-settle phases hold `money_fx` per job across money + disposition/outbox |
 | 141 | Release/mark/force SQL param bind | mark_start / release / force_settle SQL also bind account/digest/cap and surface `param_conflict` |
+| 142 | Resize + deposit SQL param bind | resize_and_authorize + deposit_sql bind account/amount(/digest/wdr) and surface `param_conflict` |
+| 143 | Recover under money_fx | Single-job `recover-undispatched` holds `money_fx` across release + disposition/outbox |
+| 144 | Release op amount bind | MemoryLedger `release` stores reserved amount in OperationRecord (SQL `j.reserved` parity) |
 
 ## Deleted Go mechanisms (do not port)
 

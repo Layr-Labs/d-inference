@@ -835,3 +835,14 @@ for the remaining money CTEs.
 deposit digest/wdr via terminal_digest/billable_cap columns) and return
 `param_conflict` on mismatched op-key reuse.
 
+### Recover under money_fx (DECISIONS #143)
+
+Single-job `POST /v1/admin/recover-undispatched` holds `money_fx` across
+the release and disposition/outbox enqueue (parity with batch/clear paths).
+
+### Release op amount bind (DECISIONS #144)
+
+`MemoryLedger::release` records the job's reserved total on the
+`OperationRecord` so mismatched op-key reuse conflicts — matching
+`release_sql`'s `amount_micro_usd = j.reserved` check.
+

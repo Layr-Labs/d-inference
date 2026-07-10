@@ -1195,6 +1195,9 @@ async fn admin_recover_undispatched(
         return resp;
     }
 
+    // Hold money_fx across release + disposition/outbox (DECISIONS #143).
+    let _fx = state.money_fx.lock().await;
+
     let (action, refunded, account) = {
         let mut led = state.ledger.lock().await;
         let Some(job_acct) = led.job_account_id(&req.job_id) else {

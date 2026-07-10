@@ -241,3 +241,43 @@ mod tests {
         assert_eq!(task.state, RequestState::Finished);
     }
 }
+
+#[cfg(test)]
+mod hedge_abort_tests {
+    use super::*;
+    use crate::abort::abort_losing_hedge;
+    use crate::provider_hub::{InboundReply, OutboundCmd, ProviderHub};
+    use darkbloom_core::JobId;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn hedge_loss_aborts_loser() {
+        let (handle, mut task) = spawn_request_task(JobId::new("j-hedge"), Duration::from_secs(30));
+        let _ = handle;
+        task.hedge_budget.record_admit();
+        assert!(task.maybe_hedge(Duration::from_secs(1)));
+        assert!(task.hedge_used);
+
+        let hub = ProviderHub::new();
+        let (tx, mut rx) = mpsc::channel(8);
+        hub.attach("loser".into(), 1, tx).await;
+        let hub2 = hub.clone();
+        tokio::spawn(async move {
+            if let Some(OutboundCmd::Text(t)) = rx.recv().await {
+                let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                assert_eq!(v["type"], "abort");
+                assert_eq!(v["reason"], "hedge_lost");
+                let attempt = v["attempt_id"].as_str().unwrap().to_string();
+                hub2.deliver_reply(
+                    "loser",
+                    &attempt,
+                    InboundReply::Aborted(serde_json::json!({"type":"aborted","attempt_id":attempt})),
+                )
+                .await;
+            }
+        });
+        abort_losing_hedge(&hub, "loser", "j-hedge", "a-loser", "l-loser", 1, "n", "d")
+            .await
+            .unwrap();
+    }
+}

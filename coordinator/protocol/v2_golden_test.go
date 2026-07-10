@@ -48,3 +48,33 @@ func TestV2Goldens_PrepareCommand(t *testing.T) {
 		t.Fatalf("unexpected prepare: %+v", msg)
 	}
 }
+
+func TestV2Goldens_StartAbortCommands(t *testing.T) {
+	dir := goldenDir(t)
+	{
+		b, err := os.ReadFile(filepath.Join(dir, "start.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var msg StartMessage
+		if err := json.Unmarshal(b, &msg); err != nil {
+			t.Fatal(err)
+		}
+		if msg.Type != TypeStart || msg.LeaseID == "" {
+			t.Fatalf("start: %+v", msg)
+		}
+	}
+	{
+		b, err := os.ReadFile(filepath.Join(dir, "abort.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var msg AbortMessage
+		if err := json.Unmarshal(b, &msg); err != nil {
+			t.Fatal(err)
+		}
+		if msg.Type != TypeAbort || msg.Reason != "hedge_lost" {
+			t.Fatalf("abort: %+v", msg)
+		}
+	}
+}

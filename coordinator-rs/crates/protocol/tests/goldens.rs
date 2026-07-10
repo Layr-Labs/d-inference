@@ -26,3 +26,19 @@ fn terminal_golden_parses() {
     assert_eq!(v["outcome"], "completed");
     assert_eq!(v["terminal_digest"], "sha256:terminal");
 }
+
+#[test]
+fn start_golden_parses() {
+    let raw = include_str!("fixtures/start.json");
+    let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(v["type"], "start");
+    assert_eq!(v["lease_id"], "lease-33333333-3333-3333-3333-333333333333");
+}
+
+#[test]
+fn abort_golden_parses() {
+    let raw = include_str!("fixtures/abort.json");
+    let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(v["type"], "abort");
+    assert_eq!(v["reason"], "hedge_lost");
+}

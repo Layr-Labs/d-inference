@@ -730,3 +730,37 @@ async fn quiescence_ready_after_force_settle_clears_hold() {
     assert_eq!(v["held_start_authorized"], 0);
     assert_eq!(v["active_jobs"], 0);
 }
+
+#[tokio::test]
+async fn admin_deposit_creates_new_account() {
+    let state = test_state(true);
+    let ledger = state.ledger.clone();
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/deposits")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "event_id": "evt_new_acct_http",
+                        "account": "fresh-user",
+                        "amount_micro_usd": 750_000,
+                        "withdrawable_micro_usd": 150_000
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["applied"], true);
+    assert_eq!(v["balance_micro_usd"], 750_000);
+    assert_eq!(v["withdrawable_micro_usd"], 150_000);
+    assert_eq!(ledger.lock().await.balance("fresh-user"), (750_000, 150_000));
+    // Pilot account unchanged.
+    assert_eq!(ledger.lock().await.balance("pilot-account").0, 1_000_000);
+}

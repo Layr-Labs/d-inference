@@ -69,3 +69,9 @@ darkbloom-coordinator recovery --confirm-same-release --demo-force-settle-job JO
 
 Production force-settle uses `force_settle_held` against Postgres once SQLx is
 wired. Do **not** call `release` on start_authorized jobs.
+
+### Deposit kill-boundary (DECISIONS #22)
+
+`apply_stripe_deposit` validates amounts **before** consuming the
+`(source, event_id)` key. If credit still fails after observe, `forget`
+restores the key so a retry can succeed. Durable shape: `deposit_sql()`.

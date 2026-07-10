@@ -23,6 +23,7 @@ use axum::Router;
 use futures::future::BoxFuture;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tracing::Instrument;
 use uuid::Uuid;
 
@@ -79,6 +80,11 @@ pub struct HttpConfig {
     pub readiness: ReadinessInputs,
     /// Coordinator shutdown token propagated into request tasks.
     pub shutdown: CancellationToken,
+    /// Tracker every spawned request task registers with (plan §15.1 step 2:
+    /// the supervisor's requests phase drains THESE tasks before workers and
+    /// sessions stop). `bootstrap` passes the requests-phase tracker; the
+    /// default is a standalone tracker for harnesses without a supervisor.
+    pub request_tracker: TaskTracker,
 }
 
 impl Default for HttpConfig {
@@ -90,6 +96,7 @@ impl Default for HttpConfig {
             provider_max_frame_bytes: DEFAULT_PROVIDER_MAX_FRAME_BYTES,
             readiness: ReadinessInputs::default(),
             shutdown: CancellationToken::new(),
+            request_tracker: TaskTracker::new(),
         }
     }
 }
@@ -101,6 +108,8 @@ pub struct HttpState {
     pub limits: Arc<ConcurrencyLimits>,
     pub task_deps: RequestTaskDeps,
     pub readiness: ReadinessInputs,
+    /// Requests-phase task tracker (see [`HttpConfig::request_tracker`]).
+    pub request_tracker: TaskTracker,
     provider_connect: Option<ProviderConnectHandler>,
     provider_max_frame_bytes: usize,
 }
@@ -132,6 +141,7 @@ pub fn build_router_with(state: AppState, config: HttpConfig) -> Router {
         )),
         task_deps,
         readiness: config.readiness.clone(),
+        request_tracker: config.request_tracker.clone(),
         provider_connect: config.provider_connect.clone(),
         provider_max_frame_bytes: config.provider_max_frame_bytes,
     };

@@ -219,7 +219,11 @@ async fn handle(state: HttpState, headers: HeaderMap, body: Bytes) -> Result<Res
     let task = {
         let deps = state.task_deps.clone();
         let normalized = prepared.normalized;
-        tokio::spawn(tracing::Instrument::instrument(
+        // Spawned on the supervisor's requests-phase tracker (plan §15.1
+        // step 2): ordered shutdown cancels via `deps.shutdown` (already in
+        // the task's select) and then WAITS for these tasks to reach their
+        // durable disposition before workers and sessions stop.
+        state.request_tracker.spawn(tracing::Instrument::instrument(
             request_task::run(deps, normalized),
             span,
         ))

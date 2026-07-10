@@ -1121,3 +1121,57 @@ async fn v1_happy_path_golden_wire_and_settle() {
         "v1 bills the frozen estimate, not the provider claim"
     );
 }
+
+// -------------------------------------------------------------------
+// Ordered shutdown drains request tasks (plan §15.1 step 2)
+// -------------------------------------------------------------------
+
+/// Request tasks spawned by the chat handler must register with the
+/// requests-phase tracker AND stop on the shutdown token: with a provider
+/// that never answers, firing shutdown makes the handler return promptly
+/// and leaves the tracker drainable — the supervisor's requests phase no
+/// longer drains nothing.
+#[tokio::test]
+async fn shutdown_cancels_and_drains_request_tasks() {
+    let mut h = HarnessBuilder::new().build();
+    let mut provider = h.providers.remove(0);
+
+    // The provider swallows the prepare and then goes silent forever,
+    // keeping its session lanes open (a dropped lane would be session loss
+    // — a different, self-resolving path).
+    let script = tokio::spawn(async move {
+        let _attach = provider.expect_attach().await;
+        let _prepare = provider.expect_data().await;
+        std::future::pending::<()>().await;
+    });
+
+    let router = h.router.clone();
+    let request = tokio::spawn(async move {
+        router
+            .oneshot(chat_request(&chat_body(true)))
+            .await
+            .expect("router")
+    });
+
+    // The request is in flight and its task is TRACKED.
+    wait_until(|| h.fleet_record.admit_count() == 1).await;
+    wait_until(|| h.request_tracker.len() == 1).await;
+
+    // Supervisor step 2, reproduced: fire the shutdown token, then drain.
+    h.shutdown.cancel();
+    let response = tokio::time::timeout(Duration::from_secs(5), request)
+        .await
+        .expect("handler must return promptly on shutdown")
+        .expect("join");
+    assert_eq!(
+        response.status(),
+        504,
+        "pre-content shutdown cancellation maps to the timeout error"
+    );
+
+    h.request_tracker.close();
+    tokio::time::timeout(Duration::from_secs(5), h.request_tracker.wait())
+        .await
+        .expect("requests phase drains after cancellation");
+    script.abort();
+}

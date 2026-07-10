@@ -15,6 +15,9 @@
 //!   it waits for provider evidence, expiry, or session loss (12.2, 13.2).
 //! - First accepted content commits the request; role/preamble does not;
 //!   no failover after commitment (9.2.7, 9.2.8).
+//! - Content arriving after cancellation was initiated neither commits the
+//!   request nor advances the billing checkpoint: settlement stays capped
+//!   at the checkpoint of chunks accepted before the cancel (13.4-13.6).
 //! - Exactly one terminal disposition per attempt: duplicate same-digest
 //!   terminals are idempotent, different digests raise a conflict effect
 //!   and move no money (9.3, 10.6, 12.8).
@@ -160,6 +163,14 @@ impl RequestMachine {
     #[must_use]
     pub fn accepted_checkpoint(&self) -> Tokens {
         self.accepted_checkpoint
+    }
+
+    /// Whether cancellation has been initiated (any rung of the 13.1-13.6
+    /// ladder). Once set it never clears: late content can no longer commit
+    /// the request or advance the billing checkpoint.
+    #[must_use]
+    pub fn is_cancel_requested(&self) -> bool {
+        self.cancel_requested
     }
 
     #[must_use]

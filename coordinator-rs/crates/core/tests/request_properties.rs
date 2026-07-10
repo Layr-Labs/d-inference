@@ -114,6 +114,9 @@ impl Harness {
     /// Deliver one event; on success, run all invariant checks.
     fn deliver(&mut self, event: Event) {
         let funding_before = self.machine.funded_attempt().is_some();
+        let cancel_before = self.machine.is_cancel_requested();
+        let committed_before = self.machine.committed_attempt();
+        let checkpoint_before = self.machine.accepted_checkpoint();
 
         // Pre-register resources the caller hands over with the event.
         let (granted, offer): (Option<(AttemptId, ProviderId)>, Option<HedgeOffer>) = match &event {
@@ -254,6 +257,22 @@ impl Harness {
             self.initial_deadlines,
             "deadlines mutated (9.2.5)"
         );
+        if cancel_before {
+            // Once cancellation is initiated, late content can neither
+            // commit the request nor advance the billing checkpoint
+            // (13.4/13.5): settlement stays capped at the pre-cancel
+            // accepted checkpoint.
+            assert_eq!(
+                self.machine.committed_attempt(),
+                committed_before,
+                "commitment changed after cancellation was initiated (13.4)"
+            );
+            assert_eq!(
+                self.machine.accepted_checkpoint(),
+                checkpoint_before,
+                "billing checkpoint advanced after cancellation (13.5/13.6)"
+            );
+        }
         assert!(self.fund_effects <= 1, "two funded starts (9.2.3)");
         assert!(self.settles <= 1, "two settlements");
         assert!(

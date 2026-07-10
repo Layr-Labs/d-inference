@@ -7,15 +7,23 @@
 //! Shared between the writer (binds on send) and the reader (validates and
 //! routes) behind a plain mutex: every critical section is a map touch,
 //! never an await.
+//!
+//! Attach also reserves ONE event-channel permit per attempt: when the
+//! bounded events lane overflows, that permit is the guaranteed path for
+//! exactly one terminal-class event (plan §9.4.5 — terminal/cancel-class
+//! events are never silently dropped; the naive fallback of `try_send`ing
+//! `SessionLost` into the same full channel provably cannot deliver).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tokio::sync::mpsc::OwnedPermit;
+
 use darkbloom_core::ids::AttemptId;
 use darkbloom_protocol::json_v2;
 
-use crate::contracts::AttemptSinks;
+use crate::contracts::{AttemptEvent, AttemptSinks};
 
 /// What the writer recorded when it dispatched the attempt's prepare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +36,9 @@ pub(crate) struct ScopeBinding {
 pub(crate) struct AttemptEntry {
     pub attempt: Option<AttemptId>,
     pub sinks: Option<AttemptSinks>,
+    /// One events-lane permit reserved at attach: the guaranteed slot for
+    /// exactly one terminal-class event on lane overflow (plan §9.4.5).
+    pub reserved: Option<OwnedPermit<AttemptEvent>>,
     pub binding: Option<ScopeBinding>,
     /// Reason from the coordinator's outbound `abort`, recorded by the
     /// writer so the provider's bare `aborted` acknowledgement can carry it
@@ -51,9 +62,14 @@ pub(crate) fn shared() -> SharedAttempts {
 
 impl AttemptTable {
     pub fn attach(&mut self, wire_id: String, attempt: AttemptId, sinks: AttemptSinks) {
+        // Reserve the terminal-class slot up front, while the fresh channel
+        // is guaranteed to have room; a failure here (already-full or
+        // closed channel at attach) degrades to the lossy legacy fallback.
+        let reserved = sinks.events.clone().try_reserve_owned().ok();
         let entry = self.entries.entry(wire_id).or_default();
         entry.attempt = Some(attempt);
         entry.sinks = Some(sinks);
+        entry.reserved = reserved;
     }
 
     pub fn detach(&mut self, wire_id: &str) {
@@ -82,18 +98,21 @@ impl AttemptTable {
             .tombstoned = true;
     }
 
-    fn drain_sinks(&mut self) -> Vec<AttemptSinks> {
+    fn drain_sinks(&mut self) -> Vec<(AttemptSinks, Option<OwnedPermit<AttemptEvent>>)> {
         self.entries
             .drain()
-            .filter_map(|(_, entry)| entry.sinks)
+            .filter_map(|(_, entry)| entry.sinks.map(|sinks| (sinks, entry.reserved)))
             .collect()
     }
 }
 
-/// Removes and returns every attached sink (session teardown: each one gets
-/// `AttemptEvent::SessionLost`). Poisoning cannot happen — no panics occur
-/// under the lock — but fail safe rather than propagate.
-pub(crate) fn take_all_sinks(attempts: &SharedAttempts) -> Vec<AttemptSinks> {
+/// Removes and returns every attached sink with its reserved terminal-slot
+/// permit (session teardown: each one gets `AttemptEvent::SessionLost`, via
+/// the permit when the lane is full). Poisoning cannot happen — no panics
+/// occur under the lock — but fail safe rather than propagate.
+pub(crate) fn take_all_sinks(
+    attempts: &SharedAttempts,
+) -> Vec<(AttemptSinks, Option<OwnedPermit<AttemptEvent>>)> {
     match attempts.lock() {
         Ok(mut table) => table.drain_sinks(),
         Err(poisoned) => poisoned.into_inner().drain_sinks(),

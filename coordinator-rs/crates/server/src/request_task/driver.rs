@@ -91,6 +91,46 @@ enum TimerKind {
     StreamIdle,
 }
 
+/// Permit bookkeeping with a Drop backstop: releasing on drop is safe
+/// because `FleetCommand::ReleasePermit` is idempotent (plan §9.2.10) and
+/// `teardown()` drains the map first on every ordinary exit path, making
+/// the Drop a no-op there.
+struct PermitLedger {
+    fleet_commands: mpsc::Sender<FleetCommand>,
+    permits: HashMap<AttemptId, (ProviderId, PermitId)>,
+}
+
+impl PermitLedger {
+    fn new(fleet_commands: mpsc::Sender<FleetCommand>) -> Self {
+        Self {
+            fleet_commands,
+            permits: HashMap::new(),
+        }
+    }
+
+    fn insert(&mut self, attempt: AttemptId, provider: ProviderId, permit: PermitId) {
+        self.permits.insert(attempt, (provider, permit));
+    }
+
+    fn remove(&mut self, attempt: &AttemptId) -> Option<(ProviderId, PermitId)> {
+        self.permits.remove(attempt)
+    }
+
+    fn release_all(&mut self) {
+        for (_, (provider, permit)) in self.permits.drain() {
+            let _ = self
+                .fleet_commands
+                .try_send(FleetCommand::ReleasePermit { provider, permit });
+        }
+    }
+}
+
+impl Drop for PermitLedger {
+    fn drop(&mut self) {
+        self.release_all();
+    }
+}
+
 pub(super) struct Driver {
     deps: RequestTaskDeps,
     req: NormalizedRequest,
@@ -104,8 +144,11 @@ pub(super) struct Driver {
     pending_grants: HashMap<AttemptId, Box<crate::contracts::AdmitGrant>>,
     /// Fleet-minted permit identity per attempt (plan §9.2.10): retained
     /// from grant until the release effect fires, independent of whether
-    /// the runtime was ever constructed.
-    attempt_permits: HashMap<AttemptId, (ProviderId, PermitId)>,
+    /// the runtime was ever constructed. Drop-guarded: if the driver future
+    /// is dropped without running `teardown()` (e.g. a caller races it
+    /// against a shutdown token), remaining permits are still released
+    /// instead of waiting for hard expiry.
+    attempt_permits: PermitLedger,
     hedge_tokens: HashMap<AttemptId, HedgeToken>,
     // Absolute deadlines fixed at ingress (plan §9.2.5, §16).
     first_content_deadline: TimestampMs,
@@ -129,6 +172,7 @@ pub(super) struct Driver {
 
 impl Driver {
     pub(super) fn new(deps: RequestTaskDeps, req: NormalizedRequest) -> Self {
+        let permit_ledger = PermitLedger::new(deps.fleet.commands.clone());
         let clock = Clock::start();
         let now = clock.now();
         let policy = &deps.policy;
@@ -161,7 +205,7 @@ impl Driver {
             pumps: JoinSet::new(),
             runtimes: HashMap::new(),
             pending_grants: HashMap::new(),
-            attempt_permits: HashMap::new(),
+            attempt_permits: permit_ledger,
             hedge_tokens: HashMap::new(),
             first_content_deadline,
             total_deadline,
@@ -444,7 +488,7 @@ impl Driver {
                 let attempt = AttemptId::new(Uuid::new_v4());
                 let provider = grant.provider;
                 self.attempt_permits
-                    .insert(attempt, (provider, grant.permit_id));
+                    .insert(attempt, provider, grant.permit_id);
                 self.pending_grants.insert(attempt, grant);
                 self.push(Event::AdmitGranted { attempt, provider });
             }
@@ -1450,7 +1494,7 @@ impl Driver {
                 let attempt = AttemptId::new(Uuid::new_v4());
                 let provider = grant.provider;
                 self.attempt_permits
-                    .insert(attempt, (provider, grant.permit_id));
+                    .insert(attempt, provider, grant.permit_id);
                 self.pending_grants.insert(attempt, grant);
                 self.hedge_tokens.insert(attempt, token);
                 Some(HedgeOffer { attempt, provider })
@@ -1557,13 +1601,8 @@ impl Driver {
         }
         // Any permit whose release effect never fired (fatal teardown) is
         // released now instead of waiting for hard expiry; release is
-        // idempotent (plan §9.2.10).
-        for (_, (provider, permit)) in self.attempt_permits.drain() {
-            let _ = self
-                .deps
-                .fleet
-                .commands
-                .try_send(FleetCommand::ReleasePermit { provider, permit });
-        }
+        // idempotent (plan §9.2.10). The PermitLedger Drop backstop covers
+        // the dropped-future path where teardown never runs.
+        self.attempt_permits.release_all();
     }
 }

@@ -8,9 +8,10 @@ use bytes::Bytes;
 
 use darkbloom_core::ids::{LeaseId, StateRevision};
 use darkbloom_protocol::binary::{self, FrameKind};
+use darkbloom_protocol::crypto::terminal_digest::verify_terminal_signature;
 use darkbloom_protocol::json_v2::{AbortReason, CancelFrame, FrameV2, RequestScope, TerminalFrame};
 
-use crate::contracts::{AttemptEvent, ChunkFrame, FleetCommand, PipeError};
+use crate::contracts::{AttemptEvent, ChunkFrame, FleetCommand, FleetObservation, PipeError};
 
 use super::attempts::{self, ScopeBinding};
 use super::reader::{Deliver, Reader};
@@ -142,6 +143,17 @@ impl Reader {
         let Some(wire_id) = self.check_scope(&terminal.scope) else {
             return;
         };
+        // Plan §12.6 step 3: the terminal's Secure Enclave signature must
+        // verify against the key attested at registration BEFORE the
+        // terminal can drive settlement. The session is the only layer
+        // holding that key, so intake is where verification lives; a v2
+        // terminal that cannot be verified (no attested key, or a bad
+        // signature) is security-dropped and the provider is fenced —
+        // money then reaches its safe disposition through the terminal-wait
+        // / recovery review path, never through an unverified claim.
+        if !self.verify_terminal(&terminal).await {
+            return;
+        }
         match self.deliver_event(&wire_id, AttemptEvent::Terminal(Box::new(terminal))) {
             Deliver::Ok | Deliver::Dropped => {}
             Deliver::NoAttempt => {
@@ -153,6 +165,38 @@ impl Reader {
                     "terminal replay without attached attempt");
             }
         }
+    }
+
+    /// Verifies the terminal's SE signature on the blocking pool (P-256
+    /// work never runs inline in a read loop — same discipline as
+    /// [`crate::trust::TrustVerifier`]). Awaiting here preserves frame
+    /// order: the terminal cannot overtake chunks already forwarded, and
+    /// nothing later can overtake the terminal.
+    async fn verify_terminal(&mut self, terminal: &TerminalFrame) -> bool {
+        let Some(se_key) = self.ctx.se_public_key.clone() else {
+            self.security_fence("v2 terminal without attested SE key");
+            return false;
+        };
+        let frame = terminal.clone();
+        let verified =
+            tokio::task::spawn_blocking(move || verify_terminal_signature(&se_key, &frame).is_ok())
+                .await
+                .unwrap_or(false);
+        if !verified {
+            self.security_fence("v2 terminal SE signature invalid");
+        }
+        verified
+    }
+
+    /// Security-drops the frame AND reports the provider for fencing
+    /// (plan §22.3: signature violations are provider faults, not noise).
+    fn security_fence(&mut self, reason: &'static str) {
+        self.count_security_drop(reason);
+        let _ = self.deps.fleet.commands.try_send(FleetCommand::Observe(
+            FleetObservation::SecurityFence {
+                provider: self.ctx.provider,
+            },
+        ));
     }
 
     async fn send_lifecycle(&mut self, model_id: String, ready: bool, revision: u64) {

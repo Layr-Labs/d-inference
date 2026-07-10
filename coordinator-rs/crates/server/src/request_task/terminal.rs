@@ -263,6 +263,10 @@ pub fn settle_params(inputs: &SettleInputs<'_>) -> SettleParams {
         accepted_cumulative_tokens: u64::from(inputs.accepted_checkpoint.get()),
         origin_session_epoch: inputs.origin_session_epoch,
         coordinator_epoch: inputs.coordinator_epoch,
+        // A v2 terminal only reaches the task after the session verified
+        // its SE signature (unverifiable ones are security-dropped there);
+        // v1 has no signed terminal and settles on transport trust.
+        signature_verified: matches!(inputs.receipt, TerminalReceipt::V2 { .. }),
     }
 }
 

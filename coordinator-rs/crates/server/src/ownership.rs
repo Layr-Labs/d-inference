@@ -34,6 +34,12 @@ pub const OWNERSHIP_LOCK_KEY: i64 = 0x6461_726b_636f_6f72;
 /// `renewed_at`.
 const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Hard bound on one keeper ping. A half-open (black-holed) TCP connection
+/// produces neither data nor an error — without this bound the ping would
+/// hang forever and the health watch would never flip, leaving a coordinator
+/// that no longer holds the advisory lock reporting ready (plan §20).
+const PING_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Debug, thiserror::Error)]
 pub enum OwnershipError {
     #[error("invalid database URL: {0}")]
@@ -153,7 +159,16 @@ impl OwnershipGuard {
 
 /// Owns the dedicated lock connection: pings it on an interval (refreshing
 /// `renewed_at`), flips the health watch to `false` when the connection
-/// fails, and performs the graceful unlock when asked.
+/// fails OR a ping exceeds [`PING_TIMEOUT`] (half-open connection), and
+/// performs the graceful unlock when asked.
+///
+/// Once health flips false it stays false permanently: the keeper returns
+/// and the guard NEVER reconnects or re-acquires. A reconnect would be a
+/// NEW lock session — another coordinator may have taken ownership in the
+/// gap, and re-acquiring would mint a new fencing epoch this process's
+/// in-flight state was not built under. The plan's answer to ownership loss
+/// is a supervised process restart (plan §20), and `bootstrap::App::serve`
+/// begins the ordered shutdown the moment this watch flips.
 async fn keeper_loop(
     mut conn: PgConnection,
     healthy_tx: watch::Sender<bool>,
@@ -164,12 +179,22 @@ async fn keeper_loop(
     loop {
         tokio::select! {
             done = &mut release_rx => {
-                let unlock = sqlx::query("SELECT pg_advisory_unlock($1)")
-                    .bind(OWNERSHIP_LOCK_KEY)
-                    .execute(&mut conn)
-                    .await;
-                if let Err(err) = unlock {
-                    tracing::warn!(error = %err, "advisory unlock failed; closing connection anyway");
+                let unlock = tokio::time::timeout(
+                    PING_TIMEOUT,
+                    sqlx::query("SELECT pg_advisory_unlock($1)")
+                        .bind(OWNERSHIP_LOCK_KEY)
+                        .execute(&mut conn),
+                )
+                .await;
+                match unlock {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(err)) => tracing::warn!(
+                        error = %err,
+                        "advisory unlock failed; closing connection anyway"
+                    ),
+                    Err(_) => tracing::warn!(
+                        "advisory unlock timed out; closing connection anyway"
+                    ),
                 }
                 let _ = conn.close().await;
                 let _ = healthy_tx.send(false);
@@ -179,18 +204,33 @@ async fn keeper_loop(
                 return;
             }
             _ = ticker.tick() => {
-                let ping = sqlx::query(
-                    "UPDATE rust_coord.coordinator_ownership SET renewed_at = NOW() WHERE id = 1",
+                let ping = tokio::time::timeout(
+                    PING_TIMEOUT,
+                    sqlx::query(
+                        "UPDATE rust_coord.coordinator_ownership SET renewed_at = NOW() WHERE id = 1",
+                    )
+                    .execute(&mut conn),
                 )
-                .execute(&mut conn)
                 .await;
-                if let Err(err) = ping {
-                    tracing::error!(
-                        error = %err,
-                        "ownership lock connection unhealthy — readiness gate closing (plan §20)"
-                    );
-                    let _ = healthy_tx.send(false);
-                    return;
+                match ping {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(err)) => {
+                        tracing::error!(
+                            error = %err,
+                            "ownership lock connection unhealthy — readiness gate closing (plan §20)"
+                        );
+                        let _ = healthy_tx.send(false);
+                        return;
+                    }
+                    Err(_) => {
+                        tracing::error!(
+                            timeout_ms = PING_TIMEOUT.as_millis() as u64,
+                            "ownership ping timed out (half-open lock connection) — \
+                             readiness gate closing (plan §20)"
+                        );
+                        let _ = healthy_tx.send(false);
+                        return;
+                    }
                 }
             }
         }

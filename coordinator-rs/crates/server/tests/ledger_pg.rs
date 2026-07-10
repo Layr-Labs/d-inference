@@ -602,6 +602,70 @@ async fn capped_completion_flags_review_and_retains_reservation() {
     );
 }
 
+/// Defense-in-depth on plan §12.6 step 3: a v2 terminal whose SE signature
+/// was NOT verified at intake parks the job in review — money never moves
+/// on an unverified claim. A v1 receipt (`"protocol":"v1"`) still settles
+/// with `signature_verified = false`: v1 has no signed terminal and settles
+/// on transport trust (Go parity).
+#[tokio::test]
+async fn unverified_v2_terminal_parks_review_but_v1_settles() {
+    if !support::pg_available() {
+        support::skip();
+        return;
+    }
+    let db = support::boot().await;
+    support::set_epoch(&db.pool, 1).await;
+    support::seed_consumer(&db.pool, CONSUMER, 20_000_000, 4_000_000).await;
+    let ledger = support::ledger_at_epoch(&db.pool, 1);
+
+    // (1) Unverified v2-shaped terminal: review, no money.
+    let (job, attempt) = flows::funded_running_job(&ledger, "unverified").await;
+    let after_resize = support::balance_of(&db.pool, CONSUMER).await;
+    let mut params = flows::settle_params(job, attempt, 0x77, 800, 800, "unverified");
+    params.signature_verified = false;
+    let outcome = ledger
+        .settle(params)
+        .await
+        .expect("settle routes to review");
+    assert!(outcome.flagged_for_review);
+    assert_eq!(outcome.charged.get(), 0);
+    assert_eq!(
+        support::job_state(&db.pool, job.get()).await,
+        "review_pending"
+    );
+    assert_eq!(support::balance_of(&db.pool, CONSUMER).await, after_resize);
+    assert_eq!(
+        support::balance_of(&db.pool, PROVIDER_BENEFICIARY).await,
+        (0, 0)
+    );
+    let (error_class,): (Option<String>,) =
+        sqlx::query_as("SELECT error_class FROM rust_coord.inference_jobs WHERE job_id = $1")
+            .bind(job.get())
+            .fetch_one(&db.pool)
+            .await
+            .expect("job row");
+    assert_eq!(
+        error_class.as_deref(),
+        Some("terminal_signature_unverified")
+    );
+
+    // (2) v1 receipt with signature_verified = false: settles normally.
+    let (v1_job, v1_attempt) = flows::funded_running_job(&ledger, "v1trust").await;
+    let mut v1 = flows::settle_params(v1_job, v1_attempt, 0x78, 800, 800, "v1trust");
+    v1.signature_verified = false;
+    v1.terminal_json = serde_json::json!({
+        "protocol": "v1",
+        "type": "inference_complete",
+        "usage": {"prompt_tokens": 1200, "completion_tokens": 800, "reasoning_tokens": 0},
+        "se_signature": "",
+        "response_hash": "ab5e0001",
+    });
+    let outcome = ledger.settle(v1).await.expect("v1 settles");
+    assert!(!outcome.flagged_for_review);
+    assert_eq!(outcome.charged.get(), 4_000_000);
+    assert_eq!(support::job_state(&db.pool, v1_job.get()).await, "settled");
+}
+
 /// Every mutation compares the live fencing epoch in-transaction; a bumped
 /// epoch (another coordinator took ownership) yields `EpochFenced` and
 /// moves nothing (plan §20).

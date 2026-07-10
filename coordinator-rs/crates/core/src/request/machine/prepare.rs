@@ -25,13 +25,15 @@ impl RequestMachine {
         effects: &mut Vec<Effect>,
     ) -> Result<(), TransitionError> {
         let rec = self.attempt_mut(attempt)?;
-        // A write failure is only meaningful while the prepare is on the
-        // wire; once a prepared lease exists it is contradictory stale
-        // evidence and is ignored.
-        if !matches!(
-            rec.state,
-            AttemptState::QueuedToSocket | AttemptState::SentUnknown
-        ) {
+        // A definitive write failure (frame provably never left the
+        // coordinator) is only meaningful while the prepare is queued. Once
+        // the outcome went ambiguous (`SentUnknown`) the provider may hold
+        // the frame, so a later local failure claim cannot un-send it: hold
+        // the attempt — no abort, no permit release, no alternate — until
+        // provider evidence, lease/permit expiry, or session loss (13.2).
+        // Any other state means a prepared lease already exists and the
+        // stale failure is contradictory evidence — ignored.
+        if !matches!(rec.state, AttemptState::QueuedToSocket) {
             return Ok(());
         }
         rec.state = AttemptState::Aborted;

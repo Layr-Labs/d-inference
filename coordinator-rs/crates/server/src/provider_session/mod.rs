@@ -282,8 +282,18 @@ async fn run_session(
     let _ = writer_task.await;
 
     let orphaned = attempts::take_all_sinks(&attempts);
-    for sinks in orphaned {
-        let _ = sinks.events.try_send(contracts::AttemptEvent::SessionLost);
+    for (sinks, reserved) in orphaned {
+        // A full lane cannot swallow the mandatory SessionLost: fall back
+        // to the permit reserved at attach (plan §9.4.5).
+        if sinks
+            .events
+            .try_send(contracts::AttemptEvent::SessionLost)
+            .is_err()
+        {
+            if let Some(permit) = reserved {
+                let _ = permit.send(contracts::AttemptEvent::SessionLost);
+            }
+        }
     }
     let _ = deps
         .fleet

@@ -14,7 +14,7 @@ use darkbloom_server::contracts::LedgerFacade;
 use darkbloom_server::ownership::OwnershipGuard;
 use darkbloom_server::recovery::{
     drain_outbox, project_fees, settle_pending_terminals, sweep_prepared, sweep_reserved,
-    sweep_start_authorized, RecoveryConfig,
+    sweep_running, sweep_start_authorized, RecoveryConfig,
 };
 use uuid::Uuid;
 
@@ -26,6 +26,7 @@ fn eager_config() -> RecoveryConfig {
         reserved_grace: Duration::ZERO,
         prepared_lease_ttl: Duration::ZERO,
         start_authorized_window: Duration::ZERO,
+        running_terminal_grace: Duration::ZERO,
         outbox_max_attempts: 2,
     }
 }
@@ -194,7 +195,93 @@ async fn stale_start_authorized_job_moves_to_review() {
     );
 }
 
-/// (d) A terminal receipt without a settlement disposition (crash between
+/// (d) A running job past its request deadline with NO terminal receipt —
+/// coordinator crashed mid-run, provider never replayed a terminal — is
+/// parked in `review_pending` with its reservation retained (plan §18.1
+/// "started jobs awaiting terminal replay"; §13.4: session loss never
+/// releases money). A running job WITH a dangling receipt row is left
+/// alone: the terminal-settlement sweeper owns it.
+#[tokio::test]
+async fn stale_running_job_without_terminal_moves_to_review() {
+    if !support::pg_available() {
+        support::skip();
+        return;
+    }
+    let db = support::boot().await;
+    support::set_epoch(&db.pool, 1).await;
+    support::seed_consumer(&db.pool, CONSUMER, 20_000_000, 4_000_000).await;
+    let ledger = support::ledger_at_epoch(&db.pool, 1);
+
+    // A FRESH running job (deadline in the future) is never touched.
+    let (job, _attempt) = flows::funded_running_job(&ledger, "run-stale").await;
+    let funded = support::balance_of(&db.pool, CONSUMER).await;
+    let processed = sweep_running(&ledger, &eager_config())
+        .await
+        .expect("sweep fresh");
+    assert_eq!(processed, 0);
+    assert_eq!(support::job_state(&db.pool, job.get()).await, "running");
+
+    // Past the deadline with no receipt: parked in review, funds retained.
+    age_job(&db.pool, job.get(), 400.0).await;
+    let processed = sweep_running(&ledger, &eager_config())
+        .await
+        .expect("sweep stale");
+    assert_eq!(processed, 1);
+    assert_eq!(
+        support::job_state(&db.pool, job.get()).await,
+        "review_pending"
+    );
+    assert_eq!(
+        support::balance_of(&db.pool, CONSUMER).await,
+        funded,
+        "reservation retained: review is not a release (plan §13.4)"
+    );
+
+    // Re-sweeping is a no-op (review_pending is idempotent and no longer
+    // matches the running predicate).
+    let processed = sweep_running(&ledger, &eager_config())
+        .await
+        .expect("re-sweep");
+    assert_eq!(processed, 0);
+
+    // A stale running job WITH a receipt row belongs to the settlement
+    // sweeper — this sweeper must not steal it into review.
+    let (with_receipt, attempt2) = flows::funded_running_job(&ledger, "run-receipt").await;
+    sqlx::query(
+        "INSERT INTO rust_coord.provider_terminals \
+             (attempt_id, terminal_digest, raw_terminal, outcome, error_class, \
+              prompt_tokens, completion_tokens, reasoning_tokens, response_hash, \
+              final_generated_tokens, rolling_hash_checkpoint, provider_signature, \
+              origin_session_epoch, coordinator_epoch) \
+         VALUES ($1, $2, $3, 'completed', NULL, 1200, 800, 0, $4, 800, NULL, $5, 7, 1)",
+    )
+    .bind(attempt2.get())
+    .bind(vec![0x77u8; 32])
+    .bind(serde_json::json!({
+        "outcome": "completed",
+        "prompt_tokens": 1200,
+        "completion_tokens": 800,
+    }))
+    .bind(vec![0xabu8; 4])
+    .bind(vec![0x51u8; 4])
+    .execute(&db.pool)
+    .await
+    .expect("insert dangling receipt");
+    age_job(&db.pool, with_receipt.get(), 400.0).await;
+    let processed = sweep_running(&ledger, &eager_config())
+        .await
+        .expect("sweep with receipt");
+    assert_eq!(
+        processed, 0,
+        "receipt-bearing jobs go to the settle sweeper"
+    );
+    assert_eq!(
+        support::job_state(&db.pool, with_receipt.get()).await,
+        "running"
+    );
+}
+
+/// (e) A terminal receipt without a settlement disposition (crash between
 /// receipt intake and settlement, or replay ingestion) is settled by the
 /// sweeper through the SAME reducer as the live path (plan §18.1).
 #[tokio::test]
@@ -456,4 +543,126 @@ async fn ownership_guard_takes_lock_and_increments_epoch() {
         .expect("join");
     assert_eq!(second.epoch().get(), 2, "epoch increments per acquisition");
     second.release().await.expect("release second");
+}
+
+/// Plan §20 regression for the keeper's ping TIMEOUT: a half-open (black-
+/// holed) lock connection produces neither data nor an error. `SIGSTOP` on
+/// the keeper's dedicated backend reproduces exactly that — the ping is
+/// written, nothing ever answers — so ONLY the bounded ping can flip the
+/// health watch. Without the timeout this test hangs at "healthy" forever.
+#[tokio::test]
+async fn ownership_ping_timeout_detects_blackholed_connection() {
+    if !support::pg_available() {
+        support::skip();
+        return;
+    }
+    let db = support::boot().await;
+
+    let guard = OwnershipGuard::acquire(&db.url, "blackhole-test")
+        .await
+        .expect("acquire ownership");
+    assert!(guard.is_healthy());
+    let mut health = guard.health_watch();
+
+    // The only advisory lock in this throwaway cluster is the keeper's.
+    let pids: Vec<(i32,)> = sqlx::query_as("SELECT pid FROM pg_locks WHERE locktype = 'advisory'")
+        .fetch_all(&db.pool)
+        .await
+        .expect("find lock backend");
+    assert!(!pids.is_empty(), "the keeper's backend must exist");
+
+    /// Resumes the stopped backends even when the test panics, so the
+    /// cluster teardown (`pg_ctl stop -m immediate`) can complete.
+    struct ResumeOnDrop(Vec<i32>);
+    impl Drop for ResumeOnDrop {
+        fn drop(&mut self) {
+            for pid in &self.0 {
+                let _ = std::process::Command::new("kill")
+                    .args(["-CONT", &pid.to_string()])
+                    .status();
+            }
+        }
+    }
+    let _resume = ResumeOnDrop(pids.iter().map(|(pid,)| *pid).collect());
+    for (pid,) in &pids {
+        let status = std::process::Command::new("kill")
+            .args(["-STOP", &pid.to_string()])
+            .status()
+            .expect("send SIGSTOP");
+        assert!(status.success(), "SIGSTOP backend {pid}");
+    }
+
+    // Worst case: up to one full interval (5s) until the next ping plus the
+    // ping bound (5s). Only the timeout can fire — the socket stays open.
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if !*health.borrow_and_update() {
+                return;
+            }
+            if health.changed().await.is_err() {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("health must flip via the ping timeout on a black-holed connection");
+    assert!(!guard.is_healthy());
+}
+
+/// Plan §20: killing the dedicated lock connection server-side must flip
+/// the health watch within the keeper's ping window, and the guard must
+/// NEVER auto-reacquire — health stays false permanently (a reacquire would
+/// be a NEW epoch; the plan's answer to ownership loss is process restart).
+#[tokio::test]
+async fn ownership_health_flips_when_lock_connection_killed() {
+    if !support::pg_available() {
+        support::skip();
+        return;
+    }
+    let db = support::boot().await;
+
+    let guard = OwnershipGuard::acquire(&db.url, "kill-test")
+        .await
+        .expect("acquire ownership");
+    assert!(guard.is_healthy());
+    let first_epoch = guard.epoch().get();
+    let mut health = guard.health_watch();
+
+    // Terminate the advisory-lock holder from the pool: the ONLY advisory
+    // lock in this throwaway cluster is the keeper's.
+    let killed: Vec<(bool,)> = sqlx::query_as(
+        "SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype = 'advisory'",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .expect("terminate lock backend");
+    assert!(!killed.is_empty(), "the keeper's backend must exist");
+
+    // The next keeper ping (interval 5s, ping bound 5s) must flip health.
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if !*health.borrow_and_update() {
+                return;
+            }
+            if health.changed().await.is_err() {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("health must flip within the ping window");
+    assert!(!guard.is_healthy());
+
+    // No auto-reacquire: the lock died with the backend, so a successor
+    // acquires immediately with the NEXT epoch — while the old guard stays
+    // permanently unhealthy.
+    let successor = OwnershipGuard::acquire(&db.url, "successor")
+        .await
+        .expect("successor acquires the freed lock");
+    assert_eq!(successor.epoch().get(), first_epoch + 1);
+    assert!(
+        !guard.is_healthy(),
+        "a guard that lost its connection must never report healthy again"
+    );
+    successor.release().await.expect("release successor");
 }

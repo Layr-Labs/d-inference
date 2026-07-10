@@ -348,6 +348,9 @@ pub struct Harness {
     pub account: AccountId,
     pub coordinator_public: PublicKey,
     pub shutdown: CancellationToken,
+    /// The requests-phase tracker every chat-spawned request task joins
+    /// (plan §15.1 step 2) — tests drain it like the supervisor would.
+    pub request_tracker: tokio_util::task::TaskTracker,
 }
 
 /// 2 µUSD per prompt token / 5 µUSD per completion token, expressed as the
@@ -522,6 +525,7 @@ impl HarnessBuilder {
         };
 
         let shutdown = CancellationToken::new();
+        let request_tracker = tokio_util::task::TaskTracker::new();
         let task_deps = RequestTaskDeps::from_state(
             &state,
             shared_hedge_budget(&state.policy),
@@ -533,6 +537,7 @@ impl HarnessBuilder {
                 global_concurrency: 64,
                 per_account_concurrency: 16,
                 shutdown: shutdown.clone(),
+                request_tracker: request_tracker.clone(),
                 ..Default::default()
             },
         );
@@ -546,6 +551,7 @@ impl HarnessBuilder {
             account,
             coordinator_public,
             shutdown,
+            request_tracker,
         }
     }
 }

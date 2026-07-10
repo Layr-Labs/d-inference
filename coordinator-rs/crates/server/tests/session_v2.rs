@@ -217,7 +217,8 @@ async fn v2_two_phase_flow_with_binary_chunks_and_terminal_ack() {
     }
 
     // Terminal -> coordinator ACK (test stands in for the request task).
-    let terminal = FrameV2::Terminal(TerminalFrame {
+    // Signed with the provider's SE key: the session verifies before intake.
+    let terminal = FrameV2::Terminal(provider.sign_terminal(TerminalFrame {
         scope: leased,
         provider_id: "prov-v2".to_owned(),
         model_id: MODEL.to_owned(),
@@ -236,8 +237,8 @@ async fn v2_two_phase_flow_with_binary_chunks_and_terminal_ack() {
             cumulative_completion_tokens: 6,
             rolling_hash: darkbloom_protocol::json_v2::ResponseHash([0x0C; 32]),
         },
-        se_signature: "sig".to_owned(),
-    });
+        se_signature: String::new(),
+    }));
     provider
         .send_json(&serde_json::from_slice(&terminal.encode().expect("encode")).expect("value"))
         .await;
@@ -311,9 +312,9 @@ async fn pre_start_rejection_terminal_reaches_events_sink() {
 
     // The rejection terminal: outcome=failed with a structured class. The
     // frame invariant requires a lease id, so the provider mints one for
-    // the rejection record.
+    // the rejection record. Signed like every v2 terminal.
     let leased = with_lease(wire.scope, [0xDD; 16]);
-    let rejection = FrameV2::Terminal(TerminalFrame {
+    let rejection = FrameV2::Terminal(provider.sign_terminal(TerminalFrame {
         scope: leased,
         provider_id: "prov-v2".to_owned(),
         model_id: MODEL.to_owned(),
@@ -324,8 +325,8 @@ async fn pre_start_rejection_terminal_reaches_events_sink() {
         generated_tokens: 0,
         response_hash: darkbloom_protocol::json_v2::ResponseHash([0; 32]),
         checkpoint: RollingHashCheckpoint::default(),
-        se_signature: "sig".to_owned(),
-    });
+        se_signature: String::new(),
+    }));
     provider
         .send_json(&serde_json::from_slice(&rejection.encode().expect("encode")).expect("value"))
         .await;
@@ -340,6 +341,84 @@ async fn pre_start_rejection_terminal_reaches_events_sink() {
         }
         other => panic!("expected the rejection terminal, got {other:?}"),
     }
+
+    harness.runtime.shutdown().await;
+}
+
+/// Plan §12.6 step 3: a terminal whose SE signature does not verify against
+/// the key attested at registration must NEVER reach the request task's
+/// events sink — settlement can only be driven by a verified terminal.
+#[tokio::test]
+async fn forged_terminal_signature_is_dropped_before_intake() {
+    let harness = Harness::start().await;
+    let mut provider = FakeProvider::connect(&harness, "SER-V2S").await;
+    let grant = establish_v2(&harness, &mut provider).await;
+    let epoch = grant.session.epoch.get();
+
+    let wire = new_attempt(epoch, 0x50);
+    let (sinks, mut events, _chunks) = attempt_sinks();
+    grant
+        .session
+        .attach_attempt(wire.wire_id.clone(), wire.attempt, sinks)
+        .await
+        .expect("attach");
+
+    let leased = with_lease(wire.scope, [0xEE; 16]);
+    let terminal = |completion: u64| TerminalFrame {
+        scope: leased,
+        provider_id: "prov-v2".to_owned(),
+        model_id: MODEL.to_owned(),
+        origin_session_epoch: leased.session_epoch,
+        outcome: TerminalOutcome::Completed,
+        error_class: None,
+        usage: TerminalUsage {
+            prompt_tokens: 42,
+            completion_tokens: completion,
+            reasoning_tokens: 0,
+        },
+        generated_tokens: completion,
+        response_hash: darkbloom_protocol::json_v2::ResponseHash([0x0B; 32]),
+        checkpoint: RollingHashCheckpoint {
+            sequence: 1,
+            cumulative_completion_tokens: completion,
+            rolling_hash: darkbloom_protocol::json_v2::ResponseHash([0x0C; 32]),
+        },
+        se_signature: String::new(),
+    };
+
+    // Sign honestly, then inflate the claim AFTER signing: the signature no
+    // longer covers the content.
+    let mut forged = provider.sign_terminal(terminal(6));
+    forged.usage.completion_tokens = 999;
+    forged.generated_tokens = 999;
+    provider
+        .send_json(
+            &serde_json::from_slice(&FrameV2::Terminal(forged).encode().expect("encode forged"))
+                .expect("value"),
+        )
+        .await;
+
+    // A correctly signed terminal on the same socket must still arrive —
+    // proving the forged one was dropped, not merely delayed.
+    let genuine = provider.sign_terminal(terminal(6));
+    provider
+        .send_json(
+            &serde_json::from_slice(&FrameV2::Terminal(genuine).encode().expect("encode genuine"))
+                .expect("value"),
+        )
+        .await;
+
+    match recv_event(&mut events).await {
+        AttemptEvent::Terminal(frame) => {
+            assert_eq!(frame.usage.completion_tokens, 6, "only the genuine claim");
+        }
+        other => panic!("expected the genuine terminal, got {other:?}"),
+    }
+    let nothing = tokio::time::timeout(Duration::from_millis(200), events.recv()).await;
+    assert!(
+        nothing.is_err(),
+        "the forged terminal must never be delivered"
+    );
 
     harness.runtime.shutdown().await;
 }
@@ -408,6 +487,147 @@ async fn stale_epoch_and_nonce_mismatch_chunks_are_dropped() {
     assert_eq!(&chunk.payload[..], b"good");
     let nothing = tokio::time::timeout(Duration::from_millis(200), chunks.recv()).await;
     assert!(nothing.is_err(), "fenced chunks must never be delivered");
+
+    harness.runtime.shutdown().await;
+}
+
+/// Plan §9.4.5: filling the bounded per-attempt event lane must not lose
+/// the terminal. One slot is reserved at attach; when normal events have
+/// exhausted the lane, the terminal rides that reserved slot.
+#[tokio::test]
+async fn terminal_survives_full_event_lane_via_reserved_slot() {
+    let harness = Harness::start().await;
+    let mut provider = FakeProvider::connect(&harness, "SER-V2Q").await;
+    let grant = establish_v2(&harness, &mut provider).await;
+    let epoch = grant.session.epoch.get();
+
+    let wire = new_attempt(epoch, 0x60);
+    // Tiny lane: capacity 4 total; the session reserves 1 slot at attach,
+    // so 3 normal events fill it.
+    let (event_tx, mut events) = tokio::sync::mpsc::channel(4);
+    let (chunk_tx, _chunks) = darkbloom_server::contracts::chunk_pipe(64, 1 << 20);
+    let sinks = darkbloom_server::contracts::AttemptSinks {
+        events: event_tx,
+        chunks: chunk_tx,
+    };
+    grant
+        .session
+        .attach_attempt(wire.wire_id.clone(), wire.attempt, sinks)
+        .await
+        .expect("attach");
+
+    let leased = with_lease(wire.scope, [0xF1; 16]);
+    // Fill every normal slot without consuming anything.
+    for _ in 0..3 {
+        let started = FrameV2::Started(StartedFrame { scope: leased });
+        provider
+            .send_json(&serde_json::from_slice(&started.encode().expect("encode")).expect("value"))
+            .await;
+    }
+    // The lane is now full for normal sends; the terminal must still land.
+    let terminal = FrameV2::Terminal(provider.sign_terminal(TerminalFrame {
+        scope: leased,
+        provider_id: "prov-v2".to_owned(),
+        model_id: MODEL.to_owned(),
+        origin_session_epoch: leased.session_epoch,
+        outcome: TerminalOutcome::Completed,
+        error_class: None,
+        usage: TerminalUsage {
+            prompt_tokens: 8,
+            completion_tokens: 4,
+            reasoning_tokens: 0,
+        },
+        generated_tokens: 4,
+        response_hash: darkbloom_protocol::json_v2::ResponseHash([0x1B; 32]),
+        checkpoint: RollingHashCheckpoint {
+            sequence: 4,
+            cumulative_completion_tokens: 4,
+            rolling_hash: darkbloom_protocol::json_v2::ResponseHash([0x1C; 32]),
+        },
+        se_signature: String::new(),
+    }));
+    provider
+        .send_json(&serde_json::from_slice(&terminal.encode().expect("encode")).expect("value"))
+        .await;
+
+    // Let the reader process every frame BEFORE consuming, so the terminal
+    // demonstrably hits the full lane (consuming earlier could free a slot
+    // and bypass the overflow path this test pins).
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Everything drains in order: the fillers, then the terminal.
+    for _ in 0..3 {
+        assert!(matches!(
+            recv_event(&mut events).await,
+            AttemptEvent::Started
+        ));
+    }
+    match recv_event(&mut events).await {
+        AttemptEvent::Terminal(frame) => {
+            assert_eq!(frame.usage.completion_tokens, 4);
+        }
+        other => panic!("terminal lost on a full event lane: {other:?}"),
+    }
+
+    harness.runtime.shutdown().await;
+}
+
+/// Plan §9.4.5 regression: when a NORMAL event overflows the lane, the
+/// contract drops the attempt — but the mandatory `SessionLost` must be
+/// DELIVERED, not `try_send`'d into the very channel that just reported
+/// full (the pre-fix fallback provably lost it). The receiver must observe
+/// a terminal-class event as the FINAL event before the channel closes.
+#[tokio::test]
+async fn session_lost_fallback_is_delivered_on_event_lane_overflow() {
+    let harness = Harness::start().await;
+    let mut provider = FakeProvider::connect(&harness, "SER-V2O").await;
+    let grant = establish_v2(&harness, &mut provider).await;
+    let epoch = grant.session.epoch.get();
+
+    let wire = new_attempt(epoch, 0x70);
+    let (event_tx, mut events) = tokio::sync::mpsc::channel(4);
+    let (chunk_tx, _chunks) = darkbloom_server::contracts::chunk_pipe(64, 1 << 20);
+    let sinks = darkbloom_server::contracts::AttemptSinks {
+        events: event_tx,
+        chunks: chunk_tx,
+    };
+    grant
+        .session
+        .attach_attempt(wire.wire_id.clone(), wire.attempt, sinks)
+        .await
+        .expect("attach");
+
+    // More normal events than the lane can hold, consuming nothing: the
+    // overflow MUST fire regardless of how many slots are reserved.
+    let leased = with_lease(wire.scope, [0xF2; 16]);
+    for _ in 0..5 {
+        let started = FrameV2::Started(StartedFrame { scope: leased });
+        provider
+            .send_json(&serde_json::from_slice(&started.encode().expect("encode")).expect("value"))
+            .await;
+    }
+    // Let the reader hit the overflow before draining.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Drain to channel close (the overflow detaches the attempt, dropping
+    // every sender). The FINAL observed event must be SessionLost.
+    let mut seen = Vec::new();
+    while let Some(event) = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .expect("drain in time")
+    {
+        seen.push(event);
+    }
+    assert!(
+        matches!(seen.last(), Some(AttemptEvent::SessionLost)),
+        "overflow must END with a delivered SessionLost, got {seen:?}"
+    );
+    assert!(
+        seen[..seen.len() - 1]
+            .iter()
+            .all(|e| matches!(e, AttemptEvent::Started)),
+        "everything before the fallback is the normal traffic: {seen:?}"
+    );
 
     harness.runtime.shutdown().await;
 }

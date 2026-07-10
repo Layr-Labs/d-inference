@@ -132,6 +132,16 @@ impl RequestMachine {
             // (22.3); the caller fences the provider.
             return Err(self.phase_mismatch("content_accepted"));
         }
+        if self.cancel_requested {
+            // 13.4/13.5: cancellation was initiated and the consumer outcome
+            // is answered. A chunk still in flight from the provider was
+            // never delivered to the pipe consumer, so it must not commit
+            // the request nor advance the billing checkpoint — settlement
+            // stays capped at the pre-cancel accepted checkpoint (10.6,
+            // 13.6). Under-counting is the safe direction: a checkpoint
+            // mismatch can never increase the consumer charge.
+            return Ok(());
+        }
         self.accepted_checkpoint = self.accepted_checkpoint.max(cumulative);
         if self.committed.is_none() {
             self.committed = Some(attempt);

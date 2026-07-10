@@ -173,6 +173,21 @@ async fn settle_tx(ledger: &Ledger, p: &SettleParams) -> Result<SettleOutcome, T
         }
     }
 
+    // Defense-in-depth on plan §12.6 step 3: money moves only on a terminal
+    // whose SE signature the intake layer verified. The session is the
+    // verifying layer (it holds the registered key); an unverified v2
+    // terminal reaching this reducer parks the job in review instead of
+    // paying. v1 terminals (`"protocol":"v1"` receipts) have no signed
+    // canonical form and settle on transport trust, matching today's Go
+    // behavior.
+    if !p.signature_verified && !terminal_is_v1(&p.terminal_json) {
+        tracing::warn!(job = %p.job, "unverified v2 terminal signature — parking for review");
+        set_receipt_disposition(&mut tx, p, "review_pending").await?;
+        park_job_for_review(&mut tx, p, &job, "terminal_signature_unverified").await?;
+        tx.commit().await?;
+        return Ok(zero_outcome(true));
+    }
+
     // 5. Recompute the charge from the frozen terms (plan §12.4: settlement
     //    never re-reads mutable pricing).
     let Some(terms) = fetch_frozen_terms(&mut tx, p).await? else {
@@ -782,6 +797,12 @@ fn outcome_from_result(result: &Value) -> SettleOutcome {
 
 fn tokens_sat(v: u64) -> Tokens {
     Tokens::new(u32::try_from(v).unwrap_or(u32::MAX))
+}
+
+/// True for the coordinator-built v1 receipt shape
+/// (`request_task::terminal::TerminalReceipt::V1{,Error}::to_json`).
+fn terminal_is_v1(terminal: &Value) -> bool {
+    terminal.get("protocol").and_then(Value::as_str) == Some("v1")
 }
 
 fn terminal_outcome(terminal: &Value) -> (String, Option<String>) {

@@ -13,7 +13,8 @@
 //!   [`CancellationToken`](tokio_util::sync::CancellationToken).
 //!
 //! Workers (plan §18.1): reserved-never-dispatched, prepared-never-
-//! authorized, start-authorized-with-unknown-delivery, terminals awaiting
+//! authorized, start-authorized-with-unknown-delivery, running-without-
+//! terminal (deadline passed, no receipt row → review), terminals awaiting
 //! settlement, the single-writer fee projection (plan §12.6), and the
 //! outbox drain.
 
@@ -33,7 +34,7 @@ use crate::ledger::Ledger;
 pub use fees::project_fees;
 pub use outbox::drain_outbox;
 pub use sweeps::{
-    settle_pending_terminals, sweep_prepared, sweep_reserved, sweep_start_authorized,
+    settle_pending_terminals, sweep_prepared, sweep_reserved, sweep_running, sweep_start_authorized,
 };
 pub use worker::run_worker;
 
@@ -55,6 +56,10 @@ pub struct RecoveryConfig {
     /// delivery moves to review (plan §18.1; resending the start needs a
     /// live session, which the fleet consumes from the outbox).
     pub start_authorized_window: Duration,
+    /// Extra grace past a running job's `request_deadline` before a job with
+    /// NO terminal receipt is parked in review (plan §18.1 "started jobs
+    /// awaiting terminal replay"; §13.4 — never released).
+    pub running_terminal_grace: Duration,
     /// Outbox rows dead-letter after this many attempts.
     pub outbox_max_attempts: i32,
 }
@@ -68,6 +73,7 @@ impl Default for RecoveryConfig {
             reserved_grace: Duration::from_secs(30),
             prepared_lease_ttl: Duration::from_secs(60),
             start_authorized_window: Duration::from_secs(120),
+            running_terminal_grace: Duration::from_secs(120),
             outbox_max_attempts: 8,
         }
     }
@@ -100,6 +106,7 @@ pub fn spawn_all(
     spawn_sweep!("recovery.reserved", sweeps::sweep_reserved);
     spawn_sweep!("recovery.prepared", sweeps::sweep_prepared);
     spawn_sweep!("recovery.start_authorized", sweeps::sweep_start_authorized);
+    spawn_sweep!("recovery.running", sweeps::sweep_running);
     spawn_sweep!("recovery.terminals", sweeps::settle_pending_terminals);
     spawn_sweep!("recovery.fee_projection", fees::project_fees);
     spawn_sweep!("recovery.outbox", outbox::drain_outbox);

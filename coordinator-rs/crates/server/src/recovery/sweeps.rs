@@ -1,4 +1,4 @@
-//! Job-state sweepers (plan §18.1 a–d).
+//! Job-state sweepers (plan §18.1 a–e).
 //!
 //! Claims use `FOR UPDATE SKIP LOCKED` over the dedicated partial indexes,
 //! bounded by the batch size; the claim transaction commits before repair so
@@ -132,7 +132,61 @@ pub async fn sweep_start_authorized(
     Ok(processed)
 }
 
-/// (d) Terminal receipts awaiting settlement: a receipt row exists but its
+/// (d) Running jobs awaiting terminal replay whose terminal never arrived
+/// (plan §18.1): the coordinator that owned the RequestTask died, the
+/// provider never replayed a terminal, and the job sits in `running` past
+/// its absolute request deadline with NO terminal receipt row. Session loss
+/// after start does not release money (plan §13.4), so the safe
+/// terminal-less disposition is `review_pending` — reservation retained,
+/// explicit reviewed settlement/release later. Jobs WITH a receipt row are
+/// excluded: the terminal-settlement sweeper (e) owns them.
+pub async fn sweep_running(ledger: &Ledger, config: &RecoveryConfig) -> anyhow::Result<usize> {
+    let grace_secs = config.running_terminal_grace.as_secs_f64();
+    let rows: Vec<(Uuid, f64)> = sqlx::query_as(
+        "SELECT j.job_id, EXTRACT(EPOCH FROM (NOW() - j.updated_at))::DOUBLE PRECISION \
+         FROM rust_coord.inference_jobs j \
+         WHERE j.state = 'running' \
+           AND COALESCE(j.request_deadline, j.created_at) \
+               < NOW() - make_interval(secs => $1) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM rust_coord.provider_terminals t \
+               JOIN rust_coord.inference_attempts a ON a.attempt_id = t.attempt_id \
+               WHERE a.job_id = j.job_id) \
+         ORDER BY j.updated_at \
+         LIMIT $2 \
+         FOR UPDATE OF j SKIP LOCKED",
+    )
+    .bind(grace_secs)
+    .bind(config.batch)
+    .fetch_all(ledger.pool())
+    .await?;
+
+    report_depth(
+        "recovery.running",
+        rows.len() as i64,
+        rows.first().map(|(_, age)| *age),
+    );
+
+    let mut processed = 0usize;
+    for (job_id, _) in &rows {
+        let job = JobId::new(*job_id);
+        match ledger
+            .move_to_review(job, "sweep:running_terminal_missing".to_owned())
+            .await
+        {
+            Ok(()) => processed += 1,
+            Err(LedgerError::Conflict(reason)) => {
+                // The job progressed (terminal arrived and settled) between
+                // claim and repair — the good case.
+                tracing::debug!(job = %job, reason, "running sweep skipped");
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(processed)
+}
+
+/// (e) Terminal receipts awaiting settlement: a receipt row exists but its
 /// disposition is unresolved (crash between receipt and settlement, Go
 /// rollback ingestion, replay of a stale coordinator's intake). Re-run the
 /// full settlement reducer; it routes duplicates, late terminals, review
@@ -193,6 +247,11 @@ pub async fn settle_pending_terminals(
                 u64::try_from(t.origin_session_epoch).unwrap_or(0),
             ),
             coordinator_epoch: epoch,
+            // Receipt rows only enter `provider_terminals` through the
+            // settle reducer, fed by the session intake that verifies v2 SE
+            // signatures before forwarding (and by v1 transport-trust
+            // receipts) — a durable row was already vetted at intake.
+            signature_verified: true,
         };
         match ledger.settle(params).await {
             Ok(outcome) => {

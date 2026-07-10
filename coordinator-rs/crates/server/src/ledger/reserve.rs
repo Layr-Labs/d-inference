@@ -16,6 +16,25 @@
 //! - `op` / `debit` / `job` / `ledger` — operation record, provenance-aware
 //!   balance debit (plan §12.3), `rust_coord.inference_jobs` insert, and the
 //!   legacy `ledger_entries` projection.
+//!
+//! # Spend-cap serialization (write-skew fence)
+//!
+//! Under `READ COMMITTED` a statement's snapshot is taken when the statement
+//! starts. The `funds` CTE's `FOR UPDATE` serializes the balance DEBIT (a
+//! blocked locker re-evaluates the balance qual against the newest row
+//! version via EvalPlanQual), but EvalPlanQual never refreshes the aggregate
+//! subqueries in `cap_ok`: two concurrent reserves for one key can both sum
+//! active reservations from snapshots that predate each other's insert and
+//! BOTH pass a cap that admits only one — classic write skew. Ordering the
+//! CTEs cannot fix this (the snapshot predates any in-statement lock), so
+//! when a spend cap applies the reserve runs as a short transaction whose
+//! FIRST statement takes `pg_advisory_xact_lock(class, hashtext(account))`:
+//! the reserve statement then starts on a snapshot that postdates the
+//! previous holder's commit, making the cap sum exact. The two-int advisory
+//! form occupies a keyspace disjoint from the single-bigint ownership lock
+//! ([`crate::ownership::OWNERSHIP_LOCK_KEY`]), so collision is impossible.
+//! Cap-less reserves keep the plan-§12.5 single-round-trip statement — the
+//! balance-row lock alone is airtight for the funds check.
 
 use serde_json::Value;
 use sqlx::Row;
@@ -103,6 +122,32 @@ SELECT EXISTS (SELECT 1 FROM fence)                 AS fence_ok,
        (SELECT c.reserved_withdrawable FROM cap_ok c) AS reserved_withdrawable
 ";
 
+/// Advisory-lock class for per-account reserve serialization. The two-int
+/// `pg_advisory_xact_lock(class, hashtext(account))` form never collides
+/// with the single-bigint ownership lock keyspace.
+const RESERVE_CAP_LOCK_CLASS: i32 = 0x5253_5643; // "RSVC"
+
+/// Binds the reserve statement's parameters in positional order.
+fn reserve_query<'q>(
+    p: &'q ReserveParams,
+    account: &'q str,
+    api_key: &'q str,
+    epoch: i64,
+) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    sqlx::query(RESERVE_SQL)
+        .bind(&p.operation_key)
+        .bind(account)
+        .bind(p.job.get())
+        .bind(p.hold.get())
+        .bind(p.spend_cap.map(MicroUsd::get))
+        .bind(api_key)
+        .bind(&p.public_model)
+        .bind(&p.concrete_model)
+        .bind(epoch)
+        .bind(p.first_content_deadline_ms)
+        .bind(p.request_deadline_ms)
+}
+
 pub(super) async fn reserve(
     ledger: &Ledger,
     p: ReserveParams,
@@ -122,27 +167,37 @@ pub(super) async fn reserve(
         .map(|k| k.as_str().to_owned())
         .unwrap_or_default();
     let epoch = i64::try_from(p.coordinator_epoch.get()).unwrap_or(i64::MAX);
+    // The cap CTE is active only with both a cap and a key; only then does
+    // the write-skew fence (module docs) require the advisory-lock leg.
+    let cap_applies = p.spend_cap.is_some() && !api_key.is_empty();
 
     let row = with_retries(|| {
         let account = account.clone();
         let api_key = api_key.clone();
         let p = p.clone();
         async move {
-            sqlx::query(RESERVE_SQL)
-                .bind(&p.operation_key)
-                .bind(&account)
-                .bind(p.job.get())
-                .bind(p.hold.get())
-                .bind(p.spend_cap.map(MicroUsd::get))
-                .bind(&api_key)
-                .bind(&p.public_model)
-                .bind(&p.concrete_model)
-                .bind(epoch)
-                .bind(p.first_content_deadline_ms)
-                .bind(p.request_deadline_ms)
-                .fetch_one(&ledger.pool)
-                .await
-                .map_err(TxError::from)
+            if cap_applies {
+                // Lock FIRST, in its own statement, so the reserve
+                // statement's snapshot postdates the previous cap-holder's
+                // commit (module docs: EvalPlanQual cannot refresh the cap
+                // aggregates inside one statement).
+                let mut tx = ledger.pool.begin().await?;
+                sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+                    .bind(RESERVE_CAP_LOCK_CLASS)
+                    .bind(&account)
+                    .execute(&mut *tx)
+                    .await?;
+                let row = reserve_query(&p, &account, &api_key, epoch)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+                Ok(row)
+            } else {
+                reserve_query(&p, &account, &api_key, epoch)
+                    .fetch_one(&ledger.pool)
+                    .await
+                    .map_err(TxError::from)
+            }
         }
     })
     .await?;

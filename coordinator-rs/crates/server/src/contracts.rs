@@ -708,6 +708,13 @@ pub struct SettleParams {
     /// terminal's `origin_session_epoch`; for v1, the dispatch session.
     pub origin_session_epoch: SessionEpoch,
     pub coordinator_epoch: CoordinatorEpoch,
+    /// Whether the terminal's Secure Enclave signature was verified against
+    /// the provider's registered SE key before intake (plan §12.6 step 3).
+    /// The session is the verifying layer (it holds the key material);
+    /// settle is defense-in-depth: an UNVERIFIED v2 terminal parks the job
+    /// in review instead of paying. v1 terminals have no signed canonical
+    /// form — they carry `false` and settle on transport trust (Go parity).
+    pub signature_verified: bool,
 }
 
 #[derive(Debug, Clone, Copy)]

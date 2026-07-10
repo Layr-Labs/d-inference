@@ -31,6 +31,8 @@ use darkbloom_core::money::Tokens;
 use darkbloom_core::settlement::MicroUsdPerMTokens;
 use darkbloom_protocol::crypto::nacl_box;
 use darkbloom_protocol::crypto::signing::{build_status_canonical, StatusCanonicalInput};
+use darkbloom_protocol::crypto::terminal_digest;
+use darkbloom_protocol::json_v2::TerminalFrame;
 use darkbloom_server::contracts::{
     fleet_channels, AdmitOutcome, AdmitRequest, CatalogSnapshot, CoordinatorKeys, FleetHandle,
     PriceCard,
@@ -235,6 +237,15 @@ impl FakeProvider {
     fn sign_b64(&self, payload: &[u8]) -> String {
         let sig: Signature = self.se_key.sign(payload);
         BASE64.encode(sig.to_der().as_bytes())
+    }
+
+    /// Fills `se_signature` with a REAL signature over the canonical
+    /// terminal bytes, exactly as the Swift provider's Secure Enclave does
+    /// — the coordinator session verifies it before intake (plan §12.6).
+    pub fn sign_terminal(&self, mut frame: TerminalFrame) -> TerminalFrame {
+        frame.se_signature =
+            terminal_digest::sign_terminal(&self.se_key, &frame).expect("sign terminal");
+        frame
     }
 
     /// Signed attestation blob exactly as embedded (signature covers these

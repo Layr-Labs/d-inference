@@ -683,7 +683,9 @@ async fn v2_serve_turn(
 }
 
 async fn v2_send_terminal(provider: &mut FakeProvider, turn: &V2Turn, claimed_completion: u64) {
-    let terminal = FrameV2::Terminal(TerminalFrame {
+    // Signed with the provider's SE key — the session verifies terminals
+    // against the attested key before intake (plan §12.6 step 3).
+    let terminal = FrameV2::Terminal(provider.sign_terminal(TerminalFrame {
         scope: turn.scope,
         provider_id: "e2e-v2".to_owned(),
         model_id: CONCRETE_MODEL.to_owned(),
@@ -702,8 +704,8 @@ async fn v2_send_terminal(provider: &mut FakeProvider, turn: &V2Turn, claimed_co
             cumulative_completion_tokens: claimed_completion,
             rolling_hash: darkbloom_protocol::json_v2::ResponseHash([0x0F; 32]),
         },
-        se_signature: "sig-e2e-v2".to_owned(),
-    });
+        se_signature: String::new(),
+    }));
     provider
         .send_json(&serde_json::from_slice(&terminal.encode().expect("encode")).expect("json"))
         .await;

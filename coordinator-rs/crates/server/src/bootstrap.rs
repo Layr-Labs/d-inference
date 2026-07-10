@@ -146,6 +146,9 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
                 admission_open: supervisor.admission_watch(),
             },
             shutdown: supervisor.requests().token(),
+            // Request tasks register with the requests phase so the ordered
+            // shutdown actually drains them (plan §15.1 step 2).
+            request_tracker: supervisor.requests().tracker().clone(),
             ..Default::default()
         },
     );

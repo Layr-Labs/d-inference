@@ -382,6 +382,7 @@ pub mod flows {
             accepted_cumulative_tokens: accepted,
             origin_session_epoch: SessionEpoch::new(1),
             coordinator_epoch: CoordinatorEpoch::new(1),
+            signature_verified: true,
         }
     }
 

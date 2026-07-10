@@ -1,5 +1,6 @@
 //! Server library surface.
 
+pub mod abort;
 pub mod chunk_pipe;
 pub mod cli;
 pub mod fleet_actor;
@@ -12,6 +13,7 @@ pub mod provider_session;
 pub mod provider_ws;
 pub mod request_task;
 
+pub use abort::{abort_frame, abort_losing_hedge};
 pub use chunk_pipe::{bounded_chunk_pipe, ChunkPipe, PipeError};
 pub use fleet_actor::{spawn_fleet_actor, FleetError, FleetHandle};
 pub use http::{router, AppState, ModelCard};

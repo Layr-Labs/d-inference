@@ -279,13 +279,35 @@ impl MemoryLedger {
         billable_cap: i64,
         terminal_digest: &str,
     ) -> Result<bool, LedgerError> {
+        self.settle_capped_as(
+            op,
+            job_id,
+            account,
+            actual,
+            billable_cap,
+            terminal_digest,
+            "settled",
+        )
+    }
+
+    /// Like `settle_capped` but records a custom terminal disposition (e.g. force_settled).
+    pub fn settle_capped_as(
+        &mut self,
+        op: OperationKey,
+        job_id: &str,
+        account: &str,
+        actual: i64,
+        billable_cap: i64,
+        terminal_digest: &str,
+        disposition: &str,
+    ) -> Result<bool, LedgerError> {
         let reserved = self
             .jobs
             .get(job_id)
             .map(|j| j.provenance.total.0)
             .unwrap_or(0);
         let charge = actual.min(billable_cap).min(reserved).max(0);
-        self.settle(op, job_id, account, charge, terminal_digest)
+        self.settle_as(op, job_id, account, charge, terminal_digest, disposition)
     }
 
     pub fn settle(
@@ -295,6 +317,18 @@ impl MemoryLedger {
         account: &str,
         actual: i64,
         terminal_digest: &str,
+    ) -> Result<bool, LedgerError> {
+        self.settle_as(op, job_id, account, actual, terminal_digest, "settled")
+    }
+
+    pub fn settle_as(
+        &mut self,
+        op: OperationKey,
+        job_id: &str,
+        account: &str,
+        actual: i64,
+        terminal_digest: &str,
+        disposition: &str,
     ) -> Result<bool, LedgerError> {
         if actual < 0 {
             return Err(LedgerError::InvalidAmount);
@@ -342,7 +376,7 @@ impl MemoryLedger {
         e.1 += refund_wdr;
 
         job.state = "settled".into();
-        job.disposition = Some("settled".into());
+        job.disposition = Some(disposition.to_string());
         self.terminals
             .insert(terminal_digest.to_string(), job_id.to_string());
         Ok(true)
@@ -394,6 +428,12 @@ impl MemoryLedger {
 
     pub fn job_funded_start(&self, job_id: &str) -> bool {
         self.jobs.get(job_id).map(|j| j.funded_start).unwrap_or(false)
+    }
+
+    pub fn job_disposition(&self, job_id: &str) -> Option<&str> {
+        self.jobs
+            .get(job_id)
+            .and_then(|j| j.disposition.as_deref())
     }
 
     pub fn job_reserved_total(&self, job_id: &str) -> Option<MicroUsd> {

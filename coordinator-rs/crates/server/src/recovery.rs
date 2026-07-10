@@ -57,13 +57,14 @@ pub fn force_settle_held(
     }
     // Clamp via settle_capped so ops amounts above reservation never fail-close.
     let reserved = g.job_reserved_total(job_id).map(|m| m.0).unwrap_or(0);
-    match g.settle_capped(
+    match g.settle_capped_as(
         OperationKey(format!("force_settle:{job_id}")),
         job_id,
         account,
         actual,
         reserved,
         terminal_digest,
+        "force_settled",
     ) {
         Ok(true) => Ok(RecoveryAction::Released), // settled — reuse Released as "cleared"
         Ok(false) => Ok(RecoveryAction::AlreadyTerminal),
@@ -179,6 +180,7 @@ mod tests {
         // reserved 100k, charged 40k → refund 60k → bal = 1M-100k+60k = 960k
         assert_eq!(g.balance("a").0, 960_000);
         assert_eq!(g.held_start_authorized_count(), 0);
+        assert_eq!(g.job_disposition("j1"), Some("force_settled"));
     }
 
     #[test]

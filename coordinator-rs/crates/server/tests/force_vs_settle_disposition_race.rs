@@ -59,5 +59,6 @@ fn concurrent_force_settled_vs_settled_exactly_one_disposition() {
     } else {
         assert_eq!(disp, "settled");
     }
-    assert_eq!(g.balance("a").0, 4_400_000);
+    // reserved 1M, charged 400k → refund 600k → bal = 5M - 1M + 600k = 4.6M
+    assert_eq!(g.balance("a").0, 4_600_000);
 }

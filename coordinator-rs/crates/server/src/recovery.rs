@@ -21,6 +21,9 @@ pub fn recover_undispatched(
     account: &str,
 ) -> Result<RecoveryAction, String> {
     let mut g = ledger.lock().map_err(|e| e.to_string())?;
+    if g.job_disposition(job_id).is_some() {
+        return Ok(RecoveryAction::AlreadyTerminal);
+    }
     if g.job_funded_start(job_id) {
         // start_authorized — must not auto-redispatch or auto-release in pilot.
         return Ok(RecoveryAction::Skipped);

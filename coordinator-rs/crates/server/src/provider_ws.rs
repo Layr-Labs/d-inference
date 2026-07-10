@@ -245,7 +245,15 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                             if let Some(class) =
                                 crate::provider_hub::ProviderHub::structured_error_class(&value)
                             {
-                                state.fleet.structured_error(id.to_string(), class.to_string());
+                                let model = value
+                                    .get("model")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
+                                state.fleet.structured_error(
+                                    id.to_string(),
+                                    class.to_string(),
+                                    model,
+                                );
                             }
                         }
                         let reply = match wire.message_type() {

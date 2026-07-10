@@ -36,6 +36,7 @@ pub enum FleetCommand {
     StructuredError {
         provider_id: String,
         class: String,
+        model: Option<String>,
     },
     Snapshot(oneshot::Sender<FleetState>),
 }
@@ -118,10 +119,11 @@ impl FleetHandle {
         });
     }
 
-    pub fn structured_error(&self, provider_id: String, class: String) {
+    pub fn structured_error(&self, provider_id: String, class: String, model: Option<String>) {
         let _ = self.lifecycle_tx.try_send(FleetCommand::StructuredError {
             provider_id,
             class,
+            model,
         });
     }
 }
@@ -224,16 +226,25 @@ impl FleetActor {
             FleetCommand::StructuredError {
                 provider_id,
                 class,
+                model,
             } => {
-                use darkbloom_core::{action_for_class, apply_health_action, apply_trust_action};
+                use darkbloom_core::{
+                    action_for_class, apply_health_action, apply_trust_action, ErrorAction,
+                };
                 let action = action_for_class(&class);
                 if let Some(p) = self.state.providers.get_mut(&provider_id) {
                     apply_health_action(&mut p.health, &action, std::time::Instant::now());
                     apply_trust_action(&mut p.trust, &action);
-                    // Keep legacy bools in sync for warm-plane snapshots.
-                    if matches!(action, darkbloom_core::ErrorAction::HardFence) {
+                    if matches!(action, ErrorAction::HardFence) {
                         p.trusted = false;
                         p.challenge_fresh = false;
+                    }
+                    // model_not_ready: drop the model from ready set so admission
+                    // stops selecting it until model_ready arrives.
+                    if matches!(action, ErrorAction::SignalPlacement) {
+                        if let Some(m) = model {
+                            p.ready_models.remove(&m);
+                        }
                     }
                 }
             }
@@ -319,7 +330,7 @@ mod tests {
             .await
             .unwrap();
         tokio::task::yield_now().await;
-        handle.structured_error("p1".into(), "security".into());
+        handle.structured_error("p1".into(), "security".into(), None);
         tokio::task::yield_now().await;
         let decision = handle
             .admit(AdmitRequest {
@@ -336,5 +347,55 @@ mod tests {
             decision,
             AdmissionDecision::RetryAfter { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn model_not_ready_drops_model_from_ready_set() {
+        let (handle, _join) = spawn_fleet_actor();
+        let mut ready = HashSet::new();
+        ready.insert("m".into());
+        ready.insert("other".into());
+        handle
+            .upsert_lifecycle(ProviderSnapshot {
+                provider_id: "p1".into(),
+                session_epoch: 1,
+                trusted: true,
+                challenge_fresh: true,
+                encrypted_transport: true,
+                ready_models: ready,
+                health: HealthMachine::healthy(),
+                data_lane_full: false,
+                predicted_first_content_ms: 10.0,
+                predicted_decode_ms: 20.0,
+                trust: darkbloom_core::TrustState::default(),
+            })
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        handle.structured_error("p1".into(), "model_not_ready".into(), Some("m".into()));
+        tokio::task::yield_now().await;
+        let decision = handle
+            .admit(AdmitRequest {
+                model: "m".into(),
+                attempt: AttemptId::new("a3"),
+                exclude_providers: HashSet::new(),
+                require_tools: false,
+                permit_ttl: Duration::from_secs(2),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(decision, AdmissionDecision::RetryAfter { .. }));
+        // Other model still warm.
+        let decision2 = handle
+            .admit(AdmitRequest {
+                model: "other".into(),
+                attempt: AttemptId::new("a4"),
+                exclude_providers: HashSet::new(),
+                require_tools: false,
+                permit_ttl: Duration::from_secs(2),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(decision2, AdmissionDecision::Prepare(_)));
     }
 }

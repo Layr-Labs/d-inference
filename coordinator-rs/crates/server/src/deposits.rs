@@ -55,6 +55,7 @@ pub fn apply_stripe_deposit(
 ///
 /// Kill-boundary (DECISIONS #22): amount guard runs before event insert; credit is an
 /// UPSERT so a missing balances row cannot leave a poisoned event id with no credit.
+/// Outbox insert is gated on credit (DECISIONS #32/#37) so money+side-effect are one txn.
 pub fn deposit_sql() -> &'static str {
     r#"
     WITH params AS (
@@ -82,6 +83,20 @@ pub fn deposit_sql() -> &'static str {
       SELECT 'deposit:' || $1 || ':' || $2, '', 'deposit', $4 FROM credit
       ON CONFLICT (operation_key) DO NOTHING
       RETURNING operation_key
+    ), outbox AS (
+      INSERT INTO rust_coord.outbox (kind, payload, attempts)
+      SELECT 'billing.deposit_applied',
+             jsonb_build_object(
+               'source', $1,
+               'event_id', $2,
+               'account', $3,
+               'amount_micro_usd', $4,
+               'withdrawable_micro_usd', $5
+             ),
+             0
+      FROM credit
+      WHERE EXISTS (SELECT 1 FROM op)
+      RETURNING id
     )
     SELECT balance_micro_usd, withdrawable_micro_usd FROM credit
     "#
@@ -187,5 +202,8 @@ mod tests {
         assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM evt)"));
         assert!(sql.contains("financial_operations"));
         assert!(sql.contains("deposit:"));
+        assert!(sql.contains("rust_coord.outbox"));
+        assert!(sql.contains("billing.deposit_applied"));
+        assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
     }
 }

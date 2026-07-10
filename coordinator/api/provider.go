@@ -1460,10 +1460,8 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 	// terminal error to the consumer goroutine.
 	select {
 	case pr.ChunkCh <- chunkData:
-		pr.AddAcceptedOutputBytes(billableOutputBytes(chunkData))
 	default:
 		if sendChunkWithGrace(pr, chunkData) {
-			pr.AddAcceptedOutputBytes(billableOutputBytes(chunkData))
 			return
 		}
 		s.logger.Error("chunk buffer overflow — failing request instead of corrupting stream",
@@ -1584,17 +1582,6 @@ func (s *Server) handleInferenceAccepted(provider *registry.Provider, msg *proto
 // could skew routing calibration. The value is advisory, never a security gate.
 const maxPlausibleDecodeTPS = 10000.0
 
-func billableOutputBytes(chunk string) int64 {
-	message := extractMessage([]string{chunk})
-	total := len(message.Content) + len(message.Reasoning)
-	for _, toolCall := range message.ToolCalls {
-		if encoded, err := json.Marshal(toolCall); err == nil {
-			total += len(encoded)
-		}
-	}
-	return int64(total)
-}
-
 func boundedProviderUsage(pr *registry.PendingRequest, usage protocol.UsageInfo) (protocol.UsageInfo, bool, bool) {
 	if usage.PromptTokens < 0 || usage.CompletionTokens < 0 ||
 		usage.ReasoningTokens < 0 || usage.PromptTokens > math.MaxInt32 ||
@@ -1614,14 +1601,6 @@ func boundedProviderUsage(pr *registry.PendingRequest, usage protocol.UsageInfo)
 		}
 		if int64(usage.PromptTokens) > promptUpper {
 			usage.PromptTokens = int(promptUpper)
-			capped = true
-		}
-		acceptedUpper := pr.AcceptedOutputBytes()
-		if acceptedUpper > math.MaxInt32 {
-			acceptedUpper = math.MaxInt32
-		}
-		if int64(usage.CompletionTokens) > acceptedUpper {
-			usage.CompletionTokens = int(acceptedUpper)
 			capped = true
 		}
 	}

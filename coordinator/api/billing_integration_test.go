@@ -31,7 +31,7 @@ func (s failingCreditStore) Credit(accountID string, amountMicroUSD int64, entry
 }
 
 func (s failingCreditStore) ReleaseInferenceReservation(accountID string, amountMicroUSD, withdrawableMicroUSD int64, operationKey, reference string) (bool, error) {
-	return false, errors.New("forced reservation release failure")
+	return false, store.ErrFinancialOperationConflict
 }
 
 func (s failingCreditStore) SettleInference(settlement *store.InferenceSettlement) (store.InferenceSettlementDisposition, error) {

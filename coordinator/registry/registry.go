@@ -199,7 +199,6 @@ type PendingRequest struct {
 	reservationMu         sync.Mutex
 	reservationFinalized  bool
 	terminalClaimed       atomic.Bool
-	acceptedOutputBytes   atomic.Int64
 	routeOutcomeMu        sync.Mutex
 	routeOutcomeFinalized bool
 
@@ -389,19 +388,6 @@ func (pr *PendingRequest) MarkTerminalClaimed() {
 
 func (pr *PendingRequest) TerminalClaimed() bool {
 	return pr != nil && pr.terminalClaimed.Load()
-}
-
-func (pr *PendingRequest) AddAcceptedOutputBytes(bytes int64) {
-	if pr != nil && bytes > 0 {
-		pr.acceptedOutputBytes.Add(bytes)
-	}
-}
-
-func (pr *PendingRequest) AcceptedOutputBytes() int64 {
-	if pr == nil {
-		return 0
-	}
-	return pr.acceptedOutputBytes.Load()
 }
 
 // FinalizeReservation runs settle while holding the reservation finalization

@@ -637,3 +637,11 @@ account concurrent with filtered cutover conserve both ledgers.
 separate quiescence poll. `ready` is true only when no remaining accounts and
 outbox is drained.
 
+### cutover-drain-all one-shot multi-tenant (DECISIONS #115)
+
+`POST /v1/admin/cutover-drain-all` runs the ops loop server-side: for each
+account in `accounts_needing_cutover`, call account-filtered cutover-drain; when
+accounts are empty, outbox-drain; repeat until ready (max_rounds). Ownership
+loss aborts with partial `accounts_cleared`. Quiescence `cutover_hint` is
+`cutover-drain-all` when active jobs remain.
+

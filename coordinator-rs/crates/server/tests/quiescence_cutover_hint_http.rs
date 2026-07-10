@@ -39,7 +39,7 @@ async fn quiescence_cutover_hint_for_orphans_and_outbox() {
         .await
         .unwrap();
     let q = body_json(res).await;
-    assert_eq!(q["cutover_hint"], "cutover-drain");
+    assert_eq!(q["cutover_hint"], "cutover-drain-all");
     assert_eq!(q["orphan_summary"]["needs_adopt_count"], 1);
 
     let res = app

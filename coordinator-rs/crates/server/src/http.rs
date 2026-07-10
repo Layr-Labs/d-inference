@@ -248,6 +248,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/clear-orphans", post(admin_clear_orphans))
         .route("/v1/admin/outbox-drain", post(admin_outbox_drain))
         .route("/v1/admin/cutover-drain", post(admin_cutover_drain))
+        .route("/v1/admin/cutover-drain-all", post(admin_cutover_drain_all))
         .route("/v1/admin/cancel-attempt", post(admin_cancel_attempt))
         .fallback(unsupported)
         .with_state(Arc::new(state))
@@ -489,9 +490,9 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let cutover_hint = if ready {
         "ready"
     } else if active_jobs > 0 && needs_adopt > 0 {
-        "cutover-drain"
+        "cutover-drain-all"
     } else if active_jobs > 0 {
-        "cutover-drain"
+        "cutover-drain-all"
     } else if outbox_retryable > 0 {
         "outbox-drain"
     } else {
@@ -2106,6 +2107,300 @@ async fn admin_cutover_drain(
             "accounts_needing_cutover": remaining_accounts,
             "active_jobs": drain_json.get("active_jobs").cloned().unwrap_or(json!(0)),
             "outbox_retryable": drain_json.get("outbox_retryable").cloned().unwrap_or(json!(0)),
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AdminCutoverDrainAllRequest {
+    /// Charge per held job when force-settling (clamped to reserved). Default 0.
+    #[serde(default)]
+    actual_micro_usd: i64,
+    /// Safety cap on outer loop iterations (DECISIONS #115).
+    #[serde(default = "default_cutover_all_max_rounds")]
+    max_rounds: u32,
+}
+
+fn default_cutover_all_max_rounds() -> u32 {
+    32
+}
+
+/// One-shot multi-tenant cutover: loop accounts_needing_cutover → cutover-drain
+/// per account → outbox-drain until ready (DECISIONS #115). Aborts on ownership loss.
+async fn admin_cutover_drain_all(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AdminCutoverDrainAllRequest>,
+) -> axum::response::Response {
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
+    }
+    if let Err(resp) = require_holding(&state) {
+        return resp;
+    }
+    if req.actual_micro_usd < 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": "actual_micro_usd must be >= 0",
+                    "type": "invalid_request_error",
+                    "code": "invalid_actual"
+                }
+            })),
+        )
+            .into_response();
+    }
+    let max_rounds = req.max_rounds.max(1).min(128);
+    let mut rounds: Vec<Value> = Vec::new();
+    let mut accounts_cleared: Vec<String> = Vec::new();
+
+    for round in 0..max_rounds {
+        if require_holding(&state).is_err() {
+            let remaining = {
+                let led = state.ledger.lock().await;
+                accounts_needing_cutover_from(&led, 0)
+            };
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": {
+                        "message": "ownership lost during cutover-drain-all",
+                        "type": "invalid_request_error",
+                        "code": "ownership_lost"
+                    },
+                    "action": "cutover_drain_all_aborted",
+                    "round": round,
+                    "rounds": rounds,
+                    "accounts_cleared": accounts_cleared,
+                    "accounts_needing_cutover": remaining,
+                    "ready": false,
+                })),
+            )
+                .into_response();
+        }
+
+        let accounts = {
+            let led = state.ledger.lock().await;
+            let epoch = state.ownership.epoch().0;
+            accounts_needing_cutover_from(&led, epoch)
+        };
+        let outbox_retryable = {
+            let box_ = state.outbox.lock().await;
+            box_.pending_under_retry_cap()
+        };
+
+        if accounts.is_empty() && outbox_retryable == 0 {
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "action": "cutover_drain_all",
+                    "ready": true,
+                    "rounds_run": round,
+                    "rounds": rounds,
+                    "accounts_cleared": accounts_cleared,
+                    "accounts_needing_cutover": [],
+                    "outbox_retryable": 0,
+                })),
+            )
+                .into_response();
+        }
+
+        if accounts.is_empty() {
+            // Outbox-only: drain and continue.
+            let drain = admin_outbox_drain(State(state.clone()), headers.clone())
+                .await
+                .into_response();
+            let drain_status = drain.status();
+            let drain_bytes = match drain.into_body().collect().await {
+                Ok(c) => c.to_bytes(),
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": {
+                                "message": "failed to read outbox-drain body",
+                                "type": "server_error",
+                                "code": "cutover_drain_all_failed"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            };
+            let drain_json: Value = serde_json::from_slice(&drain_bytes).unwrap_or(json!({}));
+            rounds.push(json!({
+                "round": round,
+                "phase": "outbox_drain",
+                "accounts": [],
+                "result": drain_json,
+            }));
+            if drain_status != StatusCode::OK {
+                let remaining = {
+                    let led = state.ledger.lock().await;
+                    accounts_needing_cutover_from(&led, 0)
+                };
+                return (
+                    drain_status,
+                    Json(json!({
+                        "error": drain_json.get("error").cloned().unwrap_or(json!({
+                            "message": "outbox-drain failed",
+                            "type": "invalid_request_error",
+                            "code": "ownership_lost"
+                        })),
+                        "action": "cutover_drain_all_aborted",
+                        "phase": "outbox_drain",
+                        "round": round,
+                        "rounds": rounds,
+                        "accounts_cleared": accounts_cleared,
+                        "accounts_needing_cutover": remaining,
+                        "ready": false,
+                    })),
+                )
+                    .into_response();
+            }
+            continue;
+        }
+
+        let mut round_results = Vec::new();
+        for acct in &accounts {
+            if require_holding(&state).is_err() {
+                let remaining = {
+                    let led = state.ledger.lock().await;
+                    accounts_needing_cutover_from(&led, 0)
+                };
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "error": {
+                            "message": "ownership lost during cutover-drain-all",
+                            "type": "invalid_request_error",
+                            "code": "ownership_lost"
+                        },
+                        "action": "cutover_drain_all_aborted",
+                        "phase": "account_cutover",
+                        "round": round,
+                        "account": acct,
+                        "rounds": rounds,
+                        "accounts_cleared": accounts_cleared,
+                        "accounts_needing_cutover": remaining,
+                        "ready": false,
+                    })),
+                )
+                    .into_response();
+            }
+            let clear_req = AdminClearOrphansRequest {
+                account: Some(acct.clone()),
+                actual_micro_usd: req.actual_micro_usd,
+            };
+            let cut = admin_cutover_drain(
+                State(state.clone()),
+                headers.clone(),
+                Json(clear_req),
+            )
+            .await;
+            let cut_status = cut.status();
+            let cut_bytes = match cut.into_body().collect().await {
+                Ok(c) => c.to_bytes(),
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": {
+                                "message": "failed to read cutover-drain body",
+                                "type": "server_error",
+                                "code": "cutover_drain_all_failed"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            };
+            let cut_json: Value = serde_json::from_slice(&cut_bytes).unwrap_or(json!({}));
+            round_results.push(json!({
+                "account": acct,
+                "status": cut_status.as_u16(),
+                "result": cut_json,
+            }));
+            if cut_status != StatusCode::OK {
+                let remaining = {
+                    let led = state.ledger.lock().await;
+                    let epoch = if state.ownership.holding() {
+                        state.ownership.epoch().0
+                    } else {
+                        0
+                    };
+                    accounts_needing_cutover_from(&led, epoch)
+                };
+                rounds.push(json!({
+                    "round": round,
+                    "phase": "account_cutover",
+                    "accounts": accounts,
+                    "results": round_results,
+                }));
+                return (
+                    cut_status,
+                    Json(json!({
+                        "error": cut_json.get("error").cloned().unwrap_or(json!({
+                            "message": "account cutover-drain failed",
+                            "type": "invalid_request_error",
+                            "code": "cutover_drain_all_aborted"
+                        })),
+                        "action": "cutover_drain_all_aborted",
+                        "phase": "account_cutover",
+                        "round": round,
+                        "account": acct,
+                        "rounds": rounds,
+                        "accounts_cleared": accounts_cleared,
+                        "accounts_needing_cutover": remaining,
+                        "ready": false,
+                    })),
+                )
+                    .into_response();
+            }
+            if !accounts_cleared.contains(acct) {
+                accounts_cleared.push(acct.clone());
+            }
+        }
+        rounds.push(json!({
+            "round": round,
+            "phase": "account_cutover",
+            "accounts": accounts,
+            "results": round_results,
+        }));
+    }
+
+    let (remaining, outbox_retryable, active) = {
+        let led = state.ledger.lock().await;
+        let box_ = state.outbox.lock().await;
+        let epoch = if state.ownership.holding() {
+            state.ownership.epoch().0
+        } else {
+            0
+        };
+        (
+            accounts_needing_cutover_from(&led, epoch),
+            box_.pending_under_retry_cap(),
+            led.active_job_count(),
+        )
+    };
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "error": {
+                "message": format!("cutover-drain-all did not converge in {max_rounds} rounds"),
+                "type": "server_error",
+                "code": "cutover_drain_all_max_rounds"
+            },
+            "action": "cutover_drain_all_aborted",
+            "phase": "max_rounds",
+            "rounds": rounds,
+            "accounts_cleared": accounts_cleared,
+            "accounts_needing_cutover": remaining,
+            "outbox_retryable": outbox_retryable,
+            "active_jobs": active,
+            "ready": false,
         })),
     )
         .into_response()

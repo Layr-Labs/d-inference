@@ -76,7 +76,7 @@ async fn account_filtered_cutover_drain_leaves_foreign_in_by_account() {
     assert_eq!(q.status(), StatusCode::SERVICE_UNAVAILABLE);
     let qv = body_json(q).await;
     assert_eq!(qv["ready"], false);
-    assert_eq!(qv["cutover_hint"], "cutover-drain");
+    assert_eq!(qv["cutover_hint"], "cutover-drain-all");
     let by = qv["orphan_summary_by_account"].as_array().unwrap();
     assert!(by.iter().all(|r| r["account"] != "yara"));
     let zane = by.iter().find(|r| r["account"] == "zane").unwrap();

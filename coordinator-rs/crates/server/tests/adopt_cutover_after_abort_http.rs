@@ -81,7 +81,7 @@ async fn adopt_jobs_then_cutover_drain_after_clear_abort() {
     let q = body_json(res).await;
     assert_eq!(q["ownership_holding"], false);
     assert_eq!(q["active_jobs"], 2);
-    assert_eq!(q["cutover_hint"], "cutover-drain");
+    assert_eq!(q["cutover_hint"], "cutover-drain-all");
 
     ownership.acquire(Epoch(111)).unwrap();
 

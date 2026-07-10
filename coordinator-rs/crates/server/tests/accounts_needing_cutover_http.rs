@@ -55,7 +55,7 @@ async fn quiescence_accounts_needing_cutover_lists_tenants() {
         .map(|x| x.as_str().unwrap())
         .collect();
     assert_eq!(accounts, vec!["ella", "finn"]);
-    assert_eq!(v["cutover_hint"], "cutover-drain");
+    assert_eq!(v["cutover_hint"], "cutover-drain-all");
 }
 
 #[tokio::test]

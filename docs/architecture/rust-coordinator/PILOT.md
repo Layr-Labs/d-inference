@@ -1,0 +1,52 @@
+# Isolated Pilot Runbook (Milestone 5)
+
+Status: prepared — **human-gated**. Do not run against production.
+
+## Isolation checklist
+
+- [ ] Separate hostname (e.g. `api.pilot.darkbloom…`)
+- [ ] Separate Postgres instance or dedicated database
+- [ ] Separate MicroMDM enrollment + persistent volume
+- [ ] Dedicated provider tokens / SE identities
+- [ ] Dedicated API keys (`DARKBLOOM_PILOT_API_KEYS`)
+- [ ] No production Stripe webhooks
+- [ ] 6–10 owned Macs across hardware classes
+
+## Minimum scope (enabled)
+
+- `/health`, `/readyz`, `/v1/encryption-key`, `/v1/models`
+- `/v1/chat/completions` (stream + non-stream)
+- `/ws/provider` registration / heartbeat
+- Mock or dual-stack prepare/start once Swift v2 ships
+- Self-route first, then pre-funded paid
+
+## Excluded (must return unsupported, never proxy to Go)
+
+Stripe deposits/withdrawals, Privy admin, vision/tools, multi-model placement,
+releases/installer, enrollment, invites, referrals, admin writes, public stats.
+
+## Success gates (from architecture §23.3)
+
+| Gate | Requirement |
+| --- | --- |
+| Duration | ≥ 7 continuous days |
+| Volume | ≥ 10,000 completed requests |
+| Paid | ≥ 2,000 settled, 500 cancels, 100 terminal replays |
+| Money | Zero unexplained balance/usage/earning diffs |
+| TTFT | Matched p95 ≤ max(Go×1.20, Go+250ms) |
+
+## Start commands (dev)
+
+```bash
+cd coordinator-rs
+cargo build --release -p darkbloom-coordinator
+PORT=8080 DARKBLOOM_PILOT_API_KEYS=sk-pilot \
+  DARKBLOOM_PILOT_MODEL=pilot-text-model \
+  ./target/release/darkbloom-coordinator
+```
+
+Apply schema before paid path:
+
+```bash
+psql "$DATABASE_URL" -f migrations/0001_rust_coord.sql
+```

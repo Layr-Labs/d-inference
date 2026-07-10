@@ -15,7 +15,10 @@ use crate::fleet_actor::FleetHandle;
 use crate::ledger::MemoryLedger;
 use crate::mock_provider::{openai_chat_response, run_mock_completion};
 use crate::provider_ws::provider_ws;
+use crate::request_task::{spawn_request_task, ControlEvent};
+use darkbloom_core::{AttemptId, JobId, LeaseId};
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -178,9 +181,70 @@ async fn chat_completions(
                 .rev()
                 .find_map(|m| m.get("content").and_then(|c| c.as_str()))
                 .unwrap_or("");
+
+            // RequestTask owns the absolute deadline and control transitions.
+            let job_id = JobId::new(format!("job-{}", Uuid::new_v4()));
+            let (task_handle, mut task) =
+                spawn_request_task(job_id.clone(), std::time::Duration::from_secs(30));
+            let attempt = permit.attempt.clone();
+            let lease = LeaseId::new(format!("lease-{}", Uuid::new_v4()));
+            if task
+                .apply(ControlEvent::Reserved {
+                    job: job_id.clone(),
+                })
+                .and_then(|_| {
+                    task.apply(ControlEvent::Admitted {
+                        attempt: attempt.clone(),
+                        permit: permit.clone(),
+                    })
+                })
+                .and_then(|_| {
+                    task.apply(ControlEvent::Prepared {
+                        attempt: attempt.clone(),
+                        lease: lease.clone(),
+                    })
+                })
+                .and_then(|_| {
+                    task.apply(ControlEvent::StartAuthorized {
+                        attempt: attempt.clone(),
+                        lease: lease.clone(),
+                    })
+                })
+                .and_then(|_| {
+                    task.apply(ControlEvent::Started {
+                        attempt: attempt.clone(),
+                        lease: lease.clone(),
+                    })
+                })
+                .is_err()
+            {
+                return (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    Json(json!({
+                        "error": {
+                            "message": "request task rejected transition or deadline",
+                            "type": "timeout",
+                            "code": "deadline_exceeded"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+            // Keep handle alive for cancel/backpressure signals from the pipe path.
+            let _ = task_handle;
+
             let mut ledger = state.ledger.lock().await;
             match run_mock_completion(&mut ledger, &state.pilot_account, &permit, user_text) {
                 Ok(completion) => {
+                    let _ = task.apply(ControlEvent::FirstContent {
+                        attempt: AttemptId::new(completion.attempt_id.clone()),
+                        lease: lease.clone(),
+                    });
+                    let _ = task.apply(ControlEvent::ProviderTerminal {
+                        attempt: AttemptId::new(completion.attempt_id.clone()),
+                        lease: lease.clone(),
+                    });
+                    let _ = task.apply(ControlEvent::FinalizeDone);
                     if req.stream {
                         let chunk = openai_chat_response(&completion, true);
                         let done = json!({"id": completion.job_id, "object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});

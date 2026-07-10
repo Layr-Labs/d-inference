@@ -32,41 +32,41 @@ type persistedInferenceSettlement struct {
 	recordUsage                  bool
 }
 
-func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (bool, error) {
+func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (InferenceSettlementDisposition, error) {
 	if err := validateInferenceSettlement(settlement); err != nil {
-		return false, err
+		return "", err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, fmt.Errorf("store: begin inference settlement: %w", err)
+		return "", fmt.Errorf("store: begin inference settlement: %w", err)
 	}
 	defer tx.Rollback(ctx)
 	finalizationKey := "finalize:" + settlement.ReservationID
 	if err := lockFinancialOperation(ctx, tx, finalizationKey); err != nil {
-		return false, err
+		return "", err
 	}
 	existing, found, err := inferenceSettlementTx(ctx, tx, settlement.ReservationID)
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	if found {
 		if !persistedSettlementMatches(existing, settlement) {
-			return false, ErrFinancialOperationConflict
+			return "", ErrFinancialOperationConflict
 		}
 		if err := tx.Commit(ctx); err != nil {
-			return false, fmt.Errorf("store: commit inference settlement replay: %w", err)
+			return "", fmt.Errorf("store: commit inference settlement replay: %w", err)
 		}
-		return false, nil
+		return InferenceSettlementReplayed, nil
 	}
 	if _, finalized, err := reservationOperationTx(ctx, tx, finalizationKey); err != nil {
-		return false, err
+		return "", err
 	} else if finalized {
 		if err := tx.Commit(ctx); err != nil {
-			return false, fmt.Errorf("store: commit late terminal disposition: %w", err)
+			return "", fmt.Errorf("store: commit late terminal disposition: %w", err)
 		}
-		return false, nil
+		return InferenceSettlementAlreadyReleased, nil
 	}
 
 	refund, refundWithdrawable := int64(0), int64(0)
@@ -75,7 +75,7 @@ func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (bool, 
 		refundWithdrawable = min(refund, settlement.ReservedWithdrawableMicroUSD)
 	}
 	if err := lockSettlementAccounts(ctx, tx, settlement); err != nil {
-		return false, err
+		return "", err
 	}
 	if !settlement.ReservationPreDebited && settlement.CostMicroUSD > 0 {
 		var balanceAfter int64
@@ -89,10 +89,10 @@ func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (bool, 
 			settlement.ConsumerAccountID, settlement.CostMicroUSD,
 		).Scan(&balanceAfter)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return false, ErrInsufficientBalance
+			return "", ErrInsufficientBalance
 		}
 		if err != nil {
-			return false, fmt.Errorf("store: debit service settlement: %w", err)
+			return "", fmt.Errorf("store: debit service settlement: %w", err)
 		}
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO ledger_entries
@@ -101,7 +101,7 @@ func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (bool, 
 			settlement.ConsumerAccountID, string(LedgerCharge),
 			-settlement.CostMicroUSD, balanceAfter, settlement.RequestID,
 		); err != nil {
-			return false, fmt.Errorf("store: record service settlement debit: %w", err)
+			return "", fmt.Errorf("store: record service settlement debit: %w", err)
 		}
 	}
 	if refund > 0 {
@@ -109,7 +109,7 @@ func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (bool, 
 			ctx, tx, settlement.ConsumerAccountID, refund, refundWithdrawable,
 			LedgerRefund, settlement.RequestID,
 		); err != nil {
-			return false, err
+			return "", err
 		}
 	}
 	if earning := settlement.ProviderEarning; earning != nil && earning.AmountMicroUSD > 0 {
@@ -117,7 +117,7 @@ func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (bool, 
 			ctx, tx, earning.AccountID, earning.AmountMicroUSD, earning.AmountMicroUSD,
 			LedgerPayout, settlement.RequestID,
 		); err != nil {
-			return false, err
+			return "", err
 		}
 		createdAt := earning.CreatedAt
 		if createdAt.IsZero() {
@@ -132,14 +132,14 @@ func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (bool, 
 			earning.Model, earning.AmountMicroUSD, earning.PromptTokens,
 			earning.CompletionTokens, createdAt,
 		); err != nil {
-			return false, fmt.Errorf("store: insert provider settlement earning: %w", err)
+			return "", fmt.Errorf("store: insert provider settlement earning: %w", err)
 		}
 		if err := updateEarningSummaryTx(ctx, tx, earning.AccountID, "account", earning); err != nil {
-			return false, err
+			return "", err
 		}
 		if earning.ProviderKey != "" {
 			if err := updateEarningSummaryTx(ctx, tx, earning.ProviderKey, "provider", earning); err != nil {
-				return false, err
+				return "", err
 			}
 		}
 	}
@@ -148,7 +148,7 @@ func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (bool, 
 			ctx, tx, "platform", settlement.PlatformFeeMicroUSD, 0,
 			LedgerPlatformFee, settlement.RequestID,
 		); err != nil {
-			return false, err
+			return "", err
 		}
 	}
 	if settlement.ReferralRewardMicroUSD > 0 {
@@ -156,7 +156,7 @@ func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (bool, 
 			ctx, tx, settlement.ReferrerAccountID, settlement.ReferralRewardMicroUSD,
 			settlement.ReferralRewardMicroUSD, LedgerReferralReward, settlement.RequestID,
 		); err != nil {
-			return false, err
+			return "", err
 		}
 	}
 	if settlement.Usage != nil {
@@ -170,7 +170,7 @@ func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (bool, 
 			usage.PublicModel, usage.PromptTokens, usage.CompletionTokens,
 			usage.RequestID, usage.CostMicroUSD, marshalProviderLocation(usage.RequestLocation),
 		); err != nil {
-			return false, fmt.Errorf("store: insert settlement usage: %w", err)
+			return "", fmt.Errorf("store: insert settlement usage: %w", err)
 		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE usage_totals SET
@@ -180,22 +180,22 @@ func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (bool, 
 			 WHERE id = 1`,
 			usage.PromptTokens, usage.CompletionTokens,
 		); err != nil {
-			return false, fmt.Errorf("store: update settlement usage totals: %w", err)
+			return "", fmt.Errorf("store: update settlement usage totals: %w", err)
 		}
 	}
 	if err := insertReservationOperationTx(ctx, tx, finalizationKey, persistedReservationOperation{
 		accountID: settlement.ConsumerAccountID, kind: "release",
 		amountMicroUSD: refund, withdrawableMicroUSD: refundWithdrawable,
 	}); err != nil {
-		return false, err
+		return "", err
 	}
 	if err := insertInferenceSettlementTx(ctx, tx, settlement); err != nil {
-		return false, err
+		return "", err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("store: commit inference settlement: %w", err)
+		return "", fmt.Errorf("store: commit inference settlement: %w", err)
 	}
-	return true, nil
+	return InferenceSettlementApplied, nil
 }
 
 func lockSettlementAccounts(ctx context.Context, tx pgx.Tx, settlement *InferenceSettlement) error {

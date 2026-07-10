@@ -28,13 +28,41 @@ type flakyInferenceSettlementStore struct {
 	attempts  int
 }
 
-func (s *flakyInferenceSettlementStore) SettleInference(settlement *store.InferenceSettlement) (bool, error) {
+type ambiguousInferenceSettlementStore struct {
+	store.Store
+	mu       sync.Mutex
+	injected bool
+	attempts int
+}
+
+func (s *ambiguousInferenceSettlementStore) SettleInference(settlement *store.InferenceSettlement) (store.InferenceSettlementDisposition, error) {
+	s.mu.Lock()
+	s.attempts++
+	inject := !s.injected
+	if inject {
+		s.injected = true
+	}
+	s.mu.Unlock()
+	disposition, err := s.Store.SettleInference(settlement)
+	if inject && err == nil {
+		return "", errors.New("ambiguous commit result")
+	}
+	return disposition, err
+}
+
+func (s *ambiguousInferenceSettlementStore) Attempts() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attempts
+}
+
+func (s *flakyInferenceSettlementStore) SettleInference(settlement *store.InferenceSettlement) (store.InferenceSettlementDisposition, error) {
 	s.mu.Lock()
 	s.attempts++
 	if s.remaining > 0 {
 		s.remaining--
 		s.mu.Unlock()
-		return false, errors.New("transient settlement failure")
+		return "", errors.New("transient settlement failure")
 	}
 	s.mu.Unlock()
 	return s.Store.SettleInference(settlement)
@@ -254,6 +282,49 @@ func TestCompletionRetriesAtomicSettlementWithoutPartialProjection(t *testing.T)
 	if usageRows := st.UsageByConsumer(testConsumerID); len(usageRows) != 1 {
 		t.Fatalf("usage rows = %d, want 1", len(usageRows))
 	}
+}
+
+func TestAmbiguousSettlementCommitResolvesReplayAndReleasesServiceHold(t *testing.T) {
+	srv, backing := newReservationTestServer(t, ServerConfig{ServiceReservations: true}, nil)
+	createServiceUser(t, backing, "svc-ambiguous")
+	if err := backing.Credit("svc-ambiguous", 1_000_000, store.LedgerDeposit, "seed"); err != nil {
+		t.Fatal(err)
+	}
+	const hold int64 = 500_000
+	serviceMode, _, err := srv.reserveInitialBalance(
+		"svc-ambiguous", "ambiguous-model", hold, "reserve-ambiguous",
+	)
+	if err != nil || !serviceMode {
+		t.Fatalf("reserve service=%t err=%v", serviceMode, err)
+	}
+	ambiguous := &ambiguousInferenceSettlementStore{Store: backing}
+	srv.store = ambiguous
+	provider := srv.registry.Register("ambiguous-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: "ambiguous-model", ModelType: "chat", Quantization: "4bit"}},
+	})
+	pr := &registry.PendingRequest{
+		RequestID: "ambiguous-attempt", Model: "ambiguous-model",
+		ConsumerKey: "svc-ambiguous", ReservedMicroUSD: hold, ServiceReservation: true,
+		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID,
+		Usage: protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 1000},
+	})
+	if ambiguous.Attempts() != 2 {
+		t.Fatalf("settlement attempts = %d, want applied+replay", ambiguous.Attempts())
+	}
+	select {
+	case <-pr.CompleteCh:
+	default:
+		t.Fatal("committed replay did not signal completion")
+	}
+	if err := srv.serviceReservations.Reserve("svc-ambiguous", 900_000); err != nil {
+		t.Fatalf("service hold remained after committed replay: %v", err)
+	}
+	srv.serviceReservations.Release("svc-ambiguous", 900_000)
 }
 
 func TestCompletionSettlementFailureDoesNotSignalSuccessOrMoveBeneficiaryMoney(t *testing.T) {

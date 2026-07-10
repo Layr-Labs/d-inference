@@ -208,7 +208,7 @@ type LedgerStore interface {
 	// SettleInference atomically finalizes the reservation, refunds exact
 	// provenance, credits beneficiaries, and records canonical usage/earning
 	// projections. Stable reservation replay returns applied=false.
-	SettleInference(settlement *InferenceSettlement) (applied bool, err error)
+	SettleInference(settlement *InferenceSettlement) (InferenceSettlementDisposition, error)
 
 	// GetWithdrawableBalance returns the withdrawable balance in micro-USD.
 	GetWithdrawableBalance(accountID string) int64

@@ -770,6 +770,9 @@ func (s *Server) Close() {
 		s.registry.Disconnect(providerID)
 	}
 	s.providerSessions.Wait()
+	if s.settlements != nil {
+		s.settlements.close()
+	}
 	if s.completions != nil {
 		s.completions.close()
 	}

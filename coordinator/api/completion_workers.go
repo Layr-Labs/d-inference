@@ -118,21 +118,17 @@ func (p *completionWorkerPool) activeCount() int64 {
 	return p.active.Load()
 }
 
-func (s *Server) settleInferenceWithRetry(settlement *store.InferenceSettlement) (bool, error) {
-	var lastErr error
-	for attempt := range settlementRetryAttempts {
-		applied, err := s.store.SettleInference(settlement)
+func (s *Server) settleInferenceWithRetry(settlement *store.InferenceSettlement) (store.InferenceSettlementDisposition, error) {
+	for attempt := 0; ; attempt++ {
+		disposition, err := s.store.SettleInference(settlement)
 		if err == nil {
-			return applied, nil
+			return disposition, nil
 		}
-		lastErr = err
 		if errors.Is(err, store.ErrInsufficientBalance) ||
 			errors.Is(err, store.ErrFinancialOperationConflict) {
-			return false, err
+			return "", err
 		}
-		if attempt+1 < settlementRetryAttempts {
-			time.Sleep(time.Duration(attempt+1) * 50 * time.Millisecond)
-		}
+		delay := time.Duration(min(attempt+1, 100)) * 50 * time.Millisecond
+		time.Sleep(delay)
 	}
-	return false, lastErr
 }

@@ -34,8 +34,8 @@ func (s failingCreditStore) ReleaseInferenceReservation(accountID string, amount
 	return false, errors.New("forced reservation release failure")
 }
 
-func (s failingCreditStore) SettleInference(settlement *store.InferenceSettlement) (bool, error) {
-	return false, errors.New("forced settlement failure")
+func (s failingCreditStore) SettleInference(settlement *store.InferenceSettlement) (store.InferenceSettlementDisposition, error) {
+	return "", store.ErrFinancialOperationConflict
 }
 
 // TestIntegration_ConsumerBillingCharge verifies that a consumer's balance is

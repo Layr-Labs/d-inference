@@ -29,10 +29,9 @@ func (m *serviceReservationManager) Reserve(accountID string, amount int64) erro
 	if m == nil || !m.enabled || amount <= 0 {
 		return nil
 	}
-	balance := m.store.GetBalance(accountID)
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	balance := m.store.GetBalance(accountID)
 	if balance-m.outstanding[accountID] < amount {
 		return store.ErrInsufficientBalance
 	}
@@ -77,7 +76,9 @@ func (s *Server) reserveInitialBalance(accountID, model string, amount int64, re
 		s.ddHistogram("billing.reserved_micro_usd", float64(amount), []string{"model:" + model, "mode:service_hold"})
 		return true, 0, nil
 	}
-	reservedWithdrawable, _, err := s.store.ReserveInferenceBalance(accountID, amount, reservationID)
+	reservedWithdrawable, _, err := s.reserveInferenceBalanceWithRetry(
+		accountID, amount, reservationID,
+	)
 	if err != nil {
 		s.ddIncr("billing.reservations", []string{"model:" + model, "mode:ledger", "outcome:rejected"})
 		return false, 0, err
@@ -86,6 +87,31 @@ func (s *Server) reserveInitialBalance(accountID, model string, amount int64, re
 	s.ddHistogram("billing.reserved_micro_usd", float64(amount), []string{"model:" + model, "mode:ledger"})
 	s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reserve"})
 	return false, reservedWithdrawable, nil
+}
+
+func (s *Server) reserveInferenceBalanceWithRetry(
+	accountID string,
+	amountMicroUSD int64,
+	operationKey string,
+) (int64, bool, error) {
+	var lastErr error
+	for attempt := range settlementRetryAttempts {
+		reservedWithdrawable, applied, err := s.store.ReserveInferenceBalance(
+			accountID, amountMicroUSD, operationKey,
+		)
+		if err == nil {
+			return reservedWithdrawable, applied, nil
+		}
+		lastErr = err
+		if errors.Is(err, store.ErrInsufficientBalance) ||
+			errors.Is(err, store.ErrFinancialOperationConflict) {
+			return 0, false, err
+		}
+		if attempt+1 < settlementRetryAttempts {
+			time.Sleep(time.Duration(attempt+1) * 50 * time.Millisecond)
+		}
+	}
+	return 0, false, lastErr
 }
 
 func (s *Server) releaseInitialReservation(accountID, model string, amount, reservedWithdrawable int64, reservationID string, serviceMode bool) {

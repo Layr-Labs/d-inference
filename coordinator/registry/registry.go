@@ -198,6 +198,7 @@ type PendingRequest struct {
 	ServiceReservation    bool
 	reservationMu         sync.Mutex
 	reservationFinalized  bool
+	terminalClaimed       atomic.Bool
 	routeOutcomeMu        sync.Mutex
 	routeOutcomeFinalized bool
 
@@ -375,6 +376,18 @@ func (pr *PendingRequest) IsReservationFinalized() bool {
 	pr.reservationMu.Lock()
 	defer pr.reservationMu.Unlock()
 	return pr.reservationFinalized
+}
+
+// MarkTerminalClaimed fences consumer/disconnect cleanup once a provider
+// terminal has been received and removed from the pending map.
+func (pr *PendingRequest) MarkTerminalClaimed() {
+	if pr != nil {
+		pr.terminalClaimed.Store(true)
+	}
+}
+
+func (pr *PendingRequest) TerminalClaimed() bool {
+	return pr != nil && pr.terminalClaimed.Load()
 }
 
 // FinalizeReservation runs settle while holding the reservation finalization
@@ -638,6 +651,19 @@ func (p *Provider) RemovePending(requestID string) *PendingRequest {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.removePendingLocked(requestID)
+}
+
+// ClaimPendingTerminal marks and removes a pending request under one provider
+// lock so cleanup cannot observe a terminal-owned request as refundable.
+func (p *Provider) ClaimPendingTerminal(requestID string) *PendingRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pr := p.pendingReqs[requestID]
+	if pr != nil {
+		pr.MarkTerminalClaimed()
+		delete(p.pendingReqs, requestID)
+	}
+	return pr
 }
 
 // removePendingLocked removes and returns a pending request. Caller must hold p.mu.

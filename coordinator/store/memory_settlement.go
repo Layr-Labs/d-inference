@@ -2,33 +2,33 @@ package store
 
 import "time"
 
-func (s *MemoryStore) SettleInference(settlement *InferenceSettlement) (bool, error) {
+func (s *MemoryStore) SettleInference(settlement *InferenceSettlement) (InferenceSettlementDisposition, error) {
 	if err := validateInferenceSettlement(settlement); err != nil {
-		return false, err
+		return "", err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing := s.inferenceSettlements[settlement.ReservationID]; existing != nil {
 		if !equivalentInferenceSettlement(existing, settlement) {
-			return false, ErrFinancialOperationConflict
+			return "", ErrFinancialOperationConflict
 		}
-		return false, nil
+		return InferenceSettlementReplayed, nil
 	}
 	finalizationKey := "finalize:" + settlement.ReservationID
 	if _, finalized := s.balanceReservationOperations[finalizationKey]; finalized {
-		return false, nil
+		return InferenceSettlementAlreadyReleased, nil
 	}
 	if settlement.ProviderEarning != nil {
 		for i := range s.providerEarnings {
 			if s.providerEarnings[i].JobID == settlement.RequestID {
-				return false, ErrFinancialOperationConflict
+				return "", ErrFinancialOperationConflict
 			}
 		}
 	}
 	if settlement.Usage != nil {
 		for i := range s.usage {
 			if s.usage[i].RequestID == settlement.RequestID {
-				return false, ErrFinancialOperationConflict
+				return "", ErrFinancialOperationConflict
 			}
 		}
 	}
@@ -40,7 +40,7 @@ func (s *MemoryStore) SettleInference(settlement *InferenceSettlement) (bool, er
 	now := time.Now()
 	if !settlement.ReservationPreDebited && settlement.CostMicroUSD > 0 {
 		if s.balances[settlement.ConsumerAccountID] < settlement.CostMicroUSD {
-			return false, ErrInsufficientBalance
+			return "", ErrInsufficientBalance
 		}
 		s.balances[settlement.ConsumerAccountID] -= settlement.CostMicroUSD
 		if s.withdrawable[settlement.ConsumerAccountID] > s.balances[settlement.ConsumerAccountID] {
@@ -113,7 +113,7 @@ func (s *MemoryStore) SettleInference(settlement *InferenceSettlement) (bool, er
 		}
 	}
 	s.inferenceSettlements[settlement.ReservationID] = cloneInferenceSettlement(settlement)
-	return true, nil
+	return InferenceSettlementApplied, nil
 }
 
 func cloneInferenceSettlement(settlement *InferenceSettlement) *InferenceSettlement {

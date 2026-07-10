@@ -24,6 +24,30 @@ type countingStore struct {
 	delay    time.Duration
 }
 
+type ambiguousReserveStore struct {
+	store.Store
+	mu       sync.Mutex
+	injected bool
+	attempts int
+}
+
+func (s *ambiguousReserveStore) ReserveInferenceBalance(accountID string, amountMicroUSD int64, operationKey string) (int64, bool, error) {
+	s.mu.Lock()
+	s.attempts++
+	inject := !s.injected
+	if inject {
+		s.injected = true
+	}
+	s.mu.Unlock()
+	reservedWithdrawable, applied, err := s.Store.ReserveInferenceBalance(
+		accountID, amountMicroUSD, operationKey,
+	)
+	if inject && err == nil {
+		return 0, false, errors.New("ambiguous reservation commit")
+	}
+	return reservedWithdrawable, applied, err
+}
+
 func (s *countingStore) Debit(accountID string, amountMicroUSD int64, entryType store.LedgerEntryType, reference string) error {
 	if s.delay > 0 {
 		time.Sleep(s.delay)
@@ -52,7 +76,7 @@ func (s *countingStore) ReserveInferenceBalance(accountID string, amountMicroUSD
 	return s.Store.ReserveInferenceBalance(accountID, amountMicroUSD, operationKey)
 }
 
-func (s *countingStore) SettleInference(settlement *store.InferenceSettlement) (bool, error) {
+func (s *countingStore) SettleInference(settlement *store.InferenceSettlement) (store.InferenceSettlementDisposition, error) {
 	if !settlement.ReservationPreDebited {
 		if s.delay > 0 {
 			time.Sleep(s.delay)
@@ -62,7 +86,7 @@ func (s *countingStore) SettleInference(settlement *store.InferenceSettlement) (
 		err := s.debitErr
 		s.mu.Unlock()
 		if err != nil {
-			return false, err
+			return "", err
 		}
 	}
 	return s.Store.SettleInference(settlement)
@@ -146,6 +170,28 @@ func TestServiceReservationConcurrentAvoidsDebitHotRow(t *testing.T) {
 	}
 }
 
+func TestServiceReservationUsesPostSettlementBalanceBeforeReadmitting(t *testing.T) {
+	backing := store.NewMemory(store.Config{})
+	const accountID = "service-readmit"
+	if err := backing.Credit(accountID, 1_000_000, store.LedgerStripeDeposit, "deposit"); err != nil {
+		t.Fatal(err)
+	}
+	manager := newServiceReservationManager(backing, true)
+	if err := manager.Reserve(accountID, 600_000); err != nil {
+		t.Fatal(err)
+	}
+	if err := backing.Debit(accountID, 500_000, store.LedgerCharge, "settlement"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Reserve(accountID, 300_000); !errors.Is(err, store.ErrInsufficientBalance) {
+		t.Fatalf("readmission against post-settlement balance error = %v", err)
+	}
+	manager.Release(accountID, 600_000)
+	if err := manager.Reserve(accountID, 300_000); err != nil {
+		t.Fatalf("readmission after old hold release: %v", err)
+	}
+}
+
 func TestNormalConsumerStillUsesSynchronousDebit(t *testing.T) {
 	srv, st := newReservationTestServer(t, ServerConfig{ServiceReservations: true}, store.ErrInsufficientBalance)
 	if err := st.Credit("consumer", 1_000_000, store.LedgerDeposit, "seed"); err != nil {
@@ -161,6 +207,75 @@ func TestNormalConsumerStillUsesSynchronousDebit(t *testing.T) {
 	}
 	if got := st.DebitCount(); got != 1 {
 		t.Fatalf("Debit calls = %d, want 1", got)
+	}
+}
+
+func TestInitialReservationResolvesAmbiguousCommitWithSameOperationKey(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	backing := store.NewMemory(store.Config{})
+	if err := backing.Credit("ambiguous-consumer", 20_000, store.LedgerStripeDeposit, "deposit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := backing.CreditWithdrawable("ambiguous-consumer", 30_000, store.LedgerPayout, "earning"); err != nil {
+		t.Fatal(err)
+	}
+	ambiguous := &ambiguousReserveStore{Store: backing}
+	srv := NewServer(registry.New(logger), ambiguous, ServerConfig{}, logger)
+	service, reservedWithdrawable, err := srv.reserveInitialBalance(
+		"ambiguous-consumer", "model", 25_000, "ambiguous-reservation",
+	)
+	if err != nil || service {
+		t.Fatalf("reserve service=%t withdrawable=%d err=%v", service, reservedWithdrawable, err)
+	}
+	if ambiguous.attempts != 2 || reservedWithdrawable != 5_000 {
+		t.Fatalf("ambiguous replay attempts=%d withdrawable=%d, want 2/5000",
+			ambiguous.attempts, reservedWithdrawable)
+	}
+	if balance, withdrawable := backing.GetBalanceWithWithdrawable("ambiguous-consumer"); balance != 25_000 || withdrawable != 25_000 {
+		t.Fatalf("balance = %d/%d, want one debit 25000/25000", balance, withdrawable)
+	}
+}
+
+func TestProviderTopUpResolvesAmbiguousCommitAndCanRefund(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	backing := store.NewMemory(store.Config{})
+	const accountID = "ambiguous-topup-consumer"
+	if err := backing.CreditWithdrawable(accountID, 10_000_000, store.LedgerPayout, "earning"); err != nil {
+		t.Fatal(err)
+	}
+	baseWithdrawable, _, err := backing.ReserveInferenceBalance(accountID, 100, "topup-base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ambiguous := &ambiguousReserveStore{Store: backing}
+	srv := NewServer(registry.New(logger), ambiguous, ServerConfig{}, logger)
+	if err := backing.SetModelPrice("provider-account", "model", 1_000_000, 1_000_000); err != nil {
+		t.Fatal(err)
+	}
+	provider := srv.registry.Register("topup-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: "model", ModelType: "chat", Quantization: "4bit"}},
+	})
+	provider.Mu().Lock()
+	provider.AccountID = "provider-account"
+	provider.Mu().Unlock()
+	pr := &registry.PendingRequest{
+		RequestID: "topup-attempt", ReservationID: "topup-base",
+		ProviderID: provider.ID, Model: "model", ConsumerKey: accountID,
+		EstimatedPromptTokens: 1000, RequestedMaxTokens: 1000,
+		ReservedMicroUSD: 100, ReservedWithdrawableMicroUSD: baseWithdrawable,
+		BaseReservedMicroUSD: 100, BaseReservedWithdrawableMicroUSD: baseWithdrawable,
+	}
+	required, err := srv.reserveAdditionalForProvider(pr, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ambiguous.attempts != 2 || required <= 100 {
+		t.Fatalf("top-up attempts=%d required=%d", ambiguous.attempts, required)
+	}
+	srv.refundProviderExtra(pr)
+	if pr.ReservedMicroUSD != 100 ||
+		pr.ReservedWithdrawableMicroUSD != baseWithdrawable {
+		t.Fatalf("top-up refund left reservation %+v", pr)
 	}
 }
 

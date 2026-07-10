@@ -21,11 +21,22 @@ const defaultTerminalSettleGrace = 30 * time.Second
 // vs. grace timer); FinalizeReservation independently guards double-counting.
 type settlementHolder struct {
 	mu      sync.Mutex
-	pending map[string]*registry.PendingRequest
+	pending map[string]*heldSettlement
+	closed  bool
+	active  int
+	cond    *sync.Cond
+}
+
+type heldSettlement struct {
+	pending  *registry.PendingRequest
+	onExpiry func(*registry.PendingRequest)
+	timer    *time.Timer
 }
 
 func newSettlementHolder() *settlementHolder {
-	return &settlementHolder{pending: make(map[string]*registry.PendingRequest)}
+	holder := &settlementHolder{pending: make(map[string]*heldSettlement)}
+	holder.cond = sync.NewCond(&holder.mu)
+	return holder
 }
 
 // hold stores pr under its request id and schedules onExpiry(pr) after grace if
@@ -34,15 +45,22 @@ func (h *settlementHolder) hold(pr *registry.PendingRequest, grace time.Duration
 	if pr == nil {
 		return
 	}
+	if pr.TerminalClaimed() {
+		return
+	}
 	h.mu.Lock()
-	h.pending[pr.RequestID] = pr
+	if h.closed {
+		h.mu.Unlock()
+		onExpiry(pr)
+		return
+	}
+	entry := &heldSettlement{pending: pr, onExpiry: onExpiry}
+	if previous := h.pending[pr.RequestID]; previous != nil && previous.timer != nil {
+		previous.timer.Stop()
+	}
+	h.pending[pr.RequestID] = entry
+	entry.timer = time.AfterFunc(grace, func() { h.expire(pr.RequestID) })
 	h.mu.Unlock()
-
-	time.AfterFunc(grace, func() {
-		if expired := h.claim(pr.RequestID); expired != nil {
-			onExpiry(expired)
-		}
-	})
 }
 
 // claim removes and returns the held record for requestID, or nil if none
@@ -50,12 +68,66 @@ func (h *settlementHolder) hold(pr *registry.PendingRequest, grace time.Duration
 func (h *settlementHolder) claim(requestID string) *registry.PendingRequest {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	pr, ok := h.pending[requestID]
+	entry, ok := h.pending[requestID]
 	if !ok {
 		return nil
 	}
 	delete(h.pending, requestID)
-	return pr
+	if entry.timer != nil {
+		entry.timer.Stop()
+	}
+	return entry.pending
+}
+
+func (h *settlementHolder) expire(requestID string) {
+	h.mu.Lock()
+	entry := h.pending[requestID]
+	if entry == nil {
+		h.mu.Unlock()
+		return
+	}
+	delete(h.pending, requestID)
+	h.active++
+	h.mu.Unlock()
+
+	entry.onExpiry(entry.pending)
+
+	h.mu.Lock()
+	h.active--
+	h.cond.Broadcast()
+	h.mu.Unlock()
+}
+
+func (h *settlementHolder) close() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.closed {
+		for h.active > 0 {
+			h.cond.Wait()
+		}
+		h.mu.Unlock()
+		return
+	}
+	h.closed = true
+	entries := make([]*heldSettlement, 0, len(h.pending))
+	for requestID, entry := range h.pending {
+		delete(h.pending, requestID)
+		if entry.timer != nil {
+			entry.timer.Stop()
+		}
+		entries = append(entries, entry)
+	}
+	h.mu.Unlock()
+	for _, entry := range entries {
+		entry.onExpiry(entry.pending)
+	}
+	h.mu.Lock()
+	for h.active > 0 {
+		h.cond.Wait()
+	}
+	h.mu.Unlock()
 }
 
 // terminalSettleGrace returns the configured grace, defaulting when unset
@@ -71,6 +143,9 @@ func (s *Server) terminalSettleGrace() time.Duration {
 // settlement, refunding its reservation if no terminal arrives within the grace.
 func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 	if pr == nil {
+		return
+	}
+	if pr.TerminalClaimed() {
 		return
 	}
 	// Skip requests whose reservation was already settled/refunded before this

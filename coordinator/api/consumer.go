@@ -234,7 +234,7 @@ func (s *Server) cancelDispatch(provider *registry.Provider, pr *registry.Pendin
 // here — that is handled once by refundReservation (full failure) or by the
 // winning attempt's settlement.
 func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
-	if pr == nil {
+	if pr == nil || pr.TerminalClaimed() {
 		return
 	}
 	extra := pr.ReservedMicroUSD - pr.BaseReservedMicroUSD
@@ -1000,6 +1000,9 @@ func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference st
 	if pr == nil || pr.ReservedMicroUSD <= 0 {
 		return false
 	}
+	if pr.TerminalClaimed() {
+		return false
+	}
 	if reference == "" {
 		reference = "reservation_refund:" + pr.RequestID
 	}
@@ -1142,7 +1145,7 @@ func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provi
 	if pr.ReservationID == "" {
 		pr.ReservationID = pr.RequestID
 	}
-	addedWithdrawable, _, err := s.store.ReserveInferenceBalance(
+	addedWithdrawable, _, err := s.reserveInferenceBalanceWithRetry(
 		pr.ConsumerKey, extra, reservationTopUpKey(pr),
 	)
 	if err != nil {

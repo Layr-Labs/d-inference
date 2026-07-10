@@ -112,6 +112,18 @@ type InferenceSettlement struct {
 	Usage                        *UsageRecord
 }
 
+type InferenceSettlementDisposition string
+
+const (
+	InferenceSettlementApplied         InferenceSettlementDisposition = "applied"
+	InferenceSettlementReplayed        InferenceSettlementDisposition = "replayed"
+	InferenceSettlementAlreadyReleased InferenceSettlementDisposition = "already_released"
+)
+
+func (d InferenceSettlementDisposition) IsSettled() bool {
+	return d == InferenceSettlementApplied || d == InferenceSettlementReplayed
+}
+
 // maxTelemetryReadRows is the hard upper bound on rows returned by the routing
 // telemetry readers (InferenceRouteRecordsSince / RejectionRecordsSince). These
 // tables grow unbounded over time, so the readers always cap the result set

@@ -192,6 +192,9 @@ func TestCompletionClaimsPendingBeforeQueueBackpressureAndDisconnect(t *testing.
 	if provider.GetPending(pr.RequestID) != nil {
 		t.Fatal("completion did not claim pending request before queue submission")
 	}
+	if srv.refundReservedBalance(pr, "post_terminal_sweep:"+pr.RequestID) {
+		t.Fatal("post-terminal sweep refunded a terminal-claimed completion")
+	}
 	srv.registry.Disconnect(provider.ID)
 	close(releaseWorker)
 	select {

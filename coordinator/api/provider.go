@@ -1604,10 +1604,13 @@ func (s *Server) claimCompletion(providerID string, provider *registry.Provider,
 		s.logger.Warn("complete from unregistered provider", "provider_id", providerID)
 		return nil
 	}
-	pr := provider.RemovePending(msg.RequestID)
+	pr := provider.ClaimPendingTerminal(msg.RequestID)
 	// Clear any parked settlement record (consumer disconnected mid-stream):
 	// settles the disconnect case and stops the grace timer from no-op-refunding.
 	parked := s.claimSettlement(msg.RequestID)
+	if parked != nil {
+		parked.MarkTerminalClaimed()
+	}
 	if pr == nil {
 		pr = parked
 	}
@@ -1841,10 +1844,10 @@ func (s *Server) handleClaimedComplete(
 			Usage:                  usage,
 		}
 		start := time.Now()
-		financialApplied := false
+		var financialDisposition store.InferenceSettlementDisposition
 		finalized, finalizeErr := pr.FinalizeReservation(func() error {
 			var err error
-			financialApplied, err = s.settleInferenceWithRetry(settlement)
+			financialDisposition, err = s.settleInferenceWithRetry(settlement)
 			return err
 		})
 		switch {
@@ -1856,7 +1859,7 @@ func (s *Server) handleClaimedComplete(
 				"error", finalizeErr,
 			)
 			s.ddIncr("billing.settlement_failed", []string{"model:" + pr.Model})
-		case !finalized || !financialApplied:
+		case !finalized || !financialDisposition.IsSettled():
 			billingFinalized = false
 			s.logger.Warn("skipping already-finalized inference settlement",
 				"provider_id", providerID,

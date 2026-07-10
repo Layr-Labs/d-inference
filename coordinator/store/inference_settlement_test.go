@@ -9,12 +9,12 @@ func TestSettleInferenceAtomicallyMovesEveryProjection(t *testing.T) {
 	for name, backend := range storeBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			settlement := fundedSettlementFixture(t, backend, uniqueID("settlement"))
-			applied, err := backend.SettleInference(settlement)
+			disposition, err := backend.SettleInference(settlement)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !applied {
-				t.Fatal("first settlement was not applied")
+			if disposition != InferenceSettlementApplied {
+				t.Fatalf("first settlement disposition = %q", disposition)
 			}
 			if balance, withdrawable := backend.GetBalanceWithWithdrawable(settlement.ConsumerAccountID); balance != 80_000 || withdrawable != 70_000 {
 				t.Fatalf("consumer balance = %d/%d, want 80000/70000", balance, withdrawable)
@@ -37,12 +37,12 @@ func TestSettleInferenceAtomicallyMovesEveryProjection(t *testing.T) {
 				t.Fatalf("earnings = %+v, %v", earnings, err)
 			}
 
-			applied, err = backend.SettleInference(settlement)
+			disposition, err = backend.SettleInference(settlement)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if applied {
-				t.Fatal("settlement replay applied twice")
+			if disposition != InferenceSettlementReplayed {
+				t.Fatalf("settlement replay disposition = %q", disposition)
 			}
 			if balance := backend.GetBalance(settlement.ProviderEarning.AccountID); balance != 80_000 {
 				t.Fatalf("replay changed provider balance to %d", balance)
@@ -71,12 +71,12 @@ func TestSettleInferenceDoesNotOverridePriorRelease(t *testing.T) {
 			); err != nil {
 				t.Fatal(err)
 			}
-			applied, err := backend.SettleInference(settlement)
+			disposition, err := backend.SettleInference(settlement)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if applied {
-				t.Fatal("late terminal settled after release")
+			if disposition != InferenceSettlementAlreadyReleased {
+				t.Fatalf("late terminal disposition = %q", disposition)
 			}
 			if balance := backend.GetBalance(settlement.ProviderEarning.AccountID); balance != 0 {
 				t.Fatalf("late terminal paid provider %d", balance)
@@ -131,12 +131,12 @@ func TestSettleInferenceAtomicallyDebitsServiceHold(t *testing.T) {
 				},
 				PlatformFeeMicroUSD: 50,
 			}
-			applied, err := backend.SettleInference(settlement)
+			disposition, err := backend.SettleInference(settlement)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !applied {
-				t.Fatal("service settlement was not applied")
+			if disposition != InferenceSettlementApplied {
+				t.Fatalf("service settlement disposition = %q", disposition)
 			}
 			if balance := backend.GetBalance(consumer); balance != 750 {
 				t.Fatalf("service consumer balance = %d, want 750", balance)

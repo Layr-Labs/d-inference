@@ -291,6 +291,25 @@ async fn chat_completions(
             let predicted_ttft_ms = 100.0_f64;
             let admit_started = std::time::Instant::now();
 
+            // Short-lived prepare permit must still be valid before we send prepare.
+            if permit.is_expired(admit_started.elapsed()) {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [(
+                        axum::http::header::RETRY_AFTER,
+                        "1".to_string(),
+                    )],
+                    Json(json!({
+                        "error": {
+                            "message": "prepare permit expired before dispatch",
+                            "type": "rate_limit_exceeded",
+                            "code": "permit_expired"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+
             if task
                 .apply(ControlEvent::Reserved {
                     job: job_id.clone(),

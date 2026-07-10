@@ -115,4 +115,26 @@ mod tests {
             true
         ));
     }
+
+    #[test]
+    fn five_percent_budget_never_exceeded_under_load() {
+        let budget = HedgeBudget::default();
+        let policy = HedgePolicy::default(); // 5%
+        const N: u64 = 10_000;
+        for _ in 0..N {
+            budget.record_admit();
+        }
+        let mut fired = 0u64;
+        for _ in 0..N {
+            if budget.should_hedge_on_timer(&policy, Duration::from_secs(1), false, false) {
+                fired += 1;
+            }
+        }
+        let rate = fired as f64 / N as f64;
+        assert!(
+            rate <= policy.global_budget_fraction + 0.001,
+            "hedge rate {rate} exceeds budget {}",
+            policy.global_budget_fraction
+        );
+    }
 }

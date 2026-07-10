@@ -363,3 +363,9 @@ old fencing epoch. Ops re-acquire, `POST /v1/admin/adopt-job`, then
 `POST /v1/admin/recover-undispatched` to refund. `MemoryLedger::active_job_ids`
 supports orphan discovery.
 
+### Start-steal adopt-force-settle + quiescence ids (DECISIONS #71)
+
+Same orphan path after start-wait steal: adopt then force-settle. Quiescence
+includes `active_job_ids` so cutover ops can list reserved/held orphans without
+ledger internals.
+

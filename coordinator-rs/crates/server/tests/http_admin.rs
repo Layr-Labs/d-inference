@@ -700,6 +700,7 @@ async fn quiescence_reports_held_start_authorized_jobs() {
     assert_eq!(v["held_start_authorized"], 1);
     assert_eq!(v["held_start_authorized_job_ids"][0], "held-job-1");
     assert_eq!(v["active_jobs"], 1);
+    assert_eq!(v["active_job_ids"][0], "held-job-1");
 }
 
 #[tokio::test]

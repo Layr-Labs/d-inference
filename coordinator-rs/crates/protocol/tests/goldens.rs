@@ -58,3 +58,13 @@ fn cancelled_golden_parses() {
     assert_eq!(v["type"], "cancelled");
     assert_eq!(v["attempt_id"], "attempt-22222222-2222-2222-2222-222222222222");
 }
+
+#[test]
+fn chunk_v2_golden_parses() {
+    let raw = include_str!("fixtures/chunk_v2.json");
+    let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(v["type"], "inference_response_chunk");
+    assert_eq!(v["sequence"], 1);
+    assert_eq!(v["completion_tokens_cumulative"], 4);
+    assert_eq!(v["rolling_response_hash"], "sha256:roll1");
+}

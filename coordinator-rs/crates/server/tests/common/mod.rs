@@ -43,6 +43,7 @@ pub fn pilot_app_state(holding: bool) -> AppState {
     }
 }
 
+#[allow(dead_code)] // not every HTTP test binary uses this helper
 pub async fn body_json(res: axum::response::Response) -> serde_json::Value {
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()

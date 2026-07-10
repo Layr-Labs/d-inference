@@ -57,6 +57,7 @@ Date: 2026-07-10
 | 48 | Live terminal binding validate | Before live settle, require `provider_terminal` fields to match funded attempt (`job_id`, `attempt_id`, `lease_id`, `coordinator_epoch`, `dispatch_nonce`, `request_digest`) plus non-negative token counts; mismatch holds the reservation |
 | 49 | Stream settle after checkpoint | Streaming requests defer `settle_capped` until after the bounded chunk pipe advances `ChunkCheckpoint`; charge is `min(provider_actual, billable_tokens * rate, reserved)` so backpressure/partial accept cannot overcharge |
 | 50 | Settle SQL writes lease_id | `settle_sql` / `settle_capped_sql` / `force_settle_sql` insert `lease_id` into `provider_terminals` so durable terminal rows bind the funded lease for ingest/audit |
+| 51 | Settle SQL writes se_signature | Settle CTEs also persist `se_signature` (COALESCE empty) on `provider_terminals` so rollback ingest can verify provider attestation material without re-settling |
 
 ## Deleted Go mechanisms (do not port)
 

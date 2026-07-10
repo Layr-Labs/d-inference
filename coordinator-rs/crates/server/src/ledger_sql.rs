@@ -221,7 +221,7 @@ impl PostgresLedgerStub {
 
     /// The SQL that will back settle once SQLx is wired (mirrors MemoryLedger.settle).
     /// Parameters: $1 account, $2 job_id, $3 actual, $4 terminal_digest, $5 operation_key,
-    ///             $6 attempt_id, $7 lease_id
+    ///             $6 attempt_id, $7 lease_id, $8 se_signature
     /// Op claim gates digest + money (DECISIONS #32/#33): reused op keys cannot move funds.
     /// Digest/op inserts are gated on guard so failed settles cannot poison digests/op keys.
     /// Outbox insert gated on mark (DECISIONS #37/#38).
@@ -247,9 +247,9 @@ impl PostgresLedgerStub {
           RETURNING operation_key
         ), digest AS (
           INSERT INTO rust_coord.provider_terminals (
-            terminal_digest, job_id, attempt_id, lease_id, disposition
+            terminal_digest, job_id, attempt_id, lease_id, se_signature, disposition
           )
-          SELECT $4, $2, $6, $7, 'settled'
+          SELECT $4, $2, $6, $7, COALESCE($8, ''), 'settled'
           FROM guard
           WHERE EXISTS (SELECT 1 FROM op)
           ON CONFLICT (terminal_digest) DO NOTHING
@@ -306,7 +306,7 @@ impl PostgresLedgerStub {
 
     /// Settle-capped SQL: charge = LEAST(actual, billable_cap, reserved) (DECISIONS #23).
     /// Parameters: $1 account, $2 job_id, $3 actual, $4 billable_cap, $5 terminal_digest,
-    ///             $6 operation_key, $7 attempt_id, $8 lease_id
+    ///             $6 operation_key, $7 attempt_id, $8 lease_id, $9 se_signature
     /// Op claim gates digest + money so reused op keys cannot move funds (DECISIONS #33).
     /// Outbox insert gated on mark (DECISIONS #37/#38).
     pub fn settle_capped_sql() -> &'static str {
@@ -334,9 +334,9 @@ impl PostgresLedgerStub {
           RETURNING operation_key
         ), digest AS (
           INSERT INTO rust_coord.provider_terminals (
-            terminal_digest, job_id, attempt_id, lease_id, disposition
+            terminal_digest, job_id, attempt_id, lease_id, se_signature, disposition
           )
-          SELECT $5, $2, $7, $8, 'settled'
+          SELECT $5, $2, $7, $8, COALESCE($9, ''), 'settled'
           FROM charge
           WHERE EXISTS (SELECT 1 FROM op)
           ON CONFLICT (terminal_digest) DO NOTHING
@@ -396,7 +396,7 @@ impl PostgresLedgerStub {
     /// Force-settle SQL for start_authorized held jobs (mirrors recovery::force_settle_held).
     /// Requires state = start_authorized and no terminal yet (DECISIONS #16/#17).
     /// Parameters: $1 account, $2 job_id, $3 actual, $4 terminal_digest, $5 operation_key,
-    ///             $6 attempt_id, $7 lease_id
+    ///             $6 attempt_id, $7 lease_id, $8 se_signature
     pub fn force_settle_sql() -> &'static str {
         r#"
         WITH job AS (
@@ -422,9 +422,9 @@ impl PostgresLedgerStub {
           RETURNING operation_key
         ), digest AS (
           INSERT INTO rust_coord.provider_terminals (
-            terminal_digest, job_id, attempt_id, lease_id, disposition
+            terminal_digest, job_id, attempt_id, lease_id, se_signature, disposition
           )
-          SELECT $4, $2, $6, $7, 'force_settled'
+          SELECT $4, $2, $6, $7, COALESCE($8, ''), 'force_settled'
           FROM charge
           WHERE EXISTS (SELECT 1 FROM op)
           ON CONFLICT (terminal_digest) DO NOTHING
@@ -582,8 +582,9 @@ mod tests {
         assert!(sql.contains("refund_wdr"));
         assert!(sql.contains("'settle'"));
         assert!(sql.contains("account_id = $1"));
-        assert!(sql.contains("SELECT $4, $2, $6, $7, 'settled'"));
+        assert!(sql.contains("SELECT $4, $2, $6, $7, COALESCE($8, ''), 'settled'"));
         assert!(sql.contains("lease_id"));
+        assert!(sql.contains("se_signature"));
         assert!(sql.contains("FROM guard"));
         assert!(sql.contains("SELECT $5, $2, 'settle', $3 FROM guard"));
         assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
@@ -602,8 +603,9 @@ mod tests {
         assert!(sql.contains("provider_terminals"));
         assert!(sql.contains("FOR UPDATE"));
         assert!(sql.contains("account_id = $1"));
-        assert!(sql.contains("SELECT $5, $2, $7, $8, 'settled'"));
+        assert!(sql.contains("SELECT $5, $2, $7, $8, COALESCE($9, ''), 'settled'"));
         assert!(sql.contains("lease_id"));
+        assert!(sql.contains("se_signature"));
         assert!(sql.contains("FROM charge"));
         assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));
@@ -623,8 +625,9 @@ mod tests {
         assert!(sql.contains("FOR UPDATE"));
         assert!(sql.contains("financial_operations"));
         assert!(sql.contains("account_id = $1"));
-        assert!(sql.contains("SELECT $4, $2, $6, $7, 'force_settled'"));
+        assert!(sql.contains("SELECT $4, $2, $6, $7, COALESCE($8, ''), 'force_settled'"));
         assert!(sql.contains("lease_id"));
+        assert!(sql.contains("se_signature"));
         assert!(sql.contains("FROM charge"));
         assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));

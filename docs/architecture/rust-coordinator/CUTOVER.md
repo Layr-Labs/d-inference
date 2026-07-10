@@ -236,3 +236,8 @@ provider claim above what the consumer pipe accepted cannot overcharge.
 Durable settle/force_settle CTEs persist `lease_id` on `provider_terminals`
 alongside attempt/digest so late ingest and audit can bind the funded lease.
 
+### Settle SQL writes se_signature (DECISIONS #51)
+
+The same CTEs persist `se_signature` (empty when absent) so Go rollback
+terminal ingest can surface attestation material without moving money again.
+

@@ -168,3 +168,41 @@ mod tests {
         assert!(BinaryPayloadHeader::decode(&[0u8; 8]).is_none());
     }
 }
+
+/// Build a binary WebSocket payload: header || ciphertext.
+pub fn encode_binary_payload(header: &BinaryPayloadHeader, ciphertext: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(BINARY_PAYLOAD_HEADER_LEN + ciphertext.len());
+    out.extend_from_slice(&header.encode());
+    out.extend_from_slice(ciphertext);
+    out
+}
+
+/// Split a binary payload into header + ciphertext.
+pub fn decode_binary_payload(bytes: &[u8]) -> Option<(BinaryPayloadHeader, &[u8])> {
+    if bytes.len() < BINARY_PAYLOAD_HEADER_LEN {
+        return None;
+    }
+    let hdr = BinaryPayloadHeader::decode(bytes)?;
+    Some((hdr, &bytes[BINARY_PAYLOAD_HEADER_LEN..]))
+}
+
+#[cfg(test)]
+mod binary_payload_tests {
+    use super::*;
+
+    #[test]
+    fn wraps_ciphertext() {
+        let hdr = BinaryPayloadHeader {
+            frame_type: BinaryPayloadHeader::FRAME_CHUNK,
+            session_epoch: 1,
+            coordinator_epoch: 2,
+            sequence: 9,
+            job_id_prefix: [3; 16],
+            attempt_id_prefix: [4; 16],
+        };
+        let payload = encode_binary_payload(&hdr, b"cipher");
+        let (decoded, ct) = decode_binary_payload(&payload).unwrap();
+        assert_eq!(decoded, hdr);
+        assert_eq!(ct, b"cipher");
+    }
+}

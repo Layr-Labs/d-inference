@@ -4,6 +4,7 @@
 
 pub mod admission;
 pub mod calibration;
+pub mod chunk_checkpoint;
 pub mod fleet;
 pub mod health;
 pub mod hedge;
@@ -17,6 +18,7 @@ pub mod trust;
 
 pub use admission::{AdmissionDecision, CapacityReason, DispatchPermit, RejectionReason};
 pub use calibration::TtftCalibrator;
+pub use chunk_checkpoint::{ChunkAccept, ChunkCheckpoint};
 pub use fleet::{AdmitRequest, FleetState, ProviderSnapshot};
 pub use health::{HealthMachine, HealthState};
 pub use hedge::{HedgeBudget, HedgePolicy};

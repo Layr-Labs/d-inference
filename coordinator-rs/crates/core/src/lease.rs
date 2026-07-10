@@ -52,6 +52,8 @@ pub enum LeaseEvent {
     Abort {
         lease: LeaseId,
     },
+    /// Prepared lease TTL elapsed before start authorization.
+    ExpirePrepared,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -149,6 +151,9 @@ impl LeaseState {
             (Self::TerminalJournaled { .. }, LeaseEvent::AckTerminal) => Ok(Self::Acknowledged),
             (Self::Preparing { .. }, LeaseEvent::Abort { lease }) => Ok(Self::Aborted { lease }),
             (Self::Prepared { .. }, LeaseEvent::Abort { lease }) => Ok(Self::Aborted { lease }),
+            (Self::Prepared { lease, .. }, LeaseEvent::ExpirePrepared) => {
+                Ok(Self::Aborted { lease })
+            }
             (
                 Self::Running {
                     job,
@@ -212,6 +217,28 @@ mod tests {
                 lease: LeaseId::new("l"),
             })
             .unwrap();
+        assert_eq!(
+            st.transition(LeaseEvent::Start).unwrap_err(),
+            LeaseError::AbortTombstone
+        );
+    }
+
+    #[test]
+    fn expire_prepared_becomes_abort_tombstone() {
+        let st = LeaseState::Idle
+            .transition(LeaseEvent::BeginPrepare {
+                job: JobId::new("j"),
+                attempt: AttemptId::new("a"),
+            })
+            .unwrap()
+            .transition(LeaseEvent::MarkPrepared {
+                lease: LeaseId::new("l"),
+                prefill_running: true,
+            })
+            .unwrap()
+            .transition(LeaseEvent::ExpirePrepared)
+            .unwrap();
+        assert!(matches!(st, LeaseState::Aborted { .. }));
         assert_eq!(
             st.transition(LeaseEvent::Start).unwrap_err(),
             LeaseError::AbortTombstone

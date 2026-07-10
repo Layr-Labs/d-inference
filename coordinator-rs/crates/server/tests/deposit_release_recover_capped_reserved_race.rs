@@ -2,7 +2,7 @@
 
 use darkbloom_coordinator::deposits::apply_stripe_deposit;
 use darkbloom_coordinator::external_events::ExternalEventInbox;
-use darkbloom_coordinator::ledger::{LedgerError, MemoryLedger, OperationKey};
+use darkbloom_coordinator::ledger::{MemoryLedger, OperationKey};
 use darkbloom_coordinator::recovery::{recover_undispatched, RecoveryAction};
 use std::sync::{Arc, Mutex};
 use std::thread;

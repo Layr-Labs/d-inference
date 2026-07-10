@@ -15,6 +15,10 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn concurrent_deposit_and_force_settle_batch_conserves_balance() {
+    // Serialize against ADMIN_BATCH_JOB_HOOK users (DECISIONS #98 flake).
+    let _guard = lock_admin_batch_hook_tests();
+    set_admin_batch_job_hook(None);
+
     let state = pilot_app_state(true);
     let epoch = state.ownership.epoch().0;
     {

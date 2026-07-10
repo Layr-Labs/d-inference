@@ -728,3 +728,11 @@ success responses include `accounts_needing_cutover` + `needs_adopt_count`
 (plus charged amount on force-settle). Ops can settle/recover one job then
 feed remaining accounts into cutover-drain-all without quiescence.
 
+### adopt-job / cancel / cutover-drain-all remaining (DECISIONS #128)
+
+`POST /v1/admin/adopt-job` and `cancel-attempt` return
+`accounts_needing_cutover` + `needs_adopt_count`. Every
+`cutover-drain-all` success and abort path (including no-progress /
+max-rounds) includes `needs_adopt_count` so ops know whether to adopt
+before retrying.
+

@@ -258,7 +258,8 @@ records dispositions via `record_bound` so rollback ACK is lease-bound.
 
 ### Live settle ownership steal hold (DECISIONS #54)
 
-If ownership is released after live `start` but before settle, the chat path
-returns `ownership_lost` and leaves the reservation `start_authorized` held.
-Never charge after a mid-flight fencing loss.
+If ownership is released after live `start` but before settle (stream or
+non-stream), the chat path returns `ownership_lost` and leaves the reservation
+`start_authorized` held. Never charge after a mid-flight fencing loss — even
+when the in-process chunk checkpoint already advanced.
 

@@ -17,6 +17,7 @@ use crate::ledger::MemoryLedger;
 use crate::mock_provider::{complete_authorized_job, openai_chat_response};
 use crate::provider_hub::{OutboundCmd, ProviderHub, SharedHub};
 use crate::provider_ws::provider_ws;
+use crate::request_task::{spawn_request_task, ControlEvent};
 use crate::sealed::decrypt_request_body;
 use darkbloom_core::{AttemptId, JobId, LeaseId};
 use tokio::sync::Mutex;

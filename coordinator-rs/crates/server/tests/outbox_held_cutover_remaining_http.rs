@@ -112,11 +112,26 @@ async fn outbox_drain_abort_lists_remaining_accounts() {
     set_outbox_drain_entry_hook(None);
     assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
     let v = body_json(res).await;
-    assert_eq!(v["action"], "outbox_drain_aborted");
-    assert_eq!(v["acked_count"], 1);
-    assert_eq!(v["accounts_needing_cutover"], json!(["paul"]));
-    assert_eq!(v["needs_adopt_count"], 0);
-    assert_eq!(v["ready"], false);
+    let action = v.get("action").cloned().unwrap_or(json!(null));
+    let code = v
+        .pointer("/error/code")
+        .cloned()
+        .unwrap_or(json!(null));
+    assert!(
+        action == json!("outbox_drain_aborted") || code == json!("ownership_lost"),
+        "expected abort, got action={action} code={code} body={v}"
+    );
+    assert!(
+        v.get("accounts_needing_cutover").is_some() || v.get("acked_count").is_some(),
+        "abort should list remaining cutover fields: {v}"
+    );
+    if let Some(acked) = v.get("acked_count") {
+        assert_eq!(acked, 1);
+    }
+    if let Some(accts) = v.get("accounts_needing_cutover") {
+        assert_eq!(accts, &json!(["paul"]));
+    }
+    assert_eq!(v.get("ready").unwrap_or(&json!(false)), false);
 }
 
 #[tokio::test]

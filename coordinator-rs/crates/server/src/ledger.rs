@@ -311,15 +311,25 @@ impl MemoryLedger {
         if !self.ops.insert(op.0.clone()) {
             return Ok(false);
         }
-        let job = self
-            .jobs
-            .get_mut(job_id)
-            .ok_or_else(|| LedgerError::Conflict("unknown job".into()))?;
+        let job = match self.jobs.get_mut(job_id) {
+            Some(j) => j,
+            None => {
+                self.ops.remove(&op.0);
+                return Err(LedgerError::Conflict("unknown job".into()));
+            }
+        };
+        if job.account_id != account {
+            self.ops.remove(&op.0);
+            return Err(LedgerError::Conflict(format!(
+                "account mismatch for job {job_id}"
+            )));
+        }
         if job.disposition.is_some() {
             return Ok(false);
         }
         let reserved = job.provenance.total.0;
         if actual > reserved {
+            self.ops.remove(&op.0);
             return Err(LedgerError::Conflict("actual exceeds reservation".into()));
         }
         let refund = reserved - actual;
@@ -348,8 +358,15 @@ impl MemoryLedger {
             return Ok(false);
         }
         let Some(job) = self.jobs.get_mut(job_id) else {
+            self.ops.remove(&op.0);
             return Ok(false);
         };
+        if job.account_id != account {
+            self.ops.remove(&op.0);
+            return Err(LedgerError::Conflict(format!(
+                "account mismatch for job {job_id}"
+            )));
+        }
         if job.disposition.is_some() {
             return Ok(false);
         }
@@ -357,6 +374,7 @@ impl MemoryLedger {
         // recovery-review. Prevents concurrent mark_start/release from
         // refunding a funded attempt.
         if job.funded_start {
+            self.ops.remove(&op.0);
             return Err(LedgerError::Conflict(format!(
                 "job {job_id} is start_authorized; cannot release"
             )));
@@ -1315,5 +1333,62 @@ mod tests {
             led.resize_and_authorize(OperationKey("ra".into()), "j", "a", 0),
             Err(LedgerError::InvalidAmount)
         );
+    }
+
+    #[test]
+    fn settle_rejects_account_mismatch_without_poisoning_op() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.credit("b", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        assert!(matches!(
+            led.settle(OperationKey("s".into()), "j", "b", 100_000, "d-mis"),
+            Err(LedgerError::Conflict(_))
+        ));
+        assert_eq!(led.balance("a").0, 4_000_000);
+        assert_eq!(led.balance("b").0, 5_000_000);
+        // Same op key can retry with correct account.
+        assert!(led
+            .settle(OperationKey("s".into()), "j", "a", 100_000, "d-mis")
+            .unwrap());
+        assert_eq!(led.balance("a").0, 4_900_000);
+    }
+
+    #[test]
+    fn release_rejects_account_mismatch_without_poisoning_op() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.credit("b", 1_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        assert!(matches!(
+            led.release(OperationKey("rel".into()), "j", "b"),
+            Err(LedgerError::Conflict(_))
+        ));
+        assert_eq!(led.balance("a").0, 4_000_000);
+        assert_eq!(led.balance("b").0, 1_000_000);
+        assert!(led.release(OperationKey("rel".into()), "j", "a").unwrap());
+        assert_eq!(led.balance("a").0, 5_000_000);
+    }
+
+    #[test]
+    fn release_after_start_authorized_does_not_poison_op_key() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        assert!(matches!(
+            led.release(OperationKey("rel".into()), "j", "a"),
+            Err(LedgerError::Conflict(_))
+        ));
+        // Op key reusable after conflict (still fails for the same reason).
+        assert!(matches!(
+            led.release(OperationKey("rel".into()), "j", "a"),
+            Err(LedgerError::Conflict(_))
+        ));
+        assert_eq!(led.active_job_count(), 1);
     }
 }

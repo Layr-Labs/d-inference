@@ -178,15 +178,18 @@ impl PostgresLedgerStub {
     }
 
     /// The SQL that will back settle once SQLx is wired (mirrors MemoryLedger.settle).
-    /// Parameters: $1 account, $2 job_id, $3 actual, $4 terminal_digest, $5 operation_key, $6 epoch
+    /// Parameters: $1 account, $2 job_id, $3 actual, $4 terminal_digest, $5 operation_key,
+    ///             $6 attempt_id
+    /// Digest/op inserts are gated on guard so failed settles cannot poison digests/op keys.
     pub fn settle_sql() -> &'static str {
         r#"
         WITH job AS (
-          SELECT job_id, reserved_total_micro_usd AS reserved,
+          SELECT job_id, account_id, reserved_total_micro_usd AS reserved,
                  reserved_withdrawable_micro_usd AS reserved_wdr,
                  terminal_disposition
           FROM rust_coord.inference_jobs
           WHERE job_id = $2
+            AND account_id = $1
           FOR UPDATE
         ), guard AS (
           SELECT 1 FROM job
@@ -196,17 +199,14 @@ impl PostgresLedgerStub {
         ), digest AS (
           INSERT INTO rust_coord.provider_terminals (
             terminal_digest, job_id, attempt_id, disposition
-          ) VALUES ($4, $2, '', 'settled')
+          )
+          SELECT $4, $2, $6, 'settled'
+          FROM guard
           ON CONFLICT (terminal_digest) DO NOTHING
           RETURNING terminal_digest
         ), calc AS (
           SELECT
             j.reserved - $3::bigint AS refund,
-            GREATEST(0, j.reserved - j.reserved_wdr) AS non_wdr_reserved,
-            LEAST(
-              j.reserved_wdr,
-              GREATEST(0, $3::bigint - GREATEST(0, j.reserved - j.reserved_wdr))
-            ) AS consumed_wdr,
             j.reserved_wdr - LEAST(
               j.reserved_wdr,
               GREATEST(0, $3::bigint - GREATEST(0, j.reserved - j.reserved_wdr))
@@ -232,7 +232,7 @@ impl PostgresLedgerStub {
           RETURNING j.job_id
         ), op AS (
           INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-          VALUES ($5, $2, 'settle', $3)
+          SELECT $5, $2, 'settle', $3 FROM calc
           ON CONFLICT (operation_key) DO NOTHING
           RETURNING operation_key
         )
@@ -241,15 +241,17 @@ impl PostgresLedgerStub {
     }
 
     /// Settle-capped SQL: charge = LEAST(actual, billable_cap, reserved) (DECISIONS #23).
-    /// Parameters: $1 account, $2 job_id, $3 actual, $4 billable_cap, $5 terminal_digest, $6 operation_key
+    /// Parameters: $1 account, $2 job_id, $3 actual, $4 billable_cap, $5 terminal_digest,
+    ///             $6 operation_key, $7 attempt_id
     pub fn settle_capped_sql() -> &'static str {
         r#"
         WITH job AS (
-          SELECT job_id, reserved_total_micro_usd AS reserved,
+          SELECT job_id, account_id, reserved_total_micro_usd AS reserved,
                  reserved_withdrawable_micro_usd AS reserved_wdr,
                  terminal_disposition
           FROM rust_coord.inference_jobs
           WHERE job_id = $2
+            AND account_id = $1
           FOR UPDATE
         ), charge AS (
           SELECT LEAST(
@@ -262,7 +264,9 @@ impl PostgresLedgerStub {
         ), digest AS (
           INSERT INTO rust_coord.provider_terminals (
             terminal_digest, job_id, attempt_id, disposition
-          ) VALUES ($5, $2, '', 'settled')
+          )
+          SELECT $5, $2, $7, 'settled'
+          FROM charge
           ON CONFLICT (terminal_digest) DO NOTHING
           RETURNING terminal_digest
         ), calc AS (
@@ -304,15 +308,17 @@ impl PostgresLedgerStub {
 
     /// Force-settle SQL for start_authorized held jobs (mirrors recovery::force_settle_held).
     /// Requires state = start_authorized and no terminal yet (DECISIONS #16/#17).
-    /// Parameters: $1 account, $2 job_id, $3 actual, $4 terminal_digest, $5 operation_key
+    /// Parameters: $1 account, $2 job_id, $3 actual, $4 terminal_digest, $5 operation_key,
+    ///             $6 attempt_id
     pub fn force_settle_sql() -> &'static str {
         r#"
         WITH job AS (
-          SELECT job_id, reserved_total_micro_usd AS reserved,
+          SELECT job_id, account_id, reserved_total_micro_usd AS reserved,
                  reserved_withdrawable_micro_usd AS reserved_wdr,
                  terminal_disposition, state
           FROM rust_coord.inference_jobs
           WHERE job_id = $2
+            AND account_id = $1
           FOR UPDATE
         ), guard AS (
           SELECT 1 FROM job
@@ -325,7 +331,9 @@ impl PostgresLedgerStub {
         ), digest AS (
           INSERT INTO rust_coord.provider_terminals (
             terminal_digest, job_id, attempt_id, disposition
-          ) VALUES ($4, $2, '', 'force_settled')
+          )
+          SELECT $4, $2, $6, 'force_settled'
+          FROM charge
           ON CONFLICT (terminal_digest) DO NOTHING
           RETURNING terminal_digest
         ), calc AS (
@@ -370,11 +378,12 @@ impl PostgresLedgerStub {
     pub fn release_sql() -> &'static str {
         r#"
         WITH job AS (
-          SELECT job_id, reserved_total_micro_usd AS reserved,
+          SELECT job_id, account_id, reserved_total_micro_usd AS reserved,
                  reserved_withdrawable_micro_usd AS reserved_wdr,
                  terminal_disposition, state
           FROM rust_coord.inference_jobs
           WHERE job_id = $2
+            AND account_id = $1
           FOR UPDATE
         ), guard AS (
           -- Forbidden after start_authorized (DECISIONS #16).
@@ -433,6 +442,50 @@ mod tests {
         assert!(sql.contains("terminal_disposition"));
         assert!(sql.contains("refund_wdr"));
         assert!(sql.contains("'settle'"));
+        assert!(sql.contains("account_id = $1"));
+        assert!(sql.contains("SELECT $4, $2, $6, 'settled'"));
+        assert!(sql.contains("FROM guard"));
+        assert!(sql.contains("SELECT $5, $2, 'settle', $3 FROM calc"));
+    }
+
+    #[test]
+    fn settle_capped_sql_uses_least_of_actual_cap_reserved() {
+        let sql = PostgresLedgerStub::settle_capped_sql();
+        assert!(sql.contains("LEAST("));
+        assert!(sql.contains("settle_capped"));
+        assert!(sql.contains("rust_coord.inference_jobs"));
+        assert!(sql.contains("provider_terminals"));
+        assert!(sql.contains("FOR UPDATE"));
+        assert!(sql.contains("account_id = $1"));
+        assert!(sql.contains("SELECT $5, $2, $7, 'settled'"));
+        assert!(sql.contains("FROM charge"));
+    }
+
+    #[test]
+    fn force_settle_sql_requires_start_authorized() {
+        let sql = PostgresLedgerStub::force_settle_sql();
+        assert!(sql.contains("rust_coord.inference_jobs"));
+        assert!(sql.contains("state = 'start_authorized'"));
+        assert!(sql.contains("force_settled"));
+        assert!(sql.contains("'force_settle'"));
+        assert!(sql.contains("LEAST("));
+        assert!(sql.contains("provider_terminals"));
+        assert!(sql.contains("FOR UPDATE"));
+        assert!(sql.contains("financial_operations"));
+        assert!(sql.contains("account_id = $1"));
+        assert!(sql.contains("SELECT $4, $2, $6, 'force_settled'"));
+        assert!(sql.contains("FROM charge"));
+    }
+
+    #[test]
+    fn release_sql_forbids_start_authorized() {
+        let sql = PostgresLedgerStub::release_sql();
+        assert!(sql.contains("rust_coord.inference_jobs"));
+        assert!(sql.contains("start_authorized"));
+        assert!(sql.contains("financial_operations"));
+        assert!(sql.contains("FOR UPDATE"));
+        assert!(sql.contains("'release'"));
+        assert!(sql.contains("account_id = $1"));
     }
 
     #[test]
@@ -452,39 +505,6 @@ mod tests {
         assert!(sql.contains("start_authorized"));
         assert!(sql.contains("start_authorize"));
         assert!(sql.contains("state = 'reserved'"));
-        assert!(sql.contains("FOR UPDATE"));
-    }
-
-    #[test]
-    fn release_sql_forbids_start_authorized() {
-        let sql = PostgresLedgerStub::release_sql();
-        assert!(sql.contains("rust_coord.inference_jobs"));
-        assert!(sql.contains("start_authorized"));
-        assert!(sql.contains("financial_operations"));
-        assert!(sql.contains("FOR UPDATE"));
-        assert!(sql.contains("'release'"));
-    }
-
-    #[test]
-    fn force_settle_sql_requires_start_authorized() {
-        let sql = PostgresLedgerStub::force_settle_sql();
-        assert!(sql.contains("rust_coord.inference_jobs"));
-        assert!(sql.contains("state = 'start_authorized'"));
-        assert!(sql.contains("force_settled"));
-        assert!(sql.contains("'force_settle'"));
-        assert!(sql.contains("LEAST("));
-        assert!(sql.contains("provider_terminals"));
-        assert!(sql.contains("FOR UPDATE"));
-        assert!(sql.contains("financial_operations"));
-    }
-
-    #[test]
-    fn settle_capped_sql_uses_least_of_actual_cap_reserved() {
-        let sql = PostgresLedgerStub::settle_capped_sql();
-        assert!(sql.contains("LEAST("));
-        assert!(sql.contains("settle_capped"));
-        assert!(sql.contains("rust_coord.inference_jobs"));
-        assert!(sql.contains("provider_terminals"));
         assert!(sql.contains("FOR UPDATE"));
     }
 

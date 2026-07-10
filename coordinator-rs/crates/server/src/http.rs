@@ -441,9 +441,21 @@ async fn chat_completions(
                 }
             };
 
+            // One-round-trip resize+authorize (DECISIONS #18). Same amount for
+            // pilot; production will pass the refined estimate from prepare ETA.
             {
                 let mut ledger = state.ledger.lock().await;
-                if let Err(err) = ledger.mark_start_authorized(job_id.as_str()) {
+                let reserved = ledger
+                    .job_reserved_total(job_id.as_str())
+                    .map(|m| m.0)
+                    .unwrap_or(100_000);
+                if let Err(err) = ledger.resize_and_authorize(
+                    crate::ledger::OperationKey(format!("resize_auth:{}", job_id.as_str())),
+                    job_id.as_str(),
+                    &state.pilot_account,
+                    reserved,
+                ) {
+                    // Not start_authorized yet on failure — safe to release.
                     let _ = ledger.release(
                         crate::ledger::OperationKey(format!("release:{}", job_id.as_str())),
                         job_id.as_str(),

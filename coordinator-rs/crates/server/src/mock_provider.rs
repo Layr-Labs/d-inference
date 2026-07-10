@@ -126,7 +126,12 @@ pub fn run_mock_completion(
         .map_err(|e| e.to_string())?;
     let _ = res;
     ledger
-        .mark_start_authorized(&job_id)
+        .resize_and_authorize(
+            OperationKey(format!("resize_auth:{job_id}")),
+            &job_id,
+            account,
+            reserve_amount,
+        )
         .map_err(|e| e.to_string())?;
     complete_authorized_job(
         ledger,

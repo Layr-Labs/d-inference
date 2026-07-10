@@ -612,31 +612,55 @@ async fn admin_terminal_ingest(
     if let Err(resp) = require_admin(&state, &headers) {
         return resp;
     }
-    let mut store = state.terminals.lock().await;
-    match ingest_terminal(
-        &mut store,
-        TerminalIngest {
-            job_id: req.job_id,
-            attempt_id: req.attempt_id,
-            terminal_digest: req.terminal_digest,
-            lease_id: req.lease_id,
-            se_signature: req.se_signature,
-            outcome: req.outcome,
-        },
-    ) {
-        Ok(ack) => (StatusCode::OK, Json(ack)).into_response(),
-        Err(err) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": {
-                    "message": format!("{err}"),
-                    "type": "invalid_request_error",
-                    "code": "terminal_ingest_failed"
-                }
-            })),
+    let ack = {
+        let mut store = state.terminals.lock().await;
+        match ingest_terminal(
+            &mut store,
+            TerminalIngest {
+                job_id: req.job_id,
+                attempt_id: req.attempt_id,
+                terminal_digest: req.terminal_digest,
+                lease_id: req.lease_id,
+                se_signature: req.se_signature,
+                outcome: req.outcome,
+            },
+        ) {
+            Ok(ack) => ack,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": {
+                            "message": format!("{err}"),
+                            "type": "invalid_request_error",
+                            "code": "terminal_ingest_failed"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    };
+    // DECISIONS #129: surface cutover remaining so ops can chain after ingest ACK.
+    let (accounts, needs_adopt, active, held) = {
+        let led = state.ledger.lock().await;
+        let epoch = state.ownership.epoch().0;
+        let (na, _, _) = led.orphan_summary_counts(epoch);
+        (
+            accounts_needing_cutover_from(&led, epoch),
+            na,
+            led.active_job_count(),
+            led.held_start_authorized_count(),
         )
-            .into_response(),
+    };
+    let mut body = ack;
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("accounts_needing_cutover".into(), json!(accounts));
+        obj.insert("needs_adopt_count".into(), json!(needs_adopt));
+        obj.insert("active_jobs".into(), json!(active));
+        obj.insert("held_start_authorized".into(), json!(held));
     }
+    (StatusCode::OK, Json(body)).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -739,9 +763,21 @@ async fn admin_deposit(
             )
             .expect("critical outbox enqueue must not fail for valid kind");
     }
-    let (bal, wdr) = {
+    let (bal, wdr, accounts, needs_adopt, active, held, outbox_retryable) = {
         let ledger = state.ledger.lock().await;
-        ledger.balance(&account)
+        let box_ = state.outbox.lock().await;
+        let epoch = state.ownership.epoch().0;
+        let (na, _, _) = ledger.orphan_summary_counts(epoch);
+        let (b, w) = ledger.balance(&account);
+        (
+            b,
+            w,
+            accounts_needing_cutover_from(&ledger, epoch),
+            na,
+            ledger.active_job_count(),
+            ledger.held_start_authorized_count(),
+            box_.pending_under_retry_cap(),
+        )
     };
     (
         StatusCode::OK,
@@ -752,6 +788,11 @@ async fn admin_deposit(
             "event_id": req.event_id,
             "balance_micro_usd": bal,
             "withdrawable_micro_usd": wdr,
+            "accounts_needing_cutover": accounts,
+            "needs_adopt_count": needs_adopt,
+            "active_jobs": active,
+            "held_start_authorized": held,
+            "outbox_retryable": outbox_retryable,
         })),
     )
         .into_response()

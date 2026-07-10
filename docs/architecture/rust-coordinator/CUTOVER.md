@@ -736,3 +736,10 @@ feed remaining accounts into cutover-drain-all without quiescence.
 max-rounds) includes `needs_adopt_count` so ops know whether to adopt
 before retrying.
 
+### Deposit / terminal-ingest remaining accounts (DECISIONS #129)
+
+`POST /v1/admin/deposits` and `terminal-ingest` success responses include
+`accounts_needing_cutover` + `needs_adopt_count`. Deposits also report
+`outbox_retryable` / active / held counts so funding during cutover can
+chain into cutover-drain-all without a quiescence poll.
+

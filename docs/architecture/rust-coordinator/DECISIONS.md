@@ -115,6 +115,7 @@ Date: 2026-07-10
 | 106 | Per-account clear + abort filter echo | Concurrent account-filtered clear-orphans conserves each account. Abort JSON echoes `account_filter` |
 | 107 | Account filter on held-review + adopt-jobs | held-review-batch / adopt-jobs accept `account` scope. Concurrent review ∥ force-settle never double-charges |
 | 108 | Outbox-drain mid-flight ownership fence | outbox-drain re-checks ownership per entry; abort returns partial acked_count; resume drains remainder |
+| 109 | cutover-drain preserves clear on drain abort | When clear succeeds but outbox-drain aborts mid-flight, response includes `clear_orphans` + partial drain; resume via outbox-drain or cutover-drain |
 
 ## Deleted Go mechanisms (do not port)
 

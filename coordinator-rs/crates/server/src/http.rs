@@ -2013,7 +2013,27 @@ async fn admin_cutover_drain(
     };
     let drain_json: Value = serde_json::from_slice(&drain_bytes).unwrap_or(json!({}));
     if drain_status != StatusCode::OK {
-        return (drain_status, Json(drain_json)).into_response();
+        // Clear already committed — surface both phases so ops can resume with
+        // outbox-drain only (DECISIONS #109).
+        return (
+            drain_status,
+            Json(json!({
+                "error": drain_json.get("error").cloned().unwrap_or(json!({
+                    "message": "outbox-drain failed after clear-orphans",
+                    "type": "invalid_request_error",
+                    "code": "ownership_lost"
+                })),
+                "action": "cutover_drain_aborted",
+                "phase": "outbox_drain",
+                "clear_orphans": clear_json,
+                "outbox_drain": drain_json,
+                "ready": false,
+                "active_jobs": clear_json.get("active_jobs").cloned().unwrap_or(json!(0)),
+                "outbox_retryable": drain_json.get("outbox_retryable").cloned().unwrap_or(json!(0)),
+                "acked_count": drain_json.get("acked_count").cloned().unwrap_or(json!(0)),
+            })),
+        )
+            .into_response();
     }
 
     (

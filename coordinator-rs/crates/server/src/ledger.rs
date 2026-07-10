@@ -440,4 +440,23 @@ mod tests {
             .unwrap()
             .applied);
     }
+
+    #[test]
+    fn mark_start_authorized_unknown_job_conflicts() {
+        let mut led = MemoryLedger::default();
+        assert!(matches!(
+            led.mark_start_authorized("missing"),
+            Err(LedgerError::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn release_unknown_job_is_noop() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 1_000_000, 0);
+        assert!(!led
+            .release(OperationKey("rel".into()), "no-such-job", "a")
+            .unwrap());
+        assert_eq!(led.balance("a").0, 1_000_000);
+    }
 }

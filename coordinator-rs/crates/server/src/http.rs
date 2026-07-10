@@ -78,6 +78,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/deposits", post(admin_deposit))
         .route("/v1/admin/force-settle", post(admin_force_settle))
         .route(
+            "/v1/admin/force-settle-batch",
+            post(admin_force_settle_batch),
+        )
+        .route(
             "/v1/admin/recover-undispatched",
             post(admin_recover_undispatched),
         )
@@ -643,6 +647,155 @@ async fn admin_force_settle(
             "terminal_digest": digest,
             "balance_micro_usd": bal,
             "held_start_authorized": held,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AdminForceSettleBatchRequest {
+    /// Optional explicit ids; empty/omitted = all held start_authorized (DECISIONS #78).
+    #[serde(default)]
+    job_ids: Vec<String>,
+    #[serde(default)]
+    account: Option<String>,
+    /// Charge per job (clamped to reserved). Default 0 = full refund.
+    #[serde(default)]
+    actual_micro_usd: i64,
+}
+
+/// Bulk force-settle held start_authorized jobs after adopt (DECISIONS #78).
+/// Default actual=0 fully refunds each hold. Skips reserved-not-started.
+async fn admin_force_settle_batch(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AdminForceSettleBatchRequest>,
+) -> impl IntoResponse {
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
+    }
+    if let Err(resp) = require_holding(&state) {
+        return resp;
+    }
+    if req.actual_micro_usd < 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": "actual_micro_usd must be >= 0",
+                    "type": "invalid_request_error",
+                    "code": "invalid_actual"
+                }
+            })),
+        )
+            .into_response();
+    }
+    let account = req
+        .account
+        .unwrap_or_else(|| state.pilot_account.clone());
+    let epoch = state.ownership.epoch().0;
+
+    let ids = {
+        let led = state.ledger.lock().await;
+        if req.job_ids.is_empty() {
+            led.held_start_authorized_job_ids()
+        } else {
+            req.job_ids.clone()
+        }
+    };
+
+    let mut settled = Vec::new();
+    let mut skipped = Vec::new();
+    let mut failed = Vec::new();
+    let mut charged_total = 0_i64;
+
+    for job_id in ids {
+        let digest = format!("force-settle-batch:{job_id}");
+        let (action, charged) = {
+            let mut led = state.ledger.lock().await;
+            let reserved = led.job_reserved_total(&job_id).map(|m| m.0).unwrap_or(0);
+            let charge = req.actual_micro_usd.min(reserved).max(0);
+            match force_settle_held_on(
+                &mut led,
+                epoch,
+                &job_id,
+                &account,
+                req.actual_micro_usd,
+                &digest,
+            ) {
+                Ok(RecoveryAction::Released) => ("released", charge),
+                Ok(RecoveryAction::AlreadyTerminal) => ("already_terminal", 0),
+                Ok(RecoveryAction::Skipped) | Ok(RecoveryAction::HeldForReview) => {
+                    ("skipped", 0)
+                }
+                Err(err) => {
+                    failed.push(json!({
+                        "job_id": job_id,
+                        "error": format!("{err}"),
+                    }));
+                    continue;
+                }
+            }
+        };
+        match action {
+            "released" => {
+                {
+                    let mut terms = state.terminals.lock().await;
+                    let ack = json!({
+                        "type": "terminal_ack",
+                        "job_id": job_id,
+                        "attempt_id": "",
+                        "lease_id": "",
+                        "terminal_digest": digest,
+                        "disposition": "force_settled",
+                    });
+                    terms.record_bound(
+                        &job_id, "", &digest, "force_settled", Some(ack), "", "",
+                    );
+                }
+                let mut box_ = state.outbox.lock().await;
+                let _ = box_.enqueue_critical(
+                    "inference.settled",
+                    &json!({
+                        "job_id": job_id,
+                        "terminal_digest": digest,
+                        "charged_micro_usd": charged,
+                        "disposition": "force_settled",
+                    })
+                    .to_string(),
+                );
+                charged_total += charged;
+                settled.push(job_id);
+            }
+            other => {
+                skipped.push(json!({ "job_id": job_id, "action": other }));
+            }
+        }
+    }
+
+    let (bal, held, active) = {
+        let led = state.ledger.lock().await;
+        (
+            led.balance(&account).0,
+            led.held_start_authorized_count(),
+            led.active_job_count(),
+        )
+    };
+    (
+        StatusCode::OK,
+        Json(json!({
+            "action": "force_settled_batch",
+            "account": account,
+            "settled": settled,
+            "skipped": skipped,
+            "failed": failed,
+            "settled_count": settled.len(),
+            "skipped_count": skipped.len(),
+            "failed_count": failed.len(),
+            "charged_micro_usd": charged_total,
+            "balance_micro_usd": bal,
+            "held_start_authorized": held,
+            "active_jobs": active,
         })),
     )
         .into_response()

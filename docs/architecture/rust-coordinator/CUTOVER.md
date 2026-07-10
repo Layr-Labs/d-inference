@@ -404,3 +404,9 @@ When holding, quiescence sets `needs_adopt=true` on jobs whose fencing epoch
 differs from the current owner. `POST /v1/admin/recover-undispatched-batch`
 releases all reserved-not-started jobs (skips held); use after adopt-jobs.
 
+### force-settle-batch (DECISIONS #78)
+
+`POST /v1/admin/force-settle-batch` force-settles all held start_authorized
+jobs (default `actual_micro_usd=0` = full refund). Ops flow for mixed orphans:
+quiescence → adopt-jobs → recover-undispatched-batch → force-settle-batch.
+

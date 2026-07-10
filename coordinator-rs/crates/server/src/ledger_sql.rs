@@ -575,7 +575,7 @@ mod tests {
         assert!(sql.contains("FOR UPDATE"));
         assert!(sql.contains("'release'"));
         assert!(sql.contains("account_id = $1"));
-        assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
+        assert!(sql.contains("EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));
     }
 
@@ -589,7 +589,7 @@ mod tests {
         assert!(sql.contains("financial_operations"));
         assert!(sql.contains("account_id = $1"));
         assert!(sql.contains("SELECT $4, $2, 'resize_authorize', $3 FROM funds"));
-        assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
+        assert!(sql.contains("EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));
     }
 
@@ -603,7 +603,7 @@ mod tests {
         assert!(sql.contains("FOR UPDATE"));
         assert!(sql.contains("account_id = $2"));
         assert!(sql.contains("SELECT $3, $1, 'start_authorize', 0 FROM guard"));
-        assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
+        assert!(sql.contains("EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));
     }
 

@@ -685,3 +685,48 @@ async fn quiescence_reports_held_start_authorized_jobs() {
     assert_eq!(v["held_start_authorized_job_ids"][0], "held-job-1");
     assert_eq!(v["active_jobs"], 1);
 }
+
+#[tokio::test]
+async fn quiescence_ready_after_force_settle_clears_hold() {
+    let state = test_state(true);
+    {
+        let mut led = state.ledger.lock().await;
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-fs".into()),
+            "held-fs",
+            "pilot-account",
+            100_000,
+        )
+        .unwrap();
+        led.mark_start_authorized("held-fs").unwrap();
+        assert!(led
+            .settle_capped_as(
+                darkbloom_coordinator::OperationKey("force_settle:held-fs".into()),
+                "held-fs",
+                "pilot-account",
+                40_000,
+                100_000,
+                "force-http-d",
+                "force_settled",
+            )
+            .unwrap());
+        assert_eq!(led.job_disposition("held-fs"), Some("force_settled"));
+        assert_eq!(led.active_job_count(), 0);
+    }
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/quiescence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["ready"], true);
+    assert_eq!(v["held_start_authorized"], 0);
+    assert_eq!(v["active_jobs"], 0);
+}

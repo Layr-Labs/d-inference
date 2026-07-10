@@ -184,6 +184,8 @@ disposed job is `AlreadyTerminal`, not `Skipped`. Shared classifier:
 ### Release SQL outbox atomicity (DECISIONS #43)
 
 `release_sql` inserts `inference.released` into `rust_coord.outbox` gated on
-successful mark+credit. Process-local admin recover uses `enqueue_critical`
-after release so refunds cannot silently lose their durable side effect.
+successful mark+credit. Process-local paths use `Outbox::enqueue_released` /
+`release_job_with_outbox` for admin recover, chat prepare-fail/timeout,
+resize-authorize failure, and pre-start cancel so refunds cannot silently lose
+their durable side effect.
 

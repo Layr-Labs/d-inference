@@ -2,9 +2,11 @@
 
 use crate::abort::{abort_losing_hedge, cancel_attempt};
 use crate::ledger::{MemoryLedger, OperationKey};
+use crate::outbox::Outbox;
 use crate::provider_hub::SharedHub;
 use crate::request_task::{ControlEvent, RequestTask};
 use std::sync::{Arc, Mutex};
+use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CancelOutcome {
@@ -31,6 +33,7 @@ pub async fn cancel_before_or_after_content(
     dispatch_nonce: &str,
     request_digest: &str,
     had_first_content: bool,
+    outbox: Option<&Arc<AsyncMutex<Outbox>>>,
 ) -> Result<CancelOutcome, String> {
     let _ = task.apply(ControlEvent::Cancel);
     if had_first_content {
@@ -73,12 +76,24 @@ pub async fn cancel_before_or_after_content(
         request_digest,
     )
     .await;
-    let mut g = ledger.lock().map_err(|e| e.to_string())?;
-    let _ = g.release(
-        OperationKey(format!("cancel_release:{job_id}")),
-        job_id,
-        account,
-    );
+    let (released, refunded) = {
+        let mut g = ledger.lock().map_err(|e| e.to_string())?;
+        let reserved = g.job_reserved_total(job_id).map(|m| m.0).unwrap_or(0);
+        let ok = g
+            .release(
+                OperationKey(format!("cancel_release:{job_id}")),
+                job_id,
+                account,
+            )
+            .map_err(|e| e.to_string())?;
+        (ok, reserved)
+    };
+    if released {
+        if let Some(box_) = outbox {
+            let mut b = box_.lock().await;
+            let _ = b.enqueue_released(job_id, account, refunded);
+        }
+    }
     if task.hedge_used {
         Ok(CancelOutcome::Aborted)
     } else {
@@ -98,6 +113,7 @@ mod tests {
     #[tokio::test]
     async fn pre_start_cancel_releases_reservation() {
         let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let outbox = Arc::new(AsyncMutex::new(Outbox::default()));
         {
             let mut g = led.lock().unwrap();
             g.credit("a", 1_000_000, 0).unwrap();
@@ -128,17 +144,38 @@ mod tests {
             }
         });
         let out = cancel_before_or_after_content(
-            &mut task, &hub, &led, "a", "p", "j1", "a1", "l1", 1, "n", "d", false,
+            &mut task,
+            &hub,
+            &led,
+            "a",
+            "p",
+            "j1",
+            "a1",
+            "l1",
+            1,
+            "n",
+            "d",
+            false,
+            Some(&outbox),
         )
         .await
         .unwrap();
         assert_eq!(out, CancelOutcome::DiscardedLocal);
         assert_eq!(led.lock().unwrap().balance("a").0, 1_000_000);
+        let box_ = outbox.lock().await;
+        assert_eq!(box_.len(), 1);
+        // Peek via claim.
+        drop(box_);
+        let e = outbox.lock().await.try_claim().unwrap();
+        assert_eq!(e.kind, "inference.released");
+        let payload: serde_json::Value = serde_json::from_str(&e.payload).unwrap();
+        assert_eq!(payload["refunded_micro_usd"], 50_000);
     }
 
     #[tokio::test]
     async fn funded_start_cancel_awaits_terminal_without_release() {
         let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let outbox = Arc::new(AsyncMutex::new(Outbox::default()));
         {
             let mut g = led.lock().unwrap();
             g.credit("a", 1_000_000, 0).unwrap();
@@ -168,7 +205,19 @@ mod tests {
             }
         });
         let out = cancel_before_or_after_content(
-            &mut task, &hub, &led, "a", "p", "j2", "a1", "l1", 1, "n", "d", false,
+            &mut task,
+            &hub,
+            &led,
+            "a",
+            "p",
+            "j2",
+            "a1",
+            "l1",
+            1,
+            "n",
+            "d",
+            false,
+            Some(&outbox),
         )
         .await
         .unwrap();
@@ -177,11 +226,13 @@ mod tests {
         assert_eq!(led.lock().unwrap().balance("a").0, 950_000);
         assert_eq!(led.lock().unwrap().active_job_count(), 1);
         assert!(led.lock().unwrap().job_funded_start("j2"));
+        assert_eq!(outbox.lock().await.len(), 0);
     }
 
     #[tokio::test]
     async fn after_content_cancel_does_not_release() {
         let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let outbox = Arc::new(AsyncMutex::new(Outbox::default()));
         {
             let mut g = led.lock().unwrap();
             g.credit("a", 1_000_000, 0).unwrap();
@@ -211,18 +262,32 @@ mod tests {
             }
         });
         let out = cancel_before_or_after_content(
-            &mut task, &hub, &led, "a", "p", "j3", "a1", "l1", 1, "n", "d", true,
+            &mut task,
+            &hub,
+            &led,
+            "a",
+            "p",
+            "j3",
+            "a1",
+            "l1",
+            1,
+            "n",
+            "d",
+            true,
+            Some(&outbox),
         )
         .await
         .unwrap();
         assert_eq!(out, CancelOutcome::CancelAfterContent);
         assert_eq!(led.lock().unwrap().balance("a").0, 950_000);
         assert_eq!(led.lock().unwrap().active_job_count(), 1);
+        assert_eq!(outbox.lock().await.len(), 0);
     }
 
     #[tokio::test]
     async fn hedge_pre_start_cancel_returns_aborted() {
         let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let outbox = Arc::new(AsyncMutex::new(Outbox::default()));
         {
             let mut g = led.lock().unwrap();
             g.credit("a", 1_000_000, 0).unwrap();
@@ -254,12 +319,25 @@ mod tests {
             }
         });
         let out = cancel_before_or_after_content(
-            &mut task, &hub, &led, "a", "p", "j4", "a1", "l1", 1, "n", "d", false,
+            &mut task,
+            &hub,
+            &led,
+            "a",
+            "p",
+            "j4",
+            "a1",
+            "l1",
+            1,
+            "n",
+            "d",
+            false,
+            Some(&outbox),
         )
         .await
         .unwrap();
         assert_eq!(out, CancelOutcome::Aborted);
         assert_eq!(led.lock().unwrap().balance("a").0, 1_000_000);
         assert_eq!(led.lock().unwrap().active_job_count(), 0);
+        assert_eq!(outbox.lock().await.len(), 1);
     }
 }

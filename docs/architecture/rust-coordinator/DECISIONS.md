@@ -49,7 +49,7 @@ Date: 2026-07-10
 | 40 | Admin recover-undispatched HTTP | `POST /v1/admin/recover-undispatched` releases reserved-not-started jobs; skips start_authorized (must use force-settle); enqueues critical `inference.released` outbox |
 | 41 | Admin held-review HTTP | `POST /v1/admin/held-review` classifies start_authorized holds without moving money (`held_for_review` / `skipped` / `already_terminal`) |
 | 42 | Disposition-first recovery | `force_settle_held` / `recover_start_authorized_held` / `recover_undispatched` (and admin mirrors) check `job_disposition` before `funded_start` so disposed jobs are AlreadyTerminal, not Skipped |
-| 43 | Release SQL outbox atomicity | `release_sql` / admin recover-undispatched insert `inference.released` into outbox gated on successful mark/credit so refunds and durable side effects commit together |
+| 43 | Release SQL outbox atomicity | `release_sql` / admin recover-undispatched / chat prepare-fail / pre-start cancel insert `inference.released` into outbox (gated on successful mark/credit in SQL; `enqueue_released` / `release_job_with_outbox` in-process) so refunds and durable side effects commit together |
 
 ## Deleted Go mechanisms (do not port)
 

@@ -183,6 +183,30 @@ fn require_nonempty_job_id(job_id: &str) -> Result<(), axum::response::Response>
     Ok(())
 }
 
+/// Release a reserved job and enqueue critical `inference.released` (DECISIONS #43).
+async fn release_job_with_outbox(
+    state: &AppState,
+    op: crate::ledger::OperationKey,
+    job_id: &str,
+    account: &str,
+) -> Result<bool, crate::ledger::LedgerError> {
+    let refunded = {
+        let mut led = state.ledger.lock().await;
+        let reserved = led.job_reserved_total(job_id).map(|m| m.0).unwrap_or(0);
+        match led.release(op, job_id, account)? {
+            true => Some(reserved),
+            false => None,
+        }
+    };
+    if let Some(amount) = refunded {
+        let mut box_ = state.outbox.lock().await;
+        let _ = box_.enqueue_released(job_id, account, amount);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Warm-plane inventory — expand as workers land.
     let (bal, wdr, active_jobs, held_start_authorized, held_job_ids) = {
@@ -546,23 +570,26 @@ async fn admin_recover_undispatched(
         .account
         .unwrap_or_else(|| state.pilot_account.clone());
 
-    let (action, refunded) = {
-        let mut led = state.ledger.lock().await;
+    let action = {
+        let led = state.ledger.lock().await;
         if led.job_disposition(&req.job_id).is_some()
             || led.job_reserved_total(&req.job_id).is_none()
         {
-            ("already_terminal".to_string(), 0_i64)
+            "already_terminal".to_string()
         } else if led.job_funded_start(&req.job_id) {
-            ("skipped".to_string(), 0_i64)
+            "skipped".to_string()
         } else {
-            let reserved = led.job_reserved_total(&req.job_id).map(|m| m.0).unwrap_or(0);
-            match led.release(
+            drop(led);
+            match release_job_with_outbox(
+                &state,
                 crate::ledger::OperationKey(format!("recovery_release:{}", req.job_id)),
                 &req.job_id,
                 &account,
-            ) {
-                Ok(true) => ("released".to_string(), reserved),
-                Ok(false) => ("already_terminal".to_string(), 0),
+            )
+            .await
+            {
+                Ok(true) => "released".to_string(),
+                Ok(false) => "already_terminal".to_string(),
                 Err(err) => {
                     return (
                         StatusCode::CONFLICT,
@@ -579,21 +606,6 @@ async fn admin_recover_undispatched(
             }
         }
     };
-
-    // Money moved — durable side effect must not be dropped (DECISIONS #32/#43).
-    if action == "released" {
-        let mut box_ = state.outbox.lock().await;
-        let _ = box_.enqueue_critical(
-            "inference.released",
-            &json!({
-                "job_id": req.job_id,
-                "account": account,
-                "disposition": "released",
-                "refunded_micro_usd": refunded,
-            })
-            .to_string(),
-        );
-    }
 
     let (bal, active) = {
         let led = state.ledger.lock().await;
@@ -887,12 +899,13 @@ async fn chat_completions(
                 Ok(_) => true,
                 Err(crate::provider_hub::HubError::NotConnected) => false,
                 Err(crate::provider_hub::HubError::Timeout) => {
-                    let mut ledger = state.ledger.lock().await;
-                    let _ = ledger.release(
+                    let _ = release_job_with_outbox(
+                        &state,
                         crate::ledger::OperationKey(format!("release:{}", job_id.as_str())),
                         job_id.as_str(),
                         &state.pilot_account,
-                    );
+                    )
+                    .await;
                     let _ = task.apply(ControlEvent::PrepareExpired);
                     let mut p = state.placement.lock().await;
                     p.signal_demand(&req.model);
@@ -909,12 +922,13 @@ async fn chat_completions(
                         .into_response();
                 }
                 Err(err) => {
-                    let mut ledger = state.ledger.lock().await;
-                    let _ = ledger.release(
+                    let _ = release_job_with_outbox(
+                        &state,
                         crate::ledger::OperationKey(format!("release:{}", job_id.as_str())),
                         job_id.as_str(),
                         &state.pilot_account,
-                    );
+                    )
+                    .await;
                     // model_not_ready / capacity → placement demand signal (no queue).
                     let err_s = format!("{err}");
                     if err_s.contains("model_not_ready") || err_s.contains("capacity") {
@@ -938,23 +952,33 @@ async fn chat_completions(
             // One-round-trip resize+authorize (DECISIONS #18). Same amount for
             // pilot; production will pass the refined estimate from prepare ETA.
             {
-                let mut ledger = state.ledger.lock().await;
-                let reserved = ledger
-                    .job_reserved_total(job_id.as_str())
-                    .map(|m| m.0)
-                    .unwrap_or(100_000);
-                if let Err(err) = ledger.resize_and_authorize(
-                    crate::ledger::OperationKey(format!("resize_auth:{}", job_id.as_str())),
-                    job_id.as_str(),
-                    &state.pilot_account,
-                    reserved,
-                ) {
+                let resize_err = {
+                    let mut ledger = state.ledger.lock().await;
+                    let reserved = ledger
+                        .job_reserved_total(job_id.as_str())
+                        .map(|m| m.0)
+                        .unwrap_or(100_000);
+                    ledger
+                        .resize_and_authorize(
+                            crate::ledger::OperationKey(format!(
+                                "resize_auth:{}",
+                                job_id.as_str()
+                            )),
+                            job_id.as_str(),
+                            &state.pilot_account,
+                            reserved,
+                        )
+                        .err()
+                };
+                if let Some(err) = resize_err {
                     // Not start_authorized yet on failure — safe to release.
-                    let _ = ledger.release(
+                    let _ = release_job_with_outbox(
+                        &state,
                         crate::ledger::OperationKey(format!("release:{}", job_id.as_str())),
                         job_id.as_str(),
                         &state.pilot_account,
-                    );
+                    )
+                    .await;
                     return (
                         StatusCode::CONFLICT,
                         Json(json!({

@@ -76,6 +76,25 @@ impl Outbox {
         Ok(self.push(kind, payload))
     }
 
+    /// Enqueue a critical `inference.released` side effect (DECISIONS #43).
+    pub fn enqueue_released(
+        &mut self,
+        job_id: &str,
+        account: &str,
+        refunded_micro_usd: i64,
+    ) -> Result<u64, OutboxError> {
+        self.enqueue_critical(
+            "inference.released",
+            &serde_json::json!({
+                "job_id": job_id,
+                "account": account,
+                "disposition": "released",
+                "refunded_micro_usd": refunded_micro_usd,
+            })
+            .to_string(),
+        )
+    }
+
     fn push(&mut self, kind: &str, payload: &str) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
@@ -241,6 +260,22 @@ mod tests {
         box_.enqueue("a", "{}").unwrap();
         box_.enqueue("b", "{}").unwrap();
         assert_eq!(box_.enqueue("c", "{}"), Err(OutboxError::Full));
+    }
+
+    #[test]
+    fn enqueue_released_is_critical_kind() {
+        let mut box_ = Outbox::new(1);
+        box_.enqueue("fill", "{}").unwrap();
+        let id = box_.enqueue_released("j1", "acct", 42_000).unwrap();
+        assert_eq!(id, 2);
+        assert_eq!(box_.len(), 2);
+        let e = box_.try_claim().unwrap();
+        // FIFO: fill first
+        assert_eq!(e.kind, "fill");
+        box_.ack_done(e.id).unwrap();
+        let e2 = box_.try_claim().unwrap();
+        assert_eq!(e2.kind, "inference.released");
+        assert!(e2.payload.contains("42000"));
     }
 
     #[test]

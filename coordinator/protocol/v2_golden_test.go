@@ -78,3 +78,18 @@ func TestV2Goldens_StartAbortCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestV2Goldens_TerminalAck(t *testing.T) {
+	dir := goldenDir(t)
+	b, err := os.ReadFile(filepath.Join(dir, "terminal_ack.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg TerminalAckMessage
+	if err := json.Unmarshal(b, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if msg.Type != TypeTerminalAck || msg.Disposition != "settled" {
+		t.Fatalf("terminal_ack: %+v", msg)
+	}
+}

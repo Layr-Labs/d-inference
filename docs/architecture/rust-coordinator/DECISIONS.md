@@ -50,6 +50,7 @@ Date: 2026-07-10
 | 41 | Admin held-review HTTP | `POST /v1/admin/held-review` classifies start_authorized holds without moving money (`held_for_review` / `skipped` / `already_terminal`) |
 | 42 | Disposition-first recovery | `force_settle_held` / `recover_start_authorized_held` / `recover_undispatched` (and admin mirrors) check `job_disposition` before `funded_start` so disposed jobs are AlreadyTerminal, not Skipped |
 | 43 | Release SQL outbox atomicity | `release_sql` / admin recover-undispatched / chat prepare-fail / pre-start cancel insert `inference.released` into outbox (gated on successful mark/credit in SQL; `enqueue_released` / `release_job_with_outbox` in-process) so refunds and durable side effects commit together |
+| 44 | Live settle requires provider terminal | After live `start`, settle only from a real `provider_terminal` (`wait_terminal` + pending buffer). Timeout / missing digest leaves the job `start_authorized` held — never fabricate a mock settle on the live path |
 
 ## Deleted Go mechanisms (do not port)
 

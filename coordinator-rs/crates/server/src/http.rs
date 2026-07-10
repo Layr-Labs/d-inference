@@ -16,10 +16,10 @@ use crate::deposits::apply_stripe_deposit;
 use crate::external_events::ExternalEventInbox;
 use crate::fleet_actor::FleetHandle;
 use crate::ledger::MemoryLedger;
-use crate::mock_provider::{complete_authorized_job, openai_chat_response};
+use crate::mock_provider::{complete_authorized_job, openai_chat_response, MockCompletion};
 use crate::outbox::Outbox;
 use crate::ownership::Gate as OwnershipGate;
-use crate::provider_hub::{OutboundCmd, ProviderHub, SharedHub};
+use crate::provider_hub::{OutboundCmd, ProviderHub, SharedHub, StartResult};
 use crate::provider_ws::provider_ws;
 use crate::request_task::{spawn_request_task, ControlEvent};
 use crate::sealed::decrypt_request_body;
@@ -993,7 +993,7 @@ async fn chat_completions(
                 }
             }
 
-            if use_live {
+            let completion_result = if use_live {
                 let _ = task.apply(ControlEvent::Prepared {
                     attempt: attempt.clone(),
                     lease: lease.clone(),
@@ -1002,7 +1002,7 @@ async fn chat_completions(
                     attempt: attempt.clone(),
                     lease: lease.clone(),
                 });
-                match state
+                let start_res = state
                     .hub
                     .start(
                         &permit.provider_id,
@@ -1018,17 +1018,57 @@ async fn chat_completions(
                         ),
                         std::time::Duration::from_secs(5),
                     )
-                    .await
-                {
-                    Ok(_) => {
+                    .await;
+                let terminal = match start_res {
+                    Ok(StartResult::Started(_)) => {
                         let _ = task.apply(ControlEvent::Started {
                             attempt: attempt.clone(),
                             lease: lease.clone(),
                         });
+                        // Live settle requires a real provider_terminal (DECISIONS #44).
+                        match state
+                            .hub
+                            .wait_terminal(
+                                &permit.provider_id,
+                                attempt.as_str(),
+                                std::time::Duration::from_secs(30),
+                            )
+                            .await
+                        {
+                            Ok(v) => v,
+                            Err(err) => {
+                                state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
+                                    name: "inference.terminal_timeout_held".into(),
+                                    tags: vec![
+                                        ("model".into(), permit.model.clone()),
+                                        ("provider".into(), permit.provider_id.clone()),
+                                    ],
+                                });
+                                return (
+                                    StatusCode::GATEWAY_TIMEOUT,
+                                    Json(json!({
+                                        "error": {
+                                            "message": format!(
+                                                "provider terminal timed out: {err}; reservation held for review"
+                                            ),
+                                            "type": "timeout",
+                                            "code": "provider_terminal_timeout_held"
+                                        }
+                                    })),
+                                )
+                                    .into_response();
+                            }
+                        }
+                    }
+                    Ok(StartResult::Terminal(v)) => {
+                        let _ = task.apply(ControlEvent::Started {
+                            attempt: attempt.clone(),
+                            lease: lease.clone(),
+                        });
+                        v
                     }
                     Err(err) => {
                         // Start-authorized: do not release or redispatch.
-                        // Leave the job held for recovery/review (DECISIONS #16).
                         state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
                             name: "inference.start_failed_held".into(),
                             tags: vec![
@@ -1048,7 +1088,93 @@ async fn chat_completions(
                         )
                             .into_response();
                     }
+                };
+
+                let digest = terminal
+                    .get("terminal_digest")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if digest.is_empty() {
+                    state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
+                        name: "inference.terminal_missing_digest_held".into(),
+                        tags: vec![("provider".into(), permit.provider_id.clone())],
+                    });
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(json!({
+                            "error": {
+                                "message": "provider terminal missing terminal_digest; reservation held for review",
+                                "type": "server_error",
+                                "code": "provider_terminal_invalid_held"
+                            }
+                        })),
+                    )
+                        .into_response();
                 }
+                let completion_tokens = terminal
+                    .get("completion_tokens")
+                    .and_then(|t| t.as_i64())
+                    .unwrap_or(1)
+                    .max(1) as i32;
+                let prompt_tokens = terminal
+                    .get("prompt_tokens")
+                    .and_then(|t| t.as_i64())
+                    .unwrap_or(1)
+                    .max(1) as i32;
+                // Pilot pricing: 10 µUSD per completion token until public price tables land.
+                let charged = (completion_tokens as i64) * 10;
+                let billable_cap = if req.stream { Some(charged) } else { None };
+                let cap = billable_cap.unwrap_or(charged);
+                let live_completion = {
+                    let mut ledger = state.ledger.lock().await;
+                    ledger.record_attempt(
+                        attempt.as_str(),
+                        job_id.as_str(),
+                        &permit.provider_id,
+                        "started",
+                    );
+                    if let Err(err) = ledger.settle_capped(
+                        crate::ledger::OperationKey(format!("settle:{}", job_id.as_str())),
+                        job_id.as_str(),
+                        &state.pilot_account,
+                        charged,
+                        cap,
+                        &digest,
+                    ) {
+                        return (
+                            StatusCode::CONFLICT,
+                            Json(json!({
+                                "error": {
+                                    "message": format!("live settle failed: {err}"),
+                                    "type": "server_error",
+                                    "code": "live_settle_conflict"
+                                }
+                            })),
+                        )
+                            .into_response();
+                    }
+                    let reserved = ledger
+                        .job_reserved_total(job_id.as_str())
+                        .unwrap_or(darkbloom_core::MicroUsd(0));
+                    MockCompletion {
+                        job_id: job_id.as_str().to_string(),
+                        attempt_id: attempt.as_str().to_string(),
+                        provider_id: permit.provider_id.clone(),
+                        model: permit.model.clone(),
+                        content: format!(
+                            "[rust-live] provider={} digest={}",
+                            permit.provider_id, digest
+                        ),
+                        prompt_tokens,
+                        completion_tokens,
+                        reserved,
+                        charged: darkbloom_core::MicroUsd(charged.min(cap).max(0)),
+                        terminal_digest: digest,
+                        mode: "rust-live".into(),
+                    }
+                };
+                Ok::<_, String>(live_completion)
             } else {
                 let _ = task.apply(ControlEvent::Prepared {
                     attempt: attempt.clone(),
@@ -1062,30 +1188,21 @@ async fn chat_completions(
                     attempt: attempt.clone(),
                     lease: lease.clone(),
                 });
-            }
+                let billable_cap = if req.stream { Some(1_000i64) } else { None };
+                let mut ledger = state.ledger.lock().await;
+                complete_authorized_job(
+                    &mut ledger,
+                    &state.pilot_account,
+                    job_id.as_str(),
+                    &permit,
+                    lease.as_str(),
+                    user_text,
+                    "rust-mock",
+                    billable_cap,
+                )
+            };
 
-            let mode = if use_live {
-                "rust-live-prepare"
-            } else {
-                "rust-mock"
-            };
-            // For streaming, billable cap tracks pipe-accepted tokens (here: full mock output).
-            let billable_cap = if req.stream {
-                Some(1_000i64) // full mock charge when checkpoint accepts the stream
-            } else {
-                None
-            };
-            let mut ledger = state.ledger.lock().await;
-            match complete_authorized_job(
-                &mut ledger,
-                &state.pilot_account,
-                job_id.as_str(),
-                &permit,
-                lease.as_str(),
-                user_text,
-                mode,
-                billable_cap,
-            ) {
+            match completion_result {
                 Ok(completion) => {
                     let _ = task.apply(ControlEvent::FirstContent {
                         attempt: AttemptId::new(completion.attempt_id.clone()),

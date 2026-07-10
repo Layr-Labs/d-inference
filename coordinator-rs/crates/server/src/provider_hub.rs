@@ -49,6 +49,8 @@ struct ProviderConn {
     outbound: mpsc::Sender<OutboundCmd>,
     session_epoch: u64,
     waiters: HashMap<String, Waiter>,
+    /// Terminals that arrived with no waiter (between start ACK and wait_terminal).
+    pending_terminals: HashMap<String, Value>,
 }
 
 #[derive(Default)]
@@ -57,6 +59,14 @@ pub struct ProviderHub {
 }
 
 pub type SharedHub = Arc<ProviderHub>;
+
+/// Result of a start round-trip (DECISIONS #44).
+#[derive(Debug, Clone)]
+pub enum StartResult {
+    Started(Value),
+    /// Provider finished before/with start ACK — settle from this terminal only.
+    Terminal(Value),
+}
 
 impl ProviderHub {
     pub fn new() -> SharedHub {
@@ -77,6 +87,7 @@ impl ProviderHub {
                 outbound,
                 session_epoch,
                 waiters: HashMap::new(),
+                pending_terminals: HashMap::new(),
             },
         );
     }
@@ -105,6 +116,9 @@ impl ProviderHub {
         if let Some(conn) = g.get_mut(provider_id) {
             if let Some(w) = conn.waiters.remove(attempt_id) {
                 let _ = w.tx.send(reply);
+            } else if let InboundReply::Terminal(v) = reply {
+                // Buffer until wait_terminal claims it (DECISIONS #44).
+                conn.pending_terminals.insert(attempt_id.to_string(), v);
             } else {
                 tracing::warn!(
                     provider_id,
@@ -180,17 +194,57 @@ impl ProviderHub {
         attempt_id: &str,
         frame: Value,
         timeout: Duration,
-    ) -> Result<Value, HubError> {
+    ) -> Result<StartResult, HubError> {
         match self
             .send_and_wait(provider_id, attempt_id, frame, timeout)
             .await?
         {
-            InboundReply::Started(v) => Ok(v),
-            InboundReply::Terminal(v) => Ok(v), // fast path: terminal may arrive with started
+            InboundReply::Started(v) => Ok(StartResult::Started(v)),
+            InboundReply::Terminal(v) => Ok(StartResult::Terminal(v)),
             InboundReply::StructuredError(v) => Err(HubError::Conflict(format!(
                 "structured_error: {v}"
             ))),
             other => Err(HubError::Conflict(format!("expected started, got {other:?}"))),
+        }
+    }
+
+    /// Wait for a provider_terminal after start (DECISIONS #44).
+    /// Checks the pending buffer first so a fast terminal is not lost.
+    pub async fn wait_terminal(
+        &self,
+        provider_id: &str,
+        attempt_id: &str,
+        timeout: Duration,
+    ) -> Result<Value, HubError> {
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut g = self.inner.lock().await;
+            let conn = g.get_mut(provider_id).ok_or(HubError::NotConnected)?;
+            if let Some(v) = conn.pending_terminals.remove(attempt_id) {
+                return Ok(v);
+            }
+            conn.waiters.insert(attempt_id.to_string(), Waiter { tx });
+        }
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(InboundReply::Terminal(v))) => Ok(v),
+            Ok(Ok(InboundReply::StructuredError(v))) => Err(HubError::Conflict(format!(
+                "structured_error: {v}"
+            ))),
+            Ok(Ok(other)) => Err(HubError::Conflict(format!(
+                "expected terminal, got {other:?}"
+            ))),
+            Ok(Err(_)) => Err(HubError::Disconnected),
+            Err(_) => {
+                let mut g = self.inner.lock().await;
+                if let Some(conn) = g.get_mut(provider_id) {
+                    conn.waiters.remove(attempt_id);
+                    // Terminal may have raced into the buffer after timeout started.
+                    if let Some(v) = conn.pending_terminals.remove(attempt_id) {
+                        return Ok(v);
+                    }
+                }
+                Err(HubError::Timeout)
+            }
         }
     }
 
@@ -302,5 +356,79 @@ mod tests {
             .unwrap();
         assert_eq!(reply["type"], "prepared");
         writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_terminal_claims_pending_buffer() {
+        let hub = ProviderHub::new();
+        let (tx, _rx) = mpsc::channel(8);
+        hub.attach("p1".into(), 1, tx).await;
+        hub.deliver_reply(
+            "p1",
+            "a1",
+            InboundReply::Terminal(json!({
+                "type": "provider_terminal",
+                "attempt_id": "a1",
+                "terminal_digest": "sha256:t1",
+                "completion_tokens": 4,
+                "outcome": "completed"
+            })),
+        )
+        .await;
+        let v = hub
+            .wait_terminal("p1", "a1", Duration::from_millis(200))
+            .await
+            .unwrap();
+        assert_eq!(v["terminal_digest"], "sha256:t1");
+    }
+
+    #[tokio::test]
+    async fn start_then_wait_terminal_round_trip() {
+        let hub = ProviderHub::new();
+        let (tx, mut rx) = mpsc::channel(8);
+        hub.attach("p1".into(), 1, tx).await;
+        let hub2 = hub.clone();
+        tokio::spawn(async move {
+            while let Some(OutboundCmd::Text(t)) = rx.recv().await {
+                let v: Value = serde_json::from_str(&t).unwrap();
+                let attempt = v["attempt_id"].as_str().unwrap().to_string();
+                if v["type"] == "start" {
+                    hub2.deliver_reply(
+                        "p1",
+                        &attempt,
+                        InboundReply::Started(json!({ "type": "started", "attempt_id": attempt })),
+                    )
+                    .await;
+                    hub2.deliver_reply(
+                        "p1",
+                        &attempt,
+                        InboundReply::Terminal(json!({
+                            "type": "provider_terminal",
+                            "attempt_id": attempt,
+                            "terminal_digest": "sha256:live",
+                            "completion_tokens": 8,
+                            "prompt_tokens": 2,
+                            "outcome": "completed"
+                        })),
+                    )
+                    .await;
+                }
+            }
+        });
+        let started = hub
+            .start(
+                "p1",
+                "a1",
+                ProviderHub::start_frame("j", "a1", "l", 1, 1, "n", "d"),
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(started, StartResult::Started(_)));
+        let term = hub
+            .wait_terminal("p1", "a1", Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(term["terminal_digest"], "sha256:live");
     }
 }

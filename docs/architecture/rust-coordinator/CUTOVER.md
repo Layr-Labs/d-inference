@@ -189,3 +189,10 @@ successful mark+credit. Process-local paths use `Outbox::enqueue_released` /
 resize-authorize failure, and pre-start cancel so refunds cannot silently lose
 their durable side effect.
 
+### Live settle requires provider terminal (DECISIONS #44)
+
+Live prepare/start must wait for a real `provider_terminal` (pending-buffer
+safe). Timeout or missing `terminal_digest` leaves the reservation
+`start_authorized` held for force-settle — the coordinator must never invent a
+mock charge/digest on the live path.
+

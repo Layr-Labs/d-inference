@@ -57,6 +57,25 @@ async def main():
                     "lease_id": msg.get("lease_id"),
                     "session_epoch": msg.get("session_epoch", 0),
                 }))
+                # Real provider_terminal required for live settle (DECISIONS #44).
+                await ws.send(json.dumps({
+                    "type": "provider_terminal",
+                    "job_id": msg.get("job_id"),
+                    "attempt_id": msg.get("attempt_id"),
+                    "lease_id": msg.get("lease_id"),
+                    "session_epoch": msg.get("session_epoch", 0),
+                    "coordinator_epoch": msg.get("coordinator_epoch", 0),
+                    "dispatch_nonce": msg.get("dispatch_nonce", ""),
+                    "request_digest": msg.get("request_digest", ""),
+                    "outcome": "completed",
+                    "prompt_tokens": 4,
+                    "completion_tokens": 8,
+                    "response_hash": "sha256:smoke-response",
+                    "final_generated_tokens": 8,
+                    "se_signature": "smoke-sig",
+                    "terminal_digest": "sha256:smoke-terminal",
+                    "model": MODEL,
+                }))
             elif t == "terminal_ack":
                 print("TERMINAL_ACK", json.dumps(msg), flush=True)
             elif t in ("abort", "cancel"):

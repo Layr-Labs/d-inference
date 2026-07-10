@@ -42,7 +42,7 @@ pub use ownership::{
     release_sql as ownership_release_sql, run_ownership_heartbeat, Epoch, Gate as OwnershipGate,
     LocalOwnershipStore, OwnershipError,
 };
-pub use provider_hub::{InboundReply, OutboundCmd, ProviderHub, SharedHub};
+pub use provider_hub::{InboundReply, OutboundCmd, ProviderHub, SharedHub, StartResult};
 pub use provider_session::{spawn_session, Lane, ProviderSessionHandle, SessionError};
 pub use recovery::{
     classify_held_job, force_settle_held, recover_start_authorized_held, recover_undispatched,

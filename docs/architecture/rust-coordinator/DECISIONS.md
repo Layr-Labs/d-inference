@@ -112,6 +112,7 @@ Date: 2026-07-10
 | 103 | Explicit remaining-id recover + deposit/drain | After recover-batch abort, adopt+recover explicit remaining ids. Concurrent deposits ∥ outbox-drain leave outbox empty |
 | 104 | Multi-account remaining settle + ingest ACK | Multi-account force-settle remaining ids refunds each owner. Force-settle records attempt_id=`force-settle` so terminal-ingest ACKs without double charge |
 | 105 | Account-scoped abort remaining + release attempt_id | Batch/clear abort `remaining_*` ids scoped to `account` filter. Released dispositions use attempt_id=`release` for ingest ACK |
+| 106 | Per-account clear + abort filter echo | Concurrent account-filtered clear-orphans conserves each account. Abort JSON echoes `account_filter` |
 
 ## Deleted Go mechanisms (do not port)
 

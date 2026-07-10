@@ -127,7 +127,7 @@ fn remaining_ids_for_abort(
     }
 }
 
-/// Partial batch response when ownership is lost mid-loop (DECISIONS #97/#98).
+/// Partial batch response when ownership is lost mid-loop (DECISIONS #97/#98/#105).
 fn batch_ownership_lost_partial(
     batch: &str,
     completed: &[String],
@@ -136,6 +136,7 @@ fn batch_ownership_lost_partial(
     amount_total: i64,
     remaining_active: &[String],
     remaining_held: &[String],
+    account_filter: Option<&str>,
 ) -> axum::response::Response {
     let mut body = serde_json::Map::new();
     body.insert(
@@ -160,6 +161,9 @@ fn batch_ownership_lost_partial(
         "held_start_authorized".into(),
         json!(remaining_held.len()),
     );
+    if let Some(acct) = account_filter {
+        body.insert("account_filter".into(), json!(acct));
+    }
     (StatusCode::SERVICE_UNAVAILABLE, Json(Value::Object(body))).into_response()
 }
 
@@ -891,6 +895,7 @@ async fn admin_force_settle_batch(
                 charged_total,
                 &remaining_active,
                 &remaining_held,
+                account_filter.as_deref(),
             );
         }
         let epoch = state.ownership.epoch().0;
@@ -1175,6 +1180,7 @@ async fn admin_recover_undispatched_batch(
                 refund_total,
                 &remaining_active,
                 &remaining_held,
+                account_filter.as_deref(),
             );
         }
         let epoch = state.ownership.epoch().0;
@@ -1569,6 +1575,7 @@ async fn admin_clear_orphans(
             0,
             &remaining_active,
             &remaining_held,
+            account_filter.as_deref(),
         );
     }
 
@@ -1595,6 +1602,7 @@ async fn admin_clear_orphans(
                     0,
                     &remaining_active,
                     &remaining_held,
+                    account_filter.as_deref(),
                 );
             }
             let epoch = state.ownership.epoch().0;
@@ -1642,6 +1650,7 @@ async fn admin_clear_orphans(
             0,
             &remaining_active,
             &remaining_held,
+            account_filter.as_deref(),
         );
     }
 
@@ -1668,6 +1677,7 @@ async fn admin_clear_orphans(
                     charged_total,
                     &remaining_active,
                     &remaining_held,
+                    account_filter.as_deref(),
                 );
             }
             let epoch = state.ownership.epoch().0;
@@ -1761,7 +1771,7 @@ async fn admin_clear_orphans(
         .into_response()
 }
 
-/// Partial clear-orphans response when ownership is lost mid-flight (DECISIONS #85/#100).
+/// Partial clear-orphans response when ownership is lost mid-flight (DECISIONS #85/#100/#105).
 fn ownership_lost_partial(
     phase: &str,
     adopted: &[String],
@@ -1771,6 +1781,7 @@ fn ownership_lost_partial(
     charged_total: i64,
     remaining_active: &[String],
     remaining_held: &[String],
+    account_filter: Option<&str>,
 ) -> axum::response::Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
@@ -1782,6 +1793,7 @@ fn ownership_lost_partial(
             },
             "action": "clear_orphans_aborted",
             "phase": phase,
+            "account_filter": account_filter,
             "adopted_count": adopted.len(),
             "adopted": adopted,
             "released_count": released.len(),

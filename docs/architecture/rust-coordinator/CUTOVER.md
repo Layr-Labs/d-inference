@@ -576,3 +576,9 @@ When batch recover/force-settle or clear-orphans abort mid-flight with an
 `remaining_held_start_authorized_job_ids` list only that account's orphans.
 Released dispositions use attempt_id `release` (parity with force-settle).
 
+### Per-account clear + abort filter echo (DECISIONS #106)
+
+Concurrent clear-orphans with distinct `account` filters clear each account
+exactly once and conserve balances. Abort responses echo `account_filter` so
+ops know which scope the remaining ids apply to.
+

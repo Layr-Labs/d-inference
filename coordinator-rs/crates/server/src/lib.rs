@@ -39,7 +39,8 @@ pub use ledger::{MemoryLedger, OperationKey, ReservationProvenance};
 pub use outbox::{ack_done_sql, requeue_sql, Outbox, OutboxEntry, OutboxError};
 pub use ownership::{
     acquire_sql as ownership_acquire_sql, heartbeat_sql as ownership_heartbeat_sql,
-    release_sql as ownership_release_sql, Epoch, Gate as OwnershipGate, OwnershipError,
+    release_sql as ownership_release_sql, run_ownership_heartbeat, Epoch, Gate as OwnershipGate,
+    LocalOwnershipStore, OwnershipError,
 };
 pub use provider_hub::{InboundReply, OutboundCmd, ProviderHub, SharedHub};
 pub use provider_session::{spawn_session, Lane, ProviderSessionHandle, SessionError};

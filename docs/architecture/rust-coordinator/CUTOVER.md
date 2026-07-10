@@ -142,3 +142,10 @@ Identical replay is idempotent; mismatched reuse is Conflict.
 `try_claim` moves entries to in-flight (SQL UPDATE-not-DELETE). Only `ack_done`
 drops them; quiescence counts in-flight. The best-effort worker does not
 auto-ack critical `billing.*` / `inference.*` kinds.
+
+### Ownership heartbeat fence (DECISIONS #36)
+
+`LocalOwnershipStore` CAS-acquires and heartbeats (SQL analogue). The heartbeat
+loop releases the Gate on steal/mismatch so chat/deposits/terminal-ingest return
+`ownership_lost`. SQLx replaces the local store with durable SQL.
+

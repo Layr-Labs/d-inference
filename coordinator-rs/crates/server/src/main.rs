@@ -1,12 +1,13 @@
 use darkbloom_coordinator::cli::{parse_and_is_recovery, run_recovery};
 use darkbloom_coordinator::{
-    bounded_telemetry, router, spawn_fleet_actor, AppState, CoordinatorKeys, Epoch,
-    ExternalEventInbox, MemoryLedger, MemoryTerminalStore, ModelCard, Outbox, OwnershipGate,
-    ProviderHub,
+    bounded_telemetry, router, run_ownership_heartbeat, spawn_fleet_actor, AppState,
+    CoordinatorKeys, ExternalEventInbox, LocalOwnershipStore, MemoryLedger, MemoryTerminalStore,
+    ModelCard, Outbox, OwnershipGate, ProviderHub,
 };
 use darkbloom_core::PlacementController;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
 
@@ -65,13 +66,38 @@ async fn main() {
             .filter(|s| !s.is_empty())
             .collect(),
     );
-    let coordinator_epoch: u64 = std::env::var("DARKBLOOM_COORDINATOR_EPOCH")
+    let holder = std::env::var("DARKBLOOM_OWNERSHIP_HOLDER")
+        .unwrap_or_else(|_| format!("pid-{}", std::process::id()));
+    let lease_ttl_secs: u64 = std::env::var("DARKBLOOM_OWNERSHIP_LEASE_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(1);
-    if let Err(err) = ownership.acquire(Epoch(coordinator_epoch)) {
-        tracing::error!(%err, "failed to acquire ownership");
+        .unwrap_or(30);
+    let ownership_store = Arc::new(LocalOwnershipStore::new(Duration::from_secs(lease_ttl_secs)));
+    let fencing_epoch = match ownership_store.acquire(&holder) {
+        Ok(e) => e,
+        Err(err) => {
+            tracing::error!(%err, holder = %holder, "failed to acquire durable ownership");
+            std::process::exit(1);
+        }
+    };
+    if let Err(err) = ownership.acquire(fencing_epoch) {
+        tracing::error!(%err, "failed to arm local ownership gate");
         std::process::exit(1);
+    }
+    let coordinator_epoch = fencing_epoch.0;
+    {
+        let store_hb = ownership_store.clone();
+        let gate_hb = ownership.clone();
+        let holder_hb = holder.clone();
+        tokio::spawn(async move {
+            run_ownership_heartbeat(
+                store_hb,
+                gate_hb,
+                holder_hb,
+                Duration::from_secs(lease_ttl_secs.max(1) / 3).max(Duration::from_millis(200)),
+            )
+            .await;
+        });
     }
     let (telemetry, mut telemetry_worker) = bounded_telemetry(1024);
     tokio::spawn(async move {
@@ -80,6 +106,8 @@ async fn main() {
         }
     });
     let ownership_for_shutdown = ownership.clone();
+    let store_for_shutdown = ownership_store.clone();
+    let holder_for_shutdown = holder.clone();
     let outbox_for_worker = Arc::new(Mutex::new(Outbox::default()));
     let outbox_for_state = outbox_for_worker.clone();
     tokio::spawn(async move {
@@ -144,13 +172,23 @@ async fn main() {
     tracing::info!(%addr, "darkbloom-coordinator warm plane listening");
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(ownership_for_shutdown))
+        .with_graceful_shutdown(shutdown_signal(
+            ownership_for_shutdown,
+            store_for_shutdown,
+            holder_for_shutdown,
+        ))
         .await
         .expect("serve");
 }
 
-async fn shutdown_signal(ownership: Arc<OwnershipGate>) {
+async fn shutdown_signal(
+    ownership: Arc<OwnershipGate>,
+    store: Arc<LocalOwnershipStore>,
+    holder: String,
+) {
     let _ = tokio::signal::ctrl_c().await;
     tracing::info!("shutdown signal received — releasing ownership");
+    let epoch = ownership.epoch();
+    let _ = store.release(&holder, epoch);
     ownership.release();
 }

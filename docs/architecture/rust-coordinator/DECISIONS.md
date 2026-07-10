@@ -42,6 +42,7 @@ Date: 2026-07-10
 | 33 | SQL op-key gates money | Durable ledger CTEs claim `financial_operations` **before** debit/credit/digest/mark; money CTEs require `EXISTS (SELECT 1 FROM op)`; orphaned op claims (digest/job conflict) are deleted in-statement via `cleanup_op` |
 | 34 | Op-key parameter bind | `MemoryLedger` stores an `OperationRecord` (type/job/account/amount/digest/cap) per op key; identical replay is idempotent, mismatched reuse is Conflict — matches SQL row semantics |
 | 35 | Outbox claim until ack | `try_claim` moves entries to in-flight (mirrors SQL UPDATE-not-DELETE); only `ack_done` drops them. Quiescence counts in-flight. Critical kinds are not auto-acked by the best-effort worker |
+| 36 | Ownership heartbeat fence | `LocalOwnershipStore` CAS-acquires + heartbeats (SQL analogue); `run_ownership_heartbeat` releases the Gate on mismatch/steal so mutating routes return ownership_lost. SQLx swaps the store for durable SQL |
 
 ## Deleted Go mechanisms (do not port)
 

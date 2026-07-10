@@ -90,3 +90,8 @@ never fail-closes a held job. SQL: `settle_capped_sql()` / `force_settle_sql()`.
 Money-moving CTEs require `inference_jobs.account_id = caller`. Digest and
 op-key inserts are `INSERT … SELECT … FROM guard|charge|calc` so a failed
 settle cannot pin a terminal digest or poison an operation key.
+
+### Terminal ingest attempt drift (DECISIONS #25)
+
+`ingest_terminal` / `lookup_sql` prefer `(attempt_id, digest)` then fall back
+to digest-only so empty or drifted attempt_id at settle still ACKs.

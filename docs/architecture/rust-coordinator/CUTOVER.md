@@ -48,3 +48,24 @@
 
 Use same-release Rust `recovery` subcommand/image — not an arbitrary older image.
 Go must not serve new paid traffic over active Rust jobs unless explicitly fenced.
+
+### Held start_authorized jobs (DECISIONS #16–17)
+
+After a provider `start` failure post-`start_authorized`, the reservation is
+**held** (not released). Quiescence reports:
+
+- `held_start_authorized` — count
+- `held_start_authorized_job_ids` — job IDs
+
+Ops dry-runs (in-memory):
+
+```bash
+# Classify without moving money
+darkbloom-coordinator recovery --confirm-same-release --demo-held-job JOB
+
+# Force-settle a review amount and clear the hold
+darkbloom-coordinator recovery --confirm-same-release --demo-force-settle-job JOB
+```
+
+Production force-settle uses `force_settle_held` against Postgres once SQLx is
+wired. Do **not** call `release` on start_authorized jobs.

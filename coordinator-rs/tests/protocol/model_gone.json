@@ -1,0 +1,6 @@
+{
+  "type": "model_gone",
+  "model": "pilot-text-model",
+  "state_revision": 43,
+  "reason": "evicted"
+}

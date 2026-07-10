@@ -1,0 +1,6 @@
+{
+  "type": "model_ready",
+  "model": "pilot-text-model",
+  "state_revision": 42,
+  "weight_hash": "sha256:abc"
+}

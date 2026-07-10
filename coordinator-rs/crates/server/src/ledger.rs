@@ -149,6 +149,20 @@ impl MemoryLedger {
 
     /// Settle: charge `actual`, refund unused provenance, mark terminal.
     /// Enforces at most one funded start / one settle per job via op key.
+    /// Settle charging min(actual, billable_cap) when a chunk checkpoint caps tokens.
+    pub fn settle_capped(
+        &mut self,
+        op: OperationKey,
+        job_id: &str,
+        account: &str,
+        actual: i64,
+        billable_cap: i64,
+        terminal_digest: &str,
+    ) -> Result<bool, LedgerError> {
+        let charge = actual.min(billable_cap).max(0);
+        self.settle(op, job_id, account, charge, terminal_digest)
+    }
+
     pub fn settle(
         &mut self,
         op: OperationKey,
@@ -309,5 +323,27 @@ mod tests {
             led.mark_start_authorized("j"),
             Err(LedgerError::Conflict(_))
         ));
+    }
+
+    #[test]
+    fn settle_capped_respects_billable_cap() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 10_000_000, 0);
+        led.reserve(OperationKey("r".into()), "j", "a", 5_000_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        // Provider claims 4M but checkpoint only accepted 1M worth.
+        assert!(led
+            .settle_capped(
+                OperationKey("s".into()),
+                "j",
+                "a",
+                4_000_000,
+                1_000_000,
+                "td"
+            )
+            .unwrap());
+        // reserved 5M, charged 1M → refund 4M → bal 10M-5M+4M = 9M
+        assert_eq!(led.balance("a").0, 9_000_000);
     }
 }

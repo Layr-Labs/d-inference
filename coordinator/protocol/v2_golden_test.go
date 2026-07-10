@@ -111,3 +111,33 @@ func TestV2Goldens_Cancelled(t *testing.T) {
 		t.Fatalf("payload=%T", pm.Payload)
 	}
 }
+
+func TestV2Goldens_ModelLifecycle(t *testing.T) {
+	dir := goldenDir(t)
+	for _, name := range []string{"model_ready.json", "model_gone.json"} {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pm ProviderMessage
+		if err := json.Unmarshal(b, &pm); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		switch name {
+		case "model_ready.json":
+			if pm.Type != TypeModelReady {
+				t.Fatalf("type=%q", pm.Type)
+			}
+			if _, ok := pm.Payload.(*ModelReadyMessage); !ok {
+				t.Fatalf("payload=%T", pm.Payload)
+			}
+		case "model_gone.json":
+			if pm.Type != TypeModelGone {
+				t.Fatalf("type=%q", pm.Type)
+			}
+			if _, ok := pm.Payload.(*ModelGoneMessage); !ok {
+				t.Fatalf("payload=%T", pm.Payload)
+			}
+		}
+	}
+}

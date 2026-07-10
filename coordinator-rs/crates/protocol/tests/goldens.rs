@@ -68,3 +68,19 @@ fn chunk_v2_golden_parses() {
     assert_eq!(v["completion_tokens_cumulative"], 4);
     assert_eq!(v["rolling_response_hash"], "sha256:roll1");
 }
+
+#[test]
+fn model_ready_golden_parses() {
+    let raw = include_str!("fixtures/model_ready.json");
+    let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(v["type"], "model_ready");
+    assert_eq!(v["state_revision"], 42);
+}
+
+#[test]
+fn model_gone_golden_parses() {
+    let raw = include_str!("fixtures/model_gone.json");
+    let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(v["type"], "model_gone");
+    assert_eq!(v["state_revision"], 43);
+}

@@ -82,6 +82,13 @@ static OUTBOX_DRAIN_ENTRY_HOOK: std::sync::Mutex<Option<Arc<dyn Fn(&str) + Send 
 /// Serializes tests that install OUTBOX_DRAIN_ENTRY_HOOK.
 static OUTBOX_DRAIN_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Test-only: invoked with job_id immediately before chat resize+authorize (DECISIONS #149).
+static CHAT_PRE_RESIZE_HOOK: std::sync::Mutex<Option<Arc<dyn Fn(&str) + Send + Sync>>> =
+    std::sync::Mutex::new(None);
+
+/// Serializes tests that install CHAT_PRE_RESIZE_HOOK.
+static CHAT_PRE_RESIZE_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Install/clear the clear-orphans phase hook (tests only).
 pub fn set_clear_orphans_phase_hook(hook: Option<Arc<dyn Fn(&str) + Send + Sync>>) {
     *CLEAR_ORPHANS_PHASE_HOOK.lock().unwrap() = hook;
@@ -118,6 +125,18 @@ pub fn lock_outbox_drain_hook_tests() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|p| p.into_inner())
 }
 
+/// Install/clear the chat pre-resize hook (tests only).
+pub fn set_chat_pre_resize_hook(hook: Option<Arc<dyn Fn(&str) + Send + Sync>>) {
+    *CHAT_PRE_RESIZE_HOOK.lock().unwrap() = hook;
+}
+
+/// Hold while installing/using the chat pre-resize hook (tests only).
+pub fn lock_chat_pre_resize_hook_tests() -> std::sync::MutexGuard<'static, ()> {
+    CHAT_PRE_RESIZE_HOOK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+}
+
 fn invoke_clear_orphans_phase(phase: &str) {
     if let Ok(guard) = CLEAR_ORPHANS_PHASE_HOOK.lock() {
         if let Some(hook) = guard.as_ref() {
@@ -138,6 +157,14 @@ fn invoke_outbox_drain_entry(kind: &str) {
     if let Ok(guard) = OUTBOX_DRAIN_ENTRY_HOOK.lock() {
         if let Some(hook) = guard.as_ref() {
             hook(kind);
+        }
+    }
+}
+
+fn invoke_chat_pre_resize(job_id: &str) {
+    if let Ok(guard) = CHAT_PRE_RESIZE_HOOK.lock() {
+        if let Some(hook) = guard.as_ref() {
+            hook(job_id);
         }
     }
 }
@@ -3177,9 +3204,11 @@ async fn chat_completions(
                 if let Err(resp) = require_holding(&state) {
                     return resp;
                 }
-                // Hold money_fx across resize+authorize (DECISIONS #146).
-                let _fx = state.money_fx.lock().await;
+                invoke_chat_pre_resize(job_id.as_str());
+                // Scope money_fx only around resize — release_job_with_outbox
+                // re-acquires it and tokio Mutex is not reentrant (DECISIONS #149).
                 let resize_err = {
+                    let _fx = state.money_fx.lock().await;
                     let mut ledger = state.ledger.lock().await;
                     let reserved = ledger
                         .job_reserved_total(job_id.as_str())

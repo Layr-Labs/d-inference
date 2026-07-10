@@ -682,6 +682,8 @@ impl MemoryLedger {
             )));
         }
         if job.disposition.is_some() {
+            // Do not poison the op key on a no-op disposed settle (DECISIONS #150).
+            self.unclaim_op(&op.0);
             return Ok(false);
         }
         let reserved = job.provenance.total.0;
@@ -1279,6 +1281,35 @@ mod tests {
             .settle(OperationKey("s".into()), "j", "a", 100_000, "d1")
             .unwrap());
         assert_eq!(led.balance("a").0, 5_000_000);
+    }
+
+    #[test]
+    fn settle_on_disposed_does_not_poison_op_key() {
+        // DECISIONS #150: unclaim on disposed no-op so the op key can be reused.
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r1".into()), "j1", "a", 1_000_000)
+            .unwrap();
+        assert!(led
+            .release(OperationKey("rel1".into()), "j1", "a")
+            .unwrap());
+        assert!(!led
+            .settle(OperationKey("shared-settle".into()), "j1", "a", 100_000, "d1")
+            .unwrap());
+        led.reserve(OperationKey("r2".into()), "j2", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j2", "a").unwrap();
+        assert!(led
+            .settle(
+                OperationKey("shared-settle".into()),
+                "j2",
+                "a",
+                100_000,
+                "d2"
+            )
+            .unwrap());
+        assert_eq!(led.active_job_count(), 0);
+        assert_eq!(led.balance("a").0, 4_900_000);
     }
 
     #[test]

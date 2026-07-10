@@ -780,4 +780,36 @@ mod tests {
         assert_eq!(a.state, "completed");
         assert_eq!(a.job_id, "job-1");
     }
+
+    #[test]
+    fn job_funded_start_remains_true_after_settle() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0);
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        assert!(!led.job_funded_start("j"));
+        led.mark_start_authorized("j").unwrap();
+        assert!(led.job_funded_start("j"));
+        assert!(led
+            .settle(OperationKey("s".into()), "j", "a", 400_000, "d1")
+            .unwrap());
+        // Funded-start flag is sticky for audit even after disposition.
+        assert!(led.job_funded_start("j"));
+        assert_eq!(led.active_job_count(), 0);
+    }
+
+    #[test]
+    fn job_funded_start_false_for_unknown_and_released() {
+        let mut led = MemoryLedger::default();
+        assert!(!led.job_funded_start("missing"));
+        led.credit("a", 5_000_000, 0);
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        assert!(!led.job_funded_start("j"));
+        assert!(led
+            .release(OperationKey("rel".into()), "j", "a")
+            .unwrap());
+        // Never start-authorized → still false after release.
+        assert!(!led.job_funded_start("j"));
+    }
 }

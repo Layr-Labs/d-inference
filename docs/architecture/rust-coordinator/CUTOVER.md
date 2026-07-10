@@ -699,3 +699,11 @@ apply exactly once; the foreign hold can then be force-settled without adopt.
 `needs_adopt_count` so ops can chain the next account (or cutover-drain-all)
 without a separate quiescence poll after a filtered clear.
 
+### adopt-jobs / batch return remaining accounts (DECISIONS #124)
+
+`POST /v1/admin/adopt-jobs`, `force-settle-batch`, and
+`recover-undispatched-batch` success responses include
+`accounts_needing_cutover` + `needs_adopt_count` (plus active/held counts on
+adopt). Ops can chain adopt → cutover-drain-all, or account-filtered batch
+settle/recover → next account, without a quiescence round-trip.
+

@@ -130,6 +130,7 @@ Date: 2026-07-10
 | 121 | Filtered clear adopts all for fencing | Account-filtered clear-orphans/cutover-drain rebinds fencing for ALL active jobs; money moves stay filter-scoped |
 | 122 | Concurrent filtered clear conservation | Concurrent account-filtered clear/cutover on disjoint tenants conserve money; deposits during filtered clear conserve |
 | 123 | clear-orphans returns remaining accounts | Success response includes `accounts_needing_cutover` + `needs_adopt_count` for chaining without quiescence |
+| 124 | adopt-jobs / batch return remaining accounts | `adopt-jobs`, `force-settle-batch`, and `recover-undispatched-batch` success include `accounts_needing_cutover` + `needs_adopt_count` for chaining without quiescence |
 
 ## Deleted Go mechanisms (do not port)
 

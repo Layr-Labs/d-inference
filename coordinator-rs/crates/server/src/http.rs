@@ -1076,12 +1076,16 @@ async fn admin_force_settle_batch(
     let report_account = account_filter
         .clone()
         .unwrap_or_else(|| state.pilot_account.clone());
-    let (bal, held, active) = {
+    let (bal, held, active, accounts_needing, needs_adopt) = {
         let led = state.ledger.lock().await;
+        let epoch = state.ownership.epoch().0;
+        let (na, _, _) = led.orphan_summary_counts(epoch);
         (
             led.balance(&report_account).0,
             led.held_start_authorized_count(),
             led.active_job_count(),
+            accounts_needing_cutover_from(&led, epoch),
+            na,
         )
     };
     (
@@ -1099,6 +1103,8 @@ async fn admin_force_settle_batch(
             "balance_micro_usd": bal,
             "held_start_authorized": held,
             "active_jobs": active,
+            "accounts_needing_cutover": accounts_needing,
+            "needs_adopt_count": needs_adopt,
         })),
     )
         .into_response()
@@ -1352,9 +1358,17 @@ async fn admin_recover_undispatched_batch(
     let report_account = account_filter
         .clone()
         .unwrap_or_else(|| state.pilot_account.clone());
-    let (bal, active) = {
+    let (bal, active, held, accounts_needing, needs_adopt) = {
         let led = state.ledger.lock().await;
-        (led.balance(&report_account).0, led.active_job_count())
+        let epoch = state.ownership.epoch().0;
+        let (na, _, _) = led.orphan_summary_counts(epoch);
+        (
+            led.balance(&report_account).0,
+            led.active_job_count(),
+            led.held_start_authorized_count(),
+            accounts_needing_cutover_from(&led, epoch),
+            na,
+        )
     };
     (
         StatusCode::OK,
@@ -1370,6 +1384,9 @@ async fn admin_recover_undispatched_batch(
             "refunded_micro_usd": refund_total,
             "balance_micro_usd": bal,
             "active_jobs": active,
+            "held_start_authorized": held,
+            "accounts_needing_cutover": accounts_needing,
+            "needs_adopt_count": needs_adopt,
         })),
     )
         .into_response()
@@ -1645,6 +1662,18 @@ async fn admin_adopt_jobs(
     }
     let adopted_count = adopted.len();
     let failed_count = failed.len();
+    // DECISIONS #124: surface remaining cutover state so ops can chain
+    // adopt-jobs → cutover-drain-all without a quiescence round-trip.
+    let (accounts_needing, needs_adopt, active, held) = {
+        let led = state.ledger.lock().await;
+        let (na, _, _) = led.orphan_summary_counts(epoch);
+        (
+            accounts_needing_cutover_from(&led, epoch),
+            na,
+            led.active_job_count(),
+            led.held_start_authorized_count(),
+        )
+    };
     (
         StatusCode::OK,
         Json(json!({
@@ -1655,6 +1684,10 @@ async fn admin_adopt_jobs(
             "failed": failed,
             "adopted_count": adopted_count,
             "failed_count": failed_count,
+            "accounts_needing_cutover": accounts_needing,
+            "needs_adopt_count": needs_adopt,
+            "active_jobs": active,
+            "held_start_authorized": held,
         })),
     )
         .into_response()

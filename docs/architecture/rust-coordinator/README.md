@@ -53,17 +53,17 @@ debits/credits target the shared Go `balances` table for continuity;
 | `POST /v1/admin/deposits` | Idempotent Stripe-inbox apply (`ExternalEventInbox`) |
 | `POST /v1/admin/terminal-ingest` | Replay ACK / late record (never double-settles) |
 | `POST /v1/admin/force-settle` | Ops clear start_authorized hold (`force_settled`) |
-| `POST /v1/admin/force-settle-batch` | Bulk force-settle held jobs (default full refund) |
+| `POST /v1/admin/force-settle-batch` | Bulk force-settle held jobs; returns remaining accounts |
 | `POST /v1/admin/clear-orphans` | One-shot adopt → recover → force-settle |
 | `POST /v1/admin/outbox-drain` | Claim+ack all outbox entries (cutover ready) |
 | `POST /v1/admin/cutover-drain` | One-shot clear-orphans then outbox-drain (optional `account`) |
 | `POST /v1/admin/cutover-drain-all` | Multi-tenant loop: all (or allowlisted) accounts then outbox until ready |
 | `POST /v1/admin/recover-undispatched` | Release reserved-not-started jobs (`inference.released` outbox) |
-| `POST /v1/admin/recover-undispatched-batch` | Bulk-release reserved-not-started jobs after adopt |
+| `POST /v1/admin/recover-undispatched-batch` | Bulk-release reserved-not-started jobs after adopt; returns remaining accounts |
 | `POST /v1/admin/held-review` | Classify held start_authorized jobs (no money move) |
 | `POST /v1/admin/held-review-batch` | Bulk classify held jobs (no money move; optional `account`) |
 | `POST /v1/admin/adopt-job` | Rebind orphaned job fencing epoch after ownership re-acquire |
-| `POST /v1/admin/adopt-jobs` | Bulk-rebind all (or listed / account-scoped) active job fencing epochs |
+| `POST /v1/admin/adopt-jobs` | Bulk-rebind fencing; returns `accounts_needing_cutover` + `needs_adopt_count` |
 | `POST /v1/admin/cancel-attempt` | Cancel start_authorized attempt (no money release) |
 
 Smoke provider: `coordinator-rs/scripts/mock_provider_ws.py`

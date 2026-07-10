@@ -271,6 +271,25 @@ async fn admin_deposit_rejects_invalid_pilot_key() {
 }
 
 #[tokio::test]
+async fn readyz_ok_when_holding() {
+    let app = router(test_state(true));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/readyz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["ready"], true);
+    assert_eq!(v["ownership_epoch"], 9);
+}
+
+#[tokio::test]
 async fn readyz_fails_without_ownership() {
     let app = router(test_state(false));
     let req = Request::builder()

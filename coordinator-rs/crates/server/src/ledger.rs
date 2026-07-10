@@ -748,4 +748,36 @@ mod tests {
             .unwrap());
         assert_eq!(led.active_job_count(), 0);
     }
+
+    #[test]
+    fn settle_capped_negative_billable_cap_clamps_to_zero() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0);
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        // Negative cap must clamp to zero charge (full refund), not panic or over-charge.
+        assert!(led
+            .settle_capped(
+                OperationKey("s".into()),
+                "j",
+                "a",
+                800_000,
+                -50,
+                "d-neg-cap"
+            )
+            .unwrap());
+        assert_eq!(led.balance("a").0, 5_000_000);
+        assert_eq!(led.active_job_count(), 0);
+    }
+
+    #[test]
+    fn record_attempt_overwrites_same_attempt_id() {
+        let mut led = MemoryLedger::default();
+        led.record_attempt("att-1", "job-1", "prov-1", "started");
+        led.record_attempt("att-1", "job-1", "prov-1", "completed");
+        let a = led.attempt("att-1").expect("attempt");
+        assert_eq!(a.state, "completed");
+        assert_eq!(a.job_id, "job-1");
+    }
 }

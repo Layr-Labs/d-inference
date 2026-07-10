@@ -44,6 +44,7 @@ Date: 2026-07-10
 | 35 | Outbox claim until ack | `try_claim` moves entries to in-flight (mirrors SQL UPDATE-not-DELETE); only `ack_done` drops them. Quiescence counts in-flight. Critical kinds are not auto-acked by the best-effort worker |
 | 36 | Ownership heartbeat fence | `LocalOwnershipStore` CAS-acquires + heartbeats (SQL analogue); `run_ownership_heartbeat` releases the Gate on mismatch/steal so mutating routes return ownership_lost. SQLx swaps the store for durable SQL |
 | 37 | Deposit SQL outbox atomicity | `deposit_sql` inserts `billing.deposit_applied` into `rust_coord.outbox` gated on credit+op so money and the durable side effect commit together (process-local path still uses enqueue_critical after apply) |
+| 38 | Settle SQL outbox atomicity | `settle_sql` / `settle_capped_sql` / `force_settle_sql` insert `inference.settled` into `rust_coord.outbox` gated on `mark` so settlement and the durable side effect commit together |
 
 ## Deleted Go mechanisms (do not port)
 

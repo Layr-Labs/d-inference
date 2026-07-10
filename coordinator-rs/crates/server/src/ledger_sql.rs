@@ -224,6 +224,7 @@ impl PostgresLedgerStub {
     ///             $6 attempt_id
     /// Op claim gates digest + money (DECISIONS #32/#33): reused op keys cannot move funds.
     /// Digest/op inserts are gated on guard so failed settles cannot poison digests/op keys.
+    /// Outbox insert gated on mark (DECISIONS #37/#38).
     pub fn settle_sql() -> &'static str {
         r#"
         WITH job AS (
@@ -280,6 +281,18 @@ impl PostgresLedgerStub {
           FROM calc
           WHERE j.job_id = $2
           RETURNING j.job_id
+        ), outbox AS (
+          INSERT INTO rust_coord.outbox (kind, payload, attempts)
+          SELECT 'inference.settled',
+                 jsonb_build_object(
+                   'job_id', $2,
+                   'attempt_id', $6,
+                   'terminal_digest', $4,
+                   'charged_micro_usd', $3
+                 ),
+                 0
+          FROM mark
+          RETURNING id
         ), cleanup_op AS (
           DELETE FROM rust_coord.financial_operations fo
           WHERE fo.operation_key = $5
@@ -295,6 +308,7 @@ impl PostgresLedgerStub {
     /// Parameters: $1 account, $2 job_id, $3 actual, $4 billable_cap, $5 terminal_digest,
     ///             $6 operation_key, $7 attempt_id
     /// Op claim gates digest + money so reused op keys cannot move funds (DECISIONS #33).
+    /// Outbox insert gated on mark (DECISIONS #37/#38).
     pub fn settle_capped_sql() -> &'static str {
         r#"
         WITH job AS (
@@ -355,6 +369,19 @@ impl PostgresLedgerStub {
           FROM calc
           WHERE j.job_id = $2
           RETURNING j.job_id
+        ), outbox AS (
+          INSERT INTO rust_coord.outbox (kind, payload, attempts)
+          SELECT 'inference.settled',
+                 jsonb_build_object(
+                   'job_id', $2,
+                   'attempt_id', $7,
+                   'terminal_digest', $5,
+                   'charged_micro_usd', c.amount
+                 ),
+                 0
+          FROM mark
+          CROSS JOIN calc c
+          RETURNING id
         ), cleanup_op AS (
           DELETE FROM rust_coord.financial_operations fo
           WHERE fo.operation_key = $6
@@ -430,6 +457,20 @@ impl PostgresLedgerStub {
           FROM calc
           WHERE j.job_id = $2
           RETURNING j.job_id
+        ), outbox AS (
+          INSERT INTO rust_coord.outbox (kind, payload, attempts)
+          SELECT 'inference.settled',
+                 jsonb_build_object(
+                   'job_id', $2,
+                   'attempt_id', $6,
+                   'terminal_digest', $4,
+                   'charged_micro_usd', c.amount,
+                   'disposition', 'force_settled'
+                 ),
+                 0
+          FROM mark
+          CROSS JOIN calc c
+          RETURNING id
         ), cleanup_op AS (
           DELETE FROM rust_coord.financial_operations fo
           WHERE fo.operation_key = $5
@@ -531,6 +572,9 @@ mod tests {
         assert!(sql.contains("SELECT $5, $2, 'settle', $3 FROM guard"));
         assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));
+        assert!(sql.contains("rust_coord.outbox"));
+        assert!(sql.contains("inference.settled"));
+        assert!(sql.contains("FROM mark"));
     }
 
     #[test]
@@ -546,6 +590,8 @@ mod tests {
         assert!(sql.contains("FROM charge"));
         assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));
+        assert!(sql.contains("rust_coord.outbox"));
+        assert!(sql.contains("inference.settled"));
     }
 
     #[test]
@@ -564,6 +610,8 @@ mod tests {
         assert!(sql.contains("FROM charge"));
         assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));
+        assert!(sql.contains("rust_coord.outbox"));
+        assert!(sql.contains("inference.settled"));
     }
 
     #[test]

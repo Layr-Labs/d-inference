@@ -149,3 +149,9 @@ auto-ack critical `billing.*` / `inference.*` kinds.
 loop releases the Gate on steal/mismatch so chat/deposits/terminal-ingest return
 `ownership_lost`. SQLx replaces the local store with durable SQL.
 
+### Deposit/settle SQL outbox atomicity (DECISIONS #37 / #38)
+
+Durable `deposit_sql` enqueues `billing.deposit_applied` gated on credit+op.
+`settle_sql` / `settle_capped_sql` / `force_settle_sql` enqueue `inference.settled`
+gated on mark so money and the side effect commit in one transaction.
+

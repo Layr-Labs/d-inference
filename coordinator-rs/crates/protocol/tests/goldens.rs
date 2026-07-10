@@ -42,3 +42,11 @@ fn abort_golden_parses() {
     assert_eq!(v["type"], "abort");
     assert_eq!(v["reason"], "hedge_lost");
 }
+
+#[test]
+fn terminal_ack_golden_parses() {
+    let raw = include_str!("fixtures/terminal_ack.json");
+    let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(v["type"], "terminal_ack");
+    assert_eq!(v["disposition"], "settled");
+}

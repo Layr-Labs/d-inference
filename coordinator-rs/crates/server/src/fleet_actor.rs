@@ -178,6 +178,7 @@ mod tests {
                 data_lane_full: false,
                 predicted_first_content_ms: 10.0,
                 predicted_decode_ms: 20.0,
+                trust: darkbloom_core::TrustState::default(),
             })
             .await
             .unwrap();

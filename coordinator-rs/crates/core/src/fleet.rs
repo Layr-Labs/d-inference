@@ -5,6 +5,7 @@
 use crate::admission::{AdmissionDecision, CapacityReason, DispatchPermit, RejectionReason};
 use crate::health::HealthMachine;
 use crate::ids::AttemptId;
+use crate::trust::TrustState;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
@@ -20,6 +21,7 @@ pub struct ProviderSnapshot {
     pub data_lane_full: bool,
     pub predicted_first_content_ms: f64,
     pub predicted_decode_ms: f64,
+    pub trust: TrustState,
 }
 
 #[derive(Debug, Clone)]
@@ -47,7 +49,14 @@ impl FleetState {
             .providers
             .values()
             .filter(|p| !req.exclude_providers.contains(&p.provider_id))
-            .filter(|p| p.trusted && p.challenge_fresh && p.encrypted_transport)
+            .filter(|p| {
+                // Prefer epoch-fenced TrustState when it has been applied; else legacy bools.
+                if p.trust.trust_epoch.0 > 0 {
+                    p.trust.publicly_routable()
+                } else {
+                    p.trusted && p.challenge_fresh && p.encrypted_transport
+                }
+            })
             .filter(|p| p.ready_models.contains(&req.model))
             .filter(|p| p.health.admits_general_traffic())
             .filter(|p| !p.data_lane_full)
@@ -107,6 +116,7 @@ mod tests {
             data_lane_full: false,
             predicted_first_content_ms: ttft,
             predicted_decode_ms: 100.0,
+            trust: crate::trust::TrustState::default(),
         }
     }
 

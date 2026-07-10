@@ -111,6 +111,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                     data_lane_full: false,
                     predicted_first_content_ms: 100.0,
                     predicted_decode_ms: 200.0,
+                    trust: darkbloom_core::TrustState::default(),
                 };
                 if let Err(err) = state.fleet.upsert_lifecycle(snap).await {
                     tracing::warn!(%err, "fleet upsert failed");
@@ -151,18 +152,19 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                 if let Some(active) = wire.rest.get("active_model").and_then(|v| v.as_str()) {
                     ready.insert(active.to_string());
                 }
-                let snap = ProviderSnapshot {
-                    provider_id: id,
-                    session_epoch,
-                    trusted: true,
-                    challenge_fresh: true,
-                    encrypted_transport: true,
-                    ready_models: ready,
-                    health: HealthMachine::healthy(),
-                    data_lane_full: false,
-                    predicted_first_content_ms: 80.0,
-                    predicted_decode_ms: 150.0,
-                };
+                        let snap = ProviderSnapshot {
+                            provider_id: id,
+                            session_epoch,
+                            trusted: true,
+                            challenge_fresh: true,
+                            encrypted_transport: true,
+                            ready_models: ready,
+                            health: HealthMachine::healthy(),
+                            data_lane_full: false,
+                            predicted_first_content_ms: 80.0,
+                            predicted_decode_ms: 150.0,
+                            trust: darkbloom_core::TrustState::default(),
+                        };
                 let _ = state.fleet.upsert_heartbeat(snap);
             }
             darkbloom_protocol::MessageType::Prepared

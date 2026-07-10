@@ -170,6 +170,7 @@ Date: 2026-07-10
 | 161 | Money SQL epoch_conflict | settle/settle_capped/force/release/mark_start/resize SQL surface `epoch_conflict` (reserve #157 parity); settle job CTE selects `state` |
 | 162 | Cancel release under money_fx | `cancel_before_or_after_content` holds optional `money_fx` across pre-start release + terminal/outbox |
 | 163 | Settle SQL needs_start_authorized | `settle_sql` / `settle_capped_sql` surface `needs_start_authorized` so reserved-only settle is Conflict, not silent no-op |
+| 164 | Chat cancel-inflight registry | `JobCancelRegistry` + `POST /v1/admin/cancel-inflight` wakes live `wait_terminal` to run `cancel_before_or_after_content` with money_fx |
 
 ## Deleted Go mechanisms (do not port)
 

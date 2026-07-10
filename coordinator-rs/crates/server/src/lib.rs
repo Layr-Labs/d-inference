@@ -9,6 +9,7 @@ pub mod deposits;
 pub mod external_events;
 pub mod fleet_actor;
 pub mod http;
+pub mod job_cancel;
 pub mod ledger;
 pub mod ledger_sql;
 pub mod mock_provider;
@@ -42,6 +43,7 @@ pub use http::{
     set_chat_pre_resize_hook, set_chat_pre_settle_hook, set_clear_orphans_phase_hook,
     set_outbox_drain_entry_hook, AppState, ModelCard,
 };
+pub use job_cancel::JobCancelRegistry;
 pub use ledger::{CutoverStatus, LedgerError, MemoryLedger, OperationKey, ReservationProvenance};
 pub use outbox::{ack_done_sql, requeue_sql, Outbox, OutboxEntry, OutboxError};
 pub use ownership::{

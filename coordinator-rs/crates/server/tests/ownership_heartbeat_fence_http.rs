@@ -45,6 +45,7 @@ fn holding_state(
         outbox: Arc::new(Mutex::new(Outbox::default())),
         terminals: Arc::new(Mutex::new(MemoryTerminalStore::new())),
         money_fx: Arc::new(Mutex::new(())),
+        job_cancels: darkbloom_coordinator::JobCancelRegistry::new(),
     }
 }
 

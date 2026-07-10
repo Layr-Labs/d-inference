@@ -57,6 +57,8 @@ pub struct AppState {
     /// Serializes money mutations with their critical outbox/terminal side
     /// effects against quiescence snapshots (DECISIONS #136).
     pub money_fx: Arc<Mutex<()>>,
+    /// In-flight chat cancel tokens (DECISIONS #164).
+    pub job_cancels: crate::job_cancel::JobCancelRegistry,
 }
 
 /// Test hook: invoked with phase name during clear-orphans (DECISIONS #85).
@@ -330,6 +332,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/cutover-drain", post(admin_cutover_drain))
         .route("/v1/admin/cutover-drain-all", post(admin_cutover_drain_all))
         .route("/v1/admin/cancel-attempt", post(admin_cancel_attempt))
+        .route("/v1/admin/cancel-inflight", post(admin_cancel_inflight))
         .fallback(unsupported)
         .with_state(Arc::new(state))
 }
@@ -2832,6 +2835,39 @@ struct AdminCancelAttemptRequest {
     request_digest: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct AdminCancelInflightRequest {
+    job_id: String,
+}
+
+/// Cancel an in-flight chat wait by job_id (DECISIONS #164).
+/// Wakes the chat select! so cancel_before_or_after_content runs under money_fx.
+async fn admin_cancel_inflight(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AdminCancelInflightRequest>,
+) -> impl IntoResponse {
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
+    }
+    if let Err(resp) = require_nonempty_job_id(&req.job_id) {
+        return resp;
+    }
+    if let Err(resp) = require_holding(&state) {
+        return resp;
+    }
+    let found = state.job_cancels.cancel(&req.job_id).await;
+    (
+        StatusCode::OK,
+        Json(json!({
+            "action": if found { "cancel_signaled" } else { "not_inflight" },
+            "job_id": req.job_id,
+            "inflight_count": state.job_cancels.len().await,
+        })),
+    )
+        .into_response()
+}
+
 /// Ops cancel for a start_authorized attempt (DECISIONS #68).
 /// Sends provider cancel; does not release money — await terminal / force-settle.
 /// Reserved-not-started jobs should use recover-undispatched instead.
@@ -2878,6 +2914,9 @@ async fn admin_cancel_attempt(
     };
 
     if action == "cancelled_await_terminal" {
+        // Wake the chat wait_terminal select so it runs cancel_before_or_after_content
+        // with money_fx (DECISIONS #164).
+        let _ = state.job_cancels.cancel(&req.job_id).await;
         match crate::abort::cancel_attempt(
             &state.hub,
             &req.provider_id,
@@ -3342,18 +3381,32 @@ async fn chat_completions(
                             lease: lease.clone(),
                         });
                         // Live settle requires a real provider_terminal (DECISIONS #44).
-                        // Abort wait if ownership is stolen mid-flight (DECISIONS #65).
+                        // Abort wait if ownership is stolen mid-flight (DECISIONS #65)
+                        // or the job is cancelled via registry (DECISIONS #164).
+                        let cancel_token = state.job_cancels.register(job_id.as_str()).await;
                         let terminal_wait = state.hub.wait_terminal(
                             &permit.provider_id,
                             attempt.as_str(),
                             std::time::Duration::from_secs(30),
                         );
-                        match tokio::select! {
-                            res = terminal_wait => res.map(Some),
-                            _ = watch_ownership_lost(state.ownership.clone()) => Ok(None),
-                        } {
-                            Ok(Some(v)) => v,
-                            Ok(None) => {
+                        enum WaitOut {
+                            Terminal(serde_json::Value),
+                            OwnershipLost,
+                            ClientCancel,
+                            Timeout(String),
+                        }
+                        let wait_outcome = tokio::select! {
+                            res = terminal_wait => match res {
+                                Ok(v) => WaitOut::Terminal(v),
+                                Err(e) => WaitOut::Timeout(e.to_string()),
+                            },
+                            _ = watch_ownership_lost(state.ownership.clone()) => WaitOut::OwnershipLost,
+                            _ = cancel_token.cancelled() => WaitOut::ClientCancel,
+                        };
+                        state.job_cancels.unregister(job_id.as_str()).await;
+                        match wait_outcome {
+                            WaitOut::Terminal(v) => v,
+                            WaitOut::OwnershipLost => {
                                 state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
                                     name: "inference.ownership_lost_held".into(),
                                     tags: vec![
@@ -3365,7 +3418,50 @@ async fn chat_completions(
                                     "ownership lost while awaiting provider terminal; reservation held for review",
                                 );
                             }
-                            Err(err) => {
+                            WaitOut::ClientCancel => {
+                                // wait_terminal is before first content delivery.
+                                let had_first = false;
+                                let outcome = crate::cancel::cancel_before_or_after_content(
+                                    &mut task,
+                                    &state.hub,
+                                    &state.ledger,
+                                    &state.pilot_account,
+                                    &permit.provider_id,
+                                    job_id.as_str(),
+                                    attempt.as_str(),
+                                    lease.as_str(),
+                                    state.coordinator_epoch,
+                                    &dispatch_nonce,
+                                    &request_digest,
+                                    had_first,
+                                    Some(&state.outbox),
+                                    Some(&state.ownership),
+                                    Some(&state.terminals),
+                                    Some(&state.money_fx),
+                                )
+                                .await;
+                                state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
+                                    name: "inference.client_cancel".into(),
+                                    tags: vec![
+                                        ("model".into(), permit.model.clone()),
+                                        ("provider".into(), permit.provider_id.clone()),
+                                        (
+                                            "outcome".into(),
+                                            format!("{:?}", outcome.as_ref().ok()),
+                                        ),
+                                    ],
+                                });
+                                return (
+                                    StatusCode::NO_CONTENT,
+                                    Json(json!({
+                                        "cancelled": true,
+                                        "job_id": job_id.as_str(),
+                                        "outcome": format!("{outcome:?}"),
+                                    })),
+                                )
+                                    .into_response();
+                            }
+                            WaitOut::Timeout(err) => {
                                 state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
                                     name: "inference.terminal_timeout_held".into(),
                                     tags: vec![

@@ -7,7 +7,7 @@ use crate::ownership::Gate as OwnershipGate;
 use crate::provider_hub::SharedHub;
 use crate::request_task::{ControlEvent, RequestTask};
 use crate::terminal_ingest::{record_released_disposition, MemoryTerminalStore};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +25,7 @@ pub enum CancelOutcome {
 pub async fn cancel_before_or_after_content(
     task: &mut RequestTask,
     hub: &SharedHub,
-    ledger: &Arc<Mutex<MemoryLedger>>,
+    ledger: &Arc<AsyncMutex<MemoryLedger>>,
     account: &str,
     provider_id: &str,
     job_id: &str,
@@ -94,7 +94,7 @@ pub async fn cancel_before_or_after_content(
         None => None,
     };
     let (released, refunded) = {
-        let mut g = ledger.lock().map_err(|e| e.to_string())?;
+        let mut g = ledger.lock().await;
         let reserved = g.job_reserved_total(job_id).map(|m| m.0).unwrap_or(0);
         let ok = g
             .release_fenced(
@@ -135,11 +135,11 @@ mod tests {
 
     #[tokio::test]
     async fn pre_start_cancel_releases_reservation() {
-        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let led = Arc::new(AsyncMutex::new(MemoryLedger::default()));
         let outbox = Arc::new(AsyncMutex::new(Outbox::default()));
         let terminals = Arc::new(AsyncMutex::new(MemoryTerminalStore::new()));
         {
-            let mut g = led.lock().unwrap();
+            let mut g = led.lock().await;
             g.credit("a", 1_000_000, 0).unwrap();
             g.reserve(OperationKey("r".into()), "j1", "a", 50_000)
                 .unwrap();
@@ -188,7 +188,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(out, CancelOutcome::DiscardedLocal);
-        assert_eq!(led.lock().unwrap().balance("a").0, 1_000_000);
+        assert_eq!(led.lock().await.balance("a").0, 1_000_000);
         let box_ = outbox.lock().await;
         assert_eq!(box_.len(), 1);
         // Peek via claim.
@@ -217,10 +217,10 @@ mod tests {
 
     #[tokio::test]
     async fn funded_start_cancel_awaits_terminal_without_release() {
-        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let led = Arc::new(AsyncMutex::new(MemoryLedger::default()));
         let outbox = Arc::new(AsyncMutex::new(Outbox::default()));
         {
-            let mut g = led.lock().unwrap();
+            let mut g = led.lock().await;
             g.credit("a", 1_000_000, 0).unwrap();
             g.reserve(OperationKey("r".into()), "j2", "a", 50_000)
                 .unwrap();
@@ -269,18 +269,18 @@ mod tests {
         .unwrap();
         assert_eq!(out, CancelOutcome::CancelledAwaitTerminal);
         // Money still held — settle/force_settle must clear it.
-        assert_eq!(led.lock().unwrap().balance("a").0, 950_000);
-        assert_eq!(led.lock().unwrap().active_job_count(), 1);
-        assert!(led.lock().unwrap().job_funded_start("j2"));
+        assert_eq!(led.lock().await.balance("a").0, 950_000);
+        assert_eq!(led.lock().await.active_job_count(), 1);
+        assert!(led.lock().await.job_funded_start("j2"));
         assert_eq!(outbox.lock().await.len(), 0);
     }
 
     #[tokio::test]
     async fn after_content_cancel_does_not_release() {
-        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let led = Arc::new(AsyncMutex::new(MemoryLedger::default()));
         let outbox = Arc::new(AsyncMutex::new(Outbox::default()));
         {
-            let mut g = led.lock().unwrap();
+            let mut g = led.lock().await;
             g.credit("a", 1_000_000, 0).unwrap();
             g.reserve(OperationKey("r".into()), "j3", "a", 50_000)
                 .unwrap();
@@ -328,17 +328,17 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(out, CancelOutcome::CancelAfterContent);
-        assert_eq!(led.lock().unwrap().balance("a").0, 950_000);
-        assert_eq!(led.lock().unwrap().active_job_count(), 1);
+        assert_eq!(led.lock().await.balance("a").0, 950_000);
+        assert_eq!(led.lock().await.active_job_count(), 1);
         assert_eq!(outbox.lock().await.len(), 0);
     }
 
     #[tokio::test]
     async fn hedge_pre_start_cancel_returns_aborted() {
-        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let led = Arc::new(AsyncMutex::new(MemoryLedger::default()));
         let outbox = Arc::new(AsyncMutex::new(Outbox::default()));
         {
-            let mut g = led.lock().unwrap();
+            let mut g = led.lock().await;
             g.credit("a", 1_000_000, 0).unwrap();
             g.reserve(OperationKey("r".into()), "j4", "a", 50_000)
                 .unwrap();
@@ -388,19 +388,19 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(out, CancelOutcome::Aborted);
-        assert_eq!(led.lock().unwrap().balance("a").0, 1_000_000);
-        assert_eq!(led.lock().unwrap().active_job_count(), 0);
+        assert_eq!(led.lock().await.balance("a").0, 1_000_000);
+        assert_eq!(led.lock().await.active_job_count(), 0);
         assert_eq!(outbox.lock().await.len(), 1);
     }
 
     #[tokio::test]
     async fn pre_start_cancel_refuses_release_after_ownership_loss() {
-        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let led = Arc::new(AsyncMutex::new(MemoryLedger::default()));
         let outbox = Arc::new(AsyncMutex::new(Outbox::default()));
         let gate = OwnershipGate::new(true);
         gate.acquire(crate::ownership::Epoch(1)).unwrap();
         {
-            let mut g = led.lock().unwrap();
+            let mut g = led.lock().await;
             g.credit("a", 1_000_000, 0).unwrap();
             g.reserve(OperationKey("r".into()), "j-own", "a", 50_000)
                 .unwrap();
@@ -429,20 +429,20 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.contains("ownership_lost"));
-        assert_eq!(led.lock().unwrap().balance("a").0, 950_000);
-        assert_eq!(led.lock().unwrap().active_job_count(), 1);
+        assert_eq!(led.lock().await.balance("a").0, 950_000);
+        assert_eq!(led.lock().await.active_job_count(), 1);
         assert_eq!(outbox.lock().await.len(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pre_start_cancel_holds_money_fx_across_release_outbox() {
         // DECISIONS #162: cancel release waits on money_fx like release_job_with_outbox.
-        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let led = Arc::new(AsyncMutex::new(MemoryLedger::default()));
         let outbox = Arc::new(AsyncMutex::new(Outbox::default()));
         let terminals = Arc::new(AsyncMutex::new(MemoryTerminalStore::new()));
         let money_fx = Arc::new(AsyncMutex::new(()));
         {
-            let mut g = led.lock().unwrap();
+            let mut g = led.lock().await;
             g.credit("a", 1_000_000, 0).unwrap();
             g.reserve(OperationKey("r".into()), "j-fx", "a", 40_000)
                 .unwrap();
@@ -505,7 +505,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(out, CancelOutcome::DiscardedLocal);
-        assert_eq!(led.lock().unwrap().balance("a").0, 1_000_000);
+        assert_eq!(led.lock().await.balance("a").0, 1_000_000);
         assert_eq!(outbox.lock().await.len(), 1);
     }
 }

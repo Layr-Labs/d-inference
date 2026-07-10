@@ -1,8 +1,8 @@
 use darkbloom_coordinator::cli::{parse_and_is_recovery, run_recovery};
 use darkbloom_coordinator::{
     bounded_telemetry, router, run_ownership_heartbeat, spawn_fleet_actor, AppState,
-    CoordinatorKeys, ExternalEventInbox, LocalOwnershipStore, MemoryLedger, MemoryTerminalStore,
-    ModelCard, Outbox, OwnershipGate, ProviderHub,
+    CoordinatorKeys, ExternalEventInbox, JobCancelRegistry, LocalOwnershipStore, MemoryLedger,
+    MemoryTerminalStore, ModelCard, Outbox, OwnershipGate, ProviderHub,
 };
 use darkbloom_core::PlacementController;
 use std::net::SocketAddr;
@@ -162,6 +162,7 @@ async fn main() {
         outbox: outbox_for_state,
         terminals: Arc::new(Mutex::new(MemoryTerminalStore::new())),
         money_fx: Arc::new(Mutex::new(())),
+        job_cancels: JobCancelRegistry::new(),
     };
 
     let app = router(state);

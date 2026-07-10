@@ -370,6 +370,12 @@ async fn chat_completions(
                         job_id.as_str(),
                         &state.pilot_account,
                     );
+                    // model_not_ready / capacity → placement demand signal (no queue).
+                    let err_s = format!("{err}");
+                    if err_s.contains("model_not_ready") || err_s.contains("capacity") {
+                        let mut p = state.placement.lock().await;
+                        p.signal_demand(&req.model);
+                    }
                     return (
                         StatusCode::BAD_GATEWAY,
                         Json(json!({

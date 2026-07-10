@@ -146,9 +146,7 @@ impl FleetActor {
                 let _ = reply.send(decision);
             }
             FleetCommand::Snapshot(reply) => {
-                let _ = reply.send(FleetState {
-                    providers: self.state.providers.clone(),
-                });
+                let _ = reply.send(self.state.clone());
             }
         }
     }

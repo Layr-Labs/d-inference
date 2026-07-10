@@ -825,19 +825,24 @@ async fn admin_deposit_rejects_withdrawable_exceeding_total() {
 }
 
 #[tokio::test]
-async fn admin_deposit_rejects_negative_withdrawable() {
-    let app = router(test_state(true));
+async fn admin_terminal_ingest_force_settled_disposition() {
+    let state = test_state(true);
+    {
+        let mut terms = state.terminals.lock().await;
+        terms.record("a-fs", "d-fs", "force_settled", None);
+    }
+    let app = router(state);
     let res = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/admin/deposits")
+                .uri("/v1/admin/terminal-ingest")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "event_id": "evt_wdr_neg",
-                        "amount_micro_usd": 100_000,
-                        "withdrawable_micro_usd": -1
+                        "job_id": "j-fs",
+                        "attempt_id": "a-fs",
+                        "terminal_digest": "d-fs"
                     })
                     .to_string(),
                 ))
@@ -845,9 +850,10 @@ async fn admin_deposit_rejects_negative_withdrawable() {
         )
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(res.status(), StatusCode::OK);
     let v = body_json(res).await;
-    assert_eq!(v["error"]["code"], "deposit_failed");
+    assert_eq!(v["disposition"], "force_settled");
+    assert_eq!(v["type"], "terminal_ack");
 }
 
 #[tokio::test]

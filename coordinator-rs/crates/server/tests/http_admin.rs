@@ -192,6 +192,31 @@ async fn terminal_ingest_known_and_late() {
 }
 
 #[tokio::test]
+async fn admin_deposit_rejects_zero_amount() {
+    let app = router(test_state(true));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/deposits")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "event_id": "evt_zero",
+                        "amount_micro_usd": 0
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let v = body_json(res).await;
+    assert_eq!(v["error"]["code"], "invalid_deposit");
+}
+
+#[tokio::test]
 async fn admin_deposit_rejects_missing_auth_when_keys_configured() {
     let mut state = test_state(true);
     state.pilot_api_keys = Arc::new(vec!["good-key".into()]);

@@ -32,6 +32,14 @@ public enum EngineV2SupportedModels {
             !raw.isEmpty
         else { return false }
         if raw == "gpt_oss" { return true }
+        // `gemma4_assistant` is the KV-less MTP drafter checkpoint, NOT a
+        // servable chat model (no standalone forward — it attends a frozen
+        // snapshot of the target's KV). Without this carve-out the gemma4
+        // prefix match below would advertise a hand-downloaded drafter in
+        // the HF cache as a chat model and the coordinator could route to
+        // it. Drafters bind engine-side only (spec-dec dir / mtp_drafter_path),
+        // never scanned, advertised, or attested.
+        if raw == "gemma4_assistant" { return false }
         // Gemma 4 family: `gemma4` (VLM wrapper), `gemma4_text`, and any
         // future gemma4-suffixed text/VLM variant. Deliberately a prefix so
         // `gemma3`/`gemma2` (no CBv2 adapter) can never match.

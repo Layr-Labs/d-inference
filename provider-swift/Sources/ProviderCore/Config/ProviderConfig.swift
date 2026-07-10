@@ -142,6 +142,18 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// false: availability beats perfection — a self-test failure may be
     /// transient and the model can still serve via the lazy-load path.
     public var startupSelftestFailClosed: Bool
+    /// MTP (multi-token prediction / speculative decoding) opt-in for CBv2
+    /// (`mtp` under `[backend]`, default false — beta id `mtp`). When enabled,
+    /// slot build resolves a Gemma drafter (`mtp_drafter_path` if set, else the
+    /// catalog entry's `spec_dec` download) and binds it to the engine. Drafter
+    /// resolution/load is fail-open: any failure means plain decode, never a
+    /// slot failure. `DARKBLOOM_CBV2_MTP` remains the engine-side kill switch.
+    public var mtp: Bool
+    /// Optional local drafter directory override (`mtp_drafter_path` under
+    /// `[backend]`) — the canary path: `config.json` + `*.safetensors`, no R2
+    /// involved. Takes precedence over the `spec_dec` download when set. nil
+    /// (default) = resolve via the catalog's `spec_dec` pointer.
+    public var mtpDrafterPath: String?
     /// RETIRED `[backend]` keys found in the decoded provider.toml
     /// (`engine_v2`, `continuous_batching`, `adaptive_prefill`,
     /// `legacy_compiled_decode`). The keys parse cleanly — an old config
@@ -165,7 +177,9 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         preloadModels: [String] = [],
         startupPreloadTimeoutSecs: UInt64 = 120,
         startupSelftest: Bool = true,
-        startupSelftestFailClosed: Bool = false
+        startupSelftestFailClosed: Bool = false,
+        mtp: Bool = false,
+        mtpDrafterPath: String? = nil
     ) {
         self.port = port
         self.model = model
@@ -182,6 +196,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.startupPreloadTimeoutSecs = startupPreloadTimeoutSecs
         self.startupSelftest = startupSelftest
         self.startupSelftestFailClosed = startupSelftestFailClosed
+        self.mtp = mtp
+        self.mtpDrafterPath = mtpDrafterPath
     }
 
     enum CodingKeys: String, CodingKey {
@@ -200,6 +216,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case startupPreloadTimeoutSecs = "startup_preload_timeout_secs"
         case startupSelftest = "startup_selftest"
         case startupSelftestFailClosed = "startup_selftest_fail_closed"
+        case mtp
+        case mtpDrafterPath = "mtp_drafter_path"
     }
 
     /// RETIRED `[backend]` keys (v0.7.5 one-engine): parsed for presence
@@ -236,6 +254,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.startupSelftest = try container.decodeIfPresent(Bool.self, forKey: .startupSelftest) ?? true
         self.startupSelftestFailClosed =
             try container.decodeIfPresent(Bool.self, forKey: .startupSelftestFailClosed) ?? false
+        self.mtp = try container.decodeIfPresent(Bool.self, forKey: .mtp) ?? false
+        self.mtpDrafterPath = try container.decodeIfPresent(String.self, forKey: .mtpDrafterPath)
         // Retired keys: presence-only scan so startup can WARN (values are
         // ignored; an old provider.toml must keep loading cleanly).
         let retired = try decoder.container(keyedBy: RetiredCodingKeys.self)

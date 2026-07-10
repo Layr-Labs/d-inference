@@ -205,6 +205,23 @@ async fn readyz_fails_without_ownership() {
 }
 
 #[tokio::test]
+async fn unsupported_routes_return_501() {
+    let app = router(test_state(true));
+    for uri in ["/v1/completions", "/v1/messages", "/v1/unknown"] {
+        let req = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_IMPLEMENTED, "uri={uri}");
+        let v = body_json(res).await;
+        assert_eq!(v["error"]["code"], "unsupported_route", "uri={uri}");
+    }
+}
+
+#[tokio::test]
 async fn quiescence_reports_late_terminals_after_ingest() {
     let state = test_state(true);
     let app = router(state);

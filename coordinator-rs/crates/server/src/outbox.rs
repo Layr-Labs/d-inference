@@ -253,30 +253,42 @@ pub fn claim_sql() -> &'static str {
 }
 
 /// Documented SQL for durable ack after successful side-effect delivery.
+/// Gated on active ownership holder+epoch so a stolen coordinator cannot
+/// drop critical side effects (DECISIONS #135).
 pub fn ack_done_sql() -> &'static str {
     r#"
-    DELETE FROM rust_coord.outbox
-    WHERE id = $1
+    DELETE FROM rust_coord.outbox o
+    WHERE o.id = $1
+      AND EXISTS (
+        SELECT 1 FROM rust_coord.coordinator_ownership c
+        WHERE c.id = 1 AND c.holder = $2 AND c.fencing_epoch = $3
+      )
     "#
 }
 
-/// Documented SQL for pilot cutover drain: claim+ack all retryable rows
-/// (DECISIONS #82/#87). Prefer a single transaction in SQLx.
+/// Documented SQL for pilot cutover drain: claim+ack all rows including
+/// exhausted attempts (DECISIONS #82/#87/#133). Prefer a single transaction
+/// gated on ownership holder+epoch (DECISIONS #135).
 pub fn drain_ack_all_sql() -> &'static str {
     r#"
-    WITH claimed AS (
+    WITH owned AS (
+      SELECT 1 FROM rust_coord.coordinator_ownership
+      WHERE id = 1 AND holder = $1 AND fencing_epoch = $2
+    ),
+    claimed AS (
       UPDATE rust_coord.outbox o
       SET attempts = o.attempts + 1
-      WHERE o.id IN (
-        SELECT id FROM rust_coord.outbox
-        WHERE attempts < 100
-        ORDER BY id
-        FOR UPDATE SKIP LOCKED
-      )
+      WHERE EXISTS (SELECT 1 FROM owned)
+        AND o.id IN (
+          SELECT id FROM rust_coord.outbox
+          ORDER BY id
+          FOR UPDATE SKIP LOCKED
+        )
       RETURNING o.id
     )
     DELETE FROM rust_coord.outbox
     WHERE id IN (SELECT id FROM claimed)
+      AND EXISTS (SELECT 1 FROM owned)
     RETURNING id
     "#
 }
@@ -398,10 +410,14 @@ mod tests {
         assert!(claim_sql().contains("SKIP LOCKED"));
         assert!(enqueue_sql().contains("rust_coord.outbox"));
         assert!(ack_done_sql().contains("DELETE FROM rust_coord.outbox"));
+        assert!(ack_done_sql().contains("fencing_epoch"));
+        assert!(ack_done_sql().contains("coordinator_ownership"));
         assert!(requeue_sql().contains("available_at"));
         assert!(requeue_sql().contains("attempts < 100"));
         assert!(drain_ack_all_sql().contains("SKIP LOCKED"));
         assert!(drain_ack_all_sql().contains("DELETE FROM rust_coord.outbox"));
+        assert!(drain_ack_all_sql().contains("fencing_epoch"));
+        assert!(drain_ack_all_sql().contains("coordinator_ownership"));
     }
 
     #[test]

@@ -771,3 +771,18 @@ rows (`attempts >= 100`) are reported as `outbox_blocked` and keep
 `ready=false` with hint `outbox-drain`. Admin `outbox-drain` /
 `drain_ack_one` force-acks exhausted pending so cutover can clear them.
 
+### Mock settle fenced on ownership (DECISIONS #134)
+
+Mock `complete_authorized_job` settles with `settle_capped_fenced` using
+the caller's fencing epoch. After ownership steal, settle fails with
+`ownership_lost`, the job stays `start_authorized` held, and balance is
+unchanged — same kill-boundary as the live settle path.
+
+### Outbox-drain epoch fence (DECISIONS #135)
+
+`POST /v1/admin/outbox-drain` captures the start fencing epoch and
+re-checks holding+epoch under the outbox lock before each ack. A mid-drain
+release+re-acquire with a new epoch aborts with `ownership_lost` and leaves
+remaining entries pending. SQL `ack_done` / `drain_ack_all` docs gate DELETE
+on `coordinator_ownership` holder+epoch.
+

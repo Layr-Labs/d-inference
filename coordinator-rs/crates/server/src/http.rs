@@ -2092,6 +2092,14 @@ fn ownership_lost_partial(
 /// Pilot cutover: claim+ack all outbox entries so quiescence can become ready
 /// (DECISIONS #82). Requires ownership + pilot key. Does not move money.
 /// Re-checks ownership between entries; aborts with partial acks on steal (#108).
+/// Binds drain to the start fencing epoch so a re-acquire mid-drain cannot
+/// silently drop critical side effects (#135).
+enum DrainStep {
+    OwnershipLost,
+    Empty,
+    Kind(String),
+}
+
 async fn admin_outbox_drain(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
@@ -2102,9 +2110,10 @@ async fn admin_outbox_drain(
     if let Err(resp) = require_holding(&state) {
         return resp;
     }
+    let drain_epoch = state.ownership.epoch().0;
     let mut kinds = Vec::new();
     loop {
-        if require_holding(&state).is_err() {
+        if require_holding(&state).is_err() || state.ownership.epoch().0 != drain_epoch {
             let (pending, retryable, status) = {
                 let box_ = state.outbox.lock().await;
                 let led = state.ledger.lock().await;
@@ -2123,6 +2132,7 @@ async fn admin_outbox_drain(
                         "code": "ownership_lost"
                     },
                     "action": "outbox_drain_aborted",
+                    "drain_epoch": drain_epoch,
                     "acked_count": kinds.len(),
                     "kinds": kinds,
                     "outbox_pending": pending,
@@ -2135,16 +2145,57 @@ async fn admin_outbox_drain(
             )
                 .into_response();
         }
-        let next = {
+        let step = {
             let mut box_ = state.outbox.lock().await;
-            box_.drain_ack_one()
+            // Re-check under the outbox lock to shrink the TOCTOU window
+            // between holding check and ack (DECISIONS #135).
+            if !state.ownership.holding() || state.ownership.epoch().0 != drain_epoch {
+                DrainStep::OwnershipLost
+            } else {
+                match box_.drain_ack_one() {
+                    Some(kind) => DrainStep::Kind(kind),
+                    None => DrainStep::Empty,
+                }
+            }
         };
-        match next {
-            Some(kind) => {
+        match step {
+            DrainStep::OwnershipLost => {
+                let (pending, retryable, status) = {
+                    let box_ = state.outbox.lock().await;
+                    let led = state.ledger.lock().await;
+                    (
+                        box_.len(),
+                        box_.pending_under_retry_cap(),
+                        led.cutover_status(state.ownership.epoch().0),
+                    )
+                };
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "error": {
+                            "message": "ownership lost during outbox-drain (under lock)",
+                            "type": "invalid_request_error",
+                            "code": "ownership_lost"
+                        },
+                        "action": "outbox_drain_aborted",
+                        "drain_epoch": drain_epoch,
+                        "acked_count": kinds.len(),
+                        "kinds": kinds,
+                        "outbox_pending": pending,
+                        "outbox_retryable": retryable,
+                        "active_jobs": status.active_jobs,
+                        "accounts_needing_cutover": status.accounts_needing_cutover,
+                        "needs_adopt_count": status.needs_adopt_count,
+                        "ready": false,
+                    })),
+                )
+                    .into_response();
+            }
+            DrainStep::Kind(kind) => {
                 invoke_outbox_drain_entry(&kind);
                 kinds.push(kind);
             }
-            None => break,
+            DrainStep::Empty => break,
         }
     }
     let (pending, retryable, status) = {

@@ -387,3 +387,8 @@ Stream=true wait-steal uses the same adopt→force-settle recovery. Bulk
 `adopt-jobs` accepts explicit `job_ids` and reports per-id failures (disposed /
 unknown) without aborting the batch; concurrent bulk adopt is idempotent.
 
+### CLI adopt-recover demo (DECISIONS #75)
+
+`darkbloom-coordinator recovery --confirm-same-release --demo-adopt-recover-job JOB`
+reserves under epoch 1, shows recover under epoch 2 fails, adopts, then recovers.
+

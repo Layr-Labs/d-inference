@@ -36,6 +36,9 @@ enum Commands {
         /// In-memory demo: force-settle a start_authorized held job.
         #[arg(long)]
         demo_force_settle_job: Option<String>,
+        /// In-memory demo: adopt fencing then recover an orphaned reserved job.
+        #[arg(long)]
+        demo_adopt_recover_job: Option<String>,
         /// In-memory demo: apply a Stripe deposit event (idempotent).
         #[arg(long)]
         demo_deposit_event: Option<String>,
@@ -53,6 +56,7 @@ pub fn parse_and_is_recovery() -> RecoveryOpts {
             demo_job: None,
             demo_held_job: None,
             demo_force_settle_job: None,
+            demo_adopt_recover_job: None,
             demo_deposit_event: None,
             demo_account: String::new(),
         },
@@ -61,6 +65,7 @@ pub fn parse_and_is_recovery() -> RecoveryOpts {
             demo_job,
             demo_held_job,
             demo_force_settle_job,
+            demo_adopt_recover_job,
             demo_deposit_event,
             demo_account,
         }) => RecoveryOpts {
@@ -69,6 +74,7 @@ pub fn parse_and_is_recovery() -> RecoveryOpts {
             demo_job,
             demo_held_job,
             demo_force_settle_job,
+            demo_adopt_recover_job,
             demo_deposit_event,
             demo_account,
         },
@@ -81,6 +87,7 @@ pub struct RecoveryOpts {
     pub demo_job: Option<String>,
     pub demo_held_job: Option<String>,
     pub demo_force_settle_job: Option<String>,
+    pub demo_adopt_recover_job: Option<String>,
     pub demo_deposit_event: Option<String>,
     pub demo_account: String,
 }
@@ -126,6 +133,49 @@ pub fn run_recovery(opts: RecoveryOpts) -> Result<(), String> {
             return Err(format!("expected bal=250000 wdr=50000, got {bal}/{wdr}"));
         }
         tracing::info!(%event_id, bal, wdr, "recovery deposit demo complete");
+        return Ok(());
+    }
+    if let Some(job) = opts.demo_adopt_recover_job {
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let old_epoch = 1u64;
+        let new_epoch = 2u64;
+        {
+            let mut g = led.lock().map_err(|e| e.to_string())?;
+            g.credit(&opts.demo_account, 1_000_000, 0).unwrap();
+            g.reserve_with_epoch(
+                crate::ledger::OperationKey(format!("reserve:{job}")),
+                &job,
+                &opts.demo_account,
+                100_000,
+                old_epoch,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        // New owner epoch cannot recover without adopt.
+        let err = recover_undispatched_fenced(&led, new_epoch, &job, &opts.demo_account)
+            .err()
+            .ok_or_else(|| "expected ownership_lost before adopt".to_string())?;
+        if !err.contains("ownership") {
+            return Err(format!("expected ownership error before adopt, got {err}"));
+        }
+        {
+            let mut g = led.lock().map_err(|e| e.to_string())?;
+            let prev = g
+                .adopt_fencing_epoch(&job, new_epoch)
+                .map_err(|e| e.to_string())?;
+            if prev != old_epoch {
+                return Err(format!("expected previous epoch {old_epoch}, got {prev}"));
+            }
+        }
+        let action = recover_undispatched_fenced(&led, new_epoch, &job, &opts.demo_account)?;
+        tracing::info!(?action, job, new_epoch, "recovery adopt-recover demo complete");
+        if action != RecoveryAction::Released {
+            return Err(format!("expected Released after adopt, got {action:?}"));
+        }
+        let bal = led.lock().map_err(|e| e.to_string())?.balance(&opts.demo_account).0;
+        if bal != 1_000_000 {
+            return Err(format!("expected balance 1000000 after adopt-recover, got {bal}"));
+        }
         return Ok(());
     }
     if let Some(job) = opts.demo_force_settle_job {
@@ -208,7 +258,7 @@ pub fn run_recovery(opts: RecoveryOpts) -> Result<(), String> {
         return Ok(());
     }
     let url = std::env::var("DATABASE_URL").map_err(|_| {
-        "DATABASE_URL required for recovery mode (or pass --demo-job / --demo-held-job / --demo-force-settle-job / --demo-deposit-event for in-memory dry-run)"
+        "DATABASE_URL required for recovery mode (or pass --demo-job / --demo-held-job / --demo-force-settle-job / --demo-adopt-recover-job / --demo-deposit-event for in-memory dry-run)"
             .to_string()
     })?;
     tracing::info!(%url, "recovery mode: would probe rust_coord and settle/release (SQLx not linked in this build)");

@@ -34,6 +34,8 @@ pub enum ControlEvent {
     BackpressureFailed,
     Cancel,
     FinalizeDone,
+    /// Prepared lease TTL elapsed — release and optionally alternate.
+    PrepareExpired,
 }
 
 pub struct RequestTask {
@@ -173,6 +175,7 @@ fn map_event(event: ControlEvent) -> Result<RequestEvent, RequestTaskError> {
             RequestEvent::ProviderTerminal { attempt, lease }
         }
         ControlEvent::FinalizeDone => RequestEvent::FinalizeDone,
+        ControlEvent::PrepareExpired => RequestEvent::PrepareExpired,
         ControlEvent::BackpressureFailed | ControlEvent::Cancel => {
             return Err(RequestTaskError::InvalidTransition)
         }

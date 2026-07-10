@@ -26,6 +26,8 @@ pub enum RequestEvent {
     FirstContent { attempt: AttemptId, lease: LeaseId },
     ProviderTerminal { attempt: AttemptId, lease: LeaseId },
     FinalizeDone,
+    /// Prepared lease TTL elapsed before start_authorized.
+    PrepareExpired,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -66,6 +68,10 @@ impl RequestState {
             }
             (AwaitingTerminal { .. }, FinalizeDone) | (Finalizing, FinalizeDone) => Ok(Finished),
             (AwaitingTerminal { .. }, _) => Ok(Finalizing),
+            // Prepare TTL expiry before funding — return to Admitting for alternate.
+            (Preparing { .. }, PrepareExpired) | (FundingPrepared { .. }, PrepareExpired) => {
+                Ok(Admitting)
+            }
             (from, event) => Err(TransitionError::Invalid {
                 from: format!("{from:?}"),
                 event: event_name(&event),
@@ -84,6 +90,7 @@ fn event_name(event: &RequestEvent) -> &'static str {
         RequestEvent::FirstContent { .. } => "FirstContent",
         RequestEvent::ProviderTerminal { .. } => "ProviderTerminal",
         RequestEvent::FinalizeDone => "FinalizeDone",
+        RequestEvent::PrepareExpired => "PrepareExpired",
     }
 }
 
@@ -150,5 +157,28 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(err, TransitionError::Invalid { .. }));
+    }
+
+    #[test]
+    fn prepare_expired_returns_to_admitting() {
+        let attempt = AttemptId::new("a");
+        let lease = LeaseId::new("l");
+        let st = RequestState::Reserving
+            .transition(RequestEvent::Reserved {
+                job: JobId::new("j"),
+            })
+            .unwrap()
+            .transition(RequestEvent::Admitted {
+                attempt: attempt.clone(),
+            })
+            .unwrap()
+            .transition(RequestEvent::Prepared {
+                attempt: attempt.clone(),
+                lease: lease.clone(),
+            })
+            .unwrap();
+        assert!(matches!(st, RequestState::FundingPrepared { .. }));
+        let st = st.transition(RequestEvent::PrepareExpired).unwrap();
+        assert_eq!(st, RequestState::Admitting);
     }
 }

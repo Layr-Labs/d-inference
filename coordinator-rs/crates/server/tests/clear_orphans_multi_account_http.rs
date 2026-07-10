@@ -54,7 +54,8 @@ async fn clear_orphans_multi_account_refunds_each_owner() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let v = body_json(res).await;
-    assert_eq!(v["adopted_count"], 0);
+    // Fencing rebound for all jobs even when account filter matches none (DECISIONS #121).
+    assert_eq!(v["adopted_count"], 2);
     assert_eq!(v["released_count"], 0);
     assert_eq!(v["settled_count"], 0);
     assert_eq!(state.ledger.lock().await.active_job_count(), 2);

@@ -488,6 +488,27 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     } else {
         "not-ready"
     };
+    // Accounts with any active orphans — ops can target cutover-drain per account (DECISIONS #112).
+    let accounts_needing_cutover: Vec<String> = orphan_summary_by_account
+        .iter()
+        .filter_map(|row| {
+            let reserved = row
+                .get("reserved_not_started_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let held = row
+                .get("held_start_authorized_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if reserved + held > 0 {
+                row.get("account")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
     let status = if ready {
         StatusCode::OK
     } else {
@@ -498,6 +519,7 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         Json(json!({
             "ready": ready,
             "cutover_hint": cutover_hint,
+            "accounts_needing_cutover": accounts_needing_cutover,
             "pilot_account_balance_micro_usd": bal,
             "pilot_account_withdrawable_micro_usd": wdr,
             "active_jobs": active_jobs,

@@ -615,3 +615,10 @@ deposits during cutover drain-abort still conserve once ownership is restored.
 per-account cutover-drain calls conserve each ledger. Quiescence without
 ownership still lists by-account holds (`needs_adopt=0`).
 
+### accounts_needing_cutover + charged filter (DECISIONS #112)
+
+Quiescence returns `accounts_needing_cutover` (sorted account ids with active
+orphans) so ops can target `cutover-drain?account=…`. Charged
+`actual_micro_usd` on account-filtered cutover clamps per hold and leaves
+foreign tenants untouched.
+

@@ -1540,7 +1540,11 @@ async fn admin_clear_orphans(
     invoke_clear_orphans_phase("after_adopt");
 
     // Re-check holding before money moves (DECISIONS #85).
-    if let Err(resp) = require_holding(&state) {
+    if require_holding(&state).is_err() {
+        let (remaining_active, remaining_held) = {
+            let led = state.ledger.lock().await;
+            (led.active_job_ids(), led.held_start_authorized_job_ids())
+        };
         return ownership_lost_partial(
             "after_adopt",
             &adopted,
@@ -1548,7 +1552,8 @@ async fn admin_clear_orphans(
             &[],
             0,
             0,
-            resp,
+            &remaining_active,
+            &remaining_held,
         );
     }
 
@@ -1561,7 +1566,11 @@ async fn admin_clear_orphans(
             led.reserved_not_started_job_ids()
         };
         for job_id in ids {
-            if let Err(resp) = require_holding(&state) {
+            if require_holding(&state).is_err() {
+                let (remaining_active, remaining_held) = {
+                    let led = state.ledger.lock().await;
+                    (led.active_job_ids(), led.held_start_authorized_job_ids())
+                };
                 return ownership_lost_partial(
                     "during_recover",
                     &adopted,
@@ -1569,7 +1578,8 @@ async fn admin_clear_orphans(
                     &[],
                     refund_total,
                     0,
-                    resp,
+                    &remaining_active,
+                    &remaining_held,
                 );
             }
             let epoch = state.ownership.epoch().0;
@@ -1603,7 +1613,11 @@ async fn admin_clear_orphans(
     }
     invoke_clear_orphans_phase("after_recover");
 
-    if let Err(resp) = require_holding(&state) {
+    if require_holding(&state).is_err() {
+        let (remaining_active, remaining_held) = {
+            let led = state.ledger.lock().await;
+            (led.active_job_ids(), led.held_start_authorized_job_ids())
+        };
         return ownership_lost_partial(
             "after_recover",
             &adopted,
@@ -1611,7 +1625,8 @@ async fn admin_clear_orphans(
             &[],
             refund_total,
             0,
-            resp,
+            &remaining_active,
+            &remaining_held,
         );
     }
 
@@ -1624,7 +1639,11 @@ async fn admin_clear_orphans(
             led.held_start_authorized_job_ids()
         };
         for job_id in ids {
-            if let Err(resp) = require_holding(&state) {
+            if require_holding(&state).is_err() {
+                let (remaining_active, remaining_held) = {
+                    let led = state.ledger.lock().await;
+                    (led.active_job_ids(), led.held_start_authorized_job_ids())
+                };
                 return ownership_lost_partial(
                     "during_force_settle",
                     &adopted,
@@ -1632,7 +1651,8 @@ async fn admin_clear_orphans(
                     &settled,
                     refund_total,
                     charged_total,
-                    resp,
+                    &remaining_active,
+                    &remaining_held,
                 );
             }
             let epoch = state.ownership.epoch().0;
@@ -1726,7 +1746,7 @@ async fn admin_clear_orphans(
         .into_response()
 }
 
-/// Partial clear-orphans response when ownership is lost mid-flight (DECISIONS #85).
+/// Partial clear-orphans response when ownership is lost mid-flight (DECISIONS #85/#100).
 fn ownership_lost_partial(
     phase: &str,
     adopted: &[String],
@@ -1734,7 +1754,8 @@ fn ownership_lost_partial(
     settled: &[String],
     refund_total: i64,
     charged_total: i64,
-    _holding_resp: axum::response::Response,
+    remaining_active: &[String],
+    remaining_held: &[String],
 ) -> axum::response::Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
@@ -1754,6 +1775,10 @@ fn ownership_lost_partial(
             "settled_count": settled.len(),
             "settled": settled,
             "charged_micro_usd": charged_total,
+            "remaining_active_job_ids": remaining_active,
+            "remaining_held_start_authorized_job_ids": remaining_held,
+            "active_jobs": remaining_active.len(),
+            "held_start_authorized": remaining_held.len(),
         })),
     )
         .into_response()

@@ -538,3 +538,9 @@ Concurrent deposits and recover-undispatched-batch conserve money. Concurrent
 held-review-batch with force-settle-batch never lets review move money; settle
 wins exactly once.
 
+### clear-orphans remaining ids + mixed batches (DECISIONS #100)
+
+clear-orphans abort responses include remaining active/held job ids (parity
+with batch abort). Concurrent recover-batch and force-settle-batch on mixed
+reserved+held orphans each clear their lane exactly once.
+

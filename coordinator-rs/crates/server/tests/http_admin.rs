@@ -166,6 +166,36 @@ async fn terminal_ingest_known_and_late() {
 }
 
 #[tokio::test]
+async fn admin_deposit_accepts_valid_pilot_key() {
+    let mut state = test_state(true);
+    state.pilot_api_keys = Arc::new(vec!["good-key".into()]);
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/deposits")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer good-key")
+                .body(Body::from(
+                    json!({
+                        "event_id": "evt_auth_ok",
+                        "amount_micro_usd": 10_000,
+                        "withdrawable_micro_usd": 1_000
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["applied"], true);
+    assert_eq!(v["balance_micro_usd"], 1_010_000);
+}
+
+#[tokio::test]
 async fn admin_deposit_rejects_invalid_pilot_key() {
     let mut state = test_state(true);
     state.pilot_api_keys = Arc::new(vec!["good-key".into()]);

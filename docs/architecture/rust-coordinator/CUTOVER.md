@@ -95,3 +95,14 @@ settle cannot pin a terminal digest or poison an operation key.
 
 `ingest_terminal` / `lookup_sql` prefer `(attempt_id, digest)` then fall back
 to digest-only so empty or drifted attempt_id at settle still ACKs.
+Go `ownership.IngestTerminal` mirrors this via optional `DigestTerminalLookup`.
+
+### Reserve SQL job-first (DECISIONS #26)
+
+`reserve_sql` inserts the job before debiting; debit/op only run when the job
+row is newly created — job_id conflict never drains balances.
+
+### Force-settle disposition (DECISIONS #27)
+
+Ops force-settle records disposition `force_settled` (distinct from `settled`)
+in both MemoryLedger and SQL for audit.

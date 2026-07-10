@@ -132,6 +132,40 @@ fn authorize_pilot(state: &AppState, headers: &axum::http::HeaderMap) -> Result<
     }
 }
 
+/// Shared ownership + pilot-key gate for mutating admin routes.
+fn require_admin(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<(), axum::response::Response> {
+    if let Err(err) = state.ownership.assert_holding() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": {
+                    "message": format!("{err}"),
+                    "type": "server_error",
+                    "code": "ownership_lost"
+                }
+            })),
+        )
+            .into_response());
+    }
+    if let Err(status) = authorize_pilot(state, headers) {
+        return Err((
+            status,
+            Json(json!({
+                "error": {
+                    "message": "invalid pilot api key",
+                    "type": "invalid_request_error",
+                    "code": "invalid_api_key"
+                }
+            })),
+        )
+            .into_response());
+    }
+    Ok(())
+}
+
 async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Warm-plane inventory — expand as workers land.
     let (bal, wdr, active_jobs, held_start_authorized, held_job_ids) = {
@@ -220,31 +254,8 @@ async fn admin_terminal_ingest(
     headers: axum::http::HeaderMap,
     Json(req): Json<AdminTerminalIngestRequest>,
 ) -> impl IntoResponse {
-    if let Err(err) = state.ownership.assert_holding() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "error": {
-                    "message": format!("{err}"),
-                    "type": "server_error",
-                    "code": "ownership_lost"
-                }
-            })),
-        )
-            .into_response();
-    }
-    if let Err(status) = authorize_pilot(&state, &headers) {
-        return (
-            status,
-            Json(json!({
-                "error": {
-                    "message": "invalid pilot api key",
-                    "type": "invalid_request_error",
-                    "code": "invalid_api_key"
-                }
-            })),
-        )
-            .into_response();
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
     }
     let mut store = state.terminals.lock().await;
     match ingest_terminal(
@@ -297,31 +308,8 @@ async fn admin_deposit(
     headers: axum::http::HeaderMap,
     Json(req): Json<AdminDepositRequest>,
 ) -> impl IntoResponse {
-    if let Err(err) = state.ownership.assert_holding() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "error": {
-                    "message": format!("{err}"),
-                    "type": "server_error",
-                    "code": "ownership_lost"
-                }
-            })),
-        )
-            .into_response();
-    }
-    if let Err(status) = authorize_pilot(&state, &headers) {
-        return (
-            status,
-            Json(json!({
-                "error": {
-                    "message": "invalid pilot api key",
-                    "type": "invalid_request_error",
-                    "code": "invalid_api_key"
-                }
-            })),
-        )
-            .into_response();
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
     }
     if req.event_id.is_empty() || req.amount_micro_usd <= 0 {
         return (
@@ -419,31 +407,8 @@ async fn admin_force_settle(
     headers: axum::http::HeaderMap,
     Json(req): Json<AdminForceSettleRequest>,
 ) -> impl IntoResponse {
-    if let Err(err) = state.ownership.assert_holding() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "error": {
-                    "message": format!("{err}"),
-                    "type": "server_error",
-                    "code": "ownership_lost"
-                }
-            })),
-        )
-            .into_response();
-    }
-    if let Err(status) = authorize_pilot(&state, &headers) {
-        return (
-            status,
-            Json(json!({
-                "error": {
-                    "message": "invalid pilot api key",
-                    "type": "invalid_request_error",
-                    "code": "invalid_api_key"
-                }
-            })),
-        )
-            .into_response();
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
     }
     if req.job_id.is_empty() {
         return (
@@ -564,31 +529,8 @@ async fn admin_recover_undispatched(
     headers: axum::http::HeaderMap,
     Json(req): Json<AdminRecoverUndispatchedRequest>,
 ) -> impl IntoResponse {
-    if let Err(err) = state.ownership.assert_holding() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "error": {
-                    "message": format!("{err}"),
-                    "type": "server_error",
-                    "code": "ownership_lost"
-                }
-            })),
-        )
-            .into_response();
-    }
-    if let Err(status) = authorize_pilot(&state, &headers) {
-        return (
-            status,
-            Json(json!({
-                "error": {
-                    "message": "invalid pilot api key",
-                    "type": "invalid_request_error",
-                    "code": "invalid_api_key"
-                }
-            })),
-        )
-            .into_response();
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
     }
     if req.job_id.is_empty() {
         return (
@@ -668,31 +610,8 @@ async fn admin_held_review(
     headers: axum::http::HeaderMap,
     Json(req): Json<AdminHeldReviewRequest>,
 ) -> impl IntoResponse {
-    if let Err(err) = state.ownership.assert_holding() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "error": {
-                    "message": format!("{err}"),
-                    "type": "server_error",
-                    "code": "ownership_lost"
-                }
-            })),
-        )
-            .into_response();
-    }
-    if let Err(status) = authorize_pilot(&state, &headers) {
-        return (
-            status,
-            Json(json!({
-                "error": {
-                    "message": "invalid pilot api key",
-                    "type": "invalid_request_error",
-                    "code": "invalid_api_key"
-                }
-            })),
-        )
-            .into_response();
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
     }
     if req.job_id.is_empty() {
         return (
@@ -792,27 +711,8 @@ async fn chat_completions(
     headers: axum::http::HeaderMap,
     Json(raw): Json<Value>,
 ) -> impl IntoResponse {
-    if let Err(err) = state.ownership.assert_holding() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "error": {
-                    "message": format!("{err}"),
-                    "type": "server_error",
-                    "code": "ownership_lost"
-                }
-            })),
-        )
-            .into_response();
-    }
-    if let Err(status) = authorize_pilot(&state, &headers) {
-        return (
-            status,
-            Json(json!({
-                "error": { "message": "invalid pilot api key", "type": "invalid_request_error", "code": "invalid_api_key" }
-            })),
-        )
-            .into_response();
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
     }
     let parsed = match decrypt_request_body(&state.keys, &raw) {
         Ok(v) => v,

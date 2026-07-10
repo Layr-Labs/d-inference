@@ -79,4 +79,22 @@ mod tests {
         apply_health_action(&mut h, &ErrorAction::RefreshCapacity, Instant::now());
         assert!(h.admits_general_traffic());
     }
+
+    #[test]
+    fn class_matrix_covers_all_protocol_classes() {
+        assert_eq!(
+            action_for_class("invalid_request"),
+            ErrorAction::FailRequest
+        );
+        assert_eq!(action_for_class("capacity"), ErrorAction::RefreshCapacity);
+        assert_eq!(
+            action_for_class("model_not_ready"),
+            ErrorAction::SignalPlacement
+        );
+        assert_eq!(action_for_class("draining"), ErrorAction::Alternate);
+        assert_eq!(action_for_class("cancelled"), ErrorAction::ReleaseCancel);
+        assert_eq!(action_for_class("fault"), ErrorAction::HealthFault);
+        assert_eq!(action_for_class("security"), ErrorAction::HardFence);
+        assert_eq!(action_for_class("unknown_future"), ErrorAction::HealthFault);
+    }
 }

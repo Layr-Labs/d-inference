@@ -27,3 +27,4 @@ tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 arc-swap = { workspace = true }
 futures-util = "0.3"
+async-trait = { workspace = true }

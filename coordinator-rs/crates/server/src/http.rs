@@ -132,8 +132,26 @@ async fn chat_completions(
             let mut ledger = state.ledger.lock().await;
             match run_mock_completion(&mut ledger, &state.pilot_account, &permit, user_text) {
                 Ok(completion) => {
-                    let body = openai_chat_response(&completion, req.stream);
-                    (StatusCode::OK, Json(body)).into_response()
+                    if req.stream {
+                        let chunk = openai_chat_response(&completion, true);
+                        let done = json!({"id": completion.job_id, "object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
+                        let body = format!(
+                            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                            chunk, done
+                        );
+                        (
+                            StatusCode::OK,
+                            [
+                                (axum::http::header::CONTENT_TYPE, "text/event-stream"),
+                                (axum::http::header::CACHE_CONTROL, "no-cache"),
+                            ],
+                            body,
+                        )
+                            .into_response()
+                    } else {
+                        let body = openai_chat_response(&completion, false);
+                        (StatusCode::OK, Json(body)).into_response()
+                    }
                 }
                 Err(err) => (
                     StatusCode::PAYMENT_REQUIRED,

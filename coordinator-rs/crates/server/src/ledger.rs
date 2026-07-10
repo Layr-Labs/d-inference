@@ -101,6 +101,15 @@ impl MemoryLedger {
                 applied: false,
             });
         }
+        // Job IDs are single-use. A disposed or still-active job must not be
+        // overwritten by a later reserve under a different operation key.
+        if let Some(existing) = self.jobs.get(job_id) {
+            self.ops.remove(&op.0);
+            return Err(LedgerError::Conflict(format!(
+                "job {job_id} already exists (state={}, disposition={:?})",
+                existing.state, existing.disposition
+            )));
+        }
         let (bal, wdr) = self.balances.entry(account.to_string()).or_insert((0, 0));
         if *bal < amount {
             self.ops.remove(&op.0);
@@ -136,6 +145,11 @@ impl MemoryLedger {
             .jobs
             .get_mut(job_id)
             .ok_or_else(|| LedgerError::Conflict("unknown job".into()))?;
+        if job.disposition.is_some() {
+            return Err(LedgerError::Conflict(format!(
+                "job {job_id} already disposed"
+            )));
+        }
         if job.funded_start {
             return Err(LedgerError::Conflict("already start_authorized".into()));
         }
@@ -999,7 +1013,7 @@ mod tests {
     }
 
     #[test]
-    fn release_then_re_reserve_same_job_id_is_allowed() {
+    fn release_then_re_reserve_same_job_id_conflicts() {
         let mut led = MemoryLedger::default();
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r1".into()), "j", "a", 1_000_000)
@@ -1007,15 +1021,48 @@ mod tests {
         assert!(led
             .release(OperationKey("rel1".into()), "j", "a")
             .unwrap());
-        // Job row remains with disposition=released; a new reserve for same job_id
-        // must not silently reuse a disposed job — current impl overwrites via insert.
+        // Job IDs are single-use; disposed jobs must not be overwritten.
+        assert!(matches!(
+            led.reserve(OperationKey("r2".into()), "j", "a", 500_000),
+            Err(LedgerError::Conflict(_))
+        ));
+        assert_eq!(led.active_job_count(), 0);
+        assert_eq!(led.balance("a").0, 5_000_000);
+        // Op key from the failed reserve must not poison later use.
         let res = led
-            .reserve(OperationKey("r2".into()), "j", "a", 500_000)
+            .reserve(OperationKey("r2".into()), "j-new", "a", 500_000)
             .unwrap();
         assert!(res.applied);
         assert_eq!(led.active_job_count(), 1);
-        assert!(!led.job_funded_start("j"));
-        assert_eq!(led.job_reserved_total("j").unwrap().0, 500_000);
+    }
+
+    #[test]
+    fn reserve_active_job_id_under_new_op_conflicts() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r1".into()), "j", "a", 1_000_000)
+            .unwrap();
+        assert!(matches!(
+            led.reserve(OperationKey("r2".into()), "j", "a", 500_000),
+            Err(LedgerError::Conflict(_))
+        ));
+        assert_eq!(led.active_job_count(), 1);
+        assert_eq!(led.balance("a").0, 4_000_000);
+    }
+
+    #[test]
+    fn mark_start_authorized_after_release_conflicts() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        assert!(led
+            .release(OperationKey("rel".into()), "j", "a")
+            .unwrap());
+        assert!(matches!(
+            led.mark_start_authorized("j"),
+            Err(LedgerError::Conflict(_))
+        ));
     }
 
     #[test]

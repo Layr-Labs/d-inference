@@ -1646,3 +1646,81 @@ async fn admin_held_review_without_ownership_returns_503() {
     assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body_json(res).await["error"]["code"], "ownership_lost");
 }
+
+#[tokio::test]
+async fn admin_force_settle_wrong_account_returns_conflict() {
+    let state = test_state(true);
+    {
+        let mut led = state.ledger.lock().await;
+        led.credit("other-account", 1_000_000, 0).unwrap();
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-wa".into()),
+            "held-wa",
+            "pilot-account",
+            100_000,
+        )
+        .unwrap();
+        led.mark_start_authorized("held-wa", "pilot-account").unwrap();
+    }
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/force-settle")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "held-wa",
+                        "actual_micro_usd": 10_000,
+                        "account": "other-account",
+                        "terminal_digest": "wa-d"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(body_json(res).await["error"]["code"], "force_settle_failed");
+}
+
+#[tokio::test]
+async fn admin_recover_undispatched_wrong_account_returns_conflict() {
+    let state = test_state(true);
+    {
+        let mut led = state.ledger.lock().await;
+        led.credit("other-account", 1_000_000, 0).unwrap();
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-rwa".into()),
+            "undisp-wa",
+            "pilot-account",
+            100_000,
+        )
+        .unwrap();
+    }
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/recover-undispatched")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "undisp-wa",
+                        "account": "other-account"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(res).await["error"]["code"],
+        "recover_undispatched_failed"
+    );
+}

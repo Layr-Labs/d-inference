@@ -955,4 +955,46 @@ mod tests {
         // reserved 2M, charged 750k → refund 1.25M → bal = 5M-2M+1.25M = 4.25M
         assert_eq!(led.balance("a").0, 4_250_000);
     }
+
+    #[test]
+    fn release_restores_partial_withdrawable_provenance() {
+        let mut led = MemoryLedger::default();
+        // 2M non-wdr + 3M wdr
+        led.credit("a", 2_000_000, 0).unwrap();
+        led.credit("a", 3_000_000, 3_000_000).unwrap();
+        // Reserve 4M → 2M non-wdr + 2M wdr
+        let res = led
+            .reserve(OperationKey("r".into()), "j", "a", 4_000_000)
+            .unwrap();
+        assert_eq!(res.provenance.withdrawable.0, 2_000_000);
+        assert_eq!(led.balance("a"), (1_000_000, 1_000_000));
+        assert!(led
+            .release(OperationKey("rel".into()), "j", "a")
+            .unwrap());
+        // Full provenance restore.
+        assert_eq!(led.balance("a"), (5_000_000, 3_000_000));
+        assert_eq!(led.active_job_count(), 0);
+    }
+
+    #[test]
+    fn settle_capped_billable_cap_above_reservation_still_caps_at_actual() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        // Cap way above reservation; actual within reservation → charge actual.
+        assert!(led
+            .settle_capped(
+                OperationKey("s".into()),
+                "j",
+                "a",
+                200_000,
+                9_000_000,
+                "d-bigcap"
+            )
+            .unwrap());
+        // reserved 1M, charged 200k → refund 800k → bal = 5M-1M+800k = 4.8M
+        assert_eq!(led.balance("a").0, 4_800_000);
+    }
 }

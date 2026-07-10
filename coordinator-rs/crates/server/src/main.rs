@@ -1,5 +1,7 @@
-use darkbloom_coordinator::{router, spawn_fleet_actor, AppState, ModelCard};
+use darkbloom_coordinator::{router, spawn_fleet_actor, AppState, MemoryLedger, ModelCard};
 use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -10,6 +12,11 @@ async fn main() {
         .init();
 
     let (fleet, _fleet_join) = spawn_fleet_actor();
+    let mut ledger = MemoryLedger::default();
+    let pilot_account =
+        std::env::var("DARKBLOOM_PILOT_ACCOUNT").unwrap_or_else(|_| "pilot-account".into());
+    // Seed pilot balance ($100) so mock settle path can charge.
+    ledger.credit(&pilot_account, 100_000_000, 0);
     let state = AppState {
         fleet,
         encryption_kid: std::env::var("DARKBLOOM_ENCRYPTION_KID").unwrap_or_else(|_| "dev".into()),
@@ -19,6 +26,8 @@ async fn main() {
             object: "model".into(),
             owned_by: "darkbloom".into(),
         }],
+        ledger: Arc::new(Mutex::new(ledger)),
+        pilot_account,
     };
 
     let app = router(state);

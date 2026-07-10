@@ -12,13 +12,19 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::fleet_actor::FleetHandle;
+use crate::ledger::MemoryLedger;
+use crate::mock_provider::{openai_chat_response, run_mock_completion};
 use crate::provider_ws::provider_ws;
+use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct AppState {
     pub fleet: FleetHandle,
     pub encryption_kid: String,
     pub models: Vec<ModelCard>,
+    /// Pilot ledger (process-local). Postgres/SQLx replaces this in M4.
+    pub ledger: Arc<Mutex<MemoryLedger>>,
+    pub pilot_account: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -117,25 +123,30 @@ async fn chat_completions(
 
     match decision {
         darkbloom_core::AdmissionDecision::Prepare(permit) => {
-            // Full prepare/start path lands with protocol-v2 provider sessions.
-            // For the warm-plane scaffold, surface an explicit unsupported until
-            // ProviderSession is wired (still proves admission works).
-            (
-                StatusCode::NOT_IMPLEMENTED,
-                Json(json!({
-                    "error": {
-                        "message": format!(
-                            "admitted to provider {} for model {}; prepare/start path not yet wired",
-                            permit.provider_id, permit.model
-                        ),
-                        "type": "not_implemented",
-                        "code": "warm_plane_stub",
-                        "stream": req.stream,
-                        "messages": req.messages.len()
-                    }
-                })),
-            )
-                .into_response()
+            let user_text = req
+                .messages
+                .iter()
+                .rev()
+                .find_map(|m| m.get("content").and_then(|c| c.as_str()))
+                .unwrap_or("");
+            let mut ledger = state.ledger.lock().await;
+            match run_mock_completion(&mut ledger, &state.pilot_account, &permit, user_text) {
+                Ok(completion) => {
+                    let body = openai_chat_response(&completion, req.stream);
+                    (StatusCode::OK, Json(body)).into_response()
+                }
+                Err(err) => (
+                    StatusCode::PAYMENT_REQUIRED,
+                    Json(json!({
+                        "error": {
+                            "message": err,
+                            "type": "insufficient_funds",
+                            "code": "insufficient_funds"
+                        }
+                    })),
+                )
+                    .into_response(),
+            }
         }
         darkbloom_core::AdmissionDecision::RetryAfter { reason, delay } => (
             StatusCode::TOO_MANY_REQUESTS,

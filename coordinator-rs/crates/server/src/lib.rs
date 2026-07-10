@@ -3,6 +3,7 @@
 pub mod fleet_actor;
 pub mod http;
 pub mod ledger;
+pub mod mock_provider;
 pub mod provider_session;
 pub mod provider_ws;
 

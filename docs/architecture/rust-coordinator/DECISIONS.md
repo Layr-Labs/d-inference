@@ -164,6 +164,8 @@ Date: 2026-07-10
 | 155 | Release disposed unclaims op | `MemoryLedger::release` unclaims the op key on disposed no-op (settle #150 parity) |
 | 156 | Outbox claim respects available_at | `claim_sql` filters `available_at <= NOW()` so requeue backoff is honoured (drain still force-clears) |
 | 157 | Reserve SQL epoch conflict on replay | `reserve_sql` surfaces `epoch_conflict` when existing job fencing epoch mismatches caller (MemoryLedger parity) |
+| 158 | Cutover-drain-all ready under money_fx | `cutover-drain-all` readiness snapshots hold `money_fx` across ledger+outbox reads (quiescence/#147 parity) |
+| 159 | Settle SQL cross-job digest conflict | `settle_sql` / `settle_capped_sql` / `force_settle_sql` surface `digest_conflict` when terminal_digest is bound to another job |
 
 ## Deleted Go mechanisms (do not port)
 

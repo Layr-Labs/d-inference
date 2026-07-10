@@ -397,7 +397,18 @@ impl PostgresLedgerStub {
         SELECT
           (SELECT refund FROM credit) AS refund,
           (SELECT refund_wdr FROM credit) AS refund_wdr,
-          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict
+          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict,
+          (
+            EXISTS (SELECT 1 FROM op)
+            AND EXISTS (SELECT 1 FROM op_ok)
+            AND NOT EXISTS (SELECT 1 FROM op_conflict)
+            AND NOT EXISTS (SELECT 1 FROM digest)
+            AND EXISTS (
+              SELECT 1 FROM rust_coord.provider_terminals
+              WHERE terminal_digest = $4
+                AND job_id <> $2
+            )
+          ) AS digest_conflict
         "#
     }
 
@@ -520,7 +531,18 @@ impl PostgresLedgerStub {
           (SELECT refund FROM credit) AS refund,
           (SELECT refund_wdr FROM credit) AS refund_wdr,
           (SELECT amount FROM credit) AS amount,
-          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict
+          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict,
+          (
+            EXISTS (SELECT 1 FROM op)
+            AND EXISTS (SELECT 1 FROM op_ok)
+            AND NOT EXISTS (SELECT 1 FROM op_conflict)
+            AND NOT EXISTS (SELECT 1 FROM digest)
+            AND EXISTS (
+              SELECT 1 FROM rust_coord.provider_terminals
+              WHERE terminal_digest = $5
+                AND job_id <> $2
+            )
+          ) AS digest_conflict
         "#
     }
 
@@ -640,7 +662,18 @@ impl PostgresLedgerStub {
           (SELECT refund FROM credit) AS refund,
           (SELECT refund_wdr FROM credit) AS refund_wdr,
           (SELECT amount FROM credit) AS amount,
-          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict
+          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict,
+          (
+            EXISTS (SELECT 1 FROM op)
+            AND EXISTS (SELECT 1 FROM op_ok)
+            AND NOT EXISTS (SELECT 1 FROM op_conflict)
+            AND NOT EXISTS (SELECT 1 FROM digest)
+            AND EXISTS (
+              SELECT 1 FROM rust_coord.provider_terminals
+              WHERE terminal_digest = $4
+                AND job_id <> $2
+            )
+          ) AS digest_conflict
         "#
     }
 
@@ -838,6 +871,7 @@ mod tests {
         assert!(sql.contains("op_ok"));
         assert!(sql.contains("op_conflict"));
         assert!(sql.contains("param_conflict"));
+        assert!(sql.contains("digest_conflict"));
         assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));
         assert!(sql.contains("rust_coord.outbox"));
@@ -863,6 +897,7 @@ mod tests {
         assert!(sql.contains("op_ok"));
         assert!(sql.contains("op_conflict"));
         assert!(sql.contains("param_conflict"));
+        assert!(sql.contains("digest_conflict"));
         assert!(sql.contains("billable_cap_micro_usd"));
         assert!(sql.contains("LEFT JOIN charge"));
         assert!(sql.contains("COALESCE("));
@@ -871,6 +906,25 @@ mod tests {
         assert!(sql.contains("rust_coord.outbox"));
         assert!(sql.contains("inference.settled"));
         assert!(sql.contains("coordinator_epoch = $10"));
+    }
+
+    #[test]
+    fn settle_sql_surfaces_cross_job_digest_conflict() {
+        // DECISIONS #159: cross-job terminal_digest collision must not look like replay.
+        for sql in [
+            PostgresLedgerStub::settle_sql(),
+            PostgresLedgerStub::settle_capped_sql(),
+            PostgresLedgerStub::force_settle_sql(),
+        ] {
+            assert!(
+                sql.contains("digest_conflict"),
+                "settle SQL must surface digest_conflict for cross-job digest reuse"
+            );
+            assert!(
+                sql.contains("job_id <> $2") || sql.contains("job_id <> $2"),
+                "digest_conflict must compare against a different job_id"
+            );
+        }
     }
 
     #[test]

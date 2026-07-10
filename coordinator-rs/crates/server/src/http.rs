@@ -2512,17 +2512,18 @@ async fn admin_cutover_drain_all(
                 .into_response();
         }
 
-        let accounts = {
+        // Hold money_fx across ledger+outbox snapshot so a concurrent settle
+        // cannot enqueue inference.settled between the two reads (DECISIONS #158).
+        let (accounts, outbox_len) = {
+            let _fx = state.money_fx.lock().await;
             let led = state.ledger.lock().await;
-            filter_accounts(
+            let accts = filter_accounts(
                 led.cutover_status(state.ownership.epoch().0)
                     .accounts_needing_cutover,
                 allowlist.as_ref(),
-            )
-        };
-        let outbox_len = {
+            );
             let box_ = state.outbox.lock().await;
-            box_.len()
+            (accts, box_.len())
         };
 
         // Scoped ready: allowlisted (or all) accounts clear + outbox fully empty
@@ -2716,17 +2717,17 @@ async fn admin_cutover_drain_all(
         }));
 
         // Re-check within the same round so max_rounds=1 can still finish (DECISIONS #118).
-        let accounts_after = {
+        // Hold money_fx across both reads (DECISIONS #158).
+        let (accounts_after, outbox_after) = {
+            let _fx = state.money_fx.lock().await;
             let led = state.ledger.lock().await;
-            filter_accounts(
+            let accts = filter_accounts(
                 led.cutover_status(state.ownership.epoch().0)
                     .accounts_needing_cutover,
                 allowlist.as_ref(),
-            )
-        };
-        let outbox_after = {
+            );
             let box_ = state.outbox.lock().await;
-            box_.len()
+            (accts, box_.len())
         };
         if accounts_after.is_empty() && outbox_after == 0 {
             let (all_remaining, needs_adopt) = {

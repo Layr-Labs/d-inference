@@ -47,6 +47,9 @@ func (s *PostgresStore) RecordInferenceSettlementReview(
 		if !persistedSettlementMatches(existing, settlement) {
 			return "", ErrFinancialOperationConflict
 		}
+		if err := deleteCompletionIntentTx(ctx, tx, settlement.ReservationID); err != nil {
+			return "", err
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return "", fmt.Errorf("store: commit reviewed settlement replay: %v: %w", err, ErrCommitOutcomeUnknown)
 		}
@@ -83,6 +86,61 @@ func (s *PostgresStore) RecordInferenceSettlementReview(
 		return "", fmt.Errorf("store: commit settlement review: %v: %w", err, ErrCommitOutcomeUnknown)
 	}
 	return InferenceSettlementReviewPending, nil
+}
+
+func (s *PostgresStore) RecordInferenceCompletionIntent(
+	intent *InferenceCompletionIntent,
+) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
+	if intent == nil || intent.ReservationID == "" || intent.RequestID == "" {
+		return ErrFinancialOperationConflict
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin completion intent: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
+	finalizationKey := "finalize:" + intent.ReservationID
+	if err := lockFinancialOperation(ctx, tx, finalizationKey); err != nil {
+		return err
+	}
+	if _, finalized, err := reservationOperationTx(ctx, tx, finalizationKey); err != nil {
+		return err
+	} else if finalized {
+		return tx.Commit(ctx)
+	}
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO inference_completion_intents
+			(reservation_id, request_id, provider_id, prompt_tokens,
+			 completion_tokens, reasoning_tokens)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 ON CONFLICT (reservation_id) DO UPDATE SET
+			reservation_id = EXCLUDED.reservation_id
+		 WHERE inference_completion_intents.request_id = EXCLUDED.request_id
+		   AND inference_completion_intents.provider_id = EXCLUDED.provider_id
+		   AND inference_completion_intents.prompt_tokens = EXCLUDED.prompt_tokens
+		   AND inference_completion_intents.completion_tokens = EXCLUDED.completion_tokens
+		   AND inference_completion_intents.reasoning_tokens = EXCLUDED.reasoning_tokens`,
+		intent.ReservationID, intent.RequestID, intent.ProviderID,
+		intent.PromptTokens, intent.CompletionTokens, intent.ReasoningTokens,
+	)
+	if err != nil {
+		return fmt.Errorf("store: record completion intent: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrFinancialOperationConflict
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit completion intent: %v: %w", err, ErrCommitOutcomeUnknown)
+	}
+	return nil
 }
 
 type persistedInferenceSettlement struct {
@@ -161,6 +219,9 @@ func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (Infere
 	if _, finalized, err := reservationOperationTx(ctx, tx, finalizationKey); err != nil {
 		return "", err
 	} else if finalized {
+		if err := deleteCompletionIntentTx(ctx, tx, settlement.ReservationID); err != nil {
+			return "", err
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return "", fmt.Errorf("store: commit late terminal disposition: %w", err)
 		}
@@ -301,6 +362,9 @@ func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (Infere
 		return "", err
 	}
 	if err := insertInferenceSettlementTx(ctx, tx, settlement); err != nil {
+		return "", err
+	}
+	if err := deleteCompletionIntentTx(ctx, tx, settlement.ReservationID); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -582,6 +646,20 @@ func insertInferenceSettlementTx(
 		promptTokens, completionTokens, recordUsage, location,
 	); err != nil {
 		return fmt.Errorf("store: insert inference settlement disposition: %w", err)
+	}
+	return nil
+}
+
+func deleteCompletionIntentTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	reservationID string,
+) error {
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM inference_completion_intents WHERE reservation_id = $1`,
+		reservationID,
+	); err != nil {
+		return fmt.Errorf("store: clear completion intent: %w", err)
 	}
 	return nil
 }

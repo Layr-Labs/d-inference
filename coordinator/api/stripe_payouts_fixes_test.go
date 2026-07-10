@@ -572,10 +572,9 @@ func newFlakyPayoutServer(t *testing.T, fakeStripe *httptest.Server) (*Server, *
 	return srv, flaky
 }
 
-// TestConnectWebhookTransferReversedConvergesAcrossPersistFailure: the credit
-// lands but the row persist fails → 500 → Stripe redelivers → the
-// reference-deduped credit no-ops and the persist completes. Exactly one
-// refund, terminal row.
+// TestConnectWebhookTransferReversedConvergesAcrossPersistFailure proves the
+// reversal path no longer has a credit-versus-row persist seam: the dedicated
+// atomic store operation succeeds even when the legacy Update method is faulted.
 func TestConnectWebhookTransferReversedConvergesAcrossPersistFailure(t *testing.T) {
 	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer fakeStripe.Close()
@@ -590,8 +589,8 @@ func TestConnectWebhookTransferReversedConvergesAcrossPersistFailure(t *testing.
 	balBefore := flaky.GetBalance(user.AccountID)
 
 	flaky.failUpdates = true
-	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_conv")); w.Code != http.StatusInternalServerError {
-		t.Fatalf("got %d, want 500 (persist failed — Stripe must redeliver)", w.Code)
+	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_conv")); w.Code != http.StatusOK {
+		t.Fatalf("atomic reversal got %d", w.Code)
 	}
 	if bal := flaky.GetBalance(user.AccountID); bal != balBefore+5_000_000 {
 		t.Fatalf("credit should have landed once: balance = %d", bal)

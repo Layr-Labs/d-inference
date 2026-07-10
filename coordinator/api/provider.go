@@ -341,6 +341,17 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				} else {
 					provider.Mu().Lock()
 					provider.AccountID = pt.AccountID
+					if provider.PublicKey != "" {
+						if _, err := s.store.MigrateAccountBalance(
+							provider.PublicKey, pt.AccountID,
+						); err != nil {
+							s.logger.Error("failed to migrate unlinked provider earnings",
+								"provider_id", providerID,
+								"account_id", pt.AccountID,
+								"error", err,
+							)
+						}
+					}
 					provider.Mu().Unlock()
 					// Account linkage can be the provider's ONLY stable identity
 					// (Open Mode / invalid attestation → the acct: fallback), and
@@ -1449,14 +1460,10 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 	// terminal error to the consumer goroutine.
 	select {
 	case pr.ChunkCh <- chunkData:
-		if !isBoilerplateChunk(chunkData) {
-			pr.MarkContentChunkAccepted()
-		}
+		pr.AddAcceptedOutputBytes(billableOutputBytes(chunkData))
 	default:
 		if sendChunkWithGrace(pr, chunkData) {
-			if !isBoilerplateChunk(chunkData) {
-				pr.MarkContentChunkAccepted()
-			}
+			pr.AddAcceptedOutputBytes(billableOutputBytes(chunkData))
 			return
 		}
 		s.logger.Error("chunk buffer overflow — failing request instead of corrupting stream",
@@ -1577,6 +1584,17 @@ func (s *Server) handleInferenceAccepted(provider *registry.Provider, msg *proto
 // could skew routing calibration. The value is advisory, never a security gate.
 const maxPlausibleDecodeTPS = 10000.0
 
+func billableOutputBytes(chunk string) int64 {
+	message := extractMessage([]string{chunk})
+	total := len(message.Content) + len(message.Reasoning)
+	for _, toolCall := range message.ToolCalls {
+		if encoded, err := json.Marshal(toolCall); err == nil {
+			total += len(encoded)
+		}
+	}
+	return int64(total)
+}
+
 func boundedProviderUsage(pr *registry.PendingRequest, usage protocol.UsageInfo) (protocol.UsageInfo, bool, bool) {
 	if usage.PromptTokens < 0 || usage.CompletionTokens < 0 ||
 		usage.ReasoningTokens < 0 || usage.PromptTokens > math.MaxInt32 ||
@@ -1598,7 +1616,7 @@ func boundedProviderUsage(pr *registry.PendingRequest, usage protocol.UsageInfo)
 			usage.PromptTokens = int(promptUpper)
 			capped = true
 		}
-		acceptedUpper := pr.AcceptedContentChunks() * 10
+		acceptedUpper := pr.AcceptedOutputBytes()
 		if acceptedUpper > math.MaxInt32 {
 			acceptedUpper = math.MaxInt32
 		}
@@ -1620,9 +1638,40 @@ type claimedCompletion struct {
 }
 
 func (s *Server) enqueueCompletion(providerID string, provider *registry.Provider, msg *protocol.InferenceCompleteMessage) {
+	if provider == nil {
+		s.logger.Warn("complete from unregistered provider", "provider_id", providerID)
+		return
+	}
+	fenced := provider.FencePendingTerminal(msg.RequestID)
+	if fenced != nil && fenced.ReservedMicroUSD > 0 {
+		if fenced.ReservationID == "" {
+			fenced.ReservationID = fenced.RequestID
+		}
+		if err := s.persistCompletionIntentWithRetry(fenced, providerID, msg); err != nil {
+			s.logger.Error("failed to persist completion intent",
+				"request_id", msg.RequestID,
+				"error", err,
+			)
+			return
+		}
+	}
 	claimed := s.claimCompletion(providerID, provider, msg)
 	if claimed == nil {
 		return
+	}
+	if fenced == nil && claimed.pending.ReservedMicroUSD > 0 {
+		if claimed.pending.ReservationID == "" {
+			claimed.pending.ReservationID = claimed.pending.RequestID
+		}
+		if err := s.persistCompletionIntentWithRetry(
+			claimed.pending, providerID, msg,
+		); err != nil {
+			s.logger.Error("failed to persist parked completion intent",
+				"request_id", msg.RequestID,
+				"error", err,
+			)
+			return
+		}
 	}
 	task := func() {
 		s.handleClaimedComplete(providerID, provider, msg, claimed)

@@ -279,3 +279,42 @@ func TestPostgresStaleRecoveryPreservesReviewPendingReservation(t *testing.T) {
 		t.Fatalf("review-pending balance = %d, want held 50000", balance)
 	}
 }
+
+func TestPostgresStaleRecoveryPreservesReceivedCompletionIntent(t *testing.T) {
+	backend := testPostgresStore(t)
+	const (
+		accountID     = "intent-reservation-account"
+		reservationID = "intent-reservation"
+	)
+	if err := backend.Credit(accountID, 100_000, LedgerStripeDeposit, "deposit"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := backend.ReserveInferenceBalance(accountID, 50_000, reservationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.pool.Exec(
+		t.Context(),
+		`UPDATE balance_reservation_operations
+		 SET created_at = NOW() - INTERVAL '1 hour'
+		 WHERE operation_key = $1`,
+		reservationID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.RecordInferenceCompletionIntent(&InferenceCompletionIntent{
+		ReservationID: reservationID, RequestID: "intent-request",
+		ProviderID: "provider", PromptTokens: 10, CompletionTokens: 20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := backend.RecoverStaleInferenceReservations(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 0 {
+		t.Fatalf("received terminal reservation recovered as orphan: %d", recovered)
+	}
+	if balance := backend.GetBalance(accountID); balance != 50_000 {
+		t.Fatalf("completion-intent balance = %d, want held 50000", balance)
+	}
+}

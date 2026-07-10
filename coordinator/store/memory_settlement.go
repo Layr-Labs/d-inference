@@ -15,6 +15,7 @@ func (s *MemoryStore) SettleInference(settlement *InferenceSettlement) (Inferenc
 		if !equivalentInferenceSettlement(existing, settlement) {
 			return "", ErrFinancialOperationConflict
 		}
+		delete(s.inferenceCompletionIntents, settlement.ReservationID)
 		return InferenceSettlementReplayed, nil
 	}
 	if review := s.inferenceSettlementReviews[settlement.ReservationID]; review != nil {
@@ -51,6 +52,7 @@ func (s *MemoryStore) SettleInference(settlement *InferenceSettlement) (Inferenc
 	}
 	finalizationKey := "finalize:" + settlement.ReservationID
 	if _, finalized := s.balanceReservationOperations[finalizationKey]; finalized {
+		delete(s.inferenceCompletionIntents, settlement.ReservationID)
 		return InferenceSettlementAlreadyReleased, nil
 	}
 	if settlement.ProviderEarning != nil {
@@ -148,6 +150,7 @@ func (s *MemoryStore) SettleInference(settlement *InferenceSettlement) (Inferenc
 		}
 	}
 	s.inferenceSettlements[settlement.ReservationID] = cloneInferenceSettlement(settlement)
+	delete(s.inferenceCompletionIntents, settlement.ReservationID)
 	return InferenceSettlementApplied, nil
 }
 
@@ -196,6 +199,25 @@ func (s *MemoryStore) RecordInferenceSettlementReview(
 	s.inferenceSettlementReviews[settlement.ReservationID] = cloneInferenceSettlement(settlement)
 	s.inferenceSettlementReasons[settlement.ReservationID] = reason
 	return InferenceSettlementReviewPending, nil
+}
+
+func (s *MemoryStore) RecordInferenceCompletionIntent(
+	intent *InferenceCompletionIntent,
+) error {
+	if intent == nil || intent.ReservationID == "" || intent.RequestID == "" {
+		return ErrFinancialOperationConflict
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing := s.inferenceCompletionIntents[intent.ReservationID]; existing != nil {
+		if *existing != *intent {
+			return ErrFinancialOperationConflict
+		}
+		return nil
+	}
+	cp := *intent
+	s.inferenceCompletionIntents[intent.ReservationID] = &cp
+	return nil
 }
 
 func (s *MemoryStore) RecoverStaleInferenceReservations(_ time.Time) (int, error) {

@@ -127,6 +127,15 @@ func (d InferenceSettlementDisposition) IsSettled() bool {
 	return d == InferenceSettlementApplied || d == InferenceSettlementReplayed
 }
 
+type InferenceCompletionIntent struct {
+	ReservationID    string
+	RequestID        string
+	ProviderID       string
+	PromptTokens     int64
+	CompletionTokens int64
+	ReasoningTokens  int64
+}
+
 // maxTelemetryReadRows is the hard upper bound on rows returned by the routing
 // telemetry readers (InferenceRouteRecordsSince / RejectionRecordsSince). These
 // tables grow unbounded over time, so the readers always cap the result set

@@ -481,6 +481,15 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		`CREATE TABLE IF NOT EXISTS inference_completion_intents (
+			reservation_id TEXT PRIMARY KEY,
+			request_id TEXT NOT NULL,
+			provider_id TEXT NOT NULL,
+			prompt_tokens BIGINT NOT NULL,
+			completion_tokens BIGINT NOT NULL,
+			reasoning_tokens BIGINT NOT NULL,
+			received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 		// Partial index for the public leaderboard/network-totals reward scans,
 		// which filter ledger_entries by reward entry_type across all accounts.
 		// Without it, each cache miss seq-scans the whole (multi-million-row)
@@ -1595,7 +1604,6 @@ func (s *PostgresStore) GetAPIKeyByID(accountID, id string) (*APIKey, error) {
 func (s *PostgresStore) UpdateAPIKey(accountID, id string, mutable APIKey) (*APIKey, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE api_keys SET
 			name = $1, active = $2, limit_micro_usd = $3, limit_reset = $4,
@@ -2982,6 +2990,9 @@ func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType 
 // one account ID to another in a single transaction. No-op (false) when the
 // source has no balance row or a zero balance.
 func (s *PostgresStore) MigrateAccountBalance(from, to string) (bool, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return false, err
+	}
 	if from == "" || to == "" || from == to {
 		return false, nil
 	}
@@ -2993,6 +3004,9 @@ func (s *PostgresStore) MigrateAccountBalance(from, to string) (bool, error) {
 		return false, fmt.Errorf("store: begin migrate tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return false, err
+	}
 
 	var bal, wdr int64
 	err = tx.QueryRow(ctx,
@@ -3818,6 +3832,9 @@ func (s *PostgresStore) GetUserByEmail(email string) (*User, error) {
 // --- Stripe Withdrawals ---
 
 func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	if w == nil || w.ID == "" {
 		return errors.New("stripe withdrawal id is required")
 	}
@@ -3985,12 +4002,23 @@ func (s *PostgresStore) GetStripeWithdrawalByTransferID(transferID string) (*Str
 }
 
 func (s *PostgresStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	if w == nil || w.ID == "" {
 		return errors.New("stripe withdrawal id is required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	tag, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin stripe withdrawal update: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx,
 		`UPDATE stripe_withdrawals SET
 			transfer_id = $2, payout_id = $3, sweep_payout_id = $4, status = $5,
 			failure_reason = $6, refunded = $7, fee_refunded = $8, updated_at = NOW()
@@ -4002,6 +4030,9 @@ func (s *PostgresStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("stripe withdrawal %q not found", w.ID)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit stripe withdrawal update: %w", err)
 	}
 	w.UpdatedAt = time.Now()
 	return nil
@@ -4040,13 +4071,23 @@ func (s *PostgresStore) ListStripeWithdrawals(accountID string, limit int) ([]St
 // MarkStripeWithdrawalPaid atomically flips a non-terminal, non-refunded
 // withdrawal to "paid" with an in-database guard (see interface doc).
 func (s *PostgresStore) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayoutID string) (bool, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return false, err
+	}
 	if id == "" {
 		return false, errors.New("stripe withdrawal id is required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	tag, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("store: begin mark stripe withdrawal paid: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx,
 		`UPDATE stripe_withdrawals
 		 SET status = 'paid',
 		     sweep_payout_id = CASE WHEN $3 <> '' THEN $3 ELSE sweep_payout_id END,
@@ -4060,19 +4101,144 @@ func (s *PostgresStore) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayo
 	if err != nil {
 		return false, fmt.Errorf("store: mark stripe withdrawal paid: %w", err)
 	}
-	return tag.RowsAffected() > 0, nil
+	applied := tag.RowsAffected() > 0
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("store: commit mark stripe withdrawal paid: %w", err)
+	}
+	return applied, nil
+}
+
+func (s *PostgresStore) RefundStripeWithdrawalOnReversal(id string) (bool, bool, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return false, false, err
+	}
+	if id == "" {
+		return false, false, errors.New("stripe withdrawal id is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, false, fmt.Errorf("store: begin transfer reversal refund: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return false, false, err
+	}
+	withdrawal, err := scanStripeWithdrawal(tx.QueryRow(ctx,
+		`SELECT `+stripeWithdrawalSelectColumns+`
+		 FROM stripe_withdrawals WHERE id = $1 FOR UPDATE`,
+		id,
+	))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+		}
+		return false, false, fmt.Errorf("store: lock reversed withdrawal: %w", err)
+	}
+	if withdrawal.Status == "paid" {
+		if err := tx.Commit(ctx); err != nil {
+			return false, false, fmt.Errorf("store: commit paid reversal review: %w", err)
+		}
+		return false, true, nil
+	}
+	if withdrawal.Refunded {
+		if _, err := tx.Exec(ctx,
+			`UPDATE stripe_withdrawals
+			 SET status = 'failed', failure_reason = 'transfer_reversed', updated_at = NOW()
+			 WHERE id = $1`,
+			id,
+		); err != nil {
+			return false, false, fmt.Errorf("store: terminalize refunded reversal: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return false, false, fmt.Errorf("store: commit refunded reversal: %w", err)
+		}
+		return false, false, nil
+	}
+	net := withdrawal.AmountMicroUSD - withdrawal.FeeMicroUSD
+	if net > 0 {
+		if _, err := creditWithdrawableReferenceTx(
+			ctx, tx, withdrawal.AccountID, net, "stripe_withdraw:"+withdrawal.ID,
+		); err != nil {
+			return false, false, err
+		}
+	}
+	feeRefunded := withdrawal.FeeRefunded
+	if withdrawal.FeeMicroUSD > 0 && !feeRefunded {
+		_, err := creditWithdrawableReferenceTx(
+			ctx, tx, withdrawal.AccountID, withdrawal.FeeMicroUSD,
+			"stripe_withdraw_fee:"+withdrawal.ID,
+		)
+		if err != nil {
+			return false, false, err
+		}
+		feeRefunded = true
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE stripe_withdrawals
+		 SET refunded = TRUE, fee_refunded = (fee_refunded OR $2),
+		     status = 'failed', failure_reason = 'transfer_reversed', updated_at = NOW()
+		 WHERE id = $1`,
+		id, feeRefunded,
+	); err != nil {
+		return false, false, fmt.Errorf("store: finalize reversed withdrawal: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, false, fmt.Errorf("store: commit reversed withdrawal: %w", err)
+	}
+	return true, false, nil
+}
+
+func creditWithdrawableReferenceTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	accountID string,
+	amount int64,
+	reference string,
+) (bool, error) {
+	var exists bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM ledger_entries
+			WHERE account_id = $1 AND entry_type = $2 AND reference = $3
+		)`,
+		accountID, string(LedgerRefund), reference,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("store: check reversal refund reference: %w", err)
+	}
+	if exists {
+		return false, nil
+	}
+	if err := creditWithdrawableTx(
+		ctx, tx, accountID, amount, LedgerRefund, reference, time.Time{},
+	); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a bounced
 // withdrawal for sweep retry with an in-database guard (see interface doc).
 func (s *PostgresStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason string, feeRefunded bool) (bool, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return false, err
+	}
 	if id == "" {
 		return false, errors.New("stripe withdrawal id is required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	tag, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("store: begin reopen stripe withdrawal: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx,
 		`UPDATE stripe_withdrawals
 		 SET status = 'transferred',
 		     payout_id = '',
@@ -4087,7 +4253,11 @@ func (s *PostgresStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReas
 	if err != nil {
 		return false, fmt.Errorf("store: reopen stripe withdrawal: %w", err)
 	}
-	return tag.RowsAffected() > 0, nil
+	applied := tag.RowsAffected() > 0
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("store: commit reopen stripe withdrawal: %w", err)
+	}
+	return applied, nil
 }
 
 // ListStripeWithdrawalsBySweepPayoutID returns the rows stamped by the given

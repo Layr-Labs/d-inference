@@ -778,9 +778,9 @@ func (s *Server) FenceProviderSessions() {
 
 func (s *Server) Close() {
 	s.BeginShutdown()
+	s.StopCompletionProcessing()
 	s.FenceProviderSessions()
 	s.providerSessions.Wait()
-	s.StopCompletionProcessing()
 	if s.settlements != nil {
 		s.settlements.close()
 	}

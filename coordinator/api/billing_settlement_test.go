@@ -465,17 +465,19 @@ func TestProviderCompletionUsageIsCappedAtFundedOutputBound(t *testing.T) {
 		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
 		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
 	}
+	pr.SessionPrivKey = &[32]byte{}
+	pr.AddAcceptedOutputBytes(4)
 	provider.AddPending(pr)
 	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
 		Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID,
 		Usage: protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 100},
 	})
-	expectedCost := payments.CalculateCost(model, 1000, 10)
+	expectedCost := payments.CalculateCost(model, 1000, 4)
 	if balance := ledger.Balance(testConsumerID); balance != initialBalance-expectedCost {
 		t.Fatalf("consumer balance = %d, want %d", balance, initialBalance-expectedCost)
 	}
 	rows := st.UsageByConsumer(testConsumerID)
-	if len(rows) != 1 || rows[0].CompletionTokens != 10 {
+	if len(rows) != 1 || rows[0].CompletionTokens != 4 {
 		t.Fatalf("capped usage rows = %+v", rows)
 	}
 }

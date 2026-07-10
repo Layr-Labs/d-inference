@@ -13,6 +13,7 @@ import (
 // record lives outside the provider's pending set, so it doesn't count against
 // concurrency/idle while waiting.
 const defaultTerminalSettleGrace = 30 * time.Second
+const maxSettlementHolds = 4096
 
 // settlementHolder parks the billing record of a consumer-disconnected request
 // so a late provider terminal can settle it (charge delivered tokens) instead of
@@ -57,6 +58,11 @@ func (h *settlementHolder) hold(pr *registry.PendingRequest, grace time.Duration
 		h.active--
 		h.cond.Broadcast()
 		h.mu.Unlock()
+		return
+	}
+	if len(h.pending) >= maxSettlementHolds {
+		h.mu.Unlock()
+		onExpiry(pr)
 		return
 	}
 	entry := &heldSettlement{pending: pr, onExpiry: onExpiry}

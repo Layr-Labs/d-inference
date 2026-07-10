@@ -6,6 +6,11 @@ import (
 )
 
 func TestCalculateCostSaturatesInsteadOfOverflowing(t *testing.T) {
+	if got, want := CalculateCostWithOverrides(
+		"model", 2, 0, math.MaxInt64, 0, true,
+	), int64(18_446_744_073_709); got != want {
+		t.Fatalf("wide intermediate cost = %d, want %d", got, want)
+	}
 	got := CalculateCostWithOverrides(
 		"model", math.MaxInt, math.MaxInt,
 		math.MaxInt64, math.MaxInt64, true,

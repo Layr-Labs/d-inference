@@ -206,6 +206,10 @@ func (s *PostgresStore) RecoverStaleInferenceReservations(before time.Time) (int
 		       SELECT 1 FROM inference_settlement_reviews
 		       WHERE reservation_id = reserve.operation_key
 		   )
+		   AND NOT EXISTS (
+		       SELECT 1 FROM inference_completion_intents
+		       WHERE reservation_id = reserve.operation_key
+		   )
 		 ORDER BY reserve.created_at
 		 LIMIT 100`,
 		before,
@@ -246,16 +250,18 @@ func (s *PostgresStore) RecoverStaleInferenceReservations(before time.Time) (int
 		} else if found {
 			continue
 		}
-		var reviewPending bool
+		var terminalOwned bool
 		if err := tx.QueryRow(ctx,
 			`SELECT EXISTS (
 				SELECT 1 FROM inference_settlement_reviews WHERE reservation_id = $1
+				UNION ALL
+				SELECT 1 FROM inference_completion_intents WHERE reservation_id = $1
 			)`,
 			reservation.operationKey,
-		).Scan(&reviewPending); err != nil {
-			return 0, fmt.Errorf("store: recheck settlement review: %w", err)
+		).Scan(&terminalOwned); err != nil {
+			return 0, fmt.Errorf("store: recheck terminal ownership: %w", err)
 		}
-		if reviewPending {
+		if terminalOwned {
 			continue
 		}
 		topups, err := staleReservationTopUps(ctx, tx, reservation.operationKey)

@@ -2,6 +2,7 @@ package payments
 
 import (
 	"math"
+	"math/bits"
 	"strconv"
 	"strings"
 )
@@ -71,10 +72,16 @@ func boundedTokenCost(tokens int, rate int64) int64 {
 	if tokens <= 0 || rate <= 0 {
 		return 0
 	}
-	if int64(tokens) > math.MaxInt64/rate {
+	high, low := bits.Mul64(uint64(tokens), uint64(rate))
+	const divisor = uint64(1_000_000)
+	if high >= divisor {
 		return math.MaxInt64
 	}
-	return int64(tokens) * rate / 1_000_000
+	quotient, _ := bits.Div64(high, low, divisor)
+	if quotient > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(quotient)
 }
 
 // CalculateCostWithOverrides is like CalculateCost but uses custom per-account

@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -191,5 +193,33 @@ func (s *Server) recordSettlementReviewWithRetry(
 		}
 		delay := time.Duration(min(attempt+1, 100)) * 50 * time.Millisecond
 		time.Sleep(delay)
+	}
+}
+
+func (s *Server) persistCompletionIntentWithRetry(
+	pending *registry.PendingRequest,
+	providerID string,
+	message *protocol.InferenceCompleteMessage,
+) error {
+	intent := &store.InferenceCompletionIntent{
+		ReservationID:    pending.ReservationID,
+		RequestID:        message.RequestID,
+		ProviderID:       providerID,
+		PromptTokens:     int64(message.Usage.PromptTokens),
+		CompletionTokens: int64(message.Usage.CompletionTokens),
+		ReasoningTokens:  int64(message.Usage.ReasoningTokens),
+	}
+	for attempt := 0; ; attempt++ {
+		if s.completions != nil && s.completions.isStopping() {
+			return errCompletionStopping
+		}
+		err := s.store.RecordInferenceCompletionIntent(intent)
+		if err == nil {
+			return nil
+		}
+		if store.IsPermanentFinancialError(err) {
+			return err
+		}
+		time.Sleep(time.Duration(min(attempt+1, 100)) * 50 * time.Millisecond)
 	}
 }

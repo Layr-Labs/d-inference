@@ -59,6 +59,7 @@ type MemoryStore struct {
 	inferenceSettlements         map[string]*InferenceSettlement
 	inferenceSettlementReviews   map[string]*InferenceSettlement
 	inferenceSettlementReasons   map[string]string
+	inferenceCompletionIntents   map[string]*InferenceCompletionIntent
 
 	// Referral system
 	referrersByCode    map[string]*Referrer // code → referrer
@@ -174,6 +175,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		inferenceSettlements:          make(map[string]*InferenceSettlement),
 		inferenceSettlementReviews:    make(map[string]*InferenceSettlement),
 		inferenceSettlementReasons:    make(map[string]string),
+		inferenceCompletionIntents:    make(map[string]*InferenceCompletionIntent),
 		referrersByCode:               make(map[string]*Referrer),
 		referrersByAccount:            make(map[string]*Referrer),
 		referrals:                     make(map[string]string),
@@ -2542,6 +2544,64 @@ func (s *MemoryStore) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayout
 	}
 	w.UpdatedAt = time.Now()
 	return true, nil
+}
+
+func (s *MemoryStore) RefundStripeWithdrawalOnReversal(id string) (bool, bool, error) {
+	if id == "" {
+		return false, false, errors.New("stripe withdrawal id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w, ok := s.stripeWithdrawalsByID[id]
+	if !ok {
+		return false, false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+	}
+	if w.Status == "paid" {
+		return false, true, nil
+	}
+	if w.Refunded {
+		w.Status = "failed"
+		w.FailureReason = "transfer_reversed"
+		w.UpdatedAt = time.Now()
+		return false, false, nil
+	}
+	now := time.Now()
+	net := w.AmountMicroUSD - w.FeeMicroUSD
+	if net > 0 && !s.hasLedgerReferenceLocked(
+		w.AccountID, LedgerRefund, "stripe_withdraw:"+w.ID,
+	) {
+		s.creditLocked(w.AccountID, net, LedgerRefund, "stripe_withdraw:"+w.ID, now)
+		s.withdrawable[w.AccountID] += net
+	}
+	if w.FeeMicroUSD > 0 && !w.FeeRefunded {
+		if !s.hasLedgerReferenceLocked(
+			w.AccountID, LedgerRefund, "stripe_withdraw_fee:"+w.ID,
+		) {
+			s.creditLocked(w.AccountID, w.FeeMicroUSD, LedgerRefund, "stripe_withdraw_fee:"+w.ID, now)
+			s.withdrawable[w.AccountID] += w.FeeMicroUSD
+		}
+		w.FeeRefunded = true
+	}
+	w.Refunded = true
+	w.Status = "failed"
+	w.FailureReason = "transfer_reversed"
+	w.UpdatedAt = now
+	return true, false, nil
+}
+
+func (s *MemoryStore) hasLedgerReferenceLocked(
+	accountID string,
+	entryType LedgerEntryType,
+	reference string,
+) bool {
+	for i := range s.ledgerEntries {
+		entry := s.ledgerEntries[i]
+		if entry.AccountID == accountID && entry.Type == entryType &&
+			entry.Reference == reference {
+			return true
+		}
+	}
+	return false
 }
 
 // ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a bounced

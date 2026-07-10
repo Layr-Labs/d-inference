@@ -218,6 +218,10 @@ type LedgerStore interface {
 	// financial command was rejected as permanently invalid.
 	RecordInferenceSettlementReview(settlement *InferenceSettlement, reason string) (InferenceSettlementDisposition, error)
 
+	// RecordInferenceCompletionIntent durably journals a received provider
+	// terminal before process-local pending state is released.
+	RecordInferenceCompletionIntent(intent *InferenceCompletionIntent) error
+
 	// RecoverStaleInferenceReservations releases old durable holds that have no
 	// settlement, review, or prior release disposition.
 	RecoverStaleInferenceReservations(before time.Time) (released int, err error)
@@ -364,6 +368,11 @@ type BillingStore interface {
 	// recorded on the row (sweep attribution). Returns whether the flip
 	// was applied.
 	MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayoutID string) (bool, error)
+
+	// RefundStripeWithdrawalOnReversal serializes a full transfer reversal
+	// against payout-paid transitions. manualReview means the bank payout
+	// already completed and no ledger refund was applied.
+	RefundStripeWithdrawalOnReversal(id string) (refunded, manualReview bool, err error)
 
 	// ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a
 	// withdrawal whose own payout failed: status back to "transferred",

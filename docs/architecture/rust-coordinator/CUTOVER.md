@@ -544,3 +544,9 @@ clear-orphans abort responses include remaining active/held job ids (parity
 with batch abort). Concurrent recover-batch and force-settle-batch on mixed
 reserved+held orphans each clear their lane exactly once.
 
+### Adopt + cutover after clear abort (DECISIONS #101)
+
+After clear-orphans aborts on steal, quiescence without ownership still lists
+orphans and hints `cutover-drain`. Re-acquire then concurrent adopt-jobs with
+cutover-drain reaches ready with conserved balance.
+

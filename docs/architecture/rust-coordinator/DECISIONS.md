@@ -107,6 +107,7 @@ Date: 2026-07-10
 | 98 | Batch abort remaining ids + deposit/force race | Batch abort lists remaining active/held ids. Concurrent deposits ∥ force-settle-batch conserve balance |
 | 99 | Deposit/recover + held-review vs force | Concurrent deposits ∥ recover-batch conserve balance. held-review-batch never moves money while force-settle races |
 | 100 | clear-orphans remaining ids + mixed batches | clear-orphans abort lists remaining active/held ids. Concurrent recover-batch ∥ force-settle-batch on mixed orphans clears both |
+| 101 | Adopt + cutover after clear abort | After clear-orphans steal abort, quiescence lists orphans without ownership; re-acquire + concurrent adopt-jobs ∥ cutover-drain reaches ready |
 
 ## Deleted Go mechanisms (do not port)
 

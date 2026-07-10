@@ -49,6 +49,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/encryption-key", get(encryption_key))
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
+        // Responses API — same handler; body uses `input` or `messages` (pilot accepts messages).
+        .route("/v1/responses", post(chat_completions))
         .route("/ws/provider", get(provider_ws))
         .route("/v1/admin/quiescence", get(quiescence))
         .fallback(unsupported)

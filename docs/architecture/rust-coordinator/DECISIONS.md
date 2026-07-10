@@ -122,6 +122,7 @@ Date: 2026-07-10
 | 113 | Ops loop accounts_needing_cutover | Quiescence→per-account cutover→outbox-drain converges to ready. Outbox-only: accounts list empty. Foreign deposits ∥ filtered cutover conserve |
 | 114 | cutover-drain returns remaining accounts | Success/abort cutover-drain responses include `accounts_needing_cutover` for the next ops loop iteration |
 | 115 | cutover-drain-all one-shot multi-tenant | `POST /v1/admin/cutover-drain-all` loops accounts then outbox until ready; aborts on steal; quiescence hint prefers it |
+| 116 | cutover-drain-all allowlist + races | Optional `accounts` allowlist scopes cutover; concurrent drain-all and deposits conserve; idempotent when ready |
 
 ## Deleted Go mechanisms (do not port)
 

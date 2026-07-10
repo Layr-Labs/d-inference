@@ -148,6 +148,16 @@ fn accounts_needing_cutover_from(led: &crate::ledger::MemoryLedger, epoch: u64) 
         .collect()
 }
 
+fn filter_accounts(
+    accounts: Vec<String>,
+    allowlist: Option<&std::collections::HashSet<String>>,
+) -> Vec<String> {
+    match allowlist {
+        Some(set) => accounts.into_iter().filter(|a| set.contains(a)).collect(),
+        None => accounts,
+    }
+}
+
 /// Remaining orphan ids for abort responses. When `account_filter` is set, scope
 /// to that account so ops do not chase foreign jobs (DECISIONS #105).
 fn remaining_ids_for_abort(
@@ -2120,6 +2130,10 @@ struct AdminCutoverDrainAllRequest {
     /// Safety cap on outer loop iterations (DECISIONS #115).
     #[serde(default = "default_cutover_all_max_rounds")]
     max_rounds: u32,
+    /// Optional allowlist — only these accounts are cut over (DECISIONS #116).
+    /// Empty/omitted = all accounts needing cutover.
+    #[serde(default)]
+    accounts: Vec<String>,
 }
 
 fn default_cutover_all_max_rounds() -> u32 {
@@ -2153,6 +2167,11 @@ async fn admin_cutover_drain_all(
             .into_response();
     }
     let max_rounds = req.max_rounds.max(1).min(128);
+    let allowlist: Option<std::collections::HashSet<String>> = if req.accounts.is_empty() {
+        None
+    } else {
+        Some(req.accounts.iter().cloned().collect())
+    };
     let mut rounds: Vec<Value> = Vec::new();
     let mut accounts_cleared: Vec<String> = Vec::new();
 
@@ -2160,7 +2179,10 @@ async fn admin_cutover_drain_all(
         if require_holding(&state).is_err() {
             let remaining = {
                 let led = state.ledger.lock().await;
-                accounts_needing_cutover_from(&led, 0)
+                filter_accounts(
+                    accounts_needing_cutover_from(&led, 0),
+                    allowlist.as_ref(),
+                )
             };
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -2175,6 +2197,7 @@ async fn admin_cutover_drain_all(
                     "rounds": rounds,
                     "accounts_cleared": accounts_cleared,
                     "accounts_needing_cutover": remaining,
+                    "account_allowlist": req.accounts,
                     "ready": false,
                 })),
             )
@@ -2184,23 +2207,33 @@ async fn admin_cutover_drain_all(
         let accounts = {
             let led = state.ledger.lock().await;
             let epoch = state.ownership.epoch().0;
-            accounts_needing_cutover_from(&led, epoch)
+            filter_accounts(
+                accounts_needing_cutover_from(&led, epoch),
+                allowlist.as_ref(),
+            )
         };
         let outbox_retryable = {
             let box_ = state.outbox.lock().await;
             box_.pending_under_retry_cap()
         };
 
+        // Scoped ready: allowlisted (or all) accounts clear + outbox empty.
         if accounts.is_empty() && outbox_retryable == 0 {
+            let all_remaining = {
+                let led = state.ledger.lock().await;
+                accounts_needing_cutover_from(&led, state.ownership.epoch().0)
+            };
             return (
                 StatusCode::OK,
                 Json(json!({
                     "action": "cutover_drain_all",
-                    "ready": true,
+                    "ready": all_remaining.is_empty(),
+                    "scoped_ready": true,
                     "rounds_run": round,
                     "rounds": rounds,
                     "accounts_cleared": accounts_cleared,
-                    "accounts_needing_cutover": [],
+                    "accounts_needing_cutover": all_remaining,
+                    "account_allowlist": req.accounts,
                     "outbox_retryable": 0,
                 })),
             )
@@ -2398,6 +2431,7 @@ async fn admin_cutover_drain_all(
             "rounds": rounds,
             "accounts_cleared": accounts_cleared,
             "accounts_needing_cutover": remaining,
+            "account_allowlist": req.accounts,
             "outbox_retryable": outbox_retryable,
             "active_jobs": active,
             "ready": false,

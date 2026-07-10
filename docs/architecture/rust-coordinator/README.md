@@ -57,7 +57,7 @@ debits/credits target the shared Go `balances` table for continuity;
 | `POST /v1/admin/clear-orphans` | One-shot adopt → recover → force-settle |
 | `POST /v1/admin/outbox-drain` | Claim+ack all outbox entries (cutover ready) |
 | `POST /v1/admin/cutover-drain` | One-shot clear-orphans then outbox-drain (optional `account`) |
-| `POST /v1/admin/cutover-drain-all` | Multi-tenant loop: all accounts then outbox until ready |
+| `POST /v1/admin/cutover-drain-all` | Multi-tenant loop: all (or allowlisted) accounts then outbox until ready |
 | `POST /v1/admin/recover-undispatched` | Release reserved-not-started jobs (`inference.released` outbox) |
 | `POST /v1/admin/recover-undispatched-batch` | Bulk-release reserved-not-started jobs after adopt |
 | `POST /v1/admin/held-review` | Classify held start_authorized jobs (no money move) |

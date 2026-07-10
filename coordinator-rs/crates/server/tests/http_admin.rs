@@ -205,6 +205,52 @@ async fn readyz_fails_without_ownership() {
 }
 
 #[tokio::test]
+async fn chat_429_signals_placement_demand() {
+    let app = router(test_state(true));
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "pilot-text-model",
+                        "messages": [{"role":"user","content":"hi"}],
+                        "stream": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    let q = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/quiescence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(q.status(), StatusCode::OK);
+    let v = body_json(q).await;
+    assert!(
+        v["placement_version"].as_u64().unwrap_or(0) >= 1,
+        "placement should bump after cold demand"
+    );
+    assert!(
+        v["placement_demand"]["pilot-text-model"].is_object(),
+        "demand for pilot model should be recorded"
+    );
+}
+
+#[tokio::test]
 async fn chat_without_provider_returns_429() {
     let app = router(test_state(true));
     let res = app

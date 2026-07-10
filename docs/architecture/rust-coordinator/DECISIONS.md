@@ -159,6 +159,7 @@ Date: 2026-07-10
 | 150 | Settle disposed unclaims op | `settle_as_inner` unclaims the op key on disposed no-op so the key is not poisoned |
 | 151 | Settle/force SQL disposed replay | `settle_capped_sql` / `force_settle_sql` `op_ok` LEFT JOINs charge so identical disposed replay is not false `param_conflict` |
 | 152 | Release SQL jsonb outbox | `release_sql` uses `jsonb_build_object` (not `json_build_object(...)::text`) for outbox payload |
+| 153 | Settle requires start_authorized | MemoryLedger + `settle_sql` / `settle_capped_sql` refuse settle on reserved-only jobs (force_settle parity) |
 
 ## Deleted Go mechanisms (do not port)
 

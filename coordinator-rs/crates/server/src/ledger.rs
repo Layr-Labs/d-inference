@@ -686,6 +686,14 @@ impl MemoryLedger {
             self.unclaim_op(&op.0);
             return Ok(false);
         }
+        // Settle requires funded start (DECISIONS #153) — reserved-only jobs
+        // must release or resize_and_authorize first.
+        if !job.funded_start {
+            self.unclaim_op(&op.0);
+            return Err(LedgerError::Conflict(format!(
+                "job {job_id} is not start_authorized; cannot settle"
+            )));
+        }
         let reserved = job.provenance.total.0;
         if charge > reserved {
             self.unclaim_op(&op.0);
@@ -1310,6 +1318,58 @@ mod tests {
             .unwrap());
         assert_eq!(led.active_job_count(), 0);
         assert_eq!(led.balance("a").0, 4_900_000);
+    }
+
+    #[test]
+    fn settle_rejects_reserved_not_start_authorized() {
+        // DECISIONS #153: cannot settle a reserved-only job.
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        assert!(matches!(
+            led.settle(OperationKey("s".into()), "j", "a", 100_000, "d1"),
+            Err(LedgerError::Conflict(_))
+        ));
+        assert_eq!(led.balance("a").0, 4_000_000);
+        assert_eq!(led.active_job_count(), 1);
+        // Op key not poisoned — can settle after authorize.
+        led.mark_start_authorized("j", "a").unwrap();
+        assert!(led
+            .settle(OperationKey("s".into()), "j", "a", 100_000, "d1")
+            .unwrap());
+        assert_eq!(led.active_job_count(), 0);
+    }
+
+    #[test]
+    fn settle_capped_rejects_reserved_not_start_authorized() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        assert!(matches!(
+            led.settle_capped(
+                OperationKey("sc".into()),
+                "j",
+                "a",
+                100_000,
+                500_000,
+                "d1"
+            ),
+            Err(LedgerError::Conflict(_))
+        ));
+        assert_eq!(led.active_job_count(), 1);
+        led.mark_start_authorized("j", "a").unwrap();
+        assert!(led
+            .settle_capped(
+                OperationKey("sc".into()),
+                "j",
+                "a",
+                100_000,
+                500_000,
+                "d1"
+            )
+            .unwrap());
     }
 
     #[test]

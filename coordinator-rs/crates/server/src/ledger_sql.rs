@@ -303,6 +303,7 @@ impl PostgresLedgerStub {
         ), guard AS (
           SELECT 1 FROM job
           WHERE terminal_disposition IS NULL
+            AND state = 'start_authorized'
             AND $3::bigint >= 0
             AND $3::bigint <= reserved
             AND (coordinator_epoch = 0 OR coordinator_epoch = $9::bigint)
@@ -416,6 +417,7 @@ impl PostgresLedgerStub {
           ) AS amount
           FROM job j
           WHERE j.terminal_disposition IS NULL
+            AND j.state = 'start_authorized'
             AND (j.coordinator_epoch = 0 OR j.coordinator_epoch = $10::bigint)
         ), op AS (
           INSERT INTO rust_coord.financial_operations (
@@ -807,6 +809,7 @@ mod tests {
         assert!(sql.contains("financial_operations"));
         assert!(sql.contains("FOR UPDATE"));
         assert!(sql.contains("terminal_disposition"));
+        assert!(sql.contains("state = 'start_authorized'"));
         assert!(sql.contains("refund_wdr"));
         assert!(sql.contains("'settle'"));
         assert!(sql.contains("account_id = $1"));
@@ -834,6 +837,7 @@ mod tests {
         assert!(sql.contains("provider_terminals"));
         assert!(sql.contains("FOR UPDATE"));
         assert!(sql.contains("account_id = $1"));
+        assert!(sql.contains("state = 'start_authorized'"));
         assert!(sql.contains("SELECT $5, $2, $7, $8, COALESCE($9, ''), 'settled'"));
         assert!(sql.contains("lease_id"));
         assert!(sql.contains("se_signature"));

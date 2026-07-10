@@ -34,6 +34,8 @@ pub enum TerminalIngestError {
 pub struct MemoryTerminalStore {
     /// (attempt_id, digest) → disposition
     by_attempt_digest: HashMap<(String, String), TerminalDisposition>,
+    /// digest → disposition (secondary index for attempt_id drift / empty settle writes)
+    by_digest: HashMap<String, TerminalDisposition>,
     late: Vec<TerminalIngest>,
 }
 
@@ -49,18 +51,26 @@ impl MemoryTerminalStore {
         disposition: &str,
         ack: Option<Value>,
     ) {
+        let disp = TerminalDisposition {
+            disposition: disposition.to_string(),
+            ack_payload: ack,
+        };
         self.by_attempt_digest.insert(
             (attempt_id.to_string(), digest.to_string()),
-            TerminalDisposition {
-                disposition: disposition.to_string(),
-                ack_payload: ack,
-            },
+            disp.clone(),
         );
+        self.by_digest.insert(digest.to_string(), disp);
     }
 
     pub fn lookup(&self, attempt_id: &str, digest: &str) -> Option<&TerminalDisposition> {
-        self.by_attempt_digest
+        if let Some(d) = self
+            .by_attempt_digest
             .get(&(attempt_id.to_string(), digest.to_string()))
+        {
+            return Some(d);
+        }
+        // Fallback: digest-only when settle wrote a different/empty attempt_id.
+        self.by_digest.get(digest)
     }
 
     pub fn late_count(&self) -> usize {
@@ -103,12 +113,15 @@ pub fn ingest_terminal(
 }
 
 /// Documented SQL for durable terminal disposition lookup (mirrors MemoryTerminalStore).
+/// Prefer (attempt_id, digest); fall back to digest-only for attempt_id drift.
 pub fn lookup_sql() -> &'static str {
     r#"
     SELECT disposition, ack_payload
     FROM rust_coord.provider_terminals
-    WHERE attempt_id = $1
-      AND terminal_digest = $2
+    WHERE terminal_digest = $2
+      AND (attempt_id = $1 OR attempt_id = '' OR $1 = '')
+    ORDER BY CASE WHEN attempt_id = $1 THEN 0 ELSE 1 END
+    LIMIT 1
     "#
 }
 
@@ -202,9 +215,29 @@ mod tests {
     }
 
     #[test]
+    fn digest_only_fallback_when_attempt_id_differs() {
+        let mut store = MemoryTerminalStore::new();
+        store.record("", "d-empty", "settled", None);
+        let ack = ingest_terminal(
+            &mut store,
+            TerminalIngest {
+                job_id: "j1".into(),
+                attempt_id: "real-attempt".into(),
+                terminal_digest: "d-empty".into(),
+                se_signature: String::new(),
+                outcome: "ok".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(ack["disposition"], "settled");
+        assert_eq!(store.late_count(), 0);
+    }
+
+    #[test]
     fn sql_docs_never_settle() {
         assert!(lookup_sql().contains("rust_coord.provider_terminals"));
         assert!(lookup_sql().contains("disposition"));
+        assert!(lookup_sql().contains("terminal_digest = $2"));
         assert!(record_late_sql().contains("late_terminals"));
         assert!(record_late_sql().contains("ON CONFLICT"));
         assert!(!record_late_sql().contains("balances"));

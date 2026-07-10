@@ -930,6 +930,28 @@ async fn admin_terminal_ingest_without_ownership_returns_503() {
 }
 
 #[tokio::test]
+async fn quiescence_readable_without_ownership_reports_not_holding() {
+    // Quiescence is an ops observation surface — readable without holding,
+    // but reports ownership_holding=false for cutover visibility.
+    let app = router(test_state(false));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/quiescence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["ready"], true);
+    assert_eq!(v["ownership_holding"], false);
+    assert_eq!(v["active_jobs"], 0);
+}
+
+#[tokio::test]
 async fn admin_terminal_ingest_force_settled_disposition() {
     let state = test_state(true);
     {

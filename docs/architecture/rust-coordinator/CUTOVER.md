@@ -671,3 +671,10 @@ Unknown allowlist entries yield `scoped_ready` without touching foreign orphans.
 (fencing epoch mismatch) must abort clear-orphans and batch recover/force-settle
 with `ownership_lost` — never silently skip and report success while holds remain.
 
+### Adopt then cutover-drain-all after fencing (DECISIONS #120)
+
+When `needs_adopt_count>0`, quiescence `cutover_hint` is
+`adopt-jobs then cutover-drain-all`. Ops adopt-jobs (or account-filtered clear
+which only adopts its filter) then cutover-drain-all. Single-job and batch
+force-settle without adopt return `ownership_lost`.
+

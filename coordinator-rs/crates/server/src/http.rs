@@ -500,7 +500,8 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let cutover_hint = if ready {
         "ready"
     } else if active_jobs > 0 && needs_adopt > 0 {
-        "cutover-drain-all"
+        // Fencing mismatch — adopt before money moves (DECISIONS #120).
+        "adopt-jobs then cutover-drain-all"
     } else if active_jobs > 0 {
         "cutover-drain-all"
     } else if outbox_retryable > 0 {

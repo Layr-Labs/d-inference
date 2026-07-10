@@ -211,3 +211,15 @@ return Conflict (HTTP 409 `deposit_payload_conflict`) and never double-credit.
 `ApplyStripeDeposit` (memory + Postgres) likewise errors on
 account/amount/external_id mismatch for a known `event_id`.
 
+### Money-boundary ownership fence (DECISIONS #47)
+
+Ownership is re-asserted immediately before reserve, resize_authorize, settle,
+and release (not only at route entry). After fencing loss, release is refused
+so a stolen coordinator cannot refund or settle mid-flight work.
+
+### Live terminal binding validate (DECISIONS #48)
+
+Live settle requires a `provider_terminal` whose job/attempt/lease/epoch/nonce/
+digest bind to the funded attempt, with non-negative token counts. Invalid
+terminals leave the reservation held for force-settle.
+

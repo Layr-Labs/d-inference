@@ -25,6 +25,7 @@ use crate::request_task::{spawn_request_task, ControlEvent};
 use crate::sealed::decrypt_request_body;
 use crate::telemetry::TelemetrySink;
 use crate::terminal_ingest::{ingest_terminal, MemoryTerminalStore, TerminalIngest};
+use crate::terminal_validate::validate_provider_terminal;
 use darkbloom_core::{ChunkCheckpoint, AttemptId, JobId, LeaseId, PlacementController};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -137,19 +138,7 @@ fn require_admin(
     state: &AppState,
     headers: &axum::http::HeaderMap,
 ) -> Result<(), axum::response::Response> {
-    if let Err(err) = state.ownership.assert_holding() {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "error": {
-                    "message": format!("{err}"),
-                    "type": "server_error",
-                    "code": "ownership_lost"
-                }
-            })),
-        )
-            .into_response());
-    }
+    require_holding(state)?;
     if let Err(status) = authorize_pilot(state, headers) {
         return Err((
             status,
@@ -158,6 +147,24 @@ fn require_admin(
                     "message": "invalid pilot api key",
                     "type": "invalid_request_error",
                     "code": "invalid_api_key"
+                }
+            })),
+        )
+            .into_response());
+    }
+    Ok(())
+}
+
+/// Money-mutation fencing: re-check ownership at every ledger boundary (DECISIONS #47).
+fn require_holding(state: &AppState) -> Result<(), axum::response::Response> {
+    if let Err(err) = state.ownership.assert_holding() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": {
+                    "message": format!("{err}"),
+                    "type": "server_error",
+                    "code": "ownership_lost"
                 }
             })),
         )
@@ -184,12 +191,18 @@ fn require_nonempty_job_id(job_id: &str) -> Result<(), axum::response::Response>
 }
 
 /// Release a reserved job and enqueue critical `inference.released` (DECISIONS #43).
+/// Refuses to move money after ownership loss (DECISIONS #47).
 async fn release_job_with_outbox(
     state: &AppState,
     op: crate::ledger::OperationKey,
     job_id: &str,
     account: &str,
 ) -> Result<bool, crate::ledger::LedgerError> {
+    if state.ownership.assert_holding().is_err() {
+        return Err(crate::ledger::LedgerError::Conflict(
+            "ownership_lost: refusing release".into(),
+        ));
+    }
     let refunded = {
         let mut led = state.ledger.lock().await;
         let reserved = led.job_reserved_total(job_id).map(|m| m.0).unwrap_or(0);
@@ -858,6 +871,9 @@ async fn chat_completions(
 
             // Durable provisional reservation before any provider prepare.
             {
+                if let Err(resp) = require_holding(&state) {
+                    return resp;
+                }
                 let mut ledger = state.ledger.lock().await;
                 if let Err(err) = ledger.reserve(
                     crate::ledger::OperationKey(format!("reserve:{}", job_id.as_str())),
@@ -958,6 +974,9 @@ async fn chat_completions(
             // One-round-trip resize+authorize (DECISIONS #18). Same amount for
             // pilot; production will pass the refined estimate from prepare ETA.
             {
+                if let Err(resp) = require_holding(&state) {
+                    return resp;
+                }
                 let resize_err = {
                     let mut ledger = state.ledger.lock().await;
                     let reserved = ledger
@@ -1096,42 +1115,47 @@ async fn chat_completions(
                     }
                 };
 
-                let digest = terminal
-                    .get("terminal_digest")
-                    .and_then(|d| d.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if digest.is_empty() {
-                    state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
-                        name: "inference.terminal_missing_digest_held".into(),
-                        tags: vec![("provider".into(), permit.provider_id.clone())],
-                    });
-                    return (
-                        StatusCode::BAD_GATEWAY,
-                        Json(json!({
-                            "error": {
-                                "message": "provider terminal missing terminal_digest; reservation held for review",
-                                "type": "server_error",
-                                "code": "provider_terminal_invalid_held"
-                            }
-                        })),
-                    )
-                        .into_response();
-                }
-                let completion_tokens = terminal
-                    .get("completion_tokens")
-                    .and_then(|t| t.as_i64())
-                    .unwrap_or(1)
-                    .max(1) as i32;
-                let prompt_tokens = terminal
-                    .get("prompt_tokens")
-                    .and_then(|t| t.as_i64())
-                    .unwrap_or(1)
-                    .max(1) as i32;
+                let (digest, prompt_tokens, completion_tokens) = match validate_provider_terminal(
+                    &terminal,
+                    job_id.as_str(),
+                    attempt.as_str(),
+                    lease.as_str(),
+                    state.coordinator_epoch,
+                    &dispatch_nonce,
+                    &request_digest,
+                ) {
+                    Ok(v) => v,
+                    Err(reason) => {
+                        state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
+                            name: "inference.terminal_invalid_held".into(),
+                            tags: vec![
+                                ("provider".into(), permit.provider_id.clone()),
+                                ("reason".into(), reason.clone()),
+                            ],
+                        });
+                        return (
+                            StatusCode::BAD_GATEWAY,
+                            Json(json!({
+                                "error": {
+                                    "message": format!(
+                                        "provider terminal invalid ({reason}); reservation held for review"
+                                    ),
+                                    "type": "server_error",
+                                    "code": "provider_terminal_invalid_held"
+                                }
+                            })),
+                        )
+                            .into_response();
+                    }
+                };
                 // Pilot pricing: 10 µUSD per completion token until public price tables land.
                 let charged = (completion_tokens as i64) * 10;
                 let billable_cap = if req.stream { Some(charged) } else { None };
                 let cap = billable_cap.unwrap_or(charged);
+                if let Err(resp) = require_holding(&state) {
+                    // start_authorized + valid terminal, but fencing lost — do not settle.
+                    return resp;
+                }
                 let live_completion = {
                     let mut ledger = state.ledger.lock().await;
                     ledger.record_attempt(
@@ -1182,6 +1206,9 @@ async fn chat_completions(
                 };
                 Ok::<_, String>(live_completion)
             } else {
+                if let Err(resp) = require_holding(&state) {
+                    return resp;
+                }
                 let _ = task.apply(ControlEvent::Prepared {
                     attempt: attempt.clone(),
                     lease: lease.clone(),

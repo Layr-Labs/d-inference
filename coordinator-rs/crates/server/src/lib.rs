@@ -23,6 +23,7 @@ pub mod sealed;
 pub mod stream_billing;
 pub mod telemetry;
 pub mod terminal_ingest;
+pub mod terminal_validate;
 
 pub use abort::{abort_frame, abort_losing_hedge, cancel_attempt, cancel_frame};
 pub use cancel::{cancel_before_or_after_content, CancelOutcome};
@@ -56,6 +57,7 @@ pub use terminal_ingest::{
     ingest_terminal, lookup_sql, record_late_sql, MemoryTerminalStore, TerminalDisposition,
     TerminalIngest, TerminalIngestError,
 };
+pub use terminal_validate::validate_provider_terminal;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

@@ -223,3 +223,9 @@ Live settle requires a `provider_terminal` whose job/attempt/lease/epoch/nonce/
 digest bind to the funded attempt, with non-negative token counts. Invalid
 terminals leave the reservation held for force-settle.
 
+### Stream settle after checkpoint (DECISIONS #49)
+
+Streaming chat defers settlement until after the bounded chunk pipe updates
+`ChunkCheckpoint`. The charge is clamped by accepted billable tokens so a
+provider claim above what the consumer pipe accepted cannot overcharge.
+

@@ -55,6 +55,7 @@ Date: 2026-07-10
 | 46 | Deposit payload param bind | `ExternalEventInbox.observe` stores a payload digest over account/amount/withdrawable; identical replay is idempotent, mismatched reuse is Conflict — `deposit_sql` mismatch CTE aborts before credit. Go `ApplyStripeDeposit` likewise conflicts on account/amount/external_id mismatch for a known event_id |
 | 47 | Money-boundary ownership fence | Re-check `OwnershipGate` immediately before every ledger money mutation (reserve / resize_authorize / settle / release) and refuse release after fencing loss — route-entry checks alone leave in-flight requests able to settle after steal |
 | 48 | Live terminal binding validate | Before live settle, require `provider_terminal` fields to match funded attempt (`job_id`, `attempt_id`, `lease_id`, `coordinator_epoch`, `dispatch_nonce`, `request_digest`) plus non-negative token counts; mismatch holds the reservation |
+| 49 | Stream settle after checkpoint | Streaming requests defer `settle_capped` until after the bounded chunk pipe advances `ChunkCheckpoint`; charge is `min(provider_actual, billable_tokens * rate, reserved)` so backpressure/partial accept cannot overcharge |
 
 ## Deleted Go mechanisms (do not port)
 

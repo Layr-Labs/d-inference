@@ -1150,13 +1150,33 @@ async fn chat_completions(
                 };
                 // Pilot pricing: 10 µUSD per completion token until public price tables land.
                 let charged = (completion_tokens as i64) * 10;
-                let billable_cap = if req.stream { Some(charged) } else { None };
-                let cap = billable_cap.unwrap_or(charged);
-                if let Err(resp) = require_holding(&state) {
-                    // start_authorized + valid terminal, but fencing lost — do not settle.
-                    return resp;
-                }
-                let live_completion = {
+                // Stream: defer settle until after chunk checkpoint (DECISIONS #49).
+                let live_completion = if req.stream {
+                    let reserved = {
+                        let led = state.ledger.lock().await;
+                        led.job_reserved_total(job_id.as_str())
+                            .unwrap_or(darkbloom_core::MicroUsd(0))
+                    };
+                    MockCompletion {
+                        job_id: job_id.as_str().to_string(),
+                        attempt_id: attempt.as_str().to_string(),
+                        provider_id: permit.provider_id.clone(),
+                        model: permit.model.clone(),
+                        content: format!(
+                            "[rust-live] provider={} digest={}",
+                            permit.provider_id, digest
+                        ),
+                        prompt_tokens,
+                        completion_tokens,
+                        reserved,
+                        charged: darkbloom_core::MicroUsd(0),
+                        terminal_digest: digest,
+                        mode: "rust-live".into(),
+                    }
+                } else {
+                    if let Err(resp) = require_holding(&state) {
+                        return resp;
+                    }
                     let mut ledger = state.ledger.lock().await;
                     ledger.record_attempt(
                         attempt.as_str(),
@@ -1169,7 +1189,7 @@ async fn chat_completions(
                         job_id.as_str(),
                         &state.pilot_account,
                         charged,
-                        cap,
+                        charged,
                         &digest,
                     ) {
                         return (
@@ -1199,7 +1219,7 @@ async fn chat_completions(
                         prompt_tokens,
                         completion_tokens,
                         reserved,
-                        charged: darkbloom_core::MicroUsd(charged.min(cap).max(0)),
+                        charged: darkbloom_core::MicroUsd(charged.max(0)),
                         terminal_digest: digest,
                         mode: "rust-live".into(),
                     }
@@ -1221,8 +1241,8 @@ async fn chat_completions(
                     attempt: attempt.clone(),
                     lease: lease.clone(),
                 });
-                let billable_cap = if req.stream { Some(1_000i64) } else { None };
                 let mut ledger = state.ledger.lock().await;
+                // Stream defers settle until after chunk checkpoint (DECISIONS #49).
                 complete_authorized_job(
                     &mut ledger,
                     &state.pilot_account,
@@ -1231,12 +1251,13 @@ async fn chat_completions(
                     lease.as_str(),
                     user_text,
                     "rust-mock",
-                    billable_cap,
+                    None,
+                    !req.stream,
                 )
             };
 
             match completion_result {
-                Ok(completion) => {
+                Ok(mut completion) => {
                     let _ = task.apply(ControlEvent::FirstContent {
                         attempt: AttemptId::new(completion.attempt_id.clone()),
                         lease: lease.clone(),
@@ -1246,6 +1267,83 @@ async fn chat_completions(
                         lease: lease.clone(),
                     });
                     let _ = task.apply(ControlEvent::FinalizeDone);
+
+                    // Stream: checkpoint accepted tokens, then settle (DECISIONS #49).
+                    let stream_body = if req.stream {
+                        let (pipe, _reader) = crate::chunk_pipe::bounded_chunk_pipe(16, 64 * 1024);
+                        let mut cp = ChunkCheckpoint::default();
+                        let tokens = completion.completion_tokens.max(0) as u64;
+                        let _ = crate::stream_billing::pipe_and_checkpoint(
+                            &pipe,
+                            &mut cp,
+                            completion.content.as_bytes(),
+                            tokens,
+                            &completion.terminal_digest,
+                        );
+                        let billable_tokens = cp.billable_completion_tokens() as i64;
+                        let billable_cap =
+                            crate::stream_billing::billable_cap_micro_usd(&cp, 10);
+                        // Provider-claimed actual (live: tokens*10; mock: 1000).
+                        let actual = if completion.mode == "rust-mock" {
+                            1_000i64
+                        } else {
+                            (completion.completion_tokens as i64) * 10
+                        };
+                        if let Err(resp) = require_holding(&state) {
+                            return resp;
+                        }
+                        {
+                            let mut ledger = state.ledger.lock().await;
+                            if completion.mode == "rust-live" {
+                                ledger.record_attempt(
+                                    &completion.attempt_id,
+                                    &completion.job_id,
+                                    &completion.provider_id,
+                                    "started",
+                                );
+                            }
+                            match ledger.settle_capped(
+                                crate::ledger::OperationKey(format!(
+                                    "settle:{}",
+                                    completion.job_id
+                                )),
+                                &completion.job_id,
+                                &state.pilot_account,
+                                actual,
+                                billable_cap,
+                                &completion.terminal_digest,
+                            ) {
+                                Ok(_) => {
+                                    completion.charged = darkbloom_core::MicroUsd(
+                                        actual.min(billable_cap).max(0),
+                                    );
+                                    completion.completion_tokens = billable_tokens as i32;
+                                }
+                                Err(err) => {
+                                    return (
+                                        StatusCode::CONFLICT,
+                                        Json(json!({
+                                            "error": {
+                                                "message": format!("stream settle failed: {err}"),
+                                                "type": "server_error",
+                                                "code": "stream_settle_conflict"
+                                            }
+                                        })),
+                                    )
+                                        .into_response();
+                                }
+                            }
+                        }
+                        let chunk = openai_chat_response(&completion, true);
+                        let done = json!({"id": completion.job_id, "object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
+                        Some(format!(
+                            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                            chunk, done
+                        ))
+                    } else {
+                        None
+                    };
+
                     // Record disposition for replay ACK (plan §4.6) + outbox side effect.
                     {
                         let ack = json!({
@@ -1313,27 +1411,7 @@ async fn chat_completions(
                         &permit.provider_id,
                         OutboundCmd::Text(ack.to_string()),
                     );
-                    if req.stream {
-                        // Sequenced pipe → ChunkCheckpoint linearizes billable tokens.
-                        let (pipe, _reader) = crate::chunk_pipe::bounded_chunk_pipe(16, 64 * 1024);
-                        let mut cp = ChunkCheckpoint::default();
-                        let tokens = completion.completion_tokens.max(0) as u64;
-                        let _ = crate::stream_billing::pipe_and_checkpoint(
-                            &pipe,
-                            &mut cp,
-                            completion.content.as_bytes(),
-                            tokens,
-                            &completion.terminal_digest,
-                        );
-                        let billable = cp.billable_completion_tokens() as i32;
-                        let mut streamed = completion;
-                        streamed.completion_tokens = billable;
-                        let chunk = openai_chat_response(&streamed, true);
-                        let done = json!({"id": streamed.job_id, "object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
-                        let body = format!(
-                            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-                            chunk, done
-                        );
+                    if let Some(body) = stream_body {
                         (
                             StatusCode::OK,
                             [

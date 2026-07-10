@@ -20,9 +20,14 @@ pub fn accept_pipe_chunk(
     )
 }
 
-/// Micro-USD charge estimate from accepted completion tokens (pilot: 1µUSD/token).
+/// Micro-USD charge estimate from accepted completion tokens.
 pub fn billable_cap_from_checkpoint(cp: &ChunkCheckpoint) -> i64 {
-    cp.billable_completion_tokens() as i64
+    billable_cap_micro_usd(cp, 1)
+}
+
+/// Billable cap using an explicit µUSD-per-completion-token rate (DECISIONS #49).
+pub fn billable_cap_micro_usd(cp: &ChunkCheckpoint, micro_per_token: i64) -> i64 {
+    (cp.billable_completion_tokens() as i64).saturating_mul(micro_per_token.max(0))
 }
 
 /// Helper used by streaming settle: enqueue mock content through the pipe and
@@ -69,5 +74,14 @@ mod tests {
         let seq2 = pipe_and_checkpoint(&pipe, &mut cp, b" world", 8, "h2").unwrap();
         assert_eq!(seq2, 2);
         assert_eq!(cp.completion_tokens, 8);
+    }
+
+    #[test]
+    fn billable_cap_scales_with_rate() {
+        let (pipe, _r) = bounded_chunk_pipe(8, 1024);
+        let mut cp = ChunkCheckpoint::default();
+        pipe_and_checkpoint(&pipe, &mut cp, b"hi", 5, "h").unwrap();
+        assert_eq!(billable_cap_from_checkpoint(&cp), 5);
+        assert_eq!(billable_cap_micro_usd(&cp, 10), 50);
     }
 }

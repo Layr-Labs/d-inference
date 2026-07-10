@@ -2,6 +2,28 @@
 //! extraction, request normalization, SSE/JSON response construction, and
 //! typed error mapping. It never mutates provider state and never
 //! implements settlement rules — both live behind the frozen contracts.
+//!
+//! # Networking posture (plan §14–§16; socket layer in [`crate::serve`])
+//!
+//! - **Ingress ordering**: `POST /v1/chat/completions` authenticates and
+//!   acquires the concurrency permits from headers BEFORE collecting the
+//!   body ([`chat`] module docs) — a shed request never buffers a body.
+//!   Body collection is bounded by [`MAX_BODY_BYTES`] and
+//!   [`BODY_READ_TIMEOUT`]; the pre-header slowloris window is closed by
+//!   the serve loop's header-read timeout.
+//! - **No blanket timeout layer**: there is intentionally no
+//!   `tower::timeout`/`tower_http` response timeout on this router — a
+//!   long SSE generation must never be killed by a generic layer. Request
+//!   lifetime is owned by the request task's deadlines (plan §16).
+//! - **SSE flush**: streaming bodies are chunked (no Content-Length), one
+//!   complete SSE event per body frame, flushed per frame by hyper, with
+//!   `Cache-Control: no-cache, no-store` and `X-Accel-Buffering: no`
+//!   (see [`chat`]).
+//! - **Provider WebSocket**: message and frame caps are both set at the
+//!   upgrade (32 MiB, sealed-vision sized); keepalive is provider
+//!   heartbeats + the session's 90 s read deadline (no coordinator-sent
+//!   pings); permessage-deflate is never negotiated (axum does not offer
+//!   the extension — chunk payloads are ciphertext, compression is waste).
 
 mod auth;
 mod chat;
@@ -35,6 +57,11 @@ pub use limits::ConcurrencyLimits;
 
 /// The Go-compatible plaintext body cap (plan §14).
 pub const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Slow-body bound: maximum wall time to receive one request body after
+/// headers (plan §14). Applies only where a body is collected — never to
+/// responses, so SSE streams are exempt by construction.
+pub const BODY_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Default provider WebSocket frame cap — sized for sealed vision payloads
 /// (mirrors `provider_session::SessionConfig::max_frame_bytes`).
@@ -152,6 +179,11 @@ pub fn build_router_with(state: AppState, config: HttpConfig) -> Router {
         .route("/v1/models/{id}", get(models::get_model))
         .route("/v1/encryption-key", get(models::encryption_key))
         .route("/healthz", get(models::healthz))
+        // Alias: the prod host Caddy (deploy/gcp/prod/Caddyfile) probes the
+        // upstream at `health_uri /health` every 2 s — without this route
+        // the proxy would mark the coordinator unhealthy and shed ALL
+        // traffic as 429.
+        .route("/health", get(models::healthz))
         .route("/readyz", get(models::readyz));
     if let Some(provider) = wire_provider_route(config.provider_connect) {
         router = router.merge(provider);
@@ -172,7 +204,11 @@ fn wire_provider_route(handler: Option<ProviderConnectHandler>) -> Option<Router
 async fn provider_connect(State(state): State<HttpState>, upgrade: WebSocketUpgrade) -> Response {
     match state.provider_connect.clone() {
         Some(handler) => upgrade
+            // Both caps must carry the same value: tungstenite's DEFAULT
+            // frame cap is 16 MiB, which would reject a single-frame sealed
+            // vision payload that the 32 MiB message cap allows.
             .max_message_size(state.provider_max_frame_bytes)
+            .max_frame_size(state.provider_max_frame_bytes)
             .on_upgrade(move |socket| async move { handler(socket).await })
             .into_response(),
         None => ApiError::Internal("provider session component not wired").into_response(),

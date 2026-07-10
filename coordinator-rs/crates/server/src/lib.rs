@@ -8,6 +8,7 @@
 //! | Module | Authority (plan section) |
 //! |---|---|
 //! | [`bootstrap`] | main-style wiring of every component (§15.1, §20) |
+//! | [`serve`] | socket-level accept loop: protocol posture, TCP_NODELAY, header timeout (§15.1, §16) |
 //! | [`http`] | Axum API adapter (§7.1) |
 //! | [`request_task`] | one logical request (§7.2) |
 //! | [`fleet`] | live fleet decision state (§7.3) |
@@ -28,5 +29,6 @@ pub mod ownership;
 pub mod provider_session;
 pub mod recovery;
 pub mod request_task;
+pub mod serve;
 pub mod supervisor;
 pub mod trust;

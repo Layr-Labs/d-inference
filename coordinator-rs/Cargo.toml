@@ -12,7 +12,12 @@ publish = false
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 axum = { version = "0.8", features = ["ws", "macros"] }
-tower = "0.5"
+# Direct hyper access for the socket-level serve loop (crates/server/src/serve.rs):
+# axum::serve cannot arm the header-read timeout or set TCP_NODELAY.
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service"] }
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace", "limit", "timeout", "set-header"] }
 futures = "0.3"
 

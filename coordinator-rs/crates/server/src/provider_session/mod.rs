@@ -43,6 +43,20 @@
 //! of the key). The session never holds request key material and never
 //! logs chunk bytes.
 //!
+//! # Keepalive and wire posture (design decision)
+//!
+//! The coordinator does NOT send WebSocket pings. Liveness is
+//! provider-driven: heartbeats arrive every ~30 s and any inbound frame
+//! advances the session's read deadline ([`SessionConfig::read_timeout`],
+//! 90 s — the Go eviction-sweep parity); a silent socket is torn down at
+//! the deadline. Inbound provider pings are answered automatically by the
+//! WebSocket layer (tungstenite queues the pong), which also keeps Caddy's
+//! proxied connection active. Outbound stalls are caught independently by
+//! the writer's per-frame [`SessionConfig::write_timeout`] — including the
+//! final close handshake. permessage-deflate is never negotiated (axum
+//! offers no deflate extension): chunk payloads are ciphertext, so
+//! compression would be pure CPU waste.
+//!
 //! # Supersede fencing (design decision)
 //!
 //! The fleet is the epoch authority. On supersede it (1) submits the

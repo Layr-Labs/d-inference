@@ -21,6 +21,9 @@ pub enum ApiError {
     InvalidRequest(String),
     ModelNotFound(String),
     PayloadTooLarge,
+    /// 408: the client did not deliver its request body within
+    /// [`crate::http::BODY_READ_TIMEOUT`].
+    BodyReadTimeout,
     InsufficientFunds,
     /// 429 with `Retry-After` (plan §11.7: fast capacity miss, no queue).
     Capacity {
@@ -68,6 +71,13 @@ impl ApiError {
                 "invalid_request_error",
                 "invalid_request_error",
                 "request body too large".to_owned(),
+                None,
+            ),
+            Self::BodyReadTimeout => (
+                StatusCode::REQUEST_TIMEOUT,
+                "invalid_request_error",
+                "request_timeout",
+                "timed out reading the request body".to_owned(),
                 None,
             ),
             Self::InsufficientFunds => (

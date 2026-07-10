@@ -6,6 +6,28 @@
 //! and handed to one supervised request task. The response commits only on
 //! first content: pre-content failures map to typed HTTP errors and any
 //! provider retries stay invisible (plan §7.8).
+//!
+//! # Ingress ordering (plan §14: reject before large allocation)
+//!
+//! The handler consumes the raw request so IT controls the order — never an
+//! extractor: (1) authenticate from headers, (2) acquire the global and
+//! per-account concurrency permits, (3) only then collect the body, bounded
+//! by [`MAX_BODY_BYTES`](crate::http::MAX_BODY_BYTES) and
+//! [`BODY_READ_TIMEOUT`](crate::http::BODY_READ_TIMEOUT). A shed request
+//! (401/429) therefore never buffers a byte of a 16 MiB body.
+//!
+//! # SSE flush guarantees (plan §16: per-chunk relay p99 < 2 ms)
+//!
+//! Streaming responses use `Body::from_stream` over frames that are each
+//! ONE complete SSE event ([`sse::event`]): hyper writes and flushes every
+//! body frame as soon as the stream yields it and never buffers across
+//! `Pending` (no Content-Length is set, the transfer is chunked). Socket
+//! coalescing is disabled at accept time (TCP_NODELAY — [`crate::serve`]).
+//! `Cache-Control: no-cache, no-store` plus `X-Accel-Buffering: no` keep
+//! intermediaries from buffering; Caddy streams flushed upstream bodies
+//! immediately by default. There is deliberately NO response-timeout layer
+//! on this route: stream lifetime is bounded by the request task's own
+//! deadlines, not a blanket tower timeout.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -27,6 +49,7 @@ use crate::http::errors::{error_for_report, ApiError};
 use crate::http::sealed::{self, SealedReply};
 use crate::http::sse;
 use crate::http::HttpState;
+use crate::http::{BODY_READ_TIMEOUT, MAX_BODY_BYTES};
 use crate::request_task::{self, ConsumerEvent, NormalizedRequest, UsageOut};
 
 /// Ceiling injected when the consumer sets no output bound, so the
@@ -183,23 +206,27 @@ fn prepare_request(
 
 pub async fn chat_completions(
     State(state): State<HttpState>,
-    headers: HeaderMap,
-    body: Bytes,
+    request: axum::extract::Request,
 ) -> Response {
-    match handle(state, headers, body).await {
+    match handle(state, request).await {
         Ok(response) => response,
         Err(err) => err.into_response(),
     }
 }
 
-async fn handle(state: HttpState, headers: HeaderMap, body: Bytes) -> Result<Response, ApiError> {
-    let key = authenticate(&*state.app.keys, &headers).await?;
+async fn handle(state: HttpState, request: axum::extract::Request) -> Result<Response, ApiError> {
+    let (parts, raw_body) = request.into_parts();
+    let headers = parts.headers;
 
-    // Reject before allocating anything heavy (plan §14).
+    // Header-only auth, then concurrency shed — BEFORE any body byte is
+    // buffered (plan §14; see the module docs on ingress ordering).
+    let key = authenticate(&*state.app.keys, &headers).await?;
     let permits = state
         .limits
         .try_acquire(key.account)
         .ok_or(ApiError::Overloaded)?;
+
+    let body = collect_body(&headers, raw_body).await?;
 
     // Sealed-transport unwrap (Go sender_encryption.go semantics).
     let (plain_body, seal_ctx): (Bytes, Option<Arc<SealedReply>>) = if sealed::is_sealed(&headers) {
@@ -254,6 +281,44 @@ async fn handle(state: HttpState, headers: HeaderMap, body: Bytes) -> Result<Res
         drop(permits);
         response
     }
+}
+
+/// Collects the request body under the plaintext cap and the read timeout
+/// (a declared-oversize Content-Length is shed without reading at all).
+async fn collect_body(headers: &HeaderMap, body: Body) -> Result<Bytes, ApiError> {
+    let declared = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok());
+    if declared.is_some_and(|len| len > MAX_BODY_BYTES) {
+        return Err(ApiError::PayloadTooLarge);
+    }
+    match tokio::time::timeout(
+        BODY_READ_TIMEOUT,
+        axum::body::to_bytes(body, MAX_BODY_BYTES),
+    )
+    .await
+    {
+        Err(_elapsed) => Err(ApiError::BodyReadTimeout),
+        Ok(Ok(bytes)) => Ok(bytes),
+        Ok(Err(err)) if is_length_limit(&err) => Err(ApiError::PayloadTooLarge),
+        Ok(Err(_)) => Err(ApiError::InvalidRequest(
+            "failed to read request body".to_owned(),
+        )),
+    }
+}
+
+/// True when the collect error is the `Limited` body cap (413), as opposed
+/// to a transport-level read failure (400).
+fn is_length_limit(err: &axum::Error) -> bool {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(inner) = source {
+        if inner.is::<http_body_util::LengthLimitError>() {
+            return true;
+        }
+        source = inner.source();
+    }
+    false
 }
 
 // ---------------------------------------------------------------------
@@ -341,11 +406,16 @@ async fn streaming_response(
         }
     });
 
+    // Streaming anti-buffering posture (module docs): chunked transfer
+    // (never a Content-Length), caches off, and the nginx/proxy buffering
+    // opt-out. Caddy respects flushed streaming bodies by default; the
+    // `Connection` header is HTTP/1.1-only and stripped by hyper on h2.
     let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
-        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::CACHE_CONTROL, "no-cache, no-store")
         .header(header::CONNECTION, "keep-alive")
+        .header("x-accel-buffering", "no")
         .body(Body::from_stream(body_stream))
         .map_err(|_| ApiError::Internal("failed to build streaming response"))?;
     if let Ok(value) = HeaderValue::from_str(&job.to_string()) {

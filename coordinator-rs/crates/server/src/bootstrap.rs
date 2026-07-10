@@ -11,7 +11,7 @@
 //! ordered shutdown: stop admission → drain request tasks → stop workers →
 //! going-away → fence sessions → release ownership LAST.
 
-use std::future::{Future, IntoFuture};
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -194,10 +194,13 @@ impl App {
     /// ordered application shutdown (plan §15.1) and releases ownership as
     /// the FINAL mutating action (plan §26.1 step 7).
     ///
-    /// The HTTP server task is stopped in parallel with the phased drain:
-    /// axum's graceful shutdown alone would wait forever on upgraded
-    /// provider WebSockets, which only close once the sessions phase fences
-    /// them.
+    /// The socket layer is [`crate::serve`] (NOT plain `axum::serve`):
+    /// HTTP/1.1 + h2c behind Caddy, TCP_NODELAY on every accepted
+    /// connection, and an armed header-read timeout — see that module's
+    /// docs for the full posture. The HTTP server task is stopped in
+    /// parallel with the phased drain: waiting on HTTP alone would never
+    /// cover upgraded provider WebSockets, which only close once the
+    /// sessions phase fences them.
     pub async fn serve<F>(self, shutdown: F) -> anyhow::Result<()>
     where
         F: Future<Output = ()> + Send,
@@ -212,11 +215,13 @@ impl App {
         } = self;
 
         let stop = CancellationToken::new();
-        let server = axum::serve(listener, router).with_graceful_shutdown({
-            let stop = stop.clone();
-            async move { stop.cancelled().await }
-        });
-        let server_task = tokio::spawn(server.into_future());
+        let server = crate::serve::serve(
+            listener,
+            router,
+            crate::serve::ServeOptions::default(),
+            stop.clone(),
+        );
+        let server_task = tokio::spawn(server);
         tracing::info!(epoch = state.coordinator_epoch.get(), "serving");
 
         tokio::select! {

@@ -129,8 +129,15 @@ pub(crate) async fn run_writer(inputs: WriterInputs) {
     }
 
     drain(&mut control_rx, &mut data_rx, &mut internal_rx);
-    let _ = sink.send(Message::Close(None)).await;
-    let _ = sink.close().await;
+    // The close handshake must be bounded too: an unbounded send here on a
+    // stalled socket (the very condition that trips the write timeout)
+    // would hang the writer task — and with it the whole session teardown
+    // that joins it — forever.
+    let _ = tokio::time::timeout(write_timeout, async {
+        let _ = sink.send(Message::Close(None)).await;
+        let _ = sink.close().await;
+    })
+    .await;
     // Reader teardown trigger: the writer never outlives the session.
     cancel.cancel();
 }

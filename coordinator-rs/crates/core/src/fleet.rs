@@ -32,6 +32,8 @@ pub struct AdmitRequest {
     pub exclude_providers: HashSet<String>,
     pub require_tools: bool,
     pub permit_ttl: Duration,
+    /// When true, HalfOpen providers may be selected for a probe admit.
+    pub allow_half_open_probe: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -105,7 +107,13 @@ impl FleetState {
                 }
             })
             .filter(|p| p.ready_models.contains(&req.model))
-            .filter(|p| p.health.admits_general_traffic())
+            .filter(|p| {
+                if req.allow_half_open_probe {
+                    p.health.admits_probe()
+                } else {
+                    p.health.admits_general_traffic()
+                }
+            })
             .filter(|p| !p.data_lane_full)
             .collect();
 
@@ -179,6 +187,7 @@ mod tests {
             exclude_providers: HashSet::new(),
             require_tools: false,
             permit_ttl: Duration::from_secs(2),
+            allow_half_open_probe: false,
         });
         match decision {
             AdmissionDecision::Prepare(p) => assert_eq!(p.provider_id, "fast"),
@@ -199,6 +208,7 @@ mod tests {
             exclude_providers: exclude,
             require_tools: false,
             permit_ttl: Duration::from_secs(2),
+            allow_half_open_probe: false,
         });
         match decision {
             AdmissionDecision::Prepare(p) => assert_eq!(p.provider_id, "b"),
@@ -219,6 +229,7 @@ mod tests {
             exclude_providers: HashSet::new(),
             require_tools: false,
             permit_ttl: Duration::from_secs(2),
+            allow_half_open_probe: false,
         });
         assert!(matches!(
             decision,
@@ -244,6 +255,7 @@ mod tests {
             exclude_providers: HashSet::new(),
             require_tools: false,
             permit_ttl: Duration::from_secs(2),
+            allow_half_open_probe: false,
         });
         match decision {
             AdmissionDecision::Prepare(p) => assert_eq!(p.provider_id, "a"),
@@ -280,10 +292,40 @@ mod tests {
             exclude_providers: HashSet::new(),
             require_tools: false,
             permit_ttl: Duration::from_secs(2),
+            allow_half_open_probe: false,
         });
         match decision {
             AdmissionDecision::Prepare(p) => assert_eq!(p.provider_id, "ok"),
             other => panic!("unexpected {other:?}"),
         }
+    }
+    #[test]
+    fn half_open_probe_admits_when_flag_set() {
+        let mut fleet = FleetState::default();
+        let mut p = base("p", "m", 10.0);
+        let t0 = Instant::now();
+        p.health.on_fault(t0, Duration::from_millis(1));
+        p.health.on_fault(t0, Duration::from_millis(1));
+        p.health.tick(t0 + Duration::from_secs(1));
+        assert_eq!(p.health.state, crate::health::HealthState::HalfOpen);
+        fleet.upsert(p);
+        let blocked = fleet.admit(&AdmitRequest {
+            model: "m".into(),
+            attempt: AttemptId::new("a"),
+            exclude_providers: HashSet::new(),
+            require_tools: false,
+            permit_ttl: Duration::from_secs(2),
+            allow_half_open_probe: false,
+        });
+        assert!(matches!(blocked, AdmissionDecision::Reject { .. } | AdmissionDecision::RetryAfter { .. }));
+        let allowed = fleet.admit(&AdmitRequest {
+            model: "m".into(),
+            attempt: AttemptId::new("a2"),
+            exclude_providers: HashSet::new(),
+            require_tools: false,
+            permit_ttl: Duration::from_secs(2),
+            allow_half_open_probe: true,
+        });
+        assert!(matches!(allowed, AdmissionDecision::Prepare(_)));
     }
 }

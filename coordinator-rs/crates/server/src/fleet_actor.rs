@@ -292,6 +292,7 @@ mod tests {
                 exclude_providers: HashSet::new(),
                 require_tools: false,
                 permit_ttl: Duration::from_secs(2),
+            allow_half_open_probe: false,
             })
             .await
             .unwrap();
@@ -339,6 +340,7 @@ mod tests {
                 exclude_providers: HashSet::new(),
                 require_tools: false,
                 permit_ttl: Duration::from_secs(2),
+            allow_half_open_probe: false,
             })
             .await
             .unwrap();
@@ -381,6 +383,7 @@ mod tests {
                 exclude_providers: HashSet::new(),
                 require_tools: false,
                 permit_ttl: Duration::from_secs(2),
+            allow_half_open_probe: false,
             })
             .await
             .unwrap();
@@ -393,6 +396,7 @@ mod tests {
                 exclude_providers: HashSet::new(),
                 require_tools: false,
                 permit_ttl: Duration::from_secs(2),
+            allow_half_open_probe: false,
             })
             .await
             .unwrap();
@@ -431,6 +435,7 @@ mod tests {
                 exclude_providers: HashSet::new(),
                 require_tools: false,
                 permit_ttl: Duration::from_secs(2),
+            allow_half_open_probe: false,
             })
             .await
             .unwrap();
@@ -471,6 +476,7 @@ mod tests {
                 exclude_providers: HashSet::new(),
                 require_tools: false,
                 permit_ttl: Duration::from_secs(2),
+            allow_half_open_probe: false,
             })
             .await
             .unwrap();

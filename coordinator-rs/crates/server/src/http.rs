@@ -169,6 +169,7 @@ async fn readyz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         exclude_providers: Default::default(),
         require_tools: false,
         permit_ttl: std::time::Duration::from_millis(1),
+            allow_half_open_probe: false,
     }).await {
         // Any decision (including RetryAfter) proves the actor is alive.
         Ok(_) => (StatusCode::OK, Json(json!({ "ready": true }))).into_response(),
@@ -254,6 +255,7 @@ async fn chat_completions(
             exclude_providers: Default::default(),
             require_tools: false,
             permit_ttl: std::time::Duration::from_secs(2),
+            allow_half_open_probe: false,
         })
         .await
     {

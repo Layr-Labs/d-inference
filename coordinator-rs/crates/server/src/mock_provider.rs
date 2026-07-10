@@ -26,6 +26,9 @@ pub struct MockCompletion {
 }
 
 /// Complete a job that was already reserved + start-authorized by the caller.
+///
+/// `billable_cap_micro_usd` caps the charge at the chunk-pipe accepted output
+/// (plan §10.6). Pass `None` to charge the full reported amount.
 pub fn complete_authorized_job(
     ledger: &mut MemoryLedger,
     account: &str,
@@ -34,6 +37,7 @@ pub fn complete_authorized_job(
     lease_id: &str,
     user_text: &str,
     mode: &str,
+    billable_cap_micro_usd: Option<i64>,
 ) -> Result<MockCompletion, String> {
     let attempt_id = permit.attempt.as_str().to_string();
     ledger.record_attempt(&attempt_id, job_id, &permit.provider_id, "started");
@@ -70,12 +74,14 @@ pub fn complete_authorized_job(
     let completion_tokens = (content.len() / 4).max(1) as i32;
     let charged = 1_000i64;
     let terminal_digest = format!("sha256:{}", Uuid::new_v4());
+    let cap = billable_cap_micro_usd.unwrap_or(charged);
     ledger
-        .settle(
+        .settle_capped(
             OperationKey(format!("settle:{job_id}")),
             job_id,
             account,
             charged,
+            cap,
             &terminal_digest,
         )
         .map_err(|e| e.to_string())?;
@@ -83,6 +89,7 @@ pub fn complete_authorized_job(
     let reserved = ledger
         .job_reserved_total(job_id)
         .unwrap_or(MicroUsd(0));
+    let actual_charged = charged.min(cap).max(0);
 
     Ok(MockCompletion {
         job_id: job_id.to_string(),
@@ -93,7 +100,7 @@ pub fn complete_authorized_job(
         prompt_tokens: (user_text.len() / 4).max(1) as i32,
         completion_tokens,
         reserved,
-        charged: MicroUsd(charged),
+        charged: MicroUsd(actual_charged),
         terminal_digest,
         mode: mode.to_string(),
     })
@@ -129,6 +136,7 @@ pub fn run_mock_completion(
         &lease_id,
         user_text,
         "rust-mock",
+        None,
     )
 }
 

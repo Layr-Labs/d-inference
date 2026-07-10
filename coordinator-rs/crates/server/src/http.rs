@@ -481,6 +481,12 @@ async fn chat_completions(
             } else {
                 "rust-mock"
             };
+            // For streaming, billable cap tracks pipe-accepted tokens (here: full mock output).
+            let billable_cap = if req.stream {
+                Some(1_000i64) // full mock charge when checkpoint accepts the stream
+            } else {
+                None
+            };
             let mut ledger = state.ledger.lock().await;
             match complete_authorized_job(
                 &mut ledger,
@@ -490,6 +496,7 @@ async fn chat_completions(
                 lease.as_str(),
                 user_text,
                 mode,
+                billable_cap,
             ) {
                 Ok(completion) => {
                     let _ = task.apply(ControlEvent::FirstContent {

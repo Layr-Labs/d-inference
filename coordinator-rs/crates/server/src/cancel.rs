@@ -135,4 +135,88 @@ mod tests {
         assert_eq!(out, CancelOutcome::DiscardedLocal);
         assert_eq!(led.lock().unwrap().balance("a").0, 1_000_000);
     }
+
+    #[tokio::test]
+    async fn funded_start_cancel_awaits_terminal_without_release() {
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        {
+            let mut g = led.lock().unwrap();
+            g.credit("a", 1_000_000, 0).unwrap();
+            g.reserve(OperationKey("r".into()), "j2", "a", 50_000)
+                .unwrap();
+            g.mark_start_authorized("j2").unwrap();
+        }
+        let (_h, mut task) = spawn_request_task(JobId::new("j2"), Duration::from_secs(30));
+        task.funded_start = true;
+        let hub = ProviderHub::new();
+        let (tx, mut rx) = mpsc::channel(4);
+        hub.attach("p".into(), 1, tx).await;
+        let hub2 = hub.clone();
+        tokio::spawn(async move {
+            while let Some(crate::provider_hub::OutboundCmd::Text(t)) = rx.recv().await {
+                let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                let attempt = v["attempt_id"].as_str().unwrap_or("a1").to_string();
+                hub2.deliver_reply(
+                    "p",
+                    &attempt,
+                    crate::provider_hub::InboundReply::Cancelled(serde_json::json!({
+                        "type": "cancelled",
+                        "attempt_id": attempt
+                    })),
+                )
+                .await;
+            }
+        });
+        let out = cancel_before_or_after_content(
+            &mut task, &hub, &led, "a", "p", "j2", "a1", "l1", 1, "n", "d", false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, CancelOutcome::CancelledAwaitTerminal);
+        // Money still held — settle/force_settle must clear it.
+        assert_eq!(led.lock().unwrap().balance("a").0, 950_000);
+        assert_eq!(led.lock().unwrap().active_job_count(), 1);
+        assert!(led.lock().unwrap().job_funded_start("j2"));
+    }
+
+    #[tokio::test]
+    async fn after_content_cancel_does_not_release() {
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        {
+            let mut g = led.lock().unwrap();
+            g.credit("a", 1_000_000, 0).unwrap();
+            g.reserve(OperationKey("r".into()), "j3", "a", 50_000)
+                .unwrap();
+            g.mark_start_authorized("j3").unwrap();
+        }
+        let (_h, mut task) = spawn_request_task(JobId::new("j3"), Duration::from_secs(30));
+        task.funded_start = true;
+        let hub = ProviderHub::new();
+        let (tx, mut rx) = mpsc::channel(4);
+        hub.attach("p".into(), 1, tx).await;
+        let hub2 = hub.clone();
+        tokio::spawn(async move {
+            while let Some(crate::provider_hub::OutboundCmd::Text(t)) = rx.recv().await {
+                let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                let attempt = v["attempt_id"].as_str().unwrap_or("a1").to_string();
+                hub2.deliver_reply(
+                    "p",
+                    &attempt,
+                    crate::provider_hub::InboundReply::Cancelled(serde_json::json!({
+                        "type": "cancelled",
+                        "attempt_id": attempt
+                    })),
+                )
+                .await;
+            }
+        });
+        let out = cancel_before_or_after_content(
+            &mut task, &hub, &led, "a", "p", "j3", "a1", "l1", 1, "n", "d", true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, CancelOutcome::CancelAfterContent);
+        assert_eq!(led.lock().unwrap().balance("a").0, 950_000);
+        assert_eq!(led.lock().unwrap().active_job_count(), 1);
+    }
 }

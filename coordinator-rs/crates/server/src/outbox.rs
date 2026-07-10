@@ -131,6 +131,14 @@ pub fn claim_sql() -> &'static str {
     "#
 }
 
+/// Documented SQL for durable ack after successful side-effect delivery.
+pub fn ack_done_sql() -> &'static str {
+    r#"
+    DELETE FROM rust_coord.outbox
+    WHERE id = $1
+    "#
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +184,6 @@ mod tests {
     fn sql_docs_mention_skip_locked() {
         assert!(claim_sql().contains("SKIP LOCKED"));
         assert!(enqueue_sql().contains("rust_coord.outbox"));
+        assert!(ack_done_sql().contains("DELETE FROM rust_coord.outbox"));
     }
 }

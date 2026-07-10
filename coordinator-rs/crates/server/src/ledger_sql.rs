@@ -239,6 +239,66 @@ impl PostgresLedgerStub {
         "#
     }
 
+    /// Force-settle SQL for start_authorized held jobs (mirrors recovery::force_settle_held).
+    /// Requires state = start_authorized and no terminal yet (DECISIONS #16/#17).
+    /// Parameters: $1 account, $2 job_id, $3 actual, $4 terminal_digest, $5 operation_key
+    pub fn force_settle_sql() -> &'static str {
+        r#"
+        WITH job AS (
+          SELECT job_id, reserved_total_micro_usd AS reserved,
+                 reserved_withdrawable_micro_usd AS reserved_wdr,
+                 terminal_disposition, state
+          FROM rust_coord.inference_jobs
+          WHERE job_id = $2
+          FOR UPDATE
+        ), guard AS (
+          SELECT 1 FROM job
+          WHERE terminal_disposition IS NULL
+            AND state = 'start_authorized'
+            AND $3::bigint >= 0
+            AND $3::bigint <= reserved
+        ), digest AS (
+          INSERT INTO rust_coord.provider_terminals (
+            terminal_digest, job_id, attempt_id, disposition
+          ) VALUES ($4, $2, '', 'force_settled')
+          ON CONFLICT (terminal_digest) DO NOTHING
+          RETURNING terminal_digest
+        ), calc AS (
+          SELECT
+            j.reserved - $3::bigint AS refund,
+            j.reserved_wdr - LEAST(
+              j.reserved_wdr,
+              GREATEST(0, $3::bigint - GREATEST(0, j.reserved - j.reserved_wdr))
+            ) AS refund_wdr
+          FROM job j
+          WHERE EXISTS (SELECT 1 FROM guard)
+            AND EXISTS (SELECT 1 FROM digest)
+        ), credit AS (
+          UPDATE balances b
+          SET balance_micro_usd = b.balance_micro_usd + c.refund,
+              withdrawable_micro_usd = b.withdrawable_micro_usd + c.refund_wdr,
+              updated_at = NOW()
+          FROM calc c
+          WHERE b.account_id = $1
+          RETURNING c.refund, c.refund_wdr
+        ), mark AS (
+          UPDATE rust_coord.inference_jobs j
+          SET state = 'settled',
+              terminal_disposition = 'force_settled',
+              updated_at = NOW()
+          FROM calc
+          WHERE j.job_id = $2
+          RETURNING j.job_id
+        ), op AS (
+          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
+          VALUES ($5, $2, 'force_settle', $3)
+          ON CONFLICT (operation_key) DO NOTHING
+          RETURNING operation_key
+        )
+        SELECT refund, refund_wdr FROM credit
+        "#
+    }
+
     /// Release SQL for reserved-but-not-start_authorized jobs (mirrors MemoryLedger.release).
     /// Parameters: $1 account, $2 job_id, $3 operation_key
     pub fn release_sql() -> &'static str {
@@ -337,6 +397,18 @@ mod tests {
         assert!(sql.contains("financial_operations"));
         assert!(sql.contains("FOR UPDATE"));
         assert!(sql.contains("'release'"));
+    }
+
+    #[test]
+    fn force_settle_sql_requires_start_authorized() {
+        let sql = PostgresLedgerStub::force_settle_sql();
+        assert!(sql.contains("rust_coord.inference_jobs"));
+        assert!(sql.contains("state = 'start_authorized'"));
+        assert!(sql.contains("force_settled"));
+        assert!(sql.contains("'force_settle'"));
+        assert!(sql.contains("provider_terminals"));
+        assert!(sql.contains("FOR UPDATE"));
+        assert!(sql.contains("financial_operations"));
     }
 
     #[test]

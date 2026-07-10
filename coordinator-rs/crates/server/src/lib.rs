@@ -33,7 +33,7 @@ pub use external_events::{observe_sql as external_event_observe_sql, ExternalEve
 pub use fleet_actor::{spawn_fleet_actor, FleetError, FleetHandle};
 pub use http::{router, AppState, ModelCard};
 pub use ledger::{MemoryLedger, OperationKey, ReservationProvenance};
-pub use outbox::{Outbox, OutboxEntry, OutboxError};
+pub use outbox::{ack_done_sql, Outbox, OutboxEntry, OutboxError};
 pub use ownership::{
     acquire_sql as ownership_acquire_sql, heartbeat_sql as ownership_heartbeat_sql,
     release_sql as ownership_release_sql, Epoch, Gate as OwnershipGate, OwnershipError,

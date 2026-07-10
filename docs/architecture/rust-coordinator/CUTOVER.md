@@ -859,3 +859,16 @@ Chat completions hold `money_fx` across provisional `reserve_with_epoch`
 and `resize_and_authorize_fenced` so quiescence cannot observe a mid-flight
 debit/authorize outside the money barrier (settle already covered by #137).
 
+### Outbox-drain ready under money_fx (DECISIONS #147)
+
+`POST /v1/admin/outbox-drain` holds `money_fx` for the final ready/cutover
+snapshot (after the drain loop) so a concurrent settle cannot make
+`ready=true` between ledger dispose and critical outbox enqueue —
+same barrier as quiescence (#136). Cutover-drain inherits this signal.
+
+### Settle/force op stores clamped charge (DECISIONS #148)
+
+MemoryLedger `settle_as_inner` stores the clamped `charge` on
+`OperationRecord.amount` (not the raw actual). `force_settled` rows omit
+`billable_cap` — matching `force_settle_sql` / `settle_capped_sql`.
+

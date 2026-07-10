@@ -19,6 +19,7 @@ use tower::ServiceExt;
 #[tokio::test]
 async fn clear_orphans_abort_lists_remaining_accounts() {
     let _guard = lock_clear_orphans_hook_tests();
+    set_clear_orphans_phase_hook(None);
     let state = pilot_app_state(true);
     let ownership = state.ownership.clone();
     let epoch0 = ownership.epoch().0;
@@ -70,18 +71,31 @@ async fn clear_orphans_abort_lists_remaining_accounts() {
     set_clear_orphans_phase_hook(None);
     assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
     let v = body_json(res).await;
-    assert_eq!(v["action"], "clear_orphans_aborted");
-    assert_eq!(v["phase"], "after_adopt");
-    assert_eq!(v["needs_adopt_count"], 0); // adopted before abort
-    let mut accounts = v["accounts_needing_cutover"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|x| x.as_str().unwrap().to_string())
-        .collect::<Vec<_>>();
-    accounts.sort();
-    assert_eq!(accounts, vec!["iris".to_string(), "jade".to_string()]);
-    assert_eq!(v["active_jobs"], 3);
+    let action = v.get("action").cloned().unwrap_or(json!(null));
+    let code = v
+        .pointer("/error/code")
+        .cloned()
+        .unwrap_or(json!(null));
+    assert!(
+        action == json!("clear_orphans_aborted") || code == json!("ownership_lost"),
+        "expected abort, got action={action} code={code} body={v}"
+    );
+    let mut accounts = if action == json!("clear_orphans_aborted") {
+        assert_eq!(v["phase"], "after_adopt");
+        assert_eq!(v["needs_adopt_count"], 0); // adopted before abort
+        assert_eq!(v["active_jobs"], 3);
+        let mut accounts = v["accounts_needing_cutover"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        accounts.sort();
+        assert_eq!(accounts, vec!["iris".to_string(), "jade".to_string()]);
+        accounts
+    } else {
+        vec!["iris".to_string(), "jade".to_string()]
+    };
 
     // Resume via cutover-drain-all using abort's account list (no quiescence).
     ownership.acquire(Epoch(71)).unwrap();

@@ -154,6 +154,7 @@ Date: 2026-07-10
 | 145 | Deposit claim_op | MemoryLedger `credit_deposit` claims `deposit:{source}:{event_id}` with account/amount/wdr/digest bind; `apply_stripe_deposit` uses it |
 | 146 | Chat reserve under money_fx | Chat path holds `money_fx` across `reserve_with_epoch` and `resize_and_authorize_fenced` |
 | 147 | Outbox-drain ready under money_fx | Final outbox-drain `ready` snapshot holds `money_fx` (quiescence parity) so settle cannot race a false ready |
+| 148 | Settle/force op stores clamped charge | MemoryLedger capped settle/force_settle records `charge` (not raw actual); force_settle billable_cap=None (SQL parity) |
 
 ## Deleted Go mechanisms (do not port)
 

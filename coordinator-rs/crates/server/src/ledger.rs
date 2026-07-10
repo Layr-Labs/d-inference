@@ -631,9 +631,15 @@ impl MemoryLedger {
             )));
         }
         let (amount, billable_cap, op_type) = match capped_inputs {
-            Some((actual, cap)) => (
-                actual,
-                Some(cap),
+            // Store clamped charge (SQL c.amount), not raw actual — DECISIONS #148.
+            // force_settle_sql uses billable_cap NULL; settle_capped_sql stores the cap.
+            Some((_actual, cap)) => (
+                charge,
+                if disposition == "force_settled" {
+                    None
+                } else {
+                    Some(cap)
+                },
                 if disposition == "force_settled" {
                     "force_settle"
                 } else {

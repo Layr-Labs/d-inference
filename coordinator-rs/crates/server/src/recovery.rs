@@ -345,6 +345,46 @@ mod tests {
     }
 
     #[test]
+    fn force_settle_op_key_binds_clamped_charge() {
+        // DECISIONS #148: OperationRecord.amount is the clamped charge (SQL c.amount),
+        // so two oversize actuals that clamp identically only conflict on job_id/digest.
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r1".into()), "j1", "a", 100_000)
+            .unwrap();
+        led.mark_start_authorized("j1", "a").unwrap();
+        assert!(led
+            .settle_capped_as(
+                OperationKey("fs-shared".into()),
+                "j1",
+                "a",
+                150_000,
+                100_000,
+                "d1",
+                "force_settled",
+            )
+            .unwrap());
+        led.reserve(OperationKey("r2".into()), "j2", "a", 100_000)
+            .unwrap();
+        led.mark_start_authorized("j2", "a").unwrap();
+        // Same op key, different job — Conflict (not silent charge).
+        assert!(matches!(
+            led.settle_capped_as(
+                OperationKey("fs-shared".into()),
+                "j2",
+                "a",
+                200_000,
+                100_000,
+                "d2",
+                "force_settled",
+            ),
+            Err(LedgerError::Conflict(_))
+        ));
+        assert_eq!(led.active_job_count(), 1);
+        assert_eq!(led.balance("a").0, 4_900_000); // j1 charged 100k, j2 still reserved
+    }
+
+    #[test]
     fn held_start_authorized_count_tracks_holds() {
         let mut led = MemoryLedger::default();
         led.credit("a", 1_000_000, 0).unwrap();

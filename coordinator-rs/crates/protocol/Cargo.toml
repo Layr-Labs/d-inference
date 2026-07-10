@@ -1,0 +1,21 @@
+[package]
+name = "darkbloom-coordinator-protocol"
+description = "Darkbloom coordinator/provider wire contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes = "1.12.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+base64 = "0.22.1"
+crypto_box = { version = "0.9.1", features = ["salsa20"] }

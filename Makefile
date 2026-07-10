@@ -2,6 +2,7 @@
 .PHONY: help \
         contracts-check contracts-update \
         coordinator-test coordinator-build coordinator-build-linux coordinator \
+        coordinator-rs-fmt coordinator-rs-lint coordinator-rs-test coordinator-rs-build coordinator-rs-sqlx coordinator-rs \
         provider-build provider-test provider \
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
@@ -32,6 +33,25 @@ coordinator-build-linux: ## Cross-compile coordinator for linux/amd64 (EigenClou
 	    go build -o coordinator-linux ./cmd/coordinator
 
 coordinator: coordinator-test coordinator-build ## Test + build coordinator
+
+# ---- Coordinator (Rust replacement) ---------------------------------------
+
+coordinator-rs-fmt: ## Check Rust coordinator formatting
+	cd coordinator-rs && cargo fmt --all -- --check
+
+coordinator-rs-lint: ## Run Clippy for the Rust coordinator
+	cd coordinator-rs && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+coordinator-rs-test: ## Run Rust coordinator tests
+	cd coordinator-rs && cargo test --workspace --all-features --locked
+
+coordinator-rs-build: ## Build the Rust coordinator
+	cd coordinator-rs && cargo build --workspace --all-targets --all-features --locked
+
+coordinator-rs-sqlx: ## Verify checked SQLx query metadata (requires cargo-sqlx)
+	cd coordinator-rs && cargo sqlx prepare --workspace --check -- --all-targets --all-features
+
+coordinator-rs: coordinator-rs-fmt coordinator-rs-lint coordinator-rs-test coordinator-rs-build ## Check, test, and build Rust coordinator
 
 # ---- Provider (Swift, Apple Silicon) --------------------------------------
 
@@ -72,12 +92,12 @@ e2e: e2e-integration ## Run the integration suite
 
 # ---- Aggregates ------------------------------------------------------------
 
-test: coordinator-test provider-test ui-test ## Run all unit tests
+test: coordinator-test coordinator-rs-test provider-test ui-test ## Run all unit tests
 
-build: coordinator-build provider-build ui-build ## Build all components
+build: coordinator-build coordinator-rs-build provider-build ui-build ## Build all components
 
 all: test build ## Test + build everything
 
 clean: ## Remove built artifacts
 	rm -f coordinator/coordinator coordinator/coordinator-linux
-	rm -rf provider-swift/.build console-ui/.next console-ui/node_modules
+	rm -rf target provider-swift/.build console-ui/.next console-ui/node_modules

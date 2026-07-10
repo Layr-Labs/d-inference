@@ -30,6 +30,23 @@ if [ -n "$GO_FILES" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Rust — rustfmt if Rust coordinator files are staged
+# ---------------------------------------------------------------------------
+RUST_FILES=$(git diff --cached --name-only --diff-filter=ACM -- 'coordinator-rs/**' 'rust-toolchain.toml')
+
+if [ -n "$RUST_FILES" ]; then
+    echo ">> Checking Rust formatting (cargo fmt)..."
+    if ! (cd coordinator-rs && cargo fmt --all -- --check); then
+        echo ""
+        echo "ERROR: Rust coordinator files need formatting."
+        echo ""
+        echo "Fix with:  cd coordinator-rs && cargo fmt --all"
+        echo ""
+        FAILED=1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # TypeScript — next lint in console-ui/ if any .ts/.tsx files are staged
 # ---------------------------------------------------------------------------
 TS_FILES=$(git diff --cached --name-only --diff-filter=ACM -- 'console-ui/**.ts' 'console-ui/**.tsx' | grep -E '\.(ts|tsx)$' || true)

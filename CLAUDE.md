@@ -28,6 +28,11 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── datadog/          Datadog APM / DogStatsD / Logs API client
 └── internal/e2e/     End-to-end encryption (X25519 key exchange) helpers + tests
 
+coordinator-rs/       Rust coordinator replacement (pre-production)
+├── crates/protocol/  versioned wire types, crypto compatibility, golden fixtures
+├── crates/core/      pure IDs, reducers, admission, scoring, health, pricing
+└── crates/server/    Axum/Tokio sessions, SQLx persistence, workers, binary entrypoint
+
 e2e/                  System-level E2E testing framework
 ├── integration_test.go  14 E2E tests (streaming, billing, encryption, attestation, etc.)
 ├── profile_test.go      latency profiling tests
@@ -86,6 +91,15 @@ go test ./...
 # Cross-compile for the EigenCloud container (Linux amd64):
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o coordinator-linux ./cmd/coordinator
 ```
+
+### Coordinator replacement, Rust
+```bash
+make coordinator-rs
+```
+
+The Rust coordinator remains pre-production until the migration gates pass.
+Keep its workspace to the three primary crates (`protocol`, `core`, `server`);
+do not create a crate for every small concern.
 
 ### Provider, Swift
 ```bash

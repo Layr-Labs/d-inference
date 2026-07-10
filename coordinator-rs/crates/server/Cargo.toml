@@ -1,0 +1,28 @@
+[package]
+name = "darkbloom-coordinator-server"
+description = "Axum and SQLx composition root for the Darkbloom coordinator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum = { version = "0.8.9", features = ["ws", "http2"] }
+darkbloom-coordinator-core = { path = "../core" }
+darkbloom-coordinator-protocol = { path = "../protocol" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "uuid", "json", "macros"] }
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["full"] }
+tokio-util = { version = "0.7.18", features = ["rt"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
+
+[dev-dependencies]
+http-body-util = "0.1.3"
+tower = { version = "0.5.3", features = ["util"] }
+
+[lints]
+workspace = true

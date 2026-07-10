@@ -1,0 +1,17 @@
+[package]
+name = "darkbloom-coordinator-core"
+description = "Pure Darkbloom coordinator domain reducers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+darkbloom-coordinator-protocol = { path = "../protocol" }
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.18"
+uuid = { version = "1.23.4", features = ["serde", "v4"] }
+
+[lints]
+workspace = true

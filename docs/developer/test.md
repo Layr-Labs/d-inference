@@ -12,6 +12,31 @@ Run with `-race` for race detection:
 cd coordinator && go test -race ./...
 ```
 
+## Rust coordinator tests
+
+```bash
+make coordinator-rs-test
+make coordinator-rs-lint
+```
+
+`coordinator-rs/crates/server/tests/postgres.rs` uses a real PostgreSQL
+instance when `DATABASE_URL` is set. CI supplies an isolated PostgreSQL 16
+service. Tests never point at production.
+
+Cross-language migration contracts are committed under `tests/contracts/`:
+
+```bash
+make contracts-check           # fail if generated contracts drift
+make contracts-update          # explicit regeneration for reviewed changes
+```
+
+The Go and Swift suites consume the same protocol/crypto fixtures. The
+Go-to-Rust NaCl reference test is:
+
+```bash
+go test ./coordinator/internal/e2e -run '^TestCrossLanguageEncryption$'
+```
+
 ## Provider tests
 
 ```bash

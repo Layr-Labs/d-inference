@@ -41,6 +41,11 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── deploy/           container entrypoint (start.sh)
 └── internal/e2e/     X25519 request-encryption helpers (+ cross-compat/tamper tests)
 
+coordinator-rs/       Rust coordinator replacement (pre-production)
+├── crates/protocol/  versioned wire types, crypto compatibility, golden fixtures
+├── crates/core/      pure IDs, reducers, admission, scoring, health, pricing
+└── crates/server/    Axum/Tokio sessions, SQLx persistence, workers, binary entrypoint
+
 e2e/                  System-level E2E testing framework
 ├── integration_test.go  14 E2E tests (streaming, billing, encryption, attestation, etc.)
 ├── profile_test.go      latency profiling tests
@@ -130,6 +135,19 @@ make coordinator-build        # cd coordinator && go build ./cmd/coordinator
 make coordinator-build-linux  # GOOS=linux GOARCH=amd64 CGO_ENABLED=0 build (EigenCloud)
 make coordinator              # test + build
 ```
+
+### Coordinator replacement (Rust)
+```bash
+make coordinator-rs-fmt
+make coordinator-rs-lint
+make coordinator-rs-test
+make coordinator-rs-build
+make coordinator-rs
+```
+
+The Rust coordinator is pre-production until the migration gates pass. Its
+three crates are intentionally `protocol`, `core`, and `server`; do not split
+it into one crate per concern.
 
 ### Provider (Swift)
 ```bash

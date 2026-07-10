@@ -6,9 +6,6 @@ target/
 
 .next/
 
-# Rust
-Cargo.lock
-
 # Go
 coordinator/bin/
 

@@ -30,6 +30,7 @@ For UI changes, include a screenshot or short video.
 <!-- Tick all that apply so reviewers know what to look at. -->
 
 - [ ] coordinator (Go)
+- [ ] coordinator-rs (Rust replacement)
 - [ ] provider (Rust, legacy)
 - [ ] provider-swift (Swift CLI)
 - [ ] console-ui (Next.js)

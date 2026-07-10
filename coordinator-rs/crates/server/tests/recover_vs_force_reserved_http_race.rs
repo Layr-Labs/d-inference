@@ -115,13 +115,17 @@ async fn concurrent_http_recover_vs_force_on_reserved_only() {
         "unexpected recover {recovered}"
     );
     for h in forces {
-        assert_eq!(h.await.unwrap(), "skipped");
+        match h.await.unwrap().as_str() {
+            // skipped while still reserved; already_terminal if recover disposed first
+            "skipped" | "already_terminal" => {}
+            other => panic!("force must not settle reserved-only; got {other}"),
+        }
     }
 
     let led = ledger.lock().await;
-    // Force never clears reserved-only; recover either released or lost the race
-    // after another recover — but we only spawned one recover. So must be released.
-    assert_eq!(recovered, "released");
+    // Exactly one of recover/force paths can clear — force never settles reserved-only,
+    // so recover must have released (or we would still have an active job).
     assert_eq!(led.active_job_count(), 0);
     assert_eq!(led.balance("pilot-account").0, 1_000_000);
+    assert_eq!(recovered, "released");
 }

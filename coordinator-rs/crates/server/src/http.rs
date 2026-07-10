@@ -348,9 +348,9 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let cutover_hint = if ready {
         "ready"
     } else if active_jobs > 0 && needs_adopt > 0 {
-        "clear-orphans then outbox-drain"
+        "cutover-drain"
     } else if active_jobs > 0 {
-        "recover/force-settle or clear-orphans"
+        "cutover-drain"
     } else if outbox_retryable > 0 {
         "outbox-drain"
     } else {

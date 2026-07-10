@@ -490,3 +490,9 @@ equals start + sum(deposits).
 `POST /v1/admin/cutover-drain` is the one-shot ops path: clear-orphans →
 outbox-drain → `ready` (aborts without drain if clear returns non-OK).
 
+### cutover-drain abort on steal (DECISIONS #92)
+
+If ownership is stolen mid clear-orphans inside cutover-drain, the response is
+the clear abort (503) and outbox is left untouched. Quiescence `cutover_hint`
+is `cutover-drain` whenever active jobs remain.
+

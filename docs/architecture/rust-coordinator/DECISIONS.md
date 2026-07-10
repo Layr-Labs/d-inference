@@ -98,6 +98,7 @@ Date: 2026-07-10
 | 89 | Single-job admin defaults to job owner | `/v1/admin/recover-undispatched` and `/force-settle` omit-account → job owner; explicit mismatch → `account_mismatch` |
 | 90 | Deposit vs clear-orphans conservation | Concurrent deposits + clear-orphans: each deposit applies once; orphans clear exactly once; balance = start + deposits |
 | 91 | held-review-batch + cutover-drain | `POST /v1/admin/held-review-batch` classifies holds (no money). `POST /v1/admin/cutover-drain` runs clear-orphans then outbox-drain |
+| 92 | cutover-drain abort on steal + hint | cutover-drain returns clear abort without draining outbox. Quiescence `cutover_hint` prefers `cutover-drain` when active jobs remain |
 
 ## Deleted Go mechanisms (do not port)
 

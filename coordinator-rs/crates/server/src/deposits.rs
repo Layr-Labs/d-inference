@@ -151,11 +151,14 @@ mod tests {
     }
 
     #[test]
-    fn deposit_sql_is_idempotent_external_event() {
-        let sql = deposit_sql();
-        assert!(sql.contains("rust_coord.external_events"));
-        assert!(sql.contains("ON CONFLICT"));
-        assert!(sql.contains("balances"));
-        assert!(sql.contains("withdrawable_micro_usd"));
+    fn empty_source_rejected_before_observe() {
+        let mut inbox = ExternalEventInbox::new();
+        let mut led = MemoryLedger::default();
+        assert!(matches!(
+            apply_stripe_deposit(&mut inbox, &mut led, "", "evt", "a", 100, 0),
+            Err(DepositError::External(ExternalEventError::InvalidKey))
+        ));
+        assert!(!inbox.contains("", "evt"));
+        assert_eq!(led.balance("a").0, 0);
     }
 }

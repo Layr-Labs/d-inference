@@ -331,6 +331,7 @@ dependencies = [
  "darkbloom-core",
  "darkbloom-protocol",
  "futures-util",
+ "http-body-util",
  "serde",
  "serde_json",
  "thiserror",

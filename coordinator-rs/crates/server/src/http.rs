@@ -19,7 +19,7 @@ use crate::provider_hub::{OutboundCmd, ProviderHub, SharedHub};
 use crate::provider_ws::provider_ws;
 use crate::request_task::{spawn_request_task, ControlEvent};
 use crate::sealed::decrypt_request_body;
-use darkbloom_core::{AttemptId, JobId, LeaseId};
+use darkbloom_core::{AttemptId, JobId, LeaseId, PlacementController};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -31,6 +31,7 @@ pub struct AppState {
     pub models: Vec<ModelCard>,
     /// Pilot ledger (process-local). Postgres/SQLx replaces this in M4.
     pub ledger: Arc<Mutex<MemoryLedger>>,
+    pub placement: Arc<Mutex<PlacementController>>,
     pub pilot_account: String,
     /// Comma-separated pilot API keys (env DARKBLOOM_PILOT_API_KEYS). Empty = open.
     pub pilot_api_keys: Arc<Vec<String>>,
@@ -500,7 +501,13 @@ async fn chat_completions(
                     .into_response(),
             }
         }
-        darkbloom_core::AdmissionDecision::RetryAfter { reason, delay } => (
+        darkbloom_core::AdmissionDecision::RetryAfter { reason, delay } => {
+            // Cold demand → placement signal (no internal queue).
+            {
+                let mut p = state.placement.lock().await;
+                p.signal_demand(&req.model);
+            }
+            (
             StatusCode::TOO_MANY_REQUESTS,
             [(
                 axum::http::header::RETRY_AFTER,
@@ -514,7 +521,8 @@ async fn chat_completions(
                 }
             })),
         )
-            .into_response(),
+            .into_response()
+        }
         darkbloom_core::AdmissionDecision::Reject { reason } => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({

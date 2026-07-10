@@ -2,6 +2,7 @@ use darkbloom_coordinator::cli::{parse_and_is_recovery, run_recovery};
 use darkbloom_coordinator::{
     router, spawn_fleet_actor, AppState, CoordinatorKeys, MemoryLedger, ModelCard, ProviderHub,
 };
+use darkbloom_core::PlacementController;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -65,6 +66,7 @@ async fn main() {
             owned_by: "darkbloom".into(),
         }],
         ledger: Arc::new(Mutex::new(ledger)),
+        placement: Arc::new(Mutex::new(PlacementController::default())),
         pilot_account,
         pilot_api_keys,
         coordinator_epoch,

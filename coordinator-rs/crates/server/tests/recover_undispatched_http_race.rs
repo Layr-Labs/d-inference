@@ -1,4 +1,4 @@
-//! Concurrent HTTP recover-undispatched: exactly one released.
+//! Concurrent HTTP recover-undispatched: exactly one released + one outbox.
 
 mod common;
 
@@ -16,6 +16,7 @@ fn test_state() -> darkbloom_coordinator::AppState {
 #[tokio::test]
 async fn concurrent_http_recover_undispatched_exactly_one_released() {
     let state = test_state();
+    let outbox = state.outbox.clone();
     {
         let mut led = state.ledger.lock().await;
         led.reserve(
@@ -60,4 +61,11 @@ async fn concurrent_http_recover_undispatched_exactly_one_released() {
     }
     assert_eq!(released, 1);
     assert_eq!(terminal, 7);
+
+    // Exactly one critical release side effect (DECISIONS #43).
+    assert_eq!(outbox.lock().await.len(), 1);
+    let e = outbox.lock().await.try_claim().unwrap();
+    assert_eq!(e.kind, "inference.released");
+    let payload: serde_json::Value = serde_json::from_str(&e.payload).unwrap();
+    assert_eq!(payload["refunded_micro_usd"], 120_000);
 }

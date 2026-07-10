@@ -1,4 +1,4 @@
-//! Concurrent HTTP force-settle: exactly one released; others already_terminal.
+//! Concurrent HTTP force-settle: exactly one released + one settled outbox.
 
 mod common;
 
@@ -16,6 +16,7 @@ fn test_state() -> darkbloom_coordinator::AppState {
 #[tokio::test]
 async fn concurrent_http_force_settle_exactly_one_released() {
     let state = test_state();
+    let outbox = state.outbox.clone();
     {
         let mut led = state.ledger.lock().await;
         led.reserve(
@@ -68,4 +69,11 @@ async fn concurrent_http_force_settle_exactly_one_released() {
     }
     assert_eq!(released, 1);
     assert_eq!(terminal, 7);
+
+    assert_eq!(outbox.lock().await.len(), 1);
+    let e = outbox.lock().await.try_claim().unwrap();
+    assert_eq!(e.kind, "inference.settled");
+    let payload: serde_json::Value = serde_json::from_str(&e.payload).unwrap();
+    assert_eq!(payload["disposition"], "force_settled");
+    assert_eq!(payload["charged_micro_usd"], 40_000);
 }

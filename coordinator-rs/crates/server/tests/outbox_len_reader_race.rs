@@ -35,5 +35,7 @@ fn concurrent_outbox_len_readers_during_enqueue_claim() {
         let n = h.join().unwrap();
         assert!(n <= 10, "len={n}");
     }
-    assert_eq!(box_.lock().unwrap().len(), 6);
+    // Claims are non-destructive until ack — occupied stays 10.
+    assert_eq!(box_.lock().unwrap().len(), 10);
+    assert_eq!(box_.lock().unwrap().in_flight_len(), 4);
 }

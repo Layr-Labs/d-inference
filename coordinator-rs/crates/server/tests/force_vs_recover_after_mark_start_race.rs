@@ -36,7 +36,12 @@ fn concurrent_force_settle_vs_recover_after_mark_start() {
     let forced = force.join().unwrap();
     assert!(forced);
     for h in recovers {
-        assert_eq!(h.join().unwrap(), RecoveryAction::Skipped);
+        match h.join().unwrap() {
+            // Skipped if recover ran while still start_authorized; AlreadyTerminal
+            // if force_settle disposed first (disposition-first recover).
+            RecoveryAction::Skipped | RecoveryAction::AlreadyTerminal => {}
+            other => panic!("unexpected {other:?}"),
+        }
     }
     let g = led.lock().unwrap();
     assert_eq!(g.active_job_count(), 0);

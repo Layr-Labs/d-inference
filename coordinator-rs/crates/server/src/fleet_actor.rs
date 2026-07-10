@@ -158,6 +158,13 @@ impl FleetActor {
                 let decision = self.state.admit(&request);
                 let _ = reply.send(decision);
             }
+            FleetCommand::RecordTtft {
+                model,
+                predicted_ms,
+                actual_ms,
+            } => {
+                self.state.record_ttft_sample(&model, predicted_ms, actual_ms);
+            }
             FleetCommand::Snapshot(reply) => {
                 let _ = reply.send(self.state.clone());
             }

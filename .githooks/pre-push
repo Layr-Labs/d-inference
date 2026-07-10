@@ -32,6 +32,7 @@ fi
 CHANGED_FILES=$(git diff --name-only "$RANGE" 2>/dev/null || git diff --name-only HEAD~1)
 
 HAS_GO=$(echo "$CHANGED_FILES" | grep -q '^coordinator/' && echo 1 || echo 0)
+HAS_RS=$(echo "$CHANGED_FILES" | grep -q '^coordinator-rs/' && echo 1 || echo 0)
 HAS_TS=$(echo "$CHANGED_FILES" | grep -q '^console-ui/' && echo 1 || echo 0)
 
 # ---------------------------------------------------------------------------
@@ -52,6 +53,21 @@ if [ "$HAS_GO" = "1" ]; then
     # timing-sensitive. They run in CI instead.
     if ! (cd coordinator && go test $(go list ./... | grep -v /internal/api) 2>&1 | tail -15); then
         echo "ERROR: Go tests failed."
+        FAILED=1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Rust coordinator — tests
+# ---------------------------------------------------------------------------
+if [ "$HAS_RS" = "1" ]; then
+    echo ">> [pre-push] Rust coordinator tests..."
+    RUSTC_CMD="cargo"
+    if command -v rustup >/dev/null 2>&1; then
+        RUSTC_CMD="rustup run 1.85.0 cargo"
+    fi
+    if ! (cd coordinator-rs && $RUSTC_CMD test --workspace 2>&1 | tail -25); then
+        echo "ERROR: Rust coordinator tests failed."
         FAILED=1
     fi
 fi

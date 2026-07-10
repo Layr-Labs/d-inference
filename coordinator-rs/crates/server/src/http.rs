@@ -481,7 +481,9 @@ async fn admin_force_settle(
 
     let (action, charged) = {
         let mut led = state.ledger.lock().await;
-        if !led.job_funded_start(&req.job_id) {
+        if led.job_disposition(&req.job_id).is_some() {
+            ("already_terminal".to_string(), 0_i64)
+        } else if !led.job_funded_start(&req.job_id) {
             ("skipped".to_string(), 0_i64)
         } else if led.job_reserved_total(&req.job_id).is_none() {
             ("already_terminal".to_string(), 0_i64)

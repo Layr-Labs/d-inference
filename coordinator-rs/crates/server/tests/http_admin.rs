@@ -1724,3 +1724,37 @@ async fn admin_recover_undispatched_wrong_account_returns_conflict() {
         "recover_undispatched_failed"
     );
 }
+
+#[tokio::test]
+async fn admin_held_review_skips_reserved_not_authorized() {
+    let state = test_state(true);
+    {
+        let mut led = state.ledger.lock().await;
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-hrs".into()),
+            "reserved-hrs",
+            "pilot-account",
+            90_000,
+        )
+        .unwrap();
+    }
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/held-review")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "job_id": "reserved-hrs" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["action"], "skipped");
+    assert_eq!(v["held_start_authorized"], 0);
+    assert_eq!(v["balance_micro_usd"], 910_000);
+}

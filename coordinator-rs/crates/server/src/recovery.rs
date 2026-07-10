@@ -52,6 +52,9 @@ pub fn force_settle_held(
     terminal_digest: &str,
 ) -> Result<RecoveryAction, String> {
     let mut g = ledger.lock().map_err(|e| e.to_string())?;
+    if g.job_disposition(job_id).is_some() {
+        return Ok(RecoveryAction::AlreadyTerminal);
+    }
     if !g.job_funded_start(job_id) {
         return Ok(RecoveryAction::Skipped);
     }
@@ -82,7 +85,7 @@ pub fn recover_start_authorized_held(
     job_id: &str,
 ) -> Result<RecoveryAction, String> {
     let g = ledger.lock().map_err(|e| e.to_string())?;
-    if g.job_reserved_total(job_id).is_none() {
+    if g.job_disposition(job_id).is_some() || g.job_reserved_total(job_id).is_none() {
         return Ok(RecoveryAction::AlreadyTerminal);
     }
     if !g.job_funded_start(job_id) {
@@ -203,6 +206,27 @@ mod tests {
         // Same digest / disposed job → AlreadyTerminal (idempotent).
         assert_eq!(
             force_settle_held(&led, "j1", "a", 40_000, "force-d1").unwrap(),
+            RecoveryAction::AlreadyTerminal
+        );
+        assert_eq!(led.lock().unwrap().balance("a").0, 960_000);
+    }
+
+    #[test]
+    fn held_review_after_force_settle_is_already_terminal() {
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        {
+            let mut g = led.lock().unwrap();
+            g.credit("a", 1_000_000, 0).unwrap();
+            g.reserve(OperationKey("r".into()), "j1", "a", 100_000)
+                .unwrap();
+            g.mark_start_authorized("j1", "a").unwrap();
+        }
+        assert_eq!(
+            force_settle_held(&led, "j1", "a", 40_000, "force-d1").unwrap(),
+            RecoveryAction::Released
+        );
+        assert_eq!(
+            recover_start_authorized_held(&led, "j1").unwrap(),
             RecoveryAction::AlreadyTerminal
         );
         assert_eq!(led.lock().unwrap().balance("a").0, 960_000);

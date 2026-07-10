@@ -1309,6 +1309,9 @@ struct AdminHeldReviewBatchRequest {
     /// Optional explicit ids; empty/omitted = all held start_authorized (DECISIONS #91).
     #[serde(default)]
     job_ids: Vec<String>,
+    /// Optional account scope (DECISIONS #107).
+    #[serde(default)]
+    account: Option<String>,
 }
 
 /// Bulk classify held jobs without moving money (DECISIONS #91).
@@ -1320,10 +1323,14 @@ async fn admin_held_review_batch(
     if let Err(resp) = require_admin(&state, &headers) {
         return resp;
     }
+    let account_filter = req.account.clone();
     let ids = {
         let led = state.ledger.lock().await;
         if req.job_ids.is_empty() {
-            led.held_start_authorized_job_ids()
+            match account_filter.as_deref() {
+                Some(acct) => led.held_start_authorized_job_ids_for_account(acct),
+                None => led.held_start_authorized_job_ids(),
+            }
         } else {
             req.job_ids.clone()
         }
@@ -1335,6 +1342,18 @@ async fn admin_held_review_batch(
     {
         let led = state.ledger.lock().await;
         for job_id in ids {
+            if let Some(ref filter) = account_filter {
+                if led.job_account_id(&job_id).as_deref() != Some(filter.as_str()) {
+                    skipped += 1;
+                    reviews.push(json!({
+                        "job_id": job_id,
+                        "action": "account_mismatch",
+                        "account_id": led.job_account_id(&job_id).unwrap_or_default(),
+                        "reserved_micro_usd": led.job_reserved_total(&job_id).map(|m| m.0).unwrap_or(0),
+                    }));
+                    continue;
+                }
+            }
             let classified = crate::recovery::classify_held_job(&led, &job_id);
             let action = match classified {
                 crate::recovery::RecoveryAction::HeldForReview => {
@@ -1363,8 +1382,12 @@ async fn admin_held_review_batch(
     }
     let (bal, held, active) = {
         let led = state.ledger.lock().await;
+        let report = account_filter
+            .as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or(state.pilot_account.as_str());
         (
-            led.balance(&state.pilot_account).0,
+            led.balance(report).0,
             led.held_start_authorized_count(),
             led.active_job_count(),
         )
@@ -1373,6 +1396,7 @@ async fn admin_held_review_batch(
         StatusCode::OK,
         Json(json!({
             "action": "held_review_batch",
+            "account_filter": account_filter,
             "reviews": reviews,
             "held_for_review_count": held_for_review,
             "skipped_count": skipped,
@@ -1443,6 +1467,9 @@ struct AdminAdoptJobsRequest {
     /// Optional explicit ids; empty/omitted = all active jobs (DECISIONS #72).
     #[serde(default)]
     job_ids: Vec<String>,
+    /// Optional account scope (DECISIONS #107).
+    #[serde(default)]
+    account: Option<String>,
 }
 
 /// Bulk-rebind active jobs to the current fencing epoch (DECISIONS #72).
@@ -1457,17 +1484,30 @@ async fn admin_adopt_jobs(
     if let Err(resp) = require_holding(&state) {
         return resp;
     }
+    let account_filter = req.account.clone();
     let epoch = state.ownership.epoch().0;
     let mut adopted = Vec::new();
     let mut failed = Vec::new();
     {
         let mut led = state.ledger.lock().await;
         let ids = if req.job_ids.is_empty() {
-            led.active_job_ids()
+            match account_filter.as_deref() {
+                Some(acct) => led.active_job_ids_for_account(acct),
+                None => led.active_job_ids(),
+            }
         } else {
             req.job_ids.clone()
         };
         for job_id in ids {
+            if let Some(ref filter) = account_filter {
+                if led.job_account_id(&job_id).as_deref() != Some(filter.as_str()) {
+                    failed.push(json!({
+                        "job_id": job_id,
+                        "error": "account_mismatch",
+                    }));
+                    continue;
+                }
+            }
             match led.adopt_fencing_epoch(&job_id, epoch) {
                 Ok(prev) => {
                     adopted.push(json!({
@@ -1491,6 +1531,7 @@ async fn admin_adopt_jobs(
         StatusCode::OK,
         Json(json!({
             "action": "adopted_batch",
+            "account_filter": account_filter,
             "fencing_epoch": epoch,
             "adopted": adopted,
             "failed": failed,

@@ -113,6 +113,7 @@ Date: 2026-07-10
 | 104 | Multi-account remaining settle + ingest ACK | Multi-account force-settle remaining ids refunds each owner. Force-settle records attempt_id=`force-settle` so terminal-ingest ACKs without double charge |
 | 105 | Account-scoped abort remaining + release attempt_id | Batch/clear abort `remaining_*` ids scoped to `account` filter. Released dispositions use attempt_id=`release` for ingest ACK |
 | 106 | Per-account clear + abort filter echo | Concurrent account-filtered clear-orphans conserves each account. Abort JSON echoes `account_filter` |
+| 107 | Account filter on held-review + adopt-jobs | held-review-batch / adopt-jobs accept `account` scope. Concurrent review ∥ force-settle never double-charges |
 
 ## Deleted Go mechanisms (do not port)
 

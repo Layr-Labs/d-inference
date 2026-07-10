@@ -582,3 +582,9 @@ Concurrent clear-orphans with distinct `account` filters clear each account
 exactly once and conserve balances. Abort responses echo `account_filter` so
 ops know which scope the remaining ids apply to.
 
+### Account filter on held-review + adopt-jobs (DECISIONS #107)
+
+`POST /v1/admin/held-review-batch` and `POST /v1/admin/adopt-jobs` accept an
+optional `account` filter. Review never moves money; adopt+force-settle for one
+account leaves foreign orphans (quiescence ready=false).
+

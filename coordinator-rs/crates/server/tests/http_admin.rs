@@ -205,6 +205,41 @@ async fn readyz_fails_without_ownership() {
 }
 
 #[tokio::test]
+async fn health_and_encryption_key_ok() {
+    let app = router(test_state(true));
+    let health = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(health.status(), StatusCode::OK);
+    let hv = body_json(health).await;
+    assert_eq!(hv["status"], "ok");
+    assert_eq!(hv["coordinator"], "rust");
+
+    let key = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/encryption-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(key.status(), StatusCode::OK);
+    let kv = body_json(key).await;
+    assert_eq!(kv["public_key"].as_str().unwrap().len() > 20, true);
+    assert_eq!(kv["kid"], "test");
+}
+
+#[tokio::test]
 async fn unsupported_routes_return_501() {
     let app = router(test_state(true));
     for uri in ["/v1/completions", "/v1/messages", "/v1/unknown"] {

@@ -65,6 +65,7 @@ async fn outbox_drain_success_lists_remaining_accounts() {
 #[tokio::test]
 async fn outbox_drain_abort_lists_remaining_accounts() {
     let _guard = lock_outbox_drain_hook_tests();
+    set_outbox_drain_entry_hook(None);
     let state = pilot_app_state(true);
     let ownership = state.ownership.clone();
     let epoch = ownership.epoch().0;

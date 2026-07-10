@@ -36,6 +36,15 @@ pub enum LedgerError {
     InvalidAmount,
 }
 
+/// Admin cutover chaining snapshot (DECISIONS #123–#130).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CutoverStatus {
+    pub accounts_needing_cutover: Vec<String>,
+    pub needs_adopt_count: usize,
+    pub active_jobs: usize,
+    pub held_start_authorized: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OperationRecord {
     op_type: &'static str,
@@ -828,6 +837,26 @@ impl MemoryLedger {
             }
         }
         (needs_adopt, reserved, held)
+    }
+
+    /// Accounts with active reserved/held orphans (sorted), for cutover chaining.
+    pub fn accounts_needing_cutover(&self, current_epoch: u64) -> Vec<String> {
+        self.orphan_summary_by_account(current_epoch)
+            .into_iter()
+            .filter(|(_, _a, reserved, held)| *reserved + *held > 0)
+            .map(|(acct, _, _, _)| acct)
+            .collect()
+    }
+
+    /// Snapshot used by admin success/abort responses (DECISIONS #130).
+    pub fn cutover_status(&self, current_epoch: u64) -> CutoverStatus {
+        let (needs_adopt, _, _) = self.orphan_summary_counts(current_epoch);
+        CutoverStatus {
+            accounts_needing_cutover: self.accounts_needing_cutover(current_epoch),
+            needs_adopt_count: needs_adopt,
+            active_jobs: self.active_job_count(),
+            held_start_authorized: self.held_start_authorized_count(),
+        }
     }
 
     /// Per-account orphan counts for multi-tenant cutover (DECISIONS #110).
@@ -2018,5 +2047,33 @@ mod tests {
         assert!(led
             .release_fenced(5, OperationKey("rel".into()), "j2", "a")
             .unwrap());
+    }
+
+    #[test]
+    fn cutover_status_snapshot_tracks_accounts_and_adopt() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 100_000, 0).unwrap();
+        led.credit("b", 100_000, 0).unwrap();
+        led.reserve_with_epoch(OperationKey("ra".into()), "ja", "a", 10_000, 1)
+            .unwrap();
+        led.mark_start_authorized_fenced(1, "ja", "a").unwrap();
+        led.reserve_with_epoch(OperationKey("rb".into()), "jb", "b", 20_000, 1)
+            .unwrap();
+
+        let s = led.cutover_status(1);
+        assert_eq!(s.needs_adopt_count, 0);
+        assert_eq!(s.active_jobs, 2);
+        assert_eq!(s.held_start_authorized, 1);
+        assert_eq!(s.accounts_needing_cutover, vec!["a".to_string(), "b".to_string()]);
+
+        // New epoch without adopt → needs_adopt for both.
+        let s2 = led.cutover_status(2);
+        assert_eq!(s2.needs_adopt_count, 2);
+        assert_eq!(s2.accounts_needing_cutover, vec!["a".to_string(), "b".to_string()]);
+
+        led.adopt_fencing_epoch("ja", 2).unwrap();
+        let s3 = led.cutover_status(2);
+        assert_eq!(s3.needs_adopt_count, 1);
+        assert_eq!(led.accounts_needing_cutover(2), vec!["a".to_string(), "b".to_string()]);
     }
 }

@@ -40,7 +40,7 @@ pub use http::{
     router, set_admin_batch_job_hook, set_clear_orphans_phase_hook, set_outbox_drain_entry_hook,
     AppState, ModelCard,
 };
-pub use ledger::{LedgerError, MemoryLedger, OperationKey, ReservationProvenance};
+pub use ledger::{CutoverStatus, LedgerError, MemoryLedger, OperationKey, ReservationProvenance};
 pub use outbox::{ack_done_sql, requeue_sql, Outbox, OutboxEntry, OutboxError};
 pub use ownership::{
     acquire_sql as ownership_acquire_sql, heartbeat_sql as ownership_heartbeat_sql,

@@ -136,6 +136,7 @@ Date: 2026-07-10
 | 127 | Single-job admin remaining accounts | force-settle / recover-undispatched / held-review success include `accounts_needing_cutover` + `needs_adopt_count` for per-job chaining |
 | 128 | adopt-job / cancel / cutover-drain-all remaining | `adopt-job`, `cancel-attempt`, and all `cutover-drain-all` success/abort paths include `accounts_needing_cutover` + `needs_adopt_count` |
 | 129 | Deposit / terminal-ingest remaining accounts | Deposit and terminal-ingest success include `accounts_needing_cutover` + `needs_adopt_count` (deposit also reports outbox_retryable) for cutover chaining mid-funding |
+| 130 | CutoverStatus helper + deposit∥clear race | `MemoryLedger::cutover_status` centralizes remaining-account snapshots; concurrent deposits ∥ clear-orphans conserve money and report remaining fields |
 
 ## Deleted Go mechanisms (do not port)
 

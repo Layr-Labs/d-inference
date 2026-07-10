@@ -141,11 +141,7 @@ fn invoke_outbox_drain_entry(kind: &str) {
 
 /// Account ids with active orphans (DECISIONS #112/#114).
 fn accounts_needing_cutover_from(led: &crate::ledger::MemoryLedger, epoch: u64) -> Vec<String> {
-    led.orphan_summary_by_account(epoch)
-        .into_iter()
-        .filter(|(_, _a, reserved, held)| *reserved + *held > 0)
-        .map(|(acct, _, _, _)| acct)
-        .collect()
+    led.accounts_needing_cutover(epoch)
 }
 
 fn filter_accounts(
@@ -173,7 +169,7 @@ fn remaining_ids_for_abort(
     }
 }
 
-/// Job ids + global cutover accounts for abort responses (DECISIONS #125).
+/// Job ids + global cutover accounts for abort responses (DECISIONS #125/#130).
 struct AbortRemainders {
     active: Vec<String>,
     held: Vec<String>,
@@ -187,12 +183,12 @@ fn abort_remainders(
     epoch: u64,
 ) -> AbortRemainders {
     let (active, held) = remaining_ids_for_abort(led, account_filter);
-    let (needs_adopt, _, _) = led.orphan_summary_counts(epoch);
+    let status = led.cutover_status(epoch);
     AbortRemainders {
         active,
         held,
-        accounts: accounts_needing_cutover_from(led, epoch),
-        needs_adopt,
+        accounts: status.accounts_needing_cutover,
+        needs_adopt: status.needs_adopt_count,
     }
 }
 
@@ -641,24 +637,23 @@ async fn admin_terminal_ingest(
             }
         }
     };
-    // DECISIONS #129: surface cutover remaining so ops can chain after ingest ACK.
-    let (accounts, needs_adopt, active, held) = {
+    // DECISIONS #129/#130: surface cutover remaining so ops can chain after ingest ACK.
+    let status = {
         let led = state.ledger.lock().await;
-        let epoch = state.ownership.epoch().0;
-        let (na, _, _) = led.orphan_summary_counts(epoch);
-        (
-            accounts_needing_cutover_from(&led, epoch),
-            na,
-            led.active_job_count(),
-            led.held_start_authorized_count(),
-        )
+        led.cutover_status(state.ownership.epoch().0)
     };
     let mut body = ack;
     if let Some(obj) = body.as_object_mut() {
-        obj.insert("accounts_needing_cutover".into(), json!(accounts));
-        obj.insert("needs_adopt_count".into(), json!(needs_adopt));
-        obj.insert("active_jobs".into(), json!(active));
-        obj.insert("held_start_authorized".into(), json!(held));
+        obj.insert(
+            "accounts_needing_cutover".into(),
+            json!(status.accounts_needing_cutover),
+        );
+        obj.insert("needs_adopt_count".into(), json!(status.needs_adopt_count));
+        obj.insert("active_jobs".into(), json!(status.active_jobs));
+        obj.insert(
+            "held_start_authorized".into(),
+            json!(status.held_start_authorized),
+        );
     }
     (StatusCode::OK, Json(body)).into_response()
 }
@@ -763,19 +758,15 @@ async fn admin_deposit(
             )
             .expect("critical outbox enqueue must not fail for valid kind");
     }
-    let (bal, wdr, accounts, needs_adopt, active, held, outbox_retryable) = {
+    let (bal, wdr, status, outbox_retryable) = {
         let ledger = state.ledger.lock().await;
         let box_ = state.outbox.lock().await;
         let epoch = state.ownership.epoch().0;
-        let (na, _, _) = ledger.orphan_summary_counts(epoch);
         let (b, w) = ledger.balance(&account);
         (
             b,
             w,
-            accounts_needing_cutover_from(&ledger, epoch),
-            na,
-            ledger.active_job_count(),
-            ledger.held_start_authorized_count(),
+            ledger.cutover_status(epoch),
             box_.pending_under_retry_cap(),
         )
     };
@@ -788,10 +779,10 @@ async fn admin_deposit(
             "event_id": req.event_id,
             "balance_micro_usd": bal,
             "withdrawable_micro_usd": wdr,
-            "accounts_needing_cutover": accounts,
-            "needs_adopt_count": needs_adopt,
-            "active_jobs": active,
-            "held_start_authorized": held,
+            "accounts_needing_cutover": status.accounts_needing_cutover,
+            "needs_adopt_count": status.needs_adopt_count,
+            "active_jobs": status.active_jobs,
+            "held_start_authorized": status.held_start_authorized,
             "outbox_retryable": outbox_retryable,
         })),
     )
@@ -1776,17 +1767,11 @@ async fn admin_adopt_jobs(
     }
     let adopted_count = adopted.len();
     let failed_count = failed.len();
-    // DECISIONS #124: surface remaining cutover state so ops can chain
+    // DECISIONS #124/#130: surface remaining cutover state so ops can chain
     // adopt-jobs → cutover-drain-all without a quiescence round-trip.
-    let (accounts_needing, needs_adopt, active, held) = {
+    let status = {
         let led = state.ledger.lock().await;
-        let (na, _, _) = led.orphan_summary_counts(epoch);
-        (
-            accounts_needing_cutover_from(&led, epoch),
-            na,
-            led.active_job_count(),
-            led.held_start_authorized_count(),
-        )
+        led.cutover_status(epoch)
     };
     (
         StatusCode::OK,
@@ -1798,10 +1783,10 @@ async fn admin_adopt_jobs(
             "failed": failed,
             "adopted_count": adopted_count,
             "failed_count": failed_count,
-            "accounts_needing_cutover": accounts_needing,
-            "needs_adopt_count": needs_adopt,
-            "active_jobs": active,
-            "held_start_authorized": held,
+            "accounts_needing_cutover": status.accounts_needing_cutover,
+            "needs_adopt_count": status.needs_adopt_count,
+            "active_jobs": status.active_jobs,
+            "held_start_authorized": status.held_start_authorized,
         })),
     )
         .into_response()
@@ -2087,17 +2072,10 @@ async fn admin_clear_orphans(
     let report_account = account_filter
         .clone()
         .unwrap_or_else(|| state.pilot_account.clone());
-    let (bal, active, held, accounts_needing, needs_adopt) = {
+    let (bal, status) = {
         let led = state.ledger.lock().await;
         let epoch = state.ownership.epoch().0;
-        let (na, _, _) = led.orphan_summary_counts(epoch);
-        (
-            led.balance(&report_account).0,
-            led.active_job_count(),
-            led.held_start_authorized_count(),
-            accounts_needing_cutover_from(&led, epoch),
-            na,
-        )
+        (led.balance(&report_account).0, led.cutover_status(epoch))
     };
     (
         StatusCode::OK,
@@ -2114,10 +2092,10 @@ async fn admin_clear_orphans(
             "settled": settled,
             "charged_micro_usd": charged_total,
             "balance_micro_usd": bal,
-            "active_jobs": active,
-            "held_start_authorized": held,
-            "accounts_needing_cutover": accounts_needing,
-            "needs_adopt_count": needs_adopt,
+            "active_jobs": status.active_jobs,
+            "held_start_authorized": status.held_start_authorized,
+            "accounts_needing_cutover": status.accounts_needing_cutover,
+            "needs_adopt_count": status.needs_adopt_count,
         })),
     )
         .into_response()

@@ -1,7 +1,7 @@
 use darkbloom_coordinator::cli::{parse_and_is_recovery, run_recovery};
 use darkbloom_coordinator::{
-    bounded_telemetry, router, spawn_fleet_actor, AppState, CoordinatorKeys, MemoryLedger,
-    ModelCard, ProviderHub,
+    bounded_telemetry, router, spawn_fleet_actor, AppState, CoordinatorKeys, Epoch, MemoryLedger,
+    ModelCard, OwnershipGate, ProviderHub,
 };
 use darkbloom_core::PlacementController;
 use std::net::SocketAddr;
@@ -23,6 +23,18 @@ async fn main() {
             std::process::exit(1);
         }
         return;
+    }
+
+    let refuse_on_rust = std::env::var("DARKBLOOM_REFUSE_ON_RUST")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let ownership = Arc::new(OwnershipGate::new(refuse_on_rust));
+    // Process-local probe: MemoryLedger has no durable rust_coord rows.
+    // When SQLx lands, probe rust_coord.* and call set_rust_active.
+    ownership.set_rust_active(false);
+    if let Err(err) = ownership.check_startup() {
+        tracing::error!(%err, "refusing unsafe startup");
+        std::process::exit(1);
     }
 
     let (fleet, _fleet_join) = spawn_fleet_actor();
@@ -56,12 +68,17 @@ async fn main() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
+    if let Err(err) = ownership.acquire(Epoch(coordinator_epoch)) {
+        tracing::error!(%err, "failed to acquire ownership");
+        std::process::exit(1);
+    }
     let (telemetry, mut telemetry_worker) = bounded_telemetry(1024);
     tokio::spawn(async move {
         while telemetry_worker.drain_one().await.is_some() {
             // Best-effort drain; Datadog forwarder lands later.
         }
     });
+    let ownership_for_shutdown = ownership.clone();
     let state = AppState {
         fleet,
         hub,
@@ -78,6 +95,7 @@ async fn main() {
         pilot_account,
         pilot_api_keys,
         coordinator_epoch,
+        ownership,
     };
 
     let app = router(state);
@@ -89,12 +107,13 @@ async fn main() {
     tracing::info!(%addr, "darkbloom-coordinator warm plane listening");
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(ownership_for_shutdown))
         .await
         .expect("serve");
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(ownership: Arc<OwnershipGate>) {
     let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("shutdown signal received");
+    tracing::info!("shutdown signal received — releasing ownership");
+    ownership.release();
 }

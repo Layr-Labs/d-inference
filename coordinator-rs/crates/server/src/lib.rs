@@ -10,6 +10,7 @@ pub mod http;
 pub mod ledger;
 pub mod ledger_sql;
 pub mod mock_provider;
+pub mod ownership;
 pub mod provider_hub;
 pub mod provider_session;
 pub mod provider_ws;
@@ -26,6 +27,7 @@ pub use crypto_keys::CoordinatorKeys;
 pub use fleet_actor::{spawn_fleet_actor, FleetError, FleetHandle};
 pub use http::{router, AppState, ModelCard};
 pub use ledger::{MemoryLedger, OperationKey, ReservationProvenance};
+pub use ownership::{Epoch, Gate as OwnershipGate, OwnershipError};
 pub use provider_hub::{InboundReply, OutboundCmd, ProviderHub, SharedHub};
 pub use provider_session::{spawn_session, Lane, ProviderSessionHandle, SessionError};
 pub use recovery::{

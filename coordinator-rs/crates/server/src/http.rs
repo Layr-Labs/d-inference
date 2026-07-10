@@ -15,6 +15,7 @@ use crate::crypto_keys::CoordinatorKeys;
 use crate::fleet_actor::FleetHandle;
 use crate::ledger::MemoryLedger;
 use crate::mock_provider::{complete_authorized_job, openai_chat_response};
+use crate::ownership::Gate as OwnershipGate;
 use crate::provider_hub::{OutboundCmd, ProviderHub, SharedHub};
 use crate::provider_ws::provider_ws;
 use crate::request_task::{spawn_request_task, ControlEvent};
@@ -38,6 +39,8 @@ pub struct AppState {
     /// Comma-separated pilot API keys (env DARKBLOOM_PILOT_API_KEYS). Empty = open.
     pub pilot_api_keys: Arc<Vec<String>>,
     pub coordinator_epoch: u64,
+    /// Single-active fencing gate (plan §20).
+    pub ownership: Arc<OwnershipGate>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -161,6 +164,8 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             "telemetry_emitted": state.telemetry.emitted(),
             "telemetry_dropped": state.telemetry.dropped(),
             "fleet_actor": "up",
+            "ownership_holding": state.ownership.holding(),
+            "ownership_epoch": state.ownership.epoch().0,
         })),
     )
 }
@@ -170,7 +175,14 @@ async fn health() -> Json<Value> {
 }
 
 async fn readyz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    // Milestone 3: ready when FleetActor is reachable. DB ownership lands in M4.
+    if let Err(err) = state.ownership.assert_holding() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "ready": false, "reason": "ownership_lost", "detail": format!("{err}") })),
+        )
+            .into_response();
+    }
+    // FleetActor must be reachable for admission.
     match state.fleet.admit(darkbloom_core::AdmitRequest {
         model: "__readyz_probe__".into(),
         attempt: darkbloom_core::AttemptId::new("readyz"),
@@ -180,7 +192,10 @@ async fn readyz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             allow_half_open_probe: false,
     }).await {
         // Any decision (including RetryAfter) proves the actor is alive.
-        Ok(_) => (StatusCode::OK, Json(json!({ "ready": true }))).into_response(),
+        Ok(_) => (StatusCode::OK, Json(json!({
+            "ready": true,
+            "ownership_epoch": state.ownership.epoch().0,
+        }))).into_response(),
         Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "ready": false, "reason": "fleet_actor_unavailable" })),
@@ -214,6 +229,19 @@ async fn chat_completions(
     headers: axum::http::HeaderMap,
     Json(raw): Json<Value>,
 ) -> impl IntoResponse {
+    if let Err(err) = state.ownership.assert_holding() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": {
+                    "message": format!("{err}"),
+                    "type": "server_error",
+                    "code": "ownership_lost"
+                }
+            })),
+        )
+            .into_response();
+    }
     if let Err(status) = authorize_pilot(&state, &headers) {
         return (
             status,

@@ -270,3 +270,10 @@ critical section as the debit. Idempotent op-key replay with a mismatched
 epoch is `OwnershipLost`. No unbound (`fencing_epoch=0`) window after a
 successful funded reserve under an active coordinator.
 
+### Fenced money API wrappers (DECISIONS #56)
+
+Ledger money mutations used by HTTP go through `*_fenced` wrappers that call
+`require_fencing_epoch` before settle/release/resize/mark_start. Route-entry
+ownership checks remain, but a forgotten check cannot move money after an
+epoch steal — the ledger itself refuses with `OwnershipLost`.
+

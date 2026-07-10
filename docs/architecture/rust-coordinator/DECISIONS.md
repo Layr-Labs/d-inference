@@ -62,6 +62,7 @@ Date: 2026-07-10
 | 53 | Terminal ingest lease/SE bind | `MemoryTerminalStore.record_bound` / Go `TerminalDisposition` persist `lease_id` + `se_signature`; ingest with a known digest but wrong lease or SE signature returns `disposition=conflict` (never settled ACK / never late). `lookup_sql` binds `$4`/`$5`. Chat settle records via `record_bound` |
 | 54 | Live settle ownership steal hold | After live `start` (stream or non-stream), if `OwnershipGate` is released before settle, `require_holding` / fencing refuse with `ownership_lost` and leave the job `start_authorized` held — never charge after fencing loss mid-flight |
 | 55 | Atomic reserve+epoch bind | `MemoryLedger.reserve_with_epoch` sets `fencing_epoch` in the same critical section as reserve (chat path uses it). Idempotent op-key replay with a mismatched epoch is `OwnershipLost`. Closes the unbound-job window between `reserve` and `bind_fencing_epoch` |
+| 56 | Fenced money API wrappers | `settle_capped_fenced` / `settle_capped_as_fenced` / `release_fenced` / `resize_and_authorize_fenced` / `mark_start_authorized_fenced` call `require_fencing_epoch` inside the ledger before mutating money. HTTP chat/admin paths use these so a forgotten route-level check cannot settle after steal |
 
 ## Deleted Go mechanisms (do not port)
 

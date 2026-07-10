@@ -268,6 +268,17 @@ impl MemoryLedger {
         Ok(())
     }
 
+    /// Mark start_authorized only when fencing epoch matches (DECISIONS #56).
+    pub fn mark_start_authorized_fenced(
+        &mut self,
+        epoch: u64,
+        job_id: &str,
+        account: &str,
+    ) -> Result<(), LedgerError> {
+        self.require_fencing_epoch(job_id, epoch)?;
+        self.mark_start_authorized(job_id, account)
+    }
+
     /// Atomically resize the reservation to `new_amount` and mark start_authorized.
     /// Mirrors the one-round-trip Postgres CTE (plan §12 / M4 ledger service).
     /// Idempotent on `op`; conflicts if already authorized or disposed.
@@ -371,6 +382,19 @@ impl MemoryLedger {
         })
     }
 
+    /// Resize+authorize only when fencing epoch matches (DECISIONS #56).
+    pub fn resize_and_authorize_fenced(
+        &mut self,
+        epoch: u64,
+        op: OperationKey,
+        job_id: &str,
+        account: &str,
+        new_amount: i64,
+    ) -> Result<ReserveResult, LedgerError> {
+        self.require_fencing_epoch(job_id, epoch)?;
+        self.resize_and_authorize(op, job_id, account, new_amount)
+    }
+
     pub fn record_attempt(
         &mut self,
         attempt_id: &str,
@@ -436,6 +460,45 @@ impl MemoryLedger {
             terminal_digest,
             disposition,
             Some((actual, billable_cap)),
+        )
+    }
+
+    /// Settle capped only when the caller's fencing epoch matches (DECISIONS #56).
+    pub fn settle_capped_fenced(
+        &mut self,
+        epoch: u64,
+        op: OperationKey,
+        job_id: &str,
+        account: &str,
+        actual: i64,
+        billable_cap: i64,
+        terminal_digest: &str,
+    ) -> Result<bool, LedgerError> {
+        self.require_fencing_epoch(job_id, epoch)?;
+        self.settle_capped(op, job_id, account, actual, billable_cap, terminal_digest)
+    }
+
+    /// Force/custom settle capped with fencing epoch check (DECISIONS #56).
+    pub fn settle_capped_as_fenced(
+        &mut self,
+        epoch: u64,
+        op: OperationKey,
+        job_id: &str,
+        account: &str,
+        actual: i64,
+        billable_cap: i64,
+        terminal_digest: &str,
+        disposition: &str,
+    ) -> Result<bool, LedgerError> {
+        self.require_fencing_epoch(job_id, epoch)?;
+        self.settle_capped_as(
+            op,
+            job_id,
+            account,
+            actual,
+            billable_cap,
+            terminal_digest,
+            disposition,
         )
     }
 
@@ -608,6 +671,18 @@ impl MemoryLedger {
         job.state = "released".into();
         job.disposition = Some("released".into());
         Ok(true)
+    }
+
+    /// Release only when fencing epoch matches (DECISIONS #56).
+    pub fn release_fenced(
+        &mut self,
+        epoch: u64,
+        op: OperationKey,
+        job_id: &str,
+        account: &str,
+    ) -> Result<bool, LedgerError> {
+        self.require_fencing_epoch(job_id, epoch)?;
+        self.release(op, job_id, account)
     }
 
     pub fn balance(&self, account: &str) -> (i64, i64) {
@@ -1726,5 +1801,36 @@ mod tests {
             led.reserve_with_epoch(OperationKey("r".into()), "j", "a", 100_000, 9),
             Err(LedgerError::OwnershipLost)
         ));
+    }
+
+    #[test]
+    fn fenced_money_apis_refuse_wrong_epoch() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve_with_epoch(OperationKey("r".into()), "j", "a", 200_000, 3)
+            .unwrap();
+        assert!(matches!(
+            led.resize_and_authorize_fenced(9, OperationKey("ra".into()), "j", "a", 200_000),
+            Err(LedgerError::OwnershipLost)
+        ));
+        led.resize_and_authorize_fenced(3, OperationKey("ra".into()), "j", "a", 200_000)
+            .unwrap();
+        assert!(matches!(
+            led.settle_capped_fenced(9, OperationKey("s".into()), "j", "a", 10, 10, "d"),
+            Err(LedgerError::OwnershipLost)
+        ));
+        assert!(led
+            .settle_capped_fenced(3, OperationKey("s".into()), "j", "a", 10, 10, "d")
+            .unwrap());
+
+        led.reserve_with_epoch(OperationKey("r2".into()), "j2", "a", 50_000, 5)
+            .unwrap();
+        assert!(matches!(
+            led.release_fenced(1, OperationKey("rel".into()), "j2", "a"),
+            Err(LedgerError::OwnershipLost)
+        ));
+        assert!(led
+            .release_fenced(5, OperationKey("rel".into()), "j2", "a")
+            .unwrap());
     }
 }

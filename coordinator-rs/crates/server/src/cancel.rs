@@ -78,7 +78,7 @@ pub async fn cancel_before_or_after_content(
         request_digest,
     )
     .await;
-    // Money-boundary fence: refuse release after ownership loss (DECISIONS #47).
+    // Money-boundary fence: refuse release after ownership loss (DECISIONS #47/#56).
     if let Some(gate) = ownership {
         if gate.assert_holding().is_err() {
             return Err("ownership_lost: refusing cancel release".into());
@@ -88,7 +88,8 @@ pub async fn cancel_before_or_after_content(
         let mut g = ledger.lock().map_err(|e| e.to_string())?;
         let reserved = g.job_reserved_total(job_id).map(|m| m.0).unwrap_or(0);
         let ok = g
-            .release(
+            .release_fenced(
+                coordinator_epoch,
                 OperationKey(format!("cancel_release:{job_id}")),
                 job_id,
                 account,

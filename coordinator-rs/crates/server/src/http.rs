@@ -204,9 +204,8 @@ async fn release_job_with_outbox(
     let epoch = state.ownership.epoch().0;
     let refunded = {
         let mut led = state.ledger.lock().await;
-        led.require_fencing_epoch(job_id, epoch)?;
         let reserved = led.job_reserved_total(job_id).map(|m| m.0).unwrap_or(0);
-        match led.release(op, job_id, account)? {
+        match led.release_fenced(epoch, op, job_id, account)? {
             true => Some(reserved),
             false => None,
         }
@@ -505,24 +504,11 @@ async fn admin_force_settle(
             ("skipped".to_string(), 0_i64)
         } else if led.job_reserved_total(&req.job_id).is_none() {
             ("already_terminal".to_string(), 0_i64)
-        } else if let Err(err) =
-            led.require_fencing_epoch(&req.job_id, state.ownership.epoch().0)
-        {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({
-                    "error": {
-                        "message": format!("{err}"),
-                        "type": "server_error",
-                        "code": "ownership_lost"
-                    }
-                })),
-            )
-                .into_response();
         } else {
             let reserved = led.job_reserved_total(&req.job_id).map(|m| m.0).unwrap_or(0);
             let charge = req.actual_micro_usd.min(reserved).max(0);
-            match led.settle_capped_as(
+            match led.settle_capped_as_fenced(
+                state.ownership.epoch().0,
                 crate::ledger::OperationKey(format!("force_settle:{}", req.job_id)),
                 &req.job_id,
                 &account,
@@ -1011,36 +997,36 @@ async fn chat_completions(
                 }
                 let resize_err = {
                     let mut ledger = state.ledger.lock().await;
-                    if let Err(err) =
-                        ledger.require_fencing_epoch(job_id.as_str(), state.ownership.epoch().0)
-                    {
-                        return (
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            Json(json!({
-                                "error": {
-                                    "message": format!("{err}"),
-                                    "type": "server_error",
-                                    "code": "ownership_lost"
-                                }
-                            })),
-                        )
-                            .into_response();
-                    }
                     let reserved = ledger
                         .job_reserved_total(job_id.as_str())
                         .map(|m| m.0)
                         .unwrap_or(100_000);
-                    ledger
-                        .resize_and_authorize(
-                            crate::ledger::OperationKey(format!(
-                                "resize_auth:{}",
-                                job_id.as_str()
-                            )),
-                            job_id.as_str(),
-                            &state.pilot_account,
-                            reserved,
-                        )
-                        .err()
+                    match ledger.resize_and_authorize_fenced(
+                        state.ownership.epoch().0,
+                        crate::ledger::OperationKey(format!(
+                            "resize_auth:{}",
+                            job_id.as_str()
+                        )),
+                        job_id.as_str(),
+                        &state.pilot_account,
+                        reserved,
+                    ) {
+                        Ok(_) => None,
+                        Err(crate::ledger::LedgerError::OwnershipLost) => {
+                            return (
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                Json(json!({
+                                    "error": {
+                                        "message": "ownership_lost",
+                                        "type": "server_error",
+                                        "code": "ownership_lost"
+                                    }
+                                })),
+                            )
+                                .into_response();
+                        }
+                        Err(err) => Some(err),
+                    }
                 };
                 if let Some(err) = resize_err {
                     // Not start_authorized yet on failure — safe to release.
@@ -1225,28 +1211,14 @@ async fn chat_completions(
                         return resp;
                     }
                     let mut ledger = state.ledger.lock().await;
-                    if let Err(err) =
-                        ledger.require_fencing_epoch(job_id.as_str(), state.ownership.epoch().0)
-                    {
-                        return (
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            Json(json!({
-                                "error": {
-                                    "message": format!("{err}"),
-                                    "type": "server_error",
-                                    "code": "ownership_lost"
-                                }
-                            })),
-                        )
-                            .into_response();
-                    }
                     ledger.record_attempt(
                         attempt.as_str(),
                         job_id.as_str(),
                         &permit.provider_id,
                         "started",
                     );
-                    if let Err(err) = ledger.settle_capped(
+                    if let Err(err) = ledger.settle_capped_fenced(
+                        state.ownership.epoch().0,
                         crate::ledger::OperationKey(format!("settle:{}", job_id.as_str())),
                         job_id.as_str(),
                         &state.pilot_account,
@@ -1254,13 +1226,20 @@ async fn chat_completions(
                         charged,
                         &digest,
                     ) {
+                        let (status, code) = match &err {
+                            crate::ledger::LedgerError::OwnershipLost => (
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "ownership_lost",
+                            ),
+                            _ => (StatusCode::CONFLICT, "live_settle_conflict"),
+                        };
                         return (
-                            StatusCode::CONFLICT,
+                            status,
                             Json(json!({
                                 "error": {
                                     "message": format!("live settle failed: {err}"),
                                     "type": "server_error",
-                                    "code": "live_settle_conflict"
+                                    "code": code
                                 }
                             })),
                         )
@@ -1361,22 +1340,6 @@ async fn chat_completions(
                         }
                         {
                             let mut ledger = state.ledger.lock().await;
-                            if let Err(err) = ledger.require_fencing_epoch(
-                                &completion.job_id,
-                                state.ownership.epoch().0,
-                            ) {
-                                return (
-                                    StatusCode::SERVICE_UNAVAILABLE,
-                                    Json(json!({
-                                        "error": {
-                                            "message": format!("{err}"),
-                                            "type": "server_error",
-                                            "code": "ownership_lost"
-                                        }
-                                    })),
-                                )
-                                    .into_response();
-                            }
                             if completion.mode == "rust-live" {
                                 ledger.record_attempt(
                                     &completion.attempt_id,
@@ -1385,7 +1348,8 @@ async fn chat_completions(
                                     "started",
                                 );
                             }
-                            match ledger.settle_capped(
+                            match ledger.settle_capped_fenced(
+                                state.ownership.epoch().0,
                                 crate::ledger::OperationKey(format!(
                                     "settle:{}",
                                     completion.job_id
@@ -1403,13 +1367,20 @@ async fn chat_completions(
                                     completion.completion_tokens = billable_tokens as i32;
                                 }
                                 Err(err) => {
+                                    let (status, code) = match &err {
+                                        crate::ledger::LedgerError::OwnershipLost => (
+                                            StatusCode::SERVICE_UNAVAILABLE,
+                                            "ownership_lost",
+                                        ),
+                                        _ => (StatusCode::CONFLICT, "stream_settle_conflict"),
+                                    };
                                     return (
-                                        StatusCode::CONFLICT,
+                                        status,
                                         Json(json!({
                                             "error": {
                                                 "message": format!("stream settle failed: {err}"),
                                                 "type": "server_error",
-                                                "code": "stream_settle_conflict"
+                                                "code": code
                                             }
                                         })),
                                     )

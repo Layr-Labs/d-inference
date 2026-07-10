@@ -546,22 +546,23 @@ async fn admin_recover_undispatched(
         .account
         .unwrap_or_else(|| state.pilot_account.clone());
 
-    let action = {
+    let (action, refunded) = {
         let mut led = state.ledger.lock().await;
         if led.job_disposition(&req.job_id).is_some()
             || led.job_reserved_total(&req.job_id).is_none()
         {
-            "already_terminal"
+            ("already_terminal".to_string(), 0_i64)
         } else if led.job_funded_start(&req.job_id) {
-            "skipped"
+            ("skipped".to_string(), 0_i64)
         } else {
+            let reserved = led.job_reserved_total(&req.job_id).map(|m| m.0).unwrap_or(0);
             match led.release(
                 crate::ledger::OperationKey(format!("recovery_release:{}", req.job_id)),
                 &req.job_id,
                 &account,
             ) {
-                Ok(true) => "released",
-                Ok(false) => "already_terminal",
+                Ok(true) => ("released".to_string(), reserved),
+                Ok(false) => ("already_terminal".to_string(), 0),
                 Err(err) => {
                     return (
                         StatusCode::CONFLICT,
@@ -578,6 +579,21 @@ async fn admin_recover_undispatched(
             }
         }
     };
+
+    // Money moved — durable side effect must not be dropped (DECISIONS #32/#43).
+    if action == "released" {
+        let mut box_ = state.outbox.lock().await;
+        let _ = box_.enqueue_critical(
+            "inference.released",
+            &json!({
+                "job_id": req.job_id,
+                "account": account,
+                "disposition": "released",
+                "refunded_micro_usd": refunded,
+            })
+            .to_string(),
+        );
+    }
 
     let (bal, active) = {
         let led = state.ledger.lock().await;

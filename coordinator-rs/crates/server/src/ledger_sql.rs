@@ -524,7 +524,22 @@ impl PostgresLedgerStub {
           WHERE j.job_id = $2
             AND EXISTS (SELECT 1 FROM guard)
             AND EXISTS (SELECT 1 FROM op)
-          RETURNING j.job_id
+          RETURNING j.job_id, j.account_id
+        ), outbox AS (
+          -- Money refund + durable side effect commit together (DECISIONS #43).
+          INSERT INTO rust_coord.outbox (kind, payload, attempts)
+          SELECT 'inference.released',
+                 json_build_object(
+                   'job_id', m.job_id,
+                   'account', m.account_id,
+                   'disposition', 'released',
+                   'refunded_micro_usd', c.reserved
+                 )::text,
+                 0
+          FROM mark m
+          CROSS JOIN credit c
+          WHERE EXISTS (SELECT 1 FROM mark)
+          RETURNING id
         ), cleanup_op AS (
           DELETE FROM rust_coord.financial_operations fo
           WHERE fo.operation_key = $3
@@ -625,6 +640,9 @@ mod tests {
         assert!(sql.contains("account_id = $1"));
         assert!(sql.contains("EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));
+        assert!(sql.contains("rust_coord.outbox"));
+        assert!(sql.contains("inference.released"));
+        assert!(sql.contains("FROM mark m"));
     }
 
     #[test]

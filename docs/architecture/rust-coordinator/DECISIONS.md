@@ -38,7 +38,7 @@ Date: 2026-07-10
 | 29 | Outbox blocks quiescence | Quiescence `ready` requires `outbox_retryable == 0`; deposit enqueue makes ready=false until claim+ack (or requeue keeps retryable) |
 | 30 | Quiescence without ownership | `/v1/admin/quiescence` remains readable when not holding (reports `ownership_holding=false`) so cutover ops can observe drain; mutating admin routes still require holding |
 | 31 | Mark-start account bind | `mark_start_authorized(job_id, account)` refuses wrong-account callers (Conflict); SQL binds `account_id = $2` so knowing a job id alone cannot advance the funded-start kill boundary |
-| 32 | Critical outbox enqueue | Money side effects (`billing.deposit_applied`, `inference.settled`) use `Outbox::enqueue_critical` which extends past the bounded capacity so a full queue cannot silently drop the entry; quiescence still blocks on the overflow |
+| 32 | Critical outbox enqueue | Money side effects (`billing.deposit_applied`, `inference.settled`, `inference.released`) use `Outbox::enqueue_critical` which extends past the bounded capacity so a full queue cannot silently drop the entry; quiescence still blocks on the overflow |
 | 33 | SQL op-key gates money | Durable ledger CTEs claim `financial_operations` **before** debit/credit/digest/mark; money CTEs require `EXISTS (SELECT 1 FROM op)`; orphaned op claims (digest/job conflict) are deleted in-statement via `cleanup_op` |
 | 34 | Op-key parameter bind | `MemoryLedger` stores an `OperationRecord` (type/job/account/amount/digest/cap) per op key; identical replay is idempotent, mismatched reuse is Conflict — matches SQL row semantics |
 | 35 | Outbox claim until ack | `try_claim` moves entries to in-flight (mirrors SQL UPDATE-not-DELETE); only `ack_done` drops them. Quiescence counts in-flight. Critical kinds are not auto-acked by the best-effort worker |
@@ -46,9 +46,10 @@ Date: 2026-07-10
 | 37 | Deposit SQL outbox atomicity | `deposit_sql` inserts `billing.deposit_applied` into `rust_coord.outbox` gated on credit+op so money and the durable side effect commit together (process-local path still uses enqueue_critical after apply) |
 | 38 | Settle SQL outbox atomicity | `settle_sql` / `settle_capped_sql` / `force_settle_sql` insert `inference.settled` into `rust_coord.outbox` gated on `mark` so settlement and the durable side effect commit together |
 | 39 | Admin force-settle HTTP | `POST /v1/admin/force-settle` (ownership + pilot key) clears start_authorized holds via settle_capped_as(`force_settled`); enqueues critical outbox; idempotent replay returns already_terminal |
-| 40 | Admin recover-undispatched HTTP | `POST /v1/admin/recover-undispatched` releases reserved-not-started jobs; skips start_authorized (must use force-settle) |
+| 40 | Admin recover-undispatched HTTP | `POST /v1/admin/recover-undispatched` releases reserved-not-started jobs; skips start_authorized (must use force-settle); enqueues critical `inference.released` outbox |
 | 41 | Admin held-review HTTP | `POST /v1/admin/held-review` classifies start_authorized holds without moving money (`held_for_review` / `skipped` / `already_terminal`) |
 | 42 | Disposition-first recovery | `force_settle_held` / `recover_start_authorized_held` / `recover_undispatched` (and admin mirrors) check `job_disposition` before `funded_start` so disposed jobs are AlreadyTerminal, not Skipped |
+| 43 | Release SQL outbox atomicity | `release_sql` / admin recover-undispatched insert `inference.released` into outbox gated on successful mark/credit so refunds and durable side effects commit together |
 
 ## Deleted Go mechanisms (do not port)
 

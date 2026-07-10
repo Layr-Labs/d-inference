@@ -53,7 +53,7 @@ debits/credits target the shared Go `balances` table for continuity;
 | `POST /v1/admin/deposits` | Idempotent Stripe-inbox apply (`ExternalEventInbox`) |
 | `POST /v1/admin/terminal-ingest` | Replay ACK / late record (never double-settles) |
 | `POST /v1/admin/force-settle` | Ops clear start_authorized hold (`force_settled`) |
-| `POST /v1/admin/recover-undispatched` | Release reserved-not-started jobs |
+| `POST /v1/admin/recover-undispatched` | Release reserved-not-started jobs (`inference.released` outbox) |
 | `POST /v1/admin/held-review` | Classify held start_authorized jobs (no money move) |
 
 Smoke provider: `coordinator-rs/scripts/mock_provider_ws.py`

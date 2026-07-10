@@ -1268,6 +1268,7 @@ async fn admin_force_settle_idempotent_replay() {
 #[tokio::test]
 async fn admin_recover_undispatched_releases_reserved() {
     let state = test_state(true);
+    let outbox = state.outbox.clone();
     {
         let mut led = state.ledger.lock().await;
         led.reserve(
@@ -1298,6 +1299,29 @@ async fn admin_recover_undispatched_releases_reserved() {
     assert_eq!(v["action"], "released");
     assert_eq!(v["active_jobs"], 0);
     assert_eq!(v["balance_micro_usd"], 1_000_000);
+    assert_eq!(outbox.lock().await.len(), 1);
+
+    // Critical release outbox blocks quiescence until drained (DECISIONS #43).
+    let q1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/quiescence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(q1.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body_json(q1).await["outbox_retryable"], 1);
+
+    {
+        let mut box_ = outbox.lock().await;
+        let e = box_.try_claim().unwrap();
+        assert_eq!(e.kind, "inference.released");
+        let _ = box_.ack_done(e.id);
+    }
 
     let q = app
         .oneshot(
@@ -1765,6 +1789,7 @@ async fn admin_force_settle_rejects_empty_job_id() {
 #[tokio::test]
 async fn admin_recover_undispatched_makes_quiescence_ready() {
     let state = test_state(true);
+    let outbox = state.outbox.clone();
     {
         let mut led = state.ledger.lock().await;
         led.reserve(
@@ -1789,6 +1814,30 @@ async fn admin_recover_undispatched_makes_quiescence_ready() {
         .await
         .unwrap();
     assert_eq!(body_json(rec).await["action"], "released");
+    assert_eq!(outbox.lock().await.len(), 1);
+
+    let q1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/quiescence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(q1.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body_json(q1).await["outbox_retryable"], 1);
+
+    {
+        let mut box_ = outbox.lock().await;
+        let e = box_.try_claim().unwrap();
+        assert_eq!(e.kind, "inference.released");
+        let payload: serde_json::Value = serde_json::from_str(&e.payload).unwrap();
+        assert_eq!(payload["refunded_micro_usd"], 80_000);
+        let _ = box_.ack_done(e.id);
+    }
 
     let q = app
         .oneshot(

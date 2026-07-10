@@ -149,11 +149,12 @@ auto-ack critical `billing.*` / `inference.*` kinds.
 loop releases the Gate on steal/mismatch so chat/deposits/terminal-ingest return
 `ownership_lost`. SQLx replaces the local store with durable SQL.
 
-### Deposit/settle SQL outbox atomicity (DECISIONS #37 / #38)
+### Deposit/settle/release SQL outbox atomicity (DECISIONS #37 / #38 / #43)
 
 Durable `deposit_sql` enqueues `billing.deposit_applied` gated on credit+op.
 `settle_sql` / `settle_capped_sql` / `force_settle_sql` enqueue `inference.settled`
-gated on mark so money and the side effect commit in one transaction.
+gated on mark. `release_sql` enqueues `inference.released` gated on mark+credit
+so money and the side effect commit in one transaction.
 
 ### Admin force-settle HTTP (DECISIONS #39)
 
@@ -164,7 +165,8 @@ outbox enqueue keeps quiescence blocked until drain.
 ### Admin recover-undispatched HTTP (DECISIONS #40)
 
 `POST /v1/admin/recover-undispatched` releases reserved-not-started jobs.
-start_authorized jobs are skipped — use force-settle instead.
+start_authorized jobs are skipped — use force-settle instead. Critical
+`inference.released` outbox enqueue keeps quiescence blocked until drain.
 
 
 ### Admin held-review HTTP (DECISIONS #41)
@@ -178,4 +180,10 @@ money. Use force-settle to clear after ops review.
 (and admin HTTP mirrors) check `job_disposition` before `funded_start` so a
 disposed job is `AlreadyTerminal`, not `Skipped`. Shared classifier:
 `classify_held_job`.
+
+### Release SQL outbox atomicity (DECISIONS #43)
+
+`release_sql` inserts `inference.released` into `rust_coord.outbox` gated on
+successful mark+credit. Process-local admin recover uses `enqueue_critical`
+after release so refunds cannot silently lose their durable side effect.
 

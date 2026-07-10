@@ -90,6 +90,7 @@ Date: 2026-07-10
 | 81 | orphan_summary + clear-orphans race | Quiescence `orphan_summary` counts needs_adopt/reserved/held. Concurrent clear-orphans conserves money; outbox must be acked for ready |
 | 82 | Admin outbox-drain | `POST /v1/admin/outbox-drain` claim+acks all outbox entries so quiescence can become ready after clear-orphans |
 | 83 | Outbox-drain race + deposit/clear conservation | Concurrent outbox-drain acks each entry once. Deposit then clear-orphans restores reserved funds on top of deposit |
+| 84 | Cutover e2e + charged clear-orphans | Full steal→clear-orphans→outbox-drain→ready path. `actual_micro_usd` on clear-orphans charges held jobs |
 
 ## Deleted Go mechanisms (do not port)
 

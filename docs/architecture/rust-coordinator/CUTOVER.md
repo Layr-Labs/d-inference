@@ -440,3 +440,9 @@ cutover.
 Concurrent outbox-drain acks each entry exactly once. Deposit during orphan
 hold then clear-orphans refunds reservations atop the deposit (money conserved).
 
+### Cutover e2e + charged clear-orphans (DECISIONS #84)
+
+Proven path: steal → quiescence `needs_adopt` → clear-orphans → outbox-drain →
+`ready=true`. Optional `actual_micro_usd` on clear-orphans charges held jobs
+(clamped to reserved) instead of full refund.
+

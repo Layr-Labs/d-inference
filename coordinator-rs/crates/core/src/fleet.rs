@@ -187,16 +187,15 @@ mod tests {
     }
 
     #[test]
-    fn calibration_can_reorder_candidates() {
+    fn calibration_scales_predictions_uniformly() {
         let mut fleet = FleetState::default();
-        // A predicts 100, B predicts 120 — without calibration A wins.
         fleet.upsert(base("a", "m", 100.0));
         fleet.upsert(base("b", "m", 120.0));
-        // But A's predictions were systematically low (actual 2x) → correction 2.0
-        // calibrated A=200, B=120 → B wins.
         for _ in 0..20 {
             fleet.record_ttft_sample("m", 100.0, 200.0);
         }
+        assert!((fleet.calibrator.correction("m") - 2.0).abs() < 1e-9);
+        // Uniform model correction preserves relative order among same-model candidates.
         let decision = fleet.admit(&AdmitRequest {
             model: "m".into(),
             attempt: AttemptId::new("a3"),
@@ -205,8 +204,9 @@ mod tests {
             permit_ttl: Duration::from_secs(2),
         });
         match decision {
-            AdmissionDecision::Prepare(p) => assert_eq!(p.provider_id, "b"),
+            AdmissionDecision::Prepare(p) => assert_eq!(p.provider_id, "a"),
             other => panic!("unexpected {other:?}"),
         }
+        assert!((fleet.calibrator.calibrate("m", 50.0) - 100.0).abs() < 1e-9);
     }
 }

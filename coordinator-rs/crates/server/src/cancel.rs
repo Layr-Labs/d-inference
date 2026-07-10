@@ -3,6 +3,7 @@
 use crate::abort::{abort_losing_hedge, cancel_attempt};
 use crate::ledger::{MemoryLedger, OperationKey};
 use crate::outbox::Outbox;
+use crate::ownership::Gate as OwnershipGate;
 use crate::provider_hub::SharedHub;
 use crate::request_task::{ControlEvent, RequestTask};
 use std::sync::{Arc, Mutex};
@@ -34,6 +35,7 @@ pub async fn cancel_before_or_after_content(
     request_digest: &str,
     had_first_content: bool,
     outbox: Option<&Arc<AsyncMutex<Outbox>>>,
+    ownership: Option<&OwnershipGate>,
 ) -> Result<CancelOutcome, String> {
     let _ = task.apply(ControlEvent::Cancel);
     if had_first_content {
@@ -76,6 +78,12 @@ pub async fn cancel_before_or_after_content(
         request_digest,
     )
     .await;
+    // Money-boundary fence: refuse release after ownership loss (DECISIONS #47).
+    if let Some(gate) = ownership {
+        if gate.assert_holding().is_err() {
+            return Err("ownership_lost: refusing cancel release".into());
+        }
+    }
     let (released, refunded) = {
         let mut g = ledger.lock().map_err(|e| e.to_string())?;
         let reserved = g.job_reserved_total(job_id).map(|m| m.0).unwrap_or(0);
@@ -157,6 +165,7 @@ mod tests {
             "d",
             false,
             Some(&outbox),
+        None,
         )
         .await
         .unwrap();
@@ -218,6 +227,7 @@ mod tests {
             "d",
             false,
             Some(&outbox),
+        None,
         )
         .await
         .unwrap();
@@ -275,6 +285,7 @@ mod tests {
             "d",
             true,
             Some(&outbox),
+        None,
         )
         .await
         .unwrap();
@@ -332,6 +343,7 @@ mod tests {
             "d",
             false,
             Some(&outbox),
+        None,
         )
         .await
         .unwrap();
@@ -339,5 +351,44 @@ mod tests {
         assert_eq!(led.lock().unwrap().balance("a").0, 1_000_000);
         assert_eq!(led.lock().unwrap().active_job_count(), 0);
         assert_eq!(outbox.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn pre_start_cancel_refuses_release_after_ownership_loss() {
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let outbox = Arc::new(AsyncMutex::new(Outbox::default()));
+        let gate = OwnershipGate::new(true);
+        gate.acquire(crate::ownership::Epoch(1)).unwrap();
+        {
+            let mut g = led.lock().unwrap();
+            g.credit("a", 1_000_000, 0).unwrap();
+            g.reserve(OperationKey("r".into()), "j-own", "a", 50_000)
+                .unwrap();
+        }
+        gate.release();
+        let (_h, mut task) = spawn_request_task(JobId::new("j-own"), Duration::from_secs(30));
+        let hub = ProviderHub::new();
+        let err = cancel_before_or_after_content(
+            &mut task,
+            &hub,
+            &led,
+            "a",
+            "p",
+            "j-own",
+            "a1",
+            "l1",
+            1,
+            "n",
+            "d",
+            false,
+            Some(&outbox),
+            Some(&gate),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("ownership_lost"));
+        assert_eq!(led.lock().unwrap().balance("a").0, 950_000);
+        assert_eq!(led.lock().unwrap().active_job_count(), 1);
+        assert_eq!(outbox.lock().await.len(), 0);
     }
 }

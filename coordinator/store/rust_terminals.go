@@ -20,11 +20,12 @@ func NewRustTerminalStore() *RustTerminalStore {
 	return &RustTerminalStore{byKey: make(map[string]*ownership.TerminalDisposition)}
 }
 
-func (s *RustTerminalStore) Put(attemptID, digest, disposition string, ack json.RawMessage) {
+func (s *RustTerminalStore) Put(jobID, attemptID, digest, disposition string, ack json.RawMessage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.byKey[attemptID+"|"+digest] = &ownership.TerminalDisposition{
 		Disposition: disposition,
+		JobID:       jobID,
 		AckPayload:  ack,
 	}
 }

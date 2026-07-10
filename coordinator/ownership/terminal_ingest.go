@@ -21,7 +21,9 @@ type TerminalIngest struct {
 // TerminalDisposition is the stored Rust money/terminal outcome.
 type TerminalDisposition struct {
 	Disposition string // settled | released | settled_reviewed | released_reviewed | late | conflict
-	AckPayload  json.RawMessage
+	// JobID binds the disposition to a funded job (DECISIONS #45). Empty = legacy unbound.
+	JobID      string
+	AckPayload json.RawMessage
 }
 
 // TerminalStore looks up and ACKs historical Rust terminals.
@@ -41,6 +43,7 @@ type DigestTerminalLookup interface {
 // Never settles or releases funds — that already happened under Rust (or is review_pending).
 // Prefers (attempt_id, digest); falls back to digest-only when the store also
 // implements DigestTerminalLookup (DECISIONS #25).
+// Known digest with a mismatched JobID returns disposition=conflict (DECISIONS #45).
 func IngestTerminal(ctx context.Context, store TerminalStore, t TerminalIngest) (json.RawMessage, error) {
 	if t.AttemptID == "" || t.TerminalDigest == "" {
 		return nil, fmt.Errorf("ownership: terminal ingest missing attempt/digest")
@@ -58,12 +61,25 @@ func IngestTerminal(ctx context.Context, store TerminalStore, t TerminalIngest) 
 		}
 	}
 	if disp != nil {
+		if disp.JobID != "" && t.JobID != "" && disp.JobID != t.JobID {
+			return json.Marshal(map[string]any{
+				"type":            "terminal_ack",
+				"job_id":          t.JobID,
+				"attempt_id":      t.AttemptID,
+				"terminal_digest": t.TerminalDigest,
+				"disposition":     "conflict",
+			})
+		}
 		if len(disp.AckPayload) > 0 {
 			return disp.AckPayload, nil
 		}
+		jobID := t.JobID
+		if disp.JobID != "" {
+			jobID = disp.JobID
+		}
 		return json.Marshal(map[string]any{
 			"type":            "terminal_ack",
-			"job_id":          t.JobID,
+			"job_id":          jobID,
 			"attempt_id":      t.AttemptID,
 			"terminal_digest": t.TerminalDigest,
 			"disposition":     disp.Disposition,

@@ -198,7 +198,8 @@ mock charge/digest on the live path.
 
 ### Terminal ingest job bind (DECISIONS #45)
 
-Terminal dispositions are job-bound. Replay with a known digest but the wrong
+Terminal dispositions are job-bound (Rust `MemoryTerminalStore` and Go
+`ownership.TerminalDisposition`). Replay with a known digest but the wrong
 `job_id` returns `disposition=conflict` — never a settled ACK and never a late
 record that could confuse ops.
 
@@ -214,8 +215,9 @@ account/amount/external_id mismatch for a known `event_id`.
 ### Money-boundary ownership fence (DECISIONS #47)
 
 Ownership is re-asserted immediately before reserve, resize_authorize, settle,
-and release (not only at route entry). After fencing loss, release is refused
-so a stolen coordinator cannot refund or settle mid-flight work.
+release, and pre-start cancel release (not only at route entry). After fencing
+loss, release is refused so a stolen coordinator cannot refund or settle
+mid-flight work.
 
 ### Live terminal binding validate (DECISIONS #48)
 
@@ -228,4 +230,9 @@ terminals leave the reservation held for force-settle.
 Streaming chat defers settlement until after the bounded chunk pipe updates
 `ChunkCheckpoint`. The charge is clamped by accepted billable tokens so a
 provider claim above what the consumer pipe accepted cannot overcharge.
+
+### Settle SQL writes lease_id (DECISIONS #50)
+
+Durable settle/force_settle CTEs persist `lease_id` on `provider_terminals`
+alongside attempt/digest so late ingest and audit can bind the funded lease.
 

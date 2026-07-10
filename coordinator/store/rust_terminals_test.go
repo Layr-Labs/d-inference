@@ -11,7 +11,7 @@ import (
 func TestRustTerminalStore_IngestRoundTrip(t *testing.T) {
 	st := NewRustTerminalStore()
 	ack, _ := json.Marshal(map[string]string{"type": "terminal_ack", "disposition": "settled"})
-	st.Put("a1", "d1", "settled", ack)
+	st.Put("j", "a1", "d1", "settled", ack)
 	out, err := ownership.IngestTerminal(context.Background(), st, ownership.TerminalIngest{
 		JobID: "j", AttemptID: "a1", TerminalDigest: "d1",
 	})

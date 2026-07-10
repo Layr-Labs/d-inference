@@ -502,3 +502,9 @@ After a mid-flight cutover-drain abort, re-acquire ownership and re-run
 cutover-drain to reach `ready`. Concurrent cutover-drain calls clear orphans
 exactly once and leave outbox empty.
 
+### CLI cutover-drain + deposit race (DECISIONS #94)
+
+`recovery --demo-cutover-drain --confirm-same-release` dry-runs clear+outbox
+drain. Concurrent deposits and cutover-drain conserve money (balance = start +
+deposits; outbox empty).
+

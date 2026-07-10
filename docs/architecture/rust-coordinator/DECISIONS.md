@@ -100,6 +100,7 @@ Date: 2026-07-10
 | 91 | held-review-batch + cutover-drain | `POST /v1/admin/held-review-batch` classifies holds (no money). `POST /v1/admin/cutover-drain` runs clear-orphans then outbox-drain |
 | 92 | cutover-drain abort on steal + hint | cutover-drain returns clear abort without draining outbox. Quiescence `cutover_hint` prefers `cutover-drain` when active jobs remain |
 | 93 | Resume cutover-drain + concurrent race | After steal abort, re-acquire → cutover-drain reaches ready. Concurrent cutover-drain clears orphans once and drains outbox |
+| 94 | CLI cutover-drain + deposit race | `--demo-cutover-drain` clears+drains outbox. Concurrent deposits ∥ cutover-drain conserve balance |
 
 ## Deleted Go mechanisms (do not port)
 

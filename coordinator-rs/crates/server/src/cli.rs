@@ -45,6 +45,9 @@ enum Commands {
         /// In-memory demo: clear mixed reserved+held orphans (adopt→recover→force).
         #[arg(long)]
         demo_clear_orphans: bool,
+        /// In-memory demo: clear orphans then drain outbox (cutover ready).
+        #[arg(long)]
+        demo_cutover_drain: bool,
         /// In-memory demo: apply a Stripe deposit event (idempotent).
         #[arg(long)]
         demo_deposit_event: Option<String>,
@@ -65,6 +68,7 @@ pub fn parse_and_is_recovery() -> RecoveryOpts {
             demo_adopt_recover_job: None,
             demo_adopt_force_settle_job: None,
             demo_clear_orphans: false,
+            demo_cutover_drain: false,
             demo_deposit_event: None,
             demo_account: String::new(),
         },
@@ -76,6 +80,7 @@ pub fn parse_and_is_recovery() -> RecoveryOpts {
             demo_adopt_recover_job,
             demo_adopt_force_settle_job,
             demo_clear_orphans,
+            demo_cutover_drain,
             demo_deposit_event,
             demo_account,
         }) => RecoveryOpts {
@@ -87,6 +92,7 @@ pub fn parse_and_is_recovery() -> RecoveryOpts {
             demo_adopt_recover_job,
             demo_adopt_force_settle_job,
             demo_clear_orphans,
+            demo_cutover_drain,
             demo_deposit_event,
             demo_account,
         },
@@ -102,6 +108,7 @@ pub struct RecoveryOpts {
     pub demo_adopt_recover_job: Option<String>,
     pub demo_adopt_force_settle_job: Option<String>,
     pub demo_clear_orphans: bool,
+    pub demo_cutover_drain: bool,
     pub demo_deposit_event: Option<String>,
     pub demo_account: String,
 }
@@ -307,6 +314,83 @@ pub fn run_recovery(opts: RecoveryOpts) -> Result<(), String> {
             return Err(format!("expected balance 1000000 after clear-orphans, got {bal}"));
         }
         tracing::info!(new_epoch, "recovery clear-orphans demo complete");
+        return Ok(());
+    }
+    if opts.demo_cutover_drain {
+        use crate::outbox::Outbox;
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let mut box_ = Outbox::new(32);
+        let old_epoch = 1u64;
+        let new_epoch = 2u64;
+        let reserved_job = "cutover-res";
+        let held_job = "cutover-held";
+        {
+            let mut g = led.lock().map_err(|e| e.to_string())?;
+            g.credit(&opts.demo_account, 1_000_000, 0).unwrap();
+            g.reserve_with_epoch(
+                crate::ledger::OperationKey("reserve:cutover-res".into()),
+                reserved_job,
+                &opts.demo_account,
+                50_000,
+                old_epoch,
+            )
+            .map_err(|e| e.to_string())?;
+            g.reserve_with_epoch(
+                crate::ledger::OperationKey("reserve:cutover-held".into()),
+                held_job,
+                &opts.demo_account,
+                80_000,
+                old_epoch,
+            )
+            .map_err(|e| e.to_string())?;
+            g.mark_start_authorized_fenced(old_epoch, held_job, &opts.demo_account)
+                .map_err(|e| e.to_string())?;
+            for job in [reserved_job, held_job] {
+                g.adopt_fencing_epoch(job, new_epoch)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        let rel = recover_undispatched_fenced(&led, new_epoch, reserved_job, &opts.demo_account)?;
+        if rel != RecoveryAction::Released {
+            return Err(format!("expected reserved Released, got {rel:?}"));
+        }
+        let _ = box_.enqueue_released(reserved_job, &opts.demo_account, 50_000);
+        let set = force_settle_held_fenced(
+            &led,
+            new_epoch,
+            held_job,
+            &opts.demo_account,
+            0,
+            "cutover-drain-d",
+        )?;
+        if set != RecoveryAction::Released {
+            return Err(format!("expected held Released, got {set:?}"));
+        }
+        let _ = box_.enqueue_critical(
+            "inference.settled",
+            &format!(r#"{{"job_id":"{held_job}","charged_micro_usd":0}}"#),
+        );
+        if box_.pending_under_retry_cap() == 0 {
+            return Err("expected outbox work before drain".into());
+        }
+        let (acked, _) = box_.drain_ack_all();
+        if acked < 2 {
+            return Err(format!("expected >=2 outbox acks, got {acked}"));
+        }
+        if box_.pending_under_retry_cap() != 0 {
+            return Err("expected empty outbox after drain".into());
+        }
+        let (active, bal) = {
+            let g = led.lock().map_err(|e| e.to_string())?;
+            (g.active_job_count(), g.balance(&opts.demo_account).0)
+        };
+        if active != 0 {
+            return Err(format!("expected 0 active after cutover-drain, got {active}"));
+        }
+        if bal != 1_000_000 {
+            return Err(format!("expected balance 1000000 after cutover-drain, got {bal}"));
+        }
+        tracing::info!(new_epoch, acked, "recovery cutover-drain demo complete");
         return Ok(());
     }
     if let Some(job) = opts.demo_force_settle_job {

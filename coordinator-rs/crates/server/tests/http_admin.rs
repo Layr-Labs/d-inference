@@ -205,6 +205,27 @@ async fn readyz_fails_without_ownership() {
 }
 
 #[tokio::test]
+async fn invalid_sealed_body_returns_400() {
+    let app = router(test_state(true));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "encrypted_body": "not-valid-base64!!!" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let v = body_json(res).await;
+    assert_eq!(v["error"]["code"], "invalid_sealed_body");
+}
+
+#[tokio::test]
 async fn sealed_chat_body_decrypts_then_429_without_provider() {
     use darkbloom_protocol::seal_box;
     let state = test_state(true);

@@ -93,6 +93,7 @@ Date: 2026-07-10
 | 84 | Cutover e2e + charged clear-orphans | Full steal→clear-orphans→outbox-drain→ready path. `actual_micro_usd` on clear-orphans charges held jobs |
 | 85 | Clear-orphans mid-flight ownership fence | Re-check OwnershipGate before each money phase/job in clear-orphans and batch recover/force-settle; abort with partial progress on steal |
 | 86 | Quiescence cutover_hint | Quiescence returns `cutover_hint` (`ready` / `clear-orphans then outbox-drain` / `outbox-drain` / …) for ops drain guidance |
+| 87 | Resume after mid-flight abort + drain SQL | After clear-orphans abort on steal, re-acquire → clear-orphans → outbox-drain reaches ready. `drain_ack_all_sql` documents durable drain |
 
 ## Deleted Go mechanisms (do not port)
 

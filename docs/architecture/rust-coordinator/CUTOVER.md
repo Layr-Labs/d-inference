@@ -458,3 +458,10 @@ continue charging/refunding under a stolen fence.
 Quiescence includes `cutover_hint` so ops know the next drain step without
 parsing orphan_summary manually.
 
+### Resume after mid-flight abort (DECISIONS #87)
+
+If clear-orphans aborts mid-flight on ownership steal, re-acquire ownership and
+re-run clear-orphans → outbox-drain. Jobs already adopted keep fencing until
+the new owner rebinds via adopt inside clear-orphans. `drain_ack_all_sql`
+documents the durable outbox drain CTE.
+

@@ -222,6 +222,27 @@ pub fn ack_done_sql() -> &'static str {
     "#
 }
 
+/// Documented SQL for pilot cutover drain: claim+ack all retryable rows
+/// (DECISIONS #82/#87). Prefer a single transaction in SQLx.
+pub fn drain_ack_all_sql() -> &'static str {
+    r#"
+    WITH claimed AS (
+      UPDATE rust_coord.outbox o
+      SET attempts = o.attempts + 1
+      WHERE o.id IN (
+        SELECT id FROM rust_coord.outbox
+        WHERE attempts < 100
+        ORDER BY id
+        FOR UPDATE SKIP LOCKED
+      )
+      RETURNING o.id
+    )
+    DELETE FROM rust_coord.outbox
+    WHERE id IN (SELECT id FROM claimed)
+    RETURNING id
+    "#
+}
+
 /// Documented SQL for requeue after transient side-effect failure.
 pub fn requeue_sql() -> &'static str {
     r#"
@@ -321,11 +342,27 @@ mod tests {
     }
 
     #[test]
+    fn drain_ack_all_clears_pending_and_inflight() {
+        let mut box_ = Outbox::new(10);
+        box_.enqueue_critical("inference.released", "{}").unwrap();
+        box_.enqueue_critical("inference.settled", "{}").unwrap();
+        let _ = box_.try_claim(); // one in-flight
+        let (n, kinds) = box_.drain_ack_all();
+        assert_eq!(n, 2);
+        assert!(kinds.contains(&"inference.released".to_string()));
+        assert!(kinds.contains(&"inference.settled".to_string()));
+        assert!(box_.is_empty());
+        assert_eq!(box_.pending_under_retry_cap(), 0);
+    }
+
+    #[test]
     fn sql_docs_mention_skip_locked() {
         assert!(claim_sql().contains("SKIP LOCKED"));
         assert!(enqueue_sql().contains("rust_coord.outbox"));
         assert!(ack_done_sql().contains("DELETE FROM rust_coord.outbox"));
         assert!(requeue_sql().contains("available_at"));
         assert!(requeue_sql().contains("attempts < 100"));
+        assert!(drain_ack_all_sql().contains("SKIP LOCKED"));
+        assert!(drain_ack_all_sql().contains("DELETE FROM rust_coord.outbox"));
     }
 }

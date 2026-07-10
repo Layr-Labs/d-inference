@@ -13,7 +13,7 @@ fn concurrent_force_settle_after_settle_already_terminal() {
         g.credit("a", 5_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 200_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
         assert!(g
             .settle(OperationKey("s".into()), "j", "a", 70_000, "d-first")
             .unwrap());

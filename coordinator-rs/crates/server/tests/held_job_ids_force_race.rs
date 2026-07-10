@@ -15,7 +15,7 @@ fn concurrent_force_settle_clears_held_job_ids() {
             let jid = format!("job-{i}");
             g.reserve(OperationKey(format!("r{i}")), &jid, "a", 1_000_000)
                 .unwrap();
-            g.mark_start_authorized(&jid).unwrap();
+            g.mark_start_authorized(&jid, "a").unwrap();
         }
         let mut ids = g.held_start_authorized_job_ids();
         ids.sort();

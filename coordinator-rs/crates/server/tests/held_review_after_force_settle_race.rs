@@ -15,7 +15,7 @@ fn concurrent_held_review_after_force_settle_all_already_terminal() {
         g.credit("a", 5_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 200_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
     assert_eq!(
         force_settle_held(&led, "j", "a", 50_000, "force-first").unwrap(),

@@ -30,13 +30,14 @@ Date: 2026-07-10
 | 21 | Terminal ingest | `ingest_terminal` ACKs known dispositions or records `late` — never double-settles (mirrors Go `ownership.IngestTerminal`) |
 | 22 | Deposit kill-boundary | Validate amounts **before** `ExternalEventInbox.observe`; on post-observe credit failure call `forget` so the event id is not poisoned |
 | 23 | Stream settle clamp | `settle_capped` charges `min(actual, billable_cap, reserved)` so a checkpoint/provider claim above the provisional reservation never fail-closes a hold |
-| 24 | Account bind on money moves | `settle` / `release` / SQL CTEs require `inference_jobs.account_id = caller account`; mismatch is Conflict and does not poison op keys. Digest/op inserts are gated on successful guard/charge so failed settles cannot pin digests |
+| 24 | Account bind on money moves | `settle` / `release` / `resize_and_authorize` / `mark_start_authorized` / SQL CTEs require `inference_jobs.account_id = caller account`; mismatch is Conflict and does not poison op keys. Digest/op inserts are gated on successful guard/charge so failed settles cannot pin digests |
 | 25 | Terminal ingest attempt drift | Lookup prefers `(attempt_id, digest)` then falls back to digest-only so empty/mismatched attempt_id at settle still ACKs without marking late |
 | 26 | Reserve SQL job-first | `reserve_sql` inserts the job row before debiting; debit/op gated on successful insert so job_id conflict never drains balances |
 | 27 | Force-settle disposition | Memory + SQL record disposition `force_settled` (distinct from normal `settled`) for audit |
 | 28 | Deposit forget SQL | Durable `forget_sql` deletes the external_events row only when no `deposit:source:event_id` financial_operations row exists — pairs with deposit_sql op insert |
 | 29 | Outbox blocks quiescence | Quiescence `ready` requires `outbox_retryable == 0`; deposit enqueue makes ready=false until claim+ack (or requeue keeps retryable) |
 | 30 | Quiescence without ownership | `/v1/admin/quiescence` remains readable when not holding (reports `ownership_holding=false`) so cutover ops can observe drain; mutating admin routes still require holding |
+| 31 | Mark-start account bind | `mark_start_authorized(job_id, account)` refuses wrong-account callers (Conflict); SQL binds `account_id = $2` so knowing a job id alone cannot advance the funded-start kill boundary |
 
 ## Deleted Go mechanisms (do not port)
 

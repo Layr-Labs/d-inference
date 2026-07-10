@@ -12,7 +12,7 @@ fn concurrent_settle_capped_zero_after_mark_start_full_refund() {
         g.credit("a", 5_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 275_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
         assert_eq!(g.balance("a").0, 4_725_000);
     }
 

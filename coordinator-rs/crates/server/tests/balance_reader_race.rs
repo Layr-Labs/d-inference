@@ -29,7 +29,7 @@ fn concurrent_balance_readers_during_lifecycle() {
         let mut g = led_w.lock().unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
         g.settle(OperationKey("s".into()), "j", "a", 250_000, "d")
             .unwrap();
     });

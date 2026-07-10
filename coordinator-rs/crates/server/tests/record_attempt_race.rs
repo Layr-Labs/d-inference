@@ -12,7 +12,7 @@ fn concurrent_record_attempt_then_settle() {
         g.credit("a", 5_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
 
     let mut handles = Vec::new();

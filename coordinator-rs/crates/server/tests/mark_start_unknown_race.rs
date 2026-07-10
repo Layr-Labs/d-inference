@@ -14,7 +14,7 @@ fn concurrent_mark_start_unknown_job_all_conflict() {
         handles.push(thread::spawn(move || {
             let mut g = led.lock().unwrap();
             matches!(
-                g.mark_start_authorized("missing"),
+                g.mark_start_authorized("missing", "a"),
                 Err(LedgerError::Conflict(_))
             )
         }));

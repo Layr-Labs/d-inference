@@ -144,7 +144,7 @@ mod tests {
             g.credit("a", 1_000_000, 0).unwrap();
             g.reserve(OperationKey("r".into()), "j2", "a", 50_000)
                 .unwrap();
-            g.mark_start_authorized("j2").unwrap();
+            g.mark_start_authorized("j2", "a").unwrap();
         }
         let (_h, mut task) = spawn_request_task(JobId::new("j2"), Duration::from_secs(30));
         task.funded_start = true;
@@ -187,7 +187,7 @@ mod tests {
             g.credit("a", 1_000_000, 0).unwrap();
             g.reserve(OperationKey("r".into()), "j3", "a", 50_000)
                 .unwrap();
-            g.mark_start_authorized("j3").unwrap();
+            g.mark_start_authorized("j3", "a").unwrap();
         }
         let (_h, mut task) = spawn_request_task(JobId::new("j3"), Duration::from_secs(30));
         task.funded_start = true;

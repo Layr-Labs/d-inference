@@ -19,7 +19,7 @@ fn concurrent_deposit_4way_clear_held_review_after_mark_start_conserves() {
         apply_stripe_deposit(&mut ib, &mut g, "stripe", "seed", "a", 900_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 280_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
 
     let inbox_d = inbox.clone();

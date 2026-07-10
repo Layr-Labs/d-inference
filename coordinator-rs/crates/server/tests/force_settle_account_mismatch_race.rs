@@ -14,7 +14,7 @@ fn concurrent_force_settle_wrong_account_never_clears() {
         g.credit("b", 5_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
 
     let mut handles = Vec::new();

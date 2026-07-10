@@ -17,7 +17,7 @@ fn concurrent_deposit_and_recover_after_mark_start_deposit_only() {
         apply_stripe_deposit(&mut ib, &mut g, "stripe", "seed", "a", 500_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 150_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
         // bal = 350k, reserved = 150k, funded_start
     }
 

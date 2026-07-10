@@ -18,7 +18,7 @@ fn concurrent_cli_style_held_job_demo() {
             100_000,
         )
         .unwrap();
-        g.mark_start_authorized("held-job").unwrap();
+        g.mark_start_authorized("held-job", "pilot-account").unwrap();
     }
 
     let mut handles = Vec::new();

@@ -16,7 +16,7 @@ fn force_settle_then_concurrent_deposits_stack() {
         g.credit("a", 5_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
     assert_eq!(
         force_settle_held(&ledger, "j", "a", 100_000, "fd").unwrap(),

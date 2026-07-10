@@ -13,7 +13,7 @@ fn concurrent_cli_style_force_settle_demo() {
         g.credit("pilot-account", 1_000_000, 0).unwrap();
         g.reserve(OperationKey("reserve:demo".into()), "demo-job", "pilot-account", 100_000)
             .unwrap();
-        g.mark_start_authorized("demo-job").unwrap();
+        g.mark_start_authorized("demo-job", "pilot-account").unwrap();
     }
 
     let mut handles = Vec::new();

@@ -12,7 +12,7 @@ fn concurrent_job_funded_start_readers_during_settle() {
         g.credit("a", 5_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
         assert!(g.job_funded_start("j"));
     }
 

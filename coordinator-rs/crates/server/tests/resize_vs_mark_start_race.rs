@@ -24,7 +24,7 @@ fn concurrent_resize_authorize_vs_mark_start_exactly_one_funds() {
     let led_m = led.clone();
     let mark = thread::spawn(move || {
         let mut g = led_m.lock().unwrap();
-        g.mark_start_authorized("j").is_ok()
+        g.mark_start_authorized("j", "a").is_ok()
     });
 
     let resized = resize.join().unwrap();

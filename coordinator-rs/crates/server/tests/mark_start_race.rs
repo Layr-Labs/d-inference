@@ -18,7 +18,7 @@ fn concurrent_mark_start_authorized_exactly_one_wins() {
         let led = led.clone();
         handles.push(thread::spawn(move || {
             let mut g = led.lock().unwrap();
-            g.mark_start_authorized("j").is_ok()
+            g.mark_start_authorized("j", "a").is_ok()
         }));
     }
     let wins: usize = handles

@@ -119,7 +119,7 @@ mod tests {
             g.credit("a", 1_000_000, 0).unwrap();
             g.reserve(OperationKey("r".into()), "j1", "a", 100_000)
                 .unwrap();
-            g.mark_start_authorized("j1").unwrap();
+            g.mark_start_authorized("j1", "a").unwrap();
         }
         assert_eq!(
             recover_undispatched(&led, "j1", "a").unwrap(),
@@ -135,7 +135,7 @@ mod tests {
             g.credit("a", 1_000_000, 0).unwrap();
             g.reserve(OperationKey("r".into()), "j1", "a", 100_000)
                 .unwrap();
-            g.mark_start_authorized("j1").unwrap();
+            g.mark_start_authorized("j1", "a").unwrap();
         }
         assert_eq!(
             recover_start_authorized_held(&led, "j1").unwrap(),
@@ -169,7 +169,7 @@ mod tests {
             g.credit("a", 1_000_000, 0).unwrap();
             g.reserve(OperationKey("r".into()), "j1", "a", 100_000)
                 .unwrap();
-            g.mark_start_authorized("j1").unwrap();
+            g.mark_start_authorized("j1", "a").unwrap();
         }
         assert_eq!(
             force_settle_held(&led, "j1", "a", 40_000, "force-d1").unwrap(),
@@ -191,7 +191,7 @@ mod tests {
             g.credit("a", 1_000_000, 0).unwrap();
             g.reserve(OperationKey("r".into()), "j1", "a", 100_000)
                 .unwrap();
-            g.mark_start_authorized("j1").unwrap();
+            g.mark_start_authorized("j1", "a").unwrap();
         }
         assert_eq!(
             force_settle_held(&led, "j1", "a", 40_000, "force-d1").unwrap(),
@@ -229,7 +229,7 @@ mod tests {
             g.credit("a", 1_000_000, 0).unwrap();
             g.reserve(OperationKey("r".into()), "j1", "a", 100_000)
                 .unwrap();
-            g.mark_start_authorized("j1").unwrap();
+            g.mark_start_authorized("j1", "a").unwrap();
         }
         assert_eq!(
             force_settle_held(&led, "j1", "a", 9_999_999, "force-over").unwrap(),
@@ -248,7 +248,7 @@ mod tests {
         led.reserve(OperationKey("r".into()), "j1", "a", 100_000)
             .unwrap();
         assert_eq!(led.held_start_authorized_count(), 0);
-        led.mark_start_authorized("j1").unwrap();
+        led.mark_start_authorized("j1", "a").unwrap();
         assert_eq!(led.held_start_authorized_count(), 1);
         assert_eq!(led.held_start_authorized_job_ids(), vec!["j1".to_string()]);
     }

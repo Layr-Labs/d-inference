@@ -13,10 +13,10 @@ fn concurrent_settle_and_force_on_distinct_jobs() {
         g.credit("a", 10_000_000, 0).unwrap();
         g.reserve(OperationKey("r0".into()), "j0", "a", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j0").unwrap();
+        g.mark_start_authorized("j0", "a").unwrap();
         g.reserve(OperationKey("r1".into()), "j1", "a", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j1").unwrap();
+        g.mark_start_authorized("j1", "a").unwrap();
     }
 
     let led_s = led.clone();

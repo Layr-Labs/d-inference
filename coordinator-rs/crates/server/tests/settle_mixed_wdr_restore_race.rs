@@ -20,7 +20,7 @@ fn concurrent_settle_restores_unused_withdrawable_after_mixed_reserve() {
             .unwrap();
         assert_eq!(res.provenance.withdrawable.0, 20_000);
         assert_eq!(g.balance("a"), (20_000, 20_000)); // leftover all wdr
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
 
     let mut handles = Vec::new();

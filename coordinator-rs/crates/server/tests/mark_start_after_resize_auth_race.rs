@@ -22,7 +22,7 @@ fn concurrent_mark_start_after_resize_authorize_all_conflict() {
         handles.push(thread::spawn(move || {
             let mut g = led.lock().unwrap();
             matches!(
-                g.mark_start_authorized("j"),
+                g.mark_start_authorized("j", "a"),
                 Err(LedgerError::Conflict(_))
             )
         }));

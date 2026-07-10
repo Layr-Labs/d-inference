@@ -25,7 +25,7 @@ fn concurrent_recover_and_mark_start_mutually_exclusive() {
     let led_m = led.clone();
     let mark = thread::spawn(move || {
         let mut g = led_m.lock().unwrap();
-        g.mark_start_authorized("j").is_ok()
+        g.mark_start_authorized("j", "a").is_ok()
     });
 
     let released = recover.join().unwrap();

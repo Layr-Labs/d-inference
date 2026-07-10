@@ -12,7 +12,7 @@ fn concurrent_settle_same_job_exactly_one_wins() {
         g.credit("a", 10_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
     let mut handles = Vec::new();
     for i in 0..16 {
@@ -51,7 +51,7 @@ fn concurrent_settle_distinct_digests_second_is_noop() {
         g.credit("a", 10_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
     let mut handles = Vec::new();
     for i in 0..16 {

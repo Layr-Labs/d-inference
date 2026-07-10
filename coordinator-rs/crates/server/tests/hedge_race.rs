@@ -19,7 +19,7 @@ fn concurrent_hedge_only_one_start_authorized() {
         let led = led.clone();
         handles.push(thread::spawn(move || {
             let mut g = led.lock().unwrap();
-            g.mark_start_authorized("job-1").is_ok()
+            g.mark_start_authorized("job-1", "acct").is_ok()
         }));
     }
     let wins: usize = handles

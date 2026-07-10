@@ -37,7 +37,7 @@ fn concurrent_deposit_and_lifecycle_on_funded_account() {
         let amount = 500_000.min(bal);
         g.1.reserve(OperationKey("r".into()), "j", "a", amount)
             .unwrap();
-        g.1.mark_start_authorized("j").unwrap();
+        g.1.mark_start_authorized("j", "a").unwrap();
         g.1.settle(OperationKey("s".into()), "j", "a", 100_000, "d")
             .unwrap()
     });

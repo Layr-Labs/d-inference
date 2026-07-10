@@ -14,7 +14,7 @@ fn concurrent_ingest_and_settle_ingest_never_moves_money() {
         g.credit("a", 10_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
     // Pre-record disposition so ingest returns settled ACK (no late).
     {

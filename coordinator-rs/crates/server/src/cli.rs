@@ -139,7 +139,7 @@ pub fn run_recovery(opts: RecoveryOpts) -> Result<(), String> {
                 100_000,
             )
             .map_err(|e| e.to_string())?;
-            g.mark_start_authorized(&job)
+            g.mark_start_authorized(&job, &opts.demo_account)
                 .map_err(|e| e.to_string())?;
         }
         let action = force_settle_held(&led, &job, &opts.demo_account, 40_000, "force-demo-d")?;
@@ -166,7 +166,7 @@ pub fn run_recovery(opts: RecoveryOpts) -> Result<(), String> {
                 100_000,
             )
             .map_err(|e| e.to_string())?;
-            g.mark_start_authorized(&job)
+            g.mark_start_authorized(&job, &opts.demo_account)
                 .map_err(|e| e.to_string())?;
         }
         let action = recover_start_authorized_held(&led, &job)?;

@@ -13,7 +13,7 @@ fn concurrent_recover_undispatched_after_mark_start_all_skipped() {
         g.credit("a", 5_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 200_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
 
     let mut handles = Vec::new();

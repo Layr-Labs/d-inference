@@ -20,7 +20,7 @@ fn concurrent_full_lifecycle_distinct_jobs() {
             let jid = format!("j{i}");
             g.reserve(OperationKey(format!("r{i}")), &jid, "a", 1_000_000)
                 .unwrap();
-            g.mark_start_authorized(&jid).unwrap();
+            g.mark_start_authorized(&jid, "a").unwrap();
             g.settle(
                 OperationKey(format!("s{i}")),
                 &jid,

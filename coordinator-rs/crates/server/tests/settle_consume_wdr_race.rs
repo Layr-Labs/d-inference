@@ -14,7 +14,7 @@ fn concurrent_settle_consumes_reserved_withdrawable() {
         // Reserve 3M → reserved_wdr=3M, bal=2M wdr=2M
         g.reserve(OperationKey("r".into()), "j", "a", 3_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
 
     let mut handles = Vec::new();

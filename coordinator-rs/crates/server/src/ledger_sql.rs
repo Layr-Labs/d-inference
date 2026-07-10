@@ -86,13 +86,15 @@ impl PostgresLedgerStub {
     }
 
     /// Mark start_authorized without resizing (same-amount fund path).
-    /// Parameters: $1 job_id, $2 operation_key
+    /// Parameters: $1 job_id, $2 account_id, $3 operation_key
+    /// Account bind: job row must match caller account (DECISIONS #24/#31).
     pub fn mark_start_authorized_sql() -> &'static str {
         r#"
         WITH job AS (
-          SELECT job_id, state, terminal_disposition
+          SELECT job_id, state, terminal_disposition, account_id
           FROM rust_coord.inference_jobs
           WHERE job_id = $1
+            AND account_id = $2
           FOR UPDATE
         ), guard AS (
           SELECT 1 FROM job
@@ -103,11 +105,12 @@ impl PostgresLedgerStub {
           SET state = 'start_authorized',
               updated_at = NOW()
           WHERE j.job_id = $1
+            AND j.account_id = $2
             AND EXISTS (SELECT 1 FROM guard)
           RETURNING j.job_id
         ), op AS (
           INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-          SELECT $2, $1, 'start_authorize', 0 FROM mark
+          SELECT $3, $1, 'start_authorize', 0 FROM mark
           ON CONFLICT (operation_key) DO NOTHING
           RETURNING operation_key
         )
@@ -526,7 +529,8 @@ mod tests {
         assert!(sql.contains("start_authorize"));
         assert!(sql.contains("state = 'reserved'"));
         assert!(sql.contains("FOR UPDATE"));
-        assert!(sql.contains("SELECT $2, $1, 'start_authorize', 0 FROM mark"));
+        assert!(sql.contains("account_id = $2"));
+        assert!(sql.contains("SELECT $3, $1, 'start_authorize', 0 FROM mark"));
     }
 
     #[test]

@@ -26,7 +26,7 @@ fn concurrent_mark_start_distinct_jobs_all_fund() {
         let led = led.clone();
         handles.push(thread::spawn(move || {
             let mut g = led.lock().unwrap();
-            g.mark_start_authorized(&format!("j{i}")).is_ok()
+            g.mark_start_authorized(&format!("j{i}"), "a").is_ok()
         }));
     }
 

@@ -17,7 +17,7 @@ fn concurrent_mark_start_and_release_mutually_exclusive() {
     let led_m = led.clone();
     let mark = thread::spawn(move || {
         let mut g = led_m.lock().unwrap();
-        g.mark_start_authorized("j").is_ok()
+        g.mark_start_authorized("j", "a").is_ok()
     });
     let led_r = led.clone();
     let release = thread::spawn(move || {
@@ -54,7 +54,7 @@ fn release_after_start_authorized_conflicts() {
     led.credit("a", 5_000_000, 0).unwrap();
     led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
         .unwrap();
-    led.mark_start_authorized("j").unwrap();
+    led.mark_start_authorized("j", "a").unwrap();
     assert!(matches!(
         led.release(OperationKey("rel".into()), "j", "a"),
         Err(LedgerError::Conflict(_))

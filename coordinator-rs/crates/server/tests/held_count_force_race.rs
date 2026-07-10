@@ -15,7 +15,7 @@ fn concurrent_held_count_tracks_force_settle_clear() {
             let jid = format!("j{i}");
             g.reserve(OperationKey(format!("r{i}")), &jid, "a", 500_000)
                 .unwrap();
-            g.mark_start_authorized(&jid).unwrap();
+            g.mark_start_authorized(&jid, "a").unwrap();
         }
         assert_eq!(g.held_start_authorized_count(), 4);
     }

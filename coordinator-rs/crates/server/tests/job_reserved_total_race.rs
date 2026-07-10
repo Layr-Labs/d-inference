@@ -12,7 +12,7 @@ fn concurrent_job_reserved_total_stable_until_settle() {
         g.credit("a", 5_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
         assert_eq!(g.job_reserved_total("j").unwrap().0, 1_000_000);
     }
 

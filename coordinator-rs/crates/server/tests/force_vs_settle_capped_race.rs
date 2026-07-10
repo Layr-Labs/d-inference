@@ -13,7 +13,7 @@ fn concurrent_force_settle_and_settle_capped_exactly_one() {
         g.credit("a", 10_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
 
     let led_f = led.clone();

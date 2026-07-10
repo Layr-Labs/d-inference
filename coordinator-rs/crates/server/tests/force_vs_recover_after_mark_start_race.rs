@@ -15,7 +15,7 @@ fn concurrent_force_settle_vs_recover_after_mark_start() {
         g.credit("a", 5_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 200_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
 
     let led_f = led.clone();

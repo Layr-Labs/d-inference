@@ -12,7 +12,7 @@ fn concurrent_settle_empty_digest_exactly_one_binds() {
         g.credit("a", 5_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
 
     let mut handles = Vec::new();
@@ -44,7 +44,7 @@ fn concurrent_settle_empty_digest_exactly_one_binds() {
         g.credit("b", 5_000_000, 0).unwrap();
         g.reserve(OperationKey("r2".into()), "j2", "b", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j2").unwrap();
+        g.mark_start_authorized("j2", "b").unwrap();
         assert!(matches!(
             g.settle(OperationKey("s-other".into()), "j2", "b", 100_000, ""),
             Err(LedgerError::Conflict(_))

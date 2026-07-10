@@ -665,7 +665,7 @@ async fn quiescence_reports_held_start_authorized_jobs() {
             100_000,
         )
         .unwrap();
-        led.mark_start_authorized("held-job-1").unwrap();
+        led.mark_start_authorized("held-job-1", "pilot-account").unwrap();
     }
     let app = router(state);
     let res = app
@@ -698,7 +698,7 @@ async fn quiescence_ready_after_force_settle_clears_hold() {
             100_000,
         )
         .unwrap();
-        led.mark_start_authorized("held-fs").unwrap();
+        led.mark_start_authorized("held-fs", "pilot-account").unwrap();
         assert!(led
             .settle_capped_as(
                 darkbloom_coordinator::OperationKey("force_settle:held-fs".into()),

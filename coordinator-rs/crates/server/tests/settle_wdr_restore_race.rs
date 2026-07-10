@@ -17,7 +17,7 @@ fn concurrent_settle_restores_unused_withdrawable() {
         // Reserve 5M: consumes 5M non_wdr → reserved_wdr=0
         g.reserve(OperationKey("r".into()), "j", "a", 5_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
         // After reserve: bal=5M wdr=4M
     }
 

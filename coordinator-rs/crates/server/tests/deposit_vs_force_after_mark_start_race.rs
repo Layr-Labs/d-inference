@@ -17,7 +17,7 @@ fn concurrent_deposit_and_force_settle_after_mark_start_conserves() {
         apply_stripe_deposit(&mut ib, &mut g, "stripe", "seed", "a", 600_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 150_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
 
     let inbox_d = inbox.clone();

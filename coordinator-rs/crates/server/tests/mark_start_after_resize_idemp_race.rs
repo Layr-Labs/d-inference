@@ -21,7 +21,7 @@ fn concurrent_mark_start_after_resize_authorize_idempotent_or_conflict() {
         let led = led.clone();
         handles.push(thread::spawn(move || {
             let mut g = led.lock().unwrap();
-            match g.mark_start_authorized("j") {
+            match g.mark_start_authorized("j", "a") {
                 Ok(()) => true, // idempotent if already authorized
                 Err(LedgerError::Conflict(_)) => false,
                 Err(e) => panic!("unexpected: {e}"),

@@ -14,7 +14,7 @@ fn concurrent_settle_exact_withdrawable_charge() {
         // Reserve 3M → reserved_wdr=3M
         g.reserve(OperationKey("r".into()), "j", "a", 3_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
         // bal=2M wdr=2M
     }
 

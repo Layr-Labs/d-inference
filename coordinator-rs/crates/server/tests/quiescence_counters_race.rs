@@ -20,7 +20,7 @@ fn concurrent_lifecycle_quiescence_counters_end_zero() {
             let jid = format!("j{i}");
             g.reserve(OperationKey(format!("r{i}")), &jid, "a", 500_000)
                 .unwrap();
-            g.mark_start_authorized(&jid).unwrap();
+            g.mark_start_authorized(&jid, "a").unwrap();
             g.settle(
                 OperationKey(format!("s{i}")),
                 &jid,

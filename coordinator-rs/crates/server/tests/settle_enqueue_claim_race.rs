@@ -16,7 +16,7 @@ fn concurrent_settle_enqueue_then_claim_drains() {
             let jid = format!("j{i}");
             g.reserve(OperationKey(format!("r{i}")), &jid, "a", 500_000)
                 .unwrap();
-            g.mark_start_authorized(&jid).unwrap();
+            g.mark_start_authorized(&jid, "a").unwrap();
             assert!(g
                 .settle(
                     OperationKey(format!("s{i}")),

@@ -18,7 +18,7 @@ fn concurrent_lifecycle_independent_accounts() {
         let mut g = led_a.lock().unwrap();
         g.reserve(OperationKey("ra".into()), "ja", "alice", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("ja").unwrap();
+        g.mark_start_authorized("ja", "alice").unwrap();
         g.settle(OperationKey("sa".into()), "ja", "alice", 200_000, "da")
             .unwrap()
     });
@@ -27,7 +27,7 @@ fn concurrent_lifecycle_independent_accounts() {
         let mut g = led_b.lock().unwrap();
         g.reserve(OperationKey("rb".into()), "jb", "bob", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("jb").unwrap();
+        g.mark_start_authorized("jb", "bob").unwrap();
         g.settle(OperationKey("sb".into()), "jb", "bob", 300_000, "db")
             .unwrap()
     });

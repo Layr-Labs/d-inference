@@ -18,7 +18,7 @@ fn concurrent_mark_start_then_force_settle() {
     let led_m = led.clone();
     let mark = thread::spawn(move || {
         let mut g = led_m.lock().unwrap();
-        g.mark_start_authorized("j").is_ok()
+        g.mark_start_authorized("j", "a").is_ok()
     });
     let led_f = led.clone();
     let force = thread::spawn(move || {

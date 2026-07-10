@@ -13,7 +13,7 @@ fn concurrent_cancel_release_vs_settle_after_start_authorized() {
         g.credit("a", 10_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
 
     let led_s = led.clone();

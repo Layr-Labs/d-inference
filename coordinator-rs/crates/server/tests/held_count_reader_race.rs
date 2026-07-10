@@ -13,7 +13,7 @@ fn concurrent_held_count_readers_during_force_settle() {
         g.credit("a", 5_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
         assert_eq!(g.held_start_authorized_count(), 1);
     }
 

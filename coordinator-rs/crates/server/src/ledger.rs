@@ -140,11 +140,21 @@ impl MemoryLedger {
         })
     }
 
-    pub fn mark_start_authorized(&mut self, job_id: &str) -> Result<(), LedgerError> {
+    /// Mark `start_authorized` only when `account` owns the job (DECISIONS #24/#31).
+    pub fn mark_start_authorized(
+        &mut self,
+        job_id: &str,
+        account: &str,
+    ) -> Result<(), LedgerError> {
         let job = self
             .jobs
             .get_mut(job_id)
             .ok_or_else(|| LedgerError::Conflict("unknown job".into()))?;
+        if job.account_id != account {
+            return Err(LedgerError::Conflict(format!(
+                "account mismatch for job {job_id}"
+            )));
+        }
         if job.disposition.is_some() {
             return Err(LedgerError::Conflict(format!(
                 "job {job_id} already disposed"
@@ -509,9 +519,9 @@ mod tests {
         led.credit("a", 10_000_000, 4_000_000).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 5_000_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         assert!(led
-            .mark_start_authorized("j")
+            .mark_start_authorized("j", "a")
             .unwrap_err()
             .to_string()
             .contains("already"));
@@ -532,10 +542,10 @@ mod tests {
         led.credit("a", 1_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 100_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         assert!(led.job_funded_start("j"));
         assert!(matches!(
-            led.mark_start_authorized("j"),
+            led.mark_start_authorized("j", "a"),
             Err(LedgerError::Conflict(_))
         ));
     }
@@ -546,7 +556,7 @@ mod tests {
         led.credit("a", 10_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 5_000_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         // Provider claims 4M but checkpoint only accepted 1M worth.
         assert!(led
             .settle_capped(
@@ -585,14 +595,14 @@ mod tests {
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r1".into()), "j1", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j1").unwrap();
+        led.mark_start_authorized("j1", "a").unwrap();
         assert!(led
             .settle(OperationKey("s1".into()), "j1", "a", 500_000, "digest-a")
             .unwrap());
         // Reuse same digest on a different job → conflict.
         led.reserve(OperationKey("r2".into()), "j2", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j2").unwrap();
+        led.mark_start_authorized("j2", "a").unwrap();
         assert!(matches!(
             led.settle(OperationKey("s2".into()), "j2", "a", 500_000, "digest-a"),
             Err(LedgerError::Conflict(_))
@@ -605,7 +615,7 @@ mod tests {
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         assert!(led
             .settle(OperationKey("s".into()), "j", "a", 400_000, "d1")
             .unwrap());
@@ -627,7 +637,7 @@ mod tests {
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         assert!(matches!(
             led.settle(OperationKey("s".into()), "j", "a", 1_000_001, "d-over"),
             Err(LedgerError::Conflict(_))
@@ -659,9 +669,25 @@ mod tests {
     fn mark_start_authorized_unknown_job_conflicts() {
         let mut led = MemoryLedger::default();
         assert!(matches!(
-            led.mark_start_authorized("missing"),
+            led.mark_start_authorized("missing", "a"),
             Err(LedgerError::Conflict(_))
         ));
+    }
+
+    #[test]
+    fn mark_start_authorized_rejects_account_mismatch() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 1_000_000, 0).unwrap();
+        led.credit("b", 1_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 100_000)
+            .unwrap();
+        assert!(matches!(
+            led.mark_start_authorized("j", "b"),
+            Err(LedgerError::Conflict(_))
+        ));
+        assert!(!led.job_funded_start("j"));
+        led.mark_start_authorized("j", "a").unwrap();
+        assert!(led.job_funded_start("j"));
     }
 
     #[test]
@@ -701,7 +727,7 @@ mod tests {
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         assert!(led
             .settle(OperationKey("s".into()), "j", "a", 400_000, "d1")
             .unwrap());
@@ -742,7 +768,7 @@ mod tests {
         assert!(res.applied);
         assert_eq!(led.job_reserved_total("j").unwrap().0, 3_000_000);
         // After settle, job row remains but disposition is set; reserved total still readable.
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         assert!(led
             .settle(OperationKey("s".into()), "j", "a", 1_000_000, "d1")
             .unwrap());
@@ -781,7 +807,7 @@ mod tests {
         led.credit("a", 1_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 100_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         assert_eq!(
             led.settle(OperationKey("s".into()), "j", "a", -1, "d")
                 .unwrap_err(),
@@ -795,7 +821,7 @@ mod tests {
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         // Provider claimed 800k but pipe accepted 0 tokens → charge 0, refund all.
         assert!(led
             .settle_capped(
@@ -819,7 +845,7 @@ mod tests {
             .unwrap();
         // Non-wdr first: reserved_wdr = max(0, 2M - 4M) = 0
         assert_eq!(led.balance("a"), (3_000_000, 1_000_000));
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         assert!(led
             .settle(OperationKey("s".into()), "j", "a", 2_000_000, "d-full")
             .unwrap());
@@ -834,7 +860,7 @@ mod tests {
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         // Cap higher than actual → charge actual only.
         assert!(led
             .settle_capped(
@@ -892,7 +918,7 @@ mod tests {
             .unwrap();
         assert_eq!(res.provenance.withdrawable.0, 1_000_000);
         assert_eq!(led.balance("a"), (1_000_000, 1_000_000));
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         // Charge 500k (all from non-wdr portion of reservation) → refund 3.5M
         // of which refund_wdr = reserved_wdr - consumed_wdr = 1M - 0 = 1M
         assert!(led
@@ -914,7 +940,7 @@ mod tests {
             .unwrap();
         assert_eq!(res.provenance.withdrawable.0, 2_000_000);
         assert_eq!(led.balance("a"), (1_000_000, 1_000_000));
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         // Charge 2.5M → consumes all 1M non-wdr + 1.5M of reserved wdr
         // refund = 0.5M, refund_wdr = 2M - 1.5M = 0.5M
         assert!(led
@@ -936,7 +962,7 @@ mod tests {
         led.reserve(OperationKey("r3".into()), "j3", "a", 1_000_000)
             .unwrap();
         assert_eq!(led.active_job_count(), 3);
-        led.mark_start_authorized("j1").unwrap();
+        led.mark_start_authorized("j1", "a").unwrap();
         assert!(led
             .settle(OperationKey("s1".into()), "j1", "a", 500_000, "d1")
             .unwrap());
@@ -957,7 +983,7 @@ mod tests {
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         // Negative cap must clamp to zero charge (full refund), not panic or over-charge.
         assert!(led
             .settle_capped(
@@ -990,7 +1016,7 @@ mod tests {
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
         assert!(!led.job_funded_start("j"));
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         assert!(led.job_funded_start("j"));
         assert!(led
             .settle(OperationKey("s".into()), "j", "a", 400_000, "d1")
@@ -1021,14 +1047,14 @@ mod tests {
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r1".into()), "j1", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j1").unwrap();
+        led.mark_start_authorized("j1", "a").unwrap();
         // Empty digest is allowed but still unique across jobs.
         assert!(led
             .settle(OperationKey("s1".into()), "j1", "a", 400_000, "")
             .unwrap());
         led.reserve(OperationKey("r2".into()), "j2", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j2").unwrap();
+        led.mark_start_authorized("j2", "a").unwrap();
         assert!(matches!(
             led.settle(OperationKey("s2".into()), "j2", "a", 400_000, ""),
             Err(LedgerError::Conflict(_))
@@ -1082,7 +1108,7 @@ mod tests {
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         // actual=0, cap=500k → charge min(0,500k)=0 → full refund
         assert!(led
             .settle_capped(
@@ -1118,7 +1144,7 @@ mod tests {
             .unwrap();
         assert_eq!(res.provenance.withdrawable.0, 3_000_000);
         assert_eq!(led.balance("a"), (1_000_000, 1_000_000));
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         // Charge exactly the reserved withdrawable amount.
         assert!(led
             .settle(OperationKey("s".into()), "j", "a", 3_000_000, "d-wonly")
@@ -1134,7 +1160,7 @@ mod tests {
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 2_000_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         assert!(led
             .settle_capped(
                 OperationKey("s".into()),
@@ -1175,7 +1201,7 @@ mod tests {
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         // Cap way above reservation; actual within reservation → charge actual.
         assert!(led
             .settle_capped(
@@ -1239,7 +1265,7 @@ mod tests {
             .release(OperationKey("rel".into()), "j", "a")
             .unwrap());
         assert!(matches!(
-            led.mark_start_authorized("j"),
+            led.mark_start_authorized("j", "a"),
             Err(LedgerError::Conflict(_))
         ));
     }
@@ -1250,7 +1276,7 @@ mod tests {
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         // charge = min(actual, cap, reserved) = min(2M, 500k, 1M) = 500k
         assert!(led
             .settle_capped(
@@ -1272,7 +1298,7 @@ mod tests {
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         // Stream checkpoint / provider both claim above reservation — charge reserved.
         assert!(led
             .settle_capped(
@@ -1335,7 +1361,7 @@ mod tests {
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         assert!(matches!(
             led.resize_and_authorize(OperationKey("ra".into()), "j", "a", 2_000_000),
             Err(LedgerError::Conflict(_))
@@ -1382,7 +1408,7 @@ mod tests {
         led.credit("b", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         assert!(matches!(
             led.settle(OperationKey("s".into()), "j", "b", 100_000, "d-mis"),
             Err(LedgerError::Conflict(_))
@@ -1419,7 +1445,7 @@ mod tests {
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        led.mark_start_authorized("j").unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
         assert!(matches!(
             led.release(OperationKey("rel".into()), "j", "a"),
             Err(LedgerError::Conflict(_))

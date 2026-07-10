@@ -13,7 +13,7 @@ fn concurrent_settle_after_force_settle_noop() {
         g.credit("a", 5_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
-        g.mark_start_authorized("j").unwrap();
+        g.mark_start_authorized("j", "a").unwrap();
     }
     assert_eq!(
         force_settle_held(&led, "j", "a", 400_000, "force-first").unwrap(),

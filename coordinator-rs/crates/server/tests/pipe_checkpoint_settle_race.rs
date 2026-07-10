@@ -52,7 +52,7 @@ fn concurrent_pipe_sequences_checkpoint_then_settle() {
     led.credit("a", 10_000_000, 0).unwrap();
     led.reserve(OperationKey("r".into()), "j", "a", reserved)
         .unwrap();
-    led.mark_start_authorized("j").unwrap();
+    led.mark_start_authorized("j", "a").unwrap();
     let charge = cap.min(reserved);
     assert!(led
         .settle_capped(OperationKey("s".into()), "j", "a", cap, cap, "pipe-d")

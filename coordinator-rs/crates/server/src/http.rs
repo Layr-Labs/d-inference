@@ -232,7 +232,8 @@ async fn chat_completions(
             let _ = task_handle;
 
             // Prefer live provider prepare/start when the hub has a session.
-            let live = state
+            // Only fall back to in-process mock when no provider is attached.
+            let prepare_result = state
                 .hub
                 .prepare(
                     &permit.provider_id,
@@ -241,7 +242,7 @@ async fn chat_completions(
                         job_id.as_str(),
                         attempt.as_str(),
                         lease.as_str(),
-                        0, // session epoch filled by provider; fencing still via attempt id
+                        0,
                         state.coordinator_epoch,
                         &dispatch_nonce,
                         &request_digest,
@@ -252,7 +253,24 @@ async fn chat_completions(
                 )
                 .await;
 
-            let use_live = live.is_ok();
+            let use_live = match &prepare_result {
+                Ok(_) => true,
+                Err(crate::provider_hub::HubError::NotConnected) => false,
+                Err(err) => {
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(json!({
+                            "error": {
+                                "message": format!("prepare failed: {err}"),
+                                "type": "server_error",
+                                "code": "provider_prepare_failed"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            };
+
             if use_live {
                 let _ = task.apply(ControlEvent::Prepared {
                     attempt: attempt.clone(),
@@ -301,7 +319,7 @@ async fn chat_completions(
                     }
                 }
             } else {
-                // Fall back to in-process mock when no live v2 provider replies.
+                // Fall back to in-process mock when no live v2 provider is attached.
                 let _ = task.apply(ControlEvent::Prepared {
                     attempt: attempt.clone(),
                     lease: lease.clone(),

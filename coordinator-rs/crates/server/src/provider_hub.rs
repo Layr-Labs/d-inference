@@ -27,6 +27,8 @@ pub enum HubError {
 #[derive(Debug, Clone)]
 pub enum OutboundCmd {
     Text(String),
+    /// WebSocket protocol pong payload (may be empty).
+    Pong(Vec<u8>),
 }
 
 #[derive(Debug, Clone)]
@@ -61,24 +63,22 @@ impl ProviderHub {
         Arc::new(Self::default())
     }
 
-    /// Register a live provider connection. Returns the outbound receiver the
-    /// WS writer must drain. Replaces any prior session for the same id.
+    /// Register a live provider connection using the session's writer sender.
     pub async fn attach(
         &self,
         provider_id: String,
         session_epoch: u64,
-    ) -> mpsc::Receiver<OutboundCmd> {
-        let (tx, rx) = mpsc::channel(64);
+        outbound: mpsc::Sender<OutboundCmd>,
+    ) {
         let mut g = self.inner.lock().await;
         g.insert(
             provider_id,
             ProviderConn {
-                outbound: tx,
+                outbound,
                 session_epoch,
                 waiters: HashMap::new(),
             },
         );
-        rx
     }
 
     pub async fn detach(&self, provider_id: &str, session_epoch: u64) {
@@ -95,7 +95,16 @@ impl ProviderHub {
         if let Some(conn) = g.get_mut(provider_id) {
             if let Some(w) = conn.waiters.remove(attempt_id) {
                 let _ = w.tx.send(reply);
+            } else {
+                tracing::warn!(
+                    provider_id,
+                    attempt_id,
+                    waiters = conn.waiters.len(),
+                    "no waiter for provider reply"
+                );
             }
+        } else {
+            tracing::warn!(provider_id, attempt_id, "deliver_reply: provider not in hub");
         }
     }
 
@@ -107,20 +116,21 @@ impl ProviderHub {
         timeout: Duration,
     ) -> Result<InboundReply, HubError> {
         let (tx, rx) = oneshot::channel();
-        {
+        let outbound = {
             let mut g = self.inner.lock().await;
             let conn = g.get_mut(provider_id).ok_or(HubError::NotConnected)?;
             conn.waiters.insert(attempt_id.to_string(), Waiter { tx });
-            let text = frame.to_string();
-            conn.outbound
-                .try_send(OutboundCmd::Text(text))
-                .map_err(|_| HubError::MailboxFull)?;
-        }
+            conn.outbound.clone()
+        };
+        // Send outside the hub lock so the WS writer never contends with deliver_reply.
+        outbound
+            .send(OutboundCmd::Text(frame.to_string()))
+            .await
+            .map_err(|_| HubError::Disconnected)?;
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(reply)) => Ok(reply),
             Ok(Err(_)) => Err(HubError::Disconnected),
             Err(_) => {
-                // Clean up waiter on timeout.
                 let mut g = self.inner.lock().await;
                 if let Some(conn) = g.get_mut(provider_id) {
                     conn.waiters.remove(attempt_id);
@@ -242,7 +252,8 @@ mod tests {
     #[tokio::test]
     async fn prepare_round_trip() {
         let hub = ProviderHub::new();
-        let mut rx = hub.attach("p1".into(), 1).await;
+        let (tx, mut rx) = mpsc::channel(8);
+        hub.attach("p1".into(), 1, tx).await;
         let hub2 = hub.clone();
         let writer = tokio::spawn(async move {
             if let Some(OutboundCmd::Text(t)) = rx.recv().await {

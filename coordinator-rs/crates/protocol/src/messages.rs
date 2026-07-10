@@ -152,3 +152,16 @@ mod tests {
         assert_eq!(msg.rest.get("provider_id").and_then(|v| v.as_str()), Some("p1"));
     }
 }
+
+#[cfg(test)]
+mod flatten_tests {
+    use super::*;
+
+    #[test]
+    fn prepared_flatten_keeps_attempt_id() {
+        let raw = br#"{"type":"prepared","attempt_id":"a1","lease_ttl_ms":1,"prompt_tokens":1,"max_output_tokens":1,"engine_queue_depth":0,"prefill_can_begin":true}"#;
+        let msg = WireMessage::parse(raw).unwrap();
+        assert_eq!(msg.message_type(), MessageType::Prepared);
+        assert_eq!(msg.rest.get("attempt_id").and_then(|v| v.as_str()), Some("a1"));
+    }
+}

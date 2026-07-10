@@ -48,6 +48,7 @@ Date: 2026-07-10
 | 39 | Admin force-settle HTTP | `POST /v1/admin/force-settle` (ownership + pilot key) clears start_authorized holds via settle_capped_as(`force_settled`); enqueues critical outbox; idempotent replay returns already_terminal |
 | 40 | Admin recover-undispatched HTTP | `POST /v1/admin/recover-undispatched` releases reserved-not-started jobs; skips start_authorized (must use force-settle) |
 | 41 | Admin held-review HTTP | `POST /v1/admin/held-review` classifies start_authorized holds without moving money (`held_for_review` / `skipped` / `already_terminal`) |
+| 42 | Disposition-first recovery | `force_settle_held` / `recover_start_authorized_held` / `recover_undispatched` (and admin mirrors) check `job_disposition` before `funded_start` so disposed jobs are AlreadyTerminal, not Skipped |
 
 ## Deleted Go mechanisms (do not port)
 

@@ -12,7 +12,6 @@ use bytes::Bytes;
 
 use darkbloom_core::ids::AttemptId;
 use darkbloom_protocol::crypto::nacl_box;
-use darkbloom_protocol::json_v1::EncryptedPayload;
 use darkbloom_server::contracts::{
     AdmitOutcome, AttemptEvent, ControlFrame, DataFrame, SubmitError,
 };
@@ -83,8 +82,9 @@ async fn full_v1_flow_streams_encrypted_chunks() {
 
     // Encrypted chunks: the provider seals to the per-request session key
     // with its REGISTERED X25519 key; the session validates the sender key
-    // and forwards RAW ciphertext; the request task (this test) owns
-    // decryption via the precomputed shared key.
+    // and forwards the RAW `nonce || box` ciphertext bytes — exactly what
+    // the request task's precomputed shared key opens
+    // (`AttemptCrypto::open_chunk`); this test plays that role.
     let (session_pub, session_secret) = nacl_box::generate_keypair();
     let plaintexts = [
         r#"{"choices":[{"delta":{"content":"Hel"}}]}"#,
@@ -112,10 +112,8 @@ async fn full_v1_flow_streams_encrypted_chunks() {
             .expect("chunk in time")
             .expect("pipe open");
         assert_eq!(frame.sequence, 0, "v1 chunks carry sequence 0");
-        let payload: EncryptedPayload =
-            serde_json::from_slice(&frame.payload).expect("raw EncryptedPayload JSON");
-        assert_eq!(payload.ephemeral_public_key, provider.x25519_pub_b64);
-        let opened = nacl_box::open_with_shared_key(&payload, &shared).expect("decrypt");
+        let opened =
+            nacl_box::open_bytes_with_shared_key(&frame.payload, &shared).expect("decrypt");
         assert_eq!(opened, expected.as_bytes());
     }
 
@@ -246,7 +244,7 @@ async fn no_heartbeat_means_model_not_ready_retry() {
 async fn reconnect_supersedes_prior_epoch() {
     let harness = Harness::start().await;
     let mut first =
-        FakeProvider::connect_keyed(&harness, "SER-EPOCH", [0x51; 32], [0x61; 32]).await;
+        FakeProvider::connect_keyed(harness.addr, "SER-EPOCH", [0x51; 32], [0x61; 32]).await;
     first.establish(false).await;
     first.send_heartbeat(MODEL, "running").await;
 
@@ -256,7 +254,7 @@ async fn reconnect_supersedes_prior_epoch() {
     // Same stable identity (same serial + keys) connects again: the fleet
     // mints the next epoch and fences the old session.
     let mut second =
-        FakeProvider::connect_keyed(&harness, "SER-EPOCH", [0x51; 32], [0x61; 32]).await;
+        FakeProvider::connect_keyed(harness.addr, "SER-EPOCH", [0x51; 32], [0x61; 32]).await;
     second.establish(false).await;
     second.send_heartbeat(MODEL, "running").await;
 

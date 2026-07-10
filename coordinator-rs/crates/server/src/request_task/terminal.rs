@@ -11,7 +11,9 @@
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use darkbloom_core::ids::{AttemptId, CoordinatorEpoch, JobId, TerminalDigest as CoreDigest};
+use darkbloom_core::ids::{
+    AttemptId, CoordinatorEpoch, JobId, SessionEpoch, TerminalDigest as CoreDigest,
+};
 use darkbloom_core::money::Tokens;
 use darkbloom_core::request::{TerminalOutcome, TerminalSummary};
 use darkbloom_core::settlement::ProviderClaimedUsage;
@@ -225,29 +227,42 @@ pub fn v1_error_receipt(
     (receipt, summary)
 }
 
+/// Everything the settlement parameter builder needs.
+pub struct SettleInputs<'a> {
+    pub job: JobId,
+    pub attempt: AttemptId,
+    pub receipt: &'a TerminalReceipt,
+    pub accepted_sequence: u64,
+    pub accepted_checkpoint: Tokens,
+    /// v1 only: the frozen billable input is the billing claim (module docs
+    /// in `request_task` — v1 has no signed exact tokenization; the
+    /// provider's self-reported prompt count stays in the raw receipt).
+    pub frozen_prompt_override: Option<Tokens>,
+    /// Session epoch the attempt ran under (plan §9.1.3).
+    pub origin_session_epoch: SessionEpoch,
+    pub coordinator_epoch: CoordinatorEpoch,
+}
+
 /// Builds the settlement transaction parameters: provider-claimed usage
 /// joined with the coordinator's independent accepted checkpoint
 /// (plan §10.6 — the ledger caps billing at the checkpoint).
-pub fn settle_params(
-    job: JobId,
-    attempt: AttemptId,
-    receipt: &TerminalReceipt,
-    accepted_sequence: u64,
-    accepted_checkpoint: Tokens,
-    coordinator_epoch: CoordinatorEpoch,
-) -> SettleParams {
-    let claimed = receipt.claimed_usage();
+pub fn settle_params(inputs: &SettleInputs<'_>) -> SettleParams {
+    let claimed = inputs.receipt.claimed_usage();
+    let prompt_tokens = inputs
+        .frozen_prompt_override
+        .unwrap_or(claimed.prompt_tokens);
     SettleParams {
-        operation_key: format!("job:{job}:settle"),
-        job,
-        attempt,
-        terminal_digest: receipt.digest(),
-        terminal_json: receipt.to_json(),
-        prompt_tokens: u64::from(claimed.prompt_tokens.get()),
+        operation_key: format!("job:{}:settle", inputs.job),
+        job: inputs.job,
+        attempt: inputs.attempt,
+        terminal_digest: inputs.receipt.digest(),
+        terminal_json: inputs.receipt.to_json(),
+        prompt_tokens: u64::from(prompt_tokens.get()),
         completion_tokens_claimed: u64::from(claimed.completion_tokens.get()),
-        accepted_sequence,
-        accepted_cumulative_tokens: u64::from(accepted_checkpoint.get()),
-        coordinator_epoch,
+        accepted_sequence: inputs.accepted_sequence,
+        accepted_cumulative_tokens: u64::from(inputs.accepted_checkpoint.get()),
+        origin_session_epoch: inputs.origin_session_epoch,
+        coordinator_epoch: inputs.coordinator_epoch,
     }
 }
 

@@ -94,6 +94,8 @@ pub enum ConfigError {
 /// - Prepare hedge budget: < 10% of admissions (plan §11.8); default 5%.
 /// - Consumer chunk pipe: 512 items / 384 KiB — multi-second burst absorption
 ///   (plan §13.6), never a handful of chunks.
+/// - Provider payout: 80% of the consumer charge (Go parity); the platform
+///   fee is the exact remainder (plan §9.3.5).
 pub fn default_policy() -> RequestPolicy {
     RequestPolicy {
         first_content_base: Duration::from_secs(5),
@@ -107,6 +109,7 @@ pub fn default_policy() -> RequestPolicy {
         pipe_max_items: 512,
         pipe_max_bytes: 384 * 1024,
         stream_idle_timeout: Duration::from_secs(300),
+        provider_payout_ppm: 800_000,
     }
 }
 
@@ -138,6 +141,15 @@ impl Config {
             }
             policy.hedge_budget_fraction = fraction;
             policy.hedge_enabled = fraction > 0.0;
+        }
+        if let Some(ppm) = parse_opt::<u32>("DARKBLOOM_PROVIDER_PAYOUT_PPM")? {
+            if ppm > 1_000_000 {
+                return Err(ConfigError::Invalid {
+                    var: "DARKBLOOM_PROVIDER_PAYOUT_PPM",
+                    reason: format!("{ppm} exceeds 1_000_000 (one whole)"),
+                });
+            }
+            policy.provider_payout_ppm = ppm;
         }
 
         let fleet_mailbox = FleetMailboxCaps {
@@ -216,6 +228,12 @@ impl Config {
                 reason: "chunk pipe must be non-empty (plan §13.6)".to_owned(),
             });
         }
+        if self.policy.provider_payout_ppm > 1_000_000 {
+            return Err(ConfigError::Invalid {
+                var: "DARKBLOOM_PROVIDER_PAYOUT_PPM",
+                reason: "payout share cannot exceed one whole".to_owned(),
+            });
+        }
         Ok(())
     }
 }
@@ -273,6 +291,7 @@ mod tests {
         assert_eq!(p.pipe_max_items, 512);
         assert_eq!(p.pipe_max_bytes, 384 * 1024);
         assert_eq!(p.stream_idle_timeout, Duration::from_secs(300));
+        assert_eq!(p.provider_payout_ppm, 800_000);
     }
 
     #[test]

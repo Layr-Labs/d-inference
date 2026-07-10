@@ -267,6 +267,83 @@ async fn v2_two_phase_flow_with_binary_chunks_and_terminal_ack() {
     harness.runtime.shutdown().await;
 }
 
+/// v2 has no dedicated prepare-rejection frame (plan §10.5): a provider
+/// that cannot serve a prepare answers with a `terminal` carrying
+/// `outcome=failed` + `error_class`. The session must forward that
+/// PRE-START terminal to the attached attempt's events sink — it is the
+/// rejection vehicle the request task maps to `PrepareRejected` (which the
+/// reducer resolves into the sequential alternate; that half is covered by
+/// the http_chat alternate tests).
+#[tokio::test]
+async fn pre_start_rejection_terminal_reaches_events_sink() {
+    let harness = Harness::start().await;
+    let mut provider = FakeProvider::connect(&harness, "SER-V2R").await;
+    let grant = establish_v2(&harness, &mut provider).await;
+    let epoch = grant.session.epoch.get();
+
+    let wire = new_attempt(epoch, 0x40);
+    let (sinks, mut events, _chunks) = attempt_sinks();
+    grant
+        .session
+        .attach_attempt(wire.wire_id.clone(), wire.attempt, sinks)
+        .await
+        .expect("attach");
+
+    // prepare goes out; the provider rejects instead of returning prepared.
+    let prepare = FrameV2::Prepare(PrepareFrame {
+        scope: wire.scope,
+        model_id: MODEL.to_owned(),
+        max_output_tokens: 16,
+        first_content_budget_ms: 1_000,
+    });
+    grant
+        .session
+        .submit_data(DataFrame::V2Prepare {
+            frame: Box::new(prepare),
+            binary_body: None,
+        })
+        .expect("submit prepare")
+        .await
+        .expect("writer alive")
+        .expect("on wire");
+    let prepare_json = provider.next_json().await;
+    assert_eq!(prepare_json["type"], "prepare");
+
+    // The rejection terminal: outcome=failed with a structured class. The
+    // frame invariant requires a lease id, so the provider mints one for
+    // the rejection record.
+    let leased = with_lease(wire.scope, [0xDD; 16]);
+    let rejection = FrameV2::Terminal(TerminalFrame {
+        scope: leased,
+        provider_id: "prov-v2".to_owned(),
+        model_id: MODEL.to_owned(),
+        origin_session_epoch: leased.session_epoch,
+        outcome: TerminalOutcome::Failed,
+        error_class: Some(darkbloom_protocol::json_v2::ErrorClass::Capacity),
+        usage: TerminalUsage::default(),
+        generated_tokens: 0,
+        response_hash: darkbloom_protocol::json_v2::ResponseHash([0; 32]),
+        checkpoint: RollingHashCheckpoint::default(),
+        se_signature: "sig".to_owned(),
+    });
+    provider
+        .send_json(&serde_json::from_slice(&rejection.encode().expect("encode")).expect("value"))
+        .await;
+
+    match recv_event(&mut events).await {
+        AttemptEvent::Terminal(frame) => {
+            assert_eq!(frame.outcome, TerminalOutcome::Failed);
+            assert_eq!(
+                frame.error_class,
+                Some(darkbloom_protocol::json_v2::ErrorClass::Capacity)
+            );
+        }
+        other => panic!("expected the rejection terminal, got {other:?}"),
+    }
+
+    harness.runtime.shutdown().await;
+}
+
 #[tokio::test]
 async fn stale_epoch_and_nonce_mismatch_chunks_are_dropped() {
     let harness = Harness::start().await;

@@ -43,25 +43,6 @@ pub fn v2_lease(lease: LeaseId) -> json_v2::LeaseId {
     json_v2::LeaseId(v2_uuid16(lease.as_bytes()))
 }
 
-/// Deterministic permit identity for `FleetCommand::ReleasePermit`. The
-/// frozen contracts return an [`crate::contracts::AdmitGrant`] without a
-/// `PermitId`, so both sides derive it as a name-based UUID (version-8,
-/// SHA-256) over `"darkbloom-permit:" || job || provider` — reported for
-/// integration with the fleet component.
-pub fn permit_id_for(job: JobId, provider: ProviderId) -> darkbloom_core::ids::PermitId {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(b"darkbloom-permit:");
-    hasher.update(job.as_bytes());
-    hasher.update(provider.as_bytes());
-    let digest = hasher.finalize();
-    let mut bytes = [0u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    bytes[6] = (bytes[6] & 0x0f) | 0x80; // version 8 (custom, RFC 9562)
-    bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC variant
-    darkbloom_core::ids::PermitId::new(Uuid::from_bytes(bytes))
-}
-
 /// Live state for one dispatched attempt.
 pub struct AttemptRuntime {
     pub provider: ProviderId,
@@ -89,6 +70,9 @@ pub struct AttemptRuntime {
     /// Grant-time facts frozen for funding and calibration feedback.
     pub price: crate::contracts::PriceCard,
     pub beneficiary: Option<darkbloom_core::ids::AccountId>,
+    /// The permit id the fleet minted for this attempt's grant; echoed
+    /// verbatim in `FleetCommand::ReleasePermit` (single mint authority).
+    pub permit_id: darkbloom_core::ids::PermitId,
     pub predicted_first_content: darkbloom_core::time::DurationMs,
     pub dispatched_at: darkbloom_core::time::TimestampMs,
     /// A cancel/abort frame has been submitted for this attempt (dedupes
@@ -119,11 +103,9 @@ impl AttemptRuntime {
             receipt: None,
             prepare_deadline_at: None,
             lease_expiry_at: None,
-            price: crate::contracts::PriceCard {
-                prompt_micro_per_token: darkbloom_core::money::MicroUsd::ZERO,
-                completion_micro_per_token: darkbloom_core::money::MicroUsd::ZERO,
-            },
+            price: crate::contracts::PriceCard::ZERO,
             beneficiary: None,
+            permit_id: darkbloom_core::ids::PermitId::new(Uuid::nil()),
             predicted_first_content: darkbloom_core::time::DurationMs::ZERO,
             dispatched_at: darkbloom_core::time::TimestampMs::new(0),
             cancel_sent: false,
@@ -287,15 +269,6 @@ pub fn classify_v1_error(status_code: u16, message: &str) -> ProviderErrorClass 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn permit_id_is_deterministic_and_distinct() {
-        let job = JobId::new(Uuid::from_u128(1));
-        let a = ProviderId::new(Uuid::from_u128(2));
-        let b = ProviderId::new(Uuid::from_u128(3));
-        assert_eq!(permit_id_for(job, a), permit_id_for(job, a));
-        assert_ne!(permit_id_for(job, a), permit_id_for(job, b));
-    }
 
     #[test]
     fn v1_error_classification() {

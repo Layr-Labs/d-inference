@@ -1,11 +1,13 @@
-//! FROZEN inter-component contracts for parallel server development.
+//! Inter-component contracts: every seam between the server components
+//! (plan §7) — the fleet mailbox, the provider-session handle and writer
+//! lanes, the per-attempt event sinks, the bounded consumer byte pipe, the
+//! ledger facade, and the shared application state.
 //!
-//! This module defines every seam between the concurrently developed server
-//! components (plan §7): the fleet mailbox, the provider-session handle and
-//! writer lanes, the per-attempt event sinks, the bounded consumer byte pipe,
-//! the ledger facade, and the shared application state. Component agents must
-//! NOT edit this file; needed extensions live in the owning component's module
-//! and are reported back for integration.
+//! These types were frozen during parallel component development; the
+//! integration phase unfroze them and folded the reported seam gaps back in
+//! (permit identity on [`AdmitGrant`], the grant-carried provider key,
+//! per-MTok pricing on [`PriceCard`], the payout rate on [`RequestPolicy`],
+//! and real fencing identifiers on the ledger parameter structs).
 //!
 //! Entry-point conventions (implemented by the owning modules):
 //!
@@ -31,7 +33,7 @@ use darkbloom_core::ids::{
     ProviderId, SessionEpoch, StateRevision, TrustEpoch,
 };
 use darkbloom_core::money::MicroUsd;
-use darkbloom_core::settlement::FrozenTerms;
+use darkbloom_core::settlement::{FrozenTerms, MicroUsdPerMTokens};
 use darkbloom_protocol::json_v1;
 use darkbloom_protocol::json_v2;
 
@@ -62,13 +64,32 @@ pub struct RequestPolicy {
     pub pipe_max_bytes: usize,
     /// Idle timeout between streamed chunks.
     pub stream_idle_timeout: Duration,
+    /// Provider payout share of the consumer charge, parts-per-million
+    /// (plan §12.4: frozen into settlement terms before start). The platform
+    /// fee is the exact remainder after payout (and referral, when present)
+    /// per `darkbloom_core::settlement::split_charge` semantics.
+    pub provider_payout_ppm: u32,
 }
 
-/// One model's public pricing card (micro-USD per token).
+/// One model's public pricing card: exact integer micro-USD per ONE MILLION
+/// tokens (the legacy `model_prices` unit, plan §11.5).
+///
+/// Rates stay per-MTok so sub-micro-USD per-token prices never round.
+/// Per-request costs are computed under the frozen
+/// [`darkbloom_core::settlement::RoundingVersion`]: reservations and
+/// settlement both round UP (`CeilV1`), so a reservation can never
+/// under-cover the charge settled from the same frozen rates.
 #[derive(Debug, Clone, Copy)]
 pub struct PriceCard {
-    pub prompt_micro_per_token: MicroUsd,
-    pub completion_micro_per_token: MicroUsd,
+    pub prompt_micro_per_mtok: MicroUsdPerMTokens,
+    pub completion_micro_per_mtok: MicroUsdPerMTokens,
+}
+
+impl PriceCard {
+    pub const ZERO: Self = Self {
+        prompt_micro_per_mtok: MicroUsdPerMTokens::ZERO,
+        completion_micro_per_mtok: MicroUsdPerMTokens::ZERO,
+    };
 }
 
 /// Immutable catalog snapshot (plan §8): public model -> concrete build,
@@ -441,8 +462,16 @@ pub struct RegistrationSummary {
 /// frozen quote reference and the live session handle.
 pub struct AdmitGrant {
     pub permit: DispatchPermit,
+    /// The permit id the fleet MINTED for this grant. The request task
+    /// echoes exactly this id in [`FleetCommand::ReleasePermit`]; nothing
+    /// re-derives it (plan §9.2.10 — the mint is the single identity).
+    pub permit_id: PermitId,
     pub provider: ProviderId,
     pub session: SessionHandle,
+    /// The provider's registered X25519 public key (base64), frozen at
+    /// grant time from the same registration that owns `session` — so the
+    /// key and the session epoch can never disagree (plan §15.4).
+    pub provider_public_key_b64: String,
     pub concrete_model: ModelId,
     pub price: PriceCard,
     pub beneficiary: Option<AccountId>,
@@ -571,6 +600,9 @@ pub struct HeartbeatUpdate {
 pub struct FleetSnapshot {
     pub providers: usize,
     pub routable: usize,
+    /// Prepare permits currently outstanding fleet-wide (plan §9.2.10 —
+    /// must return to zero when no request is in flight).
+    pub permits_outstanding: usize,
     pub warm_by_model: std::collections::HashMap<String, usize>,
 }
 
@@ -650,6 +682,13 @@ pub struct ResizeFreezeParams {
     pub frozen: FrozenTerms,
     pub lease: LeaseId,
     pub provider: ProviderId,
+    /// Session epoch the attempt was dispatched under (plan §10.2); recorded
+    /// on the durable attempt row.
+    pub session_epoch: SessionEpoch,
+    /// Dispatch nonce from the attempt's wire scope (plan §10.2).
+    pub dispatch_nonce: [u8; 16],
+    /// Canonical encrypted-request digest from the attempt's wire scope.
+    pub request_digest: [u8; 32],
     pub coordinator_epoch: CoordinatorEpoch,
 }
 
@@ -665,6 +704,9 @@ pub struct SettleParams {
     pub completion_tokens_claimed: u64,
     pub accepted_sequence: u64,
     pub accepted_cumulative_tokens: u64,
+    /// Session epoch the attempt actually RAN under (plan §9.1.3): the v2
+    /// terminal's `origin_session_epoch`; for v1, the dispatch session.
+    pub origin_session_epoch: SessionEpoch,
     pub coordinator_epoch: CoordinatorEpoch,
 }
 

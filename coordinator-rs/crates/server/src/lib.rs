@@ -1,12 +1,13 @@
 //! Darkbloom Rust coordinator server crate.
 //!
 //! Component ownership follows `docs/architecture/rust-coordinator-plan.md`
-//! section 7. The seams between concurrently-developed components live in
-//! [`contracts`] — that module is FROZEN during parallel development: no
-//! component may edit it unilaterally.
+//! section 7. The seams between components live in [`contracts`];
+//! [`bootstrap`] assembles them into the running application (shared by
+//! `main.rs` and the full-stack integration tests).
 //!
 //! | Module | Authority (plan section) |
 //! |---|---|
+//! | [`bootstrap`] | main-style wiring of every component (§15.1, §20) |
 //! | [`http`] | Axum API adapter (§7.1) |
 //! | [`request_task`] | one logical request (§7.2) |
 //! | [`fleet`] | live fleet decision state (§7.3) |
@@ -15,6 +16,7 @@
 //! | [`trust`] | attestation and signature verification (§7.6) |
 //! | [`recovery`] | durable-state sweepers (§18.1) |
 
+pub mod bootstrap;
 pub mod catalog;
 pub mod config;
 pub mod contracts;

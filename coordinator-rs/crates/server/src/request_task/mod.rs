@@ -14,7 +14,7 @@
 //! | `inference_request` submitted | attempt exists (`AdmitGranted` → `SendPrepare` executed as the v1 dispatch) |
 //! | data-lane write confirmed | `PrepareWriteConfirmed` (ambiguous → `PrepareWriteUnknown`, plan §13.2) |
 //! | `inference_accepted` | nothing — liveness only (Go parity) |
-//! | first CONTENT chunk | synthetic `PreparedArrived` (minted lease, facts = reserve estimates, eta 0) → `FundAndAuthorize` executes as a NO-OP (the durable reserve IS the v1 funding leg; no resize) → `FundAuthorized` → `SendStart` executes as a no-op → `StartedAck` → `ContentAccepted` |
+//! | first CONTENT chunk | synthetic `PreparedArrived` (minted lease, facts = reserve estimates, eta 0) → `FundAndAuthorize` runs the SAME durable resize/freeze leg as v2 (facts are the reserve estimates, so the hold is unchanged; the leg freezes terms and records `start_authorized` — the durable state machine requires it before running/settlement) → `FundAuthorized` → `SendStart` executes as `mark_running` only → `StartedAck` → `ContentAccepted` |
 //! | role-only / lifecycle chunk | `PreambleAccepted` — held, does not commit (plan §9.2.7) |
 //! | `inference_error` pre-content | `PrepareRejected { class }` (status-code classification) → invisible sequential alternate, mirroring Go pre-content failover |
 //! | `inference_error` post-content | `TerminalArrived` (outcome `Error`, zero usage) |
@@ -28,6 +28,13 @@
 //! checkpoint is raised to it before settlement; a cancelled or stalled
 //! stream settles capped at the accepted chunk count instead (plan §13.5,
 //! §13.6).
+//!
+//! v1 prompt billing basis: v1 providers have no signed exact tokenization,
+//! so the frozen billable input IS the coordinator's estimate, and the
+//! settlement claim echoes that estimate (the provider's self-reported
+//! prompt count is stored in the terminal receipt for audit but never
+//! billed and never review-flags a v1 job — the flag exists to catch v2
+//! providers whose claim contradicts what THEY quoted at prepare).
 //!
 //! Prepare-stage hedging (plan §11.8) is v2-only: a v1 dispatch generates
 //! immediately, so a v1 "hedge" would race two live generations — exactly
@@ -45,38 +52,23 @@ use std::sync::{Arc, Mutex};
 
 use darkbloom_core::fleet::admission::AdmissionConfig;
 use darkbloom_core::fleet::hedge::{HedgeBudget, HedgeConfig};
-use darkbloom_core::ids::{CoordinatorEpoch, ProviderId};
+use darkbloom_core::ids::CoordinatorEpoch;
 use tokio_util::sync::CancellationToken;
 
 use crate::contracts::{
     AppState, CoordinatorKeys, FleetHandle, LedgerFacade, RequestPolicy, SharedCatalog,
 };
 
-pub use attempt::permit_id_for;
 pub use classify::{classify, rewrite_chunk_model, strip_sse_prefix, ChunkClass};
 pub use types::{Clock, ConsumerEvent, NormalizedRequest, TaskReport, UsageOut};
 
-/// Provider X25519 key lookup. The frozen contracts do not carry the
-/// provider's registered public key on the [`crate::contracts::AdmitGrant`],
-/// and the request task owns per-request encryption (plan §15.4) — so this
-/// seam is the local adaptation, wired at integration to the fleet/session
-/// registry ([`crate::contracts::RegistrationSummary::public_key_b64`]).
-pub trait ProviderKeyDirectory: Send + Sync {
-    fn x25519_public_b64(&self, provider: ProviderId) -> Option<String>;
-}
-
-/// Static map implementation (tests, single-tenant tooling).
-#[derive(Default)]
-pub struct StaticProviderKeys(pub std::collections::HashMap<ProviderId, String>);
-
-impl ProviderKeyDirectory for StaticProviderKeys {
-    fn x25519_public_b64(&self, provider: ProviderId) -> Option<String> {
-        self.0.get(&provider).cloned()
-    }
-}
-
 /// Everything one request task needs (plan §7.2). Cheap to clone per
 /// request.
+///
+/// Provider encryption keys ride on [`crate::contracts::AdmitGrant`]
+/// (`provider_public_key_b64`), frozen by the fleet at admit time from the
+/// same registration that owns the granted session — there is no separate
+/// key directory to fall out of sync with the session epoch.
 #[derive(Clone)]
 pub struct RequestTaskDeps {
     pub fleet: FleetHandle,
@@ -86,9 +78,10 @@ pub struct RequestTaskDeps {
     pub admission_config: Arc<AdmissionConfig>,
     pub coordinator_epoch: CoordinatorEpoch,
     pub encryption: Arc<CoordinatorKeys>,
-    pub provider_keys: Arc<dyn ProviderKeyDirectory>,
-    /// Global bounded prepare-hedge budget (plan §11.8), shared across all
-    /// request tasks.
+    /// THE global bounded prepare-hedge budget (plan §11.8), shared across
+    /// all request tasks. Single authority: the fleet keeps no hedge
+    /// accounting; `http::build_router_with` constructs exactly one of
+    /// these per process from the policy fraction.
     pub hedge_budget: Arc<Mutex<HedgeBudget>>,
     /// Coordinator shutdown: cancels the request like a consumer
     /// disconnect (plan §15.1 supervisor step 2).
@@ -96,11 +89,10 @@ pub struct RequestTaskDeps {
 }
 
 impl RequestTaskDeps {
-    /// Builds deps from the shared [`AppState`] plus the pieces the frozen
-    /// contracts do not carry (provider keys, hedge budget, shutdown).
+    /// Builds deps from the shared [`AppState`] plus the pieces it does not
+    /// carry (hedge budget, shutdown).
     pub fn from_state(
         state: &AppState,
-        provider_keys: Arc<dyn ProviderKeyDirectory>,
         hedge_budget: Arc<Mutex<HedgeBudget>>,
         shutdown: CancellationToken,
     ) -> Self {
@@ -112,7 +104,6 @@ impl RequestTaskDeps {
             admission_config: state.admission_config.clone(),
             coordinator_epoch: state.coordinator_epoch,
             encryption: state.encryption.clone(),
-            provider_keys,
             hedge_budget,
             shutdown,
         }
@@ -120,7 +111,8 @@ impl RequestTaskDeps {
 }
 
 /// Builds the process-wide hedge budget from the policy fraction
-/// (plan §11.8: well under 10%, enforced by [`HedgeConfig`]).
+/// (plan §11.8: well under 10%, enforced by [`HedgeConfig`]). Construct
+/// exactly ONE per process and share it through [`RequestTaskDeps`].
 pub fn shared_hedge_budget(policy: &RequestPolicy) -> Arc<Mutex<HedgeBudget>> {
     let fraction_ppm = (policy.hedge_budget_fraction.clamp(0.0, 0.099) * 1_000_000.0) as u32;
     let config =

@@ -168,6 +168,20 @@ pub(crate) async fn register(
         capabilities.push(crate::fleet::SUPPORTS_MEDIA_CAPABILITY.to_owned());
     }
 
+    // Earnings beneficiary: the provider's registration auth token resolves
+    // to its account through the ledger's API-key store (pilot auth
+    // surface). Providers without a resolvable token stay routable only for
+    // unpaid traffic (plan §11.2 MissingBeneficiary hard gate). The token
+    // itself is never logged.
+    let beneficiary = if register.auth_token.is_empty() {
+        None
+    } else {
+        deps.auth
+            .validate(&register.auth_token)
+            .await
+            .map(|record| record.account)
+    };
+
     let summary = RegistrationSummary {
         provider,
         wire_identity: identity,
@@ -175,9 +189,7 @@ pub(crate) async fn register(
         version: register.version.clone(),
         public_key_b64: register.public_key.clone(),
         models,
-        // Beneficiary (auth token -> account) resolution is a store seam
-        // wired at integration; paid routing stays gated until then.
-        beneficiary: None,
+        beneficiary,
         capabilities,
     };
 

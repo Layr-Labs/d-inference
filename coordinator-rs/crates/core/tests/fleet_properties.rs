@@ -390,6 +390,15 @@ proptest! {
         now in 0i64..20_000,
         seed in any::<u64>(),
     ) {
+        // One snapshot per provider: the fleet actor assembles candidates
+        // from a HashMap keyed by ProviderId, so duplicate ids are
+        // unrepresentable in production — and the assertions below look
+        // the chosen provider up by id.
+        let mut seen = BTreeSet::new();
+        let candidates: Vec<CandidateSnapshot> = candidates
+            .into_iter()
+            .filter(|c| seen.insert(c.provider))
+            .collect();
         let config = AdmissionConfig::default();
         let t = traits();
         let now = TimestampMs::new(now);

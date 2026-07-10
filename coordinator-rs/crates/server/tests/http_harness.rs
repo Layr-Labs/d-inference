@@ -24,6 +24,7 @@ use darkbloom_core::ids::{
     AccountId, ApiKeyId, CoordinatorEpoch, JobId, PermitId, ProviderId, SessionEpoch,
 };
 use darkbloom_core::money::MicroUsd;
+use darkbloom_core::settlement::MicroUsdPerMTokens;
 use darkbloom_core::time::{DurationMs, TimestampMs};
 use darkbloom_protocol::crypto::nacl_box::{self, PublicKey, SecretKey, NONCE_LEN};
 
@@ -35,7 +36,7 @@ use darkbloom_server::contracts::{
     SessionHandle, SessionLaneCaps, SessionReceivers, SettleOutcome, SettleParams,
 };
 use darkbloom_server::http::{build_router_with, HttpConfig};
-use darkbloom_server::request_task::{RequestTaskDeps, StaticProviderKeys};
+use darkbloom_server::request_task::{shared_hedge_budget, RequestTaskDeps};
 
 pub const RECV_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -309,6 +310,8 @@ pub enum AdmitReply {
 #[derive(Default)]
 pub struct FleetRecord {
     pub admits: Mutex<Vec<AdmitRequest>>,
+    /// (provider, permit) minted per grant, in grant order.
+    pub minted: Mutex<Vec<(ProviderId, PermitId)>>,
     pub releases: Mutex<Vec<(ProviderId, PermitId)>>,
     pub observations: Mutex<Vec<String>>,
 }
@@ -316,6 +319,18 @@ pub struct FleetRecord {
 impl FleetRecord {
     pub fn admit_count(&self) -> usize {
         self.admits.lock().unwrap().len()
+    }
+
+    /// Every released permit id was minted for the same provider — the
+    /// permit-identity echo invariant.
+    pub fn assert_releases_echo_minted(&self) {
+        let minted = self.minted.lock().unwrap().clone();
+        for (provider, permit) in self.releases.lock().unwrap().iter() {
+            assert!(
+                minted.iter().any(|(p, id)| p == provider && id == permit),
+                "released permit {permit} was never minted for provider {provider}"
+            );
+        }
     }
 }
 
@@ -335,10 +350,12 @@ pub struct Harness {
     pub shutdown: CancellationToken,
 }
 
+/// 2 µUSD per prompt token / 5 µUSD per completion token, expressed as the
+/// exact per-MTok rates the contract carries.
 pub fn price_card() -> PriceCard {
     PriceCard {
-        prompt_micro_per_token: MicroUsd::new(2),
-        completion_micro_per_token: MicroUsd::new(5),
+        prompt_micro_per_mtok: MicroUsdPerMTokens::new(2_000_000).expect("rate"),
+        completion_micro_per_mtok: MicroUsdPerMTokens::new(5_000_000).expect("rate"),
     }
 }
 
@@ -355,6 +372,7 @@ pub fn default_policy() -> RequestPolicy {
         pipe_max_items: 64,
         pipe_max_bytes: 256 * 1024,
         stream_idle_timeout: Duration::from_secs(10),
+        provider_payout_ppm: 800_000,
     }
 }
 
@@ -411,11 +429,9 @@ impl HarnessBuilder {
             .iter()
             .map(|p| ProviderSim::new(*p))
             .collect();
-        let mut key_map = HashMap::new();
         let mut grant_info = Vec::new();
         for sim in &providers {
-            key_map.insert(sim.provider, sim.public_b64.clone());
-            grant_info.push((sim.provider, sim.handle.clone()));
+            grant_info.push((sim.provider, sim.handle.clone(), sim.public_b64.clone()));
         }
 
         let (fleet, mut fleet_rx) = fleet_channels(64, 64);
@@ -431,7 +447,11 @@ impl HarnessBuilder {
                         record.admits.lock().unwrap().push(req.clone());
                         let outcome = match script.pop_front() {
                             Some(AdmitReply::Grant(index)) => {
-                                let (provider, session) = grant_info[index].clone();
+                                let (provider, session, key_b64) = grant_info[index].clone();
+                                // Minted per grant like the real fleet; the
+                                // request task must ECHO it on release.
+                                let permit_id = PermitId::new(Uuid::new_v4());
+                                record.minted.lock().unwrap().push((provider, permit_id));
                                 AdmitOutcome::Grant(Box::new(AdmitGrant {
                                     permit: darkbloom_core::fleet::admission::DispatchPermit {
                                         provider,
@@ -441,8 +461,10 @@ impl HarnessBuilder {
                                         is_probe: false,
                                         predicted_first_content: DurationMs::new(50),
                                     },
+                                    permit_id,
                                     provider,
                                     session,
+                                    provider_public_key_b64: key_b64,
                                     concrete_model: darkbloom_core::ids::ModelId::new(
                                         CONCRETE_MODEL,
                                     ),
@@ -500,21 +522,18 @@ impl HarnessBuilder {
         };
 
         let shutdown = CancellationToken::new();
-        let provider_keys = Arc::new(StaticProviderKeys(key_map));
         let task_deps = RequestTaskDeps::from_state(
             &state,
-            provider_keys.clone(),
-            darkbloom_server::request_task::shared_hedge_budget(&state.policy),
+            shared_hedge_budget(&state.policy),
             shutdown.clone(),
         );
         let router = build_router_with(
             state.clone(),
             HttpConfig {
-                provider_keys,
                 global_concurrency: 64,
                 per_account_concurrency: 16,
-                provider_connect: None,
                 shutdown: shutdown.clone(),
+                ..Default::default()
             },
         );
         Harness {

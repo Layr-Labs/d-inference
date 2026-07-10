@@ -27,7 +27,8 @@ use tokio_tungstenite::{connect_async_with_config, MaybeTlsStream, WebSocketStre
 
 use darkbloom_core::fleet::admission::{AdmissionConfig, RequestTraits};
 use darkbloom_core::ids::{CoordinatorEpoch, JobId, ModelId};
-use darkbloom_core::money::{MicroUsd, Tokens};
+use darkbloom_core::money::Tokens;
+use darkbloom_core::settlement::MicroUsdPerMTokens;
 use darkbloom_protocol::crypto::nacl_box;
 use darkbloom_protocol::crypto::signing::{build_status_canonical, StatusCanonicalInput};
 use darkbloom_server::contracts::{
@@ -35,7 +36,7 @@ use darkbloom_server::contracts::{
     PriceCard,
 };
 use darkbloom_server::fleet::{self, FleetConfig, FleetRuntime, FleetTunables};
-use darkbloom_server::provider_session::{self, SessionConfig, SessionDeps};
+use darkbloom_server::provider_session::{self, NoProviderAuth, SessionConfig, SessionDeps};
 use darkbloom_server::trust::TrustVerifier;
 
 pub const MODEL: &str = "concrete-build";
@@ -60,8 +61,8 @@ impl Harness {
             prices: [(
                 MODEL.to_owned(),
                 PriceCard {
-                    prompt_micro_per_token: MicroUsd::new(3),
-                    completion_micro_per_token: MicroUsd::new(11),
+                    prompt_micro_per_mtok: MicroUsdPerMTokens::new(3_000_000).expect("rate"),
+                    completion_micro_per_mtok: MicroUsdPerMTokens::new(11_000_000).expect("rate"),
                 },
             )]
             .into_iter()
@@ -85,6 +86,7 @@ impl Harness {
                 x25519_public_b64: nacl_box::encode_public_key(&coordinator_secret.public_key()),
                 x25519_secret: coordinator_secret,
             }),
+            auth: Arc::new(NoProviderAuth),
             coordinator_epoch: CoordinatorEpoch::new(COORD_EPOCH),
             config: session_config,
         };
@@ -181,21 +183,31 @@ pub struct FakeProvider {
     pub x25519_secret: nacl_box::SecretKey,
     pub x25519_pub_b64: String,
     pub serial: String,
+    /// Concrete model id declared in the register frame.
+    pub model: String,
+    /// Registration auth token (earnings account link); empty = none.
+    pub auth_token: String,
 }
 
 impl FakeProvider {
     pub async fn connect(harness: &Harness, serial: &str) -> Self {
-        Self::connect_keyed(harness, serial, [0x21; 32], [0x31; 32]).await
+        Self::connect_keyed(harness.addr, serial, [0x21; 32], [0x31; 32]).await
+    }
+
+    /// Connects to any coordinator address (the full-stack tests boot the
+    /// real bootstrap app instead of this module's session-only harness).
+    pub async fn connect_addr(addr: SocketAddr, serial: &str) -> Self {
+        Self::connect_keyed(addr, serial, [0x21; 32], [0x31; 32]).await
     }
 
     /// Deterministic keys so a "reconnect" carries the same stable identity.
     pub async fn connect_keyed(
-        harness: &Harness,
+        addr: SocketAddr,
         serial: &str,
         se_seed: [u8; 32],
         x_seed: [u8; 32],
     ) -> Self {
-        let url = format!("ws://{}/v1/providers/connect", harness.addr);
+        let url = format!("ws://{addr}/v1/providers/connect");
         let config = WebSocketConfig {
             max_message_size: Some(64 * 1024 * 1024),
             max_frame_size: Some(64 * 1024 * 1024),
@@ -215,6 +227,8 @@ impl FakeProvider {
             x25519_secret,
             x25519_pub_b64,
             serial: serial.to_owned(),
+            model: MODEL.to_owned(),
+            auth_token: String::new(),
         }
     }
 
@@ -242,6 +256,8 @@ impl FakeProvider {
     }
 
     /// Sends the v1 register frame; `v2` adds the protocol_v2 extension.
+    /// The declared model is `self.model`; a non-empty `self.auth_token`
+    /// rides as the earnings-account link.
     pub async fn register(&mut self, v2: bool) {
         let attestation = self.signed_attestation();
         let extension = if v2 {
@@ -254,6 +270,11 @@ impl FakeProvider {
         } else {
             ""
         };
+        let auth = if self.auth_token.is_empty() {
+            String::new()
+        } else {
+            format!(r#","auth_token":"{}""#, self.auth_token)
+        };
         let frame = format!(
             concat!(
                 r#"{{"type":"register","#,
@@ -263,10 +284,11 @@ impl FakeProvider {
                 r#""gpu_cores":40,"memory_bandwidth_gbs":546.0}},"#,
                 r#""models":[{{"id":"{model}","size_bytes":123,"model_type":"mlx","quantization":"4bit"}}],"#,
                 r#""backend":"mlx-swift","version":"0.8.0","public_key":"{x}","#,
-                r#""encrypted_response_chunks":true,"attestation":{attestation}{extension}}}"#
+                r#""encrypted_response_chunks":true{auth},"attestation":{attestation}{extension}}}"#
             ),
-            model = MODEL,
+            model = self.model,
             x = self.x25519_pub_b64,
+            auth = auth,
             attestation = attestation,
             extension = extension,
         );

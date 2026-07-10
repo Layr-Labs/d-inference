@@ -274,6 +274,7 @@ pub(crate) fn snapshot(state: &FleetState) -> FleetSnapshot {
     FleetSnapshot {
         providers: state.providers.len(),
         routable,
+        permits_outstanding: state.permits.total_outstanding(),
         warm_by_model,
     }
 }

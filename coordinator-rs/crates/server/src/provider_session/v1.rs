@@ -27,6 +27,7 @@ enum ChunkViolation {
     Mixed,
     NoRegisteredKey,
     SenderKeyMismatch,
+    UndecodableCiphertext,
 }
 
 impl ChunkViolation {
@@ -36,6 +37,7 @@ impl ChunkViolation {
             Self::Mixed => "mixed plaintext and encrypted text chunk",
             Self::NoRegisteredKey => "provider missing registered public key",
             Self::SenderKeyMismatch => "chunk sender key mismatch",
+            Self::UndecodableCiphertext => "chunk ciphertext is not valid base64",
         }
     }
 }
@@ -209,12 +211,16 @@ impl Reader {
 
 /// The chunk-integrity gate ported from Go `decryptTextResponseChunk`,
 /// minus decryption: the session cannot know per-request keys (see the
-/// module docs), so on success the raw `EncryptedPayload` JSON is the pipe
-/// payload and the request task decrypts.
+/// module docs). On success the pipe payload is the base64-DECODED raw
+/// `nonce || box` ciphertext — exactly what the request task's precomputed
+/// shared key opens (`request_task::crypto::AttemptCrypto::open_chunk`).
 fn validate_chunk(
     msg: &InferenceResponseChunkMessage,
     registered_key_b64: &str,
 ) -> Result<Bytes, ChunkViolation> {
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine;
+
     let Some(encrypted) = msg.encrypted_data.as_ref() else {
         return Err(ChunkViolation::Plaintext);
     };
@@ -227,11 +233,10 @@ fn validate_chunk(
     if encrypted.ephemeral_public_key != registered_key_b64 {
         return Err(ChunkViolation::SenderKeyMismatch);
     }
-    // EncryptedPayload is ciphertext + a public key: safe to re-encode (it
-    // is not signed material) and never logged.
-    serde_json::to_vec(encrypted)
+    BASE64
+        .decode(&encrypted.ciphertext)
         .map(Bytes::from)
-        .map_err(|_| ChunkViolation::Plaintext)
+        .map_err(|_| ChunkViolation::UndecodableCiphertext)
 }
 
 fn non_empty(value: String) -> Option<String> {

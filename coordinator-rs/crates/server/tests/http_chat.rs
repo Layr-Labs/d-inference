@@ -500,6 +500,66 @@ async fn prepare_rejection_takes_one_alternate() {
     assert_eq!(admits[1].exclude, vec![provider_a_id]);
     assert_eq!(h.ledger.count("settle"), 1);
     assert_eq!(h.ledger.count("release"), 0);
+    // The typed rejection reached the fleet (plan §11.3 advisory
+    // invalidation / §11.6 health), and every released permit id was the
+    // one the fleet minted.
+    let observations = h.fleet_record.observations.lock().unwrap().clone();
+    assert!(
+        observations.iter().any(|o| o == "prepare_rejected"),
+        "fleet never observed the prepare rejection: {observations:?}"
+    );
+    h.fleet_record.assert_releases_echo_minted();
+}
+
+// -------------------------------------------------------------------
+// (c2) a deterministic (invalid_request) rejection terminal fails the
+//      request once — no alternate is dispatched (plan §10.5).
+// -------------------------------------------------------------------
+
+#[tokio::test]
+async fn v2_invalid_request_rejection_terminal_fails_without_alternate() {
+    let mut h = HarnessBuilder::new()
+        .providers(vec![ProtocolGen::V2, ProtocolGen::V2])
+        .admit_script(vec![AdmitReply::Grant(0), AdmitReply::Grant(1)])
+        .build();
+    let _provider_b = h.providers.remove(1);
+    let mut provider_a = h.providers.remove(0);
+
+    let script = tokio::spawn(async move {
+        let attach_a = provider_a.expect_attach().await;
+        let (prepare_a, _) = expect_v2_prepare(provider_a.expect_data().await);
+        let mut rejection = cancelled_terminal(
+            scope_with_lease(&prepare_a, LeaseId::new(Uuid::new_v4())),
+            "prov-a",
+            0,
+        );
+        rejection.outcome = json_v2::TerminalOutcome::Failed;
+        rejection.error_class = Some(json_v2::ErrorClass::InvalidRequest);
+        attach_a
+            .events
+            .send(AttemptEvent::Terminal(Box::new(rejection)))
+            .await
+            .expect("rejection");
+    });
+
+    let response = h
+        .router
+        .clone()
+        .oneshot(chat_request(&chat_body(true)))
+        .await
+        .expect("router");
+    // Deterministic class: retrying would fail identically (plan §10.5).
+    assert_eq!(response.status(), 400);
+
+    script.await.expect("script");
+    assert_eq!(
+        h.fleet_record.admit_count(),
+        1,
+        "invalid_request must not dispatch an alternate"
+    );
+    let names: Vec<&str> = h.ledger.snapshot().iter().map(call_name).collect();
+    assert_eq!(names, vec!["reserve", "release"]);
+    h.fleet_record.assert_releases_echo_minted();
 }
 
 // -------------------------------------------------------------------
@@ -1039,15 +1099,25 @@ async fn v1_happy_path_golden_wire_and_settle() {
 
     script.await.expect("script");
 
-    // v1 funding leg is the reserve itself: no resize, settle from the
-    // terminal UsageInfo with the checkpoint promoted to the claimed count.
+    // v1 runs the SAME durable funding leg as v2, with facts frozen from
+    // the reserve estimates (module docs): the resize is money-neutral but
+    // records terms + start_authorized. Settlement's prompt claim echoes
+    // the frozen estimate (5 = 22 content bytes / 4), never the provider's
+    // self-reported count; the checkpoint promotes to the claimed
+    // completion on an intact stream.
     let names: Vec<&str> = h.ledger.snapshot().iter().map(call_name).collect();
-    assert_eq!(names, vec!["reserve", "mark_running", "settle"]);
+    assert_eq!(names, vec!["reserve", "resize", "mark_running", "settle"]);
+    let resize = h.ledger.find_resize().expect("resize");
+    assert_eq!(resize.frozen.billable_input_tokens, Tokens::new(5));
+    assert_eq!(resize.frozen.max_output_tokens, Tokens::new(64));
     let settle = h.ledger.find_settle().unwrap();
     assert_eq!(settle.completion_tokens_claimed, 9);
     assert_eq!(
         settle.accepted_cumulative_tokens, 9,
         "intact stream promotes checkpoint"
     );
-    assert_eq!(settle.prompt_tokens, 6);
+    assert_eq!(
+        settle.prompt_tokens, 5,
+        "v1 bills the frozen estimate, not the provider claim"
+    );
 }

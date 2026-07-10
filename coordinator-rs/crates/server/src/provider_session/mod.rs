@@ -31,16 +31,17 @@
 //!
 //! # v1 chunk ownership (design decision)
 //!
-//! The frozen contract delivers the per-request session secret key to the
-//! request task, never to the session — so the session CANNOT decrypt v1
-//! chunks. Instead it validates the sender key (the payload's ephemeral key
-//! must equal the provider's registered X25519 key — plan §9.1.7) and
-//! forwards the RAW `EncryptedPayload` JSON bytes through the
-//! [`contracts::ChunkSender`]. The request task owns decryption: one
-//! `nacl_box::precompute_shared_key` per attempt, then
-//! `open_with_shared_key` per chunk (the Go `chunkKeyCache` equivalent,
-//! moved to the natural owner of the key). Zero contract change; the
-//! session never holds request key material and never logs chunk bytes.
+//! The contract delivers the per-request session secret key to the request
+//! task, never to the session — so the session CANNOT decrypt v1 chunks.
+//! Instead it validates the sender key (the payload's ephemeral key must
+//! equal the provider's registered X25519 key — plan §9.1.7), base64-decodes
+//! the ciphertext, and forwards the RAW `nonce || box` bytes through the
+//! [`contracts::ChunkSender`] — the exact input the request task's
+//! precomputed shared key opens. The request task owns decryption: one
+//! `nacl_box::precompute_shared_key` per attempt, then one symmetric open
+//! per chunk (the Go `chunkKeyCache` equivalent, moved to the natural owner
+//! of the key). The session never holds request key material and never
+//! logs chunk bytes.
 //!
 //! # Supersede fencing (design decision)
 //!
@@ -131,10 +132,27 @@ pub struct SessionDeps {
     pub trust: Arc<TrustVerifier>,
     /// Coordinator X25519 identity (secret zeroized by the crypto layer).
     pub keys: Arc<CoordinatorKeys>,
+    /// Resolves the provider's registration `auth_token` to its earnings
+    /// account (the paid-routing beneficiary, plan §11.2). The pilot auth
+    /// surface is API keys, so the ledger's [`contracts::ApiKeyStore`] is
+    /// the resolver; [`NoProviderAuth`] disables beneficiary resolution for
+    /// harnesses without a database.
+    pub auth: Arc<dyn contracts::ApiKeyStore>,
     /// Single-active coordinator fence: v2 frames carrying a different
     /// coordinator epoch are dropped (plan §10.2).
     pub coordinator_epoch: CoordinatorEpoch,
     pub config: SessionConfig,
+}
+
+/// [`contracts::ApiKeyStore`] that resolves nothing: providers register
+/// without a beneficiary and paid routing gates them out (plan §11.2).
+pub struct NoProviderAuth;
+
+#[async_trait::async_trait]
+impl contracts::ApiKeyStore for NoProviderAuth {
+    async fn validate(&self, _token: &str) -> Option<contracts::ApiKeyRecord> {
+        None
+    }
 }
 
 /// Immutable per-session facts shared by the reader and its demux handlers.

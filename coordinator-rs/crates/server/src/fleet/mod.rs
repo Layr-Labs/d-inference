@@ -10,10 +10,7 @@
 //!   [`CandidateSnapshot`] from heartbeats, and per (provider, model)
 //!   [`HealthState`] machines (plan §11.6);
 //! - the fleet-wide [`PermitBook`] (plan §9.2.10, §11.3);
-//! - the [`CalibrationTable`] per (model, hardware class) (plan §11.4);
-//! - the global [`HedgeBudget`] (plan §11.8) — accrued here per admission;
-//!   the acquisition seam belongs to the request task's hedge timer and is
-//!   wired at integration.
+//! - the [`CalibrationTable`] per (model, hardware class) (plan §11.4).
 //!
 //! All decision logic is `darkbloom_core::fleet` — this module only owns the
 //! mutable maps and reduces commands/observations into them. Mailbox
@@ -21,14 +18,20 @@
 //! with strict priority over the coalesced heartbeat lane; admission fails
 //! fast when the command lane is full (`FleetHandle::admit` uses `try_send`).
 //!
-//! # Permit-id convention (contract note)
+//! # Permit identity
 //!
-//! [`contracts::AdmitGrant`] carries a [`DispatchPermit`] but the frozen
-//! contract has no field for the minted [`PermitId`] the request task must
-//! later pass to `FleetCommand::ReleasePermit`. Both sides therefore derive
-//! it deterministically via [`permit_id_for`]`(job, provider)` — unique per
-//! permit because a job never admits the same provider twice (the exclusion
-//! set forbids re-selection).
+//! The fleet MINTS every [`PermitId`] ([`permit_id_for`]) and carries it on
+//! [`contracts::AdmitGrant::permit_id`]; the request task echoes exactly
+//! that id in `FleetCommand::ReleasePermit`. No other component derives
+//! permit ids.
+//!
+//! # Hedge budget (plan §11.8)
+//!
+//! The ONE global bounded prepare-hedge budget lives with the request tasks
+//! (`request_task::shared_hedge_budget`) — that is where the hedge timer
+//! fires and tokens are acquired/refunded. The fleet keeps NO hedge
+//! accounting; it only enforces per-provider permits and lane headroom for
+//! hedge dispatches like any other admission.
 
 mod actor;
 mod admit;
@@ -43,7 +46,6 @@ use tokio_util::sync::CancellationToken;
 use darkbloom_core::fleet::admission::AdmissionConfig;
 use darkbloom_core::fleet::calibration::CalibrationConfig;
 use darkbloom_core::fleet::health::HealthConfig;
-use darkbloom_core::fleet::hedge::{HedgeBudget, HedgeConfig};
 use darkbloom_core::fleet::model_presence::ProviderModelPresence;
 use darkbloom_core::fleet::permits::PermitBook;
 #[allow(unused_imports)] // doc links
@@ -80,7 +82,6 @@ pub struct FleetTunables {
     pub challenge_freshness: Duration,
     pub health: HealthConfig,
     pub calibration: CalibrationConfig,
-    pub hedge: HedgeConfig,
     /// `Connect` is rejected with `ConnectRejected::Capacity` beyond this.
     pub max_providers: usize,
     /// Outstanding-prepare bound used before the first heartbeat reports one.
@@ -98,7 +99,6 @@ impl Default for FleetTunables {
             challenge_freshness: Duration::from_secs(15 * 60),
             health: HealthConfig::default(),
             calibration: CalibrationConfig::default(),
-            hedge: HedgeConfig::default(),
             max_providers: 10_000,
             default_max_outstanding_permits: 2,
             default_predicted_first_content_ms: 1_000,
@@ -150,13 +150,11 @@ pub fn spawn(cfg: FleetConfig) -> FleetRuntime {
         cancel,
         tunables,
     } = cfg;
-    let hedge = HedgeBudget::new(tunables.hedge);
     let state = state::FleetState {
         providers: std::collections::HashMap::new(),
         permits: PermitBook::new(),
         permit_meta: std::collections::HashMap::new(),
         calibration: darkbloom_core::fleet::calibration::CalibrationTable::new(),
-        hedge,
         admission,
         catalog,
         tunables,

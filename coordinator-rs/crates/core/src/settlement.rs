@@ -94,6 +94,8 @@ pub struct PricingVersion(pub u32);
 pub struct MicroUsdPerMTokens(i64);
 
 impl MicroUsdPerMTokens {
+    pub const ZERO: Self = Self(0);
+
     /// `None` for negative rates: a negative price would let usage mint money.
     #[must_use]
     pub const fn new(rate: i64) -> Option<Self> {

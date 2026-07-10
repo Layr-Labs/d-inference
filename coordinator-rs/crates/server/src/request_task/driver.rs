@@ -20,10 +20,11 @@ use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use darkbloom_core::fleet::hedge::HedgeToken;
-use darkbloom_core::ids::{AttemptId, LeaseId, ProviderId};
+use darkbloom_core::ids::{AttemptId, LeaseId, PermitId, ProviderId, SessionEpoch};
 use darkbloom_core::money::Tokens;
 use darkbloom_core::request::{
-    Deadlines, Effect, Event, HedgeOffer, Phase, PreparedFacts, RequestMachine, RequestOutcome,
+    AttemptState, Deadlines, Effect, Event, HedgeOffer, Phase, PreparedFacts, RequestMachine,
+    RequestOutcome,
 };
 use darkbloom_core::time::{DurationMs, TimestampMs};
 use darkbloom_protocol::json_v1::UsageInfo;
@@ -33,7 +34,9 @@ use crate::contracts::{
     AdmitOutcome, AdmitRequest, AttemptEvent, AttemptSinks, ChunkFrame, FleetCommand,
     FleetObservation, LedgerError, OnWire, ProtocolGen, WriteError,
 };
-use crate::request_task::attempt::{classify_v1_error, new_scope, permit_id_for, AttemptRuntime};
+use crate::request_task::attempt::{
+    classify_v1_error, core_error_class, new_scope, AttemptRuntime,
+};
 use crate::request_task::classify::{classify, rewrite_chunk_model, strip_sse_prefix, ChunkClass};
 use crate::request_task::crypto::AttemptCrypto;
 use crate::request_task::funding::{
@@ -99,6 +102,10 @@ pub(super) struct Driver {
     pumps: JoinSet<()>,
     runtimes: HashMap<AttemptId, AttemptRuntime>,
     pending_grants: HashMap<AttemptId, Box<crate::contracts::AdmitGrant>>,
+    /// Fleet-minted permit identity per attempt (plan §9.2.10): retained
+    /// from grant until the release effect fires, independent of whether
+    /// the runtime was ever constructed.
+    attempt_permits: HashMap<AttemptId, (ProviderId, PermitId)>,
     hedge_tokens: HashMap<AttemptId, HedgeToken>,
     // Absolute deadlines fixed at ingress (plan §9.2.5, §16).
     first_content_deadline: TimestampMs,
@@ -154,6 +161,7 @@ impl Driver {
             pumps: JoinSet::new(),
             runtimes: HashMap::new(),
             pending_grants: HashMap::new(),
+            attempt_permits: HashMap::new(),
             hedge_tokens: HashMap::new(),
             first_content_deadline,
             total_deadline,
@@ -379,12 +387,13 @@ impl Driver {
                     }
                 }
                 self.pending_grants.remove(&attempt);
-                let permit = permit_id_for(self.req.job, provider);
-                let _ = self
-                    .deps
-                    .fleet
-                    .commands
-                    .try_send(FleetCommand::ReleasePermit { provider, permit });
+                if let Some((_, permit)) = self.attempt_permits.remove(&attempt) {
+                    let _ = self
+                        .deps
+                        .fleet
+                        .commands
+                        .try_send(FleetCommand::ReleasePermit { provider, permit });
+                }
             }
             Effect::SettleJob {
                 attempt,
@@ -434,6 +443,8 @@ impl Driver {
                 }
                 let attempt = AttemptId::new(Uuid::new_v4());
                 let provider = grant.provider;
+                self.attempt_permits
+                    .insert(attempt, (provider, grant.permit_id));
                 self.pending_grants.insert(attempt, grant);
                 self.push(Event::AdmitGranted { attempt, provider });
             }
@@ -476,11 +487,14 @@ impl Driver {
             self.push(Event::PrepareWriteFailed { attempt });
             return;
         };
-        let Some(provider_key) = self.deps.provider_keys.x25519_public_b64(provider) else {
+        // Grant-carried key: frozen by the fleet from the registration that
+        // owns the granted session, so key and session epoch always agree.
+        let provider_key = grant.provider_public_key_b64.clone();
+        if provider_key.is_empty() {
             tracing::warn!(job = %self.req.job, %provider, "no provider encryption key");
             self.push(Event::PrepareWriteFailed { attempt });
             return;
-        };
+        }
         let session = grant.session.clone();
         let sealed = match session.protocol {
             ProtocolGen::V1 => AttemptCrypto::seal_v1(&provider_key, &self.req.body),
@@ -506,6 +520,7 @@ impl Driver {
             DurationMs::new(grant.predicted_first_content.as_millis() as u64);
         runtime.price = grant.price;
         runtime.beneficiary = grant.beneficiary;
+        runtime.permit_id = grant.permit_id;
         runtime.dispatched_at = self.clock.now();
 
         // Attach the sinks BEFORE the frame can reach the wire so no
@@ -579,22 +594,14 @@ impl Driver {
         self.runtimes.insert(attempt, runtime);
     }
 
+    /// Echoes the fleet-minted permit id back (plan §9.2.10). The reducer
+    /// emits the release effect exactly once per attempt, so removal here
+    /// cannot orphan a live permit.
     fn release_permit(&mut self, attempt: AttemptId) {
-        let provider = self
-            .runtimes
-            .get(&attempt)
-            .map(|r| r.provider)
-            .or_else(|| {
-                self.machine
-                    .attempts()
-                    .iter()
-                    .find(|a| a.id == attempt)
-                    .map(|a| a.provider)
-            })
-            .or_else(|| self.pending_grants.get(&attempt).map(|g| g.provider));
         self.pending_grants.remove(&attempt);
-        let Some(provider) = provider else { return };
-        let permit = permit_id_for(self.req.job, provider);
+        let Some((provider, permit)) = self.attempt_permits.remove(&attempt) else {
+            return;
+        };
         let _ = self
             .deps
             .fleet
@@ -644,12 +651,13 @@ impl Driver {
         }
     }
 
-    /// Funding leg (plan §12.5). v2: the resize/freeze transaction with
-    /// terms frozen from the grant's price card and the prepared exact
-    /// billable input. v1: the durable reserve IS the funding leg (the
-    /// dispatch already carries the full request against the provisional
-    /// reservation), so the compare-and-swap authorizes immediately with no
-    /// resize — documented v1 mapping.
+    /// Funding leg (plan §12.5): the resize/freeze transaction with terms
+    /// frozen from the grant's price card. v2 funds the prepared exact
+    /// billable input; v1 funds the reserve-estimate facts — the hold is
+    /// numerically unchanged (same rounding, same inputs as the reserve),
+    /// but the leg still runs because it is what freezes terms and records
+    /// the durable `start_authorized` transition the running/settlement
+    /// states require (see the module-docs v1 mapping).
     async fn fund_and_authorize(
         &mut self,
         attempt: AttemptId,
@@ -660,10 +668,6 @@ impl Driver {
             self.push(Event::FundFailed { attempt });
             return;
         };
-        if runtime.protocol == ProtocolGen::V1 {
-            self.push(Event::FundAuthorized { attempt });
-            return;
-        }
         let catalog_version = self.deps.catalog.load().version;
         let params = resize_freeze_params(&FreezeInputs {
             job: self.req.job,
@@ -678,6 +682,10 @@ impl Driver {
             beneficiary: runtime.beneficiary,
             catalog_version,
             facts,
+            provider_payout_ppm: self.deps.policy.provider_payout_ppm,
+            session_epoch: SessionEpoch::new(runtime.scope.session_epoch.0),
+            dispatch_nonce: runtime.scope.dispatch_nonce.0,
+            request_digest: runtime.scope.request_digest.0,
             coordinator_epoch: self.deps.coordinator_epoch,
         });
         let Some(params) = params else {
@@ -747,14 +755,28 @@ impl Driver {
             self.fatal = true;
             return;
         };
-        let params = settle_params(
-            self.req.job,
+        // v2 terminals carry the epoch the attempt RAN under; v1 has no
+        // origin field, so the dispatch session is the origin (plan §9.1.3).
+        let origin_session_epoch = match receipt {
+            crate::request_task::terminal::TerminalReceipt::V2 { frame, .. } => {
+                SessionEpoch::new(frame.origin_session_epoch.0)
+            }
+            _ => runtime.session.epoch,
+        };
+        // v1 prompt billing basis is the frozen estimate (module docs): the
+        // provider's self-reported count is receipt/audit material only.
+        let frozen_prompt_override = (runtime.protocol == ProtocolGen::V1)
+            .then(|| clamp_tokens(self.req.estimated_prompt_tokens));
+        let params = settle_params(&crate::request_task::terminal::SettleInputs {
+            job: self.req.job,
             attempt,
             receipt,
-            runtime.accepted_sequence,
+            accepted_sequence: runtime.accepted_sequence,
             accepted_checkpoint,
-            self.deps.coordinator_epoch,
-        );
+            frozen_prompt_override,
+            origin_session_epoch,
+            coordinator_epoch: self.deps.coordinator_epoch,
+        });
         let usage = receipt.usage_out();
         let ack =
             if let crate::request_task::terminal::TerminalReceipt::V2 { frame, digest } = receipt {
@@ -912,6 +934,27 @@ impl Driver {
                 self.feed_now(Event::CancelAcked { attempt }).await;
             }
             AttemptEvent::Terminal(frame) => {
+                // v2 has no dedicated prepare-rejection frame: a terminal
+                // with `outcome=failed` arriving BEFORE a prepared lease IS
+                // the rejection vehicle (plan §10.5). Map it to the typed
+                // rejection so class semantics hold (capacity/draining take
+                // the sequential alternate; invalid_request/security fail
+                // deterministically) and the fleet observes it (plan §11.3
+                // advisory invalidation, §11.6 health).
+                if self.attempt_awaiting_prepare(attempt) {
+                    if let darkbloom_protocol::json_v2::TerminalOutcome::Failed = frame.outcome {
+                        let class = frame
+                            .error_class
+                            .unwrap_or(darkbloom_protocol::json_v2::ErrorClass::Fault);
+                        self.observe_prepare_rejected(attempt, class);
+                        self.feed_now(Event::PrepareRejected {
+                            attempt,
+                            class: core_error_class(class),
+                        })
+                        .await;
+                        return;
+                    }
+                }
                 let Some((receipt, summary)) = v2_receipt(frame) else {
                     tracing::warn!(job = %self.req.job, %attempt, "structurally invalid terminal dropped");
                     self.observe_fault(attempt);
@@ -1043,6 +1086,38 @@ impl Driver {
                 FleetObservation::ProviderFault {
                     provider: runtime.provider,
                     model: darkbloom_core::ids::ModelId::new(&*self.req.concrete_model),
+                },
+            ));
+        }
+    }
+
+    /// True while the attempt has produced no prepared lease and no closure
+    /// evidence — the window in which a failed terminal is a prepare
+    /// rejection, not a run disposition.
+    fn attempt_awaiting_prepare(&self, attempt: AttemptId) -> bool {
+        self.machine.attempts().iter().any(|a| {
+            a.id == attempt
+                && matches!(
+                    a.state,
+                    AttemptState::QueuedToSocket | AttemptState::SentUnknown
+                )
+        })
+    }
+
+    /// Reports a structured prepare rejection to the fleet (plan §11.6;
+    /// capacity classes also invalidate the provider's advisory capacity
+    /// until fresh heartbeat state arrives, plan §11.3).
+    fn observe_prepare_rejected(
+        &mut self,
+        attempt: AttemptId,
+        class: darkbloom_protocol::json_v2::ErrorClass,
+    ) {
+        if let Some(runtime) = self.runtimes.get(&attempt) {
+            let _ = self.deps.fleet.commands.try_send(FleetCommand::Observe(
+                FleetObservation::PrepareRejected {
+                    provider: runtime.provider,
+                    model: darkbloom_core::ids::ModelId::new(&*self.req.concrete_model),
+                    class,
                 },
             ));
         }
@@ -1374,6 +1449,8 @@ impl Driver {
             Ok(AdmitOutcome::Grant(grant)) => {
                 let attempt = AttemptId::new(Uuid::new_v4());
                 let provider = grant.provider;
+                self.attempt_permits
+                    .insert(attempt, (provider, grant.permit_id));
                 self.pending_grants.insert(attempt, grant);
                 self.hedge_tokens.insert(attempt, token);
                 Some(HedgeOffer { attempt, provider })
@@ -1477,6 +1554,16 @@ impl Driver {
             if let Ok(mut budget) = self.deps.hedge_budget.lock() {
                 budget.refund(token);
             }
+        }
+        // Any permit whose release effect never fired (fatal teardown) is
+        // released now instead of waiting for hard expiry; release is
+        // idempotent (plan §9.2.10).
+        for (_, (provider, permit)) in self.attempt_permits.drain() {
+            let _ = self
+                .deps
+                .fleet
+                .commands
+                .try_send(FleetCommand::ReleasePermit { provider, permit });
         }
     }
 }

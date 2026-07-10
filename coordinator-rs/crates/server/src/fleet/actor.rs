@@ -147,7 +147,6 @@ impl Actor {
             heartbeat_depth = self.heartbeats.len(),
             providers = self.state.providers.len(),
             permits_outstanding = self.state.permits.total_outstanding(),
-            hedge_tokens = self.state.hedge.available(),
             admits_granted = self.state.counters.admits_granted,
             admits_retry = self.state.counters.admits_retry,
             admits_rejected = self.state.counters.admits_rejected,

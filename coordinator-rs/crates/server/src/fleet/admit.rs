@@ -23,7 +23,6 @@ use darkbloom_core::fleet::model_presence::ModelPresence;
 #[allow(unused_imports)] // doc link
 use darkbloom_core::fleet::permits::PermitBook;
 use darkbloom_core::ids::{HardwareClass, JobId, ModelId, PermitId, ProviderId};
-use darkbloom_core::money::MicroUsd;
 use darkbloom_core::time::{DurationMs, TimestampMs};
 
 use crate::contracts::{AdmitGrant, AdmitOutcome, AdmitRequest, PriceCard};
@@ -31,13 +30,15 @@ use crate::contracts::{AdmitGrant, AdmitOutcome, AdmitRequest, PriceCard};
 use super::state::{now_ms, FleetState};
 use super::{PermitMeta, ProviderEntry};
 
-/// Derives the [`PermitId`] for one (job, provider) admission.
+/// Mints the [`PermitId`] for one (job, provider) admission.
 ///
-/// The frozen [`crate::contracts::AdmitGrant`] has no permit-id field, so
-/// the fleet and the request task derive the same id deterministically:
-/// SHA-256 over the job and provider UUID bytes, truncated to 16 bytes. A
-/// job never admits the same provider twice (the exclusion set forbids
-/// re-selection), so the pair uniquely names one permit.
+/// This is the SINGLE permit-identity authority: the fleet mints the id
+/// here and carries it on [`crate::contracts::AdmitGrant::permit_id`]; the
+/// request task ECHOES that id back in `FleetCommand::ReleasePermit` and
+/// never re-derives it. The derivation is deterministic (SHA-256 over the
+/// job and provider UUID bytes, truncated to 16 bytes) — unique per permit
+/// because a job never admits the same provider twice (the exclusion set
+/// forbids re-selection).
 #[must_use]
 pub fn permit_id_for(job: JobId, provider: ProviderId) -> PermitId {
     let mut hasher = Sha256::new();
@@ -69,10 +70,7 @@ pub(crate) fn handle_admit(
         .prices
         .get(&concrete_str)
         .copied()
-        .unwrap_or(PriceCard {
-            prompt_micro_per_token: MicroUsd::ZERO,
-            completion_micro_per_token: MicroUsd::ZERO,
-        });
+        .unwrap_or(PriceCard::ZERO);
     let concrete_model = ModelId::new(concrete_str);
 
     let traits = RequestTraits {
@@ -101,6 +99,32 @@ pub(crate) fn handle_admit(
         }
         AdmissionDecision::RetryAfter { reason, delay } => {
             state.counters.admits_retry += 1;
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                for c in &candidates {
+                    tracing::debug!(
+                        job = %req.job,
+                        provider = %c.provider,
+                        presence = ?c.model_presence,
+                        advisory_ok = c.advisory_capacity_ok,
+                        permits = c.outstanding_permits,
+                        max_permits = c.max_outstanding_permits,
+                        data_lane = c.data_lane_headroom,
+                        control_lane = c.control_lane_headroom,
+                        trusted = c.trusted,
+                        fresh = c.challenge_fresh,
+                        beneficiary = c.beneficiary.is_some(),
+                        health = ?c.health,
+                        security = ?c.security,
+                        integrity = c.runtime_integrity,
+                        tools = c.supports_tools,
+                        vision = c.supports_vision,
+                        needs_tools = traits.needs_tools,
+                        needs_vision = traits.needs_vision,
+                        paid = traits.paid,
+                        "admission retry candidate"
+                    );
+                }
+            }
             AdmitOutcome::RetryAfter {
                 reason: capacity_reason_str(reason).to_owned(),
                 delay: Duration::from_millis(delay.get()),
@@ -115,7 +139,7 @@ pub(crate) fn handle_admit(
     // The requester can vanish between try_send and reply: a granted
     // permit must not leak (plan §9.2.10 idempotent release path).
     if let Err(AdmitOutcome::Grant(grant)) = reply.send(outcome) {
-        release_inner(state, permit_id_for(req.job, grant.provider));
+        release_inner(state, grant.permit_id);
     }
 }
 
@@ -159,7 +183,6 @@ fn grant(
             is_probe: permit.is_probe,
         },
     );
-    state.hedge.on_admission();
 
     let Some(entry) = state.providers.get_mut(&provider) else {
         // Cannot happen: the candidate came from this map. Fail closed.
@@ -198,12 +221,21 @@ fn grant(
         };
     };
     let beneficiary = entry.registration.as_ref().and_then(|r| r.beneficiary);
+    // Frozen at grant time from the registration that owns this session:
+    // the request task encrypts to exactly the key this epoch registered.
+    let provider_public_key_b64 = entry
+        .registration
+        .as_ref()
+        .map(|r| r.public_key_b64.clone())
+        .unwrap_or_default();
     let predicted = Duration::from_millis(permit.predicted_first_content.get());
 
     AdmitOutcome::Grant(Box::new(AdmitGrant {
         permit,
+        permit_id,
         provider,
         session,
+        provider_public_key_b64,
         concrete_model,
         price,
         beneficiary,

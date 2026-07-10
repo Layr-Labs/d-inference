@@ -9,7 +9,7 @@
 
 use uuid::Uuid;
 
-use darkbloom_core::ids::{AttemptId, JobId};
+use darkbloom_core::ids::{AttemptId, JobId, SessionEpoch};
 
 use crate::contracts::{LedgerError, LedgerFacade, ReleaseParams, SettleParams};
 use crate::ledger::Ledger;
@@ -143,7 +143,7 @@ pub async fn settle_pending_terminals(
 ) -> anyhow::Result<usize> {
     let rows: Vec<PendingTerminal> = sqlx::query_as(
         "SELECT t.attempt_id, t.terminal_digest, t.raw_terminal, \
-                t.prompt_tokens, t.completion_tokens, \
+                t.prompt_tokens, t.completion_tokens, t.origin_session_epoch, \
                 a.job_id, \
                 COALESCE(j.accepted_chunk_seq, 0) AS accepted_seq, \
                 COALESCE(j.accepted_cumulative_tokens, 0) AS accepted_tokens, \
@@ -189,6 +189,9 @@ pub async fn settle_pending_terminals(
             completion_tokens_claimed: u64::try_from(t.completion_tokens).unwrap_or(0),
             accepted_sequence: u64::try_from(t.accepted_seq).unwrap_or(0),
             accepted_cumulative_tokens: u64::try_from(t.accepted_tokens).unwrap_or(0),
+            origin_session_epoch: SessionEpoch::new(
+                u64::try_from(t.origin_session_epoch).unwrap_or(0),
+            ),
             coordinator_epoch: epoch,
         };
         match ledger.settle(params).await {
@@ -251,6 +254,7 @@ struct PendingTerminal {
     raw_terminal: serde_json::Value,
     prompt_tokens: i64,
     completion_tokens: i64,
+    origin_session_epoch: i64,
     job_id: Uuid,
     accepted_seq: i64,
     accepted_tokens: i64,

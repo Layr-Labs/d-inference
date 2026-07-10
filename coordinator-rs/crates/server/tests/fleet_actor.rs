@@ -16,14 +16,15 @@ use darkbloom_core::fleet::calibration::RatioPerMille;
 use darkbloom_core::fleet::health::{HealthState, SecurityFence};
 use darkbloom_core::fleet::model_presence::ModelPresence;
 use darkbloom_core::ids::{JobId, ModelId, ProviderId, SessionEpoch, StateRevision, TrustEpoch};
-use darkbloom_core::money::{MicroUsd, Tokens};
+use darkbloom_core::money::Tokens;
+use darkbloom_core::settlement::MicroUsdPerMTokens;
 use darkbloom_core::time::DurationMs;
 use darkbloom_server::contracts::{
     fleet_channels, AdmitOutcome, AdmitRequest, CatalogSnapshot, ConnectAccept, FleetCommand,
     FleetHandle, FleetObservation, HeartbeatUpdate, PriceCard, ProtocolGen, RegistrationSummary,
     SessionLaneCaps, SessionSeed, TrustVerdict,
 };
-use darkbloom_server::fleet::{self, permit_id_for, FleetConfig, FleetRuntime, FleetTunables};
+use darkbloom_server::fleet::{self, FleetConfig, FleetRuntime, FleetTunables};
 
 const MODEL: &str = "concrete-build";
 const ALIAS: &str = "public-model";
@@ -40,8 +41,8 @@ async fn start() -> Rig {
         prices: [(
             MODEL.to_owned(),
             PriceCard {
-                prompt_micro_per_token: MicroUsd::new(5),
-                completion_micro_per_token: MicroUsd::new(17),
+                prompt_micro_per_mtok: MicroUsdPerMTokens::new(5_000_000).expect("rate"),
+                completion_micro_per_mtok: MicroUsdPerMTokens::new(17_000_000).expect("rate"),
             },
         )]
         .into_iter()
@@ -225,11 +226,13 @@ async fn admit_resolves_alias_grants_price_and_excludes() {
     heartbeat(&rig, p1, a1.epoch, 1, true).await;
     heartbeat(&rig, p2, a2.epoch, 1, true).await;
 
-    // Alias resolves to the concrete build and carries the price card.
+    // Alias resolves to the concrete build and carries the exact per-MTok
+    // price card plus the registered provider key.
     let grant = admit_until_grant(&rig, ALIAS, vec![]).await;
     assert_eq!(grant.concrete_model.as_str(), MODEL);
-    assert_eq!(grant.price.prompt_micro_per_token, MicroUsd::new(5));
-    assert_eq!(grant.price.completion_micro_per_token, MicroUsd::new(17));
+    assert_eq!(grant.price.prompt_micro_per_mtok.get(), 5_000_000);
+    assert_eq!(grant.price.completion_micro_per_mtok.get(), 17_000_000);
+    assert_eq!(grant.provider_public_key_b64, "pk");
 
     // Exclusion: shutting out one provider forces the other.
     let grant = admit_until_grant(&rig, ALIAS, vec![p1]).await;
@@ -299,20 +302,31 @@ async fn permit_release_is_idempotent_and_regates_admission() {
         kind(&outcome)
     );
 
-    // Release twice: idempotent, and capacity returns exactly once.
-    let permit = permit_id_for(job, p1);
+    // Regression (permit identity mismatch): releasing exactly the id the
+    // fleet MINTED on the grant must drain the provider's outstanding
+    // permit count back to zero — proven by a second admit succeeding at a
+    // permit cap of 1. Release twice: idempotent, capacity returns once.
     for _ in 0..2 {
         rig.fleet
             .commands
             .send(FleetCommand::ReleasePermit {
                 provider: p1,
-                permit,
+                permit: grant.permit_id,
             })
             .await
             .expect("actor alive");
     }
-    let grant = admit_until_grant(&rig, ALIAS, vec![]).await;
-    assert_eq!(grant.provider, p1);
+    let regranted = admit_until_grant(&rig, ALIAS, vec![]).await;
+    assert_eq!(regranted.provider, p1);
+
+    // The snapshot agrees: exactly the one re-granted permit outstanding.
+    let (tx, rx) = oneshot::channel();
+    rig.fleet
+        .commands
+        .send(FleetCommand::Snapshot { reply: tx })
+        .await
+        .expect("actor alive");
+    assert_eq!(rx.await.expect("snapshot").permits_outstanding, 1);
 
     rig.runtime.shutdown().await;
     drop(accept);

@@ -6,6 +6,10 @@
 //! exercises the real pool. The [`TestDb`] guard stops the cluster
 //! (`pg_ctl stop -m immediate`) and removes the directory on drop, panics
 //! included. Tests skip with a clear message when `initdb` is absent.
+//!
+//! Included by several test crates (ledger, recovery, full-stack e2e), each
+//! of which uses a subset of the helpers — hence the dead-code allowance.
+#![allow(dead_code)]
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -261,7 +265,9 @@ pub async fn assert_ledger_consistent(pool: &PgPool) {
 pub mod flows {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use darkbloom_core::ids::{AttemptId, CoordinatorEpoch, JobId, LeaseId, ProviderId};
+    use darkbloom_core::ids::{
+        AttemptId, CoordinatorEpoch, JobId, LeaseId, ProviderId, SessionEpoch,
+    };
     use darkbloom_core::money::{MicroUsd, Tokens};
     use darkbloom_core::settlement::{
         FrozenReferral, FrozenTerms, MicroUsdPerMTokens, Ppm, PricingVersion, RoundingVersion,
@@ -344,6 +350,9 @@ pub mod flows {
             lease: LeaseId::new(Uuid::from_u128(0xe0e0)),
             provider: frozen.provider,
             frozen,
+            session_epoch: SessionEpoch::new(1),
+            dispatch_nonce: [0xD0; 16],
+            request_digest: [0xD1; 32],
             coordinator_epoch: CoordinatorEpoch::new(1),
         }
     }
@@ -371,6 +380,7 @@ pub mod flows {
             completion_tokens_claimed: completion_claimed,
             accepted_sequence: 42,
             accepted_cumulative_tokens: accepted,
+            origin_session_epoch: SessionEpoch::new(1),
             coordinator_epoch: CoordinatorEpoch::new(1),
         }
     }

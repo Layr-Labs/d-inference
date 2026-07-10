@@ -11,19 +11,14 @@
 //! 3. Writes EVERY frozen term column (plan §12.4) and sets
 //!    `start_authorized`; the schema CHECK forbids start authorization with
 //!    unfrozen terms.
-//! 4. Binds the attempt row to its prepared lease.
+//! 4. Binds the attempt row to its prepared lease, recording the real wire
+//!    fencing identity (session epoch, dispatch nonce, request digest) the
+//!    request task carried on [`ResizeFreezeParams`] (plan §10.2).
 //! 5. Records the `resize` financial operation with the full serialized
 //!    [`FrozenTerms`] in its result — settlement re-reads the frozen rates
 //!    from there, never from mutable pricing (plan §12.4).
-//!
-//! Integration note (reported, not a contract change): `ResizeFreezeParams`
-//! carries no request digest, session epoch, or dispatch nonce, so this
-//! module derives a deterministic placeholder digest/nonce and records
-//! session epoch 0 on the attempt row. The integration phase plumbs the real
-//! envelope digest and session identifiers through the request task.
 
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use sqlx::Row;
 
 use darkbloom_core::ids::JobId;
@@ -117,7 +112,7 @@ WITH fence AS (
     INSERT INTO rust_coord.inference_attempts AS a
         (attempt_id, job_id, provider_stable_id, session_epoch, coordinator_epoch,
          lease_id, dispatch_nonce, request_digest, state)
-    SELECT $19, $2, $12, 0, $4, $20, $21, $18, 'prepared'
+    SELECT $19, $2, $12, $22, $4, $20, $21, $18, 'prepared'
     FROM freeze_terms
     ON CONFLICT (attempt_id) DO UPDATE
     SET lease_id = EXCLUDED.lease_id, state = 'prepared', updated_at = NOW()
@@ -168,9 +163,8 @@ pub(super) async fn resize_freeze(
 
     let frozen_json = serde_json::to_value(&p.frozen)
         .map_err(|e| LedgerError::Conflict(format!("frozen terms not serializable: {e}")))?;
-    let digest = request_digest(&p);
-    let nonce = dispatch_nonce(&p.operation_key);
     let epoch = i64::try_from(p.coordinator_epoch.get()).unwrap_or(i64::MAX);
+    let session_epoch = i64::try_from(p.session_epoch.get()).unwrap_or(i64::MAX);
     let rounding = match p.frozen.rounding_version {
         RoundingVersion::CeilV1 => 1i64,
     };
@@ -180,8 +174,8 @@ pub(super) async fn resize_freeze(
         let frozen_json = frozen_json.clone();
         let beneficiary = beneficiary.clone();
         let referral_account = referral_account.clone();
-        let digest = digest.to_vec();
-        let nonce = nonce.to_vec();
+        let digest = p.request_digest.to_vec();
+        let nonce = p.dispatch_nonce.to_vec();
         async move {
             sqlx::query(RESIZE_SQL)
                 .bind(&p.operation_key)
@@ -205,6 +199,7 @@ pub(super) async fn resize_freeze(
                 .bind(p.attempt.get())
                 .bind(p.lease.get())
                 .bind(&nonce)
+                .bind(session_epoch)
                 .fetch_one(&ledger.pool)
                 .await
                 .map_err(TxError::from)
@@ -344,26 +339,4 @@ async fn state_conflict(ledger: &Ledger, job: JobId, op: &str) -> LedgerError {
         Some((state,)) => LedgerError::Conflict(format!("{op}: job is '{state}'")),
         None => LedgerError::Conflict(format!("{op}: job not found")),
     }
-}
-
-/// Deterministic placeholder request digest (see module docs): SHA-256 over
-/// a domain-separated concatenation of the job/attempt/lease identity.
-fn request_digest(p: &ResizeFreezeParams) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"darkbloom.request-digest.v1\0");
-    hasher.update(p.job.as_bytes());
-    hasher.update(p.attempt.as_bytes());
-    hasher.update(p.lease.as_bytes());
-    hasher.finalize().into()
-}
-
-/// Deterministic dispatch nonce derived from the resize operation key.
-fn dispatch_nonce(operation_key: &str) -> [u8; 16] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"darkbloom.dispatch-nonce.v1\0");
-    hasher.update(operation_key.as_bytes());
-    let digest = hasher.finalize();
-    let mut nonce = [0u8; 16];
-    nonce.copy_from_slice(&digest[..16]);
-    nonce
 }

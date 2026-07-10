@@ -8,7 +8,6 @@ use std::collections::HashMap;
 
 use darkbloom_core::fleet::admission::{AdmissionConfig, CandidateSnapshot};
 use darkbloom_core::fleet::calibration::CalibrationTable;
-use darkbloom_core::fleet::hedge::HedgeBudget;
 use darkbloom_core::fleet::permits::PermitBook;
 use darkbloom_core::ids::{HardwareClass, ProviderId};
 use darkbloom_core::time::{DurationMs, TimestampMs};
@@ -44,7 +43,6 @@ pub(crate) struct FleetState {
     pub permits: PermitBook,
     pub permit_meta: PermitMetaMap,
     pub calibration: CalibrationTable,
-    pub hedge: HedgeBudget,
     pub admission: AdmissionConfig,
     pub catalog: SharedCatalog,
     pub tunables: FleetTunables,

@@ -4,40 +4,53 @@
 //! parameter structs with their stable, immutable operation keys
 //! (`job:{job}:{leg}` — idempotent per plan §9.3.2). The task executes
 //! them through the [`crate::contracts::LedgerFacade`] seam.
+//!
+//! Rounding: every cost leg uses [`RESERVATION_ROUNDING`] (`CeilV1` — each
+//! token-cost product rounds UP to the next micro-USD). Reservations use it
+//! so a hold can never under-cover the charge; the same version is frozen
+//! into [`FrozenTerms::rounding_version`], so settlement recomputes the
+//! charge under the identical rule (plan §12.4).
 
 use darkbloom_core::ids::{AccountId, ApiKeyId, AttemptId, JobId, LeaseId, ModelId, ProviderId};
 use darkbloom_core::money::{MicroUsd, Tokens};
 use darkbloom_core::request::PreparedFacts;
-use darkbloom_core::settlement::{
-    FrozenTerms, MicroUsdPerMTokens, Ppm, PricingVersion, RoundingVersion,
-};
+use darkbloom_core::settlement::{FrozenTerms, Ppm, PricingVersion, RoundingVersion};
 
 use crate::contracts::{PriceCard, ReleaseParams, ReserveParams, ResizeFreezeParams};
 
-use darkbloom_core::ids::CoordinatorEpoch;
+use darkbloom_core::ids::{CoordinatorEpoch, SessionEpoch};
 
-/// Provider payout share of the consumer charge, frozen into settlement
-/// terms. Not yet part of the frozen contracts ([`crate::contracts`]) or
-/// policy; this default is the local adaptation reported for integration.
-pub const DEFAULT_PROVIDER_PAYOUT: Ppm = match Ppm::new(800_000) {
+/// The one rounding rule this coordinator freezes into terms (plan §12.4).
+pub const RESERVATION_ROUNDING: RoundingVersion = RoundingVersion::CeilV1;
+
+/// Fallback payout share used only if the policy carries an out-of-range
+/// ppm (config validation rejects those at startup; direct constructions in
+/// tests could still exceed one whole).
+const FALLBACK_PROVIDER_PAYOUT: Ppm = match Ppm::new(800_000) {
     Some(p) => p,
     None => unreachable!(),
 };
 
+/// The provider payout share from policy, validated into [`Ppm`].
+pub fn payout_rate(provider_payout_ppm: u32) -> Ppm {
+    Ppm::new(provider_payout_ppm).unwrap_or(FALLBACK_PROVIDER_PAYOUT)
+}
+
 /// Worst-case pre-flight hold (Go `reservationCost` semantics): estimated
-/// prompt cost plus the full requested output bound at the public price
-/// card. `None` on arithmetic overflow (treated as reserve failure).
+/// prompt cost plus the full requested output bound at the exact per-MTok
+/// price card, each leg rounded UP. `None` on arithmetic overflow (treated
+/// as reserve failure).
 pub fn reservation_cost(
     price: &PriceCard,
     estimated_prompt_tokens: u64,
     requested_max_tokens: u64,
 ) -> Option<MicroUsd> {
     let prompt = price
-        .prompt_micro_per_token
-        .checked_mul_count(clamp_tokens(estimated_prompt_tokens).get())?;
+        .prompt_micro_per_mtok
+        .cost(clamp_tokens(estimated_prompt_tokens), RESERVATION_ROUNDING)?;
     let completion = price
-        .completion_micro_per_token
-        .checked_mul_count(clamp_tokens(requested_max_tokens).get())?;
+        .completion_micro_per_mtok
+        .cost(clamp_tokens(requested_max_tokens), RESERVATION_ROUNDING)?;
     prompt.checked_add(completion)
 }
 
@@ -45,12 +58,6 @@ pub fn reservation_cost(
 /// saturate rather than wrap (a >4B-token claim is capped, never trusted).
 pub fn clamp_tokens(v: u64) -> Tokens {
     Tokens::new(u32::try_from(v).unwrap_or(u32::MAX))
-}
-
-/// [`PriceCard`] is micro-USD per token; frozen terms carry micro-USD per
-/// MILLION tokens. `None` on overflow or a negative card.
-fn rate_per_mtokens(per_token: MicroUsd) -> Option<MicroUsdPerMTokens> {
-    MicroUsdPerMTokens::new(per_token.get().checked_mul(1_000_000)?)
 }
 
 pub struct ReserveInputs<'a> {
@@ -102,6 +109,12 @@ pub struct FreezeInputs<'a> {
     pub beneficiary: Option<AccountId>,
     pub catalog_version: u64,
     pub facts: PreparedFacts,
+    /// Provider payout share frozen into terms (policy, plan §12.4).
+    pub provider_payout_ppm: u32,
+    /// Wire-scope fencing identity recorded on the durable attempt row.
+    pub session_epoch: SessionEpoch,
+    pub dispatch_nonce: [u8; 16],
+    pub request_digest: [u8; 32],
     pub coordinator_epoch: CoordinatorEpoch,
 }
 
@@ -112,14 +125,19 @@ pub struct FreezeInputs<'a> {
 /// unpaid/self-route jobs fall back to the consumer account with a zero
 /// payout economically bounded by the zero charge.
 pub fn resize_freeze_params(inputs: &FreezeInputs<'_>) -> Option<ResizeFreezeParams> {
-    let input_rate = rate_per_mtokens(inputs.price.prompt_micro_per_token)?;
-    let output_rate = rate_per_mtokens(inputs.price.completion_micro_per_token)?;
     let billable_input = inputs.facts.billable_input_tokens;
     let max_output = inputs.facts.max_output_tokens;
-    let rounding = RoundingVersion::CeilV1;
-    let new_hold = input_rate
+    let rounding = RESERVATION_ROUNDING;
+    let new_hold = inputs
+        .price
+        .prompt_micro_per_mtok
         .cost(billable_input, rounding)?
-        .checked_add(output_rate.cost(max_output, rounding)?)?;
+        .checked_add(
+            inputs
+                .price
+                .completion_micro_per_mtok
+                .cost(max_output, rounding)?,
+        )?;
     let frozen = FrozenTerms {
         consumer_account: inputs.account,
         api_key: inputs.api_key.clone(),
@@ -129,11 +147,11 @@ pub fn resize_freeze_params(inputs: &FreezeInputs<'_>) -> Option<ResizeFreezePar
         rounding_version: rounding,
         billable_input_tokens: billable_input,
         max_output_tokens: max_output,
-        input_rate,
-        output_rate,
+        input_rate: inputs.price.prompt_micro_per_mtok,
+        output_rate: inputs.price.completion_micro_per_mtok,
         provider: inputs.provider,
         provider_beneficiary: inputs.beneficiary.unwrap_or(inputs.account),
-        provider_payout_rate: DEFAULT_PROVIDER_PAYOUT,
+        provider_payout_rate: payout_rate(inputs.provider_payout_ppm),
         referral: None,
     };
     Some(ResizeFreezeParams {
@@ -144,6 +162,9 @@ pub fn resize_freeze_params(inputs: &FreezeInputs<'_>) -> Option<ResizeFreezePar
         frozen,
         lease: inputs.lease,
         provider: inputs.provider,
+        session_epoch: inputs.session_epoch,
+        dispatch_nonce: inputs.dispatch_nonce,
+        request_digest: inputs.request_digest,
         coordinator_epoch: inputs.coordinator_epoch,
     })
 }
@@ -164,11 +185,12 @@ pub fn release_params(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use darkbloom_core::settlement::MicroUsdPerMTokens;
 
     fn price() -> PriceCard {
         PriceCard {
-            prompt_micro_per_token: MicroUsd::new(2),
-            completion_micro_per_token: MicroUsd::new(5),
+            prompt_micro_per_mtok: MicroUsdPerMTokens::new(2_000_000).unwrap(),
+            completion_micro_per_mtok: MicroUsdPerMTokens::new(5_000_000).unwrap(),
         }
     }
 
@@ -176,6 +198,26 @@ mod tests {
     fn reservation_cost_covers_prompt_and_max_output() {
         let cost = reservation_cost(&price(), 100, 200).unwrap();
         assert_eq!(cost, MicroUsd::new(100 * 2 + 200 * 5));
+    }
+
+    #[test]
+    fn sub_micro_usd_rates_stay_exact_and_round_up() {
+        // 50_000 µUSD/MTok (the Go default input price): 1000 tokens cost
+        // exactly 50 µUSD — the per-token card would have inflated this to
+        // 1000 µUSD (20x). A single token still rounds UP to 1 µUSD so the
+        // hold can never under-cover.
+        let card = PriceCard {
+            prompt_micro_per_mtok: MicroUsdPerMTokens::new(50_000).unwrap(),
+            completion_micro_per_mtok: MicroUsdPerMTokens::ZERO,
+        };
+        assert_eq!(reservation_cost(&card, 1000, 0).unwrap(), MicroUsd::new(50));
+        assert_eq!(reservation_cost(&card, 1, 0).unwrap(), MicroUsd::new(1));
+    }
+
+    #[test]
+    fn payout_rate_falls_back_on_out_of_range() {
+        assert_eq!(payout_rate(750_000).get(), 750_000);
+        assert_eq!(payout_rate(2_000_000).get(), 800_000);
     }
 
     #[test]
@@ -197,12 +239,19 @@ mod tests {
                 billable_input_tokens: Tokens::new(128),
                 max_output_tokens: Tokens::new(64),
             },
+            provider_payout_ppm: 800_000,
+            session_epoch: SessionEpoch::new(3),
+            dispatch_nonce: [7; 16],
+            request_digest: [9; 32],
             coordinator_epoch: CoordinatorEpoch::new(9),
         };
         let params = resize_freeze_params(&inputs).unwrap();
         assert_eq!(params.new_hold, MicroUsd::new(128 * 2 + 64 * 5));
         assert_eq!(params.frozen.billable_input_tokens, Tokens::new(128));
         assert_eq!(params.frozen.max_output_tokens, Tokens::new(64));
+        assert_eq!(params.frozen.input_rate.get(), 2_000_000);
+        assert_eq!(params.frozen.provider_payout_rate.get(), 800_000);
+        assert_eq!(params.session_epoch, SessionEpoch::new(3));
         assert_eq!(
             params.operation_key,
             "job:00000000-0000-0000-0000-000000000001:resize"

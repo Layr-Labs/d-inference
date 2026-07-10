@@ -632,9 +632,7 @@ async fn upsert_receipt(
     .bind(response_hash_bytes(p))
     .bind(i64::try_from(p.completion_tokens_claimed).unwrap_or(i64::MAX))
     .bind(signature_bytes(&p.terminal_json))
-    // Origin session epoch is not carried by SettleParams; the integration
-    // phase plumbs it from the provider session (plan §9.1.3).
-    .bind(0i64)
+    .bind(i64::try_from(p.origin_session_epoch.get()).unwrap_or(i64::MAX))
     .bind(epoch)
     .fetch_one(&mut *tx)
     .await?;

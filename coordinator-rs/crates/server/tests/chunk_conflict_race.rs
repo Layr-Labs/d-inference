@@ -16,7 +16,7 @@ fn concurrent_same_sequence_conflict_does_not_advance() {
     for i in 0..8 {
         let cp = cp.clone();
         handles.push(thread::spawn(move || {
-            let mut g = cp.lock().unwrap();
+            let g = cp.lock().unwrap();
             // Same sequence, different hash → Conflict (must not mutate).
             match g.accept(1, 10 + i, format!("bad-{i}")) {
                 ChunkAccept::Conflict => true,

@@ -84,3 +84,9 @@ restores the key so a retry can succeed. Durable shape: `deposit_sql()`.
 `settle_capped` charges `min(actual, billable_cap, reserved)`. Ops
 `force_settle_held` uses the same clamp so an over-sized review amount
 never fail-closes a held job. SQL: `settle_capped_sql()` / `force_settle_sql()`.
+
+### Account bind + gated digests (DECISIONS #24)
+
+Money-moving CTEs require `inference_jobs.account_id = caller`. Digest and
+op-key inserts are `INSERT … SELECT … FROM guard|charge|calc` so a failed
+settle cannot pin a terminal digest or poison an operation key.

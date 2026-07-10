@@ -68,6 +68,9 @@ pub struct JobRecord {
     pub provenance: ReservationProvenance,
     pub funded_start: bool,
     pub disposition: Option<String>,
+    /// Ownership fencing epoch at reserve time (0 = unbound). DECISIONS #52.
+    #[serde(default)]
+    pub fencing_epoch: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +180,7 @@ impl MemoryLedger {
                 provenance: provenance.clone(),
                 funded_start: false,
                 disposition: None,
+                fencing_epoch: 0,
             },
         );
         Ok(ReserveResult {
@@ -184,6 +188,33 @@ impl MemoryLedger {
             provenance,
             applied: true,
         })
+    }
+
+    /// Bind the job to the coordinator fencing epoch at reserve time (DECISIONS #52).
+    pub fn bind_fencing_epoch(&mut self, job_id: &str, epoch: u64) -> Result<(), LedgerError> {
+        let job = self
+            .jobs
+            .get_mut(job_id)
+            .ok_or_else(|| LedgerError::Conflict("unknown job".into()))?;
+        if job.disposition.is_some() {
+            return Err(LedgerError::Conflict(format!(
+                "job {job_id} already disposed"
+            )));
+        }
+        job.fencing_epoch = epoch;
+        Ok(())
+    }
+
+    /// Refuse money moves when the job was reserved under a different fencing epoch.
+    pub fn require_fencing_epoch(&self, job_id: &str, epoch: u64) -> Result<(), LedgerError> {
+        let job = self
+            .jobs
+            .get(job_id)
+            .ok_or_else(|| LedgerError::Conflict("unknown job".into()))?;
+        if job.fencing_epoch != 0 && job.fencing_epoch != epoch {
+            return Err(LedgerError::OwnershipLost);
+        }
+        Ok(())
     }
 
     /// Mark `start_authorized` only when `account` owns the job (DECISIONS #24/#31).
@@ -1631,5 +1662,23 @@ mod tests {
             Err(LedgerError::Conflict(_))
         ));
         assert_eq!(led.balance("a").0, 4_900_000);
+    }
+
+    #[test]
+    fn fencing_epoch_mismatch_is_ownership_lost() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 100_000)
+            .unwrap();
+        led.bind_fencing_epoch("j", 9).unwrap();
+        assert!(led.require_fencing_epoch("j", 9).is_ok());
+        assert!(matches!(
+            led.require_fencing_epoch("j", 10),
+            Err(LedgerError::OwnershipLost)
+        ));
+        // Unbound jobs (epoch 0) accept any caller epoch.
+        led.reserve(OperationKey("r2".into()), "j2", "a", 50_000)
+            .unwrap();
+        assert!(led.require_fencing_epoch("j2", 99).is_ok());
     }
 }

@@ -241,3 +241,9 @@ alongside attempt/digest so late ingest and audit can bind the funded lease.
 The same CTEs persist `se_signature` (empty when absent) so Go rollback
 terminal ingest can surface attestation material without moving money again.
 
+### Job fencing epoch bind (DECISIONS #52)
+
+Jobs bind the coordinator fencing epoch at reserve. Later settle/release/resize
+paths call `require_fencing_epoch` so a re-acquired coordinator with a new
+epoch cannot mutate an older job's money. Durable SQL column lands with SQLx.
+

@@ -191,7 +191,7 @@ fn require_nonempty_job_id(job_id: &str) -> Result<(), axum::response::Response>
 }
 
 /// Release a reserved job and enqueue critical `inference.released` (DECISIONS #43).
-/// Refuses to move money after ownership loss (DECISIONS #47).
+/// Refuses to move money after ownership loss (DECISIONS #47/#52).
 async fn release_job_with_outbox(
     state: &AppState,
     op: crate::ledger::OperationKey,
@@ -199,12 +199,12 @@ async fn release_job_with_outbox(
     account: &str,
 ) -> Result<bool, crate::ledger::LedgerError> {
     if state.ownership.assert_holding().is_err() {
-        return Err(crate::ledger::LedgerError::Conflict(
-            "ownership_lost: refusing release".into(),
-        ));
+        return Err(crate::ledger::LedgerError::OwnershipLost);
     }
+    let epoch = state.ownership.epoch().0;
     let refunded = {
         let mut led = state.ledger.lock().await;
+        led.require_fencing_epoch(job_id, epoch)?;
         let reserved = led.job_reserved_total(job_id).map(|m| m.0).unwrap_or(0);
         match led.release(op, job_id, account)? {
             true => Some(reserved),
@@ -893,6 +893,8 @@ async fn chat_completions(
                     )
                         .into_response();
                 }
+                // Bind job to this coordinator's fencing epoch (DECISIONS #52).
+                let _ = ledger.bind_fencing_epoch(job_id.as_str(), state.ownership.epoch().0);
             }
 
             // Prefer live provider prepare/start when the hub has a session.
@@ -979,6 +981,21 @@ async fn chat_completions(
                 }
                 let resize_err = {
                     let mut ledger = state.ledger.lock().await;
+                    if let Err(err) =
+                        ledger.require_fencing_epoch(job_id.as_str(), state.ownership.epoch().0)
+                    {
+                        return (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            Json(json!({
+                                "error": {
+                                    "message": format!("{err}"),
+                                    "type": "server_error",
+                                    "code": "ownership_lost"
+                                }
+                            })),
+                        )
+                            .into_response();
+                    }
                     let reserved = ledger
                         .job_reserved_total(job_id.as_str())
                         .map(|m| m.0)
@@ -1178,6 +1195,21 @@ async fn chat_completions(
                         return resp;
                     }
                     let mut ledger = state.ledger.lock().await;
+                    if let Err(err) =
+                        ledger.require_fencing_epoch(job_id.as_str(), state.ownership.epoch().0)
+                    {
+                        return (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            Json(json!({
+                                "error": {
+                                    "message": format!("{err}"),
+                                    "type": "server_error",
+                                    "code": "ownership_lost"
+                                }
+                            })),
+                        )
+                            .into_response();
+                    }
                     ledger.record_attempt(
                         attempt.as_str(),
                         job_id.as_str(),
@@ -1294,6 +1326,22 @@ async fn chat_completions(
                         }
                         {
                             let mut ledger = state.ledger.lock().await;
+                            if let Err(err) = ledger.require_fencing_epoch(
+                                &completion.job_id,
+                                state.ownership.epoch().0,
+                            ) {
+                                return (
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    Json(json!({
+                                        "error": {
+                                            "message": format!("{err}"),
+                                            "type": "server_error",
+                                            "code": "ownership_lost"
+                                        }
+                                    })),
+                                )
+                                    .into_response();
+                            }
                             if completion.mode == "rust-live" {
                                 ledger.record_attempt(
                                     &completion.attempt_id,

@@ -58,6 +58,7 @@ Date: 2026-07-10
 | 49 | Stream settle after checkpoint | Streaming requests defer `settle_capped` until after the bounded chunk pipe advances `ChunkCheckpoint`; charge is `min(provider_actual, billable_tokens * rate, reserved)` so backpressure/partial accept cannot overcharge |
 | 50 | Settle SQL writes lease_id | `settle_sql` / `settle_capped_sql` / `force_settle_sql` insert `lease_id` into `provider_terminals` so durable terminal rows bind the funded lease for ingest/audit |
 | 51 | Settle SQL writes se_signature | Settle CTEs also persist `se_signature` (COALESCE empty) on `provider_terminals` so rollback ingest can verify provider attestation material without re-settling |
+| 52 | Job fencing epoch bind | `MemoryLedger` stores `fencing_epoch` on reserve (via `bind_fencing_epoch`); settle/release/resize refuse with `OwnershipLost` when the caller's epoch no longer matches — pairs with DECISIONS #47 for mid-flight steal safety |
 
 ## Deleted Go mechanisms (do not port)
 

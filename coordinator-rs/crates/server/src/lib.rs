@@ -34,7 +34,10 @@ pub use fleet_actor::{spawn_fleet_actor, FleetError, FleetHandle};
 pub use http::{router, AppState, ModelCard};
 pub use ledger::{MemoryLedger, OperationKey, ReservationProvenance};
 pub use outbox::{Outbox, OutboxEntry, OutboxError};
-pub use ownership::{Epoch, Gate as OwnershipGate, OwnershipError};
+pub use ownership::{
+    acquire_sql as ownership_acquire_sql, heartbeat_sql as ownership_heartbeat_sql,
+    release_sql as ownership_release_sql, Epoch, Gate as OwnershipGate, OwnershipError,
+};
 pub use provider_hub::{InboundReply, OutboundCmd, ProviderHub, SharedHub};
 pub use provider_session::{spawn_session, Lane, ProviderSessionHandle, SessionError};
 pub use recovery::{

@@ -291,6 +291,20 @@ async fn admin_deposit(
             }
         }
     };
+    if applied {
+        let mut box_ = state.outbox.lock().await;
+        let _ = box_.enqueue(
+            "billing.deposit_applied",
+            &json!({
+                "source": req.source,
+                "event_id": req.event_id,
+                "account": account,
+                "amount_micro_usd": req.amount_micro_usd,
+                "withdrawable_micro_usd": req.withdrawable_micro_usd,
+            })
+            .to_string(),
+        );
+    }
     let (bal, wdr) = {
         let ledger = state.ledger.lock().await;
         ledger.balance(&account)

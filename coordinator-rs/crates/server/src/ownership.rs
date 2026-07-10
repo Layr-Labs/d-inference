@@ -100,6 +100,41 @@ impl Gate {
     }
 }
 
+/// Documented SQL for durable fencing epoch CAS (lands with SQLx).
+pub fn acquire_sql() -> &'static str {
+    r#"
+    UPDATE rust_coord.coordinator_ownership
+    SET fencing_epoch = fencing_epoch + 1,
+        holder = $1,
+        acquired_at = NOW(),
+        heartbeat_at = NOW(),
+        recovery_mode = $2
+    WHERE id = 1
+      AND (holder = '' OR holder = $1 OR heartbeat_at < NOW() - INTERVAL '30 seconds')
+    RETURNING fencing_epoch, holder
+    "#
+}
+
+/// Documented SQL for heartbeat while holding.
+pub fn heartbeat_sql() -> &'static str {
+    r#"
+    UPDATE rust_coord.coordinator_ownership
+    SET heartbeat_at = NOW()
+    WHERE id = 1 AND holder = $1 AND fencing_epoch = $2
+    RETURNING fencing_epoch
+    "#
+}
+
+/// Documented SQL for release on graceful shutdown.
+pub fn release_sql() -> &'static str {
+    r#"
+    UPDATE rust_coord.coordinator_ownership
+    SET holder = '', heartbeat_at = NULL
+    WHERE id = 1 AND holder = $1 AND fencing_epoch = $2
+    RETURNING fencing_epoch
+    "#
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +183,13 @@ mod tests {
         g.acquire(Epoch(1)).unwrap();
         g.acquire(Epoch(2)).unwrap();
         assert_eq!(g.epoch(), Epoch(2));
+    }
+
+    #[test]
+    fn ownership_sql_docs_mention_coordinator_ownership() {
+        assert!(acquire_sql().contains("rust_coord.coordinator_ownership"));
+        assert!(acquire_sql().contains("fencing_epoch"));
+        assert!(heartbeat_sql().contains("heartbeat_at"));
+        assert!(release_sql().contains("holder = ''"));
     }
 }

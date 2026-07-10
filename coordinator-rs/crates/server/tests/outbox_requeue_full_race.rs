@@ -11,12 +11,14 @@ fn concurrent_requeue_when_full_rejects() {
         let mut g = box_.lock().unwrap();
         g.enqueue("a", "{}").unwrap();
         g.enqueue("b", "{}").unwrap();
-        // Claim one so we have an entry to requeue, then fill again
+        // Claim one into in_flight; occupied stays 2 so further enqueue is Full.
         let e = g.try_claim().unwrap();
-        g.enqueue("c", "{}").unwrap(); // queue full again (1 remaining + new = 2)
+        assert_eq!(g.enqueue("c", "{}"), Err(OutboxError::Full));
         e
     };
 
+    // First requeue of the claimed entry succeeds (frees in_flight then pushes pending).
+    // Concurrent clones of the same entry then see a full queue.
     let mut handles = Vec::new();
     for _ in 0..4 {
         let box_ = box_.clone();
@@ -32,13 +34,9 @@ fn concurrent_requeue_when_full_rejects() {
     }
 
     let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-    // At most one requeue can succeed if a slot frees; with full queue of 2
-    // and no claims, all should be Full. But first requeue might succeed if
-    // len < max after claim left a slot that was refilled...
-    // After setup: claimed 1 (len=1), enqueued c (len=2 full). Requeue of
-    // claimed entry: first succeeds (len=3? No max=2 so Full).
-    // Wait: after claim len=1, enqueue c len=2. requeue pushes back → would be 3 > max → Full.
-    // So all Full.
-    assert!(results.iter().all(|r| *r == "full"));
+    let oks = results.iter().filter(|r| **r == "ok").count();
+    let fulls = results.iter().filter(|r| **r == "full").count();
+    assert_eq!(oks, 1);
+    assert_eq!(fulls, 3);
     assert_eq!(box_.lock().unwrap().len(), 2);
 }

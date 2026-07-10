@@ -1,6 +1,8 @@
 //! Ledger service stubs — SQLx wiring in later M4 commits.
 //!
 //! Operation keys make reserve/resize/settle/release idempotent.
+//! Replay is idempotent only when the recorded parameters match
+//! (DECISIONS #34); mismatched reuse is Conflict.
 
 use darkbloom_core::MicroUsd;
 use serde::{Deserialize, Serialize};
@@ -34,14 +36,29 @@ pub enum LedgerError {
     InvalidAmount,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OperationRecord {
+    op_type: &'static str,
+    job_id: String,
+    account: String,
+    amount: i64,
+    digest: Option<String>,
+    billable_cap: Option<i64>,
+}
+
+enum OpClaim {
+    Fresh,
+    Replay,
+}
+
 /// In-memory ledger for unit tests and warm-plane development without Postgres.
 #[derive(Default)]
 pub struct MemoryLedger {
     balances: std::collections::HashMap<String, (i64, i64)>, // total, withdrawable
-    ops: std::collections::HashSet<String>,
+    ops: std::collections::HashMap<String, OperationRecord>,
     jobs: std::collections::HashMap<String, JobRecord>,
     attempts: std::collections::HashMap<String, AttemptRecord>,
-    terminals: std::collections::HashMap<String, String>, // digest -> disposition
+    terminals: std::collections::HashMap<String, String>, // digest -> job_id
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +78,23 @@ pub struct AttemptRecord {
 }
 
 impl MemoryLedger {
+    fn claim_op(&mut self, key: &str, record: OperationRecord) -> Result<OpClaim, LedgerError> {
+        match self.ops.get(key) {
+            Some(prev) if prev == &record => Ok(OpClaim::Replay),
+            Some(_) => Err(LedgerError::Conflict(format!(
+                "operation key {key} reused with different parameters"
+            ))),
+            None => {
+                self.ops.insert(key.to_string(), record);
+                Ok(OpClaim::Fresh)
+            }
+        }
+    }
+
+    fn unclaim_op(&mut self, key: &str) {
+        self.ops.remove(key);
+    }
+
     pub fn credit(&mut self, account: &str, total: i64, withdrawable: i64) -> Result<(), LedgerError> {
         if total < 0 || withdrawable < 0 {
             return Err(LedgerError::InvalidAmount);
@@ -86,33 +120,45 @@ impl MemoryLedger {
         if amount <= 0 {
             return Err(LedgerError::InvalidAmount);
         }
-        if !self.ops.insert(op.0.clone()) {
-            let provenance = self
-                .jobs
-                .get(job_id)
-                .map(|j| j.provenance.clone())
-                .unwrap_or(ReservationProvenance {
-                    total: MicroUsd(amount),
-                    withdrawable: MicroUsd(0),
+        let record = OperationRecord {
+            op_type: "reserve",
+            job_id: job_id.to_string(),
+            account: account.to_string(),
+            amount,
+            digest: None,
+            billable_cap: None,
+        };
+        match self.claim_op(&op.0, record)? {
+            OpClaim::Replay => {
+                let provenance = self
+                    .jobs
+                    .get(job_id)
+                    .map(|j| j.provenance.clone())
+                    .unwrap_or(ReservationProvenance {
+                        total: MicroUsd(amount),
+                        withdrawable: MicroUsd(0),
+                    });
+                return Ok(ReserveResult {
+                    job_id: job_id.to_string(),
+                    provenance,
+                    applied: false,
                 });
-            return Ok(ReserveResult {
-                job_id: job_id.to_string(),
-                provenance,
-                applied: false,
-            });
+            }
+            OpClaim::Fresh => {}
         }
         // Job IDs are single-use. A disposed or still-active job must not be
         // overwritten by a later reserve under a different operation key.
         if let Some(existing) = self.jobs.get(job_id) {
-            self.ops.remove(&op.0);
+            let state = existing.state.clone();
+            let disposition = existing.disposition.clone();
+            self.unclaim_op(&op.0);
             return Err(LedgerError::Conflict(format!(
-                "job {job_id} already exists (state={}, disposition={:?})",
-                existing.state, existing.disposition
+                "job {job_id} already exists (state={state}, disposition={disposition:?})"
             )));
         }
         let (bal, wdr) = self.balances.entry(account.to_string()).or_insert((0, 0));
         if *bal < amount {
-            self.ops.remove(&op.0);
+            self.unclaim_op(&op.0);
             return Err(LedgerError::InsufficientBalance);
         }
         let non_wdr = (*bal - *wdr).max(0);
@@ -181,40 +227,51 @@ impl MemoryLedger {
         if new_amount <= 0 {
             return Err(LedgerError::InvalidAmount);
         }
-        if !self.ops.insert(op.0.clone()) {
-            let provenance = self
-                .jobs
-                .get(job_id)
-                .map(|j| j.provenance.clone())
-                .unwrap_or(ReservationProvenance {
-                    total: MicroUsd(new_amount),
-                    withdrawable: MicroUsd(0),
+        let record = OperationRecord {
+            op_type: "resize_authorize",
+            job_id: job_id.to_string(),
+            account: account.to_string(),
+            amount: new_amount,
+            digest: None,
+            billable_cap: None,
+        };
+        match self.claim_op(&op.0, record)? {
+            OpClaim::Replay => {
+                let provenance = self
+                    .jobs
+                    .get(job_id)
+                    .map(|j| j.provenance.clone())
+                    .unwrap_or(ReservationProvenance {
+                        total: MicroUsd(new_amount),
+                        withdrawable: MicroUsd(0),
+                    });
+                return Ok(ReserveResult {
+                    job_id: job_id.to_string(),
+                    provenance,
+                    applied: false,
                 });
-            return Ok(ReserveResult {
-                job_id: job_id.to_string(),
-                provenance,
-                applied: false,
-            });
+            }
+            OpClaim::Fresh => {}
         }
         let job = match self.jobs.get(job_id) {
             Some(j) => j,
             None => {
-                self.ops.remove(&op.0);
+                self.unclaim_op(&op.0);
                 return Err(LedgerError::Conflict("unknown job".into()));
             }
         };
         if job.disposition.is_some() {
-            self.ops.remove(&op.0);
+            self.unclaim_op(&op.0);
             return Err(LedgerError::Conflict(format!(
                 "job {job_id} already disposed"
             )));
         }
         if job.funded_start {
-            self.ops.remove(&op.0);
+            self.unclaim_op(&op.0);
             return Err(LedgerError::Conflict("already start_authorized".into()));
         }
         if job.account_id != account {
-            self.ops.remove(&op.0);
+            self.unclaim_op(&op.0);
             return Err(LedgerError::Conflict("account mismatch".into()));
         }
         let old_total = job.provenance.total.0;
@@ -224,7 +281,7 @@ impl MemoryLedger {
         let (bal, wdr) = self.balances.entry(account.to_string()).or_insert((0, 0));
         let (new_total, new_wdr) = if delta > 0 {
             if *bal < delta {
-                self.ops.remove(&op.0);
+                self.unclaim_op(&op.0);
                 return Err(LedgerError::InsufficientBalance);
             }
             let non_wdr = (*bal - *wdr).max(0);
@@ -317,7 +374,15 @@ impl MemoryLedger {
             .map(|j| j.provenance.total.0)
             .unwrap_or(0);
         let charge = actual.min(billable_cap).min(reserved).max(0);
-        self.settle_as(op, job_id, account, charge, terminal_digest, disposition)
+        self.settle_as_inner(
+            op,
+            job_id,
+            account,
+            charge,
+            terminal_digest,
+            disposition,
+            Some((actual, billable_cap)),
+        )
     }
 
     pub fn settle(
@@ -340,7 +405,28 @@ impl MemoryLedger {
         terminal_digest: &str,
         disposition: &str,
     ) -> Result<bool, LedgerError> {
-        if actual < 0 {
+        self.settle_as_inner(
+            op,
+            job_id,
+            account,
+            actual,
+            terminal_digest,
+            disposition,
+            None,
+        )
+    }
+
+    fn settle_as_inner(
+        &mut self,
+        op: OperationKey,
+        job_id: &str,
+        account: &str,
+        charge: i64,
+        terminal_digest: &str,
+        disposition: &str,
+        capped_inputs: Option<(i64, i64)>,
+    ) -> Result<bool, LedgerError> {
+        if charge < 0 {
             return Err(LedgerError::InvalidAmount);
         }
         if let Some(prev) = self.terminals.get(terminal_digest) {
@@ -352,18 +438,47 @@ impl MemoryLedger {
                 "terminal digest conflict: already bound to {prev}"
             )));
         }
-        if !self.ops.insert(op.0.clone()) {
-            return Ok(false);
+        let (amount, billable_cap, op_type) = match capped_inputs {
+            Some((actual, cap)) => (
+                actual,
+                Some(cap),
+                if disposition == "force_settled" {
+                    "force_settle"
+                } else {
+                    "settle_capped"
+                },
+            ),
+            None => (
+                charge,
+                None,
+                if disposition == "force_settled" {
+                    "force_settle"
+                } else {
+                    "settle"
+                },
+            ),
+        };
+        let record = OperationRecord {
+            op_type,
+            job_id: job_id.to_string(),
+            account: account.to_string(),
+            amount,
+            digest: Some(terminal_digest.to_string()),
+            billable_cap,
+        };
+        match self.claim_op(&op.0, record)? {
+            OpClaim::Replay => return Ok(false),
+            OpClaim::Fresh => {}
         }
         let job = match self.jobs.get_mut(job_id) {
             Some(j) => j,
             None => {
-                self.ops.remove(&op.0);
+                self.unclaim_op(&op.0);
                 return Err(LedgerError::Conflict("unknown job".into()));
             }
         };
         if job.account_id != account {
-            self.ops.remove(&op.0);
+            self.unclaim_op(&op.0);
             return Err(LedgerError::Conflict(format!(
                 "account mismatch for job {job_id}"
             )));
@@ -372,13 +487,13 @@ impl MemoryLedger {
             return Ok(false);
         }
         let reserved = job.provenance.total.0;
-        if actual > reserved {
-            self.ops.remove(&op.0);
+        if charge > reserved {
+            self.unclaim_op(&op.0);
             return Err(LedgerError::Conflict("actual exceeds reservation".into()));
         }
-        let refund = reserved - actual;
+        let refund = reserved - charge;
         let non_wdr_reserved = reserved - job.provenance.withdrawable.0;
-        let consumed_wdr = (actual - non_wdr_reserved).max(0).min(job.provenance.withdrawable.0);
+        let consumed_wdr = (charge - non_wdr_reserved).max(0).min(job.provenance.withdrawable.0);
         let refund_wdr = job.provenance.withdrawable.0 - consumed_wdr;
 
         let e = self.balances.entry(account.to_string()).or_insert((0, 0));
@@ -398,15 +513,24 @@ impl MemoryLedger {
         job_id: &str,
         account: &str,
     ) -> Result<bool, LedgerError> {
-        if !self.ops.insert(op.0.clone()) {
-            return Ok(false);
+        let record = OperationRecord {
+            op_type: "release",
+            job_id: job_id.to_string(),
+            account: account.to_string(),
+            amount: 0,
+            digest: None,
+            billable_cap: None,
+        };
+        match self.claim_op(&op.0, record)? {
+            OpClaim::Replay => return Ok(false),
+            OpClaim::Fresh => {}
         }
         let Some(job) = self.jobs.get_mut(job_id) else {
-            self.ops.remove(&op.0);
+            self.unclaim_op(&op.0);
             return Ok(false);
         };
         if job.account_id != account {
-            self.ops.remove(&op.0);
+            self.unclaim_op(&op.0);
             return Err(LedgerError::Conflict(format!(
                 "account mismatch for job {job_id}"
             )));
@@ -418,7 +542,7 @@ impl MemoryLedger {
         // recovery-review. Prevents concurrent mark_start/release from
         // refunding a funded attempt.
         if job.funded_start {
-            self.ops.remove(&op.0);
+            self.unclaim_op(&op.0);
             return Err(LedgerError::Conflict(format!(
                 "job {job_id} is start_authorized; cannot release"
             )));
@@ -1456,5 +1580,56 @@ mod tests {
             Err(LedgerError::Conflict(_))
         ));
         assert_eq!(led.active_job_count(), 1);
+    }
+
+    #[test]
+    fn reserve_op_key_reuse_different_job_conflicts() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        assert!(led
+            .reserve(OperationKey("op".into()), "j1", "a", 100_000)
+            .unwrap()
+            .applied);
+        assert!(matches!(
+            led.reserve(OperationKey("op".into()), "j2", "a", 100_000),
+            Err(LedgerError::Conflict(_))
+        ));
+        assert_eq!(led.active_job_count(), 1);
+        assert_eq!(led.balance("a").0, 4_900_000);
+    }
+
+    #[test]
+    fn settle_op_key_reuse_different_digest_conflicts() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
+        assert!(led
+            .settle(OperationKey("s".into()), "j", "a", 100_000, "d1")
+            .unwrap());
+        // Same op, different digest must not silently noop.
+        assert!(matches!(
+            led.settle(OperationKey("s".into()), "j", "a", 100_000, "d2"),
+            Err(LedgerError::Conflict(_))
+        ));
+        assert_eq!(led.balance("a").0, 4_900_000);
+    }
+
+    #[test]
+    fn settle_capped_op_key_reuse_different_cap_conflicts() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j", "a").unwrap();
+        assert!(led
+            .settle_capped(OperationKey("sc".into()), "j", "a", 500_000, 100_000, "d1")
+            .unwrap());
+        assert!(matches!(
+            led.settle_capped(OperationKey("sc".into()), "j", "a", 500_000, 200_000, "d2"),
+            Err(LedgerError::Conflict(_))
+        ));
+        assert_eq!(led.balance("a").0, 4_900_000);
     }
 }

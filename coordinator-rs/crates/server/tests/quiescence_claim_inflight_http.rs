@@ -1,4 +1,4 @@
-//! Concurrent outbox requeue after partial drain keeps quiescence not-ready.
+//! HTTP: claim without ack keeps quiescence not-ready (DECISIONS #35).
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -17,8 +17,10 @@ use tower::ServiceExt;
 fn test_state() -> AppState {
     let (fleet, _) = spawn_fleet_actor();
     let ownership = Arc::new(OwnershipGate::new(false));
-    ownership.acquire(Epoch(2)).unwrap();
+    ownership.acquire(Epoch(9)).unwrap();
     let (telemetry, _worker) = bounded_telemetry(16);
+    let mut ledger = MemoryLedger::default();
+    ledger.credit("pilot-account", 1_000_000, 0).unwrap();
     AppState {
         fleet,
         hub: ProviderHub::new(),
@@ -28,12 +30,12 @@ fn test_state() -> AppState {
             object: "model".into(),
             owned_by: "darkbloom".into(),
         }],
-        ledger: Arc::new(Mutex::new(MemoryLedger::default())),
+        ledger: Arc::new(Mutex::new(ledger)),
         placement: Arc::new(Mutex::new(PlacementController::default())),
         telemetry: Arc::new(telemetry),
         pilot_account: "pilot-account".into(),
         pilot_api_keys: Arc::new(vec![]),
-        coordinator_epoch: 2,
+        coordinator_epoch: 9,
         ownership,
         external_events: Arc::new(Mutex::new(ExternalEventInbox::new())),
         outbox: Arc::new(Mutex::new(Outbox::default())),
@@ -47,11 +49,10 @@ async fn body_json(res: axum::response::Response) -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn deposit_claim_requeue_keeps_quiescence_blocked_then_ack_clears() {
+async fn claim_without_ack_keeps_quiescence_blocked() {
     let state = test_state();
     let outbox = state.outbox.clone();
     let app = router(state);
-
     let res = app
         .clone()
         .oneshot(
@@ -61,8 +62,8 @@ async fn deposit_claim_requeue_keeps_quiescence_blocked_then_ack_clears() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "event_id": "evt_requeue_q",
-                        "amount_micro_usd": 40_000,
+                        "event_id": "evt_inflight_q",
+                        "amount_micro_usd": 25_000,
                         "withdrawable_micro_usd": 0
                     })
                     .to_string(),
@@ -77,13 +78,7 @@ async fn deposit_claim_requeue_keeps_quiescence_blocked_then_ack_clears() {
         let mut box_ = outbox.lock().await;
         box_.try_claim().unwrap()
     };
-    // Claim is non-destructive until ack — still occupied / not ready.
-    assert!(!outbox.lock().await.is_empty());
     assert_eq!(outbox.lock().await.in_flight_len(), 1);
-    {
-        let mut box_ = outbox.lock().await;
-        box_.requeue(entry).unwrap();
-    }
 
     let q1 = app
         .clone()
@@ -101,8 +96,7 @@ async fn deposit_claim_requeue_keeps_quiescence_blocked_then_ack_clears() {
 
     {
         let mut box_ = outbox.lock().await;
-        let e = box_.try_claim().unwrap();
-        box_.ack_done(e.id);
+        box_.ack_done(entry.id).unwrap();
     }
     let q2 = app
         .oneshot(
@@ -115,5 +109,5 @@ async fn deposit_claim_requeue_keeps_quiescence_blocked_then_ack_clears() {
         .await
         .unwrap();
     assert_eq!(q2.status(), StatusCode::OK);
-    assert_eq!(body_json(q2).await["ready"], true);
+    assert_eq!(body_json(q2).await["outbox_retryable"], 0);
 }

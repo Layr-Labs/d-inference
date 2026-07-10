@@ -43,5 +43,6 @@ fn concurrent_claim_after_deposit_enqueue_exactly_one() {
     }
     assert_eq!(claimed.len(), 1);
     assert_eq!(claimed[0], 1);
-    assert!(state.lock().unwrap().2.is_empty());
+    assert_eq!(state.lock().unwrap().2.in_flight_len(), 1);
+    assert_eq!(state.lock().unwrap().2.len(), 1);
 }

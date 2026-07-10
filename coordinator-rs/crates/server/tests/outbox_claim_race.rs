@@ -38,5 +38,6 @@ fn concurrent_try_claim_no_duplicate_ids() {
         }
     }
     assert_eq!(all.len(), 64);
-    assert!(box_.lock().unwrap().is_empty());
+    assert_eq!(box_.lock().unwrap().in_flight_len(), 64);
+    assert_eq!(box_.lock().unwrap().len(), 64);
 }

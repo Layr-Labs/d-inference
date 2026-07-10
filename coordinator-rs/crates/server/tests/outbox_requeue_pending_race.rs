@@ -17,7 +17,8 @@ fn requeue_after_claim_restores_retryable_pending() {
         let mut g = box_.lock().unwrap();
         let e = g.try_claim().unwrap();
         assert_eq!(e.attempts, 1);
-        assert!(g.is_empty());
+        assert_eq!(g.in_flight_len(), 1);
+        assert!(!g.is_empty());
         e
     };
 

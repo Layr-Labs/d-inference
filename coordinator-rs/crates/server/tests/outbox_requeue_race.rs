@@ -24,7 +24,8 @@ fn concurrent_claim_requeue_preserves_attempts_no_dup_ids() {
         }
     }
     assert_eq!(claimed.len(), 16);
-    assert!(box_.lock().unwrap().is_empty());
+    assert_eq!(box_.lock().unwrap().in_flight_len(), 16);
+    assert_eq!(box_.lock().unwrap().len(), 16);
 
     let mut handles = Vec::new();
     for e in claimed.into_iter().take(8) {

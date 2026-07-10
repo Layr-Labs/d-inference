@@ -84,6 +84,8 @@ async fn main() {
     let outbox_for_state = outbox_for_worker.clone();
     tokio::spawn(async move {
         // Best-effort outbox drain (Datadog/projection forwarder lands with SQLx).
+        // Critical money side effects stay in-flight until a durable forwarder acks
+        // them (DECISIONS #32/#35) so quiescence cannot go ready after a silent drop.
         loop {
             let claimed = {
                 let mut box_ = outbox_for_worker.lock().await;
@@ -91,8 +93,19 @@ async fn main() {
             };
             match claimed {
                 Some(entry) => {
-                    tracing::debug!(id = entry.id, kind = %entry.kind, "outbox delivered");
-                    // Success path: entry already removed by try_claim.
+                    let critical = entry.kind.starts_with("billing.")
+                        || entry.kind.starts_with("inference.");
+                    if critical {
+                        tracing::debug!(
+                            id = entry.id,
+                            kind = %entry.kind,
+                            "critical outbox held in-flight pending durable forwarder"
+                        );
+                    } else {
+                        tracing::debug!(id = entry.id, kind = %entry.kind, "outbox delivered");
+                        let mut box_ = outbox_for_worker.lock().await;
+                        let _ = box_.ack_done(entry.id);
+                    }
                 }
                 None => {
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;

@@ -131,3 +131,14 @@ observe drain state (`ownership_holding=false`). Mutating admin routes
 Money side effects (`billing.deposit_applied`, `inference.settled`) use
 `Outbox::enqueue_critical`, which extends past the bounded capacity so a full
 queue cannot silently drop the entry. Quiescence still blocks on overflow.
+
+### Op-key parameter bind (DECISIONS #34)
+
+`MemoryLedger` records op type/job/account/amount/digest/cap per operation key.
+Identical replay is idempotent; mismatched reuse is Conflict.
+
+### Outbox claim until ack (DECISIONS #35)
+
+`try_claim` moves entries to in-flight (SQL UPDATE-not-DELETE). Only `ack_done`
+drops them; quiescence counts in-flight. The best-effort worker does not
+auto-ack critical `billing.*` / `inference.*` kinds.

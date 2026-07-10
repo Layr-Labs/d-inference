@@ -1,9 +1,10 @@
 //! Outbox for durable side effects (plan §12 `rust_coord.outbox`).
 //!
 //! Process-local queue with bounded retries. Workers claim via
-//! `try_claim` (SKIP LOCKED analogue).
+//! `try_claim` (SKIP LOCKED analogue). Claims are non-destructive until
+//! `ack_done` (DECISIONS #35) so quiescence cannot go ready mid-delivery.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +21,8 @@ pub enum OutboxError {
     InvalidKind,
     #[error("queue full")]
     Full,
+    #[error("unknown in-flight id")]
+    UnknownId,
 }
 
 const DEFAULT_MAX: usize = 10_000;
@@ -30,6 +33,8 @@ pub struct Outbox {
     next_id: u64,
     max: usize,
     pending: VecDeque<OutboxEntry>,
+    /// Claimed but not yet acked — still blocks quiescence.
+    in_flight: HashMap<u64, OutboxEntry>,
 }
 
 impl Default for Outbox {
@@ -44,14 +49,19 @@ impl Outbox {
             next_id: 1,
             max: max.max(1),
             pending: VecDeque::new(),
+            in_flight: HashMap::new(),
         }
+    }
+
+    fn occupied(&self) -> usize {
+        self.pending.len() + self.in_flight.len()
     }
 
     pub fn enqueue(&mut self, kind: &str, payload: &str) -> Result<u64, OutboxError> {
         if kind.is_empty() {
             return Err(OutboxError::InvalidKind);
         }
-        if self.pending.len() >= self.max {
+        if self.occupied() >= self.max {
             return Err(OutboxError::Full);
         }
         Ok(self.push(kind, payload))
@@ -78,7 +88,8 @@ impl Outbox {
         id
     }
 
-    /// Claim the next entry with attempts < MAX_ATTEMPTS (SKIP LOCKED analogue).
+    /// Claim the next available entry (SKIP LOCKED analogue).
+    /// Moves it to `in_flight` — must `ack_done` or `requeue` (DECISIONS #35).
     pub fn try_claim(&mut self) -> Option<OutboxEntry> {
         let idx = self
             .pending
@@ -86,36 +97,56 @@ impl Outbox {
             .position(|e| e.attempts < MAX_ATTEMPTS)?;
         let mut entry = self.pending.remove(idx)?;
         entry.attempts += 1;
+        self.in_flight.insert(entry.id, entry.clone());
         Some(entry)
     }
 
     /// Re-queue after a failed delivery (keeps attempt count).
     pub fn requeue(&mut self, entry: OutboxEntry) -> Result<(), OutboxError> {
-        if self.pending.len() >= self.max {
+        let was_inflight = self.in_flight.remove(&entry.id).is_some();
+        if self.occupied() >= self.max {
+            if was_inflight {
+                self.in_flight.insert(entry.id, entry);
+            }
             return Err(OutboxError::Full);
         }
         self.pending.push_back(entry);
         Ok(())
     }
 
-    /// Drop a successfully delivered entry (already removed by try_claim).
-    pub fn ack_done(&self, _id: u64) {
-        // Entry was removed on claim; success path is a no-op.
+    /// Drop a successfully delivered entry (removes from in_flight).
+    pub fn ack_done(&mut self, id: u64) -> Result<(), OutboxError> {
+        if self.in_flight.remove(&id).is_some() {
+            Ok(())
+        } else {
+            Err(OutboxError::UnknownId)
+        }
     }
 
     pub fn len(&self) -> usize {
-        self.pending.len()
+        self.occupied()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.pending.is_empty()
+        self.occupied() == 0
     }
 
     pub fn pending_under_retry_cap(&self) -> usize {
-        self.pending
+        let pending = self
+            .pending
             .iter()
             .filter(|e| e.attempts < MAX_ATTEMPTS)
-            .count()
+            .count();
+        let inflight = self
+            .in_flight
+            .values()
+            .filter(|e| e.attempts < MAX_ATTEMPTS)
+            .count();
+        pending + inflight
+    }
+
+    pub fn in_flight_len(&self) -> usize {
+        self.in_flight.len()
     }
 }
 
@@ -129,6 +160,7 @@ pub fn enqueue_sql() -> &'static str {
 }
 
 /// Documented SQL for SKIP LOCKED claim.
+/// Claim increments attempts in-place; row remains until ack_done DELETE.
 pub fn claim_sql() -> &'static str {
     r#"
     UPDATE rust_coord.outbox o
@@ -174,8 +206,21 @@ mod tests {
         let e = box_.try_claim().unwrap();
         assert_eq!(e.id, 1);
         assert_eq!(e.attempts, 1);
+        assert_eq!(box_.in_flight_len(), 1);
+        assert!(!box_.is_empty());
+        box_.ack_done(e.id).unwrap();
         assert!(box_.is_empty());
-        box_.ack_done(e.id);
+    }
+
+    #[test]
+    fn claim_without_ack_still_blocks_retryable() {
+        let mut box_ = Outbox::new(10);
+        box_.enqueue("billing.deposit_applied", "{}").unwrap();
+        let e = box_.try_claim().unwrap();
+        assert_eq!(box_.pending_under_retry_cap(), 1);
+        assert_eq!(box_.in_flight_len(), 1);
+        box_.ack_done(e.id).unwrap();
+        assert_eq!(box_.pending_under_retry_cap(), 0);
     }
 
     #[test]
@@ -187,6 +232,7 @@ mod tests {
         box_.requeue(e).unwrap();
         let e2 = box_.try_claim().unwrap();
         assert_eq!(e2.attempts, 2);
+        box_.ack_done(e2.id).unwrap();
     }
 
     #[test]

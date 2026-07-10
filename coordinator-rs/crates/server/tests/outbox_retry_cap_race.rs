@@ -30,6 +30,8 @@ fn concurrent_pending_under_retry_cap_tracks_claims() {
         .filter(|c| *c)
         .count();
     assert_eq!(claimed, 5);
-    assert_eq!(box_.lock().unwrap().len(), 5);
-    assert_eq!(box_.lock().unwrap().pending_under_retry_cap(), 5);
+    // Claims are non-destructive until ack — occupied count stays 10.
+    assert_eq!(box_.lock().unwrap().len(), 10);
+    assert_eq!(box_.lock().unwrap().pending_under_retry_cap(), 10);
+    assert_eq!(box_.lock().unwrap().in_flight_len(), 5);
 }

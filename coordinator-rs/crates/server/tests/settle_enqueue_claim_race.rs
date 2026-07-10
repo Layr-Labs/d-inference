@@ -51,5 +51,6 @@ fn concurrent_settle_enqueue_then_claim_drains() {
         }
     }
     assert_eq!(ids.len(), 4);
-    assert!(box_.lock().unwrap().is_empty());
+    assert_eq!(box_.lock().unwrap().in_flight_len(), 4);
+    assert_eq!(box_.lock().unwrap().len(), 4);
 }

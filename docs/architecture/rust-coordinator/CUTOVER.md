@@ -398,3 +398,9 @@ Quiescence includes `active_jobs_detail` with fencing epoch, funded_start, and
 reserved amounts for orphan triage. CLI `--demo-adopt-force-settle-job` covers
 the held-orphan adopt→force-settle path.
 
+### needs_adopt + recover-undispatched-batch (DECISIONS #77)
+
+When holding, quiescence sets `needs_adopt=true` on jobs whose fencing epoch
+differs from the current owner. `POST /v1/admin/recover-undispatched-batch`
+releases all reserved-not-started jobs (skips held); use after adopt-jobs.
+

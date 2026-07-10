@@ -55,9 +55,11 @@ async fn quiescence_active_jobs_detail_reports_fencing_and_funded() {
     assert_eq!(v["active_jobs_detail"][0]["job_id"], "detail-a");
     assert_eq!(v["active_jobs_detail"][0]["funded_start"], false);
     assert_eq!(v["active_jobs_detail"][0]["fencing_epoch"], epoch);
+    assert_eq!(v["active_jobs_detail"][0]["needs_adopt"], false); // not holding
     assert_eq!(v["active_jobs_detail"][0]["reserved_micro_usd"], 80_000);
     assert_eq!(v["active_jobs_detail"][1]["job_id"], "detail-b");
     assert_eq!(v["active_jobs_detail"][1]["funded_start"], true);
+    assert_eq!(v["active_jobs_detail"][1]["needs_adopt"], false);
     assert_eq!(v["active_jobs_detail"][1]["reserved_micro_usd"], 120_000);
     assert_eq!(v["held_start_authorized"], 1);
 }

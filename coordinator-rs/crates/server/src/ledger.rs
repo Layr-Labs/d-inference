@@ -747,13 +747,17 @@ impl MemoryLedger {
         ids
     }
 
-    /// Per-job orphan inventory for quiescence (DECISIONS #76).
-    pub fn active_jobs_detail(&self) -> Vec<serde_json::Value> {
+    /// Per-job orphan inventory for quiescence (DECISIONS #76/#77).
+    /// `current_epoch` is the live ownership epoch (0 when not holding).
+    pub fn active_jobs_detail(&self, current_epoch: u64) -> Vec<serde_json::Value> {
         let mut rows: Vec<(String, serde_json::Value)> = self
             .jobs
             .iter()
             .filter(|(_, j)| j.disposition.is_none())
             .map(|(id, j)| {
+                let needs_adopt = j.fencing_epoch != 0
+                    && current_epoch != 0
+                    && j.fencing_epoch != current_epoch;
                 (
                     id.clone(),
                     serde_json::json!({
@@ -762,6 +766,7 @@ impl MemoryLedger {
                         "state": j.state,
                         "funded_start": j.funded_start,
                         "fencing_epoch": j.fencing_epoch,
+                        "needs_adopt": needs_adopt,
                         "reserved_micro_usd": j.provenance.total.0,
                         "reserved_withdrawable_micro_usd": j.provenance.withdrawable.0,
                     }),
@@ -770,6 +775,18 @@ impl MemoryLedger {
             .collect();
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         rows.into_iter().map(|(_, v)| v).collect()
+    }
+
+    /// Reserved-not-started active job ids (recover-batch candidates).
+    pub fn reserved_not_started_job_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .jobs
+            .iter()
+            .filter(|(_, j)| j.disposition.is_none() && !j.funded_start)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids
     }
 
     /// Jobs that are start_authorized but not yet disposed (held for review).

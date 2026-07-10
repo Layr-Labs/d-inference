@@ -81,6 +81,10 @@ pub fn router(state: AppState) -> Router {
             "/v1/admin/recover-undispatched",
             post(admin_recover_undispatched),
         )
+        .route(
+            "/v1/admin/recover-undispatched-batch",
+            post(admin_recover_undispatched_batch),
+        )
         .route("/v1/admin/held-review", post(admin_held_review))
         .route("/v1/admin/terminal-ingest", post(admin_terminal_ingest))
         .route("/v1/admin/adopt-job", post(admin_adopt_job))
@@ -254,6 +258,14 @@ async fn release_job_with_outbox(
 
 async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Warm-plane inventory — expand as workers land.
+    let ownership_epoch = state.ownership.epoch().0;
+    let ownership_holding = state.ownership.holding();
+    // When not holding, pass 0 so needs_adopt stays false (unknown current epoch).
+    let detail_epoch = if ownership_holding {
+        ownership_epoch
+    } else {
+        0
+    };
     let (bal, wdr, active_jobs, active_job_ids, active_jobs_detail, held_start_authorized, held_job_ids) = {
         let led = state.ledger.lock().await;
         let (b, w) = led.balance(&state.pilot_account);
@@ -262,7 +274,7 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             w,
             led.active_job_count(),
             led.active_job_ids(),
-            led.active_jobs_detail(),
+            led.active_jobs_detail(detail_epoch),
             led.held_start_authorized_count(),
             led.held_start_authorized_job_ids(),
         )
@@ -313,8 +325,8 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             "telemetry_emitted": state.telemetry.emitted(),
             "telemetry_dropped": state.telemetry.dropped(),
             "fleet_actor": "up",
-            "ownership_holding": state.ownership.holding(),
-            "ownership_epoch": state.ownership.epoch().0,
+            "ownership_holding": ownership_holding,
+            "ownership_epoch": ownership_epoch,
             "external_events_seen": external_events_seen,
             "outbox_pending": outbox_pending,
             "outbox_retryable": outbox_retryable,
@@ -721,6 +733,108 @@ async fn admin_recover_undispatched(
             "action": action,
             "job_id": req.job_id,
             "account": account,
+            "balance_micro_usd": bal,
+            "active_jobs": active,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AdminRecoverUndispatchedBatchRequest {
+    /// Optional explicit ids; empty/omitted = all reserved-not-started (DECISIONS #77).
+    #[serde(default)]
+    job_ids: Vec<String>,
+    #[serde(default)]
+    account: Option<String>,
+}
+
+/// Bulk-release reserved-not-started jobs after adopt (DECISIONS #77).
+/// Skips start_authorized holds — those need force-settle.
+async fn admin_recover_undispatched_batch(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AdminRecoverUndispatchedBatchRequest>,
+) -> impl IntoResponse {
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
+    }
+    if let Err(resp) = require_holding(&state) {
+        return resp;
+    }
+    let account = req
+        .account
+        .unwrap_or_else(|| state.pilot_account.clone());
+    let epoch = state.ownership.epoch().0;
+
+    let mut released = Vec::new();
+    let mut skipped = Vec::new();
+    let mut failed = Vec::new();
+    let mut refund_total = 0_i64;
+
+    let ids = {
+        let led = state.ledger.lock().await;
+        if req.job_ids.is_empty() {
+            led.reserved_not_started_job_ids()
+        } else {
+            req.job_ids.clone()
+        }
+    };
+
+    for job_id in ids {
+        let (action, refunded) = {
+            let mut led = state.ledger.lock().await;
+            let reserved = led.job_reserved_total(&job_id).map(|m| m.0).unwrap_or(0);
+            match recover_undispatched_on(&mut led, epoch, &job_id, &account) {
+                Ok(RecoveryAction::Released) => ("released", Some(reserved)),
+                Ok(RecoveryAction::AlreadyTerminal) => ("already_terminal", None),
+                Ok(RecoveryAction::Skipped) | Ok(RecoveryAction::HeldForReview) => {
+                    ("skipped", None)
+                }
+                Err(err) => {
+                    failed.push(json!({
+                        "job_id": job_id,
+                        "error": format!("{err}"),
+                    }));
+                    continue;
+                }
+            }
+        };
+        match action {
+            "released" => {
+                if let Some(amount) = refunded {
+                    {
+                        let mut terms = state.terminals.lock().await;
+                        crate::terminal_ingest::record_released_disposition(&mut terms, &job_id);
+                    }
+                    let mut box_ = state.outbox.lock().await;
+                    let _ = box_.enqueue_released(&job_id, &account, amount);
+                    refund_total += amount;
+                }
+                released.push(job_id);
+            }
+            other => {
+                skipped.push(json!({ "job_id": job_id, "action": other }));
+            }
+        }
+    }
+
+    let (bal, active) = {
+        let led = state.ledger.lock().await;
+        (led.balance(&account).0, led.active_job_count())
+    };
+    (
+        StatusCode::OK,
+        Json(json!({
+            "action": "recovered_batch",
+            "account": account,
+            "released": released,
+            "skipped": skipped,
+            "failed": failed,
+            "released_count": released.len(),
+            "skipped_count": skipped.len(),
+            "failed_count": failed.len(),
+            "refunded_micro_usd": refund_total,
             "balance_micro_usd": bal,
             "active_jobs": active,
         })),

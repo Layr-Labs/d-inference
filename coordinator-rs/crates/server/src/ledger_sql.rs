@@ -95,13 +95,14 @@ impl PostgresLedgerStub {
     }
 
     /// Mark start_authorized without resizing (same-amount fund path).
-    /// Parameters: $1 job_id, $2 account_id, $3 operation_key
+    /// Parameters: $1 job_id, $2 account_id, $3 operation_key, $4 fencing_epoch
     /// Account bind: job row must match caller account (DECISIONS #24/#31).
     /// Op claim gates the state transition (DECISIONS #33).
+    /// Fencing epoch must match (or job unbound=0) — DECISIONS #52.
     pub fn mark_start_authorized_sql() -> &'static str {
         r#"
         WITH job AS (
-          SELECT job_id, state, terminal_disposition, account_id
+          SELECT job_id, state, terminal_disposition, account_id, coordinator_epoch
           FROM rust_coord.inference_jobs
           WHERE job_id = $1
             AND account_id = $2
@@ -110,6 +111,7 @@ impl PostgresLedgerStub {
           SELECT 1 FROM job
           WHERE terminal_disposition IS NULL
             AND state = 'reserved'
+            AND (coordinator_epoch = 0 OR coordinator_epoch = $4::bigint)
         ), op AS (
           INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
           SELECT $3, $1, 'start_authorize', 0 FROM guard
@@ -136,14 +138,15 @@ impl PostgresLedgerStub {
     }
 
     /// Resize reservation + mark start_authorized in one round-trip (plan §12).
-    /// Parameters: $1 account, $2 job_id, $3 new_amount, $4 operation_key
+    /// Parameters: $1 account, $2 job_id, $3 new_amount, $4 operation_key, $5 fencing_epoch
     /// Op claim gates debit/mark so reused op keys cannot move funds (DECISIONS #33).
+    /// Fencing epoch must match (or job unbound=0) — DECISIONS #52.
     pub fn resize_and_authorize_sql() -> &'static str {
         r#"
         WITH job AS (
           SELECT job_id, reserved_total_micro_usd AS reserved,
                  reserved_withdrawable_micro_usd AS reserved_wdr,
-                 terminal_disposition, state, account_id
+                 terminal_disposition, state, account_id, coordinator_epoch
           FROM rust_coord.inference_jobs
           WHERE job_id = $2
             AND account_id = $1
@@ -153,6 +156,7 @@ impl PostgresLedgerStub {
           WHERE terminal_disposition IS NULL
             AND state = 'reserved'
             AND $3::bigint > 0
+            AND (coordinator_epoch = 0 OR coordinator_epoch = $5::bigint)
         ), bal AS (
           SELECT balance_micro_usd AS bal, withdrawable_micro_usd AS wdr
           FROM balances WHERE account_id = $1 FOR UPDATE
@@ -674,6 +678,7 @@ mod tests {
         assert!(sql.contains("SELECT $4, $2, 'resize_authorize', $3 FROM funds"));
         assert!(sql.contains("EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));
+        assert!(sql.contains("coordinator_epoch = $5"));
     }
 
     #[test]
@@ -688,6 +693,7 @@ mod tests {
         assert!(sql.contains("SELECT $3, $1, 'start_authorize', 0 FROM guard"));
         assert!(sql.contains("EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));
+        assert!(sql.contains("coordinator_epoch = $4"));
     }
 
     #[test]

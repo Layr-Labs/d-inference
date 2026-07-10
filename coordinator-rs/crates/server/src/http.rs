@@ -502,6 +502,20 @@ async fn admin_force_settle(
             ("skipped".to_string(), 0_i64)
         } else if led.job_reserved_total(&req.job_id).is_none() {
             ("already_terminal".to_string(), 0_i64)
+        } else if let Err(err) =
+            led.require_fencing_epoch(&req.job_id, state.ownership.epoch().0)
+        {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": {
+                        "message": format!("{err}"),
+                        "type": "server_error",
+                        "code": "ownership_lost"
+                    }
+                })),
+            )
+                .into_response();
         } else {
             let reserved = led.job_reserved_total(&req.job_id).map(|m| m.0).unwrap_or(0);
             let charge = req.actual_micro_usd.min(reserved).max(0);
@@ -1304,7 +1318,11 @@ async fn chat_completions(
                     let stream_body = if req.stream {
                         let (pipe, _reader) = crate::chunk_pipe::bounded_chunk_pipe(16, 64 * 1024);
                         let mut cp = ChunkCheckpoint::default();
-                        let tokens = completion.completion_tokens.max(0) as u64;
+                        // Billable tokens = min(provider claim, content-derived estimate)
+                        // so inflated completion_tokens cannot overcharge.
+                        let provider_tokens = completion.completion_tokens.max(0) as u64;
+                        let content_tokens = ((completion.content.len() / 4) as u64).max(1);
+                        let tokens = content_tokens.min(provider_tokens);
                         let _ = crate::stream_billing::pipe_and_checkpoint(
                             &pipe,
                             &mut cp,

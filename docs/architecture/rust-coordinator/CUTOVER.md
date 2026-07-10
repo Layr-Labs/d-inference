@@ -228,8 +228,8 @@ terminals leave the reservation held for force-settle.
 ### Stream settle after checkpoint (DECISIONS #49)
 
 Streaming chat defers settlement until after the bounded chunk pipe updates
-`ChunkCheckpoint`. The charge is clamped by accepted billable tokens so a
-provider claim above what the consumer pipe accepted cannot overcharge.
+`ChunkCheckpoint`. Billable tokens are `min(provider_claim, content_len/4)` so
+an inflated `completion_tokens` cannot overcharge past accepted content.
 
 ### Settle SQL writes lease_id (DECISIONS #50)
 

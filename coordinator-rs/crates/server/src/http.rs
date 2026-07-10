@@ -56,10 +56,24 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/chat/completions", post(chat_completions))
         // Responses API — same handler; body uses `input` or `messages` (pilot accepts messages).
         .route("/v1/responses", post(chat_completions))
+        .route("/v1/completions", post(completions_unsupported))
         .route("/ws/provider", get(provider_ws))
         .route("/v1/admin/quiescence", get(quiescence))
         .fallback(unsupported)
         .with_state(Arc::new(state))
+}
+
+async fn completions_unsupported() -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({
+            "error": {
+                "message": "legacy /v1/completions not in Rust pilot; use /v1/chat/completions",
+                "type": "not_implemented",
+                "code": "unsupported_route"
+            }
+        })),
+    )
 }
 
 fn extract_bearer(headers: &axum::http::HeaderMap) -> Option<String> {

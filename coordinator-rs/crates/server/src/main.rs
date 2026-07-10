@@ -16,9 +16,9 @@ async fn main() {
         .json()
         .init();
 
-    let (is_recovery, confirm) = parse_and_is_recovery();
-    if is_recovery {
-        if let Err(err) = run_recovery(confirm) {
+    let opts = parse_and_is_recovery();
+    if opts.enabled {
+        if let Err(err) = run_recovery(opts) {
             tracing::error!(%err, "recovery failed");
             std::process::exit(1);
         }

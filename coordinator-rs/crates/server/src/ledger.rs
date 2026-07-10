@@ -172,11 +172,12 @@ impl MemoryLedger {
         terminal_digest: &str,
     ) -> Result<bool, LedgerError> {
         if let Some(prev) = self.terminals.get(terminal_digest) {
-            if prev == "settled" {
+            // Idempotent only when replaying the same settled job digest.
+            if prev == job_id {
                 return Ok(false);
             }
             return Err(LedgerError::Conflict(format!(
-                "terminal digest conflict: was {prev}"
+                "terminal digest conflict: already bound to {prev}"
             )));
         }
         if !self.ops.insert(op.0.clone()) {
@@ -205,7 +206,7 @@ impl MemoryLedger {
         job.state = "settled".into();
         job.disposition = Some("settled".into());
         self.terminals
-            .insert(terminal_digest.to_string(), "settled".into());
+            .insert(terminal_digest.to_string(), job_id.to_string());
         Ok(true)
     }
 
@@ -362,5 +363,25 @@ mod tests {
             .release(OperationKey("rel".into()), "j", "a")
             .unwrap());
         assert_eq!(led.balance("a").0, 5_000_000);
+    }
+
+    #[test]
+    fn settle_rejects_conflicting_terminal_digest() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0);
+        led.reserve(OperationKey("r1".into()), "j1", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j1").unwrap();
+        assert!(led
+            .settle(OperationKey("s1".into()), "j1", "a", 500_000, "digest-a")
+            .unwrap());
+        // Reuse same digest on a different job → conflict.
+        led.reserve(OperationKey("r2".into()), "j2", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j2").unwrap();
+        assert!(matches!(
+            led.settle(OperationKey("s2".into()), "j2", "a", 500_000, "digest-a"),
+            Err(LedgerError::Conflict(_))
+        ));
     }
 }

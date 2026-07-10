@@ -213,17 +213,8 @@ async fn release_job_with_outbox(
     if let Some(amount) = refunded {
         {
             // Durable released disposition for reconnect/audit (DECISIONS #60).
-            let digest = format!("release:{job_id}");
-            let ack = json!({
-                "type": "terminal_ack",
-                "job_id": job_id,
-                "attempt_id": "",
-                "lease_id": "",
-                "terminal_digest": digest,
-                "disposition": "released",
-            });
             let mut terms = state.terminals.lock().await;
-            terms.record_bound(job_id, "", &digest, "released", Some(ack), "", "");
+            crate::terminal_ingest::record_released_disposition(&mut terms, job_id);
         }
         let mut box_ = state.outbox.lock().await;
         let _ = box_.enqueue_released(job_id, account, amount);

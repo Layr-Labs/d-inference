@@ -6,6 +6,7 @@ use crate::outbox::Outbox;
 use crate::ownership::Gate as OwnershipGate;
 use crate::provider_hub::SharedHub;
 use crate::request_task::{ControlEvent, RequestTask};
+use crate::terminal_ingest::{record_released_disposition, MemoryTerminalStore};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -36,6 +37,7 @@ pub async fn cancel_before_or_after_content(
     had_first_content: bool,
     outbox: Option<&Arc<AsyncMutex<Outbox>>>,
     ownership: Option<&OwnershipGate>,
+    terminals: Option<&Arc<AsyncMutex<MemoryTerminalStore>>>,
 ) -> Result<CancelOutcome, String> {
     let _ = task.apply(ControlEvent::Cancel);
     if had_first_content {
@@ -98,6 +100,10 @@ pub async fn cancel_before_or_after_content(
         (ok, reserved)
     };
     if released {
+        if let Some(terms) = terminals {
+            let mut t = terms.lock().await;
+            record_released_disposition(&mut t, job_id);
+        }
         if let Some(box_) = outbox {
             let mut b = box_.lock().await;
             let _ = b.enqueue_released(job_id, account, refunded);
@@ -123,6 +129,7 @@ mod tests {
     async fn pre_start_cancel_releases_reservation() {
         let led = Arc::new(Mutex::new(MemoryLedger::default()));
         let outbox = Arc::new(AsyncMutex::new(Outbox::default()));
+        let terminals = Arc::new(AsyncMutex::new(MemoryTerminalStore::new()));
         {
             let mut g = led.lock().unwrap();
             g.credit("a", 1_000_000, 0).unwrap();
@@ -166,7 +173,8 @@ mod tests {
             "d",
             false,
             Some(&outbox),
-        None,
+            None,
+            Some(&terminals),
         )
         .await
         .unwrap();
@@ -180,6 +188,22 @@ mod tests {
         assert_eq!(e.kind, "inference.released");
         let payload: serde_json::Value = serde_json::from_str(&e.payload).unwrap();
         assert_eq!(payload["refunded_micro_usd"], 50_000);
+
+        // Cancel release records disposition (DECISIONS #61).
+        let mut terms = terminals.lock().await;
+        let ack = crate::terminal_ingest::ingest_terminal(
+            &mut terms,
+            crate::terminal_ingest::TerminalIngest {
+                job_id: "j1".into(),
+                attempt_id: "a-any".into(),
+                terminal_digest: crate::terminal_ingest::release_disposition_digest("j1"),
+                lease_id: String::new(),
+                se_signature: String::new(),
+                outcome: String::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(ack["disposition"], "released");
     }
 
     #[tokio::test]
@@ -228,7 +252,8 @@ mod tests {
             "d",
             false,
             Some(&outbox),
-        None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -286,7 +311,8 @@ mod tests {
             "d",
             true,
             Some(&outbox),
-        None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -344,7 +370,8 @@ mod tests {
             "d",
             false,
             Some(&outbox),
-        None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -384,6 +411,7 @@ mod tests {
             false,
             Some(&outbox),
             Some(&gate),
+            None,
         )
         .await
         .unwrap_err();

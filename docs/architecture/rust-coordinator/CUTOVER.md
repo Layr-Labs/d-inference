@@ -301,3 +301,9 @@ at reserve time.
 persists a `released` disposition with digest `release:{job_id}` so releases
 are auditable and terminal-ingestable.
 
+### Cancel release records disposition (DECISIONS #61)
+
+Pre-start cancel uses the shared `record_released_disposition` helper (same
+digest as #60) when a terminal store is supplied, so cancel refunds are
+ingestable like recover/prepare-fail releases.
+

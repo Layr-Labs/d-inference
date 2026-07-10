@@ -148,6 +148,25 @@ impl MemoryTerminalStore {
     }
 }
 
+/// Digest used for pre-start / recover release dispositions (DECISIONS #60/#61).
+pub fn release_disposition_digest(job_id: &str) -> String {
+    format!("release:{job_id}")
+}
+
+/// Persist a `released` disposition for audit/ingest after a successful refund.
+pub fn record_released_disposition(store: &mut MemoryTerminalStore, job_id: &str) {
+    let digest = release_disposition_digest(job_id);
+    let ack = json!({
+        "type": "terminal_ack",
+        "job_id": job_id,
+        "attempt_id": "",
+        "lease_id": "",
+        "terminal_digest": digest,
+        "disposition": "released",
+    });
+    store.record_bound(job_id, "", &digest, "released", Some(ack), "", "");
+}
+
 /// ACK a replayed v2 terminal using stored disposition. Never settles/releases.
 pub fn ingest_terminal(
     store: &mut MemoryTerminalStore,
@@ -355,6 +374,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ack["disposition"], "settled");
+        assert_eq!(store.late_count(), 0);
+    }
+
+    #[test]
+    fn record_released_disposition_is_ingestable() {
+        let mut store = MemoryTerminalStore::new();
+        record_released_disposition(&mut store, "j-rel");
+        let digest = release_disposition_digest("j-rel");
+        let ack = ingest_terminal(
+            &mut store,
+            TerminalIngest {
+                job_id: "j-rel".into(),
+                attempt_id: "a".into(),
+                terminal_digest: digest,
+                lease_id: String::new(),
+                se_signature: String::new(),
+                outcome: String::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(ack["disposition"], "released");
         assert_eq!(store.late_count(), 0);
     }
 

@@ -57,8 +57,9 @@ pub use stream_billing::{
 };
 pub use telemetry::{bounded_telemetry, TelemetryEvent, TelemetrySink};
 pub use terminal_ingest::{
-    ingest_terminal, lookup_sql, record_late_sql, MemoryTerminalStore, TerminalDisposition,
-    TerminalIngest, TerminalIngestError,
+    ingest_terminal, lookup_sql, record_late_sql, record_released_disposition,
+    release_disposition_digest, MemoryTerminalStore, TerminalDisposition, TerminalIngest,
+    TerminalIngestError,
 };
 pub use terminal_validate::validate_provider_terminal;
 

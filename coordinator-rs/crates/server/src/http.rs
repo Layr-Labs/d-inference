@@ -1030,9 +1030,9 @@ async fn chat_completions(
 
             // Prefer live provider prepare/start when the hub has a session.
             // Only fall back to in-process mock when no provider is attached.
-            let prepare_result = state
-                .hub
-                .prepare(
+            // Abort prepare if ownership is stolen mid-wait (DECISIONS #67).
+            let prepare_result = match tokio::select! {
+                res = state.hub.prepare(
                     &permit.provider_id,
                     attempt.as_str(),
                     ProviderHub::prepare_frame(
@@ -1047,8 +1047,24 @@ async fn chat_completions(
                         None,
                     ),
                     std::time::Duration::from_secs(5),
-                )
-                .await;
+                ) => res.map(Some),
+                _ = watch_ownership_lost(state.ownership.clone()) => Ok(None),
+            } {
+                Ok(Some(v)) => Ok(v),
+                Ok(None) => {
+                    state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
+                        name: "inference.ownership_lost_prepare_held".into(),
+                        tags: vec![
+                            ("model".into(), permit.model.clone()),
+                            ("provider".into(), permit.provider_id.clone()),
+                        ],
+                    });
+                    return ownership_lost_held_response(
+                        "ownership lost during prepare; reservation held for adopt+recover",
+                    );
+                }
+                Err(e) => Err(e),
+            };
 
             let use_live = match &prepare_result {
                 Ok(_) => true,
@@ -1175,9 +1191,9 @@ async fn chat_completions(
                     attempt: attempt.clone(),
                     lease: lease.clone(),
                 });
-                let start_res = state
-                    .hub
-                    .start(
+                // Abort start wait if ownership is stolen (DECISIONS #67).
+                let start_res = match tokio::select! {
+                    res = state.hub.start(
                         &permit.provider_id,
                         attempt.as_str(),
                         ProviderHub::start_frame(
@@ -1190,8 +1206,24 @@ async fn chat_completions(
                             &request_digest,
                         ),
                         std::time::Duration::from_secs(5),
-                    )
-                    .await;
+                    ) => res.map(Some),
+                    _ = watch_ownership_lost(state.ownership.clone()) => Ok(None),
+                } {
+                    Ok(Some(v)) => Ok(v),
+                    Ok(None) => {
+                        state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
+                            name: "inference.ownership_lost_start_held".into(),
+                            tags: vec![
+                                ("model".into(), permit.model.clone()),
+                                ("provider".into(), permit.provider_id.clone()),
+                            ],
+                        });
+                        return ownership_lost_held_response(
+                            "ownership lost during start; reservation held for adopt+force-settle",
+                        );
+                    }
+                    Err(e) => Err(e),
+                };
                 let terminal = match start_res {
                     Ok(StartResult::Started(_)) => {
                         let _ = task.apply(ControlEvent::Started {

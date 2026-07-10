@@ -337,3 +337,9 @@ old epoch cannot be recovered/force-settled. `POST /v1/admin/adopt-job`
 rebinds `fencing_epoch` to the current owner (no money move); ops then call
 recover or force-settle.
 
+### Prepare/start ownership watch (DECISIONS #67)
+
+Live `prepare` and `start` waits also `select!` with `watch_ownership_lost`.
+On steal: return `ownership_lost` and leave the job reserved (prepare) or
+`start_authorized` held (start) for adopt + recover/force-settle.
+

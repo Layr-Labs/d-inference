@@ -73,6 +73,7 @@ Date: 2026-07-10
 | 64 | Deposit money-boundary holding re-check | `admin_deposit` re-asserts `OwnershipGate` immediately before `apply_stripe_deposit` so a steal between auth and credit cannot fund an account |
 | 65 | Live wait aborts on ownership steal | While awaiting `provider_terminal`, poll ownership; on steal return `ownership_lost` and leave `start_authorized` held — never settle after mid-wait fencing loss |
 | 66 | Adopt job fencing after re-acquire | `POST /v1/admin/adopt-job` rebinds an active job's `fencing_epoch` to the current owner so orphaned reserved/held jobs can be recovered or force-settled after steal |
+| 67 | Prepare/start ownership watch | Live `prepare` and `start` waits `select!` with `watch_ownership_lost`; on steal return `ownership_lost` and leave the job reserved/held for adopt+recover/force-settle |
 
 ## Deleted Go mechanisms (do not port)
 

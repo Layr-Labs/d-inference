@@ -356,3 +356,10 @@ force-settle after terminal or review.
 the caller holds `coordinator_ownership` and the job is not disposed. No
 balance CTEs — money moves stay on recover/force-settle after adopt.
 
+### Prepare-steal adopt-recover e2e (DECISIONS #70)
+
+When ownership is stolen during prepare, the reserved job stays bound to the
+old fencing epoch. Ops re-acquire, `POST /v1/admin/adopt-job`, then
+`POST /v1/admin/recover-undispatched` to refund. `MemoryLedger::active_job_ids`
+supports orphan discovery.
+

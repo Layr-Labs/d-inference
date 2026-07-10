@@ -735,6 +735,18 @@ impl MemoryLedger {
             .count()
     }
 
+    /// Active (non-disposed) job ids — used by ops/e2e orphan discovery.
+    pub fn active_job_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .jobs
+            .iter()
+            .filter(|(_, j)| j.disposition.is_none())
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
     /// Jobs that are start_authorized but not yet disposed (held for review).
     pub fn held_start_authorized_count(&self) -> usize {
         self.jobs

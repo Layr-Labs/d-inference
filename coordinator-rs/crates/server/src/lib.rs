@@ -45,7 +45,8 @@ pub use ownership::{
 pub use provider_hub::{InboundReply, OutboundCmd, ProviderHub, SharedHub};
 pub use provider_session::{spawn_session, Lane, ProviderSessionHandle, SessionError};
 pub use recovery::{
-    force_settle_held, recover_start_authorized_held, recover_undispatched, RecoveryAction,
+    classify_held_job, force_settle_held, recover_start_authorized_held, recover_undispatched,
+    RecoveryAction,
 };
 pub use request_task::{spawn_request_task, ControlEvent, RequestTaskHandle};
 pub use sealed::decrypt_request_body;

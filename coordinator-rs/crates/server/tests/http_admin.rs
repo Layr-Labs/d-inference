@@ -1758,3 +1758,86 @@ async fn admin_held_review_skips_reserved_not_authorized() {
     assert_eq!(v["held_start_authorized"], 0);
     assert_eq!(v["balance_micro_usd"], 910_000);
 }
+
+#[tokio::test]
+async fn admin_held_review_rejects_empty_job_id() {
+    let app = router(test_state(true));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/held-review")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "job_id": "" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(res).await["error"]["code"], "invalid_job_id");
+}
+
+#[tokio::test]
+async fn admin_force_settle_rejects_empty_job_id() {
+    let app = router(test_state(true));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/force-settle")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "job_id": "", "actual_micro_usd": 1 }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(res).await["error"]["code"], "invalid_job_id");
+}
+
+#[tokio::test]
+async fn admin_recover_undispatched_makes_quiescence_ready() {
+    let state = test_state(true);
+    {
+        let mut led = state.ledger.lock().await;
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-qr".into()),
+            "undisp-qr",
+            "pilot-account",
+            80_000,
+        )
+        .unwrap();
+    }
+    let app = router(state);
+    let rec = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/recover-undispatched")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "job_id": "undisp-qr" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(body_json(rec).await["action"], "released");
+
+    let q = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/quiescence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(q.status(), StatusCode::OK);
+    let v = body_json(q).await;
+    assert_eq!(v["ready"], true);
+    assert_eq!(v["active_jobs"], 0);
+    assert_eq!(v["outbox_retryable"], 0);
+}

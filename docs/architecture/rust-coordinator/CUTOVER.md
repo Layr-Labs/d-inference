@@ -171,3 +171,11 @@ start_authorized jobs are skipped — use force-settle instead.
 
 `POST /v1/admin/held-review` classifies start_authorized holds without moving
 money. Use force-settle to clear after ops review.
+
+### Disposition-first recovery (DECISIONS #42)
+
+`force_settle_held` / `recover_start_authorized_held` / `recover_undispatched`
+(and admin HTTP mirrors) check `job_disposition` before `funded_start` so a
+disposed job is `AlreadyTerminal`, not `Skipped`. Shared classifier:
+`classify_held_job`.
+

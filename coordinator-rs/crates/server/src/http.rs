@@ -710,14 +710,12 @@ async fn admin_held_review(
 
     let (action, bal, held, reserved) = {
         let led = state.ledger.lock().await;
-        let action = if led.job_disposition(&req.job_id).is_some()
-            || led.job_reserved_total(&req.job_id).is_none()
-        {
-            "already_terminal"
-        } else if !led.job_funded_start(&req.job_id) {
-            "skipped"
-        } else {
-            "held_for_review"
+        let classified = crate::recovery::classify_held_job(&led, &req.job_id);
+        let action = match classified {
+            crate::recovery::RecoveryAction::HeldForReview => "held_for_review",
+            crate::recovery::RecoveryAction::Skipped => "skipped",
+            crate::recovery::RecoveryAction::AlreadyTerminal => "already_terminal",
+            crate::recovery::RecoveryAction::Released => "already_terminal",
         };
         (
             action,

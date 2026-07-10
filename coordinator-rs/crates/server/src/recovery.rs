@@ -85,16 +85,21 @@ pub fn recover_start_authorized_held(
     job_id: &str,
 ) -> Result<RecoveryAction, String> {
     let g = ledger.lock().map_err(|e| e.to_string())?;
-    if g.job_disposition(job_id).is_some() || g.job_reserved_total(job_id).is_none() {
-        return Ok(RecoveryAction::AlreadyTerminal);
+    Ok(classify_held_job(&g, job_id))
+}
+
+/// Pure held-job classifier shared by recovery helpers and admin HTTP (DECISIONS #42).
+pub fn classify_held_job(ledger: &MemoryLedger, job_id: &str) -> RecoveryAction {
+    if ledger.job_disposition(job_id).is_some() || ledger.job_reserved_total(job_id).is_none() {
+        return RecoveryAction::AlreadyTerminal;
     }
-    if !g.job_funded_start(job_id) {
-        return Ok(RecoveryAction::Skipped);
+    if !ledger.job_funded_start(job_id) {
+        return RecoveryAction::Skipped;
     }
-    if g.active_job_count() == 0 {
-        return Ok(RecoveryAction::AlreadyTerminal);
+    if ledger.active_job_count() == 0 {
+        return RecoveryAction::AlreadyTerminal;
     }
-    Ok(RecoveryAction::HeldForReview)
+    RecoveryAction::HeldForReview
 }
 
 #[cfg(test)]
@@ -230,6 +235,35 @@ mod tests {
             RecoveryAction::AlreadyTerminal
         );
         assert_eq!(led.lock().unwrap().balance("a").0, 960_000);
+    }
+
+    #[test]
+    fn classify_held_job_covers_terminal_skipped_and_held() {
+        let mut led = MemoryLedger::default();
+        assert_eq!(
+            classify_held_job(&led, "missing"),
+            RecoveryAction::AlreadyTerminal
+        );
+        led.credit("a", 1_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 100_000)
+            .unwrap();
+        assert_eq!(classify_held_job(&led, "j"), RecoveryAction::Skipped);
+        led.mark_start_authorized("j", "a").unwrap();
+        assert_eq!(classify_held_job(&led, "j"), RecoveryAction::HeldForReview);
+        led.settle_capped_as(
+            OperationKey("s".into()),
+            "j",
+            "a",
+            10_000,
+            100_000,
+            "d",
+            "force_settled",
+        )
+        .unwrap();
+        assert_eq!(
+            classify_held_job(&led, "j"),
+            RecoveryAction::AlreadyTerminal
+        );
     }
 
     #[test]

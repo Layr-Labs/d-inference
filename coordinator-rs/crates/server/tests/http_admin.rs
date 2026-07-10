@@ -205,6 +205,36 @@ async fn readyz_fails_without_ownership() {
 }
 
 #[tokio::test]
+async fn sealed_chat_body_decrypts_then_429_without_provider() {
+    use darkbloom_protocol::seal_box;
+    let state = test_state(true);
+    let pub_key = state.keys.public_key_bytes();
+    let inner = json!({
+        "model": "pilot-text-model",
+        "messages": [{"role":"user","content":"sealed hi"}],
+        "stream": false
+    });
+    let sealed = seal_box(&pub_key, serde_json::to_vec(&inner).unwrap().as_slice()).unwrap();
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sealed);
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "encrypted_body": b64 }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Sealed body decrypted successfully; no warm provider → 429 (not 400).
+    assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+    let v = body_json(res).await;
+    assert_eq!(v["error"]["type"], "rate_limit_exceeded");
+}
+
+#[tokio::test]
 async fn chat_429_signals_placement_demand() {
     let app = router(test_state(true));
     let res = app

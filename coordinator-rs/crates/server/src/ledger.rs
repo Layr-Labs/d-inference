@@ -1019,7 +1019,7 @@ mod tests {
     }
 
     #[test]
-    fn settle_capped_actual_above_reservation_still_errors() {
+    fn settle_capped_clamps_actual_before_reservation_check() {
         let mut led = MemoryLedger::default();
         led.credit("a", 5_000_000, 0).unwrap();
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)

@@ -207,5 +207,7 @@ record that could confuse ops.
 Stripe/external deposit event ids bind a payload digest over
 account/amount/withdrawable. Identical replay is a no-op; mismatched params
 return Conflict (HTTP 409 `deposit_payload_conflict`) and never double-credit.
-`deposit_sql` / `observe_sql` document a mismatch CTE before credit.
+`deposit_sql` / `observe_sql` document a mismatch CTE before credit. Go
+`ApplyStripeDeposit` (memory + Postgres) likewise errors on
+account/amount/external_id mismatch for a known `event_id`.
 

@@ -52,7 +52,7 @@ Date: 2026-07-10
 | 43 | Release SQL outbox atomicity | `release_sql` / admin recover-undispatched / chat prepare-fail / pre-start cancel insert `inference.released` into outbox (gated on successful mark/credit in SQL; `enqueue_released` / `release_job_with_outbox` in-process) so refunds and durable side effects commit together |
 | 44 | Live settle requires provider terminal | After live `start`, settle only from a real `provider_terminal` (`wait_terminal` + pending buffer). Timeout / missing digest leaves the job `start_authorized` held — never fabricate a mock settle on the live path |
 | 45 | Terminal ingest job bind | `MemoryTerminalStore` records `job_id` with each disposition; ingest with a known digest but wrong `job_id` returns `disposition=conflict` (never settled ACK / never late) — mirrors SQL `job_id = $3` on lookup |
-| 46 | Deposit payload param bind | `ExternalEventInbox.observe` stores a payload digest over account/amount/withdrawable; identical replay is idempotent, mismatched reuse is Conflict — `deposit_sql` mismatch CTE aborts before credit |
+| 46 | Deposit payload param bind | `ExternalEventInbox.observe` stores a payload digest over account/amount/withdrawable; identical replay is idempotent, mismatched reuse is Conflict — `deposit_sql` mismatch CTE aborts before credit. Go `ApplyStripeDeposit` likewise conflicts on account/amount/external_id mismatch for a known event_id |
 
 ## Deleted Go mechanisms (do not port)
 

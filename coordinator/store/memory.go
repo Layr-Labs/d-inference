@@ -36,6 +36,14 @@ type keySpend struct {
 
 const keySpendRetentionDays = 40
 
+// stripeEventRecord binds deposit params to an event id so mismatched replays
+// conflict instead of silently no-op'ing (parity with Rust DECISIONS #46).
+type stripeEventRecord struct {
+	ExternalID     string
+	AccountID      string
+	AmountMicroUSD int64
+}
+
 // MemoryStore manages API keys, usage records, payments, and balances in memory.
 type MemoryStore struct {
 	mu            sync.RWMutex
@@ -59,8 +67,8 @@ type MemoryStore struct {
 	billingSessions map[string]*BillingSession // sessionID → session
 
 	// Stripe deposit inbox (event ID → checkout session external ID)
-	stripeExternalEvents map[string]string // eventID → externalID
-	stripeCheckoutEvents map[string]string // externalID → eventID
+	stripeExternalEvents map[string]stripeEventRecord // eventID → deposit params
+	stripeCheckoutEvents map[string]string            // externalID → eventID
 
 	// Reservation release idempotency (accountID|reference → applied)
 	reservationReleaseOps map[string]struct{}
@@ -169,7 +177,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		referrals:                     make(map[string]string),
 		referralCounts:                make(map[string]int),
 		billingSessions:               make(map[string]*BillingSession),
-		stripeExternalEvents:          make(map[string]string),
+		stripeExternalEvents:          make(map[string]stripeEventRecord),
 		stripeCheckoutEvents:          make(map[string]string),
 		reservationReleaseOps:         make(map[string]struct{}),
 		modelPrices:                   make(map[string]ModelPrice),
@@ -1628,7 +1636,10 @@ func (s *MemoryStore) ApplyStripeDeposit(eventID, externalID, accountID, billing
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.stripeExternalEvents[eventID]; ok {
+	if prev, ok := s.stripeExternalEvents[eventID]; ok {
+		if prev.AccountID != accountID || prev.AmountMicroUSD != amountMicroUSD || prev.ExternalID != externalID {
+			return false, fmt.Errorf("stripe event payload mismatch")
+		}
 		return false, nil
 	}
 	if externalID != "" {
@@ -1661,7 +1672,11 @@ func (s *MemoryStore) ApplyStripeDeposit(eventID, externalID, accountID, billing
 	}
 
 	s.creditLocked(accountID, amountMicroUSD, entryType, "stripe:"+externalID, time.Now())
-	s.stripeExternalEvents[eventID] = externalID
+	s.stripeExternalEvents[eventID] = stripeEventRecord{
+		ExternalID:     externalID,
+		AccountID:      accountID,
+		AmountMicroUSD: amountMicroUSD,
+	}
 	if externalID != "" {
 		s.stripeCheckoutEvents[externalID] = eventID
 	}

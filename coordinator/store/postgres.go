@@ -3189,6 +3189,19 @@ func (s *PostgresStore) ApplyStripeDeposit(eventID, externalID, accountID, billi
 		return false, fmt.Errorf("store: insert stripe event: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
+		var prevAccount string
+		var prevAmount int64
+		var prevExternal string
+		err = tx.QueryRow(ctx, `
+			SELECT account_id, amount_micro_usd, COALESCE(external_id, '')
+			FROM stripe_external_events WHERE event_id = $1`, eventID,
+		).Scan(&prevAccount, &prevAmount, &prevExternal)
+		if err != nil {
+			return false, fmt.Errorf("store: lookup stripe event: %w", err)
+		}
+		if prevAccount != accountID || prevAmount != amountMicroUSD || prevExternal != externalID {
+			return false, fmt.Errorf("stripe event payload mismatch")
+		}
 		return false, nil
 	}
 	if externalID != "" {

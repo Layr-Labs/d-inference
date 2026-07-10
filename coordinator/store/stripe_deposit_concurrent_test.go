@@ -51,3 +51,23 @@ func TestApplyStripeDeposit_ConcurrentSameEvent(t *testing.T) {
 		t.Fatalf("balance=%d", bal)
 	}
 }
+
+func TestApplyStripeDeposit_MismatchedPayloadConflicts(t *testing.T) {
+	st := NewMemory(Config{AdminKey: "test"})
+	applied, err := st.ApplyStripeDeposit("evt_mm", "cs_mm", "acct", "", 1_000_000, LedgerStripeDeposit)
+	if err != nil || !applied {
+		t.Fatalf("first apply: applied=%v err=%v", applied, err)
+	}
+	applied, err = st.ApplyStripeDeposit("evt_mm", "cs_mm", "acct", "", 2_000_000, LedgerStripeDeposit)
+	if err == nil || applied {
+		t.Fatalf("mismatched amount: want error, got applied=%v err=%v", applied, err)
+	}
+	if bal := st.GetBalance("acct"); bal != 1_000_000 {
+		t.Fatalf("balance=%d want 1_000_000 (no double credit)", bal)
+	}
+	// Identical replay remains idempotent.
+	applied, err = st.ApplyStripeDeposit("evt_mm", "cs_mm", "acct", "", 1_000_000, LedgerStripeDeposit)
+	if err != nil || applied {
+		t.Fatalf("identical replay: applied=%v err=%v", applied, err)
+	}
+}

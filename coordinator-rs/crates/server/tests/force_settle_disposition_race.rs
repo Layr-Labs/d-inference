@@ -35,5 +35,6 @@ fn concurrent_force_settle_records_force_settled_disposition() {
     let g = led.lock().unwrap();
     assert_eq!(g.job_disposition("j"), Some("force_settled"));
     assert_eq!(g.active_job_count(), 0);
-    assert_eq!(g.balance("a").0, 4_250_000);
+    // reserved 1M, charged 250k → refund 750k → bal = 5M - 1M + 750k = 4.75M
+    assert_eq!(g.balance("a").0, 4_750_000);
 }

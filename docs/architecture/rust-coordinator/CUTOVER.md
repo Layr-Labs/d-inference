@@ -972,3 +972,11 @@ the job exists but is not `start_authorized` and no op row was claimed —
 so SQLx callers map to Conflict (MemoryLedger #153 parity) instead of
 treating NULL refund as idempotent no-op.
 
+### Chat cancel-inflight registry (DECISIONS #164)
+
+Live chat registers a `CancelSignal` in `JobCancelRegistry` while blocked
+on `wait_terminal`. `POST /v1/admin/cancel-inflight` (and
+`cancel-attempt`) cancels the signal so the handler runs
+`cancel_before_or_after_content` under `money_fx` and returns 204.
+`cancel.rs` ledger lock is now `tokio::sync::Mutex` to match AppState.
+

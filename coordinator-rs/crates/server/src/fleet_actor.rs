@@ -17,6 +17,11 @@ pub enum FleetCommand {
         request: AdmitRequest,
         reply: oneshot::Sender<AdmissionDecision>,
     },
+    RecordTtft {
+        model: String,
+        predicted_ms: f64,
+        actual_ms: f64,
+    },
     Snapshot(oneshot::Sender<FleetState>),
 }
 
@@ -72,6 +77,14 @@ impl FleetHandle {
                 session_epoch,
             })
             .map_err(|_| FleetError::MailboxFull)
+    }
+
+    pub fn record_ttft(&self, model: String, predicted_ms: f64, actual_ms: f64) {
+        let _ = self.lifecycle_tx.try_send(FleetCommand::RecordTtft {
+            model,
+            predicted_ms,
+            actual_ms,
+        });
     }
 }
 

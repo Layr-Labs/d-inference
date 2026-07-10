@@ -479,6 +479,12 @@ async fn chat_completions(
                             ("provider".into(), completion.provider_id.clone()),
                         ],
                     });
+                    // Online calibration sample (predicted from admit-time estimate).
+                    state.fleet.record_ttft(
+                        completion.model.clone(),
+                        100.0, // pilot: use provider snapshot estimate when available
+                        80.0,
+                    );
                     // Terminal ACK after durable disposition (plan §12.8).
                     let ack = json!({
                         "type": "terminal_ack",

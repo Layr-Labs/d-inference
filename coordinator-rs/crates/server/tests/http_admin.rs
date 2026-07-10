@@ -120,6 +120,21 @@ async fn chat_rejects_when_ownership_lost() {
 }
 
 #[tokio::test]
+async fn readyz_fails_without_ownership() {
+    let app = router(test_state(false));
+    let req = Request::builder()
+        .method("GET")
+        .uri("/readyz")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let v = body_json(res).await;
+    assert_eq!(v["ready"], false);
+    assert_eq!(v["reason"], "ownership_lost");
+}
+
+#[tokio::test]
 async fn quiescence_reports_ownership_and_empty_outbox() {
     let app = router(test_state(true));
     let req = Request::builder()

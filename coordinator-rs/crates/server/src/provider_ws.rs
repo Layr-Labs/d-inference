@@ -95,24 +95,39 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                         }
                     }
                 }
-                let snap = ProviderSnapshot {
-                    provider_id: id.clone(),
-                    session_epoch,
-                    trusted: true,
-                    challenge_fresh: true,
-                    encrypted_transport: wire
-                        .rest
-                        .get("encrypted_response_chunks")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false)
-                        || wire.rest.get("public_key").is_some(),
-                    ready_models: registered_models.clone(),
-                    health: HealthMachine::healthy(),
-                    data_lane_full: false,
-                    predicted_first_content_ms: 100.0,
-                    predicted_decode_ms: 200.0,
-                    trust: darkbloom_core::TrustState::default(),
-                };
+                        let mut trust = darkbloom_core::TrustState::default();
+                        // Pilot: registration with a public key + encrypted chunks grants
+                        // a provisional hardware-equivalent trust epoch for warm-plane routing.
+                        let encrypted = wire
+                            .rest
+                            .get("encrypted_response_chunks")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                            || wire.rest.get("public_key").is_some();
+                        if encrypted {
+                            let _ = trust.apply(darkbloom_core::TrustEvidence {
+                                provider_id: id.clone(),
+                                session_epoch,
+                                trust_epoch: darkbloom_core::TrustEpoch(1),
+                                level: darkbloom_core::TrustLevel::Hardware,
+                                challenge_fresh: true,
+                                runtime_ok: true,
+                                encrypted_transport: true,
+                            });
+                        }
+                        let snap = ProviderSnapshot {
+                            provider_id: id.clone(),
+                            session_epoch,
+                            trusted: encrypted,
+                            challenge_fresh: encrypted,
+                            encrypted_transport: encrypted,
+                            ready_models: registered_models.clone(),
+                            health: HealthMachine::healthy(),
+                            data_lane_full: false,
+                            predicted_first_content_ms: 100.0,
+                            predicted_decode_ms: 200.0,
+                            trust,
+                        };
                 if let Err(err) = state.fleet.upsert_lifecycle(snap).await {
                     tracing::warn!(%err, "fleet upsert failed");
                 }

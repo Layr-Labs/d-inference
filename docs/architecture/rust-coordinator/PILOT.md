@@ -43,10 +43,28 @@ referrals, public stats.
 ```bash
 cd coordinator-rs
 cargo build --release -p darkbloom-coordinator
-PORT=8080 DARKBLOOM_PILOT_API_KEYS=sk-pilot \
+PORT=8080 \
+  DARKBLOOM_PILOT_API_KEYS=sk-pilot \
   DARKBLOOM_PILOT_MODEL=pilot-text-model \
+  DARKBLOOM_PILOT_ACCOUNT=pilot-account \
+  DARKBLOOM_OWNERSHIP_HOLDER=pilot-coord-1 \
+  DARKBLOOM_OWNERSHIP_LEASE_SECS=30 \
   ./target/release/darkbloom-coordinator
 ```
+
+### Env vars (pilot)
+
+| Var | Purpose | Default |
+| --- | --- | --- |
+| `PORT` | Listen port | `8080` |
+| `DARKBLOOM_PILOT_API_KEYS` | Comma-separated pilot keys (empty = open) | empty |
+| `DARKBLOOM_PILOT_ACCOUNT` | Ledger account for pilot traffic | `pilot-account` |
+| `DARKBLOOM_PILOT_MODEL` | Model id advertised in `/v1/models` | `pilot-text-model` |
+| `DARKBLOOM_OWNERSHIP_HOLDER` | Local ownership lease holder id | `pid-<pid>` |
+| `DARKBLOOM_OWNERSHIP_LEASE_SECS` | Lease TTL for heartbeat steal | `30` |
+| `DARKBLOOM_REFUSE_ON_RUST` | Refuse startup if rust_coord active | `false` |
+| `DARKBLOOM_ENCRYPTION_KID` | Encryption key id | `dev` |
+| `DARKBLOOM_COORDINATOR_SEED_B64` | Optional 32-byte seed (base64) | random |
 
 Apply schema before paid path:
 

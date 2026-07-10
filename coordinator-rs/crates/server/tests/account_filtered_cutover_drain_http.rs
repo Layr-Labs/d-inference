@@ -5,7 +5,7 @@ mod common;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::{body_json, pilot_app_state};
-use darkbloom_coordinator::{router, Epoch};
+use darkbloom_coordinator::router;
 use serde_json::json;
 use std::sync::Arc;
 use tower::ServiceExt;

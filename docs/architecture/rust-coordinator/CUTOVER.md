@@ -608,3 +608,10 @@ ops resume with outbox-drain (or cutover-drain again). Quiescence
 needs_adopt / reserved / held counts for multi-tenant cutover. Concurrent
 deposits during cutover drain-abort still conserve once ownership is restored.
 
+### Account-filtered cutover-drain + by_account (DECISIONS #111)
+
+`POST /v1/admin/cutover-drain` with `account` clears only that tenant. Quiescence
+`orphan_summary_by_account` lists remaining foreign orphans; concurrent
+per-account cutover-drain calls conserve each ledger. Quiescence without
+ownership still lists by-account holds (`needs_adopt=0`).
+

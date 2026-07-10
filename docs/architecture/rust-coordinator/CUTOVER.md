@@ -885,3 +885,15 @@ funds reserved forever.
 a no-op settle does not permanently bind the operation key (SQL guard
 never inserts an op for disposed jobs).
 
+### Settle/force SQL disposed replay (DECISIONS #151)
+
+`settle_capped_sql` and `force_settle_sql` `op_ok` LEFT JOINs `charge`
+(empty when `terminal_disposition` is set) and COALESCEs the amount check
+against `LEAST(...)` so identical op-key replay after dispose returns
+`param_conflict=false` — matching MemoryLedger Replay semantics.
+
+### Release SQL jsonb outbox (DECISIONS #152)
+
+`release_sql` inserts outbox payloads with `jsonb_build_object` (same as
+settle/deposit CTEs), not `json_build_object(...)::text`.
+

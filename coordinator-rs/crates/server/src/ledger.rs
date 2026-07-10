@@ -586,4 +586,26 @@ mod tests {
             LedgerError::InvalidAmount
         );
     }
+
+    #[test]
+    fn settle_capped_zero_billable_refunds_full_reservation() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0);
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        // Provider claimed 800k but pipe accepted 0 tokens → charge 0, refund all.
+        assert!(led
+            .settle_capped(
+                OperationKey("s".into()),
+                "j",
+                "a",
+                800_000,
+                0,
+                "d-zero"
+            )
+            .unwrap());
+        assert_eq!(led.balance("a").0, 5_000_000);
+        assert_eq!(led.active_job_count(), 0);
+    }
 }

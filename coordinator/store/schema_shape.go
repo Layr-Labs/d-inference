@@ -142,7 +142,10 @@ func schemaIsEmpty(ctx context.Context, queryer schemaQueryer) (bool, error) {
 			SELECT 1
 			FROM pg_class relation
 			JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
-			WHERE namespace.nspname = current_schema()
+			WHERE namespace.nspname = COALESCE(
+				NULLIF(current_setting('darkbloom.migration_schema', true), ''),
+				current_schema()
+			)
 			  AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
 		)`).Scan(&empty)
 	if err != nil {
@@ -271,7 +274,10 @@ func validateCriticalColumns(
 			FROM pg_attribute attribute
 			JOIN pg_class relation ON relation.oid = attribute.attrelid
 			JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
-			WHERE namespace.nspname = current_schema()
+			WHERE namespace.nspname = COALESCE(
+				NULLIF(current_setting('darkbloom.migration_schema', true), ''),
+				current_schema()
+			)
 			  AND relation.relname = $1
 			  AND relation.relkind IN ('r', 'p')
 			  AND attribute.attname = $2
@@ -328,7 +334,10 @@ func validateCriticalKeys(
 				FROM pg_constraint constraint_row
 				JOIN pg_class relation ON relation.oid = constraint_row.conrelid
 				JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
-				WHERE namespace.nspname = current_schema()
+				WHERE namespace.nspname = COALESCE(
+					NULLIF(current_setting('darkbloom.migration_schema', true), ''),
+					current_schema()
+				)
 				  AND relation.relname = $1
 				  AND constraint_row.contype = $2
 				  AND ARRAY(
@@ -346,7 +355,10 @@ func validateCriticalKeys(
 					FROM pg_index index_row
 					JOIN pg_class relation ON relation.oid = index_row.indrelid
 					JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
-					WHERE namespace.nspname = current_schema()
+					WHERE namespace.nspname = COALESCE(
+						NULLIF(current_setting('darkbloom.migration_schema', true), ''),
+						current_schema()
+					)
 					  AND relation.relname = $1
 					  AND index_row.indisunique
 					  AND index_row.indisvalid
@@ -395,7 +407,10 @@ func tableExists(ctx context.Context, queryer schemaQueryer, table string) (bool
 			SELECT 1
 			FROM pg_class relation
 			JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
-			WHERE namespace.nspname = current_schema()
+			WHERE namespace.nspname = COALESCE(
+				NULLIF(current_setting('darkbloom.migration_schema', true), ''),
+				current_schema()
+			)
 			  AND relation.relname = $1
 			  AND relation.relkind IN ('r', 'p')
 		)`,
@@ -412,7 +427,10 @@ func schemaRelationNames(ctx context.Context, queryer schemaQueryer) ([]string, 
 		SELECT relation.relname
 		FROM pg_class relation
 		JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
-		WHERE namespace.nspname = current_schema()
+		WHERE namespace.nspname = COALESCE(
+			NULLIF(current_setting('darkbloom.migration_schema', true), ''),
+			current_schema()
+		)
 		  AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
 		ORDER BY relation.relname`)
 	if err != nil {

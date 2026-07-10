@@ -207,12 +207,32 @@ func (w *providerWriter) closeNow() {
 	w.acceptMu.Unlock()
 }
 
+func (w *providerWriter) closeAndWait(ctx context.Context) bool {
+	if w == nil {
+		return true
+	}
+	w.closeNow()
+	select {
+	case <-w.done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 func (w *providerWriter) run() {
 	defer w.dead.Store(true)
 	defer close(w.done)
 	watchdogStop := make(chan struct{})
-	go w.watchWrites(watchdogStop)
-	defer close(watchdogStop)
+	watchdogDone := make(chan struct{})
+	go func() {
+		defer close(watchdogDone)
+		w.watchWrites(watchdogStop)
+	}()
+	defer func() {
+		close(watchdogStop)
+		<-watchdogDone
+	}()
 	for {
 		// Strict priority: serve any waiting control frame before data.
 		select {
@@ -417,4 +437,15 @@ func (p *Provider) closeWriterNow() {
 	if w != nil {
 		w.closeNow()
 	}
+}
+
+func (p *Provider) closeWriterAndWait(ctx context.Context) bool {
+	if p == nil {
+		return true
+	}
+	p.mu.Lock()
+	w := p.writer
+	p.writer = nil
+	p.mu.Unlock()
+	return w.closeAndWait(ctx)
 }

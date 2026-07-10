@@ -35,6 +35,10 @@ Before a migration version is recorded, and again before the coordinator serves,
 the code validates critical table, column type, nullability, key, and canonical
 provider-earnings index shapes.
 
+Version 3 creates only the additive `rust_coord.schema_versions` compatibility
+catalog. Its version 1 row declares compatibility with public schema version 3.
+It intentionally does not create Rust-owned inference jobs or workers.
+
 Run migrations before serving:
 
 ```bash

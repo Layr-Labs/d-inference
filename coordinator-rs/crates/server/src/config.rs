@@ -14,6 +14,7 @@ pub struct Config {
     pub database_url: String,
     pub database_max_connections: u32,
     pub database_acquire_timeout: Duration,
+    pub ownership_enabled: bool,
     pub shutdown_grace: Duration,
 }
 
@@ -38,6 +39,7 @@ impl Config {
             std::env::var("EIGENINFERENCE_RUST_BIND_ADDRESS").ok(),
             std::env::var("EIGENINFERENCE_DATABASE_URL").ok(),
             std::env::var("EIGENINFERENCE_RUST_DATABASE_MAX_CONNECTIONS").ok(),
+            std::env::var("EIGENINFERENCE_COORDINATOR_OWNERSHIP_ENABLED").ok(),
             std::env::var("EIGENINFERENCE_RUST_SHUTDOWN_GRACE_SECONDS").ok(),
         )
     }
@@ -46,6 +48,7 @@ impl Config {
         bind_value: Option<String>,
         database_url: Option<String>,
         max_connections: Option<String>,
+        ownership_enabled: Option<String>,
         shutdown_grace_seconds: Option<String>,
     ) -> Result<Self, ConfigError> {
         let bind_value = bind_value.unwrap_or_else(|| DEFAULT_BIND_ADDRESS.to_owned());
@@ -89,6 +92,7 @@ impl Config {
             database_url,
             database_max_connections,
             database_acquire_timeout: DEFAULT_DATABASE_ACQUIRE_TIMEOUT,
+            ownership_enabled: ownership_enabled.as_deref() == Some("true"),
             shutdown_grace,
         })
     }
@@ -105,7 +109,7 @@ mod tests {
 
     #[test]
     fn missing_database_url_is_a_hard_error() {
-        let error = match Config::from_values(None, None, None, None) {
+        let error = match Config::from_values(None, None, None, None, None) {
             Err(error) => error,
             Ok(_) => panic!("missing database URL was accepted"),
         };
@@ -118,11 +122,13 @@ mod tests {
             Some("127.0.0.1:9000".to_owned()),
             Some("postgres://localhost/test".to_owned()),
             Some("7".to_owned()),
+            Some("true".to_owned()),
             Some("12".to_owned()),
         )
         .expect("valid config");
         assert_eq!(config.bind_address.to_string(), "127.0.0.1:9000");
         assert_eq!(config.database_max_connections, 7);
+        assert!(config.ownership_enabled);
         assert_eq!(config.shutdown_grace.as_secs(), 12);
     }
 
@@ -134,6 +140,7 @@ mod tests {
                 Some("postgres://localhost/test".to_owned()),
                 Some("0".to_owned()),
                 None,
+                None,
             ),
             Err(ConfigError::InvalidDatabaseMaxConnections(_))
         ));
@@ -141,6 +148,7 @@ mod tests {
             Config::from_values(
                 None,
                 Some("postgres://localhost/test".to_owned()),
+                None,
                 None,
                 Some("0".to_owned()),
             ),

@@ -49,7 +49,12 @@ func ApplyPostgresMigrations(
 		return MigrationResult{}, err
 	}
 
-	conn, err := pgx.Connect(ctx, databaseURL)
+	connectionConfig, err := pgx.ParseConfig(databaseURL)
+	if err != nil {
+		return MigrationResult{}, fmt.Errorf("store: parse migration database config: %w", err)
+	}
+	pinDefaultPostgresSchema(connectionConfig.RuntimeParams)
+	conn, err := pgx.ConnectConfig(ctx, connectionConfig)
 	if err != nil {
 		return MigrationResult{}, fmt.Errorf("store: connect migration database: %w", err)
 	}
@@ -151,10 +156,21 @@ func configureMigrationTimeouts(
 	conn *pgx.Conn,
 	options MigrationOptions,
 ) error {
+	var migrationSchema string
+	if err := conn.QueryRow(ctx, `SELECT current_schema()`).Scan(&migrationSchema); err != nil {
+		return fmt.Errorf("store: identify migration schema: %w", err)
+	}
+	if _, err := conn.Exec(
+		ctx,
+		"SET search_path TO "+pgx.Identifier{migrationSchema}.Sanitize(),
+	); err != nil {
+		return fmt.Errorf("store: pin migration search path: %w", err)
+	}
 	if _, err := conn.Exec(
 		ctx,
 		`SELECT set_config('lock_timeout', $1, false),
-		        set_config('statement_timeout', $2, false)`,
+		        set_config('statement_timeout', $2, false),
+		        set_config('darkbloom.migration_schema', current_schema(), false)`,
 		postgresDuration(options.LockTimeout),
 		postgresDuration(options.StatementTimeout),
 	); err != nil {

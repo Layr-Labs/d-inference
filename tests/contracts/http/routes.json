@@ -1095,6 +1095,18 @@
       "disposition": "implement"
     },
     {
+      "pattern": "GET /v1/admin/quiescence",
+      "method": "GET",
+      "path": "/v1/admin/quiescence",
+      "handler": "handleAdminQuiescence",
+      "auth": "admin_key_or_privy_admin",
+      "area": "admin",
+      "side_effects": "read",
+      "rust_owner": "full-surface adapter",
+      "pilot": false,
+      "disposition": "implement"
+    },
+    {
       "pattern": "GET /v1/admin/routes",
       "method": "GET",
       "path": "/v1/admin/routes",

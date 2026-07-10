@@ -35,18 +35,20 @@ var _ Store = (*PostgresStore)(nil)
 
 // PostgresStore is a PostgreSQL-backed implementation of Store.
 type PostgresStore struct {
-	pool *pgxpool.Pool
+	pool      *pgxpool.Pool
+	poolFence *poolOwnershipFence
 	// ownershipConn holds the process-wide coordinator advisory lock for the
 	// lifetime of this store. Losing/closing the connection releases authority.
-	ownershipConn     *pgxpool.Conn
-	ownershipEnabled  bool
-	ownershipHealthy  atomic.Bool
-	ownershipLost     chan struct{}
-	ownershipStop     chan struct{}
-	ownershipDone     chan struct{}
-	ownershipLostOnce sync.Once
-	ownershipID       string
-	ownershipEpoch    int64
+	ownershipConn        *pgxpool.Conn
+	ownershipEnabled     bool
+	ownershipEpochActive bool
+	ownershipHealthy     atomic.Bool
+	ownershipLost        chan struct{}
+	ownershipStop        chan struct{}
+	ownershipDone        chan struct{}
+	ownershipLostOnce    sync.Once
+	ownershipID          string
+	ownershipEpoch       int64
 
 	// In-memory cache for model prices. Keyed by "accountID:model".
 	// Eliminates a DB round trip on every inference request for
@@ -67,6 +69,14 @@ func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: parse postgres config: %w", err)
 	}
+	// The Rust coordinator owns a schema named rust_coord. PostgreSQL's
+	// default "$user", public search path would switch Go stores whose role is
+	// also named rust_coord into that schema after migration 3. Pin serving to
+	// public unless an isolated test/deployment explicitly supplies a path.
+	pinDefaultPostgresSchema(cfg.ConnConfig.RuntimeParams)
+	poolFence := &poolOwnershipFence{}
+	cfg.BeforeAcquire = poolFence.beforeAcquire
+	cfg.AfterRelease = poolFence.afterRelease
 
 	// Pool was previously capped at 20, causing connection starvation under
 	// load. The stats endpoint holds connections for up to 10s (full-table
@@ -95,8 +105,19 @@ func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
 
 	s := &PostgresStore{
 		pool:       pool,
+		poolFence:  poolFence,
 		priceCache: make(map[string]cachedPrice),
 	}
+	poolFence.mu.Lock()
+	poolFence.onLost = func() {
+		s.ownershipHealthy.Store(false)
+		s.ownershipLostOnce.Do(func() {
+			if s.ownershipLost != nil {
+				close(s.ownershipLost)
+			}
+		})
+	}
+	poolFence.mu.Unlock()
 	if err := checkSchemaCompatibility(ctx, pool); err != nil {
 		pool.Close()
 		return nil, err
@@ -104,25 +125,48 @@ func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
 	return s, nil
 }
 
+func pinDefaultPostgresSchema(runtimeParams map[string]string) {
+	if _, explicit := runtimeParams["search_path"]; !explicit {
+		runtimeParams["search_path"] = "public"
+	}
+}
+
 // Close shuts down the connection pool.
 func (s *PostgresStore) Close() {
 	if s.ownershipConn != nil {
+		if s.poolFence != nil {
+			s.poolFence.markLost()
+		}
 		close(s.ownershipStop)
 		<-s.ownershipDone
-		_, _ = s.ownershipConn.Exec(
-			context.Background(),
-			`UPDATE coordinator_ownership SET owner_id = ''
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if s.ownershipEpochActive {
+			_, _ = s.ownershipConn.Exec(
+				ctx,
+				`UPDATE coordinator_ownership SET owner_id = ''
 			 WHERE singleton = TRUE AND epoch = $1 AND owner_id = $2`,
-			s.ownershipEpoch, s.ownershipID,
-		)
+				s.ownershipEpoch, s.ownershipID,
+			)
+		}
 		_, _ = s.ownershipConn.Exec(
-			context.Background(),
+			ctx,
 			`SELECT pg_advisory_unlock(hashtextextended('darkbloom-coordinator-owner', 0))`,
 		)
+		cancel()
 		s.ownershipConn.Release()
 		s.ownershipConn = nil
 	}
-	s.pool.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.pool.Close()
+	}()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
 }
 
 func (s *PostgresStore) OwnershipLost() <-chan struct{} {
@@ -145,6 +189,9 @@ func (s *PostgresStore) verifyOwnershipTx(ctx context.Context, tx pgx.Tx) error 
 	}
 	if err := s.ensureOwnership(); err != nil {
 		return err
+	}
+	if !s.ownershipEpochActive {
+		return nil
 	}
 	var valid bool
 	if err := tx.QueryRow(ctx,
@@ -180,6 +227,9 @@ func (s *PostgresStore) monitorOwnership() {
 			cancel()
 			if err != nil || one != 1 {
 				s.ownershipHealthy.Store(false)
+				if s.poolFence != nil {
+					s.poolFence.markLost()
+				}
 				s.ownershipLostOnce.Do(func() { close(s.ownershipLost) })
 				return
 			}
@@ -2550,10 +2600,20 @@ func (s *PostgresStore) DeleteModelPrice(accountID, model string) error {
 
 // CreateUser creates a new user record linked to a Privy identity.
 func (s *PostgresStore) CreateUser(user *User) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin create user: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx,
 		`INSERT INTO users (account_id, privy_user_id, email, role, platform_fee_percent)
 		 VALUES ($1, $2, $3, $4, $5)`,
 		user.AccountID, user.PrivyUserID, user.Email, user.Role, user.PlatformFeePercent,
@@ -2561,7 +2621,7 @@ func (s *PostgresStore) CreateUser(user *User) error {
 	if err != nil {
 		return fmt.Errorf("store: create user: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 const userSelectColumns = `account_id, privy_user_id, email, role, platform_fee_percent,

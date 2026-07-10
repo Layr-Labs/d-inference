@@ -27,13 +27,14 @@ type completionWorkerPool struct {
 	queue   chan func()
 	workers int
 
-	mu       sync.Mutex
-	started  bool
-	closed   bool
-	wg       sync.WaitGroup
-	active   atomic.Int64
-	stopping chan struct{}
-	stopOnce sync.Once
+	mu          sync.Mutex
+	started     bool
+	closed      bool
+	wg          sync.WaitGroup
+	active      atomic.Int64
+	outstanding atomic.Int64
+	stopping    chan struct{}
+	stopOnce    sync.Once
 }
 
 func newCompletionWorkerPool(logger *slog.Logger, capacity, workers int) *completionWorkerPool {
@@ -68,6 +69,7 @@ func (p *completionWorkerPool) submit(task func()) bool {
 	if !p.started {
 		p.startLocked()
 	}
+	p.outstanding.Add(1)
 	p.queue <- task
 	return true
 }
@@ -103,11 +105,19 @@ func (p *completionWorkerPool) run() {
 	for task := range p.queue {
 		p.active.Add(1)
 		func() {
+			defer p.outstanding.Add(-1)
 			defer p.active.Add(-1)
 			defer saferun.Recover(p.logger, "completion_worker")
 			task()
 		}()
 	}
+}
+
+func (p *completionWorkerPool) outstandingCount() int64 {
+	if p == nil {
+		return 0
+	}
+	return p.outstanding.Load()
 }
 
 func (p *completionWorkerPool) close() {
@@ -163,6 +173,15 @@ func (s *Server) settleInferenceWithRetry(settlement *store.InferenceSettlement)
 		}
 		delay := time.Duration(min(attempt+1, 100)) * 50 * time.Millisecond
 		time.Sleep(delay)
+	}
+}
+
+func (s *Server) submitFinancialFinalizer(task func()) {
+	if task == nil {
+		return
+	}
+	if s.completions == nil || !s.completions.submit(task) {
+		task()
 	}
 }
 

@@ -160,3 +160,42 @@ func TestServerCloseDrainsParkedSettlementRefunds(t *testing.T) {
 		t.Fatalf("closed holder retained parked settlement %+v", claimed)
 	}
 }
+
+func TestSettlementHolderCloseCountsCallbacksUntilTheyFinish(t *testing.T) {
+	holder := newSettlementHolder()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	holder.hold(
+		&registry.PendingRequest{RequestID: "close-counted"},
+		time.Hour,
+		func(*registry.PendingRequest) {
+			close(started)
+			<-release
+		},
+	)
+	closed := make(chan struct{})
+	go func() {
+		holder.close()
+		close(closed)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("close callback did not start")
+	}
+	held, active := holder.snapshot()
+	if held != 0 || active != 1 {
+		t.Fatalf("holder snapshot during close = held:%d active:%d", held, active)
+	}
+	select {
+	case <-closed:
+		t.Fatal("holder close returned before callback")
+	default:
+	}
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("holder close did not finish")
+	}
+}

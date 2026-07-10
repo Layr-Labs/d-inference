@@ -31,7 +31,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
 
@@ -4012,7 +4011,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			s.holdForSettlement(stale)
 		} else {
 			refundPr := pr
-			saferun.Go(s.logger, "api.postTerminalSweep", func() {
+			s.submitFinancialFinalizer(func() {
 				s.refundReservedBalance(refundPr, "post_terminal_sweep:"+requestID)
 			})
 		}

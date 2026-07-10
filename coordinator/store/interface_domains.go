@@ -226,6 +226,10 @@ type LedgerStore interface {
 	// settlement, review, or prior release disposition.
 	RecoverStaleInferenceReservations(before time.Time) (released int, err error)
 
+	// CheckRollbackSafe refuses Go authority while additive Rust state contains
+	// unresolved jobs, financial operations, or external intents.
+	CheckRollbackSafe(context.Context) error
+
 	// GetWithdrawableBalance returns the withdrawable balance in micro-USD.
 	GetWithdrawableBalance(accountID string) int64
 

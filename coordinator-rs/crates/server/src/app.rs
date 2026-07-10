@@ -6,11 +6,12 @@ use std::sync::{
 use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
 use serde::Serialize;
 
-use crate::database::Database;
+use crate::{database::Database, ownership::OwnershipStatus};
 
 #[derive(Clone, Debug)]
 pub struct AppState {
     database: Database,
+    ownership: Option<OwnershipStatus>,
     providers: Arc<AtomicUsize>,
     draining: Arc<AtomicBool>,
     inflight: Arc<AtomicU64>,
@@ -20,10 +21,16 @@ impl AppState {
     pub fn new(database: Database) -> Self {
         Self {
             database,
+            ownership: None,
             providers: Arc::new(AtomicUsize::new(0)),
             draining: Arc::new(AtomicBool::new(false)),
             inflight: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    pub fn with_ownership(mut self, ownership: OwnershipStatus) -> Self {
+        self.ownership = Some(ownership);
+        self
     }
 
     pub fn set_draining(&self, draining: bool) {
@@ -79,6 +86,21 @@ async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
     let draining = state.draining.load(Ordering::Acquire);
     let inflight = state.inflight.load(Ordering::Acquire);
     if draining {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ReadinessResponse {
+                draining,
+                inflight,
+                ready: false,
+            }),
+        );
+    }
+    if state
+        .ownership
+        .as_ref()
+        .is_some_and(|ownership| !ownership.is_healthy())
+    {
+        tracing::warn!("readiness coordinator ownership check failed");
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ReadinessResponse {

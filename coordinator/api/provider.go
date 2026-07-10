@@ -123,6 +123,7 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.providerSessions.Add(1)
+	s.providerSessionCount.Add(1)
 	if s.providerConnections == nil {
 		s.providerConnections = make(map[*websocket.Conn]struct{})
 	}
@@ -132,6 +133,7 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 		s.providerSessionMu.Lock()
 		delete(s.providerConnections, conn)
 		s.providerSessionMu.Unlock()
+		s.providerSessionCount.Add(-1)
 		s.providerSessions.Done()
 	}()
 
@@ -2336,7 +2338,7 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		// the post-commit defer's last-chance refund in consumer.go.
 		refundPr := pr
 		refundID := msg.RequestID
-		saferun.Go(s.logger, "api.refundAfterDisconnect", func() {
+		s.submitFinancialFinalizer(func() {
 			s.refundReservedBalance(refundPr, "provider_error_after_disconnect:"+refundID)
 		})
 		return

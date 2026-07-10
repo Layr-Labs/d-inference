@@ -137,6 +137,11 @@ func main() {
 		})
 	}
 
+	if err := st.CheckRollbackSafe(ctx); err != nil {
+		logger.Error("refusing unsafe Go rollback", "error", err)
+		os.Exit(1)
+	}
+
 	// ActivateCoordinatorOwnership holds the global single-active lock, so every
 	// unfinalized reservation visible before admission starts belongs to a dead
 	// prior process. Drain all batches; review/settled rows are excluded.
@@ -802,10 +807,10 @@ func main() {
 	reg.StartEvictionLoop(ctx, 90*time.Second)
 
 	// Push gauge values to DogStatsD periodically.
-	go srv.StartDDGaugeLoop(ctx)
+	srv.StartBackgroundTask("api.ddGaugeLoop", func() { srv.StartDDGaugeLoop(ctx) })
 
 	// Reclaim expired read-cache entries periodically (bounds memory growth).
-	go srv.StartReadCacheJanitor(ctx)
+	srv.StartBackgroundTask("api.readCacheJanitor", func() { srv.StartReadCacheJanitor(ctx) })
 
 	// Flag any model decoding far below its active-param/hardware class (W8 —
 	// auto-detects the gemma-dense decode bug). Spawns its own panic-safe loop.
@@ -813,7 +818,7 @@ func main() {
 
 	// Base-rewards settlement (only when enabled).
 	if br := srv.BaseRewards(); br != nil {
-		saferun.Go(logger, "base_rewards_settlement", func() { br.Run(ctx) })
+		srv.StartBackgroundTask("base_rewards_settlement", func() { br.Run(ctx) })
 	}
 
 	// Stripe payout reconciler: heals connected accounts stuck on a legacy
@@ -902,7 +907,9 @@ func main() {
 		logger.Info("drain complete; in-flight requests finished", "grace", grace.String())
 	} else {
 		logger.Warn("drain grace elapsed; forcing shutdown with requests still in flight",
-			"grace", grace.String(), "inflight", srv.Inflight())
+			"grace", grace.String(),
+			"inference_inflight", srv.Inflight(),
+			"mutation_inflight", srv.MutationInflight())
 	}
 	graceCancel()
 
@@ -912,6 +919,40 @@ func main() {
 	defer shutdownCancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
+	}
+	backgroundCtx, backgroundCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if !srv.WaitForBackgroundTasks(backgroundCtx) {
+		logger.Warn("background task shutdown deadline elapsed",
+			"active", srv.Quiescence().BackgroundTasks)
+	}
+	backgroundCancel()
+	srv.FenceProviderSessions()
+	providerWaitCtx, providerWaitCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if !srv.WaitForProviderSessions(providerWaitCtx) {
+		logger.Warn("provider session shutdown deadline elapsed",
+			"active", srv.Quiescence().ProviderSessions)
+	}
+	providerWaitCancel()
+	completionWaitCtx, completionWaitCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if !srv.WaitForCompletionProcessing(completionWaitCtx) {
+		logger.Warn("completion processing deadline elapsed",
+			"outstanding", srv.Quiescence().CompletionOutstanding)
+	}
+	completionWaitCancel()
+	srv.StopCompletionProcessing()
+	settlementCtx, settlementCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if !srv.FlushSettlementHoldsWithContext(settlementCtx) {
+		logger.Warn("settlement hold flush deadline elapsed",
+			"held", srv.Quiescence().SettlementHeld,
+			"callbacks", srv.Quiescence().SettlementCallbacks)
+	}
+	settlementCancel()
+	if !ownershipFailed {
+		quiescenceCtx, quiescenceCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if !srv.WaitForQuiescence(quiescenceCtx) {
+			logger.Warn("full quiescence deadline elapsed", "snapshot", srv.Quiescence())
+		}
+		quiescenceCancel()
 	}
 
 	logger.Info("coordinator stopped")

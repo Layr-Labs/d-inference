@@ -359,6 +359,7 @@ func newPostgresWithMaxConns(t *testing.T, maxConns int32) *PostgresStore {
 	if err != nil {
 		t.Fatalf("ParseConfig: %v", err)
 	}
+	pinDefaultPostgresSchema(cfg.ConnConfig.RuntimeParams)
 	cfg.MaxConns = maxConns
 	cfg.MinConns = 0
 

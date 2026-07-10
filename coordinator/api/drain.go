@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -62,6 +63,52 @@ func (s *Server) incInflight() int64 {
 // returns the new in-flight count.
 func (s *Server) decInflight() int64 {
 	return s.httpInflight.Add(-1)
+}
+
+func isMutatingRequest(r *http.Request) bool {
+	if r.URL.Path == "/v1/admin/quiescence" {
+		return false
+	}
+	return r.URL.Path == "/ws/provider" ||
+		r.Header.Get("Authorization") != "" ||
+		(r.Method != http.MethodGet &&
+			r.Method != http.MethodHead &&
+			r.Method != http.MethodOptions)
+}
+
+// shutdownMutationGate is the irreversible process-shutdown fence for every
+// state-changing HTTP path, including webhooks and provider WebSockets.
+func (s *Server) shutdownMutationGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isMutatingRequest(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == "/ws/provider" {
+			if s.processShuttingDown.Load() {
+				w.Header().Set("Retry-After", strconv.Itoa(int(coordinatorDrainRetryAfter/time.Second)))
+				writeJSON(w, http.StatusServiceUnavailable,
+					errorResponse("service_unavailable", "coordinator is shutting down"))
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		s.mutationInflight.Add(1)
+		if s.processShuttingDown.Load() {
+			s.mutationInflight.Add(-1)
+			w.Header().Set("Retry-After", strconv.Itoa(int(coordinatorDrainRetryAfter/time.Second)))
+			writeJSON(w, http.StatusServiceUnavailable,
+				errorResponse("service_unavailable", "coordinator is shutting down"))
+			return
+		}
+		defer s.mutationInflight.Add(-1)
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) MutationInflight() int64 {
+	return s.mutationInflight.Load()
 }
 
 // drainGate wraps an inference handler with the coordinator's graceful-drain
@@ -228,7 +275,8 @@ func DrainGraceFromEnv() time.Duration {
 	return d
 }
 
-// WaitForInflightZero blocks until the in-flight inference count reaches 0 or ctx
+// WaitForInflightZero blocks until inference and mutating-control inflight counts
+// both reach 0 or ctx
 // is done (its deadline elapses or it is cancelled), polling periodically. It
 // returns true if inflight reached 0 (clean drain) and false if it gave up with
 // requests still in flight.
@@ -240,7 +288,10 @@ func DrainGraceFromEnv() time.Duration {
 // backstop. Pair with SetDraining(true) first so no NEW requests are admitted
 // while we wait, otherwise the count may never settle.
 func (s *Server) WaitForInflightZero(ctx context.Context) bool {
-	if s.Inflight() == 0 {
+	ingressZero := func() bool {
+		return s.Inflight() == 0 && s.MutationInflight() == 0
+	}
+	if ingressZero() {
 		return true
 	}
 	ticker := time.NewTicker(drainGracePollInterval)
@@ -248,9 +299,9 @@ func (s *Server) WaitForInflightZero(ctx context.Context) bool {
 	for {
 		select {
 		case <-ctx.Done():
-			return s.Inflight() == 0
+			return ingressZero()
 		case <-ticker.C:
-			if s.Inflight() == 0 {
+			if ingressZero() {
 				return true
 			}
 		}

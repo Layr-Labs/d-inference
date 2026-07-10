@@ -134,7 +134,7 @@ func TestRunCommandPostgresSmoke(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(first.String(), "database is now version 2") {
+	if !strings.Contains(first.String(), "database is now version 3") {
 		t.Fatalf("first run output = %q", first.String())
 	}
 
@@ -149,7 +149,7 @@ func TestRunCommandPostgresSmoke(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(second.String(), "already current at version 2") {
+	if !strings.Contains(second.String(), "already current at version 3") {
 		t.Fatalf("second run output = %q", second.String())
 	}
 }

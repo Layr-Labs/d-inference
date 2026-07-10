@@ -43,7 +43,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
 )
@@ -2519,7 +2518,7 @@ func (d *dispatchState) writeCommittedResponse() {
 			// it here. Post-commit only, so it can never finalize a reservation
 			// the dispatch loop still needs for a retry attempt.
 			refundPr := pr
-			saferun.Go(s.logger, "api.postTerminalSweep", func() {
+			s.submitFinancialFinalizer(func() {
 				s.refundReservedBalance(refundPr, "post_terminal_sweep:"+requestID)
 			})
 		}

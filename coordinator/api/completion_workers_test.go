@@ -75,15 +75,19 @@ func TestCompletionWorkersBoundConcurrencyAndDrain(t *testing.T) {
 	if got := maximum.Load(); got != 2 {
 		t.Fatalf("maximum active workers = %d, want 2", got)
 	}
+	if got := pool.outstandingCount(); got != 4 {
+		t.Fatalf("outstanding work = %d, want 4 queued+active tasks", got)
+	}
 
 	close(release)
 	pool.close()
 	if got := completed.Load(); got != 4 {
 		t.Fatalf("completed tasks = %d, want 4", got)
 	}
-	if pool.activeCount() != 0 || pool.depth() != 0 || pool.capacity() != 4 {
-		t.Fatalf("pool state after close: active=%d depth=%d capacity=%d",
-			pool.activeCount(), pool.depth(), pool.capacity())
+	if pool.activeCount() != 0 || pool.depth() != 0 ||
+		pool.outstandingCount() != 0 || pool.capacity() != 4 {
+		t.Fatalf("pool state after close: active=%d depth=%d outstanding=%d capacity=%d",
+			pool.activeCount(), pool.depth(), pool.outstandingCount(), pool.capacity())
 	}
 }
 

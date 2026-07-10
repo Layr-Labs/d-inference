@@ -27,13 +27,29 @@ Runtime configuration currently required by the composition root:
 
 ```text
 EIGENINFERENCE_DATABASE_URL
+EIGENINFERENCE_COORDINATOR_OWNERSHIP_ENABLED  default false; irreversible once activated
 EIGENINFERENCE_RUST_BIND_ADDRESS              default 0.0.0.0:8081
 EIGENINFERENCE_RUST_DATABASE_MAX_CONNECTIONS default 32
 EIGENINFERENCE_RUST_SHUTDOWN_GRACE_SECONDS   default 30
 ```
 
 Application startup never applies DDL. Checked SQL metadata is committed under
-`.sqlx/`; schema changes will be applied by a separate migration command.
+`.sqlx/`; the Go `coordinator-migrate` command must first bring the public
+catalog to version 3 and install `rust_coord.schema_versions` version 1.
+`Database::connect` only checks that compatible pair.
+
+Every startup takes the same dedicated PostgreSQL primary advisory lock as the
+Go coordinator, including disabled legacy mode. It then takes the exclusive
+`darkbloom-coordinator-mutation` handoff lock before checking activation or
+advancing the public `coordinator_ownership` epoch. Serving-pool checkouts hold
+the shared form of that lock and reverify the primary lock plus the expected
+epoch (or absent legacy marker), so an old process cannot write across a
+handoff. The primary connection is monitored continuously; loss also removes
+readiness and triggers runtime shutdown. Once either coordinator has persisted
+`coordinator_ownership_activated`, disabled startup is refused.
+Future SQL mutators must enter through `Database::begin_owned`; it rejects
+unconfigured or lost authority and returns the fencing context with the
+transaction.
 Real PostgreSQL integration tests use the dedicated
 `DARKBLOOM_TEST_DATABASE_URL`; they refuse to fall back to a runtime database
 URL.

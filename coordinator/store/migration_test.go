@@ -39,12 +39,28 @@ func TestMigrationCatalogIsOrderedAndVersionBounded(t *testing.T) {
 	if !strings.Contains(catalogSQL.String(), rewardIndexPredicate) {
 		t.Fatalf("migration catalog reward index predicate is out of sync with RewardLedgerTypes: want %q", rewardIndexPredicate)
 	}
-	indexMigration := migrations[len(migrations)-1]
+	indexMigration := migrations[1]
 	if indexMigration.Transactional {
 		t.Fatal("concurrent index migration must be nontransactional")
 	}
 	if indexMigration.ConcurrentIndex != "idx_provider_earnings_job" {
 		t.Fatalf("concurrent index = %q", indexMigration.ConcurrentIndex)
+	}
+	rustCompatibilityMigration := migrations[2]
+	if !rustCompatibilityMigration.Transactional {
+		t.Fatal("Rust schema compatibility migration must be transactional")
+	}
+	for _, required := range []string{
+		"CREATE SCHEMA IF NOT EXISTS rust_coord",
+		"CREATE TABLE IF NOT EXISTS rust_coord.schema_versions",
+		"VALUES (1, 3, 3)",
+	} {
+		if !strings.Contains(rustCompatibilityMigration.SQL, required) {
+			t.Fatalf("Rust schema compatibility migration is missing %q", required)
+		}
+	}
+	if strings.Contains(rustCompatibilityMigration.SQL, "inference_jobs") {
+		t.Fatal("Rust compatibility migration must not create durable jobs yet")
 	}
 }
 

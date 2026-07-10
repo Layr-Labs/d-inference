@@ -19,7 +19,6 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/saferun"
 )
 
 // throughputAnomalySweepInterval is how often the detector compares each
@@ -47,7 +46,7 @@ func (s *Server) StartThroughputAnomalyDetector(ctx context.Context) {
 		"min_samples", cfg.MinSamples,
 		"efficiency", cfg.Efficiency,
 	)
-	saferun.Go(s.logger, "api.throughputAnomalyDetector", func() {
+	s.StartBackgroundTask("api.throughputAnomalyDetector", func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {

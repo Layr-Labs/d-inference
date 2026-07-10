@@ -195,12 +195,19 @@ type Server struct {
 	// Deliberately named to avoid collision with the provider-side drain concepts
 	// (protocol.ProviderDrainingForUpdate, registry.drainQueuedRequestsForModels):
 	// this is purely the coordinator's own HTTP-ingress drain. See drain.go.
-	httpInflight        atomic.Int64
-	coordinatorDraining atomic.Bool
-	providerSessionMu   sync.Mutex
-	providerSessions    sync.WaitGroup
-	providerClosing     bool
-	providerConnections map[*websocket.Conn]struct{}
+	httpInflight         atomic.Int64
+	mutationInflight     atomic.Int64
+	coordinatorDraining  atomic.Bool
+	processShuttingDown  atomic.Bool
+	providerSessionMu    sync.Mutex
+	providerSessions     sync.WaitGroup
+	providerSessionCount atomic.Int64
+	providerClosing      bool
+	providerConnections  map[*websocket.Conn]struct{}
+	backgroundMu         sync.Mutex
+	backgroundClosing    bool
+	backgroundTasks      sync.WaitGroup
+	backgroundTaskCount  atomic.Int64
 
 	// knownBinaryHashes is the set of accepted provider binary SHA-256 hashes.
 	// When binaryHashPolicyConfigured is true, providers whose binary hash is
@@ -751,12 +758,31 @@ func (s *Server) submitTelemetry(name string, fn func()) {
 // Close drains correctness-critical completion work before stopping the
 // best-effort routing-telemetry sink. It is idempotent.
 func (s *Server) BeginShutdown() {
+	s.providerSessionMu.Lock()
+	s.providerClosing = true
+	s.providerSessionMu.Unlock()
+	s.processShuttingDown.Store(true)
 	s.SetDraining(true)
 }
 
 func (s *Server) StopCompletionProcessing() {
 	if s.completions != nil {
 		s.completions.stop()
+	}
+}
+
+func (s *Server) WaitForCompletionProcessing(ctx context.Context) bool {
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if s.completions.outstandingCount() == 0 {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return s.completions.outstandingCount() == 0
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -776,19 +802,75 @@ func (s *Server) FenceProviderSessions() {
 	}
 }
 
-func (s *Server) Close() {
-	s.BeginShutdown()
-	s.StopCompletionProcessing()
-	s.FenceProviderSessions()
-	s.providerSessions.Wait()
+func (s *Server) WaitForProviderSessions(ctx context.Context) bool {
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if s.providerSessionCount.Load() == 0 {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return s.providerSessionCount.Load() == 0
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Server) FlushSettlementHolds() {
 	if s.settlements != nil {
 		s.settlements.close()
 	}
+}
+
+func (s *Server) FlushSettlementHoldsWithContext(ctx context.Context) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.FlushSettlementHolds()
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (s *Server) Close() {
+	s.BeginShutdown()
+	s.FenceProviderSessions()
+	providerCtx, providerCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	s.WaitForProviderSessions(providerCtx)
+	providerCancel()
+	completionCtx, completionCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	s.WaitForCompletionProcessing(completionCtx)
+	completionCancel()
+	s.StopCompletionProcessing()
+	waitForClose(5*time.Second, s.FlushSettlementHolds)
 	if s.completions != nil {
-		s.completions.close()
+		waitForClose(5*time.Second, s.completions.close)
 	}
 	if s.routeTelemetry != nil {
-		s.routeTelemetry.close()
+		waitForClose(5*time.Second, s.routeTelemetry.close)
+	}
+	s.stopBackgroundTasks()
+}
+
+func waitForClose(deadline time.Duration, closeFn func()) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() { _ = recover() }()
+		closeFn()
+	}()
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
 	}
 }
 
@@ -1924,6 +2006,7 @@ func (s *Server) routes() {
 	// (admin key OR Privy admin). Registered before the /v1/ catch-all. Note:
 	// /readyz stays unauthenticated. See drain.go (DAR-327 Phase 1).
 	s.mux.HandleFunc("POST /v1/admin/drain", s.requireAuth(s.handleAdminDrain))
+	s.mux.HandleFunc("GET /v1/admin/quiescence", s.handleAdminQuiescence)
 
 	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
 	// Browse as JSON or stream a CSV/NDJSON download for offline analysis.
@@ -2091,7 +2174,9 @@ func (s *Server) handleUnimplementedEndpoint(w http.ResponseWriter, r *http.Requ
 //
 // Recover must sit outside logging so a panic during logging doesn't leak.
 func (s *Server) Handler() http.Handler {
-	return s.corsMiddleware(s.recoverMiddleware(s.loggingMiddleware(s.bodyLimitMiddleware(s.mux))))
+	return s.corsMiddleware(s.recoverMiddleware(s.loggingMiddleware(
+		s.shutdownMutationGate(s.bodyLimitMiddleware(s.mux)),
+	)))
 }
 
 // bodyLimitMiddleware caps every request body at maxRequestBodyBytes so an

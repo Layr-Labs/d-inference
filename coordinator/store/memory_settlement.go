@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"strings"
 	"time"
 )
@@ -225,3 +226,5 @@ func (s *MemoryStore) RecoverStaleInferenceReservations(_ time.Time) (int, error
 	// orphaned by a previous process.
 	return 0, nil
 }
+
+func (s *MemoryStore) CheckRollbackSafe(context.Context) error { return nil }

@@ -3,8 +3,6 @@ package api
 import (
 	"context"
 	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/saferun"
 )
 
 const (
@@ -34,7 +32,7 @@ func (s *Server) StartStripePayoutReconciler(ctx context.Context) {
 	s.logger.Info("stripe payout reconciler started",
 		"interval", stripeReconcileInterval.String(),
 		"stuck_threshold", stripeStuckThreshold.String())
-	saferun.Go(s.logger, "api.stripePayoutReconciler", func() {
+	s.StartBackgroundTask("api.stripePayoutReconciler", func() {
 		// First sweep shortly after boot so a deploy heals stuck accounts
 		// without waiting an hour.
 		timer := time.NewTimer(1 * time.Minute)

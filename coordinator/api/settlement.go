@@ -53,16 +53,13 @@ func (h *settlementHolder) hold(pr *registry.PendingRequest, grace time.Duration
 	if h.closed {
 		h.active++
 		h.mu.Unlock()
-		onExpiry(pr)
-		h.mu.Lock()
-		h.active--
-		h.cond.Broadcast()
-		h.mu.Unlock()
+		h.runCallback(&heldSettlement{pending: pr, onExpiry: onExpiry})
 		return
 	}
 	if len(h.pending) >= maxSettlementHolds {
+		h.active++
 		h.mu.Unlock()
-		onExpiry(pr)
+		h.runCallback(&heldSettlement{pending: pr, onExpiry: onExpiry})
 		return
 	}
 	entry := &heldSettlement{pending: pr, onExpiry: onExpiry}
@@ -101,12 +98,7 @@ func (h *settlementHolder) expire(requestID string) {
 	h.active++
 	h.mu.Unlock()
 
-	entry.onExpiry(entry.pending)
-
-	h.mu.Lock()
-	h.active--
-	h.cond.Broadcast()
-	h.mu.Unlock()
+	h.runCallback(entry)
 }
 
 func (h *settlementHolder) close() {
@@ -130,15 +122,36 @@ func (h *settlementHolder) close() {
 		}
 		entries = append(entries, entry)
 	}
+	h.active += len(entries)
 	h.mu.Unlock()
 	for _, entry := range entries {
-		entry.onExpiry(entry.pending)
+		h.runCallback(entry)
 	}
 	h.mu.Lock()
 	for h.active > 0 {
 		h.cond.Wait()
 	}
 	h.mu.Unlock()
+}
+
+func (h *settlementHolder) runCallback(entry *heldSettlement) {
+	defer func() {
+		_ = recover()
+		h.mu.Lock()
+		h.active--
+		h.cond.Broadcast()
+		h.mu.Unlock()
+	}()
+	entry.onExpiry(entry.pending)
+}
+
+func (h *settlementHolder) snapshot() (held, active int) {
+	if h == nil {
+		return 0, 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.pending), h.active
 }
 
 // terminalSettleGrace returns the configured grace, defaulting when unset

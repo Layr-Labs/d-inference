@@ -1247,8 +1247,9 @@ func (p *Provider) pendingLoadForModelLocked(model string) int {
 
 // Registry holds all connected providers and provides routing.
 type Registry struct {
-	mu        sync.RWMutex
-	providers map[string]*Provider
+	mu              sync.RWMutex
+	providers       map[string]*Provider
+	backgroundTasks atomic.Int64
 
 	queue *RequestQueue
 
@@ -3646,7 +3647,11 @@ func (r *Registry) Disconnect(id string) {
 	// Disconnect runs serially in the eviction loop and Close would block ~5s
 	// waiting for a handshake the stale peer won't send. No-op if already closed;
 	// outside r.mu so it can't stall the registry.
-	p.closeWriterNow()
+	writerCtx, writerCancel := context.WithTimeout(context.Background(), time.Second)
+	if !p.closeWriterAndWait(writerCtx) {
+		r.logger.Warn("provider writer did not stop before deadline", "provider_id", id)
+	}
+	writerCancel()
 
 	// Close this connection's session row (async; durable uptime history).
 	// Covers both graceful disconnects and evictStale (which calls Disconnect).
@@ -4478,9 +4483,13 @@ func (r *Registry) ProviderCountByMDMFailure() map[string]int {
 // don't lock individual providers — counts may be off-by-one under
 // heavy churn — that's acceptable for gauges.
 type FleetSnapshot struct {
-	Connected  int
-	Idle       int
-	QueueDepth int
+	Connected          int
+	Idle               int
+	Pending            int
+	QueueDepth         int
+	WriterDataDepth    int
+	WriterControlDepth int
+	WritersActive      int
 }
 
 // Snapshot returns aggregate counts for /metrics gauges. Cheap enough
@@ -4493,12 +4502,25 @@ func (r *Registry) Snapshot() FleetSnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	idle := 0
+	pending := 0
+	writerDataDepth := 0
+	writerControlDepth := 0
+	writersActive := 0
 	for _, p := range r.providers {
 		p.mu.Lock()
 		isIdle := p.Status == StatusOnline && len(p.pendingReqs) == 0
+		pending += len(p.pendingReqs)
+		writer := p.writer
 		p.mu.Unlock()
 		if isIdle {
 			idle++
+		}
+		if writer != nil {
+			writerDataDepth += len(writer.queue)
+			writerControlDepth += len(writer.control)
+			if writer.writeDeadline.Load() != 0 {
+				writersActive++
+			}
 		}
 	}
 	q := 0
@@ -4506,9 +4528,13 @@ func (r *Registry) Snapshot() FleetSnapshot {
 		q = r.queue.TotalSize()
 	}
 	return FleetSnapshot{
-		Connected:  len(r.providers),
-		Idle:       idle,
-		QueueDepth: q,
+		Connected:          len(r.providers),
+		Idle:               idle,
+		Pending:            pending,
+		QueueDepth:         q,
+		WriterDataDepth:    writerDataDepth,
+		WriterControlDepth: writerControlDepth,
+		WritersActive:      writersActive,
 	}
 }
 
@@ -4839,7 +4865,9 @@ func (r *Registry) ProviderIDs() []string {
 // the context is cancelled.
 func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration) {
 	ticker := time.NewTicker(timeout / 3)
+	r.backgroundTasks.Add(1)
 	saferun.Go(r.logger, "registry.evictionLoop", func() {
+		defer r.backgroundTasks.Add(-1)
 		defer ticker.Stop()
 		for {
 			select {
@@ -4850,6 +4878,13 @@ func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration)
 			}
 		}
 	})
+}
+
+func (r *Registry) BackgroundTaskCount() int64 {
+	if r == nil {
+		return 0
+	}
+	return r.backgroundTasks.Load()
 }
 
 func (r *Registry) evictStale(timeout time.Duration) {

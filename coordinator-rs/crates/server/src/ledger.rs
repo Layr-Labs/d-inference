@@ -227,6 +227,10 @@ impl MemoryLedger {
         self.jobs.get(job_id).map(|j| j.funded_start).unwrap_or(false)
     }
 
+    pub fn job_reserved_total(&self, job_id: &str) -> Option<MicroUsd> {
+        self.jobs.get(job_id).map(|j| j.provenance.total)
+    }
+
     pub fn active_job_count(&self) -> usize {
         self.jobs
             .values()

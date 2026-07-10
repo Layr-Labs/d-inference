@@ -404,3 +404,104 @@ public struct ProviderTerminal: Codable, Sendable, Equatable {
         model = try c.decode(String.self, forKey: .model)
     }
 }
+
+/// Coordinator → Provider abort (pre-start, idempotent tombstone).
+public struct AbortCommand: Codable, Sendable, Equatable {
+    public var type: String = "abort"
+    public var identity: AttemptIdentity
+    public var reason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case type, reason
+        case jobId = "job_id"
+        case attemptId = "attempt_id"
+        case leaseId = "lease_id"
+        case sessionEpoch = "session_epoch"
+        case coordinatorEpoch = "coordinator_epoch"
+        case dispatchNonce = "dispatch_nonce"
+        case requestDigest = "request_digest"
+        case providerGeneration = "provider_generation"
+    }
+
+    public init(identity: AttemptIdentity, reason: String? = nil) {
+        self.identity = identity
+        self.reason = reason
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(type, forKey: .type)
+        try c.encode(identity.jobId, forKey: .jobId)
+        try c.encode(identity.attemptId, forKey: .attemptId)
+        try c.encodeIfPresent(identity.leaseId, forKey: .leaseId)
+        try c.encode(identity.sessionEpoch, forKey: .sessionEpoch)
+        try c.encode(identity.coordinatorEpoch, forKey: .coordinatorEpoch)
+        try c.encode(identity.dispatchNonce, forKey: .dispatchNonce)
+        try c.encode(identity.requestDigest, forKey: .requestDigest)
+        try c.encodeIfPresent(identity.providerGeneration, forKey: .providerGeneration)
+        try c.encodeIfPresent(reason, forKey: .reason)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type = try c.decode(String.self, forKey: .type)
+        identity = AttemptIdentity(
+            jobId: try c.decode(String.self, forKey: .jobId),
+            attemptId: try c.decode(String.self, forKey: .attemptId),
+            leaseId: try c.decodeIfPresent(String.self, forKey: .leaseId),
+            sessionEpoch: try c.decode(UInt64.self, forKey: .sessionEpoch),
+            coordinatorEpoch: try c.decode(UInt64.self, forKey: .coordinatorEpoch),
+            dispatchNonce: try c.decode(String.self, forKey: .dispatchNonce),
+            requestDigest: try c.decode(String.self, forKey: .requestDigest),
+            providerGeneration: try c.decodeIfPresent(Int64.self, forKey: .providerGeneration)
+        )
+        reason = try c.decodeIfPresent(String.self, forKey: .reason)
+    }
+}
+
+public struct AbortedReply: Codable, Sendable, Equatable {
+    public var type: String = "aborted"
+    public var identity: AttemptIdentity
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case jobId = "job_id"
+        case attemptId = "attempt_id"
+        case leaseId = "lease_id"
+        case sessionEpoch = "session_epoch"
+        case coordinatorEpoch = "coordinator_epoch"
+        case dispatchNonce = "dispatch_nonce"
+        case requestDigest = "request_digest"
+        case providerGeneration = "provider_generation"
+    }
+
+    public init(identity: AttemptIdentity) { self.identity = identity }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(type, forKey: .type)
+        try c.encode(identity.jobId, forKey: .jobId)
+        try c.encode(identity.attemptId, forKey: .attemptId)
+        try c.encodeIfPresent(identity.leaseId, forKey: .leaseId)
+        try c.encode(identity.sessionEpoch, forKey: .sessionEpoch)
+        try c.encode(identity.coordinatorEpoch, forKey: .coordinatorEpoch)
+        try c.encode(identity.dispatchNonce, forKey: .dispatchNonce)
+        try c.encode(identity.requestDigest, forKey: .requestDigest)
+        try c.encodeIfPresent(identity.providerGeneration, forKey: .providerGeneration)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type = try c.decode(String.self, forKey: .type)
+        identity = AttemptIdentity(
+            jobId: try c.decode(String.self, forKey: .jobId),
+            attemptId: try c.decode(String.self, forKey: .attemptId),
+            leaseId: try c.decodeIfPresent(String.self, forKey: .leaseId),
+            sessionEpoch: try c.decode(UInt64.self, forKey: .sessionEpoch),
+            coordinatorEpoch: try c.decode(UInt64.self, forKey: .coordinatorEpoch),
+            dispatchNonce: try c.decode(String.self, forKey: .dispatchNonce),
+            requestDigest: try c.decode(String.self, forKey: .requestDigest),
+            providerGeneration: try c.decodeIfPresent(Int64.self, forKey: .providerGeneration)
+        )
+    }
+}

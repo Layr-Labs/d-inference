@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::fleet_actor::FleetHandle;
 use crate::ledger::MemoryLedger;
-use crate::mock_provider::{openai_chat_response, run_mock_completion};
+use crate::mock_provider::{complete_authorized_job, openai_chat_response};
 use crate::provider_hub::{ProviderHub, SharedHub};
 use crate::provider_ws::provider_ws;
 use crate::request_task::{spawn_request_task, ControlEvent};
@@ -231,6 +231,29 @@ async fn chat_completions(
             }
             let _ = task_handle;
 
+            // Durable provisional reservation before any provider prepare.
+            {
+                let mut ledger = state.ledger.lock().await;
+                if let Err(err) = ledger.reserve(
+                    crate::ledger::OperationKey(format!("reserve:{}", job_id.as_str())),
+                    job_id.as_str(),
+                    &state.pilot_account,
+                    100_000,
+                ) {
+                    return (
+                        StatusCode::PAYMENT_REQUIRED,
+                        Json(json!({
+                            "error": {
+                                "message": format!("{err}"),
+                                "type": "insufficient_funds",
+                                "code": "insufficient_funds"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+
             // Prefer live provider prepare/start when the hub has a session.
             // Only fall back to in-process mock when no provider is attached.
             let prepare_result = state
@@ -257,6 +280,12 @@ async fn chat_completions(
                 Ok(_) => true,
                 Err(crate::provider_hub::HubError::NotConnected) => false,
                 Err(err) => {
+                    let mut ledger = state.ledger.lock().await;
+                    let _ = ledger.release(
+                        crate::ledger::OperationKey(format!("release:{}", job_id.as_str())),
+                        job_id.as_str(),
+                        &state.pilot_account,
+                    );
                     return (
                         StatusCode::BAD_GATEWAY,
                         Json(json!({
@@ -270,6 +299,28 @@ async fn chat_completions(
                         .into_response();
                 }
             };
+
+            {
+                let mut ledger = state.ledger.lock().await;
+                if let Err(err) = ledger.mark_start_authorized(job_id.as_str()) {
+                    let _ = ledger.release(
+                        crate::ledger::OperationKey(format!("release:{}", job_id.as_str())),
+                        job_id.as_str(),
+                        &state.pilot_account,
+                    );
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(json!({
+                            "error": {
+                                "message": format!("{err}"),
+                                "type": "server_error",
+                                "code": "start_authorize_conflict"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            }
 
             if use_live {
                 let _ = task.apply(ControlEvent::Prepared {
@@ -305,6 +356,14 @@ async fn chat_completions(
                         });
                     }
                     Err(err) => {
+                        // Start-authorized: do not redispatch; await terminal/review.
+                        // For pilot mock path, release reservation on start failure.
+                        let mut ledger = state.ledger.lock().await;
+                        let _ = ledger.release(
+                            crate::ledger::OperationKey(format!("release:{}", job_id.as_str())),
+                            job_id.as_str(),
+                            &state.pilot_account,
+                        );
                         return (
                             StatusCode::BAD_GATEWAY,
                             Json(json!({
@@ -319,7 +378,6 @@ async fn chat_completions(
                     }
                 }
             } else {
-                // Fall back to in-process mock when no live v2 provider is attached.
                 let _ = task.apply(ControlEvent::Prepared {
                     attempt: attempt.clone(),
                     lease: lease.clone(),
@@ -334,17 +392,22 @@ async fn chat_completions(
                 });
             }
 
+            let mode = if use_live {
+                "rust-live-prepare"
+            } else {
+                "rust-mock"
+            };
             let mut ledger = state.ledger.lock().await;
-            match run_mock_completion(&mut ledger, &state.pilot_account, &permit, user_text) {
-                Ok(mut completion) => {
-                    if use_live {
-                        completion.content = format!(
-                            "[rust-live-prepare] provider={} model={} echo={}",
-                            permit.provider_id,
-                            permit.model,
-                            user_text.chars().take(64).collect::<String>()
-                        );
-                    }
+            match complete_authorized_job(
+                &mut ledger,
+                &state.pilot_account,
+                job_id.as_str(),
+                &permit,
+                lease.as_str(),
+                user_text,
+                mode,
+            ) {
+                Ok(completion) => {
                     let _ = task.apply(ControlEvent::FirstContent {
                         attempt: AttemptId::new(completion.attempt_id.clone()),
                         lease: lease.clone(),

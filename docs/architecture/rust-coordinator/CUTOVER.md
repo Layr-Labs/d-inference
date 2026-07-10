@@ -478,3 +478,9 @@ the job's `account_id` when `account` is omitted. An explicit mismatched
 `account` returns 409 `account_mismatch` (never refunds/charges the wrong
 ledger).
 
+### Deposit vs clear-orphans conservation (DECISIONS #90)
+
+Concurrent Stripe deposits and clear-orphans conserve money: each deposit
+event applies once; reserved/held orphans clear exactly once; final balance
+equals start + sum(deposits).
+

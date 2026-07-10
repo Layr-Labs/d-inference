@@ -21,6 +21,7 @@ fn opts(
         demo_clear_orphans: clear_orphans,
         demo_cutover_drain: cutover_drain,
         demo_cutover_drain_all: cutover_drain_all,
+        demo_remaining_accounts: false,
         demo_deposit_event: None,
         demo_account: "pilot-account".into(),
     }

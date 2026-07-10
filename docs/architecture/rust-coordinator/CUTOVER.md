@@ -756,3 +756,10 @@ Single-job and batch force-settle / recover / held-review, adopt-job,
 cancel-attempt, and outbox-drain success/abort all populate remaining
 fields from `cutover_status` so ops see one consistent snapshot shape.
 
+### cutover-drain(-all) + CLI remaining (DECISIONS #132)
+
+`cutover-drain`, `cutover-drain-all`, and quiescence
+`accounts_needing_cutover` read from `cutover_status`. CLI
+`--demo-remaining-accounts` proves steal → adopt → clear using the
+remaining-account list restores balances.
+

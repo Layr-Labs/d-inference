@@ -205,15 +205,47 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 	// either both happen or neither. A crash here can no longer leave a
 	// debited balance with no withdrawal row.
 	if err := s.billing.Store().CreateStripeWithdrawalWithDebit(wd, store.LedgerStripePayout, debitRef); err != nil {
-		if errors.Is(err, store.ErrInsufficientBalance) {
-			writeJSON(w, http.StatusBadRequest, errorResponse("insufficient_withdrawable",
-				"insufficient withdrawable balance — only earned funds can be withdrawn"))
+		if errors.Is(err, store.ErrCommitOutcomeUnknown) {
+			resolved := false
+			for attempt := range 3 {
+				stored, lookupErr := s.billing.Store().GetStripeWithdrawal(withdrawalID)
+				if lookupErr == nil && stored.AccountID == wd.AccountID &&
+					stored.AmountMicroUSD == wd.AmountMicroUSD {
+					resolved = true
+					break
+				}
+				if errors.Is(lookupErr, store.ErrNotFound) {
+					break
+				}
+				time.Sleep(time.Duration(attempt+1) * 50 * time.Millisecond)
+			}
+			if resolved {
+				s.logger.Warn("stripe payout: resolved ambiguous debit commit",
+					"withdrawal_id", withdrawalID)
+			} else {
+				s.logger.Error("stripe payout: debit commit outcome unknown",
+					"error", err, "withdrawal_id", withdrawalID)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+					"error": map[string]any{
+						"type":    "external_unknown",
+						"message": "withdrawal commit outcome is being reconciled; do not retry with a new request",
+						"code":    "withdrawal_commit_unknown",
+					},
+					"withdrawal_id": withdrawalID,
+				})
+				return
+			}
+		} else {
+			if errors.Is(err, store.ErrInsufficientBalance) {
+				writeJSON(w, http.StatusBadRequest, errorResponse("insufficient_withdrawable",
+					"insufficient withdrawable balance — only earned funds can be withdrawn"))
+				return
+			}
+			s.logger.Error("stripe payout: debit+persist withdrawal failed", "error", err, "withdrawal_id", withdrawalID)
+			writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error",
+				"could not start the withdrawal — nothing was debited; try again shortly"))
 			return
 		}
-		s.logger.Error("stripe payout: debit+persist withdrawal failed", "error", err, "withdrawal_id", withdrawalID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error",
-			"could not start the withdrawal — nothing was debited; try again shortly"))
-		return
 	}
 
 	// markFailedRefund refunds the ledger and marks the row failed

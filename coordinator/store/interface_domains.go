@@ -386,6 +386,10 @@ type BillingStore interface {
 	// non-refunded row still attributed to the failed sweep.
 	ReopenStripeWithdrawalAfterSweepFailure(id, sweepPayoutID, failureReason string) (bool, error)
 
+	// RecordStripeSweepFailure persists a payout-failure tombstone before rows
+	// are reopened, preventing a concurrent paid event from re-claiming them.
+	RecordStripeSweepFailure(sweepPayoutID, failureReason string) error
+
 	// ListStripeWithdrawalsBySweepPayoutID returns the withdrawals a given
 	// automatic sweep payout claimed (SweepPayoutID stamp). Used to reopen
 	// exactly those rows when the sweep later bounces.

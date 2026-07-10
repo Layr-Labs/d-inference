@@ -51,6 +51,7 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 		"provider_payouts",
 		"providers",
 		"stripe_withdrawals",
+		"stripe_sweep_failures",
 		"provider_sessions",
 		"inference_routes",
 		"request_rejections",

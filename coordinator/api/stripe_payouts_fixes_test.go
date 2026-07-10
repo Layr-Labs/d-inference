@@ -504,7 +504,7 @@ func TestConnectWebhookTransferReversedRefundsGrossWhenFeeNotRefunded(t *testing
 
 // TestConnectWebhookTransferReversedOnPaidRowNeedsHuman: a reversal landing
 // on an already-paid withdrawal (bank payout completed, then clawback) is
-// ambiguous — never auto-refund, leave the row paid for manual review.
+// ambiguous — never auto-refund, durably quarantine it for manual review.
 func TestConnectWebhookTransferReversedOnPaidRowNeedsHuman(t *testing.T) {
 	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer fakeStripe.Close()
@@ -522,8 +522,8 @@ func TestConnectWebhookTransferReversedOnPaidRowNeedsHuman(t *testing.T) {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
 	}
 	wd, _ := st.GetStripeWithdrawal("wd-rev-paid")
-	if wd.Status != "paid" || wd.Refunded {
-		t.Errorf("row = status %q refunded=%v, want paid/false (manual review)", wd.Status, wd.Refunded)
+	if wd.Status != "review_pending" || wd.Refunded {
+		t.Errorf("row = status %q refunded=%v, want review_pending/false", wd.Status, wd.Refunded)
 	}
 	if bal := st.GetBalance(user.AccountID); bal != balBefore {
 		t.Errorf("balance moved on a paid row: %d -> %d", balBefore, bal)

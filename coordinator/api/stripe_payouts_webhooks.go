@@ -420,6 +420,13 @@ func (s *Server) reconcileUnmatchedPayout(pe *billing.PayoutEvent, success bool)
 // SweepPayoutID stamped when the sweep claimed them; rows claimed by other
 // sweeps are untouched.
 func (s *Server) reopenSweepBouncedRows(pe *billing.PayoutEvent) error {
+	failureReason := "sweep_payout_failed " + pe.FailureCode + ": " + pe.FailureReason +
+		" (payout " + pe.ID + "; next sweep will retry)"
+	if err := s.billing.Store().RecordStripeSweepFailure(pe.ID, failureReason); err != nil {
+		s.logger.Error("stripe connect webhook: sweep failure tombstone failed",
+			"error", err, "stripe_account_id", pe.ConnectedAcct, "payout_id", pe.ID)
+		return err
+	}
 	// Looked up by the sweep stamp directly (not by scanning the account's
 	// paid rows): exact, and immune to any per-account list bound.
 	paid, err := s.billing.Store().ListStripeWithdrawalsBySweepPayoutID(pe.ID)
@@ -435,8 +442,6 @@ func (s *Server) reopenSweepBouncedRows(pe *billing.PayoutEvent) error {
 		if wd.Status != "paid" || wd.Refunded {
 			continue
 		}
-		failureReason := "sweep_payout_failed " + pe.FailureCode + ": " + pe.FailureReason +
-			" (payout " + pe.ID + "; next sweep will retry)"
 		applied, err := s.billing.Store().ReopenStripeWithdrawalAfterSweepFailure(
 			wd.ID, pe.ID, failureReason,
 		)
@@ -486,14 +491,6 @@ func (s *Server) handleTransferFailed(event *billing.WebhookEvent) error {
 		s.logger.Error("stripe connect webhook: transfer lookup failed",
 			"transfer_id", te.ID, "error", err)
 		return err
-	}
-	if wd.Status == "paid" {
-		// The user's bank payout completed AND the transfer reversed — an
-		// ambiguous clawback state. Never auto-refund a paid row; surface it
-		// for a human decision.
-		s.logger.Error("stripe connect webhook: transfer reversed on an already-paid withdrawal — manual review required",
-			"withdrawal_id", wd.ID, "transfer_id", te.ID, "stripe_account_id", wd.StripeAccountID)
-		return nil
 	}
 	if wd.Refunded {
 		// Terminal (covers legacy rows refunded under the old semantics).

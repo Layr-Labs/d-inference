@@ -95,6 +95,7 @@ type MemoryStore struct {
 	stripeWithdrawalsByTransferID map[string]string   // transferID → withdrawalID
 	stripeWithdrawalsByPayoutID   map[string]string   // payoutID → withdrawalID
 	stripeWithdrawalsByAccount    map[string][]string // accountID → []withdrawalID, newest last
+	stripeSweepFailures           map[string]string
 
 	// Device authorization
 	deviceCodesByCode     map[string]*DeviceCode // deviceCode → DeviceCode
@@ -198,6 +199,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		stripeWithdrawalsByTransferID: make(map[string]string),
 		stripeWithdrawalsByPayoutID:   make(map[string]string),
 		stripeWithdrawalsByAccount:    make(map[string][]string),
+		stripeSweepFailures:           make(map[string]string),
 		deviceCodesByCode:             make(map[string]*DeviceCode),
 		deviceCodesByUserCode:         make(map[string]*DeviceCode),
 		providerTokens:                make(map[string]*ProviderToken),
@@ -2538,12 +2540,29 @@ func (s *MemoryStore) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayout
 	if w.PayoutID != expectedPayoutID {
 		return false, nil // payout detached/replaced concurrently — stale event
 	}
+	if sweepPayoutID != "" {
+		if _, failed := s.stripeSweepFailures[sweepPayoutID]; failed {
+			return false, nil
+		}
+	}
 	w.Status = "paid"
 	if sweepPayoutID != "" {
 		w.SweepPayoutID = sweepPayoutID
 	}
 	w.UpdatedAt = time.Now()
 	return true, nil
+}
+
+func (s *MemoryStore) RecordStripeSweepFailure(
+	sweepPayoutID, failureReason string,
+) error {
+	if sweepPayoutID == "" {
+		return errors.New("sweep payout ID is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stripeSweepFailures[sweepPayoutID] = failureReason
+	return nil
 }
 
 func (s *MemoryStore) RefundStripeWithdrawalOnReversal(id string) (bool, bool, error) {
@@ -2557,6 +2576,9 @@ func (s *MemoryStore) RefundStripeWithdrawalOnReversal(id string) (bool, bool, e
 		return false, false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
 	}
 	if w.Status == "paid" {
+		w.Status = "review_pending"
+		w.FailureReason = "transfer_reversed_after_paid"
+		w.UpdatedAt = time.Now()
 		return false, true, nil
 	}
 	if w.Refunded {

@@ -916,6 +916,11 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS fee_refunded BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS sweep_payout_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_sweep_payout ON stripe_withdrawals(sweep_payout_id) WHERE sweep_payout_id != ''`,
+		`CREATE TABLE IF NOT EXISTS stripe_sweep_failures (
+			payout_id TEXT PRIMARY KEY,
+			failure_reason TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 
 		// Telemetry events table + indices removed.
 		// Datadog is the sole durable sink for telemetry — the Postgres table
@@ -2856,7 +2861,10 @@ func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType
 		return err
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit credit: %v: %w", err, ErrCommitOutcomeUnknown)
+	}
+	return nil
 }
 
 // GetWithdrawableBalance returns the withdrawable balance in micro-USD.
@@ -3957,7 +3965,10 @@ func (s *PostgresStore) CreateStripeWithdrawalWithDebit(w *StripeWithdrawal, ent
 		return fmt.Errorf("store: create stripe withdrawal: %w", err)
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit stripe withdrawal debit: %v: %w", err, ErrCommitOutcomeUnknown)
+	}
+	return nil
 }
 
 const stripeWithdrawalSelectColumns = `id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
@@ -4102,6 +4113,29 @@ func (s *PostgresStore) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayo
 	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
 		return false, err
 	}
+	if sweepPayoutID != "" {
+		if _, err := tx.Exec(ctx,
+			`SELECT pg_advisory_xact_lock(hashtext($1))`,
+			"stripe-sweep:"+sweepPayoutID,
+		); err != nil {
+			return false, fmt.Errorf("store: lock stripe sweep payout: %w", err)
+		}
+		var failed bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (
+				SELECT 1 FROM stripe_sweep_failures WHERE payout_id = $1
+			)`,
+			sweepPayoutID,
+		).Scan(&failed); err != nil {
+			return false, fmt.Errorf("store: check stripe sweep failure: %w", err)
+		}
+		if failed {
+			if err := tx.Commit(ctx); err != nil {
+				return false, fmt.Errorf("store: commit rejected paid sweep: %w", err)
+			}
+			return false, nil
+		}
+	}
 	tag, err := tx.Exec(ctx,
 		`UPDATE stripe_withdrawals
 		 SET status = 'paid',
@@ -4121,6 +4155,42 @@ func (s *PostgresStore) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayo
 		return false, fmt.Errorf("store: commit mark stripe withdrawal paid: %w", err)
 	}
 	return applied, nil
+}
+
+func (s *PostgresStore) RecordStripeSweepFailure(
+	sweepPayoutID, failureReason string,
+) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
+	if sweepPayoutID == "" {
+		return errors.New("sweep payout ID is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin stripe sweep failure: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1))`,
+		"stripe-sweep:"+sweepPayoutID,
+	); err != nil {
+		return fmt.Errorf("store: lock failed stripe sweep: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO stripe_sweep_failures (payout_id, failure_reason)
+		 VALUES ($1, $2)
+		 ON CONFLICT (payout_id) DO UPDATE SET failure_reason = EXCLUDED.failure_reason`,
+		sweepPayoutID, failureReason,
+	); err != nil {
+		return fmt.Errorf("store: record stripe sweep failure: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresStore) RefundStripeWithdrawalOnReversal(id string) (bool, bool, error) {
@@ -4152,6 +4222,16 @@ func (s *PostgresStore) RefundStripeWithdrawalOnReversal(id string) (bool, bool,
 		return false, false, fmt.Errorf("store: lock reversed withdrawal: %w", err)
 	}
 	if withdrawal.Status == "paid" {
+		if _, err := tx.Exec(ctx,
+			`UPDATE stripe_withdrawals
+			 SET status = 'review_pending',
+			     failure_reason = 'transfer_reversed_after_paid',
+			     updated_at = NOW()
+			 WHERE id = $1`,
+			id,
+		); err != nil {
+			return false, false, fmt.Errorf("store: persist paid reversal review: %w", err)
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return false, false, fmt.Errorf("store: commit paid reversal review: %w", err)
 		}

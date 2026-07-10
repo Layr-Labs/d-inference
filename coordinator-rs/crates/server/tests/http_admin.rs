@@ -115,7 +115,7 @@ async fn terminal_ingest_known_and_late() {
     let state = test_state(true);
     {
         let mut terms = state.terminals.lock().await;
-        terms.record("a1", "d1", "settled", None);
+        terms.record("j1", "a1", "d1", "settled", None);
     }
     let app = router(state);
     let req = Request::builder()
@@ -736,7 +736,7 @@ async fn admin_terminal_ingest_digest_fallback_acks_settled() {
     {
         let mut terms = state.terminals.lock().await;
         // Settle wrote empty attempt_id; ingest arrives with real attempt_id.
-        terms.record("", "d-http-fb", "settled", None);
+        terms.record("j-fb", "", "d-http-fb", "settled", None);
     }
     let app = router(state);
     let res = app
@@ -921,7 +921,7 @@ async fn admin_terminal_ingest_force_settled_disposition() {
     let state = test_state(true);
     {
         let mut terms = state.terminals.lock().await;
-        terms.record("a-fs", "d-fs", "force_settled", None);
+        terms.record("j-fs", "a-fs", "d-fs", "force_settled", None);
     }
     let app = router(state);
     let res = app
@@ -945,6 +945,38 @@ async fn admin_terminal_ingest_force_settled_disposition() {
     assert_eq!(res.status(), StatusCode::OK);
     let v = body_json(res).await;
     assert_eq!(v["disposition"], "force_settled");
+    assert_eq!(v["type"], "terminal_ack");
+}
+
+#[tokio::test]
+async fn admin_terminal_ingest_wrong_job_returns_conflict() {
+    let state = test_state(true);
+    {
+        let mut terms = state.terminals.lock().await;
+        terms.record("j-real", "a1", "d-job", "settled", None);
+    }
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/terminal-ingest")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "j-attacker",
+                        "attempt_id": "a1",
+                        "terminal_digest": "d-job"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["disposition"], "conflict");
     assert_eq!(v["type"], "terminal_ack");
 }
 

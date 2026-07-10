@@ -9,7 +9,7 @@ fn concurrent_ingest_known_terminal_always_settled_ack() {
     let store = Arc::new(Mutex::new(MemoryTerminalStore::new()));
     {
         let mut g = store.lock().unwrap();
-        g.record("a1", "d1", "settled", None);
+        g.record("j1", "a1", "d1", "settled", None);
     }
     let mut handles = Vec::new();
     for _ in 0..16 {

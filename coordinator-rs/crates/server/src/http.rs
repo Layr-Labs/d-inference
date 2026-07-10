@@ -1225,6 +1225,7 @@ async fn chat_completions(
                         });
                         let mut terms = state.terminals.lock().await;
                         terms.record(
+                            &completion.job_id,
                             &completion.attempt_id,
                             &completion.terminal_digest,
                             "settled",

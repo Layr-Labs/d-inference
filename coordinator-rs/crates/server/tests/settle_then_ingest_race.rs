@@ -21,7 +21,7 @@ fn settle_records_terminal_then_concurrent_ingest() {
     }
     {
         let mut s = store.lock().unwrap();
-        s.record("att-1", "td-known", "settled", None);
+        s.record("j", "att-1", "td-known", "settled", None);
     }
 
     let mut handles = Vec::new();

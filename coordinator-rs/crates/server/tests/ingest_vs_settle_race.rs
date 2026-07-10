@@ -19,7 +19,7 @@ fn concurrent_ingest_and_settle_ingest_never_moves_money() {
     // Pre-record disposition so ingest returns settled ACK (no late).
     {
         let mut s = store.lock().unwrap();
-        s.record("att-1", "td-1", "settled", None);
+        s.record("j", "att-1", "td-1", "settled", None);
     }
 
     let led_s = ledger.clone();

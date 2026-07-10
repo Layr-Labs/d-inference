@@ -7,7 +7,7 @@ use std::thread;
 #[test]
 fn concurrent_ingest_digest_fallback_never_late() {
     let store = Arc::new(Mutex::new(MemoryTerminalStore::new()));
-    store.lock().unwrap().record("", "d-fb", "settled", None);
+    store.lock().unwrap().record("j", "", "d-fb", "settled", None);
 
     let mut handles = Vec::new();
     for i in 0..8 {

@@ -196,3 +196,9 @@ safe). Timeout or missing `terminal_digest` leaves the reservation
 `start_authorized` held for force-settle — the coordinator must never invent a
 mock charge/digest on the live path.
 
+### Terminal ingest job bind (DECISIONS #45)
+
+Terminal dispositions are job-bound. Replay with a known digest but the wrong
+`job_id` returns `disposition=conflict` — never a settled ACK and never a late
+record that could confuse ops.
+

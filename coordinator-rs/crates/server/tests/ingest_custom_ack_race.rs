@@ -11,7 +11,7 @@ fn concurrent_ingest_prefers_stored_ack_payload() {
     let custom = json!({"type":"terminal_ack","custom":true,"v":1});
     {
         let mut s = store.lock().unwrap();
-        s.record("a1", "d1", "settled", Some(custom.clone()));
+        s.record("j1", "a1", "d1", "settled", Some(custom.clone()));
     }
 
     let mut handles = Vec::new();

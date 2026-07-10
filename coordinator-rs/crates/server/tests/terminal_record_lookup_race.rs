@@ -12,8 +12,14 @@ fn concurrent_record_then_lookup() {
         let store = store.clone();
         handles.push(thread::spawn(move || {
             let mut s = store.lock().unwrap();
-            s.record(&format!("a{i}"), &format!("d{i}"), "settled", None);
-            s.lookup(&format!("a{i}"), &format!("d{i}"))
+            s.record(
+                &format!("j{i}"),
+                &format!("a{i}"),
+                &format!("d{i}"),
+                "settled",
+                None,
+            );
+            s.lookup(&format!("j{i}"), &format!("a{i}"), &format!("d{i}"))
                 .map(|d| d.disposition == "settled")
                 .unwrap_or(false)
         }));
@@ -26,7 +32,7 @@ fn concurrent_record_then_lookup() {
     let s = store.lock().unwrap();
     for i in 0..8 {
         assert_eq!(
-            s.lookup(&format!("a{i}"), &format!("d{i}"))
+            s.lookup(&format!("j{i}"), &format!("a{i}"), &format!("d{i}"))
                 .unwrap()
                 .disposition,
             "settled"

@@ -436,4 +436,49 @@ mod tests {
             .unwrap();
         assert!(matches!(decision, AdmissionDecision::Prepare(_)));
     }
+
+    #[tokio::test]
+    async fn fault_class_can_quarantine_after_repeated_faults() {
+        let (handle, _join) = spawn_fleet_actor();
+        let mut ready = HashSet::new();
+        ready.insert("m".into());
+        handle
+            .upsert_lifecycle(ProviderSnapshot {
+                provider_id: "p1".into(),
+                session_epoch: 1,
+                trusted: true,
+                challenge_fresh: true,
+                encrypted_transport: true,
+                ready_models: ready,
+                health: HealthMachine::healthy(),
+                data_lane_full: false,
+                predicted_first_content_ms: 10.0,
+                predicted_decode_ms: 20.0,
+                trust: darkbloom_core::TrustState::default(),
+            })
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        // Two faults within the window → quarantine (HealthMachine default).
+        handle.structured_error("p1".into(), "fault".into(), None);
+        tokio::task::yield_now().await;
+        handle.structured_error("p1".into(), "fault".into(), None);
+        tokio::task::yield_now().await;
+        let decision = handle
+            .admit(AdmitRequest {
+                model: "m".into(),
+                attempt: AttemptId::new("a6"),
+                exclude_providers: HashSet::new(),
+                require_tools: false,
+                permit_ttl: Duration::from_secs(2),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            decision,
+            AdmissionDecision::Reject {
+                reason: darkbloom_core::RejectionReason::Quarantined
+            } | AdmissionDecision::RetryAfter { .. }
+        ));
+    }
 }

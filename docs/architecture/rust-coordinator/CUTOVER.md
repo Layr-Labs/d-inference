@@ -763,3 +763,11 @@ fields from `cutover_status` so ops see one consistent snapshot shape.
 `--demo-remaining-accounts` proves steal → adopt → clear using the
 remaining-account list restores balances.
 
+### Exhausted outbox blocks ready (DECISIONS #133)
+
+Quiescence and cutover ready require the outbox to be fully empty
+(`len==0`), not merely `pending_under_retry_cap==0`. Retry-exhausted
+rows (`attempts >= 100`) are reported as `outbox_blocked` and keep
+`ready=false` with hint `outbox-drain`. Admin `outbox-drain` /
+`drain_ack_one` force-acks exhausted pending so cutover can clear them.
+

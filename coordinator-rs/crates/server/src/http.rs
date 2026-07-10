@@ -501,13 +501,18 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         (p.version().0, demand)
     };
     let external_events_seen = state.external_events.lock().await.len();
-    let (outbox_pending, outbox_retryable) = {
+    let (outbox_pending, outbox_retryable, outbox_blocked) = {
         let box_ = state.outbox.lock().await;
-        (box_.len(), box_.pending_under_retry_cap())
+        (
+            box_.len(),
+            box_.pending_under_retry_cap(),
+            box_.pending_blocked(),
+        )
     };
     let late_terminals = state.terminals.lock().await.late_count();
-    // Quiescent only when no active jobs and no retryable outbox work.
-    let ready = active_jobs == 0 && outbox_retryable == 0;
+    // Quiescent only when no active jobs and the outbox is fully empty —
+    // retry-exhausted rows still block ready (DECISIONS #133).
+    let ready = active_jobs == 0 && outbox_pending == 0;
     let needs_adopt = orphan_summary
         .get("needs_adopt_count")
         .and_then(|v| v.as_u64())
@@ -519,6 +524,8 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "adopt-jobs then cutover-drain-all"
     } else if active_jobs > 0 {
         "cutover-drain-all"
+    } else if outbox_blocked > 0 {
+        "outbox-drain"
     } else if outbox_retryable > 0 {
         "outbox-drain"
     } else {
@@ -554,6 +561,7 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             "external_events_seen": external_events_seen,
             "outbox_pending": outbox_pending,
             "outbox_retryable": outbox_retryable,
+            "outbox_blocked": outbox_blocked,
             "late_terminals": late_terminals,
         })),
     )
@@ -2149,8 +2157,8 @@ async fn admin_outbox_drain(
         )
     };
     let ready = status.active_jobs == 0
-        && retryable == 0
-        && status.accounts_needing_cutover.is_empty();
+        && status.accounts_needing_cutover.is_empty()
+        && pending == 0;
     (
         StatusCode::OK,
         Json(json!({
@@ -2374,13 +2382,14 @@ async fn admin_cutover_drain_all(
                 allowlist.as_ref(),
             )
         };
-        let outbox_retryable = {
+        let outbox_len = {
             let box_ = state.outbox.lock().await;
-            box_.pending_under_retry_cap()
+            box_.len()
         };
 
-        // Scoped ready: allowlisted (or all) accounts clear + outbox empty.
-        if accounts.is_empty() && outbox_retryable == 0 {
+        // Scoped ready: allowlisted (or all) accounts clear + outbox fully empty
+        // (including retry-exhausted rows — DECISIONS #133).
+        if accounts.is_empty() && outbox_len == 0 {
             let (all_remaining, needs_adopt) = {
                 let led = state.ledger.lock().await;
                 let status = led.cutover_status(state.ownership.epoch().0);
@@ -2405,7 +2414,7 @@ async fn admin_cutover_drain_all(
         }
 
         if accounts.is_empty() {
-            // Outbox-only: drain and continue.
+            // Outbox-only: drain (including blocked/exhausted) and continue.
             let drain = admin_outbox_drain(State(state.clone()), headers.clone())
                 .await
                 .into_response();
@@ -2579,7 +2588,7 @@ async fn admin_cutover_drain_all(
         };
         let outbox_after = {
             let box_ = state.outbox.lock().await;
-            box_.pending_under_retry_cap()
+            box_.len()
         };
         if accounts_after.is_empty() && outbox_after == 0 {
             let (all_remaining, needs_adopt) = {

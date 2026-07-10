@@ -164,6 +164,22 @@ impl Outbox {
         pending + inflight
     }
 
+    /// Entries at/above the retry cap — still occupy the queue but are not
+    /// claimable by the best-effort worker (DECISIONS #133).
+    pub fn pending_blocked(&self) -> usize {
+        let pending = self
+            .pending
+            .iter()
+            .filter(|e| e.attempts >= MAX_ATTEMPTS)
+            .count();
+        let inflight = self
+            .in_flight
+            .values()
+            .filter(|e| e.attempts >= MAX_ATTEMPTS)
+            .count();
+        pending + inflight
+    }
+
     pub fn in_flight_len(&self) -> usize {
         self.in_flight.len()
     }
@@ -180,16 +196,33 @@ impl Outbox {
 
     /// Claim+ack a single pending entry, or ack one pre-existing in-flight.
     /// Returns the kind when an entry was drained, else None when empty.
+    /// Exhausted (attempts >= MAX) pending rows are force-acked so cutover
+    /// drain can clear the queue (DECISIONS #133).
     pub fn drain_ack_one(&mut self) -> Option<String> {
         if let Some(e) = self.try_claim() {
             let kind = e.kind.clone();
             let _ = self.ack_done(e.id);
             return Some(kind);
         }
-        let id = self.in_flight.keys().next().copied()?;
-        let kind = self.in_flight.get(&id).map(|e| e.kind.clone())?;
-        let _ = self.ack_done(id);
-        Some(kind)
+        if let Some(id) = self.in_flight.keys().next().copied() {
+            let kind = self.in_flight.get(&id).map(|e| e.kind.clone())?;
+            let _ = self.ack_done(id);
+            return Some(kind);
+        }
+        // Stuck/exhausted pending — admin drain drops them so ready can clear.
+        let e = self.pending.pop_front()?;
+        Some(e.kind)
+    }
+
+    /// Test helper: bump a pending entry to the retry cap via claim+requeue.
+    pub fn force_exhaust_one_for_test(&mut self) -> bool {
+        let Some(mut e) = self.try_claim() else {
+            return false;
+        };
+        e.attempts = MAX_ATTEMPTS;
+        self.in_flight.remove(&e.id);
+        self.pending.push_back(e);
+        true
     }
 }
 
@@ -369,5 +402,33 @@ mod tests {
         assert!(requeue_sql().contains("attempts < 100"));
         assert!(drain_ack_all_sql().contains("SKIP LOCKED"));
         assert!(drain_ack_all_sql().contains("DELETE FROM rust_coord.outbox"));
+    }
+
+    #[test]
+    fn exhausted_pending_blocks_len_but_not_retryable() {
+        let mut box_ = Outbox::new(10);
+        box_
+            .enqueue_critical("billing.deposit_applied", r#"{"e":1}"#)
+            .unwrap();
+        assert!(box_.force_exhaust_one_for_test());
+        assert_eq!(box_.len(), 1);
+        assert_eq!(box_.pending_under_retry_cap(), 0);
+        assert_eq!(box_.pending_blocked(), 1);
+        assert!(box_.try_claim().is_none());
+    }
+
+    #[test]
+    fn drain_ack_clears_exhausted_pending() {
+        let mut box_ = Outbox::new(10);
+        box_
+            .enqueue_critical("inference.settled", r#"{"e":1}"#)
+            .unwrap();
+        assert!(box_.force_exhaust_one_for_test());
+        assert_eq!(box_.pending_blocked(), 1);
+        let (n, kinds) = box_.drain_ack_all();
+        assert_eq!(n, 1);
+        assert_eq!(kinds, vec!["inference.settled".to_string()]);
+        assert!(box_.is_empty());
+        assert_eq!(box_.pending_blocked(), 0);
     }
 }

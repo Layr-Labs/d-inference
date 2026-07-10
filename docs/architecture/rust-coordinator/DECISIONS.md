@@ -139,6 +139,7 @@ Date: 2026-07-10
 | 130 | CutoverStatus helper + deposit∥clear race | `MemoryLedger::cutover_status` centralizes remaining-account snapshots; concurrent deposits ∥ clear-orphans conserve money and report remaining fields |
 | 131 | Admin paths use CutoverStatus | force-settle / recover / held-review / adopt-job / cancel / outbox-drain (and batches) read remaining fields via `cutover_status` for consistent snapshots |
 | 132 | cutover-drain(-all) + CLI remaining | cutover-drain / cutover-drain-all / quiescence accounts use `cutover_status`; CLI `--demo-remaining-accounts` proves adopt→clear chaining |
+| 133 | Exhausted outbox blocks ready | Quiescence/cutover ready requires `outbox.len()==0` (not only retryable); admin drain force-acks retry-exhausted rows; report `outbox_blocked` |
 
 ## Deleted Go mechanisms (do not port)
 

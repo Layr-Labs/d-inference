@@ -148,3 +148,65 @@ async fn admin_cancel_attempt_rejects_empty_fields() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_json(res).await["error"]["code"], "invalid_cancel_attempt");
 }
+
+#[tokio::test]
+async fn admin_cancel_attempt_without_ownership_returns_503() {
+    let state = pilot_app_state(false);
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/cancel-attempt")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "j",
+                        "attempt_id": "a",
+                        "lease_id": "l",
+                        "provider_id": "p"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body_json(res).await["error"]["code"], "ownership_lost");
+}
+
+#[tokio::test]
+async fn admin_adopt_job_rejects_disposed() {
+    let state = pilot_app_state(true);
+    {
+        let mut led = state.ledger.lock().await;
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-disp".into()),
+            "disposed-1",
+            "pilot-account",
+            50_000,
+        )
+        .unwrap();
+        led.release(
+            darkbloom_coordinator::OperationKey("rel-disp".into()),
+            "disposed-1",
+            "pilot-account",
+        )
+        .unwrap();
+    }
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/adopt-job")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "job_id": "disposed-1" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(body_json(res).await["error"]["code"], "adopt_job_failed");
+}

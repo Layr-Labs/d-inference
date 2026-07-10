@@ -561,6 +561,32 @@ impl PostgresLedgerStub {
         SELECT reserved, reserved_wdr FROM credit
         "#
     }
+
+    /// Rebind an active job's coordinator_epoch after ownership re-acquire (DECISIONS #66).
+    /// Parameters: $1 job_id, $2 new_fencing_epoch, $3 holder (must match ownership row)
+    pub fn adopt_fencing_epoch_sql() -> &'static str {
+        r#"
+        WITH own AS (
+          SELECT 1 FROM rust_coord.coordinator_ownership
+          WHERE holder = $3 AND fencing_epoch = $2::bigint
+          FOR UPDATE
+        ), job AS (
+          SELECT job_id, coordinator_epoch AS prev_epoch, terminal_disposition
+          FROM rust_coord.inference_jobs
+          WHERE job_id = $1
+          FOR UPDATE
+        ), adopt AS (
+          UPDATE rust_coord.inference_jobs j
+          SET coordinator_epoch = $2::bigint
+          FROM job
+          WHERE j.job_id = job.job_id
+            AND EXISTS (SELECT 1 FROM own)
+            AND (job.terminal_disposition IS NULL OR job.terminal_disposition = '')
+          RETURNING j.job_id, job.prev_epoch
+        )
+        SELECT job_id, prev_epoch FROM adopt
+        "#
+    }
 }
 
 #[cfg(test)]
@@ -694,6 +720,20 @@ mod tests {
         assert!(sql.contains("EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));
         assert!(sql.contains("coordinator_epoch = $4"));
+    }
+
+    #[test]
+    fn adopt_fencing_epoch_sql_rebinds_active_job() {
+        let sql = PostgresLedgerStub::adopt_fencing_epoch_sql();
+        assert!(sql.contains("rust_coord.inference_jobs"));
+        assert!(sql.contains("rust_coord.coordinator_ownership"));
+        assert!(sql.contains("coordinator_epoch = $2"));
+        assert!(sql.contains("holder = $3"));
+        assert!(sql.contains("FOR UPDATE"));
+        assert!(sql.contains("terminal_disposition IS NULL OR job.terminal_disposition = ''"));
+        assert!(sql.contains("prev_epoch"));
+        assert!(!sql.contains("balances"));
+        assert!(!sql.contains("UPDATE balances"));
     }
 
     #[test]

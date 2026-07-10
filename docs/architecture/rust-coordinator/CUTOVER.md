@@ -350,3 +350,9 @@ jobs and returns `cancelled_await_terminal` without moving money. Reserved
 jobs are `skipped` — use recover-undispatched. Ops clear holds via
 force-settle after terminal or review.
 
+### Adopt fencing SQL docs (DECISIONS #69)
+
+`adopt_fencing_epoch_sql` updates `inference_jobs.coordinator_epoch` only when
+the caller holds `coordinator_ownership` and the job is not disposed. No
+balance CTEs — money moves stay on recover/force-settle after adopt.
+

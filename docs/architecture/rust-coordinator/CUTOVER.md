@@ -556,3 +556,9 @@ Ops can pass `remaining_held_start_authorized_job_ids` from a batch abort into
 `adopt-jobs` / `force-settle-batch` to clear only those orphans. Concurrent
 `cancel-attempt` never refunds/charges while force-settle settles exactly once.
 
+### Explicit remaining-id recover + deposit/drain (DECISIONS #103)
+
+Same explicit-id path for reserved orphans via recover-undispatched-batch.
+Concurrent deposits with outbox-drain after recover leave outbox empty and
+conserve deposit credits.
+

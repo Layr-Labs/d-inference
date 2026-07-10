@@ -109,6 +109,7 @@ Date: 2026-07-10
 | 100 | clear-orphans remaining ids + mixed batches | clear-orphans abort lists remaining active/held ids. Concurrent recover-batch ∥ force-settle-batch on mixed orphans clears both |
 | 101 | Adopt + cutover after clear abort | After clear-orphans steal abort, quiescence lists orphans without ownership; re-acquire + concurrent adopt-jobs ∥ cutover-drain reaches ready |
 | 102 | Explicit remaining-id settle + cancel vs force | After batch abort, adopt+force-settle explicit remaining ids clears holds. cancel-attempt never moves money while force-settle races |
+| 103 | Explicit remaining-id recover + deposit/drain | After recover-batch abort, adopt+recover explicit remaining ids. Concurrent deposits ∥ outbox-drain leave outbox empty |
 
 ## Deleted Go mechanisms (do not port)
 

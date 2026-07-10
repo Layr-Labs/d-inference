@@ -205,6 +205,25 @@ async fn readyz_fails_without_ownership() {
 }
 
 #[tokio::test]
+async fn list_models_returns_pilot_card() {
+    let app = router(test_state(true));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/models")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["object"], "list");
+    assert_eq!(v["data"][0]["id"], "pilot-text-model");
+}
+
+#[tokio::test]
 async fn health_and_encryption_key_ok() {
     let app = router(test_state(true));
     let health = app

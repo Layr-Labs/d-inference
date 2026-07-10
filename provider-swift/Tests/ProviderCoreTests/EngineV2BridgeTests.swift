@@ -204,6 +204,7 @@ private func makeBridge(
     defaultMaxTokens: Int = 4096,
     kvBytesPerToken: Int = 0,
     kvBudget: GlobalKVCacheBudget? = nil,
+    kvBackendKind: EngineV2KVBackendKind = .contiguous,
     telemetry: TelemetrySink? = nil
 ) -> EngineV2Bridge {
     EngineV2Bridge(
@@ -216,6 +217,7 @@ private func makeBridge(
         maxConcurrentRequests: 4,
         kvBytesPerToken: kvBytesPerToken,
         kvBudget: kvBudget,
+        kvBackendKind: kvBackendKind,
         emitTelemetry: telemetry?.callback()
     )
 }
@@ -1158,7 +1160,7 @@ struct EngineV2FailLoudFactoryTests {
         #expect(EngineV2RefusalReason.classify(SomeError()) == .engineInitFailed)
     }
 
-    @Test("factory: healthy builder → v2 bridge, no telemetry")
+    @Test("factory: healthy builder → v2 bridge + one INFO kv-backend event")
     func factoryBuilds() async throws {
         let telemetry = TelemetrySink()
         let bridge = try EngineV2Factory.makeBridge(
@@ -1166,10 +1168,45 @@ struct EngineV2FailLoudFactoryTests {
             tokenizer: TokenizerHandle(StubTokenizer()),
             eosTokenIds: [2],
             emitTelemetry: telemetry.callback(),
-            makeEngine: { ScriptedCBv2Engine(script: .manual) }
+            makeEngine: {
+                EngineV2Factory.ProductionBuild(
+                    engine: ScriptedCBv2Engine(script: .manual),
+                    kvBackendKind: .contiguous,
+                    kvBackendFallbackReason: nil)
+            }
         )
         #expect(await bridge.modelId == "gemma-4-26b-qat-4bit")
-        #expect(telemetry.events.isEmpty)
+        #expect(await bridge.kvBackendKind == .contiguous)
+        // Exactly one INFO event attributing the slot's serving KV backend
+        // (fleet dashboards key off operation=engine_v2_kv_backend).
+        let events = telemetry.events
+        #expect(events.count == 1)
+        #expect(events.first?.severity == .info)
+        #expect(events.first?.fields?["operation"]?.description == "engine_v2_kv_backend")
+        #expect(events.first?.fields?["reason"]?.description == "contiguous")
+        #expect(events.first?.fields?["model"]?.description == "gemma-4-26b-qat-4bit")
+    }
+
+    @Test("factory: paged fallback rides the kv-backend event reason")
+    func factoryFallbackTelemetry() throws {
+        let telemetry = TelemetrySink()
+        _ = try EngineV2Factory.makeBridge(
+            modelId: "gpt-oss-20b",
+            tokenizer: TokenizerHandle(StubTokenizer()),
+            eosTokenIds: [2],
+            emitTelemetry: telemetry.callback(),
+            makeEngine: {
+                EngineV2Factory.ProductionBuild(
+                    engine: ScriptedCBv2Engine(script: .manual),
+                    kvBackendKind: .contiguous,
+                    kvBackendFallbackReason: "ineligible: layer 0 headDim 80")
+            }
+        )
+        let events = telemetry.events
+        #expect(events.count == 1)
+        #expect(
+            events.first?.fields?["reason"]?.description
+                == "fallback:ineligible: layer 0 headDim 80")
     }
 
     @Test("factory: init failure THROWS + ERROR engine_v2_refusal telemetry (no fallback)")
@@ -1811,5 +1848,117 @@ struct EngineV2LogprobsChannelCapTests {
         #expect(channel.droppedCount == 0)
         #expect(channel.drain().count == 100)
         #expect(channel.drain().isEmpty)
+    }
+}
+
+// MARK: - Paged KV backend: capacity mapping, heartbeat bind, shared-gate skip
+
+@Suite("EngineV2Bridge paged KV backend")
+struct EngineV2BridgePagedKVTests {
+
+    @Test("terminal kv_capacity_exhausted maps to the retryable capacity error")
+    func terminalCapacityErrorMapsToTokenBudget() async {
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .finished(
+                reason: .error(
+                    CBv2KVError.capacityExhaustedFinishPrefix
+                        + "capacityExhausted(needed: 9, available: 1)"),
+                usage: CBv2Usage(promptTokens: 5, completionTokens: 0))
+        ]))
+        let bridge = makeBridge(engine: engine, kvBackendKind: .paged)
+        let (events, _) = await record(await bridge.submit(
+            request: makeRequest(), requestId: "req-cap-1"))
+        guard case .error(let message)? = events.last else {
+            Issue.record("expected terminal error, got \(events)")
+            return
+        }
+        // The canonical capacity prefix is what the scheduler-error
+        // classifier (and the coordinator) string-match for retryable
+        // 429-class handling — never an in-band 5xx.
+        #expect(message.hasPrefix("token_budget_exhausted:"), "got: \(message)")
+    }
+
+    @Test("other terminal engine errors pass through unmapped")
+    func terminalNonCapacityErrorPassesThrough() async {
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .finished(
+                reason: .error("engine exploded"),
+                usage: CBv2Usage(promptTokens: 5, completionTokens: 0))
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let (events, _) = await record(await bridge.submit(
+            request: makeRequest(), requestId: "req-cap-2"))
+        guard case .error(let message)? = events.last else {
+            Issue.record("expected terminal error, got \(events)")
+            return
+        }
+        #expect(message == "engine exploded")
+    }
+
+    @Test("heartbeat binds advertised capacity to backend pool truth")
+    func heartbeatBindsToBackendCapacity() async {
+        // Ledger grew past the construction-fixed pool (paged re-slice
+        // GROW): the advertised token budget must bind to pool truth.
+        let engine = ScriptedCBv2Engine(
+            script: .manual,
+            capacity: CBv2CapacitySnapshot(
+                activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
+                kvBytesCapacity: 100_000, kvBytesBackendCapacity: 60_000,
+                activeTokens: 0))
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 1_000)
+        #expect(await bridge.backendSlotCapacity().activeTokenBudgetMax == 60)
+        // The fleet-residency clamp still binds from below when tighter.
+        #expect(
+            await bridge.backendSlotCapacity(kvBytesBudgetClamp: 40_000)
+                .activeTokenBudgetMax == 40)
+    }
+
+    @Test("unknown backend capacity (0) does not bind")
+    func heartbeatUnknownBackendCapacityNoBind() async {
+        let engine = ScriptedCBv2Engine(
+            script: .manual,
+            capacity: CBv2CapacitySnapshot(
+                activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
+                kvBytesCapacity: 100_000, activeTokens: 0))
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 1_000)
+        #expect(await bridge.backendSlotCapacity().activeTokenBudgetMax == 100)
+    }
+
+    @Test("paged slots skip the per-request shared-KV reserve")
+    func pagedSlotSkipsSharedKVReserve() async {
+        // A reservation this large fails on ANY real machine (1 GiB per
+        // token × thousands of tokens), so a CONTIGUOUS bridge rejects at
+        // the shared gate before the engine ever sees the submit…
+        let hugeRate = 1 << 30
+        let budget = GlobalKVCacheBudget()
+        let contiguousEngine = ScriptedCBv2Engine(script: .stream([
+            .finished(
+                reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 0))
+        ]))
+        let contiguousBridge = makeBridge(
+            engine: contiguousEngine, kvBytesPerToken: hugeRate, kvBudget: budget,
+            kvBackendKind: .contiguous)
+        let (contiguousEvents, _) = await record(await contiguousBridge.submit(
+            request: makeRequest(), requestId: "req-gate-1"))
+        guard case .error(let rejected)? = contiguousEvents.last else {
+            Issue.record("expected shared-gate rejection, got \(contiguousEvents)")
+            return
+        }
+        #expect(rejected.hasPrefix("token_budget_exhausted:"))
+        #expect(contiguousEngine.submitted.isEmpty)
+
+        // …while a PAGED bridge admits: its pool is construction-committed
+        // and already counted once in MLX residency — a per-request
+        // reservation on top would double-count and collapse the gate.
+        let pagedEngine = ScriptedCBv2Engine(script: .stream([
+            .finished(
+                reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 0))
+        ]))
+        let pagedBridge = makeBridge(
+            engine: pagedEngine, kvBytesPerToken: hugeRate, kvBudget: budget,
+            kvBackendKind: .paged)
+        _ = await record(await pagedBridge.submit(
+            request: makeRequest(), requestId: "req-gate-2"))
+        #expect(pagedEngine.submitted.count == 1)
     }
 }

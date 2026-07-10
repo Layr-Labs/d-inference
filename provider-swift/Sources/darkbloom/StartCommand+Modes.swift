@@ -89,7 +89,9 @@ extension Start {
                 kvQuant: config.backend.kvQuant,
                 hardware: hardware,
                 engineV2MaxConcurrent: config.backend.engineV2MaxConcurrent,
-                engineV2MaxConcurrentByModel: config.backend.engineV2MaxConcurrentByModel
+                engineV2MaxConcurrentByModel: config.backend.engineV2MaxConcurrentByModel,
+                engineV2KVBackend: config.backend.engineV2KVBackend,
+                engineV2KVBackendByModel: config.backend.engineV2KVBackendByModel
             ),
             models: advertised
         )

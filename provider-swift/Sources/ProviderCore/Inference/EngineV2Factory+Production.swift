@@ -14,8 +14,12 @@
 //     `cbv2LayerKinds` / `newCacheV2` (Gemma 4 text, GPT-OSS — the two
 //     families the engine is correct-by-construction for; GPT-OSS's
 //     `newCacheV2` also primes its sinks-activation probe at build time),
-//   * `CBv2ContiguousKVBackend` sized from the unified-memory KV budget
-//     (admission ceiling only — nothing is preallocated),
+//   * a KV backend sized from the unified-memory KV budget — the PAGED
+//     `PagedKVBackend` for GPT-OSS slots by default (slabs physically
+//     committed at construction via `materializeSlabs`; see
+//     `EngineV2KVBackendPolicy` for the gate/kill-switch/fallback layers)
+//     or `CBv2ContiguousKVBackend` (admission ceiling only — nothing is
+//     preallocated),
 //   * `CBv2LayerCacheBank` over the model-built caches,
 //   * `CBv2DefaultSampler` + `CBv2TextDetokenizerFactory` (real incremental
 //     detokenization with stop-string holdback).
@@ -138,14 +142,68 @@ extension EngineV2Factory {
     /// `ThroughputSweep`/`SchedulerPrefillBenchmark`) builds its engines
     /// through this exact production entry point so the numbers it reports
     /// are the engine the fleet serves with — never a parallel construction
-    /// that could drift.
+    /// that could drift. Thin wrapper over `makeProductionBuild` (same
+    /// defaults, backend-kind metadata discarded).
     public static func makeProductionEngine(
         model: any LanguageModel,
         tokenizer: any MLXLMCommon.Tokenizer,
         kvBytesCapacity: Int,
         prefixCache: (any CBv2PrefixCache)? = nil,
-        maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests
+        maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests,
+        kvBackend: EngineV2KVBackendSelection = .auto,
+        maxContextLength: Int? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> any CBv2Engine {
+        try makeProductionBuild(
+            model: model,
+            tokenizer: tokenizer,
+            kvBytesCapacity: kvBytesCapacity,
+            prefixCache: prefixCache,
+            maxConcurrentRequests: maxConcurrentRequests,
+            kvBackend: kvBackend,
+            maxContextLength: maxContextLength,
+            environment: environment
+        ).engine
+    }
+
+    /// Result of production v2-engine construction: the engine plus the KV
+    /// backend it was ACTUALLY built with. The bridge keys its shared-gate
+    /// accounting, heartbeat clamp, and re-slice policy off the kind; the
+    /// fallback reason feeds the INFO `engine_v2_kv_backend` telemetry so
+    /// the fleet reports which backend every slot serves with.
+    public struct ProductionBuild {
+        public let engine: any CBv2Engine
+        public let kvBackendKind: EngineV2KVBackendKind
+        /// Non-nil when a paged selection fell back to contiguous (fleet
+        /// kill switch, kernel ineligibility, pool-construction capacity).
+        /// A fallback is a supported degradation — INFO, never a refusal.
+        public let kvBackendFallbackReason: String?
+    }
+
+    /// Build the real `EngineV2` over a loaded model, returning the engine
+    /// together with the KV-backend decision (`ProductionBuild`).
+    ///
+    /// KV-backend gate (see `EngineV2KVBackendPolicy` for the full layer
+    /// order): the caller passes the operator selection with slot vetoes
+    /// (VLM, kv-quant) already applied; `.auto` resolves per family HERE —
+    /// next to the authoritative family switch so the two can never drift —
+    /// GPT-OSS → paged (default-ON, 2026-07-10 decision), Gemma-4 →
+    /// contiguous (KV arrives bf16; fp16 pages stay an explicit opt-in).
+    /// The `DARKBLOOM_CBV2_PAGED_KV=0` fleet kill switch is enforced at
+    /// THIS deepest layer so no call path (benchmarks included) bypasses
+    /// it. Paged construction throwing `CBv2KVError` (kernel ineligibility,
+    /// pool capacity) falls back to contiguous — a paged-ineligible model
+    /// must load and serve, never refuse.
+    public static func makeProductionBuild(
+        model: any LanguageModel,
+        tokenizer: any MLXLMCommon.Tokenizer,
+        kvBytesCapacity: Int,
+        prefixCache: (any CBv2PrefixCache)? = nil,
+        maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests,
+        kvBackend: EngineV2KVBackendSelection = .auto,
+        maxContextLength: Int? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> ProductionBuild {
         guard kvBytesCapacity > 0 else {
             throw EngineV2ProductionError.noKVHeadroom
         }
@@ -162,40 +220,124 @@ extension EngineV2Factory {
         // constructors (see LayerKindDerivation.swift in mlx-swift-lm).
         // Neither family uses attention softcapping (Gemma 4's final-logit
         // softcap lives inside the model's logits path), so the caches take
-        // the default nil softcap.
+        // the default nil softcap. `newCacheV2` stays the single cache
+        // construction funnel on BOTH backends — GPT-OSS primes its
+        // sinks-activation probe inside it (one host readback per layer,
+        // at build time — never on the step path).
         let layerKinds: [CBv2LayerKind]
-        let caches: [any CBv2AttendingLayerCache]
+        let autoKind: EngineV2KVBackendKind
+        let newCaches:
+            ((Int, CBv2LayerKind) -> any CBv2AttendingLayerCache)
+                -> [any CBv2AttendingLayerCache]
         switch model {
         case let gemma as Gemma4TextModel:
             layerKinds = gemma.cbv2LayerKinds
-            caches = gemma.newCacheV2 { index, kind in
-                CBv2LayerCache(layerIndex: index, kind: kind)
-            }
+            autoKind = .contiguous
+            newCaches = { make in gemma.newCacheV2(makeLayerCache: make) }
         case let gptoss as GPTOSSModel:
             layerKinds = gptoss.cbv2LayerKinds
-            // GPT-OSS primes its sinks-activation probe inside newCacheV2
-            // (one host readback per layer, HERE at build time — never on
-            // the step path).
-            caches = gptoss.newCacheV2 { index, kind in
-                CBv2LayerCache(layerIndex: index, kind: kind)
-            }
+            autoKind = .paged
+            newCaches = { make in gptoss.newCacheV2(makeLayerCache: make) }
         default:
             throw EngineV2ProductionError.unsupportedModel(
                 String(describing: type(of: model)))
         }
 
-        let backend = CBv2ContiguousKVBackend(
-            config: CBv2ContiguousBackendConfig(bytesCapacity: cappedCapacity))
-        return EngineV2(
+        var resolvedKind: EngineV2KVBackendKind
+        switch kvBackend {
+        case .contiguous: resolvedKind = .contiguous
+        case .paged: resolvedKind = .paged
+        case .auto: resolvedKind = autoKind
+        }
+        var fallbackReason: String?
+        if resolvedKind == .paged,
+            EngineV2KVBackendPolicy.killSwitchDisabled(environment: environment)
+        {
+            resolvedKind = .contiguous
+            fallbackReason = "kill_switch"
+        }
+
+        let schedulerConfig = CBv2SchedulerConfig(
+            maxConcurrentRequests: max(1, maxConcurrentRequests),
+            enablePrefixCache: prefixCache != nil)
+
+        func contiguousAssembly() -> (CBv2KVBackend, [any CBv2AttendingLayerCache]) {
+            let backend = CBv2ContiguousKVBackend(
+                config: CBv2ContiguousBackendConfig(bytesCapacity: cappedCapacity))
+            let caches = newCaches { index, kind in
+                CBv2LayerCache(layerIndex: index, kind: kind)
+            }
+            return (backend, caches)
+        }
+
+        if resolvedKind == .paged {
+            do {
+                let paged = try PagedKVBackend(
+                    layerKinds: layerKinds,
+                    config: PagedKVPoolConfig(
+                        capacityBytes: cappedCapacity,
+                        // LOCKSTEP: a windowed-layer update larger than the
+                        // ring's provision traps the process
+                        // (PagedSequenceKV precondition) — size the pool to
+                        // the scheduler's REAL chunk, never a parallel
+                        // constant.
+                        maxPrefillChunk: schedulerConfig.prefillChunkSize,
+                        nominalMaxSequenceLength: max(1, maxContextLength ?? 8192)))
+                let pagedCaches = paged.makeLayerCaches()
+                let caches = newCaches { index, _ in pagedCaches[index] }
+                // Commit the slabs NOW (fail fast + measure honestly): the
+                // post-load headroom guards must see the pool's true
+                // residency — first traffic must never discover the
+                // allocation (that is the v0.7.2 "pinned black hole" shape).
+                paged.pool.materializeSlabs()
+                return ProductionBuild(
+                    engine: makeEngineV2(
+                        model: model, tokenizer: tokenizer, layerKinds: layerKinds,
+                        backend: paged, caches: caches,
+                        schedulerConfig: schedulerConfig, prefixCache: prefixCache),
+                    kvBackendKind: .paged,
+                    kvBackendFallbackReason: nil)
+            } catch let error as CBv2KVError {
+                // Paged ineligibility/capacity is a supported degradation:
+                // fall back to the contiguous backend (INFO telemetry at the
+                // bridge — never the engine_v2_refusal path).
+                switch error {
+                case .backendIneligible(let reason):
+                    fallbackReason = "ineligible: \(reason)"
+                case .capacityExhausted(let needed, let available):
+                    fallbackReason =
+                        "pool_construction_capacity: needed \(needed), available \(available)"
+                }
+            }
+        }
+        let (backend, caches) = contiguousAssembly()
+        return ProductionBuild(
+            engine: makeEngineV2(
+                model: model, tokenizer: tokenizer, layerKinds: layerKinds,
+                backend: backend, caches: caches,
+                schedulerConfig: schedulerConfig, prefixCache: prefixCache),
+            kvBackendKind: .contiguous,
+            kvBackendFallbackReason: fallbackReason)
+    }
+
+    /// Shared final assembly for both backends.
+    private static func makeEngineV2(
+        model: any LanguageModel,
+        tokenizer: any MLXLMCommon.Tokenizer,
+        layerKinds: [CBv2LayerKind],
+        backend: CBv2KVBackend,
+        caches: [any CBv2AttendingLayerCache],
+        schedulerConfig: CBv2SchedulerConfig,
+        prefixCache: (any CBv2PrefixCache)?
+    ) -> EngineV2 {
+        EngineV2(
             model: CBv2SteppableLanguageModelAdapter(model),
             layerKinds: layerKinds,
             backend: backend,
             cacheProvider: CBv2LayerCacheBank(caches: caches),
             sampler: CBv2DefaultSampler(),
             detokenizerFactory: CBv2TextDetokenizerFactory(tokenizer: tokenizer),
-            schedulerConfig: CBv2SchedulerConfig(
-                maxConcurrentRequests: max(1, maxConcurrentRequests),
-                enablePrefixCache: prefixCache != nil),
+            schedulerConfig: schedulerConfig,
             // TB-007 / T-041 (v0.7.5): this CBv2 cache is either the
             // default-on encrypted SSD tier or the opt-in RAM PrefixCacheV2
             // tier. Both use per-request cacheSalt scoping; selection and

@@ -75,6 +75,11 @@ public struct StandaloneServerConfig: Sendable {
     public let engineV2MaxConcurrent: UInt64
     /// Per-model overrides (`engine_v2_max_concurrent_by_model`).
     public let engineV2MaxConcurrentByModel: [String: UInt64]
+    /// CBv2 KV-backend selection (`[backend] engine_v2_kv_backend`):
+    /// "auto" | "paged" | "contiguous". See `EngineV2KVBackendPolicy`.
+    public let engineV2KVBackend: String
+    /// Per-model overrides (`engine_v2_kv_backend_by_model`).
+    public let engineV2KVBackendByModel: [String: String]
 
     public init(
         port: UInt16 = 8000,
@@ -84,7 +89,9 @@ public struct StandaloneServerConfig: Sendable {
         kvQuant: Bool = false,
         hardware: HardwareInfo? = nil,
         engineV2MaxConcurrent: UInt64 = 4,
-        engineV2MaxConcurrentByModel: [String: UInt64] = [:]
+        engineV2MaxConcurrentByModel: [String: UInt64] = [:],
+        engineV2KVBackend: String = "auto",
+        engineV2KVBackendByModel: [String: String] = [:]
     ) {
         self.port = port
         self.host = host
@@ -94,6 +101,8 @@ public struct StandaloneServerConfig: Sendable {
         self.hardware = hardware
         self.engineV2MaxConcurrent = engineV2MaxConcurrent
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
+        self.engineV2KVBackend = engineV2KVBackend
+        self.engineV2KVBackendByModel = engineV2KVBackendByModel
     }
 }
 
@@ -581,6 +590,8 @@ public actor StandaloneServer {
                 maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelId),
                 kvBudget: kvBudget,
                 kvQuantConfigured: config.kvQuant,
+                kvBackendConfig: config.engineV2KVBackend,
+                kvBackendConfigByModel: config.engineV2KVBackendByModel,
                 emitTelemetry: v2TestHooks?.emitTelemetry,
                 makeEngineOverride: v2TestHooks?.makeEngine,
                 logInfo: { standaloneLogger.info("\($0)") },

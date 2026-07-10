@@ -100,6 +100,17 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// of model id → cap). Same [1, 8] clamp. Missing ids use
     /// `engineV2MaxConcurrent`.
     public var engineV2MaxConcurrentByModel: [String: UInt64]
+    /// CBv2 KV-backend selection (`engine_v2_kv_backend` under
+    /// `[backend]`): "auto" (default — paged for GPT-OSS text slots,
+    /// contiguous otherwise), "paged", or "contiguous". VLM slots and
+    /// `kv_quant = true` always force contiguous; kernel-ineligible models
+    /// fall back to contiguous with an INFO telemetry event. Fleet kill
+    /// switch: `DARKBLOOM_CBV2_PAGED_KV=0`. See `EngineV2KVBackendPolicy`.
+    public var engineV2KVBackend: String
+    /// Optional per-model override map (`engine_v2_kv_backend_by_model`
+    /// under `[backend]`, TOML table of model id → "auto" | "paged" |
+    /// "contiguous"). Missing ids use `engineV2KVBackend`.
+    public var engineV2KVBackendByModel: [String: String]
     /// Startup model preload (default true). On boot the provider loads the
     /// `preload_models` set (or, when that is empty, the models it was serving
     /// before the last restart — see `LoadedModelsStore`) BEFORE registering
@@ -148,6 +159,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         kvQuant: Bool = false,
         engineV2MaxConcurrent: UInt64 = 4,
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
+        engineV2KVBackend: String = "auto",
+        engineV2KVBackendByModel: [String: String] = [:],
         startupPreload: Bool = true,
         preloadModels: [String] = [],
         startupPreloadTimeoutSecs: UInt64 = 120,
@@ -162,6 +175,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.kvQuant = kvQuant
         self.engineV2MaxConcurrent = engineV2MaxConcurrent
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
+        self.engineV2KVBackend = engineV2KVBackend
+        self.engineV2KVBackendByModel = engineV2KVBackendByModel
         self.startupPreload = startupPreload
         self.preloadModels = preloadModels
         self.startupPreloadTimeoutSecs = startupPreloadTimeoutSecs
@@ -178,6 +193,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case kvQuant = "kv_quant"
         case engineV2MaxConcurrent = "engine_v2_max_concurrent"
         case engineV2MaxConcurrentByModel = "engine_v2_max_concurrent_by_model"
+        case engineV2KVBackend = "engine_v2_kv_backend"
+        case engineV2KVBackendByModel = "engine_v2_kv_backend_by_model"
         case startupPreload = "startup_preload"
         case preloadModels = "preload_models"
         case startupPreloadTimeoutSecs = "startup_preload_timeout_secs"
@@ -207,6 +224,11 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.engineV2MaxConcurrentByModel =
             try container.decodeIfPresent(
                 [String: UInt64].self, forKey: .engineV2MaxConcurrentByModel) ?? [:]
+        self.engineV2KVBackend =
+            try container.decodeIfPresent(String.self, forKey: .engineV2KVBackend) ?? "auto"
+        self.engineV2KVBackendByModel =
+            try container.decodeIfPresent(
+                [String: String].self, forKey: .engineV2KVBackendByModel) ?? [:]
         self.startupPreload = try container.decodeIfPresent(Bool.self, forKey: .startupPreload) ?? true
         self.preloadModels = try container.decodeIfPresent([String].self, forKey: .preloadModels) ?? []
         self.startupPreloadTimeoutSecs =

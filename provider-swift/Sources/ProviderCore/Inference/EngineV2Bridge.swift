@@ -58,6 +58,13 @@ public actor EngineV2Bridge {
     /// §1) is resolved.
     let engine: any CBv2Engine
     public let modelId: String
+    /// Which KV backend the engine was built with. Keys the bridge's
+    /// shared-gate accounting (paged pools are construction-committed —
+    /// no per-request `GlobalKVCacheBudget` reserve), the heartbeat
+    /// capacity clamp, and the provider's re-slice policy (paged slots
+    /// rebuild instead of resizing; `updateBytesCapacity` is a no-op on
+    /// a physically preallocated pool).
+    public let kvBackendKind: EngineV2KVBackendKind
     let tokenizer: TokenizerHandle
     /// Resolved stop-token set (model EOS ∪ tokenizer EOS ∪ extra EOS
     /// tokens) — `buildStopTokenIds` semantics, computed ONCE at bridge
@@ -205,11 +212,13 @@ public actor EngineV2Bridge {
         kvBudget: GlobalKVCacheBudget? = nil,
         prefixCacheBudgetBytes: Int = 0,
         ssdPrefixCache: SSDPrefixCache? = nil,
+        kvBackendKind: EngineV2KVBackendKind = .contiguous,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
         self.engine = engine
         self.modelId = modelId
         self.tokenizer = tokenizer
+        self.kvBackendKind = kvBackendKind
         self.stopTokenIds = EngineV2Translation.stopTokenIds(
             eosTokenIds: eosTokenIds,
             tokenizerEOSTokenId: tokenizer.inner.eosTokenId,
@@ -391,7 +400,18 @@ public actor EngineV2Bridge {
         // immediately without allocating any KV).
         let worstCaseTokens = promptTokens.count + cbv2Request.maxTokens
         var sharedKVReserved = false
-        if let kvBudget, kvBytesPerToken > 0, cbv2Request.maxTokens > 0 {
+        // PAGED slots skip the per-request shared-KV reserve: the pool is
+        // physically committed at construction (`materializeSlabs`) and
+        // already counted once — in MLX active memory (which the shared
+        // gate's headroom probe reads) and in the model-load gates. A
+        // per-request reservation on top would DOUBLE-count every paged
+        // request against headroom the pool has already claimed and
+        // collapse the gate to zero. Admission for paged requests is the
+        // engine's own ledger (`AdmissionV2`) + the pool's atomic
+        // worst-case page charge, with the capacity-requeue backstop.
+        if kvBackendKind == .contiguous, let kvBudget, kvBytesPerToken > 0,
+            cbv2Request.maxTokens > 0
+        {
             sharedKVReserved = await kvBudget.reserve(
                 requestID: id, kvBytesPerToken: kvBytesPerToken, tokenCount: worstCaseTokens)
             guard sharedKVReserved else {
@@ -521,6 +541,21 @@ public actor EngineV2Bridge {
     /// re-slices refuse such targets at the serviceability floor
     /// (`resliceMeetsServiceabilityFloor(_:fixedCarveBytes:)`), so the
     /// `max(0, …)` clamp is defensive only.
+    ///
+    /// PAGED slots (`kvBackendKind == .paged`): the resize moves the
+    /// ADMISSION ledger only — the physically preallocated page pool
+    /// neither shrinks nor grows (`updateBytesCapacity` is a no-op on a
+    /// construction-fixed pool). This is safe by design: a SHRINK tightens
+    /// admissions immediately while the slabs stay resident, and whether a
+    /// newcomer physically fits is arbitrated by the post-load headroom
+    /// guards against TRUE residency (slabs are materialized eagerly at
+    /// construction) — an over-tight box fails the newcomer's load and
+    /// restores, it never jetsams. A GROW past pool truth is bound back
+    /// down in the heartbeat (`backendSlotCapacity` min-binds the
+    /// advertised capacity to `kvBytesBackendCapacity`), so the
+    /// coordinator never routes tokens the pool cannot place. Reclaiming
+    /// or adding physical pool bytes requires an engine rebuild (unload →
+    /// load), or the future pool-resize follow-up.
     public func updateKVBytesCapacity(_ bytes: Int) {
         engine.updateKVBytesCapacity(max(0, bytes - prefixCacheBudgetBytes))
     }
@@ -719,7 +754,19 @@ public actor EngineV2Bridge {
         case .error(let message):
             _ = recordFinish(id: id, usage: usage, success: false)
             emitInferenceErrorTelemetry(requestId: id)
-            continuation.yield(.error(message))
+            if message.hasPrefix(CBv2KVError.capacityExhaustedFinishPrefix) {
+                // Engine-side TERMINAL capacity exhaustion (the paged pool
+                // stayed full through the whole requeue budget). Retryable
+                // by definition — the backend is full of other tenants'
+                // KV, not broken — so surface the canonical capacity
+                // marker (429-class, the OpenRouter never-serve-5xx
+                // posture), never an in-band server error.
+                continuation.yield(.error(
+                    "token_budget_exhausted: KV capacity exhausted after "
+                        + "requeues (\(message))"))
+            } else {
+                continuation.yield(.error(message))
+            }
         }
         if !sawFirstToken {
             wedgeMonitor.recordTerminalWithoutFirstToken()

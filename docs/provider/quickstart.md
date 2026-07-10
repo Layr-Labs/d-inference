@@ -137,6 +137,16 @@ end = "08:00"
 - `backend.kv_quant` — retained for forward compatibility, but v0.7.5 serves
   fp16-only KV. Setting it logs a warning and does not enable quantization. See
   [Beta Features](beta-features.md).
+- `backend.engine_v2_kv_backend` — KV-cache backend for the inference engine:
+  `"auto"` (default — PagedAttention for GPT-OSS text models, contiguous
+  otherwise), `"paged"`, or `"contiguous"`. Vision models and `kv_quant`
+  configurations always serve contiguous; models the paged kernel cannot
+  serve fall back to contiguous automatically. Per-model overrides:
+  `engine_v2_kv_backend_by_model` (TOML table of model id → value). Fleet
+  kill switch: launch with `DARKBLOOM_CBV2_PAGED_KV=0` (survives restarts —
+  it is forwarded into the launchd service environment). Note: a paged model
+  commits its whole KV grant in memory at load (the pool is preallocated),
+  where a contiguous model grows its KV usage with traffic.
 - `coordinator.private_only` — serve only your own self-route traffic; never
   join the public fleet.
 

@@ -118,7 +118,12 @@ public enum EngineV2Factory {
     ///
     /// `makeEngine` is a closure (not a concrete type) so unit tests can
     /// script a `CBv2Engine` without weights; the production body lives in
-    /// `EngineV2Factory+Production.makeProductionEngine`.
+    /// `EngineV2Factory+Production.makeProductionBuild`. The build result
+    /// carries the KV-backend decision: the bridge stores the kind (its
+    /// shared-gate accounting, heartbeat clamp, and re-slice policy key
+    /// off it) and an INFO `engine_v2_kv_backend` event reports it — with
+    /// the fallback reason when a paged selection degraded to contiguous —
+    /// so the fleet dashboard can attribute every slot's serving backend.
     public static func makeBridge(
         modelId: String,
         tokenizer: TokenizerHandle,
@@ -131,12 +136,17 @@ public enum EngineV2Factory {
         prefixCacheBudgetBytes: Int = 0,
         ssdPrefixCache: SSDPrefixCache? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
-        makeEngine: () throws -> any CBv2Engine
+        makeEngine: () throws -> EngineV2Factory.ProductionBuild
     ) throws -> EngineV2Bridge {
         do {
-            let engine = try makeEngine()
+            let build = try makeEngine()
+            emitKVBackendTelemetry(
+                modelId: modelId,
+                kind: build.kvBackendKind,
+                fallbackReason: build.kvBackendFallbackReason,
+                emitTelemetry: emitTelemetry)
             return EngineV2Bridge(
-                engine: engine,
+                engine: build.engine,
                 modelId: modelId,
                 tokenizer: tokenizer,
                 eosTokenIds: eosTokenIds,
@@ -154,6 +164,7 @@ public enum EngineV2Factory {
                 // pre-submit staging hook + release backstops + shutdown
                 // over the SAME instance the engine holds as its cache.
                 ssdPrefixCache: ssdPrefixCache,
+                kvBackendKind: build.kvBackendKind,
                 emitTelemetry: emitTelemetry
             )
         } catch {
@@ -203,6 +214,40 @@ public enum EngineV2Factory {
             fields["error"] = .string(String(describing: error))
         }
         event.fields = TelemetryFieldFilter.filter(fields)
+        if let emitTelemetry {
+            emitTelemetry(event)
+        } else {
+            TelemetryClient.shared.emit(event)
+        }
+    }
+
+    /// INFO `engine_health` event reporting which KV backend a slot was
+    /// built with (`operation=engine_v2_kv_backend`, `reason=paged |
+    /// contiguous | fallback:<why>`). Emitted once per engine construction
+    /// so the fleet dashboard can attribute serving backends and spot
+    /// unexpected fallbacks. Allowlisted fields only — no wire changes.
+    static func emitKVBackendTelemetry(
+        modelId: String,
+        kind: EngineV2KVBackendKind,
+        fallbackReason: String?,
+        emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
+    ) {
+        let reason =
+            fallbackReason.map { "fallback:\($0)" } ?? kind.rawValue
+        var event = TelemetryEvent(
+            source: .provider,
+            severity: .info,
+            kind: .engineHealth,
+            message: "engine_v2: serving with \(kind.rawValue) KV backend"
+                + (fallbackReason.map { " (fallback: \($0))" } ?? "")
+        )
+        event.fields = TelemetryFieldFilter.filter([
+            "component": .string("engine"),
+            "operation": .string("engine_v2_kv_backend"),
+            "backend": .string("engine_v2"),
+            "model": .string(modelId),
+            "reason": .string(reason),
+        ])
         if let emitTelemetry {
             emitTelemetry(event)
         } else {

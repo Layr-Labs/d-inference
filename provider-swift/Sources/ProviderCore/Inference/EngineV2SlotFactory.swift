@@ -211,6 +211,8 @@ enum EngineV2SlotFactory {
         maxConcurrentRequests: Int,
         kvBudget: GlobalKVCacheBudget?,
         kvQuantConfigured: Bool,
+        kvBackendConfig: String = "auto",
+        kvBackendConfigByModel: [String: String] = [:],
         weightHash: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
@@ -218,6 +220,30 @@ enum EngineV2SlotFactory {
         logInfo: @escaping @Sendable (String) -> Void = { _ in },
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> EngineV2Bridge {
+        // KV-backend gate, slot-veto layer (`EngineV2KVBackendPolicy`):
+        // parse the operator selection (per-model override wins; typo →
+        // WARN + auto), then force contiguous for slots the paged cache
+        // cannot serve — VLM (span masks unsupported: media would 4xx at
+        // submit) and kv_quant intent (fp16 pages only). Family
+        // resolution for `auto` + the fleet kill switch + eligibility
+        // fallback live in `makeProductionBuild`.
+        let parsedKVBackend = EngineV2KVBackendPolicy.parseSelection(
+            global: kvBackendConfig, byModel: kvBackendConfigByModel, modelID: modelId)
+        if let unrecognized = parsedKVBackend.unrecognized {
+            logWarning(
+                "engine_v2: unrecognized engine_v2_kv_backend value "
+                    + "\"\(unrecognized)\" for \(modelId) — using \"auto\"")
+        }
+        let vetoed = EngineV2KVBackendPolicy.applySlotVetoes(
+            selection: parsedKVBackend.selection,
+            isVLM: isVLM,
+            kvQuantConfigured: kvQuantConfigured)
+        let kvBackendSelection = vetoed.selection
+        if let veto = vetoed.veto {
+            logInfo(
+                "engine_v2: \(modelId) paged KV backend forced to contiguous "
+                    + "(\(veto))")
+        }
         // Snapshot the model handle + EOS config out of the container.
         // Handing the module reference to the v2 engine serializes all
         // forward passes on the engine's own step thread. Taken BEFORE the
@@ -325,9 +351,16 @@ enum EngineV2SlotFactory {
             enginePrefixCache = nil
         }
 
-        let makeEngine: () throws -> any CBv2Engine
+        let makeEngine: () throws -> EngineV2Factory.ProductionBuild
         if let makeEngineOverride {
-            makeEngine = { try makeEngineOverride(modelId, engineKVBytesCapacity) }
+            // Scripted engines are backend-less stubs: report contiguous
+            // (the shared-gate/reslice default) with no fallback.
+            makeEngine = {
+                EngineV2Factory.ProductionBuild(
+                    engine: try makeEngineOverride(modelId, engineKVBytesCapacity),
+                    kvBackendKind: .contiguous,
+                    kvBackendFallbackReason: nil)
+            }
         } else {
             makeEngine = {
                 // VLM slot: extract the CBv2-adapted MLXLLM text model over
@@ -350,12 +383,19 @@ enum EngineV2SlotFactory {
                 } else {
                     servingModel = snapshot.model
                 }
-                return try EngineV2Factory.makeProductionEngine(
+                return try EngineV2Factory.makeProductionBuild(
                     model: servingModel,
                     tokenizer: tokenizer.inner,
                     kvBytesCapacity: engineKVBytesCapacity,
                     prefixCache: enginePrefixCache,
-                    maxConcurrentRequests: maxConcurrentRequests)
+                    maxConcurrentRequests: maxConcurrentRequests,
+                    kvBackend: kvBackendSelection,
+                    // Sizes the paged pool's per-group split
+                    // (`nominalMaxSequenceLength`); 0/unknown → factory
+                    // default.
+                    maxContextLength: sizing.maxContextLength > 0
+                        ? sizing.maxContextLength : nil,
+                    environment: environment)
             }
         }
 

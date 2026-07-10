@@ -98,11 +98,23 @@ extension EngineV2Bridge {
         //                           inside the committed sum above — the
         //                           bridge does not split running/waiting)
         let budgetUsed = maxTokensPotential
+        // Physical backend truth binds the advertised capacity from below
+        // the admission ledger: on the PAGED backend a re-slice GROW moves
+        // only the ledger — the construction-fixed pool is what actually
+        // places pages, so advertising ledger tokens past pool truth would
+        // over-route into the capacity-requeue path. (Contiguous backends
+        // resize both ledgers together — the min is a no-op. 0 ⇒ unknown,
+        // e.g. an idle point-update snapshot — no bind.)
+        var boundedKVBytesCapacity = snapshot.kvBytesCapacity
+        if snapshot.kvBytesBackendCapacity > 0 {
+            boundedKVBytesCapacity = min(
+                boundedKVBytesCapacity, snapshot.kvBytesBackendCapacity)
+        }
         let reportedKVBytesCapacity: Int
         if let kvBytesBudgetClamp {
-            reportedKVBytesCapacity = min(snapshot.kvBytesCapacity, max(0, kvBytesBudgetClamp))
+            reportedKVBytesCapacity = min(boundedKVBytesCapacity, max(0, kvBytesBudgetClamp))
         } else {
-            reportedKVBytesCapacity = snapshot.kvBytesCapacity
+            reportedKVBytesCapacity = boundedKVBytesCapacity
         }
         let budgetMax: Int64 =
             kvBytesPerToken > 0 ? Int64(reportedKVBytesCapacity / kvBytesPerToken) : 0

@@ -51,11 +51,13 @@
 //
 // BACKEND NOTE: CBv2 multimodal prefill requires the CONTIGUOUS KV backend
 // (the paged backend cannot bind span attention masks and rejects at submit
-// with `CBv2MultimodalError.unsupportedBackend`). Production engines are
-// always built on `CBv2ContiguousKVBackend` (`EngineV2Factory
-// .makeProductionEngine`), so the rejection is unreachable there; if it
-// ever fires it maps to a deterministic 4xx via `multimodal_rejected:`
-// (see `EngineV2Translation.admissionErrorMessage`).
+// with `CBv2MultimodalError.unsupportedBackend`). The KV-backend gate
+// forces every VLM slot to contiguous (`EngineV2KVBackendPolicy
+// .applySlotVetoes` — paged serves TEXT slots only), so the rejection is
+// unreachable in production; if it ever fires it maps to a deterministic
+// 4xx via `multimodal_rejected:` (see
+// `EngineV2Translation.admissionErrorMessage`) and doubles as the loud
+// signal that the veto was bypassed.
 
 import Foundation
 import MLX

@@ -266,10 +266,12 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_PREFIX_CACHE_SSD` (v0.7.5): the SSD tier's kill switch
     /// must survive install/restart like the master gate — an operator who
     /// killed the default-on tier must not have it silently revive on the
-    /// next launchd start.
+    /// next launchd start. `DARKBLOOM_CBV2_PAGED_KV`: same rationale for
+    /// the paged KV backend's fleet kill switch (default-ON for GPT-OSS
+    /// slots — see `EngineV2KVBackendPolicy`).
     static let passthroughEnvKeys = [
         "DARKBLOOM_PREFIX_CACHE", "DARKBLOOM_PREFIX_CACHE_SSD",
-        "DARKBLOOM_MLX_RESOURCE_DEBUG",
+        "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
     ]
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,

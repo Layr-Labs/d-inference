@@ -447,7 +447,15 @@ extension ProviderLoop {
                 kvBudget: kvBudget,
                 prefixCacheBudgetBytes: carve.prefixCacheBudgetBytes,
                 emitTelemetry: hooks.emitTelemetry,
-                makeEngine: { try hookBuilder(modelId, carve.engineKVBytesCapacity) })
+                makeEngine: {
+                    // Scripted hook engines are backend-less stubs:
+                    // contiguous semantics (per-request shared-gate
+                    // reserves, resize-in-place re-slice).
+                    EngineV2Factory.ProductionBuild(
+                        engine: try hookBuilder(modelId, carve.engineKVBytesCapacity),
+                        kvBackendKind: .contiguous,
+                        kvBackendFallbackReason: nil)
+                })
             // WARN once (per load) that kv_quant is ignored on the v2 path
             // (fp16 caches are what the engine builds).
             if loopConfig.config.backend.kvQuant {
@@ -468,6 +476,8 @@ extension ProviderLoop {
                 maxConcurrentRequests: maxConcurrent,
                 kvBudget: kvBudget,
                 kvQuantConfigured: loopConfig.config.backend.kvQuant,
+                kvBackendConfig: loopConfig.config.backend.engineV2KVBackend,
+                kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
                 // SSD-tier metadata binding: the verified hash for the bytes
                 // this slot loaded (nil ⇒ model-id binding degradation).
                 weightHash: liveModelHashes[modelId],
@@ -485,9 +495,12 @@ extension ProviderLoop {
             logger.info(
                 "engine_v2: serving \(modelId) via ContinuousBatchingV2 "
                     + "(vlm routing: text→v2, media→v2 multimodal prefill "
-                    + "(image+video, fail-loud))")
+                    + "(image+video, fail-loud)) "
+                    + "[kv=\(bridge.kvBackendKind.rawValue)]")
         } else {
-            logger.info("engine_v2: serving \(modelId) via ContinuousBatchingV2")
+            logger.info(
+                "engine_v2: serving \(modelId) via ContinuousBatchingV2 "
+                    + "[kv=\(bridge.kvBackendKind.rawValue)]")
         }
         return bridge
     }

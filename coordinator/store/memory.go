@@ -2630,6 +2630,28 @@ func (s *MemoryStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason
 	return true, nil
 }
 
+func (s *MemoryStore) ReopenStripeWithdrawalAfterSweepFailure(
+	id, sweepPayoutID, failureReason string,
+) (bool, error) {
+	if id == "" || sweepPayoutID == "" {
+		return false, errors.New("stripe withdrawal and sweep payout IDs are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w, ok := s.stripeWithdrawalsByID[id]
+	if !ok {
+		return false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+	}
+	if w.Status != "paid" || w.Refunded || w.SweepPayoutID != sweepPayoutID {
+		return false, nil
+	}
+	w.Status = "transferred"
+	w.SweepPayoutID = ""
+	w.FailureReason = failureReason
+	w.UpdatedAt = time.Now()
+	return true, nil
+}
+
 // ListStripeWithdrawalsBySweepPayoutID returns the rows stamped by the given
 // automatic sweep payout, oldest first.
 func (s *MemoryStore) ListStripeWithdrawalsBySweepPayoutID(sweepPayoutID string) ([]StripeWithdrawal, error) {

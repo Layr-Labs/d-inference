@@ -382,6 +382,10 @@ type BillingStore interface {
 	// overwritten back to sweep-eligible). Returns whether it was applied.
 	ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason string, feeRefunded bool) (bool, error)
 
+	// ReopenStripeWithdrawalAfterSweepFailure atomically reopens only a paid,
+	// non-refunded row still attributed to the failed sweep.
+	ReopenStripeWithdrawalAfterSweepFailure(id, sweepPayoutID, failureReason string) (bool, error)
+
 	// ListStripeWithdrawalsBySweepPayoutID returns the withdrawals a given
 	// automatic sweep payout claimed (SweepPayoutID stamp). Used to reopen
 	// exactly those rows when the sweep later bounces.

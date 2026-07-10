@@ -435,11 +435,12 @@ func (s *Server) reopenSweepBouncedRows(pe *billing.PayoutEvent) error {
 		if wd.Status != "paid" || wd.Refunded {
 			continue
 		}
-		wd.Status = "transferred"
-		wd.SweepPayoutID = ""
-		wd.FailureReason = "sweep_payout_failed " + pe.FailureCode + ": " + pe.FailureReason +
+		failureReason := "sweep_payout_failed " + pe.FailureCode + ": " + pe.FailureReason +
 			" (payout " + pe.ID + "; next sweep will retry)"
-		if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
+		applied, err := s.billing.Store().ReopenStripeWithdrawalAfterSweepFailure(
+			wd.ID, pe.ID, failureReason,
+		)
+		if err != nil {
 			s.logger.Error("stripe connect webhook: sweep bounce reopen failed",
 				"error", err, "withdrawal_id", wd.ID)
 			if firstErr == nil {
@@ -447,7 +448,9 @@ func (s *Server) reopenSweepBouncedRows(pe *billing.PayoutEvent) error {
 			}
 			continue
 		}
-		reopened++
+		if applied {
+			reopened++
+		}
 	}
 	s.logger.Warn("stripe connect webhook: sweep payout failed — will retry on next schedule",
 		"stripe_account_id", pe.ConnectedAcct, "payout_id", pe.ID,

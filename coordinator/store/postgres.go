@@ -4212,6 +4212,12 @@ func creditWithdrawableReferenceTx(
 	amount int64,
 	reference string,
 ) (bool, error) {
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1))`,
+		string(LedgerRefund)+":"+reference,
+	); err != nil {
+		return false, fmt.Errorf("store: lock reversal refund reference: %w", err)
+	}
 	var exists bool
 	if err := tx.QueryRow(ctx,
 		`SELECT EXISTS (
@@ -4271,6 +4277,45 @@ func (s *PostgresStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReas
 	applied := tag.RowsAffected() > 0
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("store: commit reopen stripe withdrawal: %w", err)
+	}
+	return applied, nil
+}
+
+func (s *PostgresStore) ReopenStripeWithdrawalAfterSweepFailure(
+	id, sweepPayoutID, failureReason string,
+) (bool, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return false, err
+	}
+	if id == "" || sweepPayoutID == "" {
+		return false, errors.New("stripe withdrawal and sweep payout IDs are required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("store: begin reopen sweep withdrawal: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx,
+		`UPDATE stripe_withdrawals
+		 SET status = 'transferred', sweep_payout_id = '',
+		     failure_reason = $3, updated_at = NOW()
+		 WHERE id = $1
+		   AND sweep_payout_id = $2
+		   AND status = 'paid'
+		   AND refunded = FALSE`,
+		id, sweepPayoutID, failureReason,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: reopen sweep withdrawal: %w", err)
+	}
+	applied := tag.RowsAffected() > 0
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("store: commit reopen sweep withdrawal: %w", err)
 	}
 	return applied, nil
 }

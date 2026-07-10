@@ -277,3 +277,9 @@ Ledger money mutations used by HTTP go through `*_fenced` wrappers that call
 ownership checks remain, but a forgotten check cannot move money after an
 epoch steal — the ledger itself refuses with `OwnershipLost`.
 
+### Live SE signature on disposition (DECISIONS #57)
+
+Live `provider_terminal.se_signature` is persisted on the terminal disposition
+via `record_bound`. Replay ingest with a mismatched SE signature returns
+`disposition=conflict` (never settled ACK).
+

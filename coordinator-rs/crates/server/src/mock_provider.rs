@@ -22,6 +22,8 @@ pub struct MockCompletion {
     pub reserved: MicroUsd,
     pub charged: MicroUsd,
     pub terminal_digest: String,
+    /// Provider SE signature from live terminal (DECISIONS #57). Empty for mock.
+    pub se_signature: String,
     pub mode: String,
 }
 
@@ -108,6 +110,7 @@ pub fn complete_authorized_job(
         reserved,
         charged: MicroUsd(actual_charged),
         terminal_digest,
+        se_signature: String::new(),
         mode: mode.to_string(),
     })
 }

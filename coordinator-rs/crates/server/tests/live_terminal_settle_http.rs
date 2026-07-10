@@ -18,6 +18,7 @@ async fn live_terminal_valid_settles_and_conserves() {
     let state = pilot_app_state(true);
     let ledger = state.ledger.clone();
     let outbox = state.outbox.clone();
+    let terminals = state.terminals.clone();
     let hub = state.hub.clone();
 
     let mut ready = HashSet::new();
@@ -89,6 +90,7 @@ async fn live_terminal_valid_settles_and_conserves() {
                             "dispatch_nonce": v["dispatch_nonce"],
                             "request_digest": v["request_digest"],
                             "terminal_digest": "sha256:live-ok",
+                            "se_signature": "se-sig-live-ok",
                             "prompt_tokens": 2,
                             "completion_tokens": 5,
                             "outcome": "completed"
@@ -141,4 +143,33 @@ async fn live_terminal_valid_settles_and_conserves() {
     let payload: serde_json::Value = serde_json::from_str(&e.payload).unwrap();
     assert_eq!(payload["charged_micro_usd"], 50);
     assert_eq!(payload["terminal_digest"], "sha256:live-ok");
+
+    // SE signature persisted on disposition (DECISIONS #57) — wrong sig conflicts.
+    let mut terms = terminals.lock().await;
+    let ack = darkbloom_coordinator::ingest_terminal(
+        &mut terms,
+        darkbloom_coordinator::TerminalIngest {
+            job_id: String::new(),
+            attempt_id: "any".into(),
+            terminal_digest: "sha256:live-ok".into(),
+            lease_id: String::new(),
+            se_signature: "se-sig-attacker".into(),
+            outcome: String::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(ack["disposition"], "conflict");
+    let ack_ok = darkbloom_coordinator::ingest_terminal(
+        &mut terms,
+        darkbloom_coordinator::TerminalIngest {
+            job_id: String::new(),
+            attempt_id: "any".into(),
+            terminal_digest: "sha256:live-ok".into(),
+            lease_id: String::new(),
+            se_signature: "se-sig-live-ok".into(),
+            outcome: String::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(ack_ok["disposition"], "settled");
 }

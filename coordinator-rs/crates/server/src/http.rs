@@ -1181,6 +1181,11 @@ async fn chat_completions(
                             .into_response();
                     }
                 };
+                let se_signature = terminal
+                    .get("se_signature")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 // Pilot pricing: 10 µUSD per completion token until public price tables land.
                 let charged = (completion_tokens as i64) * 10;
                 // Stream: defer settle until after chunk checkpoint (DECISIONS #49).
@@ -1204,6 +1209,7 @@ async fn chat_completions(
                         reserved,
                         charged: darkbloom_core::MicroUsd(0),
                         terminal_digest: digest,
+                        se_signature: se_signature.clone(),
                         mode: "rust-live".into(),
                     }
                 } else {
@@ -1262,6 +1268,7 @@ async fn chat_completions(
                         reserved,
                         charged: darkbloom_core::MicroUsd(charged.max(0)),
                         terminal_digest: digest,
+                        se_signature,
                         mode: "rust-live".into(),
                     }
                 };
@@ -1416,7 +1423,7 @@ async fn chat_completions(
                             "settled",
                             Some(ack),
                             lease.as_str(),
-                            "", // mock/live SE signature lands with attestation wire-up
+                            &completion.se_signature,
                         );
                     }
                     {

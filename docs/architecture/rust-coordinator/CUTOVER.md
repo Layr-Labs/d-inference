@@ -651,3 +651,9 @@ Optional `accounts` allowlist scopes which tenants are cleared (`scoped_ready`
 vs global `ready`). Concurrent cutover-drain-all calls and deposits racing the
 drain conserve balances. Idempotent when already quiescent (`rounds_run=0`).
 
+### CLI demo-cutover-drain-all (DECISIONS #117)
+
+`recovery --demo-cutover-drain-all --confirm-same-release` dry-runs a
+multi-account adopt→recover/force-settle loop then outbox drain, restoring
+each tenant balance.
+

@@ -587,6 +587,25 @@ impl PostgresLedgerStub {
         SELECT job_id, prev_epoch FROM adopt
         "#
     }
+
+    /// Bulk adopt: rebind all non-disposed jobs for the current holder (DECISIONS #72).
+    /// Parameters: $1 new_fencing_epoch, $2 holder
+    pub fn adopt_all_fencing_epoch_sql() -> &'static str {
+        r#"
+        WITH own AS (
+          SELECT 1 FROM rust_coord.coordinator_ownership
+          WHERE holder = $2 AND fencing_epoch = $1::bigint
+          FOR UPDATE
+        ), adopt AS (
+          UPDATE rust_coord.inference_jobs j
+          SET coordinator_epoch = $1::bigint
+          WHERE EXISTS (SELECT 1 FROM own)
+            AND (j.terminal_disposition IS NULL OR j.terminal_disposition = '')
+          RETURNING j.job_id, j.coordinator_epoch
+        )
+        SELECT job_id, coordinator_epoch FROM adopt
+        "#
+    }
 }
 
 #[cfg(test)]
@@ -734,6 +753,18 @@ mod tests {
         assert!(sql.contains("prev_epoch"));
         assert!(!sql.contains("balances"));
         assert!(!sql.contains("UPDATE balances"));
+    }
+
+    #[test]
+    fn adopt_all_fencing_epoch_sql_bulk_rebinds() {
+        let sql = PostgresLedgerStub::adopt_all_fencing_epoch_sql();
+        assert!(sql.contains("rust_coord.inference_jobs"));
+        assert!(sql.contains("rust_coord.coordinator_ownership"));
+        assert!(sql.contains("coordinator_epoch = $1"));
+        assert!(sql.contains("holder = $2"));
+        assert!(sql.contains("FOR UPDATE"));
+        assert!(sql.contains("terminal_disposition IS NULL"));
+        assert!(!sql.contains("balances"));
     }
 
     #[test]

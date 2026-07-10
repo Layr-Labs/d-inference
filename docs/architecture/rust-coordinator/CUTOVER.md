@@ -375,3 +375,9 @@ ledger internals.
 list) to the current fencing epoch. Quiescence remains readable without
 ownership and lists `active_job_ids` for discovery after steal.
 
+### Wait-steal adopt-force-settle e2e (DECISIONS #73)
+
+After ownership steal during `wait_terminal`, ops discover the orphan via
+quiescence `active_job_ids`, bulk-adopt, then force-settle. SQL:
+`adopt_all_fencing_epoch_sql`.
+

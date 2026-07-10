@@ -384,4 +384,26 @@ mod tests {
             Err(LedgerError::Conflict(_))
         ));
     }
+
+    #[test]
+    fn settle_same_job_digest_replay_is_idempotent() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0);
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        assert!(led
+            .settle(OperationKey("s".into()), "j", "a", 400_000, "d1")
+            .unwrap());
+        // Same op key + same digest → idempotent false.
+        assert!(!led
+            .settle(OperationKey("s".into()), "j", "a", 400_000, "d1")
+            .unwrap());
+        // Different op key but same digest+job → still idempotent (digest bound to job).
+        assert!(!led
+            .settle(OperationKey("s2".into()), "j", "a", 400_000, "d1")
+            .unwrap());
+        // reserved 1M, charged 400k → refund 600k → bal = 5M-1M+600k = 4.6M
+        assert_eq!(led.balance("a").0, 4_600_000);
+    }
 }

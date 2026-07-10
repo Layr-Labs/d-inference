@@ -266,4 +266,24 @@ mod tests {
         assert!(!fleet.apply_model_ready("p", "m2", 5));
         assert!(!fleet.providers["p"].ready_models.contains("m2"));
     }
+
+    #[test]
+    fn data_lane_full_excludes_provider() {
+        let mut fleet = FleetState::default();
+        let mut p = base("full", "m", 10.0);
+        p.data_lane_full = true;
+        fleet.upsert(p);
+        fleet.upsert(base("ok", "m", 50.0));
+        let decision = fleet.admit(&AdmitRequest {
+            model: "m".into(),
+            attempt: AttemptId::new("a"),
+            exclude_providers: HashSet::new(),
+            require_tools: false,
+            permit_ttl: Duration::from_secs(2),
+        });
+        match decision {
+            AdmissionDecision::Prepare(p) => assert_eq!(p.provider_id, "ok"),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
 }

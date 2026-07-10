@@ -872,3 +872,16 @@ MemoryLedger `settle_as_inner` stores the clamped `charge` on
 `OperationRecord.amount` (not the raw actual). `force_settled` rows omit
 `billable_cap` — matching `force_settle_sql` / `settle_capped_sql`.
 
+### Resize fail drops money_fx before release (DECISIONS #149)
+
+Chat `resize_and_authorize` holds `money_fx` only for the resize call.
+On failure, `release_job_with_outbox` re-acquires `money_fx` — tokio
+Mutex is not reentrant, so a surrounding hold would deadlock and leave
+funds reserved forever.
+
+### Settle disposed unclaims op (DECISIONS #150)
+
+`settle_as_inner` calls `unclaim_op` when the job is already disposed so
+a no-op settle does not permanently bind the operation key (SQL guard
+never inserts an op for disposed jobs).
+

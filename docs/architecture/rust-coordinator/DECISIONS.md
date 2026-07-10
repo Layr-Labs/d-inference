@@ -155,6 +155,8 @@ Date: 2026-07-10
 | 146 | Chat reserve under money_fx | Chat path holds `money_fx` across `reserve_with_epoch` and `resize_and_authorize_fenced` |
 | 147 | Outbox-drain ready under money_fx | Final outbox-drain `ready` snapshot holds `money_fx` (quiescence parity) so settle cannot race a false ready |
 | 148 | Settle/force op stores clamped charge | MemoryLedger capped settle/force_settle records `charge` (not raw actual); force_settle billable_cap=None (SQL parity) |
+| 149 | Resize fail drops money_fx before release | Chat resize+authorize scopes `money_fx` so `release_job_with_outbox` can re-acquire (tokio Mutex not reentrant) |
+| 150 | Settle disposed unclaims op | `settle_as_inner` unclaims the op key on disposed no-op so the key is not poisoned |
 
 ## Deleted Go mechanisms (do not port)
 

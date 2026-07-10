@@ -1,8 +1,8 @@
 //! Socket-level test support for the `net_*` suites: a real server on an
-//! ephemeral port (through the SHIPPED `darkbloom_server::serve` loop), a
-//! raw TCP HTTP/1.1 client (no client library — the tests must observe the
-//! exact bytes and timing on the wire), and the v2 provider-script helpers
-//! shared with the chat suites.
+//! ephemeral port (through the SHIPPED `darkbloom_server::serve` loop) and
+//! a raw TCP HTTP/1.1 client (no client library — the tests must observe
+//! the exact bytes and timing on the wire). The v2 provider-script helpers
+//! shared with the chat suites live in `http_support/mod.rs`.
 
 #![allow(dead_code)]
 
@@ -10,23 +10,11 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use axum::Router;
-use bytes::Bytes;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
-use darkbloom_core::ids::LeaseId;
-use darkbloom_protocol::json_v2::{
-    self, ExecutionFacts, FrameV2, PrepareFrame, PreparedFrame, RequestScope, ResourceFacts,
-    RollingHashCheckpoint, TerminalFrame, TerminalUsage,
-};
-use darkbloom_server::contracts::{AttemptEvent, ControlFrame, DataFrame};
 use darkbloom_server::serve::{serve, ServeOptions};
-
-/// Private (NOT `pub`) so the glob imports of this module and the shared
-/// harness never collide on the name.
-const CONCRETE_MODEL: &str = "gemma-4-26b-4bit";
 
 // ---------------------------------------------------------------------
 // Real server on an ephemeral port
@@ -208,89 +196,4 @@ pub fn dechunk(body: &[u8]) -> Option<Vec<u8>> {
         }
         rest = &rest[size + 2..];
     }
-}
-
-// ---------------------------------------------------------------------
-// v2 provider-script helpers (mirrors http_chat.rs)
-// ---------------------------------------------------------------------
-
-pub fn expect_v2_prepare(frame: DataFrame) -> (PrepareFrame, Bytes) {
-    match frame {
-        DataFrame::V2Prepare { frame, binary_body } => match *frame {
-            FrameV2::Prepare(prepare) => (prepare, binary_body.expect("binary body present")),
-            other => panic!("expected prepare frame, got {}", other.type_str()),
-        },
-        other => panic!("expected v2 prepare data frame, got {other:?}"),
-    }
-}
-
-pub fn scope_with_lease(prepare: &PrepareFrame, lease: LeaseId) -> RequestScope {
-    RequestScope {
-        lease_id: Some(json_v2::LeaseId(*lease.as_bytes())),
-        ..prepare.scope
-    }
-}
-
-pub fn prepared_event(prepare: &PrepareFrame, lease: LeaseId, eta_ms: u64) -> AttemptEvent {
-    AttemptEvent::Prepared {
-        lease,
-        ttl: Duration::from_secs(30),
-        billable_prompt_tokens: 6,
-        queue_depth: 0,
-        prefill_can_start: true,
-        frame: Box::new(PreparedFrame {
-            scope: scope_with_lease(prepare, lease),
-            ttl_ms: 30_000,
-            billable_input_tokens: 6,
-            resource: ResourceFacts::default(),
-            execution: ExecutionFacts {
-                engine_queue_depth: 0,
-                prefill_can_start: true,
-                predicted_first_content_ms: Some(eta_ms),
-            },
-        }),
-    }
-}
-
-pub fn completed_terminal(
-    scope: RequestScope,
-    provider: &str,
-    completion_tokens: u64,
-    sequence: u64,
-) -> TerminalFrame {
-    TerminalFrame {
-        scope,
-        provider_id: provider.to_owned(),
-        model_id: CONCRETE_MODEL.to_owned(),
-        origin_session_epoch: json_v2::SessionEpoch(1),
-        outcome: json_v2::TerminalOutcome::Completed,
-        error_class: None,
-        usage: TerminalUsage {
-            prompt_tokens: 6,
-            completion_tokens,
-            reasoning_tokens: 0,
-        },
-        generated_tokens: completion_tokens,
-        response_hash: json_v2::ResponseHash([7; 32]),
-        checkpoint: RollingHashCheckpoint {
-            sequence,
-            cumulative_completion_tokens: completion_tokens,
-            rolling_hash: json_v2::ResponseHash([8; 32]),
-        },
-        se_signature: "test-signature".to_owned(),
-    }
-}
-
-pub fn expect_control_start(frame: ControlFrame) -> RequestScope {
-    match frame {
-        ControlFrame::V2(f) => match *f {
-            FrameV2::Start(start) => start.scope,
-            other => panic!("expected start, got {}", other.type_str()),
-        },
-        other => panic!("expected v2 control frame, got {other:?}"),
-    }
-}
-
-pub fn new_lease() -> LeaseId {
-    LeaseId::new(Uuid::new_v4())
 }

@@ -12,10 +12,10 @@
 //! - provider WebSocket message/frame caps sized for sealed vision
 //!   payloads (32 MiB single-frame messages must pass).
 
-#[path = "http_harness.rs"]
-mod harness;
 #[path = "net_support/mod.rs"]
 mod net;
+#[path = "http_support/mod.rs"]
+mod support;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -26,8 +26,8 @@ use darkbloom_server::contracts::AttemptEvent;
 use darkbloom_server::http::{build_router_with, HttpConfig, ProviderConnectHandler};
 use darkbloom_server::serve::ServeOptions;
 
-use harness::*;
 use net::*;
+use support::*;
 
 // ---------------------------------------------------------------------
 // HTTP/1.1 keep-alive

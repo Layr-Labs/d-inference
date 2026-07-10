@@ -29,7 +29,7 @@
 //!   reported bound contribute 1), clamped to [1, 8]; 2 when no slots.
 //! - Authoritative fields (trust, freshness, lanes, permits, calibration,
 //!   presence) are placeholders here — the fleet overwrites them from live
-//!   state at admission (`fleet::admit::build_candidate`).
+//!   state at admission (`fleet::candidates::build_candidate`).
 
 use darkbloom_core::fleet::admission::CandidateSnapshot;
 use darkbloom_core::fleet::calibration::RatioPerMille;

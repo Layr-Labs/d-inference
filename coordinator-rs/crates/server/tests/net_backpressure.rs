@@ -10,10 +10,10 @@
 //! driver input channel, the consumer channel), so total acceptance before
 //! the cancel is a fixed budget — asserted here.
 
-#[path = "http_harness.rs"]
-mod harness;
 #[path = "net_support/mod.rs"]
 mod net;
+#[path = "http_support/mod.rs"]
+mod support;
 
 use std::time::Duration;
 
@@ -21,8 +21,8 @@ use darkbloom_protocol::json_v2::FrameV2;
 use darkbloom_server::contracts::{AttemptEvent, ChunkFrame, ControlFrame, PipeError};
 use darkbloom_server::serve::ServeOptions;
 
-use harness::*;
 use net::*;
+use support::*;
 
 /// Generous ceiling on bytes the coordinator may accept from the provider
 /// after the client stalls: chunk pipe (128 KiB) + driver input channel +

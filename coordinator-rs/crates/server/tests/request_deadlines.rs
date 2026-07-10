@@ -4,8 +4,8 @@
 //! a silent funded attempt. Driven against `request_task::run` directly
 //! with real timers (the pinned workspace tokio lacks `test-util`) and generous assertion margins.
 
-#[path = "http_harness.rs"]
-mod harness;
+#[path = "http_support/mod.rs"]
+mod support;
 
 use std::time::Duration;
 
@@ -21,7 +21,7 @@ use darkbloom_protocol::json_v2::{
 use darkbloom_server::contracts::{AttemptEvent, ChunkFrame, ControlFrame, DataFrame, ProtocolGen};
 use darkbloom_server::request_task::{self, ConsumerEvent, NormalizedRequest};
 
-use harness::*;
+use support::*;
 
 fn normalized(h: &Harness, consumer: mpsc::Sender<ConsumerEvent>) -> NormalizedRequest {
     NormalizedRequest {

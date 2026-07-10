@@ -13,7 +13,7 @@ use darkbloom_core::ids::ProviderId;
 use crate::contracts::{FleetCommand, FleetReceivers, HeartbeatUpdate};
 
 use super::state::{now_ms, FleetState};
-use super::{admit, connect, observe};
+use super::{admit, connect, observe, permits};
 
 pub(crate) struct Actor {
     state: FleetState,
@@ -64,7 +64,7 @@ impl Actor {
         match cmd {
             FleetCommand::Admit { req, reply } => admit::handle_admit(&mut self.state, req, reply),
             FleetCommand::ReleasePermit { provider, permit } => {
-                admit::handle_release(&mut self.state, provider, permit);
+                permits::handle_release(&mut self.state, provider, permit);
             }
             FleetCommand::Connect {
                 registration,

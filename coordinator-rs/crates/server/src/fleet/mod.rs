@@ -3,14 +3,14 @@
 //!
 //! The actor owns (single-threaded inside the task — no locks):
 //!
-//! - the provider map keyed by stable [`ProviderId`]: current session epoch
-//!   and [`SessionHandle`], trust state with monotonic [`TrustEpoch`]
-//!   fencing (plan §9.1.6), the canonical revision-fenced
-//!   [`ProviderModelPresence`] (plan §10.7), the latest advisory
-//!   [`CandidateSnapshot`] from heartbeats, and per (provider, model)
-//!   [`HealthState`] machines (plan §11.6);
-//! - the fleet-wide [`PermitBook`] (plan §9.2.10, §11.3);
-//! - the [`CalibrationTable`] per (model, hardware class) (plan §11.4).
+//! - the provider map keyed by stable `ProviderId`: current session epoch
+//!   and [`SessionHandle`](crate::contracts::SessionHandle), trust state
+//!   with monotonic `TrustEpoch` fencing (plan §9.1.6), the canonical
+//!   revision-fenced `ProviderModelPresence` (plan §10.7), the latest
+//!   advisory `CandidateSnapshot` from heartbeats, and per (provider, model)
+//!   `HealthState` machines (plan §11.6);
+//! - the fleet-wide `PermitBook` (plan §9.2.10, §11.3);
+//! - the `CalibrationTable` per (model, hardware class) (plan §11.4).
 //!
 //! All decision logic is `darkbloom_core::fleet` — this module only owns the
 //! mutable maps and reduces commands/observations into them. Mailbox
@@ -20,10 +20,10 @@
 //!
 //! # Permit identity
 //!
-//! The fleet MINTS every [`PermitId`] ([`permit_id_for`]) and carries it on
-//! [`contracts::AdmitGrant::permit_id`]; the request task echoes exactly
-//! that id in `FleetCommand::ReleasePermit`. No other component derives
-//! permit ids.
+//! The fleet MINTS every `PermitId` ([`permit_id_for`]) and carries it on
+//! [`contracts::AdmitGrant::permit_id`](crate::contracts::AdmitGrant); the
+//! request task echoes exactly that id in `FleetCommand::ReleasePermit`. No
+//! other component derives permit ids.
 //!
 //! # Hedge budget (plan §11.8)
 //!
@@ -32,113 +32,32 @@
 //! fires and tokens are acquired/refunded. The fleet keeps NO hedge
 //! accounting; it only enforces per-provider permits and lane headroom for
 //! hedge dispatches like any other admission.
+//!
+//! Module layout: [`actor`] (the select loop), [`admit`] (the admission
+//! operation), [`candidates`] (candidate assembly), [`permits`] (permit
+//! minting/release), [`connect`] (connect/disconnect/supersede),
+//! [`observe`] (health observations + heartbeats), [`state`] (the owned
+//! maps), [`types`] (config/runtime/provider-state shapes).
 
 mod actor;
 mod admit;
+mod candidates;
 mod connect;
 mod observe;
+mod permits;
 mod state;
+mod types;
 
-use std::time::Duration;
-
-use tokio_util::sync::CancellationToken;
-
-use darkbloom_core::fleet::admission::AdmissionConfig;
-use darkbloom_core::fleet::calibration::CalibrationConfig;
-use darkbloom_core::fleet::health::HealthConfig;
-use darkbloom_core::fleet::model_presence::ProviderModelPresence;
 use darkbloom_core::fleet::permits::PermitBook;
-#[allow(unused_imports)] // doc links
-use darkbloom_core::fleet::{
-    admission::CandidateSnapshot, calibration::CalibrationTable, health::HealthState,
-};
-use darkbloom_core::ids::{PermitId, ProviderId, TrustEpoch};
 
-use crate::contracts::{self, FleetReceivers, SessionHandle, SharedCatalog};
+pub use permits::permit_id_for;
+pub use types::{FleetConfig, FleetRuntime, FleetTunables, TrustFloor};
 
-pub use admit::permit_id_for;
 pub(crate) use state::{
     HW_CLASS_CAPABILITY_PREFIX, SUPPORTS_MEDIA_CAPABILITY, SUPPORTS_TOOLS_CAPABILITY,
     SUPPORTS_VISION_CAPABILITY,
 };
-
-/// Trust level required for routing eligibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrustFloor {
-    /// Local-dev only: every connected provider is routable and challenge
-    /// freshness is not enforced.
-    AllowUntrusted,
-    /// Pilot default: a verified Secure Enclave attestation (`self_signed`)
-    /// or better, with fresh challenge evidence.
-    SelfSigned,
-}
-
-/// Actor tunables with pilot defaults.
-#[derive(Debug, Clone)]
-pub struct FleetTunables {
-    pub trust_floor: TrustFloor,
-    /// How long a trust stamp satisfies the challenge-freshness hard gate
-    /// (challenges fire every ~5 min; default allows two missed rounds).
-    pub challenge_freshness: Duration,
-    pub health: HealthConfig,
-    pub calibration: CalibrationConfig,
-    /// `Connect` is rejected with `ConnectRejected::Capacity` beyond this.
-    pub max_providers: usize,
-    /// Outstanding-prepare bound used before the first heartbeat reports one.
-    pub default_max_outstanding_permits: u32,
-    /// Predicted first-content used before the first heartbeat reports one.
-    pub default_predicted_first_content_ms: u64,
-    /// Permit-expiry sweep and mailbox-depth metrics interval.
-    pub sweep_interval: Duration,
-}
-
-impl Default for FleetTunables {
-    fn default() -> Self {
-        Self {
-            trust_floor: TrustFloor::SelfSigned,
-            challenge_freshness: Duration::from_secs(15 * 60),
-            health: HealthConfig::default(),
-            calibration: CalibrationConfig::default(),
-            max_providers: 10_000,
-            default_max_outstanding_permits: 2,
-            default_predicted_first_content_ms: 1_000,
-            sweep_interval: Duration::from_secs(1),
-        }
-    }
-}
-
-/// Everything `spawn` needs. The receivers come from
-/// [`contracts::fleet_channels`]; the matching [`contracts::FleetHandle`]
-/// stays with the caller.
-pub struct FleetConfig {
-    pub receivers: FleetReceivers,
-    pub admission: AdmissionConfig,
-    pub catalog: SharedCatalog,
-    pub cancel: CancellationToken,
-    pub tunables: FleetTunables,
-}
-
-/// Handle to the running actor task.
-pub struct FleetRuntime {
-    handle: tokio::task::JoinHandle<()>,
-    cancel: CancellationToken,
-}
-
-impl FleetRuntime {
-    /// Cooperative shutdown: cancels the actor and joins it. Dropping every
-    /// provider [`SessionHandle`] fences the live sessions (their lanes
-    /// close), which is the supervisor's going-away trigger (plan §15.1).
-    pub async fn shutdown(self) {
-        self.cancel.cancel();
-        let _ = self.handle.await;
-    }
-
-    /// The token that stops the actor (shared with [`FleetConfig::cancel`]).
-    #[must_use]
-    pub fn cancellation_token(&self) -> &CancellationToken {
-        &self.cancel
-    }
-}
+pub(crate) use types::{PermitMeta, PermitMetaMap, ProviderEntry, TrustState};
 
 /// Spawns the single fleet actor task (plan §7.3: do not shard).
 #[must_use]
@@ -165,56 +84,3 @@ pub fn spawn(cfg: FleetConfig) -> FleetRuntime {
     let handle = tokio::spawn(actor.run());
     FleetRuntime { handle, cancel }
 }
-
-/// Trust as the fleet tracks it: the latest epoch-fenced verdict plus the
-/// stamp used for the challenge-freshness gate.
-#[derive(Debug, Clone)]
-pub(crate) struct TrustState {
-    pub epoch: TrustEpoch,
-    pub verdict: contracts::TrustVerdict,
-    /// Set on every non-`Untrusted` verdict; the freshness gate compares it
-    /// against [`FleetTunables::challenge_freshness`].
-    pub stamped_at_ms: Option<i64>,
-}
-
-impl Default for TrustState {
-    fn default() -> Self {
-        Self {
-            epoch: TrustEpoch::new(0),
-            verdict: contracts::TrustVerdict::Untrusted {
-                reason: "never verified".to_owned(),
-            },
-            stamped_at_ms: None,
-        }
-    }
-}
-
-/// One provider's live state. Trust, health, and the epoch high-water mark
-/// survive disconnects; session, presence, and advisory state are per-epoch.
-#[derive(Default)]
-pub(crate) struct ProviderEntry {
-    pub last_epoch: darkbloom_core::ids::SessionEpoch,
-    pub session: Option<SessionHandle>,
-    pub registration: Option<contracts::RegistrationSummary>,
-    pub hardware_class: Option<darkbloom_core::ids::HardwareClass>,
-    pub trust: TrustState,
-    pub presence: ProviderModelPresence,
-    pub advisory: Option<state::AdvisoryState>,
-    pub health: std::collections::BTreeMap<
-        darkbloom_core::ids::ModelId,
-        darkbloom_core::fleet::health::HealthState,
-    >,
-    pub security: darkbloom_core::fleet::health::SecurityFence,
-}
-
-/// Metadata for one outstanding permit, kept so release/expiry can resolve
-/// half-open probes and per-provider cleanup.
-#[derive(Debug, Clone)]
-pub(crate) struct PermitMeta {
-    pub provider: ProviderId,
-    pub model: darkbloom_core::ids::ModelId,
-    pub is_probe: bool,
-}
-
-/// Outstanding-permit metadata index, keyed by the minted [`PermitId`].
-pub(crate) type PermitMetaMap = std::collections::HashMap<PermitId, PermitMeta>;

@@ -1,10 +1,13 @@
 //! Shared integration-test harness: fakes for every frozen seam
 //! (`contracts.rs`) — an in-memory recording ledger, a static API-key
-//! store, a scripted fleet actor, and provider simulators that drain real
-//! session channels. No real database, no real fleet, no real sockets.
+//! store, a scripted fleet actor, provider simulators that drain real
+//! session channels, and the v2 provider-script helpers shared by the
+//! chat/deadline/net suites. No real database, no real fleet, no real
+//! sockets.
 //!
-//! Included from `http_*.rs` / `request_*.rs` test crates via
-//! `#[path = "http_harness.rs"] mod harness;`.
+//! Included from `http_*.rs` / `request_*.rs` / `net_*.rs` test crates via
+//! `#[path = "http_support/mod.rs"] mod support;`. Each crate uses a
+//! subset of the helpers — hence the dead-code allowance.
 
 #![allow(dead_code)]
 
@@ -21,19 +24,23 @@ use uuid::Uuid;
 
 use darkbloom_core::fleet::admission::AdmissionConfig;
 use darkbloom_core::ids::{
-    AccountId, ApiKeyId, CoordinatorEpoch, JobId, PermitId, ProviderId, SessionEpoch,
+    AccountId, ApiKeyId, CoordinatorEpoch, JobId, LeaseId, PermitId, ProviderId, SessionEpoch,
 };
 use darkbloom_core::money::MicroUsd;
 use darkbloom_core::settlement::MicroUsdPerMTokens;
 use darkbloom_core::time::{DurationMs, TimestampMs};
 use darkbloom_protocol::crypto::nacl_box::{self, PublicKey, SecretKey, NONCE_LEN};
+use darkbloom_protocol::json_v2::{
+    self, ExecutionFacts, FrameV2, PrepareFrame, PreparedFrame, RequestScope, ResourceFacts,
+    RollingHashCheckpoint, TerminalFrame, TerminalUsage,
+};
 
 use darkbloom_server::contracts::{
     fleet_channels, session_channels, AdmitGrant, AdmitOutcome, AdmitRequest, ApiKeyRecord,
-    ApiKeyStore, AppState, CatalogSnapshot, ControlFrame, CoordinatorKeys, DataFrame, FleetCommand,
-    FleetObservation, LedgerError, LedgerFacade, PriceCard, ProtocolGen, ReleaseParams,
-    RequestPolicy, ReserveOutcome, ReserveParams, ResizeFreezeParams, SessionCommand,
-    SessionHandle, SessionLaneCaps, SessionReceivers, SettleOutcome, SettleParams,
+    ApiKeyStore, AppState, AttemptEvent, CatalogSnapshot, ControlFrame, CoordinatorKeys, DataFrame,
+    FleetCommand, FleetObservation, LedgerError, LedgerFacade, PriceCard, ProtocolGen,
+    ReleaseParams, RequestPolicy, ReserveOutcome, ReserveParams, ResizeFreezeParams,
+    SessionCommand, SessionHandle, SessionLaneCaps, SessionReceivers, SettleOutcome, SettleParams,
 };
 use darkbloom_server::http::{build_router_with, HttpConfig};
 use darkbloom_server::request_task::{shared_hedge_budget, RequestTaskDeps};
@@ -624,4 +631,129 @@ pub fn role_preamble_chunk() -> String {
     format!(
         r#"{{"id":"chatcmpl-p","object":"chat.completion.chunk","model":"{CONCRETE_MODEL}","choices":[{{"delta":{{"role":"assistant"}},"finish_reason":null}}]}}"#
     )
+}
+
+// ---------------------------------------------------------------------
+// v2 provider-script helpers (shared by the chat, deadline, and net
+// suites)
+// ---------------------------------------------------------------------
+
+/// Polls `condition` for up to 5s (10ms cadence), panicking on timeout.
+pub async fn wait_until(mut condition: impl FnMut() -> bool) {
+    for _ in 0..500 {
+        if condition() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("condition not reached within 5s");
+}
+
+pub fn expect_v2_prepare(frame: DataFrame) -> (PrepareFrame, Bytes) {
+    match frame {
+        DataFrame::V2Prepare { frame, binary_body } => match *frame {
+            FrameV2::Prepare(prepare) => (prepare, binary_body.expect("binary body present")),
+            other => panic!("expected prepare frame, got {}", other.type_str()),
+        },
+        other => panic!("expected v2 prepare data frame, got {other:?}"),
+    }
+}
+
+pub fn scope_with_lease(prepare: &PrepareFrame, lease: LeaseId) -> RequestScope {
+    RequestScope {
+        lease_id: Some(json_v2::LeaseId(*lease.as_bytes())),
+        ..prepare.scope
+    }
+}
+
+pub fn prepared_event(prepare: &PrepareFrame, lease: LeaseId, eta_ms: u64) -> AttemptEvent {
+    AttemptEvent::Prepared {
+        lease,
+        ttl: Duration::from_secs(30),
+        billable_prompt_tokens: 6,
+        queue_depth: 0,
+        prefill_can_start: true,
+        frame: Box::new(PreparedFrame {
+            scope: scope_with_lease(prepare, lease),
+            ttl_ms: 30_000,
+            billable_input_tokens: 6,
+            resource: ResourceFacts::default(),
+            execution: ExecutionFacts {
+                engine_queue_depth: 0,
+                prefill_can_start: true,
+                predicted_first_content_ms: Some(eta_ms),
+            },
+        }),
+    }
+}
+
+pub fn completed_terminal(
+    scope: RequestScope,
+    provider: &str,
+    completion_tokens: u64,
+    sequence: u64,
+) -> TerminalFrame {
+    TerminalFrame {
+        scope,
+        provider_id: provider.to_owned(),
+        model_id: CONCRETE_MODEL.to_owned(),
+        origin_session_epoch: json_v2::SessionEpoch(1),
+        outcome: json_v2::TerminalOutcome::Completed,
+        error_class: None,
+        usage: TerminalUsage {
+            prompt_tokens: 6,
+            completion_tokens,
+            reasoning_tokens: 0,
+        },
+        generated_tokens: completion_tokens,
+        response_hash: json_v2::ResponseHash([7; 32]),
+        checkpoint: RollingHashCheckpoint {
+            sequence,
+            cumulative_completion_tokens: completion_tokens,
+            rolling_hash: json_v2::ResponseHash([8; 32]),
+        },
+        se_signature: "test-signature".to_owned(),
+    }
+}
+
+pub fn cancelled_terminal(
+    scope: RequestScope,
+    provider: &str,
+    claimed_completion: u64,
+) -> TerminalFrame {
+    TerminalFrame {
+        scope,
+        provider_id: provider.to_owned(),
+        model_id: CONCRETE_MODEL.to_owned(),
+        origin_session_epoch: json_v2::SessionEpoch(1),
+        outcome: json_v2::TerminalOutcome::Cancelled,
+        error_class: Some(json_v2::ErrorClass::Cancelled),
+        usage: TerminalUsage {
+            prompt_tokens: 6,
+            completion_tokens: claimed_completion,
+            reasoning_tokens: 0,
+        },
+        generated_tokens: claimed_completion,
+        response_hash: json_v2::ResponseHash([7; 32]),
+        checkpoint: RollingHashCheckpoint {
+            sequence: claimed_completion,
+            cumulative_completion_tokens: claimed_completion,
+            rolling_hash: json_v2::ResponseHash([8; 32]),
+        },
+        se_signature: "test-signature".to_owned(),
+    }
+}
+
+pub fn expect_control_start(frame: ControlFrame) -> RequestScope {
+    match frame {
+        ControlFrame::V2(f) => match *f {
+            FrameV2::Start(start) => start.scope,
+            other => panic!("expected start, got {}", other.type_str()),
+        },
+        other => panic!("expected v2 control frame, got {other:?}"),
+    }
+}
+
+pub fn new_lease() -> LeaseId {
+    LeaseId::new(Uuid::new_v4())
 }

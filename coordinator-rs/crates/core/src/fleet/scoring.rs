@@ -26,11 +26,13 @@ use crate::time::DurationMs;
 
 /// Total estimated completion cost in milliseconds; lower is better.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Score(u64);
+pub(crate) struct Score(u64);
 
 impl Score {
+    /// Test-only accessor: production ranking compares `Score`s directly.
+    #[cfg(test)]
     #[must_use]
-    pub const fn millis(self) -> u64 {
+    pub(crate) const fn millis(self) -> u64 {
         self.0
     }
 }
@@ -63,7 +65,7 @@ impl Default for ScoringConfig {
 /// Per-candidate scoring inputs, assembled by admission from the advisory
 /// snapshot, the calibration table, and the permit book.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScoreInputs {
+pub(crate) struct ScoreInputs {
     /// Provider-estimated first-content latency (includes its own queue and
     /// prefill state — the single occupancy signal).
     pub predicted_first_content: DurationMs,
@@ -82,7 +84,7 @@ pub struct ScoreInputs {
 /// Compute one candidate's score. Pure saturating arithmetic: latency
 /// estimates saturate rather than error because they rank, not bill.
 #[must_use]
-pub fn score(inputs: &ScoreInputs, config: &ScoringConfig) -> Score {
+pub(crate) fn score(inputs: &ScoreInputs, config: &ScoringConfig) -> Score {
     let first_content = inputs.calibration.apply_to(inputs.predicted_first_content);
 
     let decode = if inputs.decode_tokens_per_sec == 0 {
@@ -120,7 +122,7 @@ pub fn score(inputs: &ScoreInputs, config: &ScoringConfig) -> Score {
 /// Ties are ordered by `ProviderId` before the seed picks, so the result is
 /// independent of input order.
 #[must_use]
-pub fn select_best(
+pub(crate) fn select_best(
     scored: &[(ProviderId, Score)],
     config: &ScoringConfig,
     tiebreak_seed: u64,

@@ -16,10 +16,10 @@
 //! The pre-fix posture (plain `axum::serve`) is measured too and printed
 //! for comparison; assertions run only against the shipped loop.
 
-#[path = "http_harness.rs"]
-mod harness;
 #[path = "net_support/mod.rs"]
 mod net;
+#[path = "http_support/mod.rs"]
+mod support;
 
 use std::time::{Duration, Instant};
 
@@ -27,8 +27,8 @@ use darkbloom_protocol::json_v2::FrameV2;
 use darkbloom_server::contracts::{AttemptEvent, ChunkFrame, ControlFrame};
 use darkbloom_server::serve::ServeOptions;
 
-use harness::*;
 use net::*;
+use support::*;
 
 const CHUNKS: usize = 40;
 const SEND_INTERVAL: Duration = Duration::from_millis(10);

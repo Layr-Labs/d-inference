@@ -205,6 +205,39 @@ async fn readyz_fails_without_ownership() {
 }
 
 #[tokio::test]
+async fn quiescence_reports_late_terminals_after_ingest() {
+    let state = test_state(true);
+    let app = router(state);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/admin/terminal-ingest")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "job_id": "j-late",
+                "attempt_id": "a-late",
+                "terminal_digest": "d-late"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(body_json(res).await["disposition"], "late");
+
+    let q = Request::builder()
+        .method("GET")
+        .uri("/v1/admin/quiescence")
+        .body(Body::empty())
+        .unwrap();
+    let res_q = app.oneshot(q).await.unwrap();
+    assert_eq!(res_q.status(), StatusCode::OK);
+    let v = body_json(res_q).await;
+    assert_eq!(v["late_terminals"], 1);
+    assert_eq!(v["ready"], true);
+}
+
+#[tokio::test]
 async fn quiescence_reports_ownership_and_empty_outbox() {
     let app = router(test_state(true));
     let req = Request::builder()

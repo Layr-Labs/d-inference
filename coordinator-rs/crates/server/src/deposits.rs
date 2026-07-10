@@ -161,4 +161,13 @@ mod tests {
         assert!(!inbox.contains("", "evt"));
         assert_eq!(led.balance("a").0, 0);
     }
+
+    #[test]
+    fn deposit_sql_is_idempotent_external_event() {
+        let sql = deposit_sql();
+        assert!(sql.contains("rust_coord.external_events"));
+        assert!(sql.contains("ON CONFLICT"));
+        assert!(sql.contains("balances"));
+        assert!(sql.contains("withdrawable_micro_usd"));
+    }
 }

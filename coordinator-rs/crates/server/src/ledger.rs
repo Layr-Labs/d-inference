@@ -30,6 +30,8 @@ pub enum LedgerError {
     OwnershipLost,
     #[error("conflict: {0}")]
     Conflict(String),
+    #[error("invalid amount")]
+    InvalidAmount,
 }
 
 /// In-memory ledger for unit tests and warm-plane development without Postgres.
@@ -72,6 +74,9 @@ impl MemoryLedger {
         account: &str,
         amount: i64,
     ) -> Result<ReserveResult, LedgerError> {
+        if amount <= 0 {
+            return Err(LedgerError::InvalidAmount);
+        }
         if !self.ops.insert(op.0.clone()) {
             let provenance = self
                 .jobs
@@ -171,6 +176,9 @@ impl MemoryLedger {
         actual: i64,
         terminal_digest: &str,
     ) -> Result<bool, LedgerError> {
+        if actual < 0 {
+            return Err(LedgerError::InvalidAmount);
+        }
         if let Some(prev) = self.terminals.get(terminal_digest) {
             // Idempotent only when replaying the same settled job digest.
             if prev == job_id {
@@ -546,5 +554,36 @@ mod tests {
         led.credit("a", 1_000_000, 0);
         led.credit("a", 500_000, 500_000);
         assert_eq!(led.balance("a"), (1_500_000, 500_000));
+    }
+
+    #[test]
+    fn reserve_rejects_zero_or_negative_amount() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 1_000_000, 0);
+        assert_eq!(
+            led.reserve(OperationKey("r0".into()), "j", "a", 0)
+                .unwrap_err(),
+            LedgerError::InvalidAmount
+        );
+        assert_eq!(
+            led.reserve(OperationKey("r-1".into()), "j", "a", -1)
+                .unwrap_err(),
+            LedgerError::InvalidAmount
+        );
+        assert_eq!(led.active_job_count(), 0);
+    }
+
+    #[test]
+    fn settle_rejects_negative_actual() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 1_000_000, 0);
+        led.reserve(OperationKey("r".into()), "j", "a", 100_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        assert_eq!(
+            led.settle(OperationKey("s".into()), "j", "a", -1, "d")
+                .unwrap_err(),
+            LedgerError::InvalidAmount
+        );
     }
 }

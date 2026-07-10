@@ -1,4 +1,5 @@
-//! Concurrent deposit with settle XOR settle_capped on reserved (force skipped).
+//! Concurrent deposit with settle/force/capped on reserved: force skips;
+//! settle and settle_capped refuse without start_authorized (DECISIONS #153).
 
 use darkbloom_coordinator::deposits::apply_stripe_deposit;
 use darkbloom_coordinator::external_events::ExternalEventInbox;
@@ -73,11 +74,12 @@ fn concurrent_deposit_with_3way_on_reserved_force_skips_conserves() {
     let capped_ok = capped.join().unwrap();
     assert!(deposited);
     assert!(!forced, "force requires start_authorized");
-    assert!(settled ^ capped_ok);
+    assert!(!settled, "settle requires start_authorized (DECISIONS #153)");
+    assert!(!capped_ok, "settle_capped requires start_authorized");
 
     let g = led.lock().unwrap();
-    // Seed 600k + deposit 90k = 690k. Charged 45k → free = 645k
-    assert_eq!(g.active_job_count(), 0);
-    assert_eq!(g.balance("a").0, 645_000);
-    assert_eq!(g.job_disposition("j"), Some("settled"));
+    // Seed 600k + deposit 90k - reserved 180k still held = 510k
+    assert_eq!(g.active_job_count(), 1);
+    assert_eq!(g.balance("a").0, 510_000);
+    assert!(g.job_disposition("j").is_none());
 }

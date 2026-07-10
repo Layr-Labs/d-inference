@@ -897,3 +897,10 @@ against `LEAST(...)` so identical op-key replay after dispose returns
 `release_sql` inserts outbox payloads with `jsonb_build_object` (same as
 settle/deposit CTEs), not `json_build_object(...)::text`.
 
+### Settle requires start_authorized (DECISIONS #153)
+
+`MemoryLedger::settle_as_inner` and `settle_sql` / `settle_capped_sql`
+require `funded_start` / `state = 'start_authorized'` before moving money —
+matching `force_settle_sql`. Reserved-only jobs must `release` or
+`resize_and_authorize` first; the op key is unclaimed on refusal.
+

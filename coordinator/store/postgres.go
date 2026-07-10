@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -37,7 +38,13 @@ type PostgresStore struct {
 	pool *pgxpool.Pool
 	// ownershipConn holds the process-wide coordinator advisory lock for the
 	// lifetime of this store. Losing/closing the connection releases authority.
-	ownershipConn *pgxpool.Conn
+	ownershipConn     *pgxpool.Conn
+	ownershipEnabled  bool
+	ownershipHealthy  atomic.Bool
+	ownershipLost     chan struct{}
+	ownershipStop     chan struct{}
+	ownershipDone     chan struct{}
+	ownershipLostOnce sync.Once
 
 	// In-memory cache for model prices. Keyed by "accountID:model".
 	// Eliminates a DB round trip on every inference request for
@@ -88,37 +95,51 @@ func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
 		pool:       pool,
 		priceCache: make(map[string]cachedPrice),
 	}
-	ownershipConn, err := pool.Acquire(ctx)
-	if err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("store: acquire coordinator ownership connection: %w", err)
+	if scfg.OwnershipEnabled {
+		ownershipConn, err := pool.Acquire(ctx)
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("store: acquire coordinator ownership connection: %w", err)
+		}
+		var ownsCoordinator bool
+		if err := ownershipConn.QueryRow(ctx,
+			`SELECT pg_try_advisory_lock(hashtextextended('darkbloom-coordinator-owner', 0))`,
+		).Scan(&ownsCoordinator); err != nil {
+			ownershipConn.Release()
+			pool.Close()
+			return nil, fmt.Errorf("store: acquire coordinator ownership lock: %w", err)
+		}
+		if !ownsCoordinator {
+			ownershipConn.Release()
+			pool.Close()
+			return nil, errors.New("store: coordinator ownership is already held by another process")
+		}
+		s.ownershipConn = ownershipConn
+		s.ownershipEnabled = true
+		s.ownershipHealthy.Store(true)
+		s.ownershipLost = make(chan struct{})
+		s.ownershipStop = make(chan struct{})
+		s.ownershipDone = make(chan struct{})
 	}
-	var ownsCoordinator bool
-	if err := ownershipConn.QueryRow(ctx,
-		`SELECT pg_try_advisory_lock(hashtextextended('darkbloom-coordinator-owner', 0))`,
-	).Scan(&ownsCoordinator); err != nil {
-		ownershipConn.Release()
-		pool.Close()
-		return nil, fmt.Errorf("store: acquire coordinator ownership lock: %w", err)
-	}
-	if !ownsCoordinator {
-		ownershipConn.Release()
-		pool.Close()
-		return nil, errors.New("store: coordinator ownership is already held by another process")
-	}
-	s.ownershipConn = ownershipConn
 	if err := s.migrate(ctx); err != nil {
-		ownershipConn.Release()
+		if s.ownershipConn != nil {
+			s.ownershipConn.Release()
+		}
 		pool.Close()
 		return nil, fmt.Errorf("store: run migrations: %w", err)
 	}
 
+	if s.ownershipEnabled {
+		go s.monitorOwnership()
+	}
 	return s, nil
 }
 
 // Close shuts down the connection pool.
 func (s *PostgresStore) Close() {
 	if s.ownershipConn != nil {
+		close(s.ownershipStop)
+		<-s.ownershipDone
 		_, _ = s.ownershipConn.Exec(
 			context.Background(),
 			`SELECT pg_advisory_unlock(hashtextextended('darkbloom-coordinator-owner', 0))`,
@@ -127,6 +148,42 @@ func (s *PostgresStore) Close() {
 		s.ownershipConn = nil
 	}
 	s.pool.Close()
+}
+
+func (s *PostgresStore) OwnershipLost() <-chan struct{} {
+	if !s.ownershipEnabled {
+		return nil
+	}
+	return s.ownershipLost
+}
+
+func (s *PostgresStore) ensureOwnership() error {
+	if s.ownershipEnabled && !s.ownershipHealthy.Load() {
+		return ErrOwnershipLost
+	}
+	return nil
+}
+
+func (s *PostgresStore) monitorOwnership() {
+	defer close(s.ownershipDone)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.ownershipStop:
+			return
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			var one int
+			err := s.ownershipConn.QueryRow(ctx, `SELECT 1`).Scan(&one)
+			cancel()
+			if err != nil || one != 1 {
+				s.ownershipHealthy.Store(false)
+				s.ownershipLostOnce.Do(func() { close(s.ownershipLost) })
+				return
+			}
+		}
+	}
 }
 
 // migrate runs the schema creation statements.
@@ -2689,6 +2746,9 @@ func creditWithdrawableTx(ctx context.Context, tx pgx.Tx, accountID string, amou
 
 // Credit adds micro-USD to an account and records a ledger entry (atomic).
 func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -2738,6 +2798,9 @@ func (s *PostgresStore) GetBalanceWithWithdrawable(accountID string) (int64, int
 // CreditWithdrawable adds micro-USD to both the total balance and the
 // withdrawable balance, and records a ledger entry.
 func (s *PostgresStore) CreditWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -2759,6 +2822,9 @@ func (s *PostgresStore) CreditWithdrawable(accountID string, amountMicroUSD int6
 // the reference serializes concurrent deliveries of the same webhook so the
 // existence check can't race its own insert.
 func (s *PostgresStore) CreditWithdrawableOnce(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) (bool, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return false, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -2793,6 +2859,9 @@ func (s *PostgresStore) CreditWithdrawableOnce(accountID string, amountMicroUSD 
 
 // Debit subtracts micro-USD from an account. Returns error if insufficient funds.
 func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -2903,6 +2972,9 @@ func (s *PostgresStore) MigrateAccountBalance(from, to string) (bool, error) {
 // is insufficient. This ensures withdrawal debits are symmetric with
 // CreditWithdrawable refunds — both touch the same columns.
 func (s *PostgresStore) DebitWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -3126,6 +3198,9 @@ func (s *PostgresStore) CreateBillingSession(session *BillingSession) error {
 }
 
 func (s *PostgresStore) SetBillingSessionExternalID(sessionID, externalID string) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	if externalID == "" {
 		return errors.New("external billing session ID is required")
 	}
@@ -3147,6 +3222,9 @@ func (s *PostgresStore) SetBillingSessionExternalID(sessionID, externalID string
 }
 
 func (s *PostgresStore) ApplyStripeDeposit(eventID, billingSessionID, checkoutSessionID, currency string, amountMicroUSD int64) (*StripeDepositResult, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return nil, err
+	}
 	if eventID == "" || checkoutSessionID == "" {
 		return nil, ErrStripeDepositMismatch
 	}
@@ -3690,6 +3768,9 @@ func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
 // withdrawal row. Returns ErrInsufficientBalance when the guarded debit
 // matches no row.
 func (s *PostgresStore) CreateStripeWithdrawalWithDebit(w *StripeWithdrawal, entryType LedgerEntryType, reference string) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	if w == nil || w.ID == "" {
 		return errors.New("stripe withdrawal id is required")
 	}
@@ -4579,6 +4660,9 @@ func (s *PostgresStore) SettleProviderPayout(id int64) error {
 // all in one round trip. The old implementation used 6 sequential round trips
 // (BEGIN + upsert + SELECT balance + INSERT ledger + INSERT earning + COMMIT).
 func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	if earning == nil {
 		return errors.New("provider earning is required")
 	}
@@ -4655,6 +4739,9 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 // CreditProviderWallet atomically credits an unlinked provider wallet and
 // records the corresponding payout history row.
 func (s *PostgresStore) CreditProviderWallet(payout *ProviderPayout) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	if payout == nil {
 		return errors.New("provider payout is required")
 	}

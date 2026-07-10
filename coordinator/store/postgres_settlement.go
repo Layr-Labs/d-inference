@@ -14,24 +14,50 @@ import (
 func (s *PostgresStore) RecordInferenceSettlementReview(
 	settlement *InferenceSettlement,
 	reason string,
-) error {
+) (InferenceSettlementDisposition, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return "", err
+	}
 	if settlement == nil || settlement.ReservationID == "" ||
 		settlement.RequestID == "" || reason == "" {
-		return ErrFinancialOperationConflict
+		return "", ErrFinancialOperationConflict
 	}
 	payload, err := json.Marshal(settlement)
 	if err != nil {
-		return fmt.Errorf("store: encode settlement review: %w", err)
+		return "", fmt.Errorf("store: encode settlement review: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("store: begin settlement review: %w", err)
+		return "", fmt.Errorf("store: begin settlement review: %w", err)
 	}
 	defer tx.Rollback(ctx)
 	if err := lockFinancialOperation(ctx, tx, "finalize:"+settlement.ReservationID); err != nil {
-		return err
+		return "", err
+	}
+	existing, found, err := inferenceSettlementTx(ctx, tx, settlement.ReservationID)
+	if err != nil {
+		return "", err
+	}
+	if found {
+		if !persistedSettlementMatches(existing, settlement) {
+			return "", ErrFinancialOperationConflict
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return "", fmt.Errorf("store: commit reviewed settlement replay: %v: %w", err, ErrCommitOutcomeUnknown)
+		}
+		return InferenceSettlementReplayed, nil
+	}
+	if _, released, err := reservationOperationTx(
+		ctx, tx, "finalize:"+settlement.ReservationID,
+	); err != nil {
+		return "", err
+	} else if released {
+		if err := tx.Commit(ctx); err != nil {
+			return "", fmt.Errorf("store: commit reviewed release replay: %v: %w", err, ErrCommitOutcomeUnknown)
+		}
+		return InferenceSettlementAlreadyReleased, nil
 	}
 	tag, err := tx.Exec(ctx,
 		`INSERT INTO inference_settlement_reviews
@@ -45,15 +71,15 @@ func (s *PostgresStore) RecordInferenceSettlementReview(
 		settlement.ReservationID, settlement.RequestID, reason, payload,
 	)
 	if err != nil {
-		return fmt.Errorf("store: record settlement review: %w", err)
+		return "", fmt.Errorf("store: record settlement review: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrFinancialOperationConflict
+		return "", ErrFinancialOperationConflict
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("store: commit settlement review: %v: %w", err, ErrCommitOutcomeUnknown)
+		return "", fmt.Errorf("store: commit settlement review: %v: %w", err, ErrCommitOutcomeUnknown)
 	}
-	return nil
+	return InferenceSettlementReviewPending, nil
 }
 
 type persistedInferenceSettlement struct {
@@ -79,6 +105,9 @@ type persistedInferenceSettlement struct {
 }
 
 func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (InferenceSettlementDisposition, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return "", err
+	}
 	if err := validateInferenceSettlement(settlement); err != nil {
 		return "", err
 	}
@@ -105,6 +134,23 @@ func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (Infere
 			return "", fmt.Errorf("store: commit inference settlement replay: %w", err)
 		}
 		return InferenceSettlementReplayed, nil
+	}
+	var reviewedRequestID string
+	err = tx.QueryRow(ctx,
+		`SELECT request_id FROM inference_settlement_reviews WHERE reservation_id = $1`,
+		settlement.ReservationID,
+	).Scan(&reviewedRequestID)
+	if err == nil {
+		if reviewedRequestID != settlement.RequestID {
+			return "", ErrFinancialOperationConflict
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return "", fmt.Errorf("store: commit review-pending replay: %v: %w", err, ErrCommitOutcomeUnknown)
+		}
+		return InferenceSettlementReviewPending, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("store: read settlement review: %w", err)
 	}
 	if _, finalized, err := reservationOperationTx(ctx, tx, finalizationKey); err != nil {
 		return "", err

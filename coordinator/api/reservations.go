@@ -37,6 +37,9 @@ func (s *Server) reserveInferenceBalanceWithRetry(
 ) (int64, bool, error) {
 	var lastErr error
 	for attempt := 0; ; attempt++ {
+		if s.completions != nil && s.completions.isStopping() {
+			return 0, false, errCompletionStopping
+		}
 		reservedWithdrawable, applied, err := s.store.ReserveInferenceBalance(
 			accountID, amountMicroUSD, operationKey,
 		)
@@ -95,6 +98,9 @@ func (s *Server) releaseInferenceReservationWithRetry(
 		}
 		if store.IsPermanentFinancialError(err) {
 			return false, err
+		}
+		if s.completions != nil && s.completions.isStopping() {
+			return false, errCompletionStopping
 		}
 		time.Sleep(time.Duration(min(attempt+1, 100)) * 50 * time.Millisecond)
 	}

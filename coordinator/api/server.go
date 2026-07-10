@@ -750,7 +750,14 @@ func (s *Server) submitTelemetry(name string, fn func()) {
 
 // Close drains correctness-critical completion work before stopping the
 // best-effort routing-telemetry sink. It is idempotent.
-func (s *Server) Close() {
+func (s *Server) BeginShutdown() {
+	s.SetDraining(true)
+	if s.completions != nil {
+		s.completions.stop()
+	}
+}
+
+func (s *Server) FenceProviderSessions() {
 	s.providerSessionMu.Lock()
 	s.providerClosing = true
 	connections := make([]*websocket.Conn, 0, len(s.providerConnections))
@@ -764,6 +771,11 @@ func (s *Server) Close() {
 	for _, providerID := range s.registry.ProviderIDs() {
 		s.registry.Disconnect(providerID)
 	}
+}
+
+func (s *Server) Close() {
+	s.BeginShutdown()
+	s.FenceProviderSessions()
 	s.providerSessions.Wait()
 	if s.settlements != nil {
 		s.settlements.close()

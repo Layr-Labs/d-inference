@@ -135,20 +135,22 @@ func main() {
 	// NewPostgres holds the global single-active ownership lock, so every
 	// unfinalized reservation visible before admission starts belongs to a dead
 	// prior process. Drain all batches; review/settled rows are excluded.
-	recoveredTotal := 0
-	for {
-		recovered, err := st.RecoverStaleInferenceReservations(time.Now())
-		if err != nil {
-			logger.Error("failed to recover orphaned inference reservations", "error", err)
-			os.Exit(1)
+	if st.OwnershipLost() != nil {
+		recoveredTotal := 0
+		for {
+			recovered, err := st.RecoverStaleInferenceReservations(time.Now())
+			if err != nil {
+				logger.Error("failed to recover orphaned inference reservations", "error", err)
+				os.Exit(1)
+			}
+			recoveredTotal += recovered
+			if recovered == 0 {
+				break
+			}
 		}
-		recoveredTotal += recovered
-		if recovered == 0 {
-			break
+		if recoveredTotal > 0 {
+			logger.Warn("recovered orphaned inference reservations", "count", recoveredTotal)
 		}
-	}
-	if recoveredTotal > 0 {
-		logger.Warn("recovered orphaned inference reservations", "count", recoveredTotal)
 	}
 
 	// Reconcile provider sessions left open by a previous coordinator process
@@ -845,13 +847,32 @@ func main() {
 	// Wait for interrupt signal.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-sigCh
-	logger.Info("shutting down", "signal", sig.String())
+	ownershipLost := st.OwnershipLost()
+	ownershipFailed := false
+	var shutdownReason string
+	if ownershipLost == nil {
+		sig := <-sigCh
+		shutdownReason = sig.String()
+	} else {
+		select {
+		case sig := <-sigCh:
+			shutdownReason = sig.String()
+		case <-ownershipLost:
+			ownershipFailed = true
+			shutdownReason = "database_ownership_lost"
+		}
+	}
+	logger.Info("shutting down", "reason", shutdownReason)
 
 	// Enter drain mode first so /readyz and /health immediately report not-ready,
 	// the capacity feed stops advertising, and new inference requests get
 	// 429+Retry-After (DAR-327 Phase 1).
-	srv.SetDraining(true)
+	srv.BeginShutdown()
+	if ownershipFailed {
+		// A stale coordinator must stop issuing/receiving provider work
+		// immediately; do not spend the normal inference drain grace.
+		srv.FenceProviderSessions()
+	}
 
 	// DAR-327 merge note: when Phase 3 (#396) lands, srv.BroadcastGoingAway()
 	// belongs HERE — right after SetDraining(true) and BEFORE cancel() /
@@ -867,6 +888,9 @@ func main() {
 	// We never block forever: the grace context bounds the wait, and the hard
 	// Shutdown deadline below is the final backstop.
 	grace := api.DrainGraceFromEnv()
+	if ownershipFailed {
+		grace = 0
+	}
 	graceCtx, graceCancel := context.WithTimeout(context.Background(), grace)
 	if srv.WaitForInflightZero(graceCtx) {
 		logger.Info("drain complete; in-flight requests finished", "grace", grace.String())

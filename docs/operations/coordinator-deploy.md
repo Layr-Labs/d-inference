@@ -87,6 +87,9 @@ Rules learned the hard way:
 
 - **One host-network container at a time.** Stop the old container *before* starting the
   new one. Two containers fighting over `:8080` caused the 2026-07-03 outage.
+- **One database owner at a time.** After the phased
+  [ownership rollout](coordinator-ownership-rollout.md), the old coordinator
+  must release its PostgreSQL lock before the replacement can become ready.
 - **The volume mount is mandatory.** Omitting `-v /mnt/disks/userdata:/mnt/disks/userdata`
   boots a **blank MicroMDM** — every device lookup returns "device not found", the fleet
   falls to `self_signed` trust, and with `MIN_TRUST=hardware` the network is effectively
@@ -224,6 +227,7 @@ semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlig
 | Variable | Notes |
 |---|---|
 | `EIGENINFERENCE_DATABASE_URL` | RDS DSN — presence selects the Postgres store |
+| `EIGENINFERENCE_COORDINATOR_OWNERSHIP_ENABLED` | Enables the single-active PostgreSQL lock and orphan recovery. Follow the two-restart ownership rollout before first enablement; never disable afterward. |
 | `EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_RELEASE_KEY` | Admin / CI release auth |
 | `EIGENINFERENCE_PRIVY_*` | Consumer JWT auth |
 | `MICROMDM_API_KEY` = `EIGENINFERENCE_MDM_API_KEY` | Must be byte-identical or MDM lookups fail |

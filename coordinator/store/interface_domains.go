@@ -187,6 +187,10 @@ type TelemetryStore interface {
 
 // LedgerStore is the double-entry balance ledger (all amounts in micro-USD).
 type LedgerStore interface {
+	// OwnershipLost closes when this store's single-active PostgreSQL lock
+	// connection fails. Nil means ownership fencing is disabled.
+	OwnershipLost() <-chan struct{}
+
 	// GetBalance returns the current balance in micro-USD for an account.
 	GetBalance(accountID string) int64
 
@@ -212,7 +216,7 @@ type LedgerStore interface {
 
 	// RecordInferenceSettlementReview durably retains a terminal whose immutable
 	// financial command was rejected as permanently invalid.
-	RecordInferenceSettlementReview(settlement *InferenceSettlement, reason string) error
+	RecordInferenceSettlementReview(settlement *InferenceSettlement, reason string) (InferenceSettlementDisposition, error)
 
 	// RecoverStaleInferenceReservations releases old durable holds that have no
 	// settlement, review, or prior release disposition.

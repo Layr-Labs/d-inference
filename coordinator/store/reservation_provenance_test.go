@@ -261,7 +261,7 @@ func TestPostgresStaleRecoveryPreservesReviewPendingReservation(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := backend.RecordInferenceSettlementReview(&InferenceSettlement{
+	if _, err := backend.RecordInferenceSettlementReview(&InferenceSettlement{
 		ReservationID: reservationID, RequestID: "review-request",
 		ConsumerAccountID: accountID, ReservedMicroUSD: 50_000,
 		ReservationPreDebited: true,

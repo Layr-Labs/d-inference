@@ -1251,6 +1251,8 @@ func (s *MemoryStore) KeyCount() int {
 }
 
 // GetBalance returns the current balance in micro-USD for an account.
+func (s *MemoryStore) OwnershipLost() <-chan struct{} { return nil }
+
 func (s *MemoryStore) GetBalance(accountID string) int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

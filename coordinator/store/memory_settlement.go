@@ -14,6 +14,12 @@ func (s *MemoryStore) SettleInference(settlement *InferenceSettlement) (Inferenc
 		}
 		return InferenceSettlementReplayed, nil
 	}
+	if review := s.inferenceSettlementReviews[settlement.ReservationID]; review != nil {
+		if review.RequestID != settlement.RequestID {
+			return "", ErrFinancialOperationConflict
+		}
+		return InferenceSettlementReviewPending, nil
+	}
 	finalizationKey := "finalize:" + settlement.ReservationID
 	if _, finalized := s.balanceReservationOperations[finalizationKey]; finalized {
 		return InferenceSettlementAlreadyReleased, nil
@@ -136,22 +142,31 @@ func cloneInferenceSettlement(settlement *InferenceSettlement) *InferenceSettlem
 func (s *MemoryStore) RecordInferenceSettlementReview(
 	settlement *InferenceSettlement,
 	reason string,
-) error {
+) (InferenceSettlementDisposition, error) {
 	if settlement == nil || settlement.ReservationID == "" ||
 		settlement.RequestID == "" || reason == "" {
-		return ErrFinancialOperationConflict
+		return "", ErrFinancialOperationConflict
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if existing := s.inferenceSettlements[settlement.ReservationID]; existing != nil {
+		if !equivalentInferenceSettlement(existing, settlement) {
+			return "", ErrFinancialOperationConflict
+		}
+		return InferenceSettlementReplayed, nil
+	}
+	if _, released := s.balanceReservationOperations["finalize:"+settlement.ReservationID]; released {
+		return InferenceSettlementAlreadyReleased, nil
+	}
 	if existing := s.inferenceSettlementReviews[settlement.ReservationID]; existing != nil {
 		if existing.RequestID != settlement.RequestID {
-			return ErrFinancialOperationConflict
+			return "", ErrFinancialOperationConflict
 		}
-		return nil
+		return InferenceSettlementReviewPending, nil
 	}
 	s.inferenceSettlementReviews[settlement.ReservationID] = cloneInferenceSettlement(settlement)
 	s.inferenceSettlementReasons[settlement.ReservationID] = reason
-	return nil
+	return InferenceSettlementReviewPending, nil
 }
 
 func (s *MemoryStore) RecoverStaleInferenceReservations(_ time.Time) (int, error) {

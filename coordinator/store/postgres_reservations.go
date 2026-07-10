@@ -17,6 +17,9 @@ type persistedReservationOperation struct {
 }
 
 func (s *PostgresStore) ReserveInferenceBalance(accountID string, amountMicroUSD int64, operationKey string) (int64, bool, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return 0, false, err
+	}
 	if amountMicroUSD <= 0 || operationKey == "" {
 		return 0, false, ErrFinancialOperationConflict
 	}
@@ -96,6 +99,9 @@ func (s *PostgresStore) ReserveInferenceBalance(accountID string, amountMicroUSD
 }
 
 func (s *PostgresStore) ReleaseInferenceReservation(accountID string, amountMicroUSD, withdrawableMicroUSD int64, operationKey, reference string) (bool, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return false, err
+	}
 	if amountMicroUSD < 0 || withdrawableMicroUSD < 0 || withdrawableMicroUSD > amountMicroUSD || operationKey == "" {
 		return false, ErrFinancialOperationConflict
 	}
@@ -163,6 +169,9 @@ func (s *PostgresStore) ReleaseInferenceReservation(accountID string, amountMicr
 }
 
 func (s *PostgresStore) RecoverStaleInferenceReservations(before time.Time) (int, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return 0, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	tx, err := s.pool.Begin(ctx)

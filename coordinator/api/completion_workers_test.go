@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -16,6 +17,19 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
+
+type transientSettlementStore struct {
+	store.Store
+	attempted chan struct{}
+}
+
+func (s transientSettlementStore) SettleInference(*store.InferenceSettlement) (store.InferenceSettlementDisposition, error) {
+	select {
+	case s.attempted <- struct{}{}:
+	default:
+	}
+	return "", errors.New("transient database outage")
+}
 
 func TestCompletionWorkersBoundConcurrencyAndDrain(t *testing.T) {
 	pool := newCompletionWorkerPool(slog.New(slog.NewTextHandler(io.Discard, nil)), 4, 2)
@@ -239,4 +253,36 @@ func TestServerCloseJoinsUnregisteredProviderWebSocketBeforeWorkers(t *testing.T
 	case <-time.After(time.Second):
 		t.Fatal("Server.Close did not join provider WebSocket producer")
 	}
+}
+
+func TestSettlementRetryStopsDuringBoundedShutdown(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	backing := store.NewMemory(store.Config{})
+	attempted := make(chan struct{}, 1)
+	srv := NewServer(registry.New(logger), transientSettlementStore{
+		Store: backing, attempted: attempted,
+	}, ServerConfig{}, logger)
+	result := make(chan error, 1)
+	go func() {
+		_, err := srv.settleInferenceWithRetry(&store.InferenceSettlement{
+			ReservationID: "shutdown-reservation", RequestID: "shutdown-request",
+			ConsumerAccountID: "shutdown-consumer",
+		})
+		result <- err
+	}()
+	select {
+	case <-attempted:
+	case <-time.After(time.Second):
+		t.Fatal("settlement retry did not start")
+	}
+	srv.BeginShutdown()
+	select {
+	case err := <-result:
+		if !errors.Is(err, errCompletionStopping) {
+			t.Fatalf("shutdown retry error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("settlement retry blocked shutdown")
+	}
+	srv.Close()
 }

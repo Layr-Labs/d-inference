@@ -151,6 +151,32 @@ func TestSettleInferenceAtomicallyDebitsServiceHold(t *testing.T) {
 	}
 }
 
+func TestSettlementAndReviewDispositionsAreMutuallyExclusive(t *testing.T) {
+	for name, backend := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			reviewed := fundedSettlementFixture(t, backend, uniqueID("review-first"))
+			disposition, err := backend.RecordInferenceSettlementReview(reviewed, "invalid terminal")
+			if err != nil || disposition != InferenceSettlementReviewPending {
+				t.Fatalf("record review = %q, %v", disposition, err)
+			}
+			disposition, err = backend.SettleInference(reviewed)
+			if err != nil || disposition != InferenceSettlementReviewPending {
+				t.Fatalf("settle reviewed reservation = %q, %v", disposition, err)
+			}
+
+			settled := fundedSettlementFixture(t, backend, uniqueID("settle-first"))
+			disposition, err = backend.SettleInference(settled)
+			if err != nil || disposition != InferenceSettlementApplied {
+				t.Fatalf("settle = %q, %v", disposition, err)
+			}
+			disposition, err = backend.RecordInferenceSettlementReview(settled, "late conflict")
+			if err != nil || disposition != InferenceSettlementReplayed {
+				t.Fatalf("review settled reservation = %q, %v", disposition, err)
+			}
+		})
+	}
+}
+
 func fundedSettlementFixture(t *testing.T, backend Store, reservationID string) *InferenceSettlement {
 	t.Helper()
 	consumer := uniqueID("settlement-consumer")

@@ -35,6 +35,7 @@ var (
 	ErrStripeDepositConflict      = errors.New("Stripe deposit event identity conflict")
 	ErrFinancialOperationConflict = errors.New("financial operation key reused with different parameters")
 	ErrCommitOutcomeUnknown       = errors.New("database commit outcome unknown")
+	ErrOwnershipLost              = errors.New("coordinator database ownership lost")
 )
 
 // Store is the union of every storage-domain sub-interface (defined in

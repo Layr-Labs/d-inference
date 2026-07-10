@@ -120,6 +120,32 @@ async fn chat_rejects_when_ownership_lost() {
 }
 
 #[tokio::test]
+async fn terminal_ingest_missing_identity_returns_400() {
+    let app = router(test_state(true));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/terminal-ingest")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "j",
+                        "attempt_id": "",
+                        "terminal_digest": "d"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let v = body_json(res).await;
+    assert_eq!(v["error"]["code"], "terminal_ingest_failed");
+}
+
+#[tokio::test]
 async fn terminal_ingest_known_and_late() {
     let state = test_state(true);
     {

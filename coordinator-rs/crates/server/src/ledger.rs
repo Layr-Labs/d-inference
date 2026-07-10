@@ -812,4 +812,42 @@ mod tests {
         // Never start-authorized → still false after release.
         assert!(!led.job_funded_start("j"));
     }
+
+    #[test]
+    fn settle_empty_terminal_digest_still_binds_and_blocks_reuse() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0);
+        led.reserve(OperationKey("r1".into()), "j1", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j1").unwrap();
+        // Empty digest is allowed but still unique across jobs.
+        assert!(led
+            .settle(OperationKey("s1".into()), "j1", "a", 400_000, "")
+            .unwrap());
+        led.reserve(OperationKey("r2".into()), "j2", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j2").unwrap();
+        assert!(matches!(
+            led.settle(OperationKey("s2".into()), "j2", "a", 400_000, ""),
+            Err(LedgerError::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn reserve_idempotent_returns_existing_provenance() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 2_000_000);
+        let r1 = led
+            .reserve(OperationKey("r".into()), "j", "a", 3_000_000)
+            .unwrap();
+        assert!(r1.applied);
+        let r2 = led
+            .reserve(OperationKey("r".into()), "j", "a", 3_000_000)
+            .unwrap();
+        assert!(!r2.applied);
+        assert_eq!(r2.provenance.total.0, r1.provenance.total.0);
+        assert_eq!(r2.provenance.withdrawable.0, r1.provenance.withdrawable.0);
+        // Balance unchanged by idempotent replay.
+        assert_eq!(led.balance("a").0, 2_000_000);
+    }
 }

@@ -51,7 +51,10 @@ pub use recovery::{
 };
 pub use request_task::{spawn_request_task, ControlEvent, RequestTaskHandle};
 pub use sealed::decrypt_request_body;
-pub use stream_billing::{accept_pipe_chunk, billable_cap_from_checkpoint, pipe_and_checkpoint};
+pub use stream_billing::{
+    accept_pipe_chunk, billable_cap_from_checkpoint, billable_cap_micro_usd, pipe_and_checkpoint,
+    stream_billable_tokens,
+};
 pub use telemetry::{bounded_telemetry, TelemetryEvent, TelemetrySink};
 pub use terminal_ingest::{
     ingest_terminal, lookup_sql, record_late_sql, MemoryTerminalStore, TerminalDisposition,

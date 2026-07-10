@@ -221,6 +221,22 @@ impl FleetActor {
                     .state
                     .apply_model_gone(&provider_id, &model, state_revision);
             }
+            FleetCommand::StructuredError {
+                provider_id,
+                class,
+            } => {
+                use darkbloom_core::{action_for_class, apply_health_action, apply_trust_action};
+                let action = action_for_class(&class);
+                if let Some(p) = self.state.providers.get_mut(&provider_id) {
+                    apply_health_action(&mut p.health, &action, std::time::Instant::now());
+                    apply_trust_action(&mut p.trust, &action);
+                    // Keep legacy bools in sync for warm-plane snapshots.
+                    if matches!(action, darkbloom_core::ErrorAction::HardFence) {
+                        p.trusted = false;
+                        p.challenge_fresh = false;
+                    }
+                }
+            }
             FleetCommand::Snapshot(reply) => {
                 let _ = reply.send(self.state.clone());
             }
@@ -269,5 +285,56 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(decision, AdmissionDecision::Prepare(_)));
+    }
+
+    #[tokio::test]
+    async fn security_error_hard_fences_provider() {
+        let (handle, _join) = spawn_fleet_actor();
+        let mut ready = HashSet::new();
+        ready.insert("m".into());
+        let mut trust = darkbloom_core::TrustState::default();
+        let _ = trust.apply(darkbloom_core::TrustEvidence {
+            provider_id: "p1".into(),
+            session_epoch: 1,
+            trust_epoch: darkbloom_core::TrustEpoch(1),
+            level: darkbloom_core::TrustLevel::Hardware,
+            challenge_fresh: true,
+            runtime_ok: true,
+            encrypted_transport: true,
+        });
+        handle
+            .upsert_lifecycle(ProviderSnapshot {
+                provider_id: "p1".into(),
+                session_epoch: 1,
+                trusted: true,
+                challenge_fresh: true,
+                encrypted_transport: true,
+                ready_models: ready,
+                health: HealthMachine::healthy(),
+                data_lane_full: false,
+                predicted_first_content_ms: 10.0,
+                predicted_decode_ms: 20.0,
+                trust,
+            })
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        handle.structured_error("p1".into(), "security".into());
+        tokio::task::yield_now().await;
+        let decision = handle
+            .admit(AdmitRequest {
+                model: "m".into(),
+                attempt: AttemptId::new("a2"),
+                exclude_providers: HashSet::new(),
+                require_tools: false,
+                permit_ttl: Duration::from_secs(2),
+            })
+            .await
+            .unwrap();
+        // Hard-fenced provider is no longer warm-eligible → RetryAfter NoWarmProvider.
+        assert!(matches!(
+            decision,
+            AdmissionDecision::RetryAfter { .. }
+        ));
     }
 }

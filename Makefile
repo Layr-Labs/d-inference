@@ -1,6 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help \
         coordinator-test coordinator-build coordinator-build-linux coordinator \
+        coordinator-rs-test coordinator-rs-build coordinator-rs \
         provider-build provider-test provider \
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
@@ -23,6 +24,16 @@ coordinator-build-linux: ## Cross-compile coordinator for linux/amd64 (EigenClou
 	    go build -o coordinator-linux ./cmd/coordinator
 
 coordinator: coordinator-test coordinator-build ## Test + build coordinator
+
+# ---- Coordinator (Rust) ----------------------------------------------------
+
+coordinator-rs-test: ## Run Rust coordinator unit tests
+	cd coordinator-rs && cargo test --workspace
+
+coordinator-rs-build: ## Build the Rust coordinator binary
+	cd coordinator-rs && cargo build --release -p darkbloom-coordinator
+
+coordinator-rs: coordinator-rs-test coordinator-rs-build ## Test + build Rust coordinator
 
 # ---- Provider (Swift, Apple Silicon) --------------------------------------
 
@@ -63,9 +74,9 @@ e2e: e2e-integration ## Run the integration suite
 
 # ---- Aggregates ------------------------------------------------------------
 
-test: coordinator-test provider-test ui-test ## Run all unit tests
+test: coordinator-test coordinator-rs-test provider-test ui-test ## Run all unit tests
 
-build: coordinator-build provider-build ui-build ## Build all components
+build: coordinator-build coordinator-rs-build provider-build ui-build ## Build all components
 
 all: test build ## Test + build everything
 

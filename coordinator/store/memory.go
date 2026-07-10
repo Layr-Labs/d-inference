@@ -62,6 +62,9 @@ type MemoryStore struct {
 	stripeExternalEvents map[string]string // eventID → externalID
 	stripeCheckoutEvents map[string]string // externalID → eventID
 
+	// Reservation release idempotency (accountID|reference → applied)
+	reservationReleaseOps map[string]struct{}
+
 	// Custom pricing
 	modelPrices map[string]ModelPrice // "accountID:model" → price
 
@@ -168,6 +171,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		billingSessions:               make(map[string]*BillingSession),
 		stripeExternalEvents:          make(map[string]string),
 		stripeCheckoutEvents:          make(map[string]string),
+		reservationReleaseOps:         make(map[string]struct{}),
 		modelPrices:                   make(map[string]ModelPrice),
 		modelRegistry:                 make(map[string]*ModelRegistryEntry),
 		modelAliases:                  make(map[string]*ModelAlias),
@@ -1354,6 +1358,8 @@ func (s *MemoryStore) DebitReservation(accountID string, amountMicroUSD int64, e
 }
 
 // CreditReservationRelease restores exact total and withdrawable provenance.
+// Idempotent on (accountID, reference): a second call with the same reference
+// is a no-op so concurrent release races cannot over-credit.
 func (s *MemoryStore) CreditReservationRelease(accountID string, totalMicroUSD, withdrawableMicroUSD int64, entryType LedgerEntryType, reference string) error {
 	if totalMicroUSD < 0 || withdrawableMicroUSD < 0 {
 		return fmt.Errorf("negative reservation release")
@@ -1363,6 +1369,16 @@ func (s *MemoryStore) CreditReservationRelease(accountID string, totalMicroUSD, 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if reference != "" {
+		key := accountID + "|" + reference
+		if s.reservationReleaseOps == nil {
+			s.reservationReleaseOps = make(map[string]struct{})
+		}
+		if _, seen := s.reservationReleaseOps[key]; seen {
+			return nil
+		}
+		s.reservationReleaseOps[key] = struct{}{}
+	}
 	s.creditLocked(accountID, totalMicroUSD, entryType, reference, time.Now())
 	s.withdrawable[accountID] += withdrawableMicroUSD
 	if s.withdrawable[accountID] > s.balances[accountID] {

@@ -49,10 +49,9 @@ The image tag is the 7-char short SHA of the master commit.
 
 ### 2. Pre-swap checks
 
-**Check RDS for lock holders before restarting.** Coordinator startup runs schema
-migrations; an `ALTER TABLE` queued behind a long-running query's relation lock will
-hang the whole deploy (2026-07-03 outage: repeated restarts stacked migrations behind a
-58-minute runaway query — recovery was killing the blocking PID, not more restarts).
+**Check RDS for lock holders before migrating.** Schema changes run only through
+the external `coordinator-migrate` deployment command; serving startup performs
+zero DDL/DML and refuses an incompatible schema.
 
 ```bash
 # No rows = safe to proceed. Rows here = investigate/kill blockers first.
@@ -81,7 +80,31 @@ sudo grep -E "^THE_VARS_YOU_CHANGED" /etc/d-inference/env   # verify
 New env vars take effect only on container start — flip flags in the same maintenance
 window as the swap.
 
-### 4. Swap
+### 4. Apply schema migrations
+
+Run the image's dedicated migration command while the old coordinator is still
+serving. It holds a migration advisory lock, verifies checksums, and applies
+pending versions under bounded PostgreSQL lock/statement timeouts.
+
+```bash
+sudo docker run --rm \
+  --network host \
+  --env-file /etc/d-inference/env \
+  --entrypoint /usr/local/bin/coordinator-migrate \
+  us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:<TAG> \
+  -lock-timeout=10s -statement-timeout=30m -adopt-legacy
+```
+
+`-adopt-legacy` is a one-time authorization for the first transition from the
+unversioned Darkbloom schema. It still refuses unrelated or fingerprint-mismatched
+databases. Remove the flag from every command immediately after that first
+successful adoption; fresh empty databases and already-versioned databases do
+not need it.
+
+Re-running the command must report that the schema is already current before
+the container swap.
+
+### 5. Swap
 
 Rules learned the hard way:
 
@@ -107,12 +130,10 @@ sudo docker run -d --name coordinator \
   us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:<TAG>
 ```
 
-Startup takes ~15–40 s (MicroMDM init + migrations + listeners). If health does not
-respond after ~60 s, suspect a migration stuck behind a DB lock — re-run the
-`pg_stat_activity` query from step 2 and kill the blocking PID (`select
-pg_terminate_backend(<pid>)`); do **not** restart the container again.
+Startup takes ~15–40 s (MicroMDM init + listeners). A schema mismatch fails
+immediately with an instruction to run `coordinator-migrate`.
 
-### 5. Verify
+### 6. Verify
 
 ```bash
 # Health + provider reconnection ramp (fleet reconnects within ~1 min)
@@ -143,7 +164,7 @@ psql "$PROD_DB_URL" -c "select date_trunc('minute', created_at) m,
   group by 1 order by 1;"
 ```
 
-### 6. Rollback
+### 7. Rollback
 
 The old container is still on the box, stopped, with the pre-swap image and env:
 

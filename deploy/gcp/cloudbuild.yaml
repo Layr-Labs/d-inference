@@ -1,14 +1,14 @@
 # Cloud Build config for the d-inference DEV coordinator on Google Cloud.
 #
 # Triggered on push to master (path filter: coordinator/** | deploy/gcp/**).
-# Builds coordinator/Dockerfile (same image EigenCloud prod uses), pushes to
+# Builds coordinator/Dockerfile (same image shape prod uses), pushes to
 # Artifact Registry, then pins the VM's container image tag and restarts the
 # systemd unit so it picks up the new image.
 #
 # Why GCE VM instead of Cloud Run: the coordinator runs
 # MicroMDM (BoltDB), which needs reliable local filesystem semantics that
 # Cloud Run's ephemeral FS + gcsfuse can't provide. The VM has a persistent
-# disk at /mnt/disks/userdata — same path prod uses on EigenCloud.
+# disk at /mnt/disks/userdata — the same persistent path used in prod.
 #
 # Upgrade time: ~2-4 minutes end-to-end (build + push + SSH restart).
 
@@ -19,6 +19,8 @@ substitutions:
   _ZONE: us-central1-a
   _IMAGE: us-central1-docker.pkg.dev/sepolia-ai/coordinator/coordinator
   _HEALTH_URL: https://api.dev.darkbloom.xyz/health
+  # One-time only for the first migration of the known legacy dev schema.
+  _ADOPT_LEGACY: 'false'
 
 options:
   logging: CLOUD_LOGGING_ONLY
@@ -42,9 +44,9 @@ steps:
     name: gcr.io/cloud-builders/docker
     args: [push, '${_IMAGE}:latest']
 
-  # Pin the container image on the VM and restart the systemd unit. We SSH
-  # via IAP so no public SSH ingress is required. The unit's ExecStartPre
-  # does `docker pull`, so restarting is all we need to do here.
+  # Pin the image, apply its schema while the old coordinator is still serving,
+  # then restart the systemd unit. Any migration failure aborts this step before
+  # restart, leaving the old process and image running.
   - id: deploy
     name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: bash
@@ -53,23 +55,23 @@ steps:
       - |
         set -euo pipefail
 
-        # Write the new image tag to instance metadata so the systemd unit
-        # picks it up. The unit reads IMAGE_TAG at ExecStartPre time.
-        gcloud compute instances add-metadata ${_INSTANCE} \
-          --zone=${_ZONE} \
-          --metadata=DINF_IMAGE_TAG=$SHORT_SHA
-
-        # Update the startup script metadata so the next VM reboot picks
-        # up any new env vars added to vm-startup.sh.
-        gcloud compute instances add-metadata ${_INSTANCE} \
-          --zone=${_ZONE} \
-          --metadata-from-file=startup-script=deploy/gcp/vm-startup.sh
-
         # Re-fetch secrets from Secret Manager and regenerate the env
         # file before restarting. Pipe the script via SSH stdin to avoid
         # SCP permission issues with Cloud Build's ephemeral SSH keys.
         cat deploy/gcp/refresh-env.sh | gcloud compute ssh ${_INSTANCE} \
           --zone=${_ZONE} --tunnel-through-iap -- "sudo bash -s"
+
+        cat deploy/gcp/migrate-coordinator.sh | gcloud compute ssh ${_INSTANCE} \
+          --zone=${_ZONE} --tunnel-through-iap -- \
+          "sudo bash -s -- '$SHORT_SHA' '${_ADOPT_LEGACY}'"
+
+        # Commit every boot-affecting metadata change only after migration
+        # succeeds. A failed migration leaves the running process, image tag,
+        # and reboot startup script on their last known-compatible versions.
+        gcloud compute instances add-metadata ${_INSTANCE} \
+          --zone=${_ZONE} \
+          --metadata=DINF_IMAGE_TAG=$SHORT_SHA \
+          --metadata-from-file=startup-script=deploy/gcp/vm-startup.sh
 
         gcloud compute ssh ${_INSTANCE} --zone=${_ZONE} --tunnel-through-iap -- \
           "sudo systemctl restart d-inference-coordinator"

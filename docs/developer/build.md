@@ -16,6 +16,8 @@ make ui-install         # console-ui npm deps
 make coordinator-test         # cd coordinator && go test ./...
 make coordinator-build        # cd coordinator && go build ./cmd/coordinator
 make coordinator-build-linux  # GOOS=linux GOARCH=amd64 CGO_ENABLED=0
+make coordinator-migrate-build # external PostgreSQL migration command
+make coordinator-migration-test # migration catalog/runner tests
 make coordinator              # test + build
 ```
 

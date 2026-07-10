@@ -133,8 +133,13 @@ make ui-install         # console-ui npm deps
 make coordinator-test         # cd coordinator && go test ./...
 make coordinator-build        # cd coordinator && go build ./cmd/coordinator
 make coordinator-build-linux  # GOOS=linux GOARCH=amd64 CGO_ENABLED=0 build (EigenCloud)
+make coordinator-migrate-build # build external schema migration command
+make coordinator-migration-test # test migration catalog and runner
 make coordinator              # test + build
 ```
+
+Serving startup never applies schema changes. Run `coordinator-migrate` as a
+deployment step before starting a binary that requires a newer schema.
 
 ### Coordinator replacement (Rust)
 ```bash
@@ -186,23 +191,18 @@ Canonical runbook: `docs/operations/coordinator-deploy.md`
 
 Current release-sensitive pieces:
 
-- Prod coordinator runs on EigenCloud (TEE) as app `d-inference` at `api.darkbloom.dev`. Build target: `coordinator/Dockerfile`. Dev coordinator runs on Google Cloud (see `docs/operations/dev-environment.md`).
+- Prod coordinator runs as the host-network `coordinator` container on GCE VM
+  `darkbloom-coordinator` in `us-east4-a`; Cloud Build publishes
+  `coordinator/Dockerfile` images. Dev is a separate GCE/Cloud SQL environment.
 - Provider bundle creation (staging, .app wrapping, signing, notarization) lives inline in `.github/workflows/release-swift.yml` (bundle steps ~341-617); there is no standalone bundling script.
 - Installer flow lives in `scripts/install.sh`.
 - Provider update checks read the latest registered release from the store (CI registers via `POST /v1/releases`). The installer and `darkbloom update` hit `GET /v1/releases/latest`, which returns **404 when no release row exists** — a missing/mis-registered release row breaks installs and self-updates and is fixed by registering the release, not by bumping code. `LatestProviderVersion` in `coordinator/api/server.go` is only the no-release-row fallback for the version *display* path and must stay in sync with `ProviderCore.version`.
 - CI release workflow (`release-swift.yml`) signs binaries with Developer ID Application cert, notarizes with Apple, computes SHA-256 hashes after signing, embeds provisioning profile in .app bundle.
 
-Quick coordinator deploy (prod, EigenCloud):
-
-```bash
-# EigenCloud builds from the repo via coordinator/Dockerfile and blue-green deploys.
-git push origin master
-ecloud compute app deploy d-inference
-curl https://api.darkbloom.dev/health
-ecloud compute app logs d-inference
-```
-
-Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
+Production deploys are serial, human-operated GCE container handoffs. Apply
+schema changes with `coordinator-migrate` before stopping the old container;
+follow `docs/operations/coordinator-deploy.md`. Dev details are in
+`docs/operations/dev-environment.md`.
 
 ## Important Sync Points
 

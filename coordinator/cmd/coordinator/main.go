@@ -96,6 +96,11 @@ func main() {
 			logger.Error("failed to connect to PostgreSQL", "error", err)
 			os.Exit(1)
 		}
+		if err := pgStore.ActivateCoordinatorOwnership(ctx, cfg.StoreConfig.OwnershipEnabled); err != nil {
+			pgStore.Close()
+			logger.Error("failed to activate PostgreSQL coordinator ownership", "error", err)
+			os.Exit(1)
+		}
 		defer pgStore.Close()
 		st = pgStore
 		logger.Info("using PostgreSQL store")
@@ -132,7 +137,7 @@ func main() {
 		})
 	}
 
-	// NewPostgres holds the global single-active ownership lock, so every
+	// ActivateCoordinatorOwnership holds the global single-active lock, so every
 	// unfinalized reservation visible before admission starts belongs to a dead
 	// prior process. Drain all batches; review/settled rows are excluded.
 	if st.OwnershipLost() != nil {

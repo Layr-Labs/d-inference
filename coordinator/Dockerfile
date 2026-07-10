@@ -4,6 +4,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o /app/coordinator-bin ./coordinator/cmd/coordinator
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o /app/coordinator-migrate-bin ./coordinator/cmd/migrate
 
 # Pre-built base with MicroMDM v1.13.1 (also carries step-ca/step CLI, unused
 # since the dormant ACME device-attest leg was removed).
@@ -11,7 +12,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o /app/coordinator-bin ./
 FROM eigengajesh/d-inference-base:v1-amd64
 
 COPY --from=builder /app/coordinator-bin /usr/local/bin/coordinator
-RUN chmod +x /usr/local/bin/coordinator
+COPY --from=builder /app/coordinator-migrate-bin /usr/local/bin/coordinator-migrate
+RUN chmod +x /usr/local/bin/coordinator /usr/local/bin/coordinator-migrate
 
 RUN mkdir -p /var/www/html/dl
 

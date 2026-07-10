@@ -90,7 +90,11 @@ cd coordinator
 go test ./...
 # Cross-compile for the EigenCloud container (Linux amd64):
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o coordinator-linux ./cmd/coordinator
+go build -o coordinator-migrate ./cmd/migrate
 ```
+
+Schema migrations are external deployment steps. `NewPostgres` only validates
+the checksum/version range and serving startup performs no DDL/DML.
 
 ### Coordinator replacement, Rust
 ```bash
@@ -155,27 +159,18 @@ Full deploy runbook: **[docs/operations/coordinator-deploy.md](docs/operations/c
 
 Covers coordinator deploy, provider CLI bundling, and install.sh updates.
 
-### Coordinator (prod, EigenCloud)
+### Coordinator (prod, GCE)
 
-> **AI agents must NOT deploy to EigenCloud.** Prod deploys (`ecloud compute app deploy …`, any mutation of the `d-inference` EigenCloud app, any write to EigenCloud KMS or prod secrets) are a human-only action. If asked to ship to prod, stop and hand off — prepare the PR, the tag, or the exact commands, but do not execute them. This applies even when the user says "deploy"; confirm they mean *they* will run it, not you. Read-only commands like `ecloud compute app logs d-inference` or `curl https://api.darkbloom.dev/health` are fine.
+> **AI agents must NOT deploy production.** The prod GCE container handoff,
+> external database migration, Secret Manager writes, and VM/systemd mutations
+> are human-only. Agents may prepare images, scripts, PRs, and read-only health
+> checks.
 
-The prod coordinator runs on EigenCloud (TEE). Build target is `coordinator/Dockerfile`; EigenCloud builds from the repo and injects Caddy + TLS. Deploy is blue-green with persistent disk transfer (`/mnt/disks/userdata`).
-
-Human-only deploy flow (for reference — do not run this as the agent):
-
-```bash
-# 1. Push your changes (agent may do this if explicitly asked)
-git push origin master
-
-# 2. Trigger EigenCloud deploy — HUMAN ONLY
-ecloud compute app deploy d-inference
-
-# 3. Verify (agent may do this)
-curl https://api.darkbloom.dev/health
-ecloud compute app logs d-inference
-```
-
-Deploy time: ~5-7 minutes. Env vars/secrets are managed via EigenCloud KMS — see `docs/operations/coordinator-deploy.md` for the full list.
+Production runs as one host-network Docker container on GCE VM
+`darkbloom-coordinator` (`us-east4-a`) with external AWS RDS PostgreSQL and a
+persistent disk mounted at `/mnt/disks/userdata`. Deploys are serial: run the
+image's `coordinator-migrate` command, drain/stop the old database owner, then
+start the pinned replacement. Follow the canonical runbook.
 
 ### Coordinator (dev, Google Cloud)
 
@@ -191,13 +186,13 @@ CI (`.github/workflows/release-swift.yml`) builds, signs, notarizes, and uploads
 
 | Component | Prod | Dev |
 |-----------|------|-----|
-| Coordinator host | EigenCloud app `d-inference` | GCE VM `d-inference-dev` (us-central1-a, Ubuntu + Docker + systemd) |
-| Console UI | EigenCloud app | Vercel (separate dev project, `NEXT_PUBLIC_COORDINATOR_URL=https://api.dev.darkbloom.xyz`) |
+| Coordinator host | GCE VM `darkbloom-coordinator` (us-east4-a) | GCE VM `d-inference-dev` (us-central1-a, Ubuntu + Docker + systemd) |
+| Console UI | Separate hosted console | Vercel (separate dev project, `NEXT_PUBLIC_COORDINATOR_URL=https://api.dev.darkbloom.xyz`) |
 | Domain | `api.darkbloom.dev` | `api.dev.darkbloom.xyz` |
-| TLS | Caddy + EigenCloud-injected certs | Caddy in-container (Let's Encrypt ACME, VM :443) |
+| TLS | Host Caddy | Caddy in-container (Let's Encrypt ACME, VM :443) |
 | Database | AWS RDS PostgreSQL (managed) | Cloud SQL Postgres 16 `d-inference-dev-db` via cloud-sql-proxy sidecar |
-| Persistent storage | `/mnt/disks/userdata` (EigenCloud blue-green) | GCE persistent disk `d-inference-dev-data`, 30 GB, mounted at `/mnt/disks/userdata` |
-| Logs | `ecloud compute app logs d-inference` | `gcloud logging read ...` (VM + Cloud SQL in Cloud Logging) |
+| Persistent storage | GCE persistent disk at `/mnt/disks/userdata` | GCE persistent disk `d-inference-dev-data`, 30 GB, mounted at `/mnt/disks/userdata` |
+| Logs | GCE/systemd/container logs | `gcloud logging read ...` (VM + Cloud SQL in Cloud Logging) |
 | Release bucket | R2 `d-inf-app` | R2 `d-inf-app-dev` |
 | Trust level | `hardware` (MDM enrollment required) | `hardware` (same — full MDM stack) |
 | Provider install | `curl -fsSL https://api.darkbloom.dev/install.sh \| bash` | `curl -fsSL https://api.dev.darkbloom.xyz/install.sh \| bash` |

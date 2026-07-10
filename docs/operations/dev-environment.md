@@ -86,7 +86,20 @@ From the repo root:
 gcloud builds submit --config=deploy/gcp/cloudbuild.yaml --project=sepolia-ai
 ```
 
-This builds the image, pushes to Artifact Registry, writes the SHA to VM metadata, and restarts the systemd unit on the VM via IAP SSH. First build is ~4 minutes; subsequent deploys are ~2–3 minutes. Reference: [`deploy/gcp/cloudbuild.yaml`](../../deploy/gcp/cloudbuild.yaml).
+This builds the image, pushes to Artifact Registry, runs that image's
+`coordinator-migrate` command on the VM, writes the SHA to VM metadata only
+after migration succeeds, and then restarts the systemd unit via IAP SSH.
+Migration failure leaves both the old process and reboot metadata unchanged.
+The VM startup wrapper also
+runs the migration command before launching the coordinator, so manual restarts
+and reboots fail closed on schema errors. First build is ~4 minutes; subsequent
+deploys are ~2–3 minutes. Reference:
+[`deploy/gcp/cloudbuild.yaml`](../../deploy/gcp/cloudbuild.yaml).
+
+For the first migration from the unversioned legacy database only, submit with
+`--substitutions=_ADOPT_LEGACY=true`; the script adds `-adopt-legacy` only after
+the strict Darkbloom fingerprint passes. The checked-in default is `false`;
+never enable adoption for routine deployments.
 
 ### 5. Console UI on Vercel
 
@@ -135,7 +148,7 @@ It hits `/health`, `/v1/stats`, `/v1/models/catalog`, verifies `install.sh` temp
 
 ## Day-to-day flow
 
-- **Push to `master`** → Cloud Build auto-deploys the coordinator; Vercel auto-deploys the console UI. No approval step.
+- **Push to `master`** → Cloud Build migrates and auto-deploys the coordinator; Vercel auto-deploys the console UI. No approval step.
 - **Need a new provider release on dev?** Run the **Release Provider Bundle** workflow with `environment=dev` (or push a `-dev.N` tag).
 - **Prod release after dev bake?** Use the same commit SHA and run the workflow with `environment=prod`. The prod GitHub Environment should require reviewer approval. Dev and prod never share artifacts.
 - **Fleet refresh.** `deploy/provider-fleet/update-fleet.sh dev` reinstalls via SSH + `install.sh`.

@@ -22,9 +22,16 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	s, err := NewPostgres(ctx, Config{DatabaseURL: dbURL, OwnershipEnabled: true})
+	if _, err := ApplyPostgresMigrations(ctx, dbURL, MigrationOptions{}); err != nil {
+		t.Fatalf("ApplyPostgresMigrations: %v", err)
+	}
+	s, err := NewPostgres(ctx, Config{DatabaseURL: dbURL})
 	if err != nil {
 		t.Fatalf("NewPostgres: %v", err)
+	}
+	if err := s.ActivateCoordinatorOwnership(ctx, true); err != nil {
+		s.Close()
+		t.Fatalf("ActivateCoordinatorOwnership: %v", err)
 	}
 
 	// Clean tables for test isolation.

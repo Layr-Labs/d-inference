@@ -181,6 +181,15 @@ printf '%s' "$TOKEN" | /usr/bin/docker login -u oauth2accesstoken --password-std
 unset TOKEN
 
 /usr/bin/docker pull "$IMAGE"
+echo "Validating coordinator schema with image $IMAGE"
+/usr/bin/docker run --rm \
+  --network host \
+  --env-file /etc/d-inference/env \
+  --entrypoint /usr/local/bin/coordinator-migrate \
+  "$IMAGE" \
+  -lock-timeout=10s \
+  -statement-timeout=30m
+
 exec /usr/bin/docker run --rm --name d-inference-coordinator \
   --network host \
   --env-file /etc/d-inference/env \

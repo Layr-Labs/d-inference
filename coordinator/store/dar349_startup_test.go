@@ -23,8 +23,8 @@ func TestMigrate_NoBootTimeProviderEarningsDedupe(t *testing.T) {
 		"GROUP BY job_id) AND job_id",
 	} {
 		if bytes.Contains(src, []byte(banned)) {
-			t.Fatalf("DAR-349 regression: boot-time provider_earnings dedupe reintroduced "+
-				"(found %q in postgres.go); move destructive cleanup to an offline job", banned)
+			t.Fatalf("DAR-349 regression: serving startup provider_earnings dedupe reintroduced "+
+				"(found %q in postgres.go); keep destructive cleanup in the offline job", banned)
 		}
 	}
 }
@@ -51,35 +51,40 @@ func TestMigrate_DoesNotReclassifyLaterDepositsAsWithdrawable(t *testing.T) {
 	if err := s.Credit(accountID, 50_000, LedgerStripeDeposit, "later-deposit"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.migrate(context.Background()); err != nil {
+	reopened, err := NewPostgres(context.Background(), Config{DatabaseURL: os.Getenv("DATABASE_URL")})
+	if err != nil {
 		t.Fatal(err)
 	}
+	reopened.Close()
 	balance, withdrawable := s.GetBalanceWithWithdrawable(accountID)
 	if balance != 50_000 || withdrawable != 0 {
 		t.Fatalf("restart changed balance provenance: total=%d withdrawable=%d, want 50000/0", balance, withdrawable)
 	}
 }
 
-// TestProviderEarningsJobIndex_BootSafe verifies the safe replacement: startup
-// builds a valid partial unique index on provider_earnings(job_id) without a
-// dedupe DELETE, migrate() is re-entrant, and the index backs the idempotent
+// TestProviderEarningsJobIndex_BootSafe verifies the safe replacement: the
+// deployment migration builds a valid partial unique index without a dedupe
+// DELETE, migration application is re-entrant, and the index backs the idempotent
 // ON CONFLICT write path. Runs only with DATABASE_URL (throwaway test DB).
 func TestProviderEarningsJobIndex_BootSafe(t *testing.T) {
 	s := testPostgresStore(t) // t.Skip()s when DATABASE_URL is unset
 	ctx := context.Background()
 
-	// NewPostgres -> migrate -> ensureProviderEarningsJobIndex left a VALID index.
+	// The test harness migration left a VALID index.
 	if !jobIndexValid(t, s) {
-		t.Fatal("idx_provider_earnings_job missing or invalid after startup")
+		t.Fatal("idx_provider_earnings_job missing or invalid after migration")
 	}
 
-	// Re-entrancy: a coordinator restart re-runs migrate() and must not error or
-	// do heavy work (the valid-index fast path makes index creation a no-op).
-	if err := s.migrate(ctx); err != nil {
-		t.Fatalf("re-running migrate (restart): %v", err)
+	// Re-entrancy: a repeated deployment migration has no pending work.
+	result, err := ApplyPostgresMigrations(ctx, os.Getenv("DATABASE_URL"), MigrationOptions{})
+	if err != nil {
+		t.Fatalf("re-running migrations: %v", err)
+	}
+	if len(result.Applied) != 0 {
+		t.Fatalf("re-running migrations applied versions %v, want none", result.Applied)
 	}
 	if !jobIndexValid(t, s) {
-		t.Fatal("idx_provider_earnings_job invalid after re-running migrate")
+		t.Fatal("idx_provider_earnings_job invalid after re-running migrations")
 	}
 
 	// RecordProviderEarning is idempotent for a non-empty job_id (ON CONFLICT

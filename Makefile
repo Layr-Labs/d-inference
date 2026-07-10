@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help \
         contracts-check contracts-update \
-        coordinator-test coordinator-build coordinator-build-linux coordinator \
+        coordinator-test coordinator-build coordinator-build-linux coordinator-migrate-build coordinator-migration-test coordinator \
         coordinator-rs-fmt coordinator-rs-lint coordinator-rs-test coordinator-rs-build coordinator-rs-sqlx coordinator-rs-deps coordinator-rs \
         provider-build provider-test provider \
         ui-install ui-build ui-lint ui-test ui \
@@ -31,6 +31,13 @@ coordinator-build: ## Build the coordinator binary for the host platform
 coordinator-build-linux: ## Cross-compile coordinator for linux/amd64 (EigenCloud)
 	cd coordinator && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
 	    go build -o coordinator-linux ./cmd/coordinator
+
+coordinator-migrate-build: ## Build the external PostgreSQL migration command
+	mkdir -p coordinator/bin
+	go build -o coordinator/bin/coordinator-migrate ./coordinator/cmd/migrate
+
+coordinator-migration-test: ## Test migration catalog, compatibility, and runner
+	go test ./coordinator/store ./coordinator/cmd/migrate -run 'Migration|Migrate_|Schema'
 
 coordinator: coordinator-test coordinator-build ## Test + build coordinator
 

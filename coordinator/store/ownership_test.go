@@ -16,24 +16,35 @@ func TestPostgresCoordinatorOwnershipIsSingleActive(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	first, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL, OwnershipEnabled: true})
+	if _, err := ApplyPostgresMigrations(ctx, databaseURL, MigrationOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.Close()
-	second, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL, OwnershipEnabled: true})
-	if second != nil {
-		second.Close()
+	if err := first.ActivateCoordinatorOwnership(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	err = second.ActivateCoordinatorOwnership(ctx, true)
+	if err == nil {
 		t.Fatal("second coordinator acquired ownership")
 	}
 	if err == nil || !strings.Contains(err.Error(), "ownership is already held") {
 		t.Fatalf("second coordinator error = %v", err)
 	}
 	disabled, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
-	if disabled != nil {
-		disabled.Close()
-		t.Fatal("ownership-disabled coordinator started after activation")
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer disabled.Close()
+	err = disabled.ActivateCoordinatorOwnership(ctx, false)
 	if err == nil || !strings.Contains(err.Error(), "cannot be disabled") {
 		t.Fatalf("ownership disable error = %v", err)
 	}
@@ -46,11 +57,17 @@ func TestPostgresOwnershipConnectionLossFencesMutations(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	backend, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL, OwnershipEnabled: true})
+	if _, err := ApplyPostgresMigrations(ctx, databaseURL, MigrationOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer backend.Close()
+	if err := backend.ActivateCoordinatorOwnership(ctx, true); err != nil {
+		t.Fatal(err)
+	}
 	if err := backend.ownershipConn.Conn().Close(ctx); err != nil {
 		t.Fatal(err)
 	}

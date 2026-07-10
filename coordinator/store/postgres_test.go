@@ -352,6 +352,9 @@ func newPostgresWithMaxConns(t *testing.T, maxConns int32) *PostgresStore {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	if _, err := ApplyPostgresMigrations(ctx, dbURL, MigrationOptions{}); err != nil {
+		t.Fatalf("ApplyPostgresMigrations: %v", err)
+	}
 	cfg, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {
 		t.Fatalf("ParseConfig: %v", err)
@@ -364,9 +367,9 @@ func newPostgresWithMaxConns(t *testing.T, maxConns int32) *PostgresStore {
 		t.Fatalf("NewWithConfig: %v", err)
 	}
 	s := &PostgresStore{pool: pool}
-	if err := s.migrate(ctx); err != nil {
+	if err := checkSchemaCompatibility(ctx, pool); err != nil {
 		pool.Close()
-		t.Fatalf("migrate: %v", err)
+		t.Fatalf("check schema compatibility: %v", err)
 	}
 	for _, table := range []string{"providers"} {
 		if _, err := s.pool.Exec(ctx, "TRUNCATE "+table+" CASCADE"); err != nil {
@@ -533,11 +536,9 @@ func TestPostgresWalletPriceCleanupPreservesPlatform(t *testing.T) {
 		t.Fatalf("set orphan wallet price: %v", err)
 	}
 
-	// Re-run migrations (simulated restart). With the marker cleared, the
-	// guarded cleanup executes exactly once.
-	if err := s.migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	// Re-adopt the legacy schema with the marker cleared. The guarded cleanup
+	// executes exactly once while version 1 is recorded.
+	reapplyLegacyBaselineForTest(t, s)
 
 	if in, out, ok := s.GetModelPrice("platform", "gpt-oss-20b"); !ok || in != 50_000 || out != 200_000 {
 		t.Errorf("platform price = (%d, %d, %v), want (50000, 200000, true) — platform pricing must never be wiped", in, out, ok)
@@ -561,9 +562,9 @@ func TestPostgresWalletPriceCleanupPreservesPlatform(t *testing.T) {
 }
 
 // TestPostgresWalletPriceCleanupRunsOnce verifies the destructive cleanup is
-// gated behind its schema_migrations marker and does NOT run on every boot. Once
-// the marker is set, a subsequent migrate() leaves even orphan wallet-keyed rows
-// untouched — stopping the destructive DELETE from running repeatedly.
+// gated behind its schema_migrations marker and does NOT run on every migration
+// invocation. Once marked, even a legacy-baseline replay leaves later orphan
+// wallet-keyed rows untouched.
 func TestPostgresWalletPriceCleanupRunsOnce(t *testing.T) {
 	s := testPostgresStore(t)
 	ctx := context.Background()
@@ -583,12 +584,25 @@ func TestPostgresWalletPriceCleanupRunsOnce(t *testing.T) {
 		t.Fatalf("set orphan wallet price: %v", err)
 	}
 
-	if err := s.migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	reapplyLegacyBaselineForTest(t, s)
 
 	if _, _, ok := s.GetModelPrice("So1anaWa11etAddre55NotAUser", "gemma-4-26b"); !ok {
 		t.Error("orphan row should survive when the cleanup marker is already set (run-once)")
+	}
+}
+
+func reapplyLegacyBaselineForTest(t *testing.T, s *PostgresStore) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := s.pool.Exec(ctx, "DELETE FROM schema_migration_versions"); err != nil {
+		t.Fatalf("clear versioned migration metadata: %v", err)
+	}
+	result, err := ApplyPostgresMigrations(ctx, os.Getenv("DATABASE_URL"), MigrationOptions{})
+	if err != nil {
+		t.Fatalf("reapply legacy baseline: %v", err)
+	}
+	if len(result.Applied) != int(MaximumSupportedSchemaVersion) {
+		t.Fatalf("reapplied versions = %v, want full catalog", result.Applied)
 	}
 }
 

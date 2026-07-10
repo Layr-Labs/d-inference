@@ -721,4 +721,31 @@ mod tests {
         // bal: 1M + 0.5M = 1.5M; wdr: 1M + 0.5M = 1.5M
         assert_eq!(led.balance("a"), (1_500_000, 1_500_000));
     }
+
+    #[test]
+    fn active_job_count_tracks_multiple_concurrent_jobs() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 10_000_000, 0);
+        assert_eq!(led.active_job_count(), 0);
+        led.reserve(OperationKey("r1".into()), "j1", "a", 1_000_000)
+            .unwrap();
+        led.reserve(OperationKey("r2".into()), "j2", "a", 1_000_000)
+            .unwrap();
+        led.reserve(OperationKey("r3".into()), "j3", "a", 1_000_000)
+            .unwrap();
+        assert_eq!(led.active_job_count(), 3);
+        led.mark_start_authorized("j1").unwrap();
+        assert!(led
+            .settle(OperationKey("s1".into()), "j1", "a", 500_000, "d1")
+            .unwrap());
+        assert_eq!(led.active_job_count(), 2);
+        assert!(led
+            .release(OperationKey("rel2".into()), "j2", "a")
+            .unwrap());
+        assert_eq!(led.active_job_count(), 1);
+        assert!(led
+            .release(OperationKey("rel3".into()), "j3", "a")
+            .unwrap());
+        assert_eq!(led.active_job_count(), 0);
+    }
 }

@@ -1,50 +1,16 @@
 //! Concurrent HTTP held-review: never moves money.
 
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use darkbloom_coordinator::{
-    bounded_telemetry, router, spawn_fleet_actor, AppState, CoordinatorKeys, Epoch,
-    ExternalEventInbox, MemoryLedger, MemoryTerminalStore, ModelCard, Outbox, OwnershipGate,
-    ProviderHub,
-};
-use darkbloom_core::PlacementController;
-use http_body_util::BodyExt;
+use common::{body_json, pilot_app_state};
+use darkbloom_coordinator::router;
 use serde_json::json;
-use tokio::sync::Mutex;
 use tower::ServiceExt;
 
-fn test_state() -> AppState {
-    let (fleet, _) = spawn_fleet_actor();
-    let ownership = std::sync::Arc::new(OwnershipGate::new(false));
-    ownership.acquire(Epoch(9)).unwrap();
-    let (telemetry, _worker) = bounded_telemetry(16);
-    let mut ledger = MemoryLedger::default();
-    ledger.credit("pilot-account", 1_000_000, 0).unwrap();
-    AppState {
-        fleet,
-        hub: ProviderHub::new(),
-        keys: CoordinatorKeys::generate("test"),
-        models: vec![ModelCard {
-            id: "pilot-text-model".into(),
-            object: "model".into(),
-            owned_by: "darkbloom".into(),
-        }],
-        ledger: std::sync::Arc::new(Mutex::new(ledger)),
-        placement: std::sync::Arc::new(Mutex::new(PlacementController::default())),
-        telemetry: std::sync::Arc::new(telemetry),
-        pilot_account: "pilot-account".into(),
-        pilot_api_keys: std::sync::Arc::new(vec![]),
-        coordinator_epoch: 9,
-        ownership,
-        external_events: std::sync::Arc::new(Mutex::new(ExternalEventInbox::new())),
-        outbox: std::sync::Arc::new(Mutex::new(Outbox::default())),
-        terminals: std::sync::Arc::new(Mutex::new(MemoryTerminalStore::new())),
-    }
-}
-
-async fn body_json(res: axum::response::Response) -> serde_json::Value {
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&bytes).unwrap()
+fn test_state() -> darkbloom_coordinator::AppState {
+    pilot_app_state(true)
 }
 
 #[tokio::test]

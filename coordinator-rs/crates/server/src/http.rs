@@ -258,6 +258,8 @@ async fn chat_completions(
             let lease = LeaseId::new(format!("lease-{}", Uuid::new_v4()));
             let dispatch_nonce = Uuid::new_v4().to_string();
             let request_digest = format!("sha256:{}", Uuid::new_v4());
+            let predicted_ttft_ms = 100.0_f64;
+            let admit_started = std::time::Instant::now();
 
             if task
                 .apply(ControlEvent::Reserved {
@@ -479,11 +481,12 @@ async fn chat_completions(
                             ("provider".into(), completion.provider_id.clone()),
                         ],
                     });
-                    // Online calibration sample (predicted from admit-time estimate).
+                    // Online calibration sample from this request's observed latency.
+                    let actual_ttft_ms = admit_started.elapsed().as_secs_f64() * 1000.0;
                     state.fleet.record_ttft(
                         completion.model.clone(),
-                        100.0, // pilot: use provider snapshot estimate when available
-                        80.0,
+                        predicted_ttft_ms,
+                        actual_ttft_ms.max(1.0),
                     );
                     // Terminal ACK after durable disposition (plan §12.8).
                     let ack = json!({

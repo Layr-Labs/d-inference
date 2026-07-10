@@ -1,14 +1,16 @@
 //! HTTP: ownership heartbeat loss fences chat/deposits (DECISIONS #36).
 
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use common::body_json;
 use darkbloom_coordinator::{
     bounded_telemetry, router, run_ownership_heartbeat, spawn_fleet_actor, AppState,
     CoordinatorKeys, Epoch, ExternalEventInbox, LocalOwnershipStore, MemoryLedger,
     MemoryTerminalStore, ModelCard, Outbox, OwnershipGate, ProviderHub,
 };
 use darkbloom_core::PlacementController;
-use http_body_util::BodyExt;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +18,7 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 fn holding_state(
-    store: Arc<LocalOwnershipStore>,
+    _store: Arc<LocalOwnershipStore>,
     gate: Arc<OwnershipGate>,
 ) -> AppState {
     let (fleet, _) = spawn_fleet_actor();
@@ -43,11 +45,6 @@ fn holding_state(
         outbox: Arc::new(Mutex::new(Outbox::default())),
         terminals: Arc::new(Mutex::new(MemoryTerminalStore::new())),
     }
-}
-
-async fn body_json(res: axum::response::Response) -> serde_json::Value {
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&bytes).unwrap()
 }
 
 #[tokio::test]

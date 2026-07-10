@@ -1,49 +1,16 @@
 //! Concurrent outbox enqueue while deposit applies: quiescence not ready until drain.
 
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use darkbloom_coordinator::{
-    bounded_telemetry, router, spawn_fleet_actor, AppState, CoordinatorKeys, Epoch,
-    ExternalEventInbox, MemoryLedger, MemoryTerminalStore, ModelCard, Outbox, OwnershipGate,
-    ProviderHub,
-};
-use darkbloom_core::PlacementController;
-use http_body_util::BodyExt;
+use common::{body_json, pilot_app_state};
+use darkbloom_coordinator::router;
 use serde_json::json;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use tower::ServiceExt;
 
-fn test_state() -> AppState {
-    let (fleet, _) = spawn_fleet_actor();
-    let ownership = Arc::new(OwnershipGate::new(false));
-    ownership.acquire(Epoch(1)).unwrap();
-    let (telemetry, _worker) = bounded_telemetry(16);
-    AppState {
-        fleet,
-        hub: ProviderHub::new(),
-        keys: CoordinatorKeys::generate("test"),
-        models: vec![ModelCard {
-            id: "pilot-text-model".into(),
-            object: "model".into(),
-            owned_by: "darkbloom".into(),
-        }],
-        ledger: Arc::new(Mutex::new(MemoryLedger::default())),
-        placement: Arc::new(Mutex::new(PlacementController::default())),
-        telemetry: Arc::new(telemetry),
-        pilot_account: "pilot-account".into(),
-        pilot_api_keys: Arc::new(vec![]),
-        coordinator_epoch: 1,
-        ownership,
-        external_events: Arc::new(Mutex::new(ExternalEventInbox::new())),
-        outbox: Arc::new(Mutex::new(Outbox::default())),
-        terminals: Arc::new(Mutex::new(MemoryTerminalStore::new())),
-    }
-}
-
-async fn body_json(res: axum::response::Response) -> serde_json::Value {
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&bytes).unwrap()
+fn test_state() -> darkbloom_coordinator::AppState {
+    pilot_app_state(true)
 }
 
 #[tokio::test]
@@ -96,7 +63,7 @@ async fn two_deposits_two_outbox_entries_block_quiescence_until_both_drained() {
     {
         let mut box_ = outbox.lock().await;
         let e = box_.try_claim().unwrap();
-        box_.ack_done(e.id);
+        let _ = box_.ack_done(e.id);
     }
     let q2 = app
         .clone()
@@ -116,7 +83,7 @@ async fn two_deposits_two_outbox_entries_block_quiescence_until_both_drained() {
     {
         let mut box_ = outbox.lock().await;
         let e = box_.try_claim().unwrap();
-        box_.ack_done(e.id);
+        let _ = box_.ack_done(e.id);
     }
     let q3 = app
         .oneshot(

@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// Build a pilot AppState. When `holding` is true, ownership epoch 9 is acquired.
+#[allow(dead_code)] // not every HTTP test binary uses this helper
 pub fn pilot_app_state(holding: bool) -> AppState {
     let (fleet, _) = spawn_fleet_actor();
     let ownership = Arc::new(OwnershipGate::new(false));

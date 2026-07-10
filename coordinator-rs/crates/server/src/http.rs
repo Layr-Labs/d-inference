@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::crypto_keys::CoordinatorKeys;
+use crate::deposits::apply_stripe_deposit;
 use crate::external_events::ExternalEventInbox;
 use crate::fleet_actor::FleetHandle;
 use crate::ledger::MemoryLedger;
@@ -72,6 +73,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/messages", post(messages_unsupported))
         .route("/ws/provider", get(provider_ws))
         .route("/v1/admin/quiescence", get(quiescence))
+        .route("/v1/admin/deposits", post(admin_deposit))
         .fallback(unsupported)
         .with_state(Arc::new(state))
 }
@@ -192,6 +194,119 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "coordinator": "rust" }))
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminDepositRequest {
+    /// Stripe (or other) event id — idempotency key with `source`.
+    event_id: String,
+    #[serde(default = "default_deposit_source")]
+    source: String,
+    /// Micro-USD total credit. Defaults to pilot account when omitted.
+    amount_micro_usd: i64,
+    #[serde(default)]
+    withdrawable_micro_usd: i64,
+    #[serde(default)]
+    account: Option<String>,
+}
+
+fn default_deposit_source() -> String {
+    "stripe".into()
+}
+
+/// Pilot-only deposit apply (mirrors Go ApplyStripeDeposit via ExternalEventInbox).
+/// Auth: same pilot API keys as chat. Not a production Stripe webhook.
+async fn admin_deposit(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AdminDepositRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = state.ownership.assert_holding() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": {
+                    "message": format!("{err}"),
+                    "type": "server_error",
+                    "code": "ownership_lost"
+                }
+            })),
+        )
+            .into_response();
+    }
+    if let Err(status) = authorize_pilot(&state, &headers) {
+        return (
+            status,
+            Json(json!({
+                "error": {
+                    "message": "invalid pilot api key",
+                    "type": "invalid_request_error",
+                    "code": "invalid_api_key"
+                }
+            })),
+        )
+            .into_response();
+    }
+    if req.event_id.is_empty() || req.amount_micro_usd <= 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": "event_id required and amount_micro_usd must be > 0",
+                    "type": "invalid_request_error",
+                    "code": "invalid_deposit"
+                }
+            })),
+        )
+            .into_response();
+    }
+    let account = req
+        .account
+        .unwrap_or_else(|| state.pilot_account.clone());
+    let applied = {
+        let mut inbox = state.external_events.lock().await;
+        let mut ledger = state.ledger.lock().await;
+        match apply_stripe_deposit(
+            &mut inbox,
+            &mut ledger,
+            &req.source,
+            &req.event_id,
+            &account,
+            req.amount_micro_usd,
+            req.withdrawable_micro_usd,
+        ) {
+            Ok(applied) => applied,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": {
+                            "message": format!("{err}"),
+                            "type": "invalid_request_error",
+                            "code": "deposit_failed"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    };
+    let (bal, wdr) = {
+        let ledger = state.ledger.lock().await;
+        ledger.balance(&account)
+    };
+    (
+        StatusCode::OK,
+        Json(json!({
+            "applied": applied,
+            "account": account,
+            "source": req.source,
+            "event_id": req.event_id,
+            "balance_micro_usd": bal,
+            "withdrawable_micro_usd": wdr,
+        })),
+    )
+        .into_response()
 }
 
 async fn readyz(State(state): State<Arc<AppState>>) -> impl IntoResponse {

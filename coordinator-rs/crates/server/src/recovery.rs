@@ -39,6 +39,35 @@ pub fn recover_undispatched(
     }
 }
 
+/// Explicit ops review settle for a start_authorized held job (DECISIONS #16).
+/// Charges `actual` (capped by reservation) and clears the hold.
+pub fn force_settle_held(
+    ledger: &Arc<Mutex<MemoryLedger>>,
+    job_id: &str,
+    account: &str,
+    actual: i64,
+    terminal_digest: &str,
+) -> Result<RecoveryAction, String> {
+    let mut g = ledger.lock().map_err(|e| e.to_string())?;
+    if !g.job_funded_start(job_id) {
+        return Ok(RecoveryAction::Skipped);
+    }
+    if g.active_job_count() == 0 || g.job_reserved_total(job_id).is_none() {
+        return Ok(RecoveryAction::AlreadyTerminal);
+    }
+    match g.settle(
+        OperationKey(format!("force_settle:{job_id}")),
+        job_id,
+        account,
+        actual,
+        terminal_digest,
+    ) {
+        Ok(true) => Ok(RecoveryAction::Released), // settled — reuse Released as "cleared"
+        Ok(false) => Ok(RecoveryAction::AlreadyTerminal),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Classify a start_authorized job that never reached a provider terminal.
 /// Does not move money — ops must settle or force-release via explicit review.
 pub fn recover_start_authorized_held(
@@ -53,7 +82,6 @@ pub fn recover_start_authorized_held(
         return Ok(RecoveryAction::Skipped);
     }
     if g.active_job_count() == 0 {
-        // Disposition already set.
         return Ok(RecoveryAction::AlreadyTerminal);
     }
     Ok(RecoveryAction::HeldForReview)
@@ -127,5 +155,38 @@ mod tests {
             recover_start_authorized_held(&led, "j1").unwrap(),
             RecoveryAction::Skipped
         );
+    }
+
+    #[test]
+    fn force_settle_held_clears_hold() {
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        {
+            let mut g = led.lock().unwrap();
+            g.credit("a", 1_000_000, 0).unwrap();
+            g.reserve(OperationKey("r".into()), "j1", "a", 100_000)
+                .unwrap();
+            g.mark_start_authorized("j1").unwrap();
+        }
+        assert_eq!(
+            force_settle_held(&led, "j1", "a", 40_000, "force-d1").unwrap(),
+            RecoveryAction::Released
+        );
+        let g = led.lock().unwrap();
+        assert_eq!(g.active_job_count(), 0);
+        // reserved 100k, charged 40k → refund 60k → bal = 1M-100k+60k = 960k
+        assert_eq!(g.balance("a").0, 960_000);
+        assert_eq!(g.held_start_authorized_count(), 0);
+    }
+
+    #[test]
+    fn held_start_authorized_count_tracks_holds() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 1_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j1", "a", 100_000)
+            .unwrap();
+        assert_eq!(led.held_start_authorized_count(), 0);
+        led.mark_start_authorized("j1").unwrap();
+        assert_eq!(led.held_start_authorized_count(), 1);
+        assert_eq!(led.held_start_authorized_job_ids(), vec!["j1".to_string()]);
     }
 }

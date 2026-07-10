@@ -295,6 +295,22 @@ impl MemoryLedger {
             .filter(|j| j.disposition.is_none())
             .count()
     }
+
+    /// Jobs that are start_authorized but not yet disposed (held for review).
+    pub fn held_start_authorized_count(&self) -> usize {
+        self.jobs
+            .values()
+            .filter(|j| j.disposition.is_none() && j.funded_start)
+            .count()
+    }
+
+    pub fn held_start_authorized_job_ids(&self) -> Vec<String> {
+        self.jobs
+            .iter()
+            .filter(|(_, j)| j.disposition.is_none() && j.funded_start)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
 }
 
 #[cfg(test)]

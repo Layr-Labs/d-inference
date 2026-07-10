@@ -113,10 +113,16 @@ fn authorize_pilot(state: &AppState, headers: &axum::http::HeaderMap) -> Result<
 
 async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Warm-plane inventory — expand as workers land.
-    let (bal, wdr, active_jobs) = {
+    let (bal, wdr, active_jobs, held_start_authorized, held_job_ids) = {
         let led = state.ledger.lock().await;
         let (b, w) = led.balance(&state.pilot_account);
-        (b, w, led.active_job_count())
+        (
+            b,
+            w,
+            led.active_job_count(),
+            led.held_start_authorized_count(),
+            led.held_start_authorized_job_ids(),
+        )
     };
     let (placement_version, demand) = {
         let p = state.placement.lock().await;
@@ -148,6 +154,8 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             "pilot_account_balance_micro_usd": bal,
             "pilot_account_withdrawable_micro_usd": wdr,
             "active_jobs": active_jobs,
+            "held_start_authorized": held_start_authorized,
+            "held_start_authorized_job_ids": held_job_ids,
             "placement_version": placement_version,
             "placement_demand": demand,
             "telemetry_emitted": state.telemetry.emitted(),

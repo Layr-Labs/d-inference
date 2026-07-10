@@ -123,6 +123,7 @@ Date: 2026-07-10
 | 114 | cutover-drain returns remaining accounts | Success/abort cutover-drain responses include `accounts_needing_cutover` for the next ops loop iteration |
 | 115 | cutover-drain-all one-shot multi-tenant | `POST /v1/admin/cutover-drain-all` loops accounts then outbox until ready; aborts on steal; quiescence hint prefers it |
 | 116 | cutover-drain-all allowlist + races | Optional `accounts` allowlist scopes cutover; concurrent drain-all and deposits conserve; idempotent when ready |
+| 117 | CLI demo-cutover-drain-all | `--demo-cutover-drain-all` clears multi-account reserved+held orphans then drains outbox |
 
 ## Deleted Go mechanisms (do not port)
 

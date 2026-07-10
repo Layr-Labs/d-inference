@@ -453,3 +453,8 @@ each money-moving phase/job. Mid-flight steal returns 503 `ownership_lost`
 with partial progress (`adopted`/`released`/`settled` counts) and does not
 continue charging/refunding under a stolen fence.
 
+### Quiescence cutover_hint (DECISIONS #86)
+
+Quiescence includes `cutover_hint` so ops know the next drain step without
+parsing orphan_summary manually.
+

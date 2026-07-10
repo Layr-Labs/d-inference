@@ -335,6 +335,21 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let late_terminals = state.terminals.lock().await.late_count();
     // Quiescent only when no active jobs and no retryable outbox work.
     let ready = active_jobs == 0 && outbox_retryable == 0;
+    let needs_adopt = orphan_summary
+        .get("needs_adopt_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let cutover_hint = if ready {
+        "ready"
+    } else if active_jobs > 0 && needs_adopt > 0 {
+        "clear-orphans then outbox-drain"
+    } else if active_jobs > 0 {
+        "recover/force-settle or clear-orphans"
+    } else if outbox_retryable > 0 {
+        "outbox-drain"
+    } else {
+        "not-ready"
+    };
     let status = if ready {
         StatusCode::OK
     } else {
@@ -344,6 +359,7 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         status,
         Json(json!({
             "ready": ready,
+            "cutover_hint": cutover_hint,
             "pilot_account_balance_micro_usd": bal,
             "pilot_account_withdrawable_micro_usd": wdr,
             "active_jobs": active_jobs,
@@ -721,7 +737,6 @@ async fn admin_force_settle_batch(
     let account = req
         .account
         .unwrap_or_else(|| state.pilot_account.clone());
-    let mut epoch = state.ownership.epoch().0;
 
     let ids = {
         let led = state.ledger.lock().await;
@@ -742,7 +757,7 @@ async fn admin_force_settle_batch(
         if let Err(resp) = require_holding(&state) {
             return resp;
         }
-        epoch = state.ownership.epoch().0;
+        let epoch = state.ownership.epoch().0;
         let digest = format!("force-settle-batch:{job_id}");
         let (action, charged) = {
             let mut led = state.ledger.lock().await;
@@ -951,7 +966,6 @@ async fn admin_recover_undispatched_batch(
     let account = req
         .account
         .unwrap_or_else(|| state.pilot_account.clone());
-    let mut epoch = state.ownership.epoch().0;
 
     let mut released = Vec::new();
     let mut skipped = Vec::new();
@@ -972,7 +986,7 @@ async fn admin_recover_undispatched_batch(
         if let Err(resp) = require_holding(&state) {
             return resp;
         }
-        epoch = state.ownership.epoch().0;
+        let epoch = state.ownership.epoch().0;
         let (action, refunded) = {
             let mut led = state.ledger.lock().await;
             let reserved = led.job_reserved_total(&job_id).map(|m| m.0).unwrap_or(0);
@@ -1234,7 +1248,7 @@ async fn admin_clear_orphans(
     let account = req
         .account
         .unwrap_or_else(|| state.pilot_account.clone());
-    let mut epoch = state.ownership.epoch().0;
+    let epoch = state.ownership.epoch().0;
 
     // 1) Adopt all active jobs to current epoch.
     let mut adopted = Vec::new();
@@ -1264,7 +1278,6 @@ async fn admin_clear_orphans(
             resp,
         );
     }
-    epoch = state.ownership.epoch().0;
 
     // 2) Recover reserved-not-started.
     let mut released = Vec::new();
@@ -1286,7 +1299,7 @@ async fn admin_clear_orphans(
                     resp,
                 );
             }
-            epoch = state.ownership.epoch().0;
+            let epoch = state.ownership.epoch().0;
             let refunded = {
                 let mut led = state.ledger.lock().await;
                 let reserved = led.job_reserved_total(&job_id).map(|m| m.0).unwrap_or(0);
@@ -1320,7 +1333,6 @@ async fn admin_clear_orphans(
             resp,
         );
     }
-    epoch = state.ownership.epoch().0;
 
     // 3) Force-settle remaining holds.
     let mut settled = Vec::new();
@@ -1342,7 +1354,7 @@ async fn admin_clear_orphans(
                     resp,
                 );
             }
-            epoch = state.ownership.epoch().0;
+            let epoch = state.ownership.epoch().0;
             let digest = format!("clear-orphans:{job_id}");
             let charged = {
                 let mut led = state.ledger.lock().await;

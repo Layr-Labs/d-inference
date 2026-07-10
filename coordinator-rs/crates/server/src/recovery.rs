@@ -179,6 +179,44 @@ mod tests {
     }
 
     #[test]
+    fn force_settle_held_second_call_is_already_terminal() {
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        {
+            let mut g = led.lock().unwrap();
+            g.credit("a", 1_000_000, 0).unwrap();
+            g.reserve(OperationKey("r".into()), "j1", "a", 100_000)
+                .unwrap();
+            g.mark_start_authorized("j1").unwrap();
+        }
+        assert_eq!(
+            force_settle_held(&led, "j1", "a", 40_000, "force-d1").unwrap(),
+            RecoveryAction::Released
+        );
+        // Same digest / disposed job → AlreadyTerminal (idempotent).
+        assert_eq!(
+            force_settle_held(&led, "j1", "a", 40_000, "force-d1").unwrap(),
+            RecoveryAction::AlreadyTerminal
+        );
+        assert_eq!(led.lock().unwrap().balance("a").0, 960_000);
+    }
+
+    #[test]
+    fn force_settle_held_skips_when_not_authorized() {
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        {
+            let mut g = led.lock().unwrap();
+            g.credit("a", 1_000_000, 0).unwrap();
+            g.reserve(OperationKey("r".into()), "j1", "a", 100_000)
+                .unwrap();
+        }
+        assert_eq!(
+            force_settle_held(&led, "j1", "a", 40_000, "force-d1").unwrap(),
+            RecoveryAction::Skipped
+        );
+        assert_eq!(led.lock().unwrap().active_job_count(), 1);
+    }
+
+    #[test]
     fn held_start_authorized_count_tracks_holds() {
         let mut led = MemoryLedger::default();
         led.credit("a", 1_000_000, 0).unwrap();

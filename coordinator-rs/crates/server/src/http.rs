@@ -92,6 +92,30 @@ fn invoke_admin_batch_job(job_id: &str) {
     }
 }
 
+/// Partial batch response when ownership is lost mid-loop (DECISIONS #97).
+fn batch_ownership_lost_partial(
+    batch: &str,
+    completed: &[String],
+    completed_key: &str,
+    amount_key: &str,
+    amount_total: i64,
+) -> axum::response::Response {
+    let mut body = serde_json::Map::new();
+    body.insert(
+        "error".into(),
+        json!({
+            "message": format!("ownership lost during {batch}"),
+            "type": "invalid_request_error",
+            "code": "ownership_lost"
+        }),
+    );
+    body.insert("action".into(), json!(format!("{batch}_aborted")));
+    body.insert(completed_key.into(), json!(completed));
+    body.insert(format!("{completed_key}_count"), json!(completed.len()));
+    body.insert(amount_key.into(), json!(amount_total));
+    (StatusCode::SERVICE_UNAVAILABLE, Json(Value::Object(body))).into_response()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModelCard {
     pub id: String,
@@ -806,9 +830,15 @@ async fn admin_force_settle_batch(
 
     for job_id in ids {
         invoke_admin_batch_job(&job_id);
-        // Re-check holding per job (DECISIONS #85/#96).
-        if let Err(resp) = require_holding(&state) {
-            return resp;
+        // Re-check holding per job (DECISIONS #85/#96/#97).
+        if require_holding(&state).is_err() {
+            return batch_ownership_lost_partial(
+                "force_settle_batch",
+                &settled,
+                "settled",
+                "charged_micro_usd",
+                charged_total,
+            );
         }
         let epoch = state.ownership.epoch().0;
         let digest = format!("force-settle-batch:{job_id}");
@@ -1078,9 +1108,15 @@ async fn admin_recover_undispatched_batch(
 
     for job_id in ids {
         invoke_admin_batch_job(&job_id);
-        // Re-check holding per job (DECISIONS #85/#96).
-        if let Err(resp) = require_holding(&state) {
-            return resp;
+        // Re-check holding per job (DECISIONS #85/#96/#97).
+        if require_holding(&state).is_err() {
+            return batch_ownership_lost_partial(
+                "recover_undispatched_batch",
+                &released,
+                "released",
+                "refunded_micro_usd",
+                refund_total,
+            );
         }
         let epoch = state.ownership.epoch().0;
         let (action, refunded) = {

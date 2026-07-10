@@ -520,3 +520,8 @@ foreign orphans remain and `ready` stays false until a full (unfiltered) drain.
 before each job. A steal after the first money move returns 503 and leaves
 remaining orphans for adopt + cutover-drain.
 
+### Batch abort partial + cutover resume (DECISIONS #97)
+
+Batch abort responses include partial `settled`/`released` counts and amounts.
+Ops re-acquire ownership and run cutover-drain to clear the remainder.
+

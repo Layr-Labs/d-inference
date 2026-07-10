@@ -1,11 +1,11 @@
-//! Mid-flight ownership steal aborts batch recover/force-settle (DECISIONS #96).
+//! Batch abort partial progress + resume via cutover-drain (DECISIONS #97).
 
 mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::{body_json, pilot_app_state};
-use darkbloom_coordinator::{router, set_admin_batch_job_hook};
+use darkbloom_coordinator::{router, set_admin_batch_job_hook, Epoch};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
@@ -19,7 +19,7 @@ fn lock_hook() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[tokio::test]
-async fn force_settle_batch_aborts_after_first_job_on_steal() {
+async fn force_settle_batch_abort_reports_partial_then_cutover_resumes() {
     let _guard = lock_hook();
     set_admin_batch_job_hook(None);
     let state = pilot_app_state(true);
@@ -27,7 +27,7 @@ async fn force_settle_batch_aborts_after_first_job_on_steal() {
     let epoch = ownership.epoch().0;
     {
         let mut led = state.ledger.lock().await;
-        for id in ["fsb-a", "fsb-b"] {
+        for id in ["pfs-a", "pfs-b"] {
             led.reserve_with_epoch(
                 darkbloom_coordinator::OperationKey(format!("r-{id}")),
                 id,
@@ -45,7 +45,6 @@ async fn force_settle_batch_aborts_after_first_job_on_steal() {
     let seen = Arc::new(AtomicUsize::new(0));
     let seen2 = seen.clone();
     set_admin_batch_job_hook(Some(Arc::new(move |_job| {
-        // Release before the second job's money move.
         if seen2.fetch_add(1, Ordering::SeqCst) == 1 {
             gate.release();
         }
@@ -53,6 +52,7 @@ async fn force_settle_batch_aborts_after_first_job_on_steal() {
 
     let app = router(state.clone());
     let res = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -70,17 +70,33 @@ async fn force_settle_batch_aborts_after_first_job_on_steal() {
     assert_eq!(v["error"]["code"], "ownership_lost");
     assert_eq!(v["action"], "force_settle_batch_aborted");
     assert_eq!(v["settled_count"], 1);
-    // Exactly one hold cleared; one remains.
-    assert_eq!(state.ledger.lock().await.held_start_authorized_count(), 1);
+    assert_eq!(v["charged_micro_usd"], 0);
     assert_eq!(state.ledger.lock().await.active_job_count(), 1);
+
+    ownership.acquire(Epoch(epoch + 10)).unwrap();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/cutover-drain")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["ready"], true);
+    assert_eq!(v["clear_orphans"]["settled_count"], 1);
     assert_eq!(
         state.ledger.lock().await.balance("pilot-account").0,
-        1_000_000 - 50_000
+        1_000_000
     );
 }
 
 #[tokio::test]
-async fn recover_batch_aborts_after_first_job_on_steal() {
+async fn recover_batch_abort_reports_partial_then_cutover_resumes() {
     let _guard = lock_hook();
     set_admin_batch_job_hook(None);
     let state = pilot_app_state(true);
@@ -88,7 +104,7 @@ async fn recover_batch_aborts_after_first_job_on_steal() {
     let epoch = ownership.epoch().0;
     {
         let mut led = state.ledger.lock().await;
-        for id in ["rbb-a", "rbb-b"] {
+        for id in ["prb-a", "prb-b"] {
             led.reserve_with_epoch(
                 darkbloom_coordinator::OperationKey(format!("r-{id}")),
                 id,
@@ -111,6 +127,7 @@ async fn recover_batch_aborts_after_first_job_on_steal() {
 
     let app = router(state.clone());
     let res = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -125,13 +142,27 @@ async fn recover_batch_aborts_after_first_job_on_steal() {
 
     assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
     let v = body_json(res).await;
-    assert_eq!(v["error"]["code"], "ownership_lost");
     assert_eq!(v["action"], "recover_undispatched_batch_aborted");
     assert_eq!(v["released_count"], 1);
     assert_eq!(v["refunded_micro_usd"], 40_000);
     assert_eq!(state.ledger.lock().await.active_job_count(), 1);
+
+    ownership.acquire(Epoch(epoch + 11)).unwrap();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/cutover-drain")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(body_json(res).await["ready"], true);
     assert_eq!(
         state.ledger.lock().await.balance("pilot-account").0,
-        1_000_000 - 40_000
+        1_000_000
     );
 }

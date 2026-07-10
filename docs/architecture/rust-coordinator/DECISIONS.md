@@ -103,6 +103,7 @@ Date: 2026-07-10
 | 94 | CLI cutover-drain + deposit race | `--demo-cutover-drain` clears+drains outbox. Concurrent deposits ∥ cutover-drain conserve balance |
 | 95 | Multi-account + charged cutover-drain | cutover-drain refunds each job owner; `actual_micro_usd` charges holds; account filter leaves foreign jobs (ready=false) |
 | 96 | Batch recover/force mid-flight steal | recover-undispatched-batch / force-settle-batch re-check ownership per job; steal after first job aborts with remaining orphans |
+| 97 | Batch abort partial + cutover resume | Batch abort returns partial settled/released counts; re-acquire + cutover-drain clears remainder |
 
 ## Deleted Go mechanisms (do not port)
 

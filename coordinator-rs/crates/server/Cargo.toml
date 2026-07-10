@@ -39,6 +39,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 arc-swap = { workspace = true }
+async-trait = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 uuid = { workspace = true }

@@ -3426,6 +3426,7 @@ async fn chat_completions(
                     "rust-mock",
                     None,
                     !req.stream,
+                    state.ownership.epoch().0,
                 )
             };
 
@@ -3614,17 +3615,33 @@ async fn chat_completions(
                         (StatusCode::OK, Json(body)).into_response()
                     }
                 }
-                Err(err) => (
-                    StatusCode::PAYMENT_REQUIRED,
-                    Json(json!({
-                        "error": {
-                            "message": err,
-                            "type": "insufficient_funds",
-                            "code": "insufficient_funds"
-                        }
-                    })),
-                )
-                    .into_response(),
+                Err(err) => {
+                    let ownership_lost = err.contains("ownership lost");
+                    let (status, code, ty) = if ownership_lost {
+                        (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "ownership_lost",
+                            "server_error",
+                        )
+                    } else {
+                        (
+                            StatusCode::PAYMENT_REQUIRED,
+                            "insufficient_funds",
+                            "insufficient_funds",
+                        )
+                    };
+                    (
+                        status,
+                        Json(json!({
+                            "error": {
+                                "message": err,
+                                "type": ty,
+                                "code": code
+                            }
+                        })),
+                    )
+                        .into_response()
+                }
             }
         }
         darkbloom_core::AdmissionDecision::RetryAfter { reason, delay } => {

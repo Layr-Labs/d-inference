@@ -33,6 +33,8 @@ pub struct MockCompletion {
 /// (plan §10.6). Pass `None` to charge the full reported amount.
 /// When `settle` is false, content is produced but money is not moved — the
 /// caller must settle after the stream checkpoint (DECISIONS #49).
+/// Settlement uses `settle_capped_fenced` so ownership steal cannot charge
+/// (DECISIONS #134).
 pub fn complete_authorized_job(
     ledger: &mut MemoryLedger,
     account: &str,
@@ -43,6 +45,7 @@ pub fn complete_authorized_job(
     mode: &str,
     billable_cap_micro_usd: Option<i64>,
     settle: bool,
+    fencing_epoch: u64,
 ) -> Result<MockCompletion, String> {
     let attempt_id = permit.attempt.as_str().to_string();
     ledger.record_attempt(&attempt_id, job_id, &permit.provider_id, "started");
@@ -83,7 +86,8 @@ pub fn complete_authorized_job(
     if settle {
         let cap = billable_cap_micro_usd.unwrap_or(charged);
         ledger
-            .settle_capped(
+            .settle_capped_fenced(
+                fencing_epoch,
                 OperationKey(format!("settle:{job_id}")),
                 job_id,
                 account,
@@ -152,6 +156,7 @@ pub fn run_mock_completion(
         "rust-mock",
         None,
         true,
+        0, // unbound jobs from unfenced reserve
     )
 }
 
@@ -215,5 +220,37 @@ mod tests {
         // reserved 100_000 then settled charging 1_000 → refund 99_000 → net -1_000
         assert_eq!(bal, 1_000_000 - 1_000);
         assert_eq!(led.active_job_count(), 0);
+    }
+
+    #[test]
+    fn fenced_settle_refuses_after_epoch_mismatch() {
+        let mut led = MemoryLedger::default();
+        led.credit("acct", 1_000_000, 0).unwrap();
+        led.reserve_with_epoch(OperationKey("r1".into()), "j1", "acct", 100_000, 7)
+            .unwrap();
+        led.mark_start_authorized_fenced(7, "j1", "acct").unwrap();
+        let permit = DispatchPermit {
+            attempt: AttemptId::new("a1"),
+            provider_id: "p1".into(),
+            model: "m".into(),
+            expires_after: Duration::from_secs(2),
+        };
+        let err = complete_authorized_job(
+            &mut led,
+            "acct",
+            "j1",
+            &permit,
+            "lease-1",
+            "hi",
+            "rust-mock",
+            None,
+            true,
+            8, // stolen epoch
+        )
+        .unwrap_err();
+        assert!(err.contains("ownership lost"), "err={err}");
+        assert_eq!(led.active_job_count(), 1);
+        assert!(led.job_funded_start("j1"));
+        assert_eq!(led.balance("acct").0, 900_000);
     }
 }

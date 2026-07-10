@@ -12,6 +12,7 @@ pub mod http;
 pub mod ledger;
 pub mod ledger_sql;
 pub mod mock_provider;
+pub use mock_provider::{complete_authorized_job, openai_chat_response, MockCompletion};
 pub mod outbox;
 pub mod ownership;
 pub mod provider_hub;

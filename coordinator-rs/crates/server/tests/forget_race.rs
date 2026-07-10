@@ -9,7 +9,7 @@ fn after_forget_concurrent_observe_exactly_one_wins() {
     let inbox = Arc::new(Mutex::new(ExternalEventInbox::new()));
     {
         let mut g = inbox.lock().unwrap();
-        assert!(g.observe("stripe", "evt_f").unwrap());
+        assert!(g.observe("stripe", "evt_f", "d").unwrap());
         assert!(g.forget("stripe", "evt_f"));
         assert!(!g.contains("stripe", "evt_f"));
     }
@@ -19,7 +19,7 @@ fn after_forget_concurrent_observe_exactly_one_wins() {
         let inbox = inbox.clone();
         handles.push(thread::spawn(move || {
             let mut g = inbox.lock().unwrap();
-            g.observe("stripe", "evt_f").unwrap()
+            g.observe("stripe", "evt_f", "d").unwrap()
         }));
     }
 

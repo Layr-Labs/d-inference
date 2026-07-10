@@ -16,7 +16,7 @@ fn concurrent_manual_forget_then_deposit_retry_applies_once() {
     // Simulate crash between observe and credit: observe then forget.
     {
         let mut g = state.lock().unwrap();
-        assert!(g.0.observe("stripe", "evt_crash").unwrap());
+        assert!(g.0.observe("stripe", "evt_crash", "d").unwrap());
         assert!(g.0.forget("stripe", "evt_crash"));
     }
 

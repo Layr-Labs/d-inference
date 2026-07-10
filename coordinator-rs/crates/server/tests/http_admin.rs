@@ -63,6 +63,57 @@ async fn admin_deposit_applies_then_replays() {
 }
 
 #[tokio::test]
+async fn admin_deposit_mismatched_replay_returns_conflict() {
+    let state = test_state(true);
+    let app = router(state);
+    let first = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/deposits")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "event_id": "evt_mm_http",
+                        "amount_micro_usd": 100_000,
+                        "withdrawable_micro_usd": 0
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(body_json(first).await["applied"], true);
+
+    let mismatched = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/deposits")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "event_id": "evt_mm_http",
+                        "amount_micro_usd": 999_000,
+                        "withdrawable_micro_usd": 0
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mismatched.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(mismatched).await["error"]["code"],
+        "deposit_payload_conflict"
+    );
+}
+
+#[tokio::test]
 async fn chat_rejects_when_ownership_lost() {
     let app = router(test_state(false));
     let req = Request::builder()

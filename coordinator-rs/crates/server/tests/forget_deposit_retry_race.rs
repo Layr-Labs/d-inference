@@ -14,7 +14,7 @@ fn concurrent_forget_observe_deposit_retry() {
     )));
     {
         let mut g = state.lock().unwrap();
-        assert!(g.0.observe("stripe", "retry-evt").unwrap());
+        assert!(g.0.observe("stripe", "retry-evt", "d").unwrap());
         assert!(g.0.forget("stripe", "retry-evt"));
     }
 

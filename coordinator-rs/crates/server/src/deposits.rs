@@ -1,6 +1,7 @@
 //! Stripe deposit application via ExternalEventInbox + MemoryLedger.
 //!
 //! Mirrors Go `ApplyStripeDeposit`: event-id idempotency first, then credit.
+//! Payload digest binds account/amount/withdrawable (DECISIONS #46).
 
 use crate::external_events::{ExternalEventError, ExternalEventInbox};
 use crate::ledger::{LedgerError, MemoryLedger};
@@ -14,8 +15,14 @@ pub enum DepositError {
     Ledger(#[from] LedgerError),
 }
 
+/// Canonical payload digest for a deposit apply (DECISIONS #46).
+pub fn deposit_payload_digest(account: &str, total: i64, withdrawable: i64) -> String {
+    format!("v1|{account}|{total}|{withdrawable}")
+}
+
 /// Apply a Stripe deposit once per `(source, event_id)`.
-/// Returns `true` if credit was applied, `false` on replay.
+/// Returns `true` if credit was applied, `false` on identical replay.
+/// Returns Conflict when the same event is replayed with different params.
 ///
 /// Kill-boundary: amounts are validated **before** observe so a failed credit
 /// cannot permanently consume the event id (mirrors one-txn Postgres apply).
@@ -36,7 +43,8 @@ pub fn apply_stripe_deposit(
             "withdrawable exceeds total credit".into(),
         )));
     }
-    if !inbox.observe(source, event_id)? {
+    let digest = deposit_payload_digest(account, total, withdrawable);
+    if !inbox.observe(source, event_id, &digest)? {
         return Ok(false);
     }
     match ledger.credit(account, total, withdrawable) {
@@ -56,6 +64,7 @@ pub fn apply_stripe_deposit(
 /// Kill-boundary (DECISIONS #22): amount guard runs before event insert; credit is an
 /// UPSERT so a missing balances row cannot leave a poisoned event id with no credit.
 /// Outbox insert is gated on credit (DECISIONS #32/#37) so money+side-effect are one txn.
+/// Payload digest mismatch aborts before credit (DECISIONS #46).
 pub fn deposit_sql() -> &'static str {
     r#"
     WITH params AS (
@@ -63,9 +72,19 @@ pub fn deposit_sql() -> &'static str {
       WHERE $4::bigint > 0
         AND $5::bigint >= 0
         AND $5::bigint <= $4::bigint
+    ), existing AS (
+      SELECT payload_digest
+      FROM rust_coord.external_events
+      WHERE source = $1 AND event_id = $2
+      FOR UPDATE
+    ), mismatch AS (
+      SELECT 1 FROM existing
+      WHERE payload_digest IS DISTINCT FROM $6
     ), evt AS (
       INSERT INTO rust_coord.external_events (source, event_id, payload_digest)
       SELECT $1, $2, $6 FROM params
+      WHERE NOT EXISTS (SELECT 1 FROM existing)
+        AND NOT EXISTS (SELECT 1 FROM mismatch)
       ON CONFLICT (source, event_id) DO NOTHING
       RETURNING source, event_id
     ), credit AS (
@@ -73,6 +92,7 @@ pub fn deposit_sql() -> &'static str {
       SELECT $3, p.total, p.wdr, NOW()
       FROM params p
       WHERE EXISTS (SELECT 1 FROM evt)
+        AND NOT EXISTS (SELECT 1 FROM mismatch)
       ON CONFLICT (account_id) DO UPDATE SET
         balance_micro_usd = balances.balance_micro_usd + EXCLUDED.balance_micro_usd,
         withdrawable_micro_usd = balances.withdrawable_micro_usd + EXCLUDED.withdrawable_micro_usd,
@@ -91,14 +111,18 @@ pub fn deposit_sql() -> &'static str {
                'event_id', $2,
                'account', $3,
                'amount_micro_usd', $4,
-               'withdrawable_micro_usd', $5
+               'withdrawable_micro_usd', $5,
+               'payload_digest', $6
              ),
              0
       FROM credit
       WHERE EXISTS (SELECT 1 FROM op)
       RETURNING id
     )
-    SELECT balance_micro_usd, withdrawable_micro_usd FROM credit
+    SELECT
+      (SELECT balance_micro_usd FROM credit) AS balance_micro_usd,
+      (SELECT withdrawable_micro_usd FROM credit) AS withdrawable_micro_usd,
+      (SELECT COUNT(*)::int FROM mismatch) AS mismatched
     "#
 }
 
@@ -132,6 +156,48 @@ mod tests {
         )
         .unwrap());
         assert_eq!(led.balance("a"), (1_000_000, 1_000_000));
+    }
+
+    #[test]
+    fn mismatched_replay_params_conflict_without_double_credit() {
+        let mut inbox = ExternalEventInbox::new();
+        let mut led = MemoryLedger::default();
+        assert!(apply_stripe_deposit(
+            &mut inbox,
+            &mut led,
+            "stripe",
+            "evt_m",
+            "a",
+            100_000,
+            50_000
+        )
+        .unwrap());
+        assert!(matches!(
+            apply_stripe_deposit(
+                &mut inbox,
+                &mut led,
+                "stripe",
+                "evt_m",
+                "a",
+                200_000, // different amount
+                50_000
+            ),
+            Err(DepositError::External(ExternalEventError::Conflict(_)))
+        ));
+        assert!(matches!(
+            apply_stripe_deposit(
+                &mut inbox,
+                &mut led,
+                "stripe",
+                "evt_m",
+                "b", // different account
+                100_000,
+                50_000
+            ),
+            Err(DepositError::External(ExternalEventError::Conflict(_)))
+        ));
+        assert_eq!(led.balance("a"), (100_000, 50_000));
+        assert_eq!(led.balance("b").0, 0);
     }
 
     #[test]
@@ -205,5 +271,17 @@ mod tests {
         assert!(sql.contains("rust_coord.outbox"));
         assert!(sql.contains("billing.deposit_applied"));
         assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
+        assert!(sql.contains("mismatch"));
+        assert!(sql.contains("IS DISTINCT FROM $6"));
+        assert!(sql.contains("NOT EXISTS (SELECT 1 FROM mismatch)"));
+    }
+
+    #[test]
+    fn deposit_payload_digest_stable() {
+        assert_eq!(deposit_payload_digest("a", 100, 50), "v1|a|100|50");
+        assert_ne!(
+            deposit_payload_digest("a", 100, 50),
+            deposit_payload_digest("a", 100, 51)
+        );
     }
 }

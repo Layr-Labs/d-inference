@@ -12,7 +12,7 @@ fn concurrent_contains_readers_during_observe() {
     let writer = thread::spawn(move || {
         let mut g = inbox_w.lock().unwrap();
         for i in 0..8 {
-            assert!(g.observe("stripe", &format!("e{i}")).unwrap());
+            assert!(g.observe("stripe", &format!("e{i}"), "d").unwrap());
         }
     });
 

@@ -12,7 +12,7 @@ fn concurrent_observe_same_event_exactly_one_applies() {
         let inbox = inbox.clone();
         handles.push(thread::spawn(move || {
             let mut g = inbox.lock().unwrap();
-            g.observe("stripe", "evt_race").unwrap()
+            g.observe("stripe", "evt_race", "d").unwrap()
         }));
     }
     let wins: usize = handles

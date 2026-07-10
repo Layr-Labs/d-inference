@@ -382,13 +382,19 @@ async fn admin_deposit(
         ) {
             Ok(applied) => applied,
             Err(err) => {
+                let (status, code) = match &err {
+                    crate::deposits::DepositError::External(
+                        crate::external_events::ExternalEventError::Conflict(_),
+                    ) => (StatusCode::CONFLICT, "deposit_payload_conflict"),
+                    _ => (StatusCode::BAD_REQUEST, "deposit_failed"),
+                };
                 return (
-                    StatusCode::BAD_REQUEST,
+                    status,
                     Json(json!({
                         "error": {
                             "message": format!("{err}"),
                             "type": "invalid_request_error",
-                            "code": "deposit_failed"
+                            "code": code
                         }
                     })),
                 )

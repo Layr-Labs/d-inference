@@ -12,7 +12,7 @@ fn concurrent_inbox_len_tracks_distinct_observes() {
         let inbox = inbox.clone();
         handles.push(thread::spawn(move || {
             let mut g = inbox.lock().unwrap();
-            g.observe("stripe", &format!("e{i}")).unwrap()
+            g.observe("stripe", &format!("e{i}"), "d").unwrap()
         }));
     }
 

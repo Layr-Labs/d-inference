@@ -13,7 +13,7 @@ fn concurrent_observe_distinct_sources_same_event_id() {
         let source = if i % 2 == 0 { "stripe" } else { "connect" };
         handles.push(thread::spawn(move || {
             let mut g = inbox.lock().unwrap();
-            g.observe(source, "evt_shared").unwrap()
+            g.observe(source, "evt_shared", "d").unwrap()
         }));
     }
 

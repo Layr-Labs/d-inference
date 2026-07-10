@@ -591,6 +591,19 @@ public actor ProviderLoop {
         /// drop window while the slot is still resident (a Gemma build would
         /// otherwise fall back to the qwen3 parser and leak <think> tokens).
         let modelType: String?
+        /// Opaque MTP drafter handle bound to this slot's engine, nil when
+        /// speculative decoding is off or no drafter resolved. Type-erased on
+        /// purpose: the concrete drafter type lives in MLXLLM and ProviderCore
+        /// must not depend on it (wrap a non-Sendable drafter in a small
+        /// `@unchecked Sendable` holder — the handle exists ONLY to pin
+        /// lifetime; nothing ever calls through it). Sendable-constrained so
+        /// `ModelSlot` keeps its implicit Sendable conformance. The SLOT owns
+        /// the drafter (plan D5): it is released with the target in
+        /// `unloadModel` (before the cache purge), and it is never scanned,
+        /// advertised, weight-hashed, or attested — its resident footprint is
+        /// accounted via the sizing snapshot's `auxiliaryWeightBytes` fold
+        /// instead.
+        var mtpDrafter: (any AnyObject & Sendable)? = nil
         var lastInferenceAt: ContinuousClock.Instant
 
         /// Per-slot memory gate for VLM media decode and generation KV against

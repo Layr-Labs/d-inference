@@ -33,8 +33,13 @@ import MLXVLM
 /// Immutable sizing facts for one loaded model slot.
 public struct SlotSizingSnapshot: Sendable, Equatable {
     /// Σ parameter nbytes over the loaded container (same figure the legacy
-    /// `snapshotContainer` measured). Feeds the fleet KV budget
-    /// (`UnifiedMemoryCap.kvBudgetBytes(residentWeightBytes:)`).
+    /// `snapshotContainer` measured), PLUS any `auxiliaryWeightBytes` folded
+    /// in at construction (the MTP drafter's resident footprint — plan D5
+    /// capacity truthfulness). Feeds the fleet KV budget
+    /// (`UnifiedMemoryCap.kvBudgetBytes(residentWeightBytes:)`), re-slice
+    /// grants, the heartbeat clamp, and StandaloneServer's mirrored budget:
+    /// folding at construction means every consumer sees the sum with zero
+    /// consumer-site changes.
     public let weightsBytes: Int
     /// fp16 per-token KV cost (bytes/token), engine-truth marginal rate —
     /// see the header. 0 = unknown (non-CBv2 family; such models are not
@@ -48,13 +53,19 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
     /// legacy `applyPostLoadBudgets` policy).
     public let defaultMaxTokens: Int
 
+    /// `auxiliaryWeightBytes`: resident weight bytes that live OUTSIDE the
+    /// model container (the MTP drafter — never scanned, advertised, or
+    /// attested), folded into `weightsBytes` here so all downstream memory
+    /// accounting is truthful. Deliberately NOT an input to any KV-rate
+    /// figure: the drafter writes no KV.
     public init(
         weightsBytes: Int,
+        auxiliaryWeightBytes: Int = 0,
         fp16KVBytesPerToken: Int,
         maxContextLength: Int,
         defaultMaxTokens: Int
     ) {
-        self.weightsBytes = weightsBytes
+        self.weightsBytes = weightsBytes + max(0, auxiliaryWeightBytes)
         self.fp16KVBytesPerToken = fp16KVBytesPerToken
         self.maxContextLength = maxContextLength
         self.defaultMaxTokens = defaultMaxTokens
@@ -71,10 +82,15 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
     ///   - modelPath: the checkpoint directory (for `config.json`).
     ///   - fallbackDefaultMaxTokens: the provider-wide default max-token
     ///     budget used when the model's context window is unknown.
+    ///   - auxiliaryWeightBytes: non-snapshot resident weight bytes (the MTP
+    ///     drafter estimate: file bytes × the standard 1.2 factor — sizing
+    ///     runs before the drafter loads). Folded into `weightsBytes`; never
+    ///     touches the KV-rate derivation below.
     public static func build(
         container: ModelContainer,
         modelPath: URL?,
-        fallbackDefaultMaxTokens: Int
+        fallbackDefaultMaxTokens: Int,
+        auxiliaryWeightBytes: Int = 0
     ) async -> SlotSizingSnapshot {
         struct ModuleFacts: @unchecked Sendable {
             let bytes: Int
@@ -137,6 +153,7 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
 
         return SlotSizingSnapshot(
             weightsBytes: facts.bytes,
+            auxiliaryWeightBytes: auxiliaryWeightBytes,
             fp16KVBytesPerToken: kvRate,
             maxContextLength: maxContext,
             defaultMaxTokens: defaultMaxTokens

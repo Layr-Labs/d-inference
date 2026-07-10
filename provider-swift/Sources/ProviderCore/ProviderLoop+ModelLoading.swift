@@ -100,7 +100,17 @@ extension ProviderLoop {
     /// checks run INSIDE the `isLoadingAny` critical section, so an
     /// interleaved local-endpoint load cannot make the no-evict verdict
     /// stale.
-    internal func ensureModelLoaded(modelId: String, allowEviction: Bool = true) async throws {
+    ///
+    /// `extraWeightBytes` (default 0): resident weight bytes this load will
+    /// add BEYOND the model snapshot — the MTP drafter estimate (file bytes ×
+    /// the standard 1.2 factor, plan D5). The drafter lives outside the HF
+    /// snapshot on every path, so `modelInfo.estimatedMemoryGb` (scan-time,
+    /// snapshot-derived) can never include it; the load gate, the
+    /// pending-load reservation, and the sizing snapshot each add it
+    /// explicitly here instead.
+    internal func ensureModelLoaded(
+        modelId: String, allowEviction: Bool = true, extraWeightBytes: UInt64 = 0
+    ) async throws {
         if isShuttingDown {
             throw CancellationError()
         }
@@ -125,7 +135,8 @@ extension ProviderLoop {
                 if isShuttingDown { throw CancellationError() }
             }
             if modelSlots[modelId] != nil { return }
-            try await ensureModelLoaded(modelId: modelId, allowEviction: allowEviction)
+            try await ensureModelLoaded(
+                modelId: modelId, allowEviction: allowEviction, extraWeightBytes: extraWeightBytes)
             return
         }
 
@@ -201,7 +212,9 @@ extension ProviderLoop {
             // clamps to real OS-available memory and subtracts in-flight KV
             // reservations, so dropping the multiplier here is still OOM-safe.
             let requiredGb = ModelLoadAdmission.requiredToLoadGb(
-                weightsGb: modelInfo.estimatedMemoryGb,
+                weightsGb: Self.loadGateWeightsGb(
+                    estimatedWeightsGb: modelInfo.estimatedMemoryGb,
+                    extraWeightBytes: extraWeightBytes),
                 headroomGb: Self.loadHeadroomGb)
             do {
                 try await evictUntilAvailable(requiredGb: requiredGb, allowEviction: allowEviction)
@@ -218,11 +231,11 @@ extension ProviderLoop {
             // a concurrent KV reservation on an already-loaded model can't grant
             // headroom that, plus these incoming (not-yet-in-mlxUsed) weights,
             // blows the unified-memory cap. Released once the weights are resident.
-            let pendingLoadGiB = modelInfo.estimatedMemoryGb * 1_073_741_824
-            let pendingLoadBytes: UInt64 =
-                pendingLoadGiB.isFinite && pendingLoadGiB > 0
-                ? (pendingLoadGiB >= Double(UInt64.max) ? .max : UInt64(pendingLoadGiB))
-                : 0
+            // Includes `extraWeightBytes` (the drafter): those bytes land in
+            // mlxUsed during this load window just like the target's.
+            let pendingLoadBytes = Self.pendingLoadReservationBytes(
+                estimatedWeightsGb: modelInfo.estimatedMemoryGb,
+                extraWeightBytes: extraWeightBytes)
             await kvBudget.reservePendingLoad(requestID: pendingLoadID, bytes: pendingLoadBytes)
 
             logger.info("Loading model: \(modelId) from \(modelPath.path)")
@@ -289,11 +302,15 @@ extension ProviderLoop {
 
             // Scheduler-free sizing snapshot (v0.7.5): weight bytes + the
             // engine-truth fp16 KV rate + context window — everything the
-            // re-slice, bridge, heartbeat, and vision gate need.
+            // re-slice, bridge, heartbeat, and vision gate need. The drafter
+            // estimate folds into weightsBytes here (single source of truth
+            // with the gate/reservation above), so every downstream consumer
+            // of `.weightsBytes` accounts for it automatically.
             let sizing = try await SlotSizingSnapshot.build(
                 container: newcomer.borrow(),
                 modelPath: modelPath,
-                fallbackDefaultMaxTokens: Self.schedulerDefaultMaxTokens)
+                fallbackDefaultMaxTokens: Self.schedulerDefaultMaxTokens,
+                auxiliaryWeightBytes: Int(min(extraWeightBytes, UInt64(Int.max))))
 
             // Weights are resident now (reflected in MLX active/cache), so hand
             // off from the pending-load reservation to the live mlxUsed view —
@@ -480,6 +497,32 @@ extension ProviderLoop {
         }
     }
 
+    // MARK: - Load-gate arithmetic (pure, unit-tested by SpecDecCapacityTests)
+
+    /// The load gate's weight figure (GB): the scan-time snapshot estimate
+    /// plus any auxiliary weight bytes the load will make resident OUTSIDE
+    /// the snapshot (the MTP drafter — plan D5: scan-time estimates never
+    /// include it, so the gate must add it explicitly).
+    internal static func loadGateWeightsGb(
+        estimatedWeightsGb: Double, extraWeightBytes: UInt64
+    ) -> Double {
+        estimatedWeightsGb + Double(extraWeightBytes) / 1_073_741_824.0
+    }
+
+    /// The pending-load reservation (bytes) for an in-flight load: the
+    /// estimated snapshot footprint plus auxiliary weight bytes, saturating.
+    /// A non-finite/non-positive estimate contributes nothing (the pre-MTP
+    /// behavior), leaving just the auxiliary bytes.
+    internal static func pendingLoadReservationBytes(
+        estimatedWeightsGb: Double, extraWeightBytes: UInt64
+    ) -> UInt64 {
+        let weightBytes = estimatedWeightsGb * 1_073_741_824
+        guard weightBytes.isFinite, weightBytes > 0 else { return extraWeightBytes }
+        if weightBytes >= Double(UInt64.max) { return .max }
+        let (sum, overflow) = UInt64(weightBytes).addingReportingOverflow(extraWeightBytes)
+        return overflow ? .max : sum
+    }
+
     internal func releaseLoadGateWaiters() {
         let waiters = loadGateWaiters
         loadGateWaiters.removeAll()
@@ -495,13 +538,21 @@ extension ProviderLoop {
     }
 
     internal func unloadModel(_ modelId: String) async {
-        guard let slot = modelSlots[modelId], !modelsUnloading.contains(modelId) else { return }
+        // Bind ONLY the bridge, never the whole slot: the slot value is the
+        // last owner of the container AND the opaque MTP drafter handle, and
+        // both must be released at `removeValue` below — BEFORE the cache
+        // purge — not kept alive by a local until this function returns.
+        guard let engineV2 = modelSlots[modelId]?.engineV2,
+            !modelsUnloading.contains(modelId)
+        else { return }
         modelsUnloading.insert(modelId)
         // Retire the slot's v2 bridge: unregister so heartbeats/cancellation
         // stop fanning out to it, then drain the engine gracefully (running
         // requests finish, new submissions are rejected).
         await engineV2Runtime.unregister(modelId: modelId)
-        await slot.engineV2.shutdown()
+        await engineV2.shutdown()
+        // Drops the slot's container and MTP drafter references with the
+        // target (the drafter is slot-owned — plan D5 teardown).
         modelSlots.removeValue(forKey: modelId)
         modelsUnloading.remove(modelId)
         // Mandatory: freed weights linger in MLX's pool (GPU.cacheMemory), which

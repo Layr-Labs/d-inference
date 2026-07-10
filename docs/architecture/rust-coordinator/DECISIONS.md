@@ -119,6 +119,7 @@ Date: 2026-07-10
 | 110 | Quiescence orphan_summary_by_account | Quiescence lists per-account orphan counts. Deposits ∥ cutover drain-abort conserve balance after resume |
 | 111 | Account-filtered cutover-drain + by_account | Account-scoped cutover-drain clears one tenant; foreign remains in orphan_summary_by_account. Concurrent per-account cutover conserves |
 | 112 | accounts_needing_cutover + charged filter | Quiescence lists `accounts_needing_cutover`. Charged account-filtered cutover-drain clamps per hold |
+| 113 | Ops loop accounts_needing_cutover | Quiescence→per-account cutover→outbox-drain converges to ready. Outbox-only: accounts list empty. Foreign deposits ∥ filtered cutover conserve |
 
 ## Deleted Go mechanisms (do not port)
 

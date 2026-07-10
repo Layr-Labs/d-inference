@@ -652,3 +652,36 @@ async fn responses_without_ownership_returns_503() {
     let v = body_json(res).await;
     assert_eq!(v["error"]["code"], "ownership_lost");
 }
+
+#[tokio::test]
+async fn quiescence_reports_held_start_authorized_jobs() {
+    let state = test_state(true);
+    {
+        let mut led = state.ledger.lock().await;
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-held".into()),
+            "held-job-1",
+            "pilot-account",
+            100_000,
+        )
+        .unwrap();
+        led.mark_start_authorized("held-job-1").unwrap();
+    }
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/quiescence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let v = body_json(res).await;
+    assert_eq!(v["ready"], false);
+    assert_eq!(v["held_start_authorized"], 1);
+    assert_eq!(v["held_start_authorized_job_ids"][0], "held-job-1");
+    assert_eq!(v["active_jobs"], 1);
+}

@@ -77,6 +77,11 @@ pub fn deposit_sql() -> &'static str {
         withdrawable_micro_usd = balances.withdrawable_micro_usd + EXCLUDED.withdrawable_micro_usd,
         updated_at = NOW()
       RETURNING balance_micro_usd, withdrawable_micro_usd
+    ), op AS (
+      INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
+      SELECT 'deposit:' || $1 || ':' || $2, '', 'deposit', $4 FROM credit
+      ON CONFLICT (operation_key) DO NOTHING
+      RETURNING operation_key
     )
     SELECT balance_micro_usd, withdrawable_micro_usd FROM credit
     "#
@@ -180,5 +185,7 @@ mod tests {
         assert!(sql.contains("INSERT INTO balances"));
         assert!(sql.contains("ON CONFLICT (account_id) DO UPDATE"));
         assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM evt)"));
+        assert!(sql.contains("financial_operations"));
+        assert!(sql.contains("deposit:"));
     }
 }

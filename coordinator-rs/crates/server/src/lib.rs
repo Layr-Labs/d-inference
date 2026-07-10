@@ -29,7 +29,10 @@ pub use cancel::{cancel_before_or_after_content, CancelOutcome};
 pub use chunk_pipe::{bounded_chunk_pipe, ChunkPipe, ChunkPipeReader, PipeError, SequencedChunk};
 pub use crypto_keys::CoordinatorKeys;
 pub use deposits::{apply_stripe_deposit, deposit_sql, DepositError};
-pub use external_events::{observe_sql as external_event_observe_sql, ExternalEventInbox};
+pub use external_events::{
+    forget_sql as external_event_forget_sql, observe_sql as external_event_observe_sql,
+    ExternalEventInbox,
+};
 pub use fleet_actor::{spawn_fleet_actor, FleetError, FleetHandle};
 pub use http::{router, AppState, ModelCard};
 pub use ledger::{MemoryLedger, OperationKey, ReservationProvenance};

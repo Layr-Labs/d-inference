@@ -63,6 +63,21 @@ pub fn observe_sql() -> &'static str {
     "#
 }
 
+/// Documented SQL for compensating a failed post-observe side effect (DECISIONS #22).
+/// Only deletes when the event was just observed and credit did not land.
+pub fn forget_sql() -> &'static str {
+    r#"
+    DELETE FROM rust_coord.external_events
+    WHERE source = $1
+      AND event_id = $2
+      AND NOT EXISTS (
+        SELECT 1 FROM rust_coord.financial_operations
+        WHERE operation_key = 'deposit:' || $1 || ':' || $2
+      )
+    RETURNING source, event_id
+    "#
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,5 +118,23 @@ mod tests {
         assert!(sql.contains("rust_coord.external_events"));
         assert!(sql.contains("ON CONFLICT"));
         assert!(sql.contains("DO NOTHING"));
+    }
+
+    #[test]
+    fn forget_sql_compensates_without_deposit_op() {
+        let sql = forget_sql();
+        assert!(sql.contains("DELETE FROM rust_coord.external_events"));
+        assert!(sql.contains("financial_operations"));
+        assert!(sql.contains("deposit:"));
+        assert!(sql.contains("RETURNING source, event_id"));
+    }
+
+    #[test]
+    fn forget_restores_key_for_retry() {
+        let mut inbox = ExternalEventInbox::new();
+        assert!(inbox.observe("stripe", "evt_x").unwrap());
+        assert!(inbox.forget("stripe", "evt_x"));
+        assert!(!inbox.contains("stripe", "evt_x"));
+        assert!(inbox.observe("stripe", "evt_x").unwrap());
     }
 }

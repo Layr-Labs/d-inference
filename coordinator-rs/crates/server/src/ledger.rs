@@ -484,4 +484,40 @@ mod tests {
         assert_eq!(a.state, "started");
         assert!(led.attempt("missing").is_none());
     }
+
+    #[test]
+    fn release_after_settle_is_noop() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0);
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        assert!(led
+            .settle(OperationKey("s".into()), "j", "a", 400_000, "d1")
+            .unwrap());
+        let bal_after_settle = led.balance("a").0;
+        // Release after disposition must not double-refund.
+        assert!(!led
+            .release(OperationKey("rel".into()), "j", "a")
+            .unwrap());
+        assert_eq!(led.balance("a").0, bal_after_settle);
+        assert_eq!(led.active_job_count(), 0);
+    }
+
+    #[test]
+    fn settle_after_release_is_noop() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0);
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        assert!(led
+            .release(OperationKey("rel".into()), "j", "a")
+            .unwrap());
+        assert_eq!(led.balance("a").0, 5_000_000);
+        // Settle after release: disposition already set → noop false.
+        assert!(!led
+            .settle(OperationKey("s".into()), "j", "a", 100_000, "d1")
+            .unwrap());
+        assert_eq!(led.balance("a").0, 5_000_000);
+    }
 }

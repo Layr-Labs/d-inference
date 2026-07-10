@@ -21,6 +21,7 @@ Date: 2026-07-10
 | 12 | Binary payload header | Fixed 64-byte header + ciphertext |
 | 13 | Half-open recovery admits | `AdmitRequest.allow_half_open_probe`; general traffic stays Healthy\|Suspect only |
 | 14 | Sequential alternate after prepare expiry | At most **one** alternate; second PrepareExpired finalizes (no attempt ladder) |
+| 15 | Job ID reuse | **Forbidden.** `MemoryLedger.reserve` / start_authorized reject existing or disposed `job_id` (new UUID per job) |
 
 ## Deleted Go mechanisms (do not port)
 

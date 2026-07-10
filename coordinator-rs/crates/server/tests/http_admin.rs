@@ -120,6 +120,30 @@ async fn chat_rejects_when_ownership_lost() {
 }
 
 #[tokio::test]
+async fn admin_deposit_rejects_invalid_pilot_key() {
+    let mut state = test_state(true);
+    state.pilot_api_keys = Arc::new(vec!["good-key".into()]);
+    let app = router(state);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/admin/deposits")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer bad-key")
+        .body(Body::from(
+            json!({
+                "event_id": "evt_auth",
+                "amount_micro_usd": 1000
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    let v = body_json(res).await;
+    assert_eq!(v["error"]["code"], "invalid_api_key");
+}
+
+#[tokio::test]
 async fn readyz_fails_without_ownership() {
     let app = router(test_state(false));
     let req = Request::builder()

@@ -281,7 +281,8 @@ Go: [`ModelInfo`](../../coordinator/protocol/messages.go); Swift: `ModelInfo`.
 | `is_vision` | bool | Only emitted when `true`; pre-0.6.0 providers omit |
 | `template_render_ok` | bool / null | `false` excludes provider from tool requests; `null` omitted |
 
-Swift's `ModelInfo` additionally carries `estimated_memory_gb` and `parameters` for local use; they are not sent to the coordinator.
+Swift's `ModelInfo` also emits `estimated_memory_gb` and may emit `parameters`.
+The Go v1 decoder intentionally ignores those additive fields.
 
 ### `BackendCapacity`
 

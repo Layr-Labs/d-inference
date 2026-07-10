@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{fs, path::PathBuf, time::Duration};
 
 use axum::{
     body::Body,
@@ -9,8 +9,26 @@ use darkbloom_coordinator_server::{
     database::Database,
 };
 use http_body_util::BodyExt;
+use serde::Deserialize;
 use serde_json::Value;
 use tower::ServiceExt;
+
+#[derive(Deserialize)]
+struct HttpContracts {
+    exchanges: Vec<HttpExchange>,
+}
+
+#[derive(Deserialize)]
+struct HttpExchange {
+    name: String,
+    response: HttpResponse,
+}
+
+#[derive(Deserialize)]
+struct HttpResponse {
+    status: u16,
+    body: String,
+}
 
 fn database_url() -> Option<String> {
     std::env::var("DATABASE_URL")
@@ -22,47 +40,88 @@ fn database_url() -> Option<String> {
 #[tokio::test]
 async fn health_and_readiness_use_real_postgres() {
     let Some(url) = database_url() else {
+        assert_ne!(
+            std::env::var("CI").as_deref(),
+            Ok("true"),
+            "DATABASE_URL is required in CI"
+        );
         eprintln!("DATABASE_URL is unset; skipping real PostgreSQL integration test");
         return;
     };
     let database = Database::connect(&url, 2, Duration::from_secs(3))
         .await
         .expect("connect real PostgreSQL");
-    let app = router(AppState::new(database.clone()));
+    let state = AppState::new(database.clone());
+    let app = router(state.clone());
+    let contracts = load_http_contracts();
 
-    let health = app
+    assert_matches_contract(&app, "/health", contract(&contracts, "health")).await;
+    assert_matches_contract(&app, "/readyz", contract(&contracts, "readiness")).await;
+
+    state.set_inflight(3);
+    state.set_draining(true);
+    let (status, payload) = request_json(&app, "/readyz").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        payload,
+        serde_json::json!({"draining": true, "inflight": 3, "ready": false})
+    );
+
+    state.set_draining(false);
+    database.clone().close().await;
+    let (status, payload) = request_json(&app, "/readyz").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        payload,
+        serde_json::json!({"draining": false, "inflight": 3, "ready": false})
+    );
+    drop(app);
+    database.close().await;
+}
+
+async fn assert_matches_contract(app: &axum::Router, path: &str, contract: &HttpResponse) {
+    let (status, payload) = request_json(app, path).await;
+    assert_eq!(status.as_u16(), contract.status);
+    let expected: Value = serde_json::from_str(&contract.body).expect("contract body JSON");
+    assert_eq!(payload, expected);
+}
+
+async fn request_json(app: &axum::Router, path: &str) -> (StatusCode, Value) {
+    let response = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/health")
+                .uri(path)
                 .body(Body::empty())
-                .expect("health request"),
+                .expect("request"),
         )
         .await
-        .expect("health response");
-    assert_eq!(health.status(), StatusCode::OK);
-    let body = health
+        .expect("response");
+    let status = response.status();
+    let body = response
         .into_body()
         .collect()
         .await
-        .expect("health body")
+        .expect("response body")
         .to_bytes();
-    let payload: Value = serde_json::from_slice(&body).expect("health JSON");
-    assert_eq!(payload["status"], "ok");
-    assert_eq!(payload["protocol_minimum_major"], 1);
-    assert_eq!(payload["protocol_preferred_major"], 2);
+    let payload = serde_json::from_slice(&body).expect("response JSON");
+    (status, payload)
+}
 
-    let readiness = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/readyz")
-                .body(Body::empty())
-                .expect("readiness request"),
-        )
-        .await
-        .expect("readiness response");
-    assert_eq!(readiness.status(), StatusCode::OK);
-    drop(app);
-    database.close().await;
+fn contract<'a>(contracts: &'a HttpContracts, name: &str) -> &'a HttpResponse {
+    &contracts
+        .exchanges
+        .iter()
+        .find(|exchange| exchange.name == name)
+        .unwrap_or_else(|| panic!("missing HTTP contract {name}"))
+        .response
+}
+
+fn load_http_contracts() -> HttpContracts {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .join("tests/contracts/http/core.json");
+    let data = fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    serde_json::from_slice(&data)
+        .unwrap_or_else(|error| panic!("decode {}: {error}", path.display()))
 }

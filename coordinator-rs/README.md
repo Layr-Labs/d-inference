@@ -29,6 +29,7 @@ Runtime configuration currently required by the composition root:
 EIGENINFERENCE_DATABASE_URL
 EIGENINFERENCE_RUST_BIND_ADDRESS              default 0.0.0.0:8081
 EIGENINFERENCE_RUST_DATABASE_MAX_CONNECTIONS default 32
+EIGENINFERENCE_RUST_SHUTDOWN_GRACE_SECONDS   default 30
 ```
 
 Application startup never applies DDL. Checked SQL metadata is committed under

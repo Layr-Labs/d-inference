@@ -64,24 +64,89 @@ private struct ProtocolContractCase: Decodable {
     ]
     #expect(fixtureTypes == requiredTypes)
 
-    let signed = try #require(
-        fixture.cases.first(where: { $0.name == "register_full_raw_attestation" })
-    )
-    #expect(signed.exactBytes)
-    #expect(
-        signed.wire.contains(
-            #""attestation":{"signature":"sig","attestation":{"z":1,"a":[true,false]}}"#
+    for contract in fixture.cases {
+        let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: contract.wire)
+        let encoded = try ProviderProtocolCodec.encodeProviderMessage(decoded)
+        let object = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
         )
+        #expect(object["type"] as? String == contract.messageType)
+
+        if contract.exactBytes {
+            guard case .register(let register) = decoded else {
+                Issue.record("\(contract.name) marks exact bytes on a non-register message")
+                continue
+            }
+            #expect(
+                register.attestation?.string
+                    == #"{"signature":"sig","attestation":{"z":1,"a":[true,false]}}"#
+            )
+        }
+    }
+}
+
+private struct CryptoContract: Decodable {
+    let schemaVersion: Int
+    let plaintextBase64: String
+    let recipientPrivateKeyBase64: String
+    let payload: CryptoPayload
+    let tamperedPayload: CryptoPayload
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case plaintextBase64 = "plaintext_base64"
+        case recipientPrivateKeyBase64 = "recipient_private_key_base64"
+        case payload
+        case tamperedPayload = "tampered_payload"
+    }
+}
+
+private struct CryptoPayload: Decodable {
+    let ephemeralPublicKey: String
+    let ciphertext: String
+
+    enum CodingKeys: String, CodingKey {
+        case ephemeralPublicKey = "ephemeral_public_key"
+        case ciphertext
+    }
+}
+
+@Test func swiftDecryptsGoNaClContractAndRejectsTamper() throws {
+    let fixture = try JSONDecoder().decode(
+        CryptoContract.self,
+        from: Data(contentsOf: contractURL("crypto/nacl_box.json"))
     )
+    #expect(fixture.schemaVersion == 1)
+    let privateKey = try #require(Data(base64Encoded: fixture.recipientPrivateKeyBase64))
+    let expected = try #require(Data(base64Encoded: fixture.plaintextBase64))
+    let keyPair = try NodeKeyPair(rawSecret: privateKey)
+    let payload = EncryptedPayload(
+        ephemeralPublicKey: fixture.payload.ephemeralPublicKey,
+        ciphertext: fixture.payload.ciphertext
+    )
+    #expect(try keyPair.decryptPayload(payload) == expected)
+
+    let tampered = EncryptedPayload(
+        ephemeralPublicKey: fixture.tamperedPayload.ephemeralPublicKey,
+        ciphertext: fixture.tamperedPayload.ciphertext
+    )
+    do {
+        _ = try keyPair.decryptPayload(tampered)
+        Issue.record("tampered NaCl contract decrypted successfully")
+    } catch {
+        // Authentication failure is required.
+    }
 }
 
 private func loadProtocolContract(_ name: String) throws -> ProtocolContractFile {
+    let url = contractURL("protocol/v1/\(name)")
+    return try JSONDecoder().decode(ProtocolContractFile.self, from: Data(contentsOf: url))
+}
+
+private func contractURL(_ relative: String) -> URL {
     var root = URL(fileURLWithPath: #filePath)
     for _ in 0..<4 {
         root.deleteLastPathComponent()
     }
-    let url = root
-        .appendingPathComponent("tests/contracts/protocol/v1")
-        .appendingPathComponent(name)
-    return try JSONDecoder().decode(ProtocolContractFile.self, from: Data(contentsOf: url))
+    return root.appendingPathComponent("tests/contracts").appendingPathComponent(relative)
 }

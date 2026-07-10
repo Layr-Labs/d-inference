@@ -2,7 +2,7 @@ use darkbloom_coordinator_server::{
     app::{AppState, router},
     config::Config,
     database::Database,
-    shutdown,
+    runtime, shutdown,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -23,10 +23,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(config.bind_address).await?;
     tracing::info!(address = %config.bind_address, "Rust coordinator listening");
 
-    axum::serve(listener, router(AppState::new(database.clone())))
-        .with_graceful_shutdown(shutdown::signal())
-        .await?;
+    let serve_result = runtime::serve(
+        listener,
+        router(AppState::new(database.clone())),
+        shutdown::signal(),
+        config.shutdown_grace,
+    )
+    .await;
     database.close().await;
+    serve_result?;
     tracing::info!("Rust coordinator stopped");
     Ok(())
 }

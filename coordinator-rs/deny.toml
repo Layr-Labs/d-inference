@@ -22,7 +22,7 @@ allow = [
 ignore = true
 
 [bans]
-multiple-versions = "warn"
+multiple-versions = "allow"
 wildcards = "deny"
 highlight = "simplest-path"
 

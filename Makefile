@@ -2,7 +2,7 @@
 .PHONY: help \
         contracts-check contracts-update \
         coordinator-test coordinator-build coordinator-build-linux coordinator \
-        coordinator-rs-fmt coordinator-rs-lint coordinator-rs-test coordinator-rs-build coordinator-rs-sqlx coordinator-rs \
+        coordinator-rs-fmt coordinator-rs-lint coordinator-rs-test coordinator-rs-build coordinator-rs-sqlx coordinator-rs-deps coordinator-rs \
         provider-build provider-test provider \
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
@@ -51,7 +51,10 @@ coordinator-rs-build: ## Build the Rust coordinator
 coordinator-rs-sqlx: ## Verify checked SQLx query metadata (requires cargo-sqlx)
 	cd coordinator-rs && cargo sqlx prepare --workspace --check -- --all-targets --all-features
 
-coordinator-rs: coordinator-rs-fmt coordinator-rs-lint coordinator-rs-test coordinator-rs-build ## Check, test, and build Rust coordinator
+coordinator-rs-deps: ## Check Rust advisories, bans, licenses, and sources
+	cd coordinator-rs && cargo deny check advisories bans licenses sources
+
+coordinator-rs: coordinator-rs-fmt coordinator-rs-lint coordinator-rs-test coordinator-rs-build coordinator-rs-deps ## Check, test, and build Rust coordinator
 
 # ---- Provider (Swift, Apple Silicon) --------------------------------------
 
@@ -100,4 +103,4 @@ all: test build ## Test + build everything
 
 clean: ## Remove built artifacts
 	rm -f coordinator/coordinator coordinator/coordinator-linux
-	rm -rf target provider-swift/.build console-ui/.next console-ui/node_modules
+	rm -rf target coordinator-rs/target provider-swift/.build console-ui/.next console-ui/node_modules

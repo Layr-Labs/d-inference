@@ -156,8 +156,17 @@ func routeAuth(path, handler string) string {
 	switch {
 	case path == "/v1/admin/auth/init" || path == "/v1/admin/auth/verify":
 		return "public"
+	case strings.HasPrefix(path, "/v1/admin/models/"):
+		return "publishing_key_or_admin_key"
+	case path == "/v1/admin/state-export":
+		return "admin_key_only"
+	case path == "/v1/admin/releases" || path == "/v1/admin/metrics" ||
+		path == "/v1/admin/base-rewards" || path == "/v1/admin/utilization" ||
+		path == "/v1/admin/routes" || path == "/v1/admin/routes/export" ||
+		path == "/v1/admin/rejections" || path == "/v1/admin/rejections/export":
+		return "admin_key_only"
 	case strings.HasPrefix(path, "/v1/admin/"):
-		return "handler_admin"
+		return "admin_key_or_privy_admin"
 	case strings.Contains(handler, "requirePrivyAuth"):
 		return "privy_jwt"
 	case strings.Contains(handler, "requireAuth"):

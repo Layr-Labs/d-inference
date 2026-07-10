@@ -11,7 +11,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16@sha256:be01cf82fc7dbba824acf0a82e150b4b360f3ff93c6631d7844af431e841a95c
         env:
           POSTGRES_USER: testbed
           POSTGRES_PASSWORD: testbed
@@ -59,7 +59,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16@sha256:be01cf82fc7dbba824acf0a82e150b4b360f3ff93c6631d7844af431e841a95c
         env:
           POSTGRES_USER: rust_coord
           POSTGRES_PASSWORD: rust_coord
@@ -104,7 +104,7 @@ jobs:
         working-directory: coordinator-rs
         run: |
           cargo install cargo-deny --version 0.20.2 --locked
-          cargo deny check advisories licenses sources
+          cargo deny check advisories bans licenses sources
       - name: Verify Go-to-Rust NaCl compatibility
         run: go test ./coordinator/internal/e2e -run '^TestCrossLanguageEncryption$' -count=1
 

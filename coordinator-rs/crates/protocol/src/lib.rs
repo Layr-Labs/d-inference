@@ -1,5 +1,7 @@
 //! Versioned wire contracts shared by the Rust coordinator and Swift provider.
 
+pub mod raw_json;
+
 /// The deployed JSON WebSocket protocol.
 pub const PROTOCOL_V1_MAJOR: u16 = 1;
 

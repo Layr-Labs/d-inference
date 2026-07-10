@@ -1,5 +1,9 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+};
+
 use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
-use darkbloom_coordinator_core::ProtocolSupport;
 use serde::Serialize;
 
 use crate::database::Database;
@@ -7,30 +11,48 @@ use crate::database::Database;
 #[derive(Clone, Debug)]
 pub struct AppState {
     database: Database,
-    protocol: ProtocolSupport,
+    providers: Arc<AtomicUsize>,
+    draining: Arc<AtomicBool>,
+    inflight: Arc<AtomicU64>,
 }
 
 impl AppState {
     pub fn new(database: Database) -> Self {
         Self {
             database,
-            protocol: ProtocolSupport::default(),
+            providers: Arc::new(AtomicUsize::new(0)),
+            draining: Arc::new(AtomicBool::new(false)),
+            inflight: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    pub fn set_draining(&self, draining: bool) {
+        self.draining.store(draining, Ordering::Release);
+    }
+
+    pub fn set_provider_count(&self, providers: usize) {
+        self.providers.store(providers, Ordering::Release);
+    }
+
+    pub fn set_inflight(&self, inflight: u64) {
+        self.inflight.store(inflight, Ordering::Release);
     }
 }
 
 #[derive(Debug, Serialize)]
 struct HealthResponse {
     status: &'static str,
+    providers: usize,
     version: &'static str,
-    protocol_minimum_major: u16,
-    protocol_preferred_major: u16,
+    build_commit: &'static str,
+    build_date: &'static str,
 }
 
 #[derive(Debug, Serialize)]
 struct ReadinessResponse {
+    draining: bool,
+    inflight: u64,
     ready: bool,
-    database: &'static str,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -43,28 +65,35 @@ pub fn router(state: AppState) -> Router {
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
-        version: env!("CARGO_PKG_VERSION"),
-        protocol_minimum_major: state.protocol.minimum_major,
-        protocol_preferred_major: state.protocol.preferred_major,
+        providers: state.providers.load(Ordering::Acquire),
+        version: option_env!("DARKBLOOM_BUILD_VERSION").unwrap_or("dev"),
+        build_commit: option_env!("DARKBLOOM_BUILD_COMMIT").unwrap_or("unknown"),
+        build_date: option_env!("DARKBLOOM_BUILD_DATE").unwrap_or("unknown"),
     })
 }
 
 async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
-    match state.database.ping().await {
-        Ok(()) => (
+    let draining = state.draining.load(Ordering::Acquire);
+    let inflight = state.inflight.load(Ordering::Acquire);
+    match (draining, state.database.ping().await) {
+        (false, Ok(())) => (
             StatusCode::OK,
             Json(ReadinessResponse {
+                draining,
+                inflight,
                 ready: true,
-                database: "ready",
             }),
         ),
-        Err(error) => {
-            tracing::warn!(error = %error, "readiness database check failed");
+        (_, database) => {
+            if let Err(error) = database {
+                tracing::warn!(error = %error, "readiness database check failed");
+            }
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(ReadinessResponse {
+                    draining,
+                    inflight,
                     ready: false,
-                    database: "unavailable",
                 }),
             )
         }

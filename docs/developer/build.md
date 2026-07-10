@@ -32,6 +32,7 @@ make coordinator-rs-lint      # Clippy with warnings denied
 make coordinator-rs-test      # workspace tests
 make coordinator-rs-build     # all targets
 make coordinator-rs-sqlx      # checked-query metadata
+make coordinator-rs-deps      # advisories, bans, licenses, sources
 make coordinator-rs           # format + lint + test + build
 ```
 

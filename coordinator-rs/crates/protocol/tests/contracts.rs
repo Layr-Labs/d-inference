@@ -16,6 +16,7 @@ struct WireCase {
     name: String,
     message_type: String,
     wire: String,
+    exact_bytes: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -25,6 +26,14 @@ struct CryptoContract {
     recipient_private_key_base64: String,
     payload: EncryptedPayload,
     tampered_payload: EncryptedPayload,
+    status_canonical: StatusCanonical,
+}
+
+#[derive(Debug, Deserialize)]
+struct StatusCanonical {
+    current_base64: String,
+    legacy_hypervisor_false_base64: String,
+    explicit_security_false_base64: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,6 +61,17 @@ fn protocol_v1_contracts_are_valid_tagged_json() {
                 "{} has the wrong discriminator",
                 contract.name
             );
+            if contract.exact_bytes {
+                assert_eq!(
+                    darkbloom_coordinator_protocol::raw_json::registration_attestation(
+                        &contract.wire
+                    )
+                    .expect("valid registration JSON"),
+                    Some(r#"{"signature":"sig","attestation":{"z":1,"a":[true,false]}}"#),
+                    "{} changed signed registration bytes",
+                    contract.name
+                );
+            }
         }
     }
 }
@@ -71,6 +91,24 @@ fn rust_decrypts_go_nacl_box_contract_and_rejects_tamper() {
     assert!(
         decrypt(&fixture.tampered_payload, private_key).is_err(),
         "tampered contract vector must fail authentication"
+    );
+    assert_eq!(
+        STANDARD
+            .decode(fixture.status_canonical.current_base64)
+            .expect("current canonical base64"),
+        br#"{"active_model_hash":"activemodel","binary_hash":"binhash","model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}"#
+    );
+    assert_eq!(
+        STANDARD
+            .decode(fixture.status_canonical.legacy_hypervisor_false_base64)
+            .expect("legacy canonical base64"),
+        br#"{"active_model_hash":"activemodel","binary_hash":"binhash","hypervisor_active":false,"model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}"#
+    );
+    assert_eq!(
+        STANDARD
+            .decode(fixture.status_canonical.explicit_security_false_base64)
+            .expect("false canonical base64"),
+        br#"{"nonce":"n","sip_enabled":false,"timestamp":"t"}"#
     );
 }
 

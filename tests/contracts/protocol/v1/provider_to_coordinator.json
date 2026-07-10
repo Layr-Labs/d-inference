@@ -6,21 +6,21 @@
     {
       "name": "register_minimal",
       "message_type": "register",
-      "wire": "{\"type\":\"register\",\"hardware\":{\"machine_model\":\"\",\"chip_name\":\"\",\"chip_family\":\"\",\"chip_tier\":\"\",\"memory_gb\":0,\"memory_available_gb\":0,\"cpu_cores\":{\"total\":0,\"performance\":0,\"efficiency\":0},\"gpu_cores\":0,\"memory_bandwidth_gbs\":0},\"models\":[],\"backend\":\"mlx-swift\"}",
+      "wire": "{\"type\":\"register\",\"hardware\":{\"machine_model\":\"Mac15,8\",\"chip_name\":\"Apple M3 Max\",\"chip_family\":\"M3\",\"chip_tier\":\"Max\",\"memory_gb\":64,\"memory_available_gb\":58,\"cpu_cores\":{\"total\":16,\"performance\":12,\"efficiency\":4},\"gpu_cores\":40,\"memory_bandwidth_gbs\":400},\"models\":[],\"backend\":\"mlx-swift\"}",
       "exact_bytes": false,
       "notes": "Optional fields are omitted."
     },
     {
       "name": "register_full_raw_attestation",
       "message_type": "register",
-      "wire": "{\"type\":\"register\",\"hardware\":{\"machine_model\":\"Mac15,8\",\"chip_name\":\"Apple M3 Max\",\"chip_family\":\"M3\",\"chip_tier\":\"Max\",\"memory_gb\":64,\"memory_available_gb\":58.5,\"cpu_cores\":{\"total\":16,\"performance\":12,\"efficiency\":4},\"gpu_cores\":40,\"memory_bandwidth_gbs\":400},\"models\":[{\"id\":\"model-a\",\"size_bytes\":123456789,\"model_type\":\"chat\",\"quantization\":\"4bit\",\"weight_hash\":\"weight-sha256\",\"is_vision\":true,\"template_render_ok\":false}],\"backend\":\"mlx-swift\",\"version\":\"0.7.5\",\"public_key\":\"provider-x25519\",\"encrypted_response_chunks\":true,\"attestation\":{\"signature\":\"sig\",\"attestation\":{\"z\":1,\"a\":[true,false]}},\"prefill_tps\":321.5,\"decode_tps\":42.25,\"auth_token\":\"provider-token\",\"private_only\":true,\"apns_device_token\":\"device-token\",\"apns_environment\":\"production\",\"runtime_hash\":\"runtime-sha256\",\"template_hashes\":{\"mlx_metallib\":\"template-sha256\"},\"privacy_capabilities\":{\"text_backend_inprocess\":true,\"text_proxy_disabled\":true,\"python_runtime_locked\":true,\"dangerous_modules_blocked\":true,\"sip_enabled\":true,\"anti_debug_enabled\":true,\"core_dumps_disabled\":true,\"env_scrubbed\":true}}",
+      "wire": "{\"type\":\"register\",\"hardware\":{\"machine_model\":\"Mac15,8\",\"chip_name\":\"Apple M3 Max\",\"chip_family\":\"M3\",\"chip_tier\":\"Max\",\"memory_gb\":64,\"memory_available_gb\":58,\"cpu_cores\":{\"total\":16,\"performance\":12,\"efficiency\":4},\"gpu_cores\":40,\"memory_bandwidth_gbs\":400},\"models\":[{\"id\":\"model-a\",\"size_bytes\":123456789,\"model_type\":\"chat\",\"quantization\":\"4bit\",\"estimated_memory_gb\":16,\"weight_hash\":\"weight-sha256\",\"is_vision\":true,\"template_render_ok\":false}],\"backend\":\"mlx-swift\",\"version\":\"0.7.5\",\"public_key\":\"provider-x25519\",\"encrypted_response_chunks\":true,\"attestation\":{\"signature\":\"sig\",\"attestation\":{\"z\":1,\"a\":[true,false]}},\"prefill_tps\":321.5,\"decode_tps\":42.25,\"auth_token\":\"provider-token\",\"private_only\":true,\"apns_device_token\":\"device-token\",\"apns_environment\":\"production\",\"runtime_hash\":\"runtime-sha256\",\"template_hashes\":{\"mlx_metallib\":\"template-sha256\"},\"privacy_capabilities\":{\"text_backend_inprocess\":true,\"text_proxy_disabled\":true,\"python_runtime_locked\":true,\"dangerous_modules_blocked\":true,\"sip_enabled\":true,\"anti_debug_enabled\":true,\"core_dumps_disabled\":true,\"env_scrubbed\":true}}",
       "exact_bytes": true,
       "notes": "The nested attestation value is signed; consumers must preserve its exact raw bytes."
     },
     {
       "name": "heartbeat_no_active_model",
       "message_type": "heartbeat",
-      "wire": "{\"type\":\"heartbeat\",\"status\":\"idle\",\"active_model\":null,\"stats\":{\"requests_served\":0,\"tokens_generated\":0},\"system_metrics\":{\"memory_pressure\":0,\"cpu_usage\":0,\"thermal_state\":\"\"}}",
+      "wire": "{\"type\":\"heartbeat\",\"status\":\"idle\",\"active_model\":null,\"stats\":{\"requests_served\":0,\"tokens_generated\":0},\"system_metrics\":{\"memory_pressure\":0,\"cpu_usage\":0,\"thermal_state\":\"nominal\"}}",
       "exact_bytes": false,
       "notes": "Go emits active_model:null; decoders must also accept omission from Swift."
     },
@@ -107,7 +107,7 @@
     {
       "name": "models_update",
       "message_type": "models_update",
-      "wire": "{\"type\":\"models_update\",\"models\":[{\"id\":\"model-a\",\"size_bytes\":0,\"model_type\":\"\",\"quantization\":\"\",\"weight_hash\":\"weight-sha256\"}]}",
+      "wire": "{\"type\":\"models_update\",\"models\":[{\"id\":\"model-a\",\"size_bytes\":123456789,\"model_type\":\"chat\",\"quantization\":\"4bit\",\"estimated_memory_gb\":16,\"weight_hash\":\"weight-sha256\"}]}",
       "exact_bytes": false
     }
   ]

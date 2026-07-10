@@ -23,6 +23,44 @@ type wireContract struct {
 	Cases         []wireCase `json:"cases"`
 }
 
+// providerRegisterContract mirrors the Swift provider's emitted register
+// shape, including estimated_memory_gb, which Go intentionally ignores.
+type providerRegisterContract struct {
+	Type                    string                        `json:"type"`
+	Hardware                protocol.Hardware             `json:"hardware"`
+	Models                  []providerModelInfoContract   `json:"models"`
+	Backend                 string                        `json:"backend"`
+	Version                 string                        `json:"version,omitempty"`
+	PublicKey               string                        `json:"public_key,omitempty"`
+	EncryptedResponseChunks bool                          `json:"encrypted_response_chunks,omitempty"`
+	Attestation             json.RawMessage               `json:"attestation,omitempty"`
+	PrefillTPS              float64                       `json:"prefill_tps,omitempty"`
+	DecodeTPS               float64                       `json:"decode_tps,omitempty"`
+	AuthToken               string                        `json:"auth_token,omitempty"`
+	PrivateOnly             bool                          `json:"private_only,omitempty"`
+	APNsDeviceToken         string                        `json:"apns_device_token,omitempty"`
+	APNsEnvironment         string                        `json:"apns_environment,omitempty"`
+	RuntimeHash             string                        `json:"runtime_hash,omitempty"`
+	TemplateHashes          map[string]string             `json:"template_hashes,omitempty"`
+	PrivacyCapabilities     *protocol.PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
+}
+
+type providerModelInfoContract struct {
+	ID                string  `json:"id"`
+	SizeBytes         int64   `json:"size_bytes"`
+	ModelType         string  `json:"model_type,omitempty"`
+	Quantization      string  `json:"quantization,omitempty"`
+	EstimatedMemoryGB float64 `json:"estimated_memory_gb"`
+	WeightHash        string  `json:"weight_hash,omitempty"`
+	IsVision          bool    `json:"is_vision,omitempty"`
+	TemplateRenderOK  *bool   `json:"template_render_ok,omitempty"`
+}
+
+type providerModelsUpdateContract struct {
+	Type   string                      `json:"type"`
+	Models []providerModelInfoContract `json:"models"`
+}
+
 func generateProtocol(_ string) (map[string][]byte, error) {
 	providerCases, err := providerProtocolCases()
 	if err != nil {
@@ -70,7 +108,7 @@ func providerProtocolCases() ([]wireCase, error) {
 		ChipFamily:         "M3",
 		ChipTier:           "Max",
 		MemoryGB:           64,
-		MemoryAvailableGB:  58.5,
+		MemoryAvailableGB:  58,
 		CPUCores:           protocol.CPUCores{Total: 16, Performance: 12, Efficiency: 4},
 		GPUCores:           40,
 		MemoryBandwidthGBs: 400,
@@ -86,21 +124,22 @@ func providerProtocolCases() ([]wireCase, error) {
 		{
 			name:        "register_minimal",
 			messageType: protocol.TypeRegister,
-			value: protocol.RegisterMessage{
-				Type: protocol.TypeRegister, Hardware: protocol.Hardware{}, Models: []protocol.ModelInfo{}, Backend: "mlx-swift",
+			value: providerRegisterContract{
+				Type: protocol.TypeRegister, Hardware: fullHardware,
+				Models: []providerModelInfoContract{}, Backend: "mlx-swift",
 			},
 			notes: "Optional fields are omitted.",
 		},
 		{
 			name:        "register_full_raw_attestation",
 			messageType: protocol.TypeRegister,
-			value: protocol.RegisterMessage{
+			value: providerRegisterContract{
 				Type:     protocol.TypeRegister,
 				Hardware: fullHardware,
-				Models: []protocol.ModelInfo{{
+				Models: []providerModelInfoContract{{
 					ID: "model-a", SizeBytes: 123456789, ModelType: "chat",
-					Quantization: "4bit", WeightHash: "weight-sha256",
-					IsVision: true, TemplateRenderOK: &templateOK,
+					Quantization: "4bit", EstimatedMemoryGB: 16,
+					WeightHash: "weight-sha256", IsVision: true, TemplateRenderOK: &templateOK,
 				}},
 				Backend: "mlx-swift", Version: "0.7.5", PublicKey: "provider-x25519",
 				EncryptedResponseChunks: true,
@@ -127,7 +166,8 @@ func providerProtocolCases() ([]wireCase, error) {
 			messageType: protocol.TypeHeartbeat,
 			value: protocol.HeartbeatMessage{
 				Type: protocol.TypeHeartbeat, Status: "idle", ActiveModel: nil,
-				Stats: protocol.HeartbeatStats{}, SystemMetrics: protocol.SystemMetrics{},
+				Stats:         protocol.HeartbeatStats{},
+				SystemMetrics: protocol.SystemMetrics{ThermalState: "nominal"},
 			},
 			notes: "Go emits active_model:null; decoders must also accept omission from Swift.",
 		},
@@ -243,9 +283,12 @@ func providerProtocolCases() ([]wireCase, error) {
 		},
 		{
 			name: "models_update", messageType: protocol.TypeModelsUpdate,
-			value: protocol.ModelsUpdateMessage{
-				Type:   protocol.TypeModelsUpdate,
-				Models: []protocol.ModelInfo{{ID: "model-a", WeightHash: "weight-sha256"}},
+			value: providerModelsUpdateContract{
+				Type: protocol.TypeModelsUpdate,
+				Models: []providerModelInfoContract{{
+					ID: "model-a", SizeBytes: 123456789, ModelType: "chat",
+					Quantization: "4bit", EstimatedMemoryGB: 16, WeightHash: "weight-sha256",
+				}},
 			},
 		},
 	}

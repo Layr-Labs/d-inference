@@ -108,14 +108,23 @@ func (s *Server) drainGate(next http.HandlerFunc) http.HandlerFunc {
 // ("safe to route new traffic here").
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	draining := s.IsDraining()
+	ownershipHealthy := true
+	if lost := s.store.OwnershipLost(); lost != nil {
+		select {
+		case <-lost:
+			ownershipHealthy = false
+		default:
+		}
+	}
+	ready := !draining && ownershipHealthy
 	status := http.StatusOK
-	if draining {
+	if !ready {
 		status = http.StatusServiceUnavailable
 	}
 	writeJSON(w, status, readinessResponse{
 		Draining: draining,
 		Inflight: s.Inflight(),
-		Ready:    !draining,
+		Ready:    ready,
 	})
 }
 

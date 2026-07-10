@@ -816,3 +816,16 @@ per job around the ledger money move and the terminal/outbox side effect,
 so quiescence cannot observe a settled/released job without the critical
 outbox entry.
 
+### Clear-orphans under money_fx (DECISIONS #140)
+
+`clear-orphans` recover and force-settle phases hold `money_fx` per job
+across the money move and disposition/outbox enqueue (same barrier as
+batch paths).
+
+### Release/mark/force SQL param bind (DECISIONS #141)
+
+`mark_start_authorized_sql`, `release_sql`, and `force_settle_sql` insert
+account/digest/cap onto `financial_operations` and return
+`param_conflict` on mismatched op-key reuse — completing #138 coverage
+for the remaining money CTEs.
+

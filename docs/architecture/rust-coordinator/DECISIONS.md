@@ -147,6 +147,7 @@ Date: 2026-07-10
 | 138 | SQL financial op param bind | Migration `0003` adds account/digest/cap columns; reserve/settle/settle_capped SQL surface `param_conflict` on mismatched op-key reuse (MemoryLedger #34 parity) |
 | 139 | Batch money under money_fx | force-settle-batch / recover-undispatched-batch hold `money_fx` per job across settle/release + terminal/outbox |
 | 140 | Clear-orphans under money_fx | clear-orphans recover + force-settle phases hold `money_fx` per job across money + disposition/outbox |
+| 141 | Release/mark/force SQL param bind | mark_start / release / force_settle SQL also bind account/digest/cap and surface `param_conflict` |
 
 ## Deleted Go mechanisms (do not port)
 

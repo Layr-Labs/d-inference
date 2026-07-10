@@ -134,10 +134,25 @@ impl PostgresLedgerStub {
             AND state = 'reserved'
             AND (coordinator_epoch = 0 OR coordinator_epoch = $4::bigint)
         ), op AS (
-          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-          SELECT $3, $1, 'start_authorize', 0 FROM guard
+          INSERT INTO rust_coord.financial_operations (
+            operation_key, job_id, op_type, amount_micro_usd,
+            account_id, terminal_digest, billable_cap_micro_usd
+          )
+          SELECT $3, $1, 'start_authorize', 0, $2, '', NULL FROM guard
           ON CONFLICT (operation_key) DO NOTHING
           RETURNING operation_key
+        ), op_row AS (
+          SELECT * FROM rust_coord.financial_operations WHERE operation_key = $3
+        ), op_ok AS (
+          SELECT 1 FROM op_row
+          WHERE job_id = $1
+            AND op_type = 'start_authorize'
+            AND amount_micro_usd = 0
+            AND account_id = $2
+            AND COALESCE(terminal_digest, '') = ''
+            AND billable_cap_micro_usd IS NULL
+        ), op_conflict AS (
+          SELECT 1 FROM op_row WHERE NOT EXISTS (SELECT 1 FROM op_ok)
         ), mark AS (
           UPDATE rust_coord.inference_jobs j
           SET state = 'start_authorized',
@@ -146,6 +161,8 @@ impl PostgresLedgerStub {
             AND j.account_id = $2
             AND EXISTS (SELECT 1 FROM guard)
             AND EXISTS (SELECT 1 FROM op)
+            AND EXISTS (SELECT 1 FROM op_ok)
+            AND NOT EXISTS (SELECT 1 FROM op_conflict)
           RETURNING j.job_id
         ), cleanup_op AS (
           DELETE FROM rust_coord.financial_operations fo
@@ -154,7 +171,9 @@ impl PostgresLedgerStub {
             AND NOT EXISTS (SELECT 1 FROM mark)
           RETURNING fo.operation_key
         )
-        SELECT job_id FROM mark
+        SELECT
+          (SELECT job_id FROM mark) AS job_id,
+          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict
         "#
     }
 
@@ -492,10 +511,26 @@ impl PostgresLedgerStub {
           FROM job j
           WHERE EXISTS (SELECT 1 FROM guard)
         ), op AS (
-          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-          SELECT $5, $2, 'force_settle', c.amount FROM charge c
+          INSERT INTO rust_coord.financial_operations (
+            operation_key, job_id, op_type, amount_micro_usd,
+            account_id, terminal_digest, billable_cap_micro_usd
+          )
+          SELECT $5, $2, 'force_settle', c.amount, $1, $4, NULL FROM charge c
           ON CONFLICT (operation_key) DO NOTHING
           RETURNING operation_key
+        ), op_row AS (
+          SELECT * FROM rust_coord.financial_operations WHERE operation_key = $5
+        ), op_ok AS (
+          SELECT 1 FROM op_row o
+          JOIN charge c ON TRUE
+          WHERE o.job_id = $2
+            AND o.op_type = 'force_settle'
+            AND o.amount_micro_usd = c.amount
+            AND o.account_id = $1
+            AND COALESCE(o.terminal_digest, '') = COALESCE($4, '')
+            AND o.billable_cap_micro_usd IS NULL
+        ), op_conflict AS (
+          SELECT 1 FROM op_row WHERE NOT EXISTS (SELECT 1 FROM op_ok)
         ), digest AS (
           INSERT INTO rust_coord.provider_terminals (
             terminal_digest, job_id, attempt_id, lease_id, se_signature, disposition
@@ -503,6 +538,8 @@ impl PostgresLedgerStub {
           SELECT $4, $2, $6, $7, COALESCE($8, ''), 'force_settled'
           FROM charge
           WHERE EXISTS (SELECT 1 FROM op)
+            AND EXISTS (SELECT 1 FROM op_ok)
+            AND NOT EXISTS (SELECT 1 FROM op_conflict)
           ON CONFLICT (terminal_digest) DO NOTHING
           RETURNING terminal_digest
         ), calc AS (
@@ -516,6 +553,8 @@ impl PostgresLedgerStub {
           FROM job j
           CROSS JOIN charge c
           WHERE EXISTS (SELECT 1 FROM op)
+            AND EXISTS (SELECT 1 FROM op_ok)
+            AND NOT EXISTS (SELECT 1 FROM op_conflict)
             AND EXISTS (SELECT 1 FROM digest)
         ), credit AS (
           UPDATE balances b
@@ -554,7 +593,11 @@ impl PostgresLedgerStub {
             AND NOT EXISTS (SELECT 1 FROM digest)
           RETURNING fo.operation_key
         )
-        SELECT refund, refund_wdr, amount FROM credit
+        SELECT
+          (SELECT refund FROM credit) AS refund,
+          (SELECT refund_wdr FROM credit) AS refund_wdr,
+          (SELECT amount FROM credit) AS amount,
+          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict
         "#
     }
 
@@ -579,11 +622,27 @@ impl PostgresLedgerStub {
             AND state <> 'start_authorized'
             AND (coordinator_epoch = 0 OR coordinator_epoch = $4::bigint)
         ), op AS (
-          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-          SELECT $3, $2, 'release', j.reserved FROM job j
+          INSERT INTO rust_coord.financial_operations (
+            operation_key, job_id, op_type, amount_micro_usd,
+            account_id, terminal_digest, billable_cap_micro_usd
+          )
+          SELECT $3, $2, 'release', j.reserved, $1, '', NULL FROM job j
           WHERE EXISTS (SELECT 1 FROM guard)
           ON CONFLICT (operation_key) DO NOTHING
           RETURNING operation_key
+        ), op_row AS (
+          SELECT * FROM rust_coord.financial_operations WHERE operation_key = $3
+        ), op_ok AS (
+          SELECT 1 FROM op_row o
+          JOIN job j ON TRUE
+          WHERE o.job_id = $2
+            AND o.op_type = 'release'
+            AND o.amount_micro_usd = j.reserved
+            AND o.account_id = $1
+            AND COALESCE(o.terminal_digest, '') = ''
+            AND o.billable_cap_micro_usd IS NULL
+        ), op_conflict AS (
+          SELECT 1 FROM op_row WHERE NOT EXISTS (SELECT 1 FROM op_ok)
         ), credit AS (
           UPDATE balances b
           SET balance_micro_usd = b.balance_micro_usd + j.reserved,
@@ -593,6 +652,8 @@ impl PostgresLedgerStub {
           WHERE b.account_id = $1
             AND EXISTS (SELECT 1 FROM guard)
             AND EXISTS (SELECT 1 FROM op)
+            AND EXISTS (SELECT 1 FROM op_ok)
+            AND NOT EXISTS (SELECT 1 FROM op_conflict)
           RETURNING j.reserved, j.reserved_wdr
         ), mark AS (
           UPDATE rust_coord.inference_jobs j
@@ -602,6 +663,8 @@ impl PostgresLedgerStub {
           WHERE j.job_id = $2
             AND EXISTS (SELECT 1 FROM guard)
             AND EXISTS (SELECT 1 FROM op)
+            AND EXISTS (SELECT 1 FROM op_ok)
+            AND NOT EXISTS (SELECT 1 FROM op_conflict)
           RETURNING j.job_id, j.account_id
         ), outbox AS (
           -- Money refund + durable side effect commit together (DECISIONS #43).
@@ -625,7 +688,10 @@ impl PostgresLedgerStub {
             AND NOT EXISTS (SELECT 1 FROM mark)
           RETURNING fo.operation_key
         )
-        SELECT reserved, reserved_wdr FROM credit
+        SELECT
+          (SELECT reserved FROM credit) AS reserved,
+          (SELECT reserved_wdr FROM credit) AS reserved_wdr,
+          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict
         "#
     }
 
@@ -756,6 +822,9 @@ mod tests {
             PostgresLedgerStub::reserve_sql(),
             PostgresLedgerStub::settle_sql(),
             PostgresLedgerStub::settle_capped_sql(),
+            PostgresLedgerStub::force_settle_sql(),
+            PostgresLedgerStub::release_sql(),
+            PostgresLedgerStub::mark_start_authorized_sql(),
         ] {
             assert!(
                 sql.contains("op_conflict") && sql.contains("param_conflict"),
@@ -832,7 +901,9 @@ mod tests {
         assert!(sql.contains("state = 'reserved'"));
         assert!(sql.contains("FOR UPDATE"));
         assert!(sql.contains("account_id = $2"));
-        assert!(sql.contains("SELECT $3, $1, 'start_authorize', 0 FROM guard"));
+        assert!(sql.contains("'start_authorize'"));
+        assert!(sql.contains("op_ok"));
+        assert!(sql.contains("param_conflict"));
         assert!(sql.contains("EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));
         assert!(sql.contains("coordinator_epoch = $4"));

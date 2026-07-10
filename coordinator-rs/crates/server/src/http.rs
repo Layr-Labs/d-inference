@@ -1010,6 +1010,23 @@ async fn admin_force_settle_batch(
                 Ok(RecoveryAction::Skipped) | Ok(RecoveryAction::HeldForReview) => {
                     ("skipped", 0)
                 }
+                Err(crate::ledger::LedgerError::OwnershipLost) => {
+                    drop(led);
+                    let (remaining_active, remaining_held) = {
+                        let led = state.ledger.lock().await;
+                        remaining_ids_for_abort(&led, account_filter.as_deref())
+                    };
+                    return batch_ownership_lost_partial(
+                        "force_settle_batch",
+                        &settled,
+                        "settled",
+                        "charged_micro_usd",
+                        charged_total,
+                        &remaining_active,
+                        &remaining_held,
+                        account_filter.as_deref(),
+                    );
+                }
                 Err(err) => {
                     failed.push(json!({
                         "job_id": job_id,
@@ -1285,6 +1302,23 @@ async fn admin_recover_undispatched_batch(
                 Ok(RecoveryAction::AlreadyTerminal) => ("already_terminal", None),
                 Ok(RecoveryAction::Skipped) | Ok(RecoveryAction::HeldForReview) => {
                     ("skipped", None)
+                }
+                Err(crate::ledger::LedgerError::OwnershipLost) => {
+                    drop(led);
+                    let (remaining_active, remaining_held) = {
+                        let led = state.ledger.lock().await;
+                        remaining_ids_for_abort(&led, account_filter.as_deref())
+                    };
+                    return batch_ownership_lost_partial(
+                        "recover_undispatched_batch",
+                        &released,
+                        "released",
+                        "refunded_micro_usd",
+                        refund_total,
+                        &remaining_active,
+                        &remaining_held,
+                        account_filter.as_deref(),
+                    );
                 }
                 Err(err) => {
                     failed.push(json!({
@@ -1742,9 +1776,30 @@ async fn admin_clear_orphans(
                 }
                 let reserved = led.job_reserved_total(&job_id).map(|m| m.0).unwrap_or(0);
                 match recover_undispatched_on(&mut led, epoch, &job_id, &job_acct) {
-                    Ok(RecoveryAction::Released) => Some((reserved, job_acct)),
-                    _ => None,
+                    Ok(RecoveryAction::Released) => Ok(Some((reserved, job_acct))),
+                    Err(crate::ledger::LedgerError::OwnershipLost) => Err(()),
+                    _ => Ok(None),
                 }
+            };
+            let refunded = match refunded {
+                Err(()) => {
+                    let (remaining_active, remaining_held) = {
+                        let led = state.ledger.lock().await;
+                        remaining_ids_for_abort(&led, account_filter.as_deref())
+                    };
+                    return ownership_lost_partial(
+                        "during_recover",
+                        &adopted,
+                        &released,
+                        &[],
+                        refund_total,
+                        0,
+                        &remaining_active,
+                        &remaining_held,
+                        account_filter.as_deref(),
+                    );
+                }
+                Ok(v) => v,
             };
             if let Some((amount, job_acct)) = refunded {
                 {
@@ -1826,9 +1881,30 @@ async fn admin_clear_orphans(
                     req.actual_micro_usd,
                     &digest,
                 ) {
-                    Ok(RecoveryAction::Released) => Some(charge),
-                    _ => None,
+                    Ok(RecoveryAction::Released) => Ok(Some(charge)),
+                    Err(crate::ledger::LedgerError::OwnershipLost) => Err(()),
+                    _ => Ok(None),
                 }
+            };
+            let charged = match charged {
+                Err(()) => {
+                    let (remaining_active, remaining_held) = {
+                        let led = state.ledger.lock().await;
+                        remaining_ids_for_abort(&led, account_filter.as_deref())
+                    };
+                    return ownership_lost_partial(
+                        "during_force_settle",
+                        &adopted,
+                        &released,
+                        &settled,
+                        refund_total,
+                        charged_total,
+                        &remaining_active,
+                        &remaining_held,
+                        account_filter.as_deref(),
+                    );
+                }
+                Ok(v) => v,
             };
             if let Some(charge) = charged {
                 {

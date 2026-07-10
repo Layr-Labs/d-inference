@@ -665,3 +665,9 @@ account-cutover phase within the same round. If an account-cutover round leaves
 the same non-empty account set, abort with `cutover_drain_all_no_progress`.
 Unknown allowlist entries yield `scoped_ready` without touching foreign orphans.
 
+### clear-orphans/batch abort on ledger OwnershipLost (DECISIONS #119)
+
+`force_settle_held_on` / `recover_undispatched_on` returning `OwnershipLost`
+(fencing epoch mismatch) must abort clear-orphans and batch recover/force-settle
+with `ownership_lost` — never silently skip and report success while holds remain.
+

@@ -125,6 +125,7 @@ Date: 2026-07-10
 | 116 | cutover-drain-all allowlist + races | Optional `accounts` allowlist scopes cutover; concurrent drain-all and deposits conserve; idempotent when ready |
 | 117 | CLI demo-cutover-drain-all | `--demo-cutover-drain-all` clears multi-account reserved+held orphans then drains outbox |
 | 118 | cutover-drain-all allowlist edges + mid-round ready | Disjoint concurrent allowlists conserve. max_rounds=1 clears multi-tenant via mid-round ready check. No-progress abort if accounts unchanged |
+| 119 | clear-orphans/batch abort on ledger OwnershipLost | Fencing mismatch no longer silently skipped — clear-orphans and batch recover/force-settle abort with ownership_lost |
 
 ## Deleted Go mechanisms (do not port)
 

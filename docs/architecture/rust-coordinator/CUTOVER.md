@@ -917,3 +917,16 @@ clamped to `min(actual, billable_cap, reserved)`.
 `MemoryLedger::release` unclaims the op key when the job is already
 disposed — matching settle #150 and SQL release guard semantics.
 
+### Outbox claim respects available_at (DECISIONS #156)
+
+`claim_sql` only claims rows with `available_at <= NOW()`, so
+`requeue_sql` backoff is honoured and transient delivery failures cannot
+burn through `MAX_ATTEMPTS` in wall-clock seconds. Cutover
+`drain_ack_all_sql` intentionally omits the filter.
+
+### Reserve SQL epoch conflict on replay (DECISIONS #157)
+
+`reserve_sql` returns `epoch_conflict` when an existing job's
+`coordinator_epoch` mismatches the caller epoch — matching
+`MemoryLedger::reserve_with_epoch` OwnershipLost on stale replay.
+

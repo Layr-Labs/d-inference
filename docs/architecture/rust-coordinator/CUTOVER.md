@@ -630,3 +630,10 @@ empty but not ready, outbox-drain → repeat until ready. Outbox-only state has
 empty accounts list and `cutover_hint=outbox-drain`. Deposits to a foreign
 account concurrent with filtered cutover conserve both ledgers.
 
+### cutover-drain returns remaining accounts (DECISIONS #114)
+
+`POST /v1/admin/cutover-drain` success and drain-abort responses include
+`accounts_needing_cutover` so the next loop iteration can proceed without a
+separate quiescence poll. `ready` is true only when no remaining accounts and
+outbox is drained.
+

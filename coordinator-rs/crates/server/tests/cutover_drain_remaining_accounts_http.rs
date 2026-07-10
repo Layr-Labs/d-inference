@@ -15,6 +15,8 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn cutover_drain_response_lists_remaining_accounts() {
+    let _guard = lock_outbox_drain_hook_tests();
+    set_outbox_drain_entry_hook(None);
     let state = pilot_app_state(true);
     let epoch = state.ownership.epoch().0;
     {

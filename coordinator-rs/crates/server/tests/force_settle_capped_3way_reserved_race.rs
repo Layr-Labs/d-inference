@@ -1,4 +1,5 @@
-//! Concurrent 3-way force/settle/settle_capped on reserved-only: exactly one clear.
+//! Concurrent 3-way force/settle/settle_capped on reserved-only: all refuse
+//! without start_authorized (DECISIONS #153).
 
 use darkbloom_coordinator::ledger::{LedgerError, MemoryLedger, OperationKey};
 use darkbloom_coordinator::recovery::{force_settle_held, RecoveryAction};
@@ -13,9 +14,6 @@ fn concurrent_force_settle_settle_capped_on_reserved_exactly_one() {
         g.credit("a", 5_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 280_000)
             .unwrap();
-        // Not start_authorized — force_settle_held requires start_authorized,
-        // so force should Skip/AlreadyTerminal-ish; settle and capped race.
-        // Actually force_settle_held on reserved-only returns Skipped.
     }
 
     let led_f = led.clone();
@@ -59,13 +57,12 @@ fn concurrent_force_settle_settle_capped_on_reserved_exactly_one() {
     let forced = force.join().unwrap();
     let settled = settle.join().unwrap();
     let capped_ok = capped.join().unwrap();
-    // force must not win on reserved-only (not start_authorized)
     assert!(!forced, "force_settle requires start_authorized");
-    assert!(settled ^ capped_ok, "exactly one of settle/capped");
+    assert!(!settled, "settle requires start_authorized");
+    assert!(!capped_ok, "settle_capped requires start_authorized");
 
     let g = led.lock().unwrap();
-    assert_eq!(g.active_job_count(), 0);
-    // charged 70k of 280k → refund 210k → bal = 5M - 280k + 210k = 4.93M
-    assert_eq!(g.balance("a").0, 4_930_000);
-    assert_eq!(g.job_disposition("j"), Some("settled"));
+    assert_eq!(g.active_job_count(), 1);
+    assert_eq!(g.balance("a").0, 4_720_000);
+    assert!(g.job_disposition("j").is_none());
 }

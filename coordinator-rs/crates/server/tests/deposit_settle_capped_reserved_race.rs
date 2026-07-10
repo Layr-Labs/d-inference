@@ -1,4 +1,5 @@
-//! Concurrent deposit with settle XOR settle_capped on reserved-only: money conserved.
+//! Concurrent deposit with settle/settle_capped on reserved-only: both refuse
+//! without start_authorized (DECISIONS #153); deposit still applies.
 
 use darkbloom_coordinator::deposits::apply_stripe_deposit;
 use darkbloom_coordinator::external_events::ExternalEventInbox;
@@ -63,11 +64,12 @@ fn concurrent_deposit_with_settle_or_capped_on_reserved_conserves() {
     let settled = settle.join().unwrap();
     let capped_ok = capped.join().unwrap();
     assert!(deposited);
-    assert!(settled ^ capped_ok, "exactly one settle path");
+    assert!(!settled, "settle requires start_authorized");
+    assert!(!capped_ok, "settle_capped requires start_authorized");
 
     let g = led.lock().unwrap();
-    // Seed 500k + deposit 80k = 580k. Charged 40k → free = 540k
-    assert_eq!(g.active_job_count(), 0);
-    assert_eq!(g.balance("a").0, 540_000);
-    assert_eq!(g.job_disposition("j"), Some("settled"));
+    // Seed 500k + deposit 80k - reserved 150k still held = 430k
+    assert_eq!(g.active_job_count(), 1);
+    assert_eq!(g.balance("a").0, 430_000);
+    assert!(g.job_disposition("j").is_none());
 }

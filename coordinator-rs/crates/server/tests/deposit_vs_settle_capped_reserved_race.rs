@@ -1,4 +1,4 @@
-//! Concurrent deposit while settle_capped on reserved job: money conserved.
+//! Concurrent deposit while settle_capped on reserved: capped refuses (DECISIONS #153).
 
 use darkbloom_coordinator::deposits::apply_stripe_deposit;
 use darkbloom_coordinator::external_events::ExternalEventInbox;
@@ -46,11 +46,11 @@ fn concurrent_deposit_and_settle_capped_on_reserved_conserves() {
     let deposited = deposit.join().unwrap();
     let capped_ok = capped.join().unwrap();
     assert!(deposited);
-    assert!(capped_ok);
+    assert!(!capped_ok, "settle_capped requires start_authorized");
 
     let g = led.lock().unwrap();
-    // Seed 400k + deposit 70k = 470k. Charged 30k → free = 440k
-    assert_eq!(g.active_job_count(), 0);
-    assert_eq!(g.balance("a").0, 440_000);
-    assert_eq!(g.job_disposition("j"), Some("settled"));
+    // Seed 400k + deposit 70k - reserved 100k still held = 370k
+    assert_eq!(g.active_job_count(), 1);
+    assert_eq!(g.balance("a").0, 370_000);
+    assert!(g.job_disposition("j").is_none());
 }

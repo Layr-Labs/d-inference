@@ -1,4 +1,4 @@
-//! Concurrent settle vs settle_capped on reserved-only job: XOR.
+//! Concurrent settle vs settle_capped on reserved-only: both refuse (DECISIONS #153).
 
 use darkbloom_coordinator::ledger::{LedgerError, MemoryLedger, OperationKey};
 use std::sync::{Arc, Mutex};
@@ -12,7 +12,6 @@ fn concurrent_settle_vs_settle_capped_on_reserved_xor() {
         g.credit("a", 5_000_000, 0).unwrap();
         g.reserve(OperationKey("r".into()), "j", "a", 240_000)
             .unwrap();
-        // Not start_authorized — both settle paths allowed.
     }
 
     let led_s = led.clone();
@@ -48,11 +47,11 @@ fn concurrent_settle_vs_settle_capped_on_reserved_xor() {
 
     let settled = settle.join().unwrap();
     let capped_ok = capped.join().unwrap();
-    assert!(settled ^ capped_ok, "exactly one clear");
+    assert!(!settled, "settle requires start_authorized");
+    assert!(!capped_ok, "settle_capped requires start_authorized");
 
     let g = led.lock().unwrap();
-    assert_eq!(g.active_job_count(), 0);
-    // Both charge 80k of 240k → refund 160k → bal = 5M - 240k + 160k = 4.92M
-    assert_eq!(g.balance("a").0, 4_920_000);
-    assert_eq!(g.job_disposition("j"), Some("settled"));
+    assert_eq!(g.active_job_count(), 1);
+    assert_eq!(g.balance("a").0, 4_760_000);
+    assert!(g.job_disposition("j").is_none());
 }

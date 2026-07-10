@@ -74,6 +74,7 @@ Date: 2026-07-10
 | 65 | Live wait aborts on ownership steal | While awaiting `provider_terminal`, poll ownership; on steal return `ownership_lost` and leave `start_authorized` held — never settle after mid-wait fencing loss |
 | 66 | Adopt job fencing after re-acquire | `POST /v1/admin/adopt-job` rebinds an active job's `fencing_epoch` to the current owner so orphaned reserved/held jobs can be recovered or force-settled after steal |
 | 67 | Prepare/start ownership watch | Live `prepare` and `start` waits `select!` with `watch_ownership_lost`; on steal return `ownership_lost` and leave the job reserved/held for adopt+recover/force-settle |
+| 68 | Admin cancel-attempt HTTP | `POST /v1/admin/cancel-attempt` sends provider cancel for `start_authorized` jobs without releasing money (`cancelled_await_terminal`); reserved-not-started returns `skipped` (use recover-undispatched) |
 
 ## Deleted Go mechanisms (do not port)
 

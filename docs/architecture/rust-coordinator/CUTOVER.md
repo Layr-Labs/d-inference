@@ -343,3 +343,10 @@ Live `prepare` and `start` waits also `select!` with `watch_ownership_lost`.
 On steal: return `ownership_lost` and leave the job reserved (prepare) or
 `start_authorized` held (start) for adopt + recover/force-settle.
 
+### Admin cancel-attempt HTTP (DECISIONS #68)
+
+`POST /v1/admin/cancel-attempt` sends a provider cancel for `start_authorized`
+jobs and returns `cancelled_await_terminal` without moving money. Reserved
+jobs are `skipped` — use recover-undispatched. Ops clear holds via
+force-settle after terminal or review.
+

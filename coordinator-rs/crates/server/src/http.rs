@@ -84,6 +84,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/held-review", post(admin_held_review))
         .route("/v1/admin/terminal-ingest", post(admin_terminal_ingest))
         .route("/v1/admin/adopt-job", post(admin_adopt_job))
+        .route("/v1/admin/cancel-attempt", post(admin_cancel_attempt))
         .fallback(unsupported)
         .with_state(Arc::new(state))
 }
@@ -817,6 +818,107 @@ async fn admin_adopt_job(
             "job_id": req.job_id,
             "previous_fencing_epoch": prev,
             "fencing_epoch": current,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminCancelAttemptRequest {
+    job_id: String,
+    attempt_id: String,
+    lease_id: String,
+    provider_id: String,
+    #[serde(default)]
+    dispatch_nonce: String,
+    #[serde(default)]
+    request_digest: String,
+}
+
+/// Ops cancel for a start_authorized attempt (DECISIONS #68).
+/// Sends provider cancel; does not release money — await terminal / force-settle.
+/// Reserved-not-started jobs should use recover-undispatched instead.
+async fn admin_cancel_attempt(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AdminCancelAttemptRequest>,
+) -> impl IntoResponse {
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
+    }
+    if let Err(resp) = require_nonempty_job_id(&req.job_id) {
+        return resp;
+    }
+    if req.attempt_id.is_empty() || req.provider_id.is_empty() || req.lease_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": "attempt_id, lease_id, and provider_id required",
+                    "type": "invalid_request_error",
+                    "code": "invalid_cancel_attempt"
+                }
+            })),
+        )
+            .into_response();
+    }
+    if let Err(resp) = require_holding(&state) {
+        return resp;
+    }
+
+    let (action, reserved) = {
+        let led = state.ledger.lock().await;
+        if led.job_disposition(&req.job_id).is_some() {
+            ("already_terminal".to_string(), 0_i64)
+        } else if !led.job_funded_start(&req.job_id) {
+            ("skipped".to_string(), 0_i64)
+        } else {
+            (
+                "cancelled_await_terminal".to_string(),
+                led.job_reserved_total(&req.job_id).map(|m| m.0).unwrap_or(0),
+            )
+        }
+    };
+
+    if action == "cancelled_await_terminal" {
+        match crate::abort::cancel_attempt(
+            &state.hub,
+            &req.provider_id,
+            &req.job_id,
+            &req.attempt_id,
+            &req.lease_id,
+            state.coordinator_epoch,
+            &req.dispatch_nonce,
+            &req.request_digest,
+        )
+        .await
+        {
+            Ok(()) => {}
+            Err(err) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "error": {
+                            "message": format!("cancel failed: {err}"),
+                            "type": "server_error",
+                            "code": "cancel_attempt_failed"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let held = state.ledger.lock().await.held_start_authorized_count();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "action": action,
+            "job_id": req.job_id,
+            "attempt_id": req.attempt_id,
+            "reserved_micro_usd": reserved,
+            "held_start_authorized": held,
         })),
     )
         .into_response()

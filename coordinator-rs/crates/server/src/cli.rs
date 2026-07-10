@@ -4,7 +4,9 @@ use clap::{Parser, Subcommand};
 use std::sync::{Arc, Mutex};
 
 use crate::ledger::MemoryLedger;
-use crate::recovery::{recover_undispatched, RecoveryAction};
+use crate::recovery::{
+    recover_start_authorized_held, recover_undispatched, RecoveryAction,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "darkbloom-coordinator", about = "Darkbloom Rust coordinator")]
@@ -22,9 +24,12 @@ enum Commands {
         /// Require explicit confirmation that this is the same-release artifact.
         #[arg(long)]
         confirm_same_release: bool,
-        /// Optional in-memory demo: release a reserved job (tests / dry-run).
+        /// In-memory demo: release a reserved (not start-authorized) job.
         #[arg(long)]
         demo_job: Option<String>,
+        /// In-memory demo: classify a start_authorized held job (no money move).
+        #[arg(long)]
+        demo_held_job: Option<String>,
         #[arg(long, default_value = "pilot-account")]
         demo_account: String,
     },
@@ -37,16 +42,19 @@ pub fn parse_and_is_recovery() -> RecoveryOpts {
             enabled: false,
             confirm: false,
             demo_job: None,
+            demo_held_job: None,
             demo_account: String::new(),
         },
         Some(Commands::Recovery {
             confirm_same_release,
             demo_job,
+            demo_held_job,
             demo_account,
         }) => RecoveryOpts {
             enabled: true,
             confirm: confirm_same_release,
             demo_job,
+            demo_held_job,
             demo_account,
         },
     }
@@ -56,6 +64,7 @@ pub struct RecoveryOpts {
     pub enabled: bool,
     pub confirm: bool,
     pub demo_job: Option<String>,
+    pub demo_held_job: Option<String>,
     pub demo_account: String,
 }
 
@@ -65,6 +74,33 @@ pub fn run_recovery(opts: RecoveryOpts) -> Result<(), String> {
             "recovery requires --confirm-same-release (plan §26.2: same-release artifact only)"
                 .into(),
         );
+    }
+    if let Some(job) = opts.demo_held_job {
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        {
+            let mut g = led.lock().map_err(|e| e.to_string())?;
+            g.credit(&opts.demo_account, 1_000_000, 0).unwrap();
+            g.reserve(
+                crate::ledger::OperationKey(format!("reserve:{job}")),
+                &job,
+                &opts.demo_account,
+                100_000,
+            )
+            .map_err(|e| e.to_string())?;
+            g.mark_start_authorized(&job)
+                .map_err(|e| e.to_string())?;
+        }
+        let action = recover_start_authorized_held(&led, &job)?;
+        tracing::info!(?action, job, "recovery held-job demo complete");
+        if action != RecoveryAction::HeldForReview {
+            return Err(format!("expected HeldForReview, got {action:?}"));
+        }
+        // Money still held.
+        let bal = led.lock().map_err(|e| e.to_string())?.balance(&opts.demo_account).0;
+        if bal != 900_000 {
+            return Err(format!("expected held balance 900000, got {bal}"));
+        }
+        return Ok(());
     }
     if let Some(job) = opts.demo_job {
         let led = Arc::new(Mutex::new(MemoryLedger::default()));
@@ -87,7 +123,7 @@ pub fn run_recovery(opts: RecoveryOpts) -> Result<(), String> {
         return Ok(());
     }
     let url = std::env::var("DATABASE_URL").map_err(|_| {
-        "DATABASE_URL required for recovery mode (or pass --demo-job for in-memory dry-run)"
+        "DATABASE_URL required for recovery mode (or pass --demo-job / --demo-held-job for in-memory dry-run)"
             .to_string()
     })?;
     tracing::info!(%url, "recovery mode: would probe rust_coord and settle/release (SQLx not linked in this build)");

@@ -236,21 +236,32 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                 for (k, v) in &wire.rest {
                     full.insert(k.clone(), v.clone());
                 }
-                let value = Value::Object(full);
-                let reply = match wire.message_type() {
-                    darkbloom_protocol::MessageType::Prepared => InboundReply::Prepared(value),
-                    darkbloom_protocol::MessageType::Started => InboundReply::Started(value),
-                    darkbloom_protocol::MessageType::Aborted => InboundReply::Aborted(value),
-                    darkbloom_protocol::MessageType::Cancelled => InboundReply::Cancelled(value),
-                    darkbloom_protocol::MessageType::ProviderTerminal => {
-                        InboundReply::Terminal(value)
-                    }
-                    darkbloom_protocol::MessageType::StructuredError => {
-                        InboundReply::StructuredError(value)
-                    }
-                    _ => continue,
-                };
-                state.hub.deliver_reply(id, attempt, reply).await;
+                        let value = Value::Object(full);
+                        // Side-effect structured errors onto fleet health/trust before demux.
+                        if matches!(
+                            wire.message_type(),
+                            darkbloom_protocol::MessageType::StructuredError
+                        ) {
+                            if let Some(class) =
+                                crate::provider_hub::ProviderHub::structured_error_class(&value)
+                            {
+                                state.fleet.structured_error(id.to_string(), class.to_string());
+                            }
+                        }
+                        let reply = match wire.message_type() {
+                            darkbloom_protocol::MessageType::Prepared => InboundReply::Prepared(value),
+                            darkbloom_protocol::MessageType::Started => InboundReply::Started(value),
+                            darkbloom_protocol::MessageType::Aborted => InboundReply::Aborted(value),
+                            darkbloom_protocol::MessageType::Cancelled => InboundReply::Cancelled(value),
+                            darkbloom_protocol::MessageType::ProviderTerminal => {
+                                InboundReply::Terminal(value)
+                            }
+                            darkbloom_protocol::MessageType::StructuredError => {
+                                InboundReply::StructuredError(value)
+                            }
+                            _ => continue,
+                        };
+                        state.hub.deliver_reply(id, attempt, reply).await;
             }
             other => {
                 tracing::debug!(?other, "ignoring provider frame in warm plane");

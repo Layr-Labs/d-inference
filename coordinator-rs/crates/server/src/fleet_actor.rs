@@ -32,6 +32,11 @@ pub enum FleetCommand {
         model: String,
         state_revision: u64,
     },
+    /// Apply a structured_error class to provider health/trust.
+    StructuredError {
+        provider_id: String,
+        class: String,
+    },
     Snapshot(oneshot::Sender<FleetState>),
 }
 
@@ -110,6 +115,13 @@ impl FleetHandle {
             provider_id,
             model,
             state_revision,
+        });
+    }
+
+    pub fn structured_error(&self, provider_id: String, class: String) {
+        let _ = self.lifecycle_tx.try_send(FleetCommand::StructuredError {
+            provider_id,
+            class,
         });
     }
 }

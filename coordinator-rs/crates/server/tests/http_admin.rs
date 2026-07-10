@@ -1304,6 +1304,69 @@ async fn admin_force_settle_clears_held_job() {
 }
 
 #[tokio::test]
+async fn admin_force_settle_records_disposition_for_ingest() {
+    let state = test_state(true);
+    {
+        let mut led = state.ledger.lock().await;
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-fs-ing".into()),
+            "held-fs-ing",
+            "pilot-account",
+            100_000,
+        )
+        .unwrap();
+        led.mark_start_authorized("held-fs-ing", "pilot-account")
+            .unwrap();
+    }
+    let app = router(state);
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/force-settle")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "held-fs-ing",
+                        "actual_micro_usd": 10_000,
+                        "terminal_digest": "force-ing-d"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(body_json(res).await["action"], "released");
+
+    // Force-settle must record disposition so reconnect ingest ACKs (DECISIONS #58).
+    let ingest = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/terminal-ingest")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "held-fs-ing",
+                        "attempt_id": "a-any",
+                        "terminal_digest": "force-ing-d"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ingest.status(), StatusCode::OK);
+    let v = body_json(ingest).await;
+    assert_eq!(v["disposition"], "force_settled");
+    assert_eq!(v["type"], "terminal_ack");
+}
+
+#[tokio::test]
 async fn admin_force_settle_without_ownership_returns_503() {
     let app = router(test_state(false));
     let res = app

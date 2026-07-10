@@ -544,6 +544,26 @@ async fn admin_force_settle(
     };
 
     if action == "released" {
+        {
+            let mut terms = state.terminals.lock().await;
+            let ack = json!({
+                "type": "terminal_ack",
+                "job_id": req.job_id,
+                "attempt_id": "",
+                "lease_id": "",
+                "terminal_digest": digest,
+                "disposition": "force_settled",
+            });
+            terms.record_bound(
+                &req.job_id,
+                "",
+                &digest,
+                "force_settled",
+                Some(ack),
+                "",
+                "",
+            );
+        }
         let mut box_ = state.outbox.lock().await;
         let _ = box_.enqueue_critical(
             "inference.settled",

@@ -283,3 +283,8 @@ Live `provider_terminal.se_signature` is persisted on the terminal disposition
 via `record_bound`. Replay ingest with a mismatched SE signature returns
 `disposition=conflict` (never settled ACK).
 
+### Force-settle records disposition (DECISIONS #58)
+
+Admin `force-settle` persists a `force_settled` disposition via `record_bound`
+so a reconnecting provider's terminal ingest ACKs without recording late.
+

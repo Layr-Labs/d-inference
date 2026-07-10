@@ -4350,7 +4350,7 @@ func (s *PostgresStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReas
 		     updated_at = NOW()
 		 WHERE id = $1
 		   AND refunded = FALSE
-		   AND status <> 'failed'`,
+		   AND status NOT IN ('failed', 'review_pending')`,
 		id, failureReason, feeRefunded,
 	)
 	if err != nil {

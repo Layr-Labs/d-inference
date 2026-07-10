@@ -514,7 +514,7 @@ func TestConnectWebhookTransferReversedOnPaidRowNeedsHuman(t *testing.T) {
 	mkWithdrawal(t, st, store.StripeWithdrawal{
 		ID: "wd-rev-paid", AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
 		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
-		Method: "standard", Status: "paid", TransferID: "tr_rev_p",
+		Method: "standard", Status: "paid", TransferID: "tr_rev_p", PayoutID: "po_rev_p",
 	})
 	balBefore := st.GetBalance(user.AccountID)
 
@@ -523,6 +523,10 @@ func TestConnectWebhookTransferReversedOnPaidRowNeedsHuman(t *testing.T) {
 	}
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rev_p")); w.Code != http.StatusOK {
 		t.Fatalf("redelivery got %d: %s", w.Code, w.Body.String())
+	}
+	if w := deliverConnectWebhook(t, srv,
+		payoutEventPayload("po_rev_p", user.StripeAccountID, "failed", false, time.Now().Unix())); w.Code != http.StatusOK {
+		t.Fatalf("payout failure got %d: %s", w.Code, w.Body.String())
 	}
 	wd, _ := st.GetStripeWithdrawal("wd-rev-paid")
 	if wd.Status != "review_pending" || wd.Refunded {

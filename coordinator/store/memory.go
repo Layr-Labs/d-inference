@@ -2640,7 +2640,7 @@ func (s *MemoryStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason
 	if !ok {
 		return false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
 	}
-	if w.Refunded || w.Status == "failed" {
+	if w.Refunded || w.Status == "failed" || w.Status == "review_pending" {
 		return false, nil // a concurrent reversal terminalized it — never reopen
 	}
 	if w.PayoutID != "" {

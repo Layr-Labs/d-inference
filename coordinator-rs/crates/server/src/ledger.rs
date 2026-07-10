@@ -1057,7 +1057,9 @@ mod tests {
             led.release(OperationKey("rel-shared".into()), "j2", "a"),
             Err(LedgerError::Conflict(_))
         ));
-        assert_eq!(led.balance("a").0, 9_000_000); // j2 still reserved
+        // j1 refunded then j2 reserved 2M from 10M → 8M; conflict leaves j2 held.
+        assert_eq!(led.balance("a").0, 8_000_000);
+        assert_eq!(led.active_job_count(), 1);
     }
 
     #[test]

@@ -248,3 +248,11 @@ Jobs bind the coordinator fencing epoch at reserve (`bind_fencing_epoch` /
 `require_fencing_epoch` (and SQL guards `coordinator_epoch = $N OR 0`) so a
 re-acquired coordinator with a new epoch cannot mutate an older job's money.
 
+### Terminal ingest lease/SE bind (DECISIONS #53)
+
+`MemoryTerminalStore.record_bound` (and Go `TerminalDisposition`) persist
+`lease_id` + `se_signature` alongside `job_id`. Replay ingest with a known
+digest but mismatched lease or SE signature returns `disposition=conflict`
+and never settles or records late. `lookup_sql` binds `$4`/`$5`. Chat settle
+records dispositions via `record_bound` so rollback ACK is lease-bound.
+

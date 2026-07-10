@@ -1032,6 +1032,72 @@ async fn admin_terminal_ingest_wrong_job_returns_conflict() {
 }
 
 #[tokio::test]
+async fn admin_terminal_ingest_wrong_lease_returns_conflict() {
+    let state = test_state(true);
+    {
+        let mut terms = state.terminals.lock().await;
+        terms.record_bound("j1", "a1", "d-lease", "settled", None, "lease-real", "sig1");
+    }
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/terminal-ingest")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "j1",
+                        "attempt_id": "a1",
+                        "terminal_digest": "d-lease",
+                        "lease_id": "lease-attacker",
+                        "se_signature": "sig1"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["disposition"], "conflict");
+}
+
+#[tokio::test]
+async fn admin_terminal_ingest_wrong_se_signature_returns_conflict() {
+    let state = test_state(true);
+    {
+        let mut terms = state.terminals.lock().await;
+        terms.record_bound("j1", "a1", "d-sig", "settled", None, "l1", "sig-real");
+    }
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/terminal-ingest")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "j1",
+                        "attempt_id": "a1",
+                        "terminal_digest": "d-sig",
+                        "lease_id": "l1",
+                        "se_signature": "sig-attacker"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["disposition"], "conflict");
+}
+
+#[tokio::test]
 async fn deposit_outbox_blocks_quiescence_until_drained() {
     let state = test_state(true);
     let outbox = state.outbox.clone();

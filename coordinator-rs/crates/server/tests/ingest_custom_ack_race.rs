@@ -26,6 +26,7 @@ fn concurrent_ingest_prefers_stored_ack_payload() {
                     job_id: "j1".into(),
                     attempt_id: "a1".into(),
                     terminal_digest: "d1".into(),
+                    lease_id: String::new(),
                     se_signature: String::new(),
                     outcome: String::new(),
                 },

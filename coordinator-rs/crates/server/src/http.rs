@@ -297,6 +297,8 @@ struct AdminTerminalIngestRequest {
     attempt_id: String,
     terminal_digest: String,
     #[serde(default)]
+    lease_id: String,
+    #[serde(default)]
     se_signature: String,
     #[serde(default)]
     outcome: String,
@@ -318,6 +320,7 @@ async fn admin_terminal_ingest(
             job_id: req.job_id,
             attempt_id: req.attempt_id,
             terminal_digest: req.terminal_digest,
+            lease_id: req.lease_id,
             se_signature: req.se_signature,
             outcome: req.outcome,
         },
@@ -1436,12 +1439,14 @@ async fn chat_completions(
                             "disposition": "settled",
                         });
                         let mut terms = state.terminals.lock().await;
-                        terms.record(
+                        terms.record_bound(
                             &completion.job_id,
                             &completion.attempt_id,
                             &completion.terminal_digest,
                             "settled",
                             Some(ack),
+                            lease.as_str(),
+                            "", // mock/live SE signature lands with attestation wire-up
                         );
                     }
                     {

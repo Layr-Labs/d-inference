@@ -14,6 +14,7 @@ type TerminalIngest struct {
 	JobID          string
 	AttemptID      string
 	TerminalDigest string
+	LeaseID        string
 	SESignature    string
 	Outcome        string
 }
@@ -22,8 +23,12 @@ type TerminalIngest struct {
 type TerminalDisposition struct {
 	Disposition string // settled | released | settled_reviewed | released_reviewed | late | conflict
 	// JobID binds the disposition to a funded job (DECISIONS #45). Empty = legacy unbound.
-	JobID      string
-	AckPayload json.RawMessage
+	JobID string
+	// LeaseID binds the disposition to the funded lease (DECISIONS #53). Empty = legacy unbound.
+	LeaseID string
+	// SESignature binds attestation material (DECISIONS #53). Empty = legacy unbound.
+	SESignature string
+	AckPayload  json.RawMessage
 }
 
 // TerminalStore looks up and ACKs historical Rust terminals.
@@ -44,6 +49,7 @@ type DigestTerminalLookup interface {
 // Prefers (attempt_id, digest); falls back to digest-only when the store also
 // implements DigestTerminalLookup (DECISIONS #25).
 // Known digest with a mismatched JobID returns disposition=conflict (DECISIONS #45).
+// Known digest with a mismatched LeaseID or SESignature returns conflict (DECISIONS #53).
 func IngestTerminal(ctx context.Context, store TerminalStore, t TerminalIngest) (json.RawMessage, error) {
 	if t.AttemptID == "" || t.TerminalDigest == "" {
 		return nil, fmt.Errorf("ownership: terminal ingest missing attempt/digest")
@@ -66,6 +72,27 @@ func IngestTerminal(ctx context.Context, store TerminalStore, t TerminalIngest) 
 				"type":            "terminal_ack",
 				"job_id":          t.JobID,
 				"attempt_id":      t.AttemptID,
+				"lease_id":        t.LeaseID,
+				"terminal_digest": t.TerminalDigest,
+				"disposition":     "conflict",
+			})
+		}
+		if disp.LeaseID != "" && t.LeaseID != "" && disp.LeaseID != t.LeaseID {
+			return json.Marshal(map[string]any{
+				"type":            "terminal_ack",
+				"job_id":          t.JobID,
+				"attempt_id":      t.AttemptID,
+				"lease_id":        t.LeaseID,
+				"terminal_digest": t.TerminalDigest,
+				"disposition":     "conflict",
+			})
+		}
+		if disp.SESignature != "" && t.SESignature != "" && disp.SESignature != t.SESignature {
+			return json.Marshal(map[string]any{
+				"type":            "terminal_ack",
+				"job_id":          t.JobID,
+				"attempt_id":      t.AttemptID,
+				"lease_id":        t.LeaseID,
 				"terminal_digest": t.TerminalDigest,
 				"disposition":     "conflict",
 			})
@@ -77,10 +104,15 @@ func IngestTerminal(ctx context.Context, store TerminalStore, t TerminalIngest) 
 		if disp.JobID != "" {
 			jobID = disp.JobID
 		}
+		leaseID := t.LeaseID
+		if disp.LeaseID != "" {
+			leaseID = disp.LeaseID
+		}
 		return json.Marshal(map[string]any{
 			"type":            "terminal_ack",
 			"job_id":          jobID,
 			"attempt_id":      t.AttemptID,
+			"lease_id":        leaseID,
 			"terminal_digest": t.TerminalDigest,
 			"disposition":     disp.Disposition,
 		})
@@ -93,6 +125,7 @@ func IngestTerminal(ctx context.Context, store TerminalStore, t TerminalIngest) 
 		"type":            "terminal_ack",
 		"job_id":          t.JobID,
 		"attempt_id":      t.AttemptID,
+		"lease_id":        t.LeaseID,
 		"terminal_digest": t.TerminalDigest,
 		"disposition":     "late",
 	})

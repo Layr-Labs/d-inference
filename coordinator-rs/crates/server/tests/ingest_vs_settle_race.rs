@@ -38,6 +38,7 @@ fn concurrent_ingest_and_settle_ingest_never_moves_money() {
                 job_id: "j".into(),
                 attempt_id: "att-1".into(),
                 terminal_digest: "td-1".into(),
+                lease_id: String::new(),
                 se_signature: String::new(),
                 outcome: String::new(),
             },

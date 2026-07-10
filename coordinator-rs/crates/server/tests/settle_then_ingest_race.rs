@@ -35,6 +35,7 @@ fn settle_records_terminal_then_concurrent_ingest() {
                     job_id: "j".into(),
                     attempt_id: "att-1".into(),
                     terminal_digest: "td-known".into(),
+                    lease_id: String::new(),
                     se_signature: String::new(),
                     outcome: String::new(),
                 },

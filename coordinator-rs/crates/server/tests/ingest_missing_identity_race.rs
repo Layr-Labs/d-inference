@@ -26,6 +26,7 @@ fn concurrent_ingest_missing_identity_all_error() {
                         job_id: "j".into(),
                         attempt_id: attempt,
                         terminal_digest: digest,
+                        lease_id: String::new(),
                         se_signature: String::new(),
                         outcome: String::new(),
                     },

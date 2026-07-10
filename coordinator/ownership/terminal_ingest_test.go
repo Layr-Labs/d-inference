@@ -129,3 +129,40 @@ func TestIngestTerminal_DigestFallbackWrongJobConflict(t *testing.T) {
 		t.Fatalf("expected conflict, got %v", got)
 	}
 }
+
+func TestIngestTerminal_WrongLeaseIDReturnsConflict(t *testing.T) {
+	st := &memTerminalStore{byKey: map[string]*TerminalDisposition{
+		"a1|d1": {Disposition: "settled", JobID: "j", LeaseID: "lease-real"},
+	}}
+	out, err := IngestTerminal(context.Background(), st, TerminalIngest{
+		JobID: "j", AttemptID: "a1", TerminalDigest: "d1", LeaseID: "lease-attacker",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	if got["disposition"] != "conflict" {
+		t.Fatalf("expected conflict, got %v", got)
+	}
+	if len(st.late) != 0 {
+		t.Fatal("must not record late on lease mismatch")
+	}
+}
+
+func TestIngestTerminal_WrongSESignatureReturnsConflict(t *testing.T) {
+	st := &memTerminalStore{byKey: map[string]*TerminalDisposition{
+		"a1|d1": {Disposition: "settled", JobID: "j", LeaseID: "l1", SESignature: "sig-real"},
+	}}
+	out, err := IngestTerminal(context.Background(), st, TerminalIngest{
+		JobID: "j", AttemptID: "a1", TerminalDigest: "d1", LeaseID: "l1", SESignature: "sig-attacker",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	if got["disposition"] != "conflict" {
+		t.Fatalf("expected conflict, got %v", got)
+	}
+}

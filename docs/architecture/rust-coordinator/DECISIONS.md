@@ -59,6 +59,7 @@ Date: 2026-07-10
 | 50 | Settle SQL writes lease_id | `settle_sql` / `settle_capped_sql` / `force_settle_sql` insert `lease_id` into `provider_terminals` so durable terminal rows bind the funded lease for ingest/audit |
 | 51 | Settle SQL writes se_signature | Settle CTEs also persist `se_signature` (COALESCE empty) on `provider_terminals` so rollback ingest can verify provider attestation material without re-settling |
 | 52 | Job fencing epoch bind | `MemoryLedger` stores `fencing_epoch` on reserve (via `bind_fencing_epoch`); settle/release/resize refuse with `OwnershipLost` when the caller's epoch no longer matches. SQL `inference_jobs.coordinator_epoch` already reserved in `0001_rust_coord.sql` / `reserve_sql` `$5` |
+| 53 | Terminal ingest lease/SE bind | `MemoryTerminalStore.record_bound` / Go `TerminalDisposition` persist `lease_id` + `se_signature`; ingest with a known digest but wrong lease or SE signature returns `disposition=conflict` (never settled ACK / never late). `lookup_sql` binds `$4`/`$5`. Chat settle records via `record_bound` |
 
 ## Deleted Go mechanisms (do not port)
 

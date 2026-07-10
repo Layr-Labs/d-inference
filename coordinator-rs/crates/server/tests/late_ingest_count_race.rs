@@ -18,6 +18,7 @@ fn concurrent_late_ingest_increments_late_count() {
                     job_id: format!("j{i}"),
                     attempt_id: format!("a{i}"),
                     terminal_digest: format!("d{i}"),
+                    lease_id: String::new(),
                     se_signature: String::new(),
                     outcome: String::new(),
                 },

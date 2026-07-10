@@ -118,6 +118,11 @@ impl ProviderHub {
         }
     }
 
+    /// Classify a structured_error class for admission/health side effects.
+    pub fn structured_error_class(v: &Value) -> Option<&str> {
+        v.get("class").and_then(|c| c.as_str())
+    }
+
     async fn send_and_wait(
         &self,
         provider_id: &str,

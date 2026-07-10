@@ -12,6 +12,7 @@ pub mod ids;
 pub mod lease;
 pub mod placement;
 pub mod request;
+pub mod structured_error;
 pub mod routing_replay;
 pub mod terminal_journal;
 pub mod trust;
@@ -26,6 +27,7 @@ pub use ids::{AttemptId, CoordinatorEpoch, JobId, LeaseId, MicroUsd, SessionEpoc
 pub use lease::{LeaseError, LeaseEvent, LeaseState};
 pub use placement::{DesiredModel, PlacementController, PlacementVersion};
 pub use request::{RequestEvent, RequestState};
+pub use structured_error::{action_for_class, apply_health_action, apply_trust_action, ErrorAction};
 pub use routing_replay::{score_replay, ReplayReport, ReplaySample};
 pub use terminal_journal::{JournalEntry, JournalError, TerminalJournal};
 pub use trust::{TrustEpoch, TrustEvidence, TrustLevel, TrustState};

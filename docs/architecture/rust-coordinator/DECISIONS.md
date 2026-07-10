@@ -153,6 +153,7 @@ Date: 2026-07-10
 | 144 | Release op amount bind | MemoryLedger `release` stores reserved amount in OperationRecord (SQL `j.reserved` parity) |
 | 145 | Deposit claim_op | MemoryLedger `credit_deposit` claims `deposit:{source}:{event_id}` with account/amount/wdr/digest bind; `apply_stripe_deposit` uses it |
 | 146 | Chat reserve under money_fx | Chat path holds `money_fx` across `reserve_with_epoch` and `resize_and_authorize_fenced` |
+| 147 | Outbox-drain ready under money_fx | Final outbox-drain `ready` snapshot holds `money_fx` (quiescence parity) so settle cannot race a false ready |
 
 ## Deleted Go mechanisms (do not port)
 

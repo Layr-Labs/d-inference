@@ -2229,6 +2229,9 @@ async fn admin_outbox_drain(
         }
     }
     let (pending, retryable, status) = {
+        // Hold money_fx so we cannot snapshot after ledger-settle but before
+        // outbox-enqueue — same barrier as quiescence (DECISIONS #136/#147).
+        let _fx = state.money_fx.lock().await;
         let box_ = state.outbox.lock().await;
         let led = state.ledger.lock().await;
         (

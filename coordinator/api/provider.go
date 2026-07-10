@@ -478,14 +478,16 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypeInferenceComplete:
 			completeMsg := msg.Payload.(*protocol.InferenceCompleteMessage)
-			// Run completion handling (billing settlement) off the read loop.
-			// Billing does synchronous DB calls (GetModelPrice, Credit, Charge)
-			// that can block for seconds under DB pressure. If the read loop is
-			// blocked, attestation challenge responses can't be read from the
-			// WebSocket, causing challenge timeouts and provider derouting.
-			saferun.Go(s.logger, "handleComplete", func() {
+			// Completion settlement runs on a fixed, bounded worker pool. A full
+			// queue backpressures this provider reader instead of dropping money
+			// work or spawning an unbounded goroutine.
+			if s.completions == nil || !s.completions.submit(func() {
 				s.handleComplete(providerID, provider, completeMsg)
-			})
+			}) {
+				// A directly-constructed/closing Server still processes the
+				// terminal synchronously; financial work is never discarded.
+				s.handleComplete(providerID, provider, completeMsg)
+			}
 
 		case protocol.TypeInferenceError:
 			errMsg := msg.Payload.(*protocol.InferenceErrorMessage)
@@ -1853,9 +1855,8 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			Timestamp:        time.Now(),
 		})
 
-		// Persist usage to DB asynchronously — billing has already been
-		// settled above, so this INSERT is not on the critical path. KeyID
-		// carries per-key usage/spend attribution (empty for legacy callers).
+		// Persist usage inside the bounded completion worker. KeyID carries
+		// per-key usage/spend attribution (empty for legacy callers).
 		//
 		// Skip the persistent (public-stats-feeding) row for FREE self-route:
 		// it is private, owner-only traffic and must not appear in the public
@@ -1864,9 +1865,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		// traffic out of public stats. The owner still sees it via the in-memory
 		// RecordUsage above (their session/transparency view).
 		if !freeSelfRoute {
-			saferun.Go(s.logger, "recordUsage", func() {
-				s.store.RecordUsageFullWithPublicModel(providerID, pr.ConsumerKey, pr.KeyID, pr.Model, consumerModel(pr), msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
-			})
+			s.store.RecordUsageFullWithPublicModel(providerID, pr.ConsumerKey, pr.KeyID, pr.Model, consumerModel(pr), msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
 		}
 
 		// Fallback actual_ttft_ms anchor for the COMMITTED attempt only. The
@@ -1947,10 +1946,6 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
 		}
 
-		// Run provider credit and platform fee credit concurrently —
-		// they target different accounts so there is no data dependency.
-		var settlementWg sync.WaitGroup
-
 		// Credit the provider's linked account (if any).
 		if p != nil {
 			p.Mu().Lock()
@@ -1964,52 +1959,42 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			// owner had no balance) — in both cases we must not record a
 			// (zero-value) earning row. Mirrors the platformFee > 0 guard below.
 			if accountID != "" && !freeSelfRoute && providerPayout > 0 {
-				settlementWg.Add(1)
-				go func() {
-					defer settlementWg.Done()
-					start := time.Now()
-					if err := s.store.CreditProviderAccount(&store.ProviderEarning{
-						AccountID:        accountID,
-						ProviderID:       providerID,
-						ProviderKey:      publicKey,
-						JobID:            msg.RequestID,
-						Model:            pr.Model,
-						AmountMicroUSD:   providerPayout,
-						PromptTokens:     msg.Usage.PromptTokens,
-						CompletionTokens: msg.Usage.CompletionTokens,
-						CreatedAt:        time.Now(),
-					}); err != nil {
-						s.logger.Error("failed to credit linked provider account",
-							"provider_id", providerID,
-							"account_id", accountID,
-							"request_id", msg.RequestID,
-							"error", err,
-						)
-					}
-					s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:provider_account_credit"})
-					s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
-				}()
+				start := time.Now()
+				if err := s.store.CreditProviderAccount(&store.ProviderEarning{
+					AccountID:        accountID,
+					ProviderID:       providerID,
+					ProviderKey:      publicKey,
+					JobID:            msg.RequestID,
+					Model:            pr.Model,
+					AmountMicroUSD:   providerPayout,
+					PromptTokens:     msg.Usage.PromptTokens,
+					CompletionTokens: msg.Usage.CompletionTokens,
+					CreatedAt:        time.Now(),
+				}); err != nil {
+					s.logger.Error("failed to credit linked provider account",
+						"provider_id", providerID,
+						"account_id", accountID,
+						"request_id", msg.RequestID,
+						"error", err,
+					)
+				}
+				s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:provider_account_credit"})
+				s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
 			}
 		}
 
 		// Record platform fee.
 		if platformFee > 0 {
-			settlementWg.Add(1)
-			go func() {
-				defer settlementWg.Done()
-				start := time.Now()
-				// Financial: a failed platform-fee credit drops revenue accounting. Never swallow it.
-				if err := s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID); err != nil {
-					s.logger.Error("failed to credit platform fee",
-						"request_id", msg.RequestID, "platform_fee_micro_usd", platformFee, "error", err)
-					s.ddIncr("billing.credit_failed", []string{"op:platform_fee"})
-				}
-				s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:platform_fee"})
-				s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
-			}()
+			start := time.Now()
+			// Financial: a failed platform-fee credit drops revenue accounting. Never swallow it.
+			if err := s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID); err != nil {
+				s.logger.Error("failed to credit platform fee",
+					"request_id", msg.RequestID, "platform_fee_micro_usd", platformFee, "error", err)
+				s.ddIncr("billing.credit_failed", []string{"op:platform_fee"})
+			}
+			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:platform_fee"})
+			s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
 		}
-
-		settlementWg.Wait()
 	}
 
 	// Signal completion to the consumer response handler. This must happen

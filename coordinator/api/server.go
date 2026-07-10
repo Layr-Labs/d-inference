@@ -282,6 +282,10 @@ type Server struct {
 	// mid-stream, so a late provider terminal can settle them (or the reservation
 	// is refunded on grace expiry). See settlement.go.
 	settlements *settlementHolder
+	// completions bounds terminal accounting and settlement concurrency. Its
+	// queue is lossless: provider readers backpressure rather than dropping
+	// financial work or spawning unbounded goroutines.
+	completions *completionWorkerPool
 	// settleGrace overrides defaultTerminalSettleGrace (tests set it small).
 	settleGrace time.Duration
 	// zombieCanceller throttles cancels for chunks on abandoned streams. See zombie_stream.go.
@@ -695,6 +699,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		codeAttestThrottle:   newCodeAttestThrottle(),
 		trustReuseCache:      newTrustReuseCache(),
 		settlements:          newSettlementHolder(),
+		completions:          newCompletionWorkerPool(logger, defaultCompletionCapacity, defaultCompletionWorkers),
 		zombieCanceller:      newZombieStreamCanceller(),
 		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
 		routeTelemetry:       newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
@@ -742,10 +747,12 @@ func (s *Server) submitTelemetry(name string, fn func()) {
 	saferun.Go(s.logger, name, fn)
 }
 
-// Close releases background resources owned by the Server. Currently it stops
-// the routing-telemetry sink's worker pool. It is idempotent and never blocks on
-// in-flight telemetry writes, so it is safe to defer from main's shutdown path.
+// Close drains correctness-critical completion work before stopping the
+// best-effort routing-telemetry sink. It is idempotent.
 func (s *Server) Close() {
+	if s.completions != nil {
+		s.completions.close()
+	}
 	if s.routeTelemetry != nil {
 		s.routeTelemetry.close()
 	}
@@ -1911,6 +1918,15 @@ func (s *Server) registerDefaultGauges() {
 			return 1
 		}
 		return 0
+	})
+	s.metrics.RegisterGauge("completion_queue_depth", func() float64 {
+		return float64(s.completions.depth())
+	})
+	s.metrics.RegisterGauge("completion_queue_capacity", func() float64 {
+		return float64(s.completions.capacity())
+	})
+	s.metrics.RegisterGauge("completion_workers_active", func() float64 {
+		return float64(s.completions.activeCount())
 	})
 }
 

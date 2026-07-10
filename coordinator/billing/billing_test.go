@@ -344,7 +344,7 @@ func TestStripeWebhookNoSecret(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	proc := NewStripeProcessor("sk_test_123", "", "http://success", "http://cancel", logger)
 
-	payload := []byte(`{"type":"checkout.session.completed","data":{"object":{"id":"cs_123","payment_status":"paid","amount_total":1000}}}`)
+	payload := []byte(`{"id":"evt_123","type":"checkout.session.completed","data":{"object":{"id":"cs_123","payment_status":"paid","amount_total":1000}}}`)
 	_, err := proc.VerifyWebhookSignature(payload, "")
 	if err == nil {
 		t.Fatal("expected error when webhook secret is empty")

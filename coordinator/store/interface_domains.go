@@ -263,6 +263,15 @@ type BillingStore interface {
 	// CreateBillingSession stores a new billing session (Stripe).
 	CreateBillingSession(session *BillingSession) error
 
+	// SetBillingSessionExternalID binds a locally-created order to the Stripe
+	// Checkout Session returned by the external API.
+	SetBillingSessionExternalID(sessionID, externalID string) error
+
+	// ApplyStripeDeposit atomically validates a signed Stripe event against its
+	// local order, credits the balance, records the ledger/event rows, and marks
+	// the order complete. Exact replay returns Applied=false.
+	ApplyStripeDeposit(eventID, billingSessionID, checkoutSessionID, currency string, amountMicroUSD int64) (*StripeDepositResult, error)
+
 	// GetBillingSession retrieves a billing session by ID.
 	GetBillingSession(sessionID string) (*BillingSession, error)
 

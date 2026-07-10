@@ -56,7 +56,9 @@ type MemoryStore struct {
 	referralCounts     map[string]int       // referrerCode → count of referred accounts
 
 	// Billing sessions
-	billingSessions map[string]*BillingSession // sessionID → session
+	billingSessions      map[string]*BillingSession    // sessionID → session
+	stripeDepositEvents  map[string]StripeDepositEvent // Stripe event ID → disposition
+	stripeCheckoutEvents map[string]string             // Checkout Session ID → Stripe event ID
 
 	// Custom pricing
 	modelPrices map[string]ModelPrice // "accountID:model" → price
@@ -162,6 +164,8 @@ func NewMemory(scfg Config) *MemoryStore {
 		referrals:                     make(map[string]string),
 		referralCounts:                make(map[string]int),
 		billingSessions:               make(map[string]*BillingSession),
+		stripeDepositEvents:           make(map[string]StripeDepositEvent),
+		stripeCheckoutEvents:          make(map[string]string),
 		modelPrices:                   make(map[string]ModelPrice),
 		modelRegistry:                 make(map[string]*ModelRegistryEntry),
 		modelAliases:                  make(map[string]*ModelAlias),
@@ -1534,8 +1538,133 @@ func (s *MemoryStore) CreateBillingSession(session *BillingSession) error {
 		return fmt.Errorf("billing session %q already exists", session.ID)
 	}
 	copy := *session
+	if copy.Currency == "" {
+		copy.Currency = "usd"
+	}
+	copy.Currency = strings.ToLower(copy.Currency)
 	s.billingSessions[session.ID] = &copy
 	return nil
+}
+
+func (s *MemoryStore) SetBillingSessionExternalID(sessionID, externalID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if externalID == "" {
+		return errors.New("external billing session ID is required")
+	}
+	session, ok := s.billingSessions[sessionID]
+	if !ok {
+		return fmt.Errorf("billing session %q not found", sessionID)
+	}
+	if session.ExternalID != "" {
+		if session.ExternalID == externalID {
+			return nil
+		}
+		return fmt.Errorf("billing session %q already bound to another external ID", sessionID)
+	}
+	for id, candidate := range s.billingSessions {
+		if id != sessionID && candidate.ExternalID == externalID {
+			return fmt.Errorf("external billing session ID %q already bound", externalID)
+		}
+	}
+	session.ExternalID = externalID
+	return nil
+}
+
+func (s *MemoryStore) ApplyStripeDeposit(eventID, billingSessionID, checkoutSessionID, currency string, amountMicroUSD int64) (*StripeDepositResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if eventID == "" || checkoutSessionID == "" {
+		return nil, ErrStripeDepositMismatch
+	}
+	currency = strings.ToLower(currency)
+	if existing, ok := s.stripeDepositEvents[eventID]; ok {
+		if existing.BillingSessionID != billingSessionID || existing.CheckoutSessionID != checkoutSessionID ||
+			existing.AmountMicroUSD != amountMicroUSD || existing.Currency != currency {
+			return nil, ErrStripeDepositConflict
+		}
+		if existing.Status != "applied" && existing.Status != "replayed" {
+			return nil, fmt.Errorf("%w: %s", ErrStripeDepositMismatch, existing.Reason)
+		}
+		session := *s.billingSessions[billingSessionID]
+		return &StripeDepositResult{Session: session, Applied: false}, nil
+	}
+	if priorEventID, ok := s.stripeCheckoutEvents[checkoutSessionID]; ok {
+		existing := s.stripeDepositEvents[priorEventID]
+		if existing.BillingSessionID != billingSessionID || existing.AmountMicroUSD != amountMicroUSD ||
+			existing.Currency != currency {
+			return nil, ErrStripeDepositConflict
+		}
+		if existing.Status != "applied" && existing.Status != "replayed" {
+			return nil, fmt.Errorf("%w: %s", ErrStripeDepositMismatch, existing.Reason)
+		}
+		session := *s.billingSessions[billingSessionID]
+		return &StripeDepositResult{Session: session, Applied: false}, nil
+	}
+
+	event := StripeDepositEvent{
+		EventID: eventID, CheckoutSessionID: checkoutSessionID,
+		BillingSessionID: billingSessionID, AmountMicroUSD: amountMicroUSD,
+		Currency: currency, Status: "received",
+	}
+	s.stripeDepositEvents[eventID] = event
+	s.stripeCheckoutEvents[checkoutSessionID] = eventID
+
+	session, ok := s.billingSessions[billingSessionID]
+	if !ok {
+		return nil, s.rejectStripeDepositLocked(eventID, "unknown_billing_session")
+	}
+	if session.PaymentMethod != "stripe" {
+		return nil, s.rejectStripeDepositLocked(eventID, "payment_method_mismatch")
+	}
+	if session.Currency == "" {
+		session.Currency = "usd"
+	}
+	if currency != session.Currency || session.Currency != "usd" {
+		return nil, s.rejectStripeDepositLocked(eventID, "currency_mismatch")
+	}
+	if amountMicroUSD <= 0 || session.AmountMicroUSD != amountMicroUSD {
+		return nil, s.rejectStripeDepositLocked(eventID, "amount_mismatch")
+	}
+	if session.ExternalID != "" && session.ExternalID != checkoutSessionID {
+		return nil, s.rejectStripeDepositLocked(eventID, "checkout_session_mismatch")
+	}
+	for id, candidate := range s.billingSessions {
+		if id != billingSessionID && candidate.ExternalID == checkoutSessionID {
+			return nil, s.rejectStripeDepositLocked(eventID, "checkout_session_conflict")
+		}
+	}
+	if session.Status == "completed" {
+		if session.ExternalID != checkoutSessionID {
+			return nil, s.rejectStripeDepositLocked(eventID, "completed_session_mismatch")
+		}
+		event.Status = "replayed"
+		s.stripeDepositEvents[eventID] = event
+		copy := *session
+		return &StripeDepositResult{Session: copy, Applied: false}, nil
+	}
+	if session.Status != "pending" {
+		return nil, s.rejectStripeDepositLocked(eventID, "billing_session_not_pending")
+	}
+
+	session.ExternalID = checkoutSessionID
+	session.ProcessedEventID = eventID
+	session.Status = "completed"
+	now := time.Now()
+	session.CompletedAt = &now
+	s.creditLocked(session.AccountID, amountMicroUSD, LedgerStripeDeposit, "stripe:"+checkoutSessionID, now)
+	event.Status = "applied"
+	s.stripeDepositEvents[eventID] = event
+	copy := *session
+	return &StripeDepositResult{Session: copy, Applied: true}, nil
+}
+
+func (s *MemoryStore) rejectStripeDepositLocked(eventID, reason string) error {
+	event := s.stripeDepositEvents[eventID]
+	event.Status = "rejected"
+	event.Reason = reason
+	s.stripeDepositEvents[eventID] = event
+	return fmt.Errorf("%w: %s", ErrStripeDepositMismatch, reason)
 }
 
 // GetBillingSession retrieves a billing session by ID.

@@ -30,6 +30,11 @@ var ErrInsufficientBalance = errors.New("insufficient balance or account not fou
 // treating every error as not-found.
 var ErrNotFound = errors.New("not found")
 
+var (
+	ErrStripeDepositMismatch = errors.New("Stripe deposit does not match its local billing order")
+	ErrStripeDepositConflict = errors.New("Stripe deposit event identity conflict")
+)
+
 // Store is the union of every storage-domain sub-interface (defined in
 // interface_domains.go). It was split from a single ~150-method god-interface
 // into composed domains so callers can depend on a narrow slice of the
@@ -827,15 +832,34 @@ type ProviderPayout struct {
 
 // BillingSession tracks an in-progress payment via any method (Stripe).
 type BillingSession struct {
-	ID             string     `json:"id"`
-	AccountID      string     `json:"account_id"`
-	PaymentMethod  string     `json:"payment_method"` // "stripe"
-	AmountMicroUSD int64      `json:"amount_micro_usd"`
-	ExternalID     string     `json:"external_id"`   // Stripe session ID, tx hash, etc.
-	Status         string     `json:"status"`        // "pending", "completed", "expired"
-	ReferralCode   string     `json:"referral_code"` // optional
-	CreatedAt      time.Time  `json:"created_at"`
-	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+	ID               string     `json:"id"`
+	AccountID        string     `json:"account_id"`
+	PaymentMethod    string     `json:"payment_method"` // "stripe"
+	Currency         string     `json:"currency"`       // lowercase ISO currency
+	AmountMicroUSD   int64      `json:"amount_micro_usd"`
+	ExternalID       string     `json:"external_id"` // Stripe session ID, tx hash, etc.
+	ProcessedEventID string     `json:"processed_event_id,omitempty"`
+	Status           string     `json:"status"`        // "pending", "completed", "expired"
+	ReferralCode     string     `json:"referral_code"` // optional
+	CreatedAt        time.Time  `json:"created_at"`
+	CompletedAt      *time.Time `json:"completed_at,omitempty"`
+}
+
+// StripeDepositResult is the durable disposition of a verified Stripe event.
+// Applied is true only for the transaction that moved money.
+type StripeDepositResult struct {
+	Session BillingSession
+	Applied bool
+}
+
+type StripeDepositEvent struct {
+	EventID           string
+	CheckoutSessionID string
+	BillingSessionID  string
+	AmountMicroUSD    int64
+	Currency          string
+	Status            string
+	Reason            string
 }
 
 // ProviderRecord is the persistent representation of a provider for storage.

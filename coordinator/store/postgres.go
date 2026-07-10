@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -289,8 +290,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			id TEXT PRIMARY KEY,
 			account_id TEXT NOT NULL,
 			payment_method TEXT NOT NULL,
+			currency TEXT NOT NULL DEFAULT 'usd',
 			amount_micro_usd BIGINT NOT NULL,
 			external_id TEXT NOT NULL DEFAULT '',
+			processed_event_id TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL DEFAULT 'pending',
 			referral_code TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -298,6 +301,23 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_billing_sessions_account ON billing_sessions(account_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_billing_sessions_external ON billing_sessions(external_id)`,
+		`DO $$ BEGIN ALTER TABLE billing_sessions ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'usd'; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE billing_sessions ADD COLUMN IF NOT EXISTS processed_event_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_billing_sessions_external_unique ON billing_sessions(external_id) WHERE external_id <> ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_billing_sessions_processed_event ON billing_sessions(processed_event_id) WHERE processed_event_id <> ''`,
+		`CREATE TABLE IF NOT EXISTS stripe_deposit_events (
+			event_id TEXT PRIMARY KEY,
+			checkout_session_id TEXT NOT NULL UNIQUE,
+			billing_session_id TEXT NOT NULL,
+			account_id TEXT NOT NULL DEFAULT '',
+			amount_micro_usd BIGINT NOT NULL,
+			currency TEXT NOT NULL,
+			status TEXT NOT NULL,
+			reason TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_stripe_deposit_events_billing_session ON stripe_deposit_events(billing_session_id)`,
 		`DO $$ BEGIN
 			ALTER TABLE billing_sessions DROP COLUMN IF EXISTS chain;
 		EXCEPTION WHEN others THEN NULL;
@@ -3020,16 +3040,219 @@ func (s *PostgresStore) CreateBillingSession(session *BillingSession) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	currency := strings.ToLower(session.Currency)
+	if currency == "" {
+		currency = "usd"
+	}
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO billing_sessions (id, account_id, payment_method, amount_micro_usd, external_id, status, referral_code)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		`INSERT INTO billing_sessions (id, account_id, payment_method, currency, amount_micro_usd, external_id, processed_event_id, status, referral_code)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		session.ID, session.AccountID, session.PaymentMethod,
-		session.AmountMicroUSD, session.ExternalID, session.Status, session.ReferralCode,
+		currency, session.AmountMicroUSD, session.ExternalID, session.ProcessedEventID,
+		session.Status, session.ReferralCode,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create billing session: %w", err)
 	}
 	return nil
+}
+
+func (s *PostgresStore) SetBillingSessionExternalID(sessionID, externalID string) error {
+	if externalID == "" {
+		return errors.New("external billing session ID is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE billing_sessions
+		 SET external_id = $2
+		 WHERE id = $1 AND status = 'pending' AND (external_id = '' OR external_id = $2)`,
+		sessionID, externalID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: bind billing session external ID: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("store: billing session %q not pending or already bound", sessionID)
+	}
+	return nil
+}
+
+func (s *PostgresStore) ApplyStripeDeposit(eventID, billingSessionID, checkoutSessionID, currency string, amountMicroUSD int64) (*StripeDepositResult, error) {
+	if eventID == "" || checkoutSessionID == "" {
+		return nil, ErrStripeDepositMismatch
+	}
+	currency = strings.ToLower(currency)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: begin Stripe deposit: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO stripe_deposit_events
+		   (event_id, checkout_session_id, billing_session_id, amount_micro_usd, currency, status)
+		 VALUES ($1, $2, $3, $4, $5, 'received')
+		 ON CONFLICT DO NOTHING`,
+		eventID, checkoutSessionID, billingSessionID, amountMicroUSD, currency,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: insert Stripe deposit event: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		var existing StripeDepositEvent
+		err := tx.QueryRow(ctx,
+			`SELECT event_id, checkout_session_id, billing_session_id, amount_micro_usd, currency, status, reason
+			 FROM stripe_deposit_events
+			 WHERE event_id = $1 OR checkout_session_id = $2
+			 ORDER BY (event_id = $1) DESC
+			 LIMIT 1
+			 FOR UPDATE`,
+			eventID, checkoutSessionID,
+		).Scan(&existing.EventID, &existing.CheckoutSessionID, &existing.BillingSessionID,
+			&existing.AmountMicroUSD, &existing.Currency, &existing.Status, &existing.Reason)
+		if err != nil {
+			return nil, fmt.Errorf("store: read Stripe deposit replay: %w", err)
+		}
+		if existing.CheckoutSessionID != checkoutSessionID || existing.BillingSessionID != billingSessionID ||
+			existing.AmountMicroUSD != amountMicroUSD || existing.Currency != currency {
+			return nil, ErrStripeDepositConflict
+		}
+		if existing.Status != "applied" && existing.Status != "replayed" {
+			if err := tx.Commit(ctx); err != nil {
+				return nil, fmt.Errorf("store: commit Stripe rejected replay: %w", err)
+			}
+			return nil, fmt.Errorf("%w: %s", ErrStripeDepositMismatch, existing.Reason)
+		}
+		session, err := billingSessionTx(ctx, tx, billingSessionID, false)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("store: commit Stripe deposit replay: %w", err)
+		}
+		return &StripeDepositResult{Session: *session, Applied: false}, nil
+	}
+
+	session, err := billingSessionTx(ctx, tx, billingSessionID, true)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return s.rejectStripeDeposit(ctx, tx, eventID, "unknown_billing_session")
+	}
+	if err != nil {
+		return nil, err
+	}
+	var checkoutConflict bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM billing_sessions
+			WHERE external_id = $1 AND id <> $2
+		)`,
+		checkoutSessionID, billingSessionID,
+	).Scan(&checkoutConflict); err != nil {
+		return nil, fmt.Errorf("store: check Checkout Session binding: %w", err)
+	}
+	reason := ""
+	switch {
+	case session.PaymentMethod != "stripe":
+		reason = "payment_method_mismatch"
+	case session.Currency != "usd" || currency != session.Currency:
+		reason = "currency_mismatch"
+	case amountMicroUSD <= 0 || session.AmountMicroUSD != amountMicroUSD:
+		reason = "amount_mismatch"
+	case session.ExternalID != "" && session.ExternalID != checkoutSessionID:
+		reason = "checkout_session_mismatch"
+	case checkoutConflict:
+		reason = "checkout_session_conflict"
+	case session.Status != "pending" && session.Status != "completed":
+		reason = "billing_session_not_pending"
+	case session.Status == "completed" && session.ExternalID != checkoutSessionID:
+		reason = "completed_session_mismatch"
+	}
+	if reason != "" {
+		return s.rejectStripeDeposit(ctx, tx, eventID, reason)
+	}
+	if session.Status == "completed" {
+		if _, err := tx.Exec(ctx,
+			`UPDATE stripe_deposit_events
+			 SET status = 'replayed', account_id = $2, updated_at = NOW()
+			 WHERE event_id = $1`,
+			eventID, session.AccountID,
+		); err != nil {
+			return nil, fmt.Errorf("store: mark Stripe event replayed: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("store: commit Stripe completed replay: %w", err)
+		}
+		return &StripeDepositResult{Session: *session, Applied: false}, nil
+	}
+
+	tag, err = tx.Exec(ctx,
+		`UPDATE billing_sessions
+		 SET external_id = $2, processed_event_id = $3, status = 'completed', completed_at = NOW()
+		 WHERE id = $1 AND status = 'pending' AND (external_id = '' OR external_id = $2)`,
+		billingSessionID, checkoutSessionID, eventID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: complete Stripe billing session: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return s.rejectStripeDeposit(ctx, tx, eventID, "billing_session_changed")
+	}
+	if err := creditTx(ctx, tx, session.AccountID, amountMicroUSD, LedgerStripeDeposit, "stripe:"+checkoutSessionID, time.Time{}); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE stripe_deposit_events
+		 SET status = 'applied', account_id = $2, updated_at = NOW()
+		 WHERE event_id = $1`,
+		eventID, session.AccountID,
+	); err != nil {
+		return nil, fmt.Errorf("store: finalize Stripe deposit event: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: commit Stripe deposit: %w", err)
+	}
+	now := time.Now()
+	session.ExternalID = checkoutSessionID
+	session.ProcessedEventID = eventID
+	session.Status = "completed"
+	session.CompletedAt = &now
+	return &StripeDepositResult{Session: *session, Applied: true}, nil
+}
+
+func billingSessionTx(ctx context.Context, tx pgx.Tx, sessionID string, lock bool) (*BillingSession, error) {
+	query := `SELECT id, account_id, payment_method, currency, amount_micro_usd, external_id,
+	                processed_event_id, status, referral_code, created_at, completed_at
+	          FROM billing_sessions WHERE id = $1`
+	if lock {
+		query += " FOR UPDATE"
+	}
+	var session BillingSession
+	if err := tx.QueryRow(ctx, query, sessionID).Scan(
+		&session.ID, &session.AccountID, &session.PaymentMethod, &session.Currency,
+		&session.AmountMicroUSD, &session.ExternalID, &session.ProcessedEventID,
+		&session.Status, &session.ReferralCode, &session.CreatedAt, &session.CompletedAt,
+	); err != nil {
+		return nil, err
+	}
+	return &session, nil
+}
+
+func (s *PostgresStore) rejectStripeDeposit(ctx context.Context, tx pgx.Tx, eventID, reason string) (*StripeDepositResult, error) {
+	if _, err := tx.Exec(ctx,
+		`UPDATE stripe_deposit_events
+		 SET status = 'rejected', reason = $2, updated_at = NOW()
+		 WHERE event_id = $1`,
+		eventID, reason,
+	); err != nil {
+		return nil, fmt.Errorf("store: reject Stripe deposit event: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: commit rejected Stripe deposit: %w", err)
+	}
+	return nil, fmt.Errorf("%w: %s", ErrStripeDepositMismatch, reason)
 }
 
 // GetBillingSession retrieves a billing session by ID.
@@ -3039,10 +3262,10 @@ func (s *PostgresStore) GetBillingSession(sessionID string) (*BillingSession, er
 
 	var bs BillingSession
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, account_id, payment_method, amount_micro_usd, external_id, status, referral_code, created_at, completed_at
+		`SELECT id, account_id, payment_method, currency, amount_micro_usd, external_id, processed_event_id, status, referral_code, created_at, completed_at
 		 FROM billing_sessions WHERE id = $1`, sessionID,
-	).Scan(&bs.ID, &bs.AccountID, &bs.PaymentMethod,
-		&bs.AmountMicroUSD, &bs.ExternalID, &bs.Status, &bs.ReferralCode,
+	).Scan(&bs.ID, &bs.AccountID, &bs.PaymentMethod, &bs.Currency,
+		&bs.AmountMicroUSD, &bs.ExternalID, &bs.ProcessedEventID, &bs.Status, &bs.ReferralCode,
 		&bs.CreatedAt, &bs.CompletedAt)
 	if err != nil {
 		return nil, fmt.Errorf("store: billing session not found: %w", err)

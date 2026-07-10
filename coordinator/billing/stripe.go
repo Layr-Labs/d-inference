@@ -46,11 +46,12 @@ func NewStripeProcessor(secretKey, webhookSecret, successURL, cancelURL string, 
 
 // CheckoutSessionRequest is the input for creating a Stripe checkout session.
 type CheckoutSessionRequest struct {
-	AmountCents   int64             `json:"amount_cents"` // amount in USD cents
-	Currency      string            `json:"currency"`     // "usd"
-	CustomerEmail string            `json:"customer_email,omitempty"`
-	ReferralCode  string            `json:"referral_code,omitempty"`
-	Metadata      map[string]string `json:"metadata,omitempty"`
+	AmountCents    int64             `json:"amount_cents"` // amount in USD cents
+	Currency       string            `json:"currency"`     // "usd"
+	IdempotencyKey string            `json:"idempotency_key"`
+	CustomerEmail  string            `json:"customer_email,omitempty"`
+	ReferralCode   string            `json:"referral_code,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
 }
 
 // CheckoutSessionResponse is returned after creating a Stripe checkout session.
@@ -100,6 +101,9 @@ func (p *StripeProcessor) CreateCheckoutSession(req CheckoutSessionRequest) (*Ch
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+p.secretKey)
 	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if req.IdempotencyKey != "" {
+		httpReq.Header.Set("Idempotency-Key", req.IdempotencyKey)
+	}
 
 	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
@@ -146,6 +150,7 @@ func checkoutMetadata(metadata map[string]string) map[string]string {
 
 // WebhookEvent represents a parsed Stripe webhook event.
 type WebhookEvent struct {
+	ID   string          `json:"id"`
 	Type string          `json:"type"`
 	Data json.RawMessage `json:"data"`
 }
@@ -222,6 +227,9 @@ func (p *StripeProcessor) VerifyWebhookSignature(payload []byte, sigHeader strin
 	var event WebhookEvent
 	if err := json.Unmarshal(payload, &event); err != nil {
 		return nil, fmt.Errorf("stripe: parse webhook payload: %w", err)
+	}
+	if event.ID == "" {
+		return nil, errors.New("stripe: webhook event ID missing")
 	}
 
 	return &event, nil

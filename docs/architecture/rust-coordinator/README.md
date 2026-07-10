@@ -27,4 +27,5 @@ cd coordinator-rs && cargo test --workspace
 - [DECISIONS.md](./DECISIONS.md) — locked §29 defaults
 - [PILOT.md](./PILOT.md) — Milestone 5 isolated pilot
 - [CUTOVER.md](./CUTOVER.md) — Milestones 7–8 cutover/rollback
+- [UNSUPPORTED.md](./UNSUPPORTED.md) — pilot route matrix
 - Contracts: [contracts/](./contracts/)

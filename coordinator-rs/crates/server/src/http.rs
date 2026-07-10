@@ -17,7 +17,7 @@ use crate::ledger::MemoryLedger;
 use crate::mock_provider::{complete_authorized_job, openai_chat_response};
 use crate::provider_hub::{OutboundCmd, ProviderHub, SharedHub};
 use crate::provider_ws::provider_ws;
-use crate::request_task::{spawn_request_task, ControlEvent};
+use crate::sealed::decrypt_request_body;
 use darkbloom_core::{AttemptId, JobId, LeaseId};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -151,7 +151,7 @@ struct ChatRequest {
 async fn chat_completions(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
-    Json(req): Json<ChatRequest>,
+    Json(raw): Json<Value>,
 ) -> impl IntoResponse {
     if let Err(status) = authorize_pilot(&state, &headers) {
         return (
@@ -162,6 +162,37 @@ async fn chat_completions(
         )
             .into_response();
     }
+    let parsed = match decrypt_request_body(&state.keys, &raw) {
+        Ok(v) => v,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "message": err,
+                        "type": "invalid_request_error",
+                        "code": "invalid_sealed_body"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+    let req: ChatRequest = match serde_json::from_value(parsed) {
+        Ok(r) => r,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "message": format!("invalid chat body: {err}"),
+                        "type": "invalid_request_error"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
     // Warm-plane stub: admit against fleet; without providers return 429.
     let decision = match state
         .fleet

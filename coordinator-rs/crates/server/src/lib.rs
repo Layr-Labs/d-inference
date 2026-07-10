@@ -13,6 +13,7 @@ pub mod provider_hub;
 pub mod provider_session;
 pub mod provider_ws;
 pub mod request_task;
+pub mod sealed;
 
 pub use abort::{abort_frame, abort_losing_hedge};
 pub use chunk_pipe::{bounded_chunk_pipe, ChunkPipe, PipeError};
@@ -23,6 +24,7 @@ pub use ledger::{MemoryLedger, OperationKey, ReservationProvenance};
 pub use provider_hub::{InboundReply, OutboundCmd, ProviderHub, SharedHub};
 pub use provider_session::{spawn_session, Lane, ProviderSessionHandle, SessionError};
 pub use request_task::{spawn_request_task, ControlEvent, RequestTaskHandle};
+pub use sealed::decrypt_request_body;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

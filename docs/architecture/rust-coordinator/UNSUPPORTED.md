@@ -1,0 +1,24 @@
+# Unsupported route matrix (Rust pilot)
+
+The Rust pilot **never proxies** to Go. Excluded production surfaces return
+`501` with `code=unsupported_route`.
+
+| Surface | Status in pilot |
+| --- | --- |
+| `POST /v1/chat/completions` | Supported (warm plane) |
+| `POST /v1/responses` | Supported (alias) |
+| `GET /v1/models` | Supported |
+| `GET /v1/encryption-key` | Supported (real X25519) |
+| `GET /health`, `/readyz` | Supported |
+| `GET /ws/provider` | Supported (register/heartbeat/prepare/start) |
+| `GET /v1/admin/quiescence` | Supported (pilot inventory) |
+| Stripe deposit/withdraw/Connect | Unsupported |
+| Privy / API-key CRUD | Unsupported (pilot keys via env) |
+| Device auth / enroll / MDM | Unsupported |
+| Vision / tools / Anthropic messages | Unsupported |
+| Completions (legacy) | Unsupported |
+| Releases / installer / catalog admin | Unsupported |
+| Invites / referrals / rewards / stats | Unsupported |
+| Telemetry ingest / admin writes | Unsupported |
+
+When adding a route to the pilot, remove it from this table and add fixtures.

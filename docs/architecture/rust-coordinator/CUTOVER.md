@@ -313,3 +313,9 @@ ingestable like recover/prepare-fail releases.
 CLI/recovery — so disposition-first classification, fencing, and reservation
 clamping cannot drift between HTTP and in-process recovery.
 
+### Admin recover via recovery core (DECISIONS #63)
+
+`POST /v1/admin/recover-undispatched` calls `recover_undispatched_on` then
+persists `released` disposition + critical outbox. Classification and fencing
+match CLI/recovery; side effects stay on the HTTP path.
+

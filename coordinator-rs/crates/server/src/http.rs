@@ -22,7 +22,7 @@ use crate::ownership::Gate as OwnershipGate;
 use crate::provider_hub::{OutboundCmd, ProviderHub, SharedHub, StartResult};
 use crate::provider_ws::provider_ws;
 use crate::request_task::{spawn_request_task, ControlEvent};
-use crate::recovery::{force_settle_held_on, RecoveryAction};
+use crate::recovery::{force_settle_held_on, recover_undispatched_on, RecoveryAction};
 use crate::sealed::decrypt_request_body;
 use crate::telemetry::TelemetrySink;
 use crate::terminal_ingest::{ingest_terminal, MemoryTerminalStore, TerminalIngest};
@@ -502,6 +502,11 @@ async fn admin_force_settle(
         .filter(|d| !d.is_empty())
         .unwrap_or_else(|| format!("force-settle:{}", req.job_id));
 
+    // Re-check holding immediately before money move (DECISIONS #47/#62).
+    if let Err(resp) = require_holding(&state) {
+        return resp;
+    }
+
     let (action, charged) = {
         let mut led = state.ledger.lock().await;
         let reserved = led.job_reserved_total(&req.job_id).map(|m| m.0).unwrap_or(0);
@@ -618,49 +623,56 @@ async fn admin_recover_undispatched(
         .account
         .unwrap_or_else(|| state.pilot_account.clone());
 
-    let action = {
-        let led = state.ledger.lock().await;
-        if led.job_disposition(&req.job_id).is_some()
-            || led.job_reserved_total(&req.job_id).is_none()
-        {
-            "already_terminal".to_string()
-        } else if led.job_funded_start(&req.job_id) {
-            "skipped".to_string()
-        } else {
-            drop(led);
-            match release_job_with_outbox(
-                &state,
-                crate::ledger::OperationKey(format!("recovery_release:{}", req.job_id)),
-                &req.job_id,
-                &account,
-            )
-            .await
-            {
-                Ok(true) => "released".to_string(),
-                Ok(false) => "already_terminal".to_string(),
-                Err(err) => {
-                    let (status, code) = match &err {
-                        crate::ledger::LedgerError::OwnershipLost => (
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "ownership_lost",
-                        ),
-                        _ => (StatusCode::CONFLICT, "recover_undispatched_failed"),
-                    };
-                    return (
-                        status,
-                        Json(json!({
-                            "error": {
-                                "message": format!("{err}"),
-                                "type": "invalid_request_error",
-                                "code": code
-                            }
-                        })),
-                    )
-                        .into_response();
-                }
+    // Re-check holding immediately before money move (DECISIONS #47/#63).
+    if let Err(resp) = require_holding(&state) {
+        return resp;
+    }
+
+    let (action, refunded) = {
+        let mut led = state.ledger.lock().await;
+        let reserved = led.job_reserved_total(&req.job_id).map(|m| m.0).unwrap_or(0);
+        match recover_undispatched_on(
+            &mut led,
+            state.ownership.epoch().0,
+            &req.job_id,
+            &account,
+        ) {
+            Ok(RecoveryAction::Released) => ("released".to_string(), Some(reserved)),
+            Ok(RecoveryAction::AlreadyTerminal) => ("already_terminal".to_string(), None),
+            Ok(RecoveryAction::Skipped) | Ok(RecoveryAction::HeldForReview) => {
+                ("skipped".to_string(), None)
+            }
+            Err(err) => {
+                let (status, code) = match &err {
+                    crate::ledger::LedgerError::OwnershipLost => (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "ownership_lost",
+                    ),
+                    _ => (StatusCode::CONFLICT, "recover_undispatched_failed"),
+                };
+                return (
+                    status,
+                    Json(json!({
+                        "error": {
+                            "message": format!("{err}"),
+                            "type": "invalid_request_error",
+                            "code": code
+                        }
+                    })),
+                )
+                    .into_response();
             }
         }
     };
+
+    if let Some(amount) = refunded {
+        {
+            let mut terms = state.terminals.lock().await;
+            crate::terminal_ingest::record_released_disposition(&mut terms, &req.job_id);
+        }
+        let mut box_ = state.outbox.lock().await;
+        let _ = box_.enqueue_released(&req.job_id, &account, amount);
+    }
 
     let (bal, active) = {
         let led = state.ledger.lock().await;

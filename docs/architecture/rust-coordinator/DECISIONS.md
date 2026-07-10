@@ -69,6 +69,7 @@ Date: 2026-07-10
 | 60 | Release records disposition | `release_job_with_outbox` persists `released` via `record_bound` with digest `release:{job_id}` so recover/cancel releases are auditable and ingestable |
 | 61 | Cancel release records disposition | Pre-start cancel release calls `record_released_disposition` (same digest as #60) when a terminal store is provided — parity with recover/prepare-fail releases |
 | 62 | Admin force-settle via recovery core | `admin_force_settle` calls `force_settle_held_on` (shared with CLI/recovery) so HTTP and recovery cannot drift on disposition-first / fencing / clamp semantics |
+| 63 | Admin recover via recovery core | `admin_recover_undispatched` calls `recover_undispatched_on` then records disposition + critical outbox — same classification/fencing as CLI/recovery |
 
 ## Deleted Go mechanisms (do not port)
 

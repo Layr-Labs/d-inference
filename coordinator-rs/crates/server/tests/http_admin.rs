@@ -851,6 +851,33 @@ async fn admin_deposit_rejects_negative_withdrawable() {
 }
 
 #[tokio::test]
+async fn admin_deposit_rejects_empty_source() {
+    let app = router(test_state(true));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/deposits")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "event_id": "evt_empty_src",
+                        "source": "",
+                        "amount_micro_usd": 100_000,
+                        "withdrawable_micro_usd": 0
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let v = body_json(res).await;
+    assert_eq!(v["error"]["code"], "deposit_failed");
+}
+
+#[tokio::test]
 async fn admin_terminal_ingest_force_settled_disposition() {
     let state = test_state(true);
     {

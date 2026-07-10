@@ -381,3 +381,9 @@ After ownership steal during `wait_terminal`, ops discover the orphan via
 quiescence `active_job_ids`, bulk-adopt, then force-settle. SQL:
 `adopt_all_fencing_epoch_sql`.
 
+### Stream wait-steal + adopt-jobs edges (DECISIONS #74)
+
+Stream=true wait-steal uses the same adopt→force-settle recovery. Bulk
+`adopt-jobs` accepts explicit `job_ids` and reports per-id failures (disposed /
+unknown) without aborting the batch; concurrent bulk adopt is idempotent.
+

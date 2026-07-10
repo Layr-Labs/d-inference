@@ -33,7 +33,7 @@ pub use external_events::{observe_sql as external_event_observe_sql, ExternalEve
 pub use fleet_actor::{spawn_fleet_actor, FleetError, FleetHandle};
 pub use http::{router, AppState, ModelCard};
 pub use ledger::{MemoryLedger, OperationKey, ReservationProvenance};
-pub use outbox::{ack_done_sql, Outbox, OutboxEntry, OutboxError};
+pub use outbox::{ack_done_sql, requeue_sql, Outbox, OutboxEntry, OutboxError};
 pub use ownership::{
     acquire_sql as ownership_acquire_sql, heartbeat_sql as ownership_heartbeat_sql,
     release_sql as ownership_release_sql, Epoch, Gate as OwnershipGate, OwnershipError,
@@ -48,7 +48,8 @@ pub use sealed::decrypt_request_body;
 pub use stream_billing::{accept_pipe_chunk, billable_cap_from_checkpoint, pipe_and_checkpoint};
 pub use telemetry::{bounded_telemetry, TelemetryEvent, TelemetrySink};
 pub use terminal_ingest::{
-    ingest_terminal, MemoryTerminalStore, TerminalDisposition, TerminalIngest, TerminalIngestError,
+    ingest_terminal, lookup_sql, record_late_sql, MemoryTerminalStore, TerminalDisposition,
+    TerminalIngest, TerminalIngestError,
 };
 
 pub fn version() -> &'static str {

@@ -102,6 +102,26 @@ pub fn ingest_terminal(
     }))
 }
 
+/// Documented SQL for durable terminal disposition lookup (mirrors MemoryTerminalStore).
+pub fn lookup_sql() -> &'static str {
+    r#"
+    SELECT disposition, ack_payload
+    FROM rust_coord.provider_terminals
+    WHERE attempt_id = $1
+      AND terminal_digest = $2
+    "#
+}
+
+/// Documented SQL for recording a late (unknown) terminal without settling.
+pub fn record_late_sql() -> &'static str {
+    r#"
+    INSERT INTO rust_coord.late_terminals (
+      job_id, attempt_id, terminal_digest, se_signature, outcome, seen_at
+    ) VALUES ($1, $2, $3, $4, $5, NOW())
+    ON CONFLICT (attempt_id, terminal_digest) DO NOTHING
+    "#
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +199,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ack, custom);
+    }
+
+    #[test]
+    fn sql_docs_never_settle() {
+        assert!(lookup_sql().contains("rust_coord.provider_terminals"));
+        assert!(lookup_sql().contains("disposition"));
+        assert!(record_late_sql().contains("late_terminals"));
+        assert!(record_late_sql().contains("ON CONFLICT"));
+        assert!(!record_late_sql().contains("balances"));
+        assert!(!lookup_sql().contains("UPDATE balances"));
     }
 }

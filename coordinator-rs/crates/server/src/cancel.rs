@@ -219,4 +219,47 @@ mod tests {
         assert_eq!(led.lock().unwrap().balance("a").0, 950_000);
         assert_eq!(led.lock().unwrap().active_job_count(), 1);
     }
+
+    #[tokio::test]
+    async fn hedge_pre_start_cancel_returns_aborted() {
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        {
+            let mut g = led.lock().unwrap();
+            g.credit("a", 1_000_000, 0).unwrap();
+            g.reserve(OperationKey("r".into()), "j4", "a", 50_000)
+                .unwrap();
+        }
+        let (_h, mut task) = spawn_request_task(JobId::new("j4"), Duration::from_secs(30));
+        task.hedge_used = true;
+        let hub = ProviderHub::new();
+        let (tx, mut rx) = mpsc::channel(4);
+        hub.attach("p".into(), 1, tx).await;
+        let hub2 = hub.clone();
+        tokio::spawn(async move {
+            while let Some(crate::provider_hub::OutboundCmd::Text(t)) = rx.recv().await {
+                let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                let attempt = v["attempt_id"].as_str().unwrap_or("a1").to_string();
+                let reply = if v["type"] == "abort" {
+                    crate::provider_hub::InboundReply::Aborted(serde_json::json!({
+                        "type": "aborted",
+                        "attempt_id": attempt
+                    }))
+                } else {
+                    crate::provider_hub::InboundReply::Cancelled(serde_json::json!({
+                        "type": "cancelled",
+                        "attempt_id": attempt
+                    }))
+                };
+                hub2.deliver_reply("p", &attempt, reply).await;
+            }
+        });
+        let out = cancel_before_or_after_content(
+            &mut task, &hub, &led, "a", "p", "j4", "a1", "l1", 1, "n", "d", false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, CancelOutcome::Aborted);
+        assert_eq!(led.lock().unwrap().balance("a").0, 1_000_000);
+        assert_eq!(led.lock().unwrap().active_job_count(), 0);
+    }
 }

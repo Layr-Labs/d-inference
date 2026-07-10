@@ -139,6 +139,16 @@ pub fn ack_done_sql() -> &'static str {
     "#
 }
 
+/// Documented SQL for requeue after transient side-effect failure.
+pub fn requeue_sql() -> &'static str {
+    r#"
+    UPDATE rust_coord.outbox
+    SET available_at = NOW() + ($2::int * INTERVAL '1 second')
+    WHERE id = $1
+      AND attempts < 100
+    "#
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +195,7 @@ mod tests {
         assert!(claim_sql().contains("SKIP LOCKED"));
         assert!(enqueue_sql().contains("rust_coord.outbox"));
         assert!(ack_done_sql().contains("DELETE FROM rust_coord.outbox"));
+        assert!(requeue_sql().contains("available_at"));
+        assert!(requeue_sql().contains("attempts < 100"));
     }
 }

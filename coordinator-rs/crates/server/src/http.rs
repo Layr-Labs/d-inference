@@ -14,6 +14,7 @@ use std::sync::Arc;
 use crate::fleet_actor::FleetHandle;
 use crate::ledger::MemoryLedger;
 use crate::mock_provider::{openai_chat_response, run_mock_completion};
+use crate::provider_hub::{ProviderHub, SharedHub};
 use crate::provider_ws::provider_ws;
 use crate::request_task::{spawn_request_task, ControlEvent};
 use darkbloom_core::{AttemptId, JobId, LeaseId};
@@ -23,6 +24,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct AppState {
     pub fleet: FleetHandle,
+    pub hub: SharedHub,
     pub encryption_kid: String,
     pub models: Vec<ModelCard>,
     /// Pilot ledger (process-local). Postgres/SQLx replaces this in M4.
@@ -30,6 +32,7 @@ pub struct AppState {
     pub pilot_account: String,
     /// Comma-separated pilot API keys (env DARKBLOOM_PILOT_API_KEYS). Empty = open.
     pub pilot_api_keys: Arc<Vec<String>>,
+    pub coordinator_epoch: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -75,17 +78,28 @@ fn authorize_pilot(state: &AppState, headers: &axum::http::HeaderMap) -> Result<
 
 async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Warm-plane inventory — expand as workers land.
-    let (bal, wdr) = {
+    let (bal, wdr, active_jobs) = {
         let led = state.ledger.lock().await;
-        led.balance(&state.pilot_account)
+        let (b, w) = led.balance(&state.pilot_account);
+        (b, w, led.active_job_count())
     };
-    Json(json!({
-        "ready": true,
-        "pilot_account_balance_micro_usd": bal,
-        "pilot_account_withdrawable_micro_usd": wdr,
-        "fleet_actor": "up",
-        "note": "full quiescence counters land with RequestTask tracking"
-    }))
+    let ready = active_jobs == 0;
+    let status = if ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        status,
+        Json(json!({
+            "ready": ready,
+            "pilot_account_balance_micro_usd": bal,
+            "pilot_account_withdrawable_micro_usd": wdr,
+            "active_jobs": active_jobs,
+            "fleet_actor": "up",
+            "note": "full quiescence counters land with RequestTask tracking"
+        })),
+    )
 }
 
 async fn health() -> Json<Value> {
@@ -188,6 +202,9 @@ async fn chat_completions(
                 spawn_request_task(job_id.clone(), std::time::Duration::from_secs(30));
             let attempt = permit.attempt.clone();
             let lease = LeaseId::new(format!("lease-{}", Uuid::new_v4()));
+            let dispatch_nonce = Uuid::new_v4().to_string();
+            let request_digest = format!("sha256:{}", Uuid::new_v4());
+
             if task
                 .apply(ControlEvent::Reserved {
                     job: job_id.clone(),
@@ -196,24 +213,6 @@ async fn chat_completions(
                     task.apply(ControlEvent::Admitted {
                         attempt: attempt.clone(),
                         permit: permit.clone(),
-                    })
-                })
-                .and_then(|_| {
-                    task.apply(ControlEvent::Prepared {
-                        attempt: attempt.clone(),
-                        lease: lease.clone(),
-                    })
-                })
-                .and_then(|_| {
-                    task.apply(ControlEvent::StartAuthorized {
-                        attempt: attempt.clone(),
-                        lease: lease.clone(),
-                    })
-                })
-                .and_then(|_| {
-                    task.apply(ControlEvent::Started {
-                        attempt: attempt.clone(),
-                        lease: lease.clone(),
                     })
                 })
                 .is_err()
@@ -230,12 +229,104 @@ async fn chat_completions(
                 )
                     .into_response();
             }
-            // Keep handle alive for cancel/backpressure signals from the pipe path.
             let _ = task_handle;
+
+            // Prefer live provider prepare/start when the hub has a session.
+            let live = state
+                .hub
+                .prepare(
+                    &permit.provider_id,
+                    attempt.as_str(),
+                    ProviderHub::prepare_frame(
+                        job_id.as_str(),
+                        attempt.as_str(),
+                        lease.as_str(),
+                        0, // session epoch filled by provider; fencing still via attempt id
+                        state.coordinator_epoch,
+                        &dispatch_nonce,
+                        &request_digest,
+                        &permit.model,
+                        None,
+                    ),
+                    std::time::Duration::from_secs(5),
+                )
+                .await;
+
+            let use_live = live.is_ok();
+            if use_live {
+                let _ = task.apply(ControlEvent::Prepared {
+                    attempt: attempt.clone(),
+                    lease: lease.clone(),
+                });
+                let _ = task.apply(ControlEvent::StartAuthorized {
+                    attempt: attempt.clone(),
+                    lease: lease.clone(),
+                });
+                match state
+                    .hub
+                    .start(
+                        &permit.provider_id,
+                        attempt.as_str(),
+                        ProviderHub::start_frame(
+                            job_id.as_str(),
+                            attempt.as_str(),
+                            lease.as_str(),
+                            0,
+                            state.coordinator_epoch,
+                            &dispatch_nonce,
+                            &request_digest,
+                        ),
+                        std::time::Duration::from_secs(5),
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        let _ = task.apply(ControlEvent::Started {
+                            attempt: attempt.clone(),
+                            lease: lease.clone(),
+                        });
+                    }
+                    Err(err) => {
+                        return (
+                            StatusCode::BAD_GATEWAY,
+                            Json(json!({
+                                "error": {
+                                    "message": format!("start failed: {err}"),
+                                    "type": "server_error",
+                                    "code": "provider_start_failed"
+                                }
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
+            } else {
+                // Fall back to in-process mock when no live v2 provider replies.
+                let _ = task.apply(ControlEvent::Prepared {
+                    attempt: attempt.clone(),
+                    lease: lease.clone(),
+                });
+                let _ = task.apply(ControlEvent::StartAuthorized {
+                    attempt: attempt.clone(),
+                    lease: lease.clone(),
+                });
+                let _ = task.apply(ControlEvent::Started {
+                    attempt: attempt.clone(),
+                    lease: lease.clone(),
+                });
+            }
 
             let mut ledger = state.ledger.lock().await;
             match run_mock_completion(&mut ledger, &state.pilot_account, &permit, user_text) {
-                Ok(completion) => {
+                Ok(mut completion) => {
+                    if use_live {
+                        completion.content = format!(
+                            "[rust-live-prepare] provider={} model={} echo={}",
+                            permit.provider_id,
+                            permit.model,
+                            user_text.chars().take(64).collect::<String>()
+                        );
+                    }
                     let _ = task.apply(ControlEvent::FirstContent {
                         attempt: AttemptId::new(completion.attempt_id.clone()),
                         lease: lease.clone(),

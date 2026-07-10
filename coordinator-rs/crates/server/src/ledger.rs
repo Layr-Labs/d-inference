@@ -37,7 +37,25 @@ pub enum LedgerError {
 pub struct MemoryLedger {
     balances: std::collections::HashMap<String, (i64, i64)>, // total, withdrawable
     ops: std::collections::HashSet<String>,
-    jobs: std::collections::HashMap<String, ReservationProvenance>,
+    jobs: std::collections::HashMap<String, JobRecord>,
+    attempts: std::collections::HashMap<String, AttemptRecord>,
+    terminals: std::collections::HashMap<String, String>, // digest -> disposition
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobRecord {
+    pub account_id: String,
+    pub state: String,
+    pub provenance: ReservationProvenance,
+    pub funded_start: bool,
+    pub disposition: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttemptRecord {
+    pub job_id: String,
+    pub provider_id: String,
+    pub state: String,
 }
 
 impl MemoryLedger {
@@ -58,7 +76,7 @@ impl MemoryLedger {
             let provenance = self
                 .jobs
                 .get(job_id)
-                .cloned()
+                .map(|j| j.provenance.clone())
                 .unwrap_or(ReservationProvenance {
                     total: MicroUsd(amount),
                     withdrawable: MicroUsd(0),
@@ -82,12 +100,99 @@ impl MemoryLedger {
             total: MicroUsd(amount),
             withdrawable: MicroUsd(reserved_wdr),
         };
-        self.jobs.insert(job_id.to_string(), provenance.clone());
+        self.jobs.insert(
+            job_id.to_string(),
+            JobRecord {
+                account_id: account.to_string(),
+                state: "reserved".into(),
+                provenance: provenance.clone(),
+                funded_start: false,
+                disposition: None,
+            },
+        );
         Ok(ReserveResult {
             job_id: job_id.to_string(),
             provenance,
             applied: true,
         })
+    }
+
+    pub fn mark_start_authorized(&mut self, job_id: &str) -> Result<(), LedgerError> {
+        let job = self
+            .jobs
+            .get_mut(job_id)
+            .ok_or_else(|| LedgerError::Conflict("unknown job".into()))?;
+        if job.funded_start {
+            return Err(LedgerError::Conflict("already start_authorized".into()));
+        }
+        job.funded_start = true;
+        job.state = "start_authorized".into();
+        Ok(())
+    }
+
+    pub fn record_attempt(
+        &mut self,
+        attempt_id: &str,
+        job_id: &str,
+        provider_id: &str,
+        state: &str,
+    ) {
+        self.attempts.insert(
+            attempt_id.to_string(),
+            AttemptRecord {
+                job_id: job_id.to_string(),
+                provider_id: provider_id.to_string(),
+                state: state.to_string(),
+            },
+        );
+    }
+
+    /// Settle: charge `actual`, refund unused provenance, mark terminal.
+    /// Enforces at most one funded start / one settle per job via op key.
+    pub fn settle(
+        &mut self,
+        op: OperationKey,
+        job_id: &str,
+        account: &str,
+        actual: i64,
+        terminal_digest: &str,
+    ) -> Result<bool, LedgerError> {
+        if let Some(prev) = self.terminals.get(terminal_digest) {
+            if prev == "settled" {
+                return Ok(false);
+            }
+            return Err(LedgerError::Conflict(format!(
+                "terminal digest conflict: was {prev}"
+            )));
+        }
+        if !self.ops.insert(op.0.clone()) {
+            return Ok(false);
+        }
+        let job = self
+            .jobs
+            .get_mut(job_id)
+            .ok_or_else(|| LedgerError::Conflict("unknown job".into()))?;
+        if job.disposition.is_some() {
+            return Ok(false);
+        }
+        let reserved = job.provenance.total.0;
+        if actual > reserved {
+            return Err(LedgerError::Conflict("actual exceeds reservation".into()));
+        }
+        let refund = reserved - actual;
+        let non_wdr_reserved = reserved - job.provenance.withdrawable.0;
+        let consumed_wdr = (actual - non_wdr_reserved).max(0).min(job.provenance.withdrawable.0);
+        let refund_wdr = job.provenance.withdrawable.0 - consumed_wdr;
+
+        let e = self.balances.entry(account.to_string()).or_insert((0, 0));
+        e.0 += refund;
+        e.1 += refund_wdr;
+
+        job.state = "settled".into();
+        job.disposition = Some("settled".into());
+        self.terminals
+            .insert(terminal_digest.to_string(), "settled".into());
+        Ok(true)
     }
 
     pub fn release(
@@ -99,17 +204,34 @@ impl MemoryLedger {
         if !self.ops.insert(op.0.clone()) {
             return Ok(false);
         }
-        let Some(prov) = self.jobs.remove(job_id) else {
+        let Some(job) = self.jobs.get_mut(job_id) else {
             return Ok(false);
         };
+        if job.disposition.is_some() {
+            return Ok(false);
+        }
+        let prov = job.provenance.clone();
         let e = self.balances.entry(account.to_string()).or_insert((0, 0));
         e.0 += prov.total.0;
         e.1 += prov.withdrawable.0;
+        job.state = "released".into();
+        job.disposition = Some("released".into());
         Ok(true)
     }
 
     pub fn balance(&self, account: &str) -> (i64, i64) {
         self.balances.get(account).copied().unwrap_or((0, 0))
+    }
+
+    pub fn job_funded_start(&self, job_id: &str) -> bool {
+        self.jobs.get(job_id).map(|j| j.funded_start).unwrap_or(false)
+    }
+
+    pub fn active_job_count(&self) -> usize {
+        self.jobs
+            .values()
+            .filter(|j| j.disposition.is_none())
+            .count()
     }
 }
 
@@ -123,12 +245,7 @@ mod tests {
         led.credit("a", 10_000_000, 0);
         led.credit("a", 5_000_000, 5_000_000);
         let res = led
-            .reserve(
-                OperationKey("op1".into()),
-                "j1",
-                "a",
-                12_000_000,
-            )
+            .reserve(OperationKey("op1".into()), "j1", "a", 12_000_000)
             .unwrap();
         assert!(res.applied);
         assert_eq!(res.provenance.withdrawable.0, 2_000_000);
@@ -151,5 +268,42 @@ mod tests {
             .unwrap();
         assert!(r1.applied && !r2.applied);
         assert_eq!(led.balance("a").0, 4_000_000);
+    }
+
+    #[test]
+    fn settle_refunds_unused_and_is_idempotent() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 10_000_000, 4_000_000);
+        led.reserve(OperationKey("r".into()), "j", "a", 5_000_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        assert!(led
+            .mark_start_authorized("j")
+            .unwrap_err()
+            .to_string()
+            .contains("already"));
+        assert!(led
+            .settle(OperationKey("s".into()), "j", "a", 1_000_000, "td1")
+            .unwrap());
+        assert!(!led
+            .settle(OperationKey("s".into()), "j", "a", 1_000_000, "td1")
+            .unwrap());
+        // reserved 5M, charged 1M → refund 4M; start bal 10M → 5M after reserve → 9M after settle
+        assert_eq!(led.balance("a").0, 9_000_000);
+        assert_eq!(led.active_job_count(), 0);
+    }
+
+    #[test]
+    fn at_most_one_funded_start_per_job() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 1_000_000, 0);
+        led.reserve(OperationKey("r".into()), "j", "a", 100_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        assert!(led.job_funded_start("j"));
+        assert!(matches!(
+            led.mark_start_authorized("j"),
+            Err(LedgerError::Conflict(_))
+        ));
     }
 }

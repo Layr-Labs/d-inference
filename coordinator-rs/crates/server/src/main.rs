@@ -1,5 +1,7 @@
 use darkbloom_coordinator::cli::{parse_and_is_recovery, run_recovery};
-use darkbloom_coordinator::{router, spawn_fleet_actor, AppState, MemoryLedger, ModelCard};
+use darkbloom_coordinator::{
+    router, spawn_fleet_actor, AppState, MemoryLedger, ModelCard, ProviderHub,
+};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -22,6 +24,7 @@ async fn main() {
     }
 
     let (fleet, _fleet_join) = spawn_fleet_actor();
+    let hub = ProviderHub::new();
     let mut ledger = MemoryLedger::default();
     let pilot_account =
         std::env::var("DARKBLOOM_PILOT_ACCOUNT").unwrap_or_else(|_| "pilot-account".into());
@@ -35,8 +38,13 @@ async fn main() {
             .filter(|s| !s.is_empty())
             .collect(),
     );
+    let coordinator_epoch: u64 = std::env::var("DARKBLOOM_COORDINATOR_EPOCH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
     let state = AppState {
         fleet,
+        hub,
         encryption_kid: std::env::var("DARKBLOOM_ENCRYPTION_KID").unwrap_or_else(|_| "dev".into()),
         models: vec![ModelCard {
             id: std::env::var("DARKBLOOM_PILOT_MODEL")
@@ -47,6 +55,7 @@ async fn main() {
         ledger: Arc::new(Mutex::new(ledger)),
         pilot_account,
         pilot_api_keys,
+        coordinator_epoch,
     };
 
     let app = router(state);

@@ -12,6 +12,7 @@ pub mod hedge;
 pub mod ids;
 pub mod lease;
 pub mod request;
+pub mod terminal_journal;
 
 pub use admission::{AdmissionDecision, CapacityReason, DispatchPermit, RejectionReason};
 pub use fleet::{AdmitRequest, FleetState, ProviderSnapshot};
@@ -20,3 +21,4 @@ pub use hedge::{HedgeBudget, HedgePolicy};
 pub use ids::{AttemptId, CoordinatorEpoch, JobId, LeaseId, MicroUsd, SessionEpoch};
 pub use lease::{LeaseError, LeaseEvent, LeaseState};
 pub use request::{RequestEvent, RequestState};
+pub use terminal_journal::{JournalEntry, JournalError, TerminalJournal};

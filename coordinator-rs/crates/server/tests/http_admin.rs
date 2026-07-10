@@ -52,7 +52,9 @@ async fn body_json(res: axum::response::Response) -> serde_json::Value {
 
 #[tokio::test]
 async fn admin_deposit_applies_then_replays() {
-    let app = router(test_state(true));
+    let state = test_state(true);
+    let outbox = state.outbox.clone();
+    let app = router(state);
     let req = Request::builder()
         .method("POST")
         .uri("/v1/admin/deposits")
@@ -71,6 +73,7 @@ async fn admin_deposit_applies_then_replays() {
     let v = body_json(res).await;
     assert_eq!(v["applied"], true);
     assert_eq!(v["balance_micro_usd"], 1_250_000);
+    assert_eq!(outbox.lock().await.len(), 1);
 
     let req2 = Request::builder()
         .method("POST")
@@ -90,6 +93,8 @@ async fn admin_deposit_applies_then_replays() {
     let v2 = body_json(res2).await;
     assert_eq!(v2["applied"], false);
     assert_eq!(v2["balance_micro_usd"], 1_250_000);
+    // Replay must not enqueue a second outbox side effect.
+    assert_eq!(outbox.lock().await.len(), 1);
 }
 
 #[tokio::test]

@@ -166,6 +166,23 @@ fn require_admin(
     Ok(())
 }
 
+fn require_nonempty_job_id(job_id: &str) -> Result<(), axum::response::Response> {
+    if job_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": "job_id required",
+                    "type": "invalid_request_error",
+                    "code": "invalid_job_id"
+                }
+            })),
+        )
+            .into_response());
+    }
+    Ok(())
+}
+
 async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Warm-plane inventory — expand as workers land.
     let (bal, wdr, active_jobs, held_start_authorized, held_job_ids) = {
@@ -410,18 +427,8 @@ async fn admin_force_settle(
     if let Err(resp) = require_admin(&state, &headers) {
         return resp;
     }
-    if req.job_id.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": {
-                    "message": "job_id required",
-                    "type": "invalid_request_error",
-                    "code": "invalid_job_id"
-                }
-            })),
-        )
-            .into_response();
+    if let Err(resp) = require_nonempty_job_id(&req.job_id) {
+        return resp;
     }
     if req.actual_micro_usd < 0 {
         return (
@@ -532,18 +539,8 @@ async fn admin_recover_undispatched(
     if let Err(resp) = require_admin(&state, &headers) {
         return resp;
     }
-    if req.job_id.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": {
-                    "message": "job_id required",
-                    "type": "invalid_request_error",
-                    "code": "invalid_job_id"
-                }
-            })),
-        )
-            .into_response();
+    if let Err(resp) = require_nonempty_job_id(&req.job_id) {
+        return resp;
     }
     let account = req
         .account
@@ -613,18 +610,8 @@ async fn admin_held_review(
     if let Err(resp) = require_admin(&state, &headers) {
         return resp;
     }
-    if req.job_id.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": {
-                    "message": "job_id required",
-                    "type": "invalid_request_error",
-                    "code": "invalid_job_id"
-                }
-            })),
-        )
-            .into_response();
+    if let Err(resp) = require_nonempty_job_id(&req.job_id) {
+        return resp;
     }
 
     let (action, bal, held, reserved) = {

@@ -1848,3 +1848,65 @@ async fn admin_force_settle_rejects_negative_actual() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_json(res).await["error"]["code"], "invalid_amount");
 }
+
+#[tokio::test]
+async fn admin_force_settle_zero_actual_full_refund() {
+    let state = test_state(true);
+    let outbox = state.outbox.clone();
+    {
+        let mut led = state.ledger.lock().await;
+        led.reserve(
+            darkbloom_coordinator::OperationKey("r-zfs".into()),
+            "held-zfs",
+            "pilot-account",
+            120_000,
+        )
+        .unwrap();
+        led.mark_start_authorized("held-zfs", "pilot-account").unwrap();
+    }
+    let app = router(state);
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/force-settle")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "held-zfs",
+                        "actual_micro_usd": 0,
+                        "terminal_digest": "zfs-d"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["action"], "released");
+    // Full reservation refunded → back to 1M
+    assert_eq!(v["balance_micro_usd"], 1_000_000);
+    assert_eq!(v["held_start_authorized"], 0);
+    assert_eq!(outbox.lock().await.len(), 1);
+
+    {
+        let mut box_ = outbox.lock().await;
+        let e = box_.try_claim().unwrap();
+        let _ = box_.ack_done(e.id);
+    }
+    let q = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/quiescence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(q.status(), StatusCode::OK);
+    assert_eq!(body_json(q).await["ready"], true);
+}

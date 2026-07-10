@@ -112,3 +112,8 @@ in both MemoryLedger and SQL for audit.
 Durable `forget_sql` deletes the external_events row only when no
 `deposit:source:event_id` financial_operations row exists. `deposit_sql`
 inserts that op key on successful credit so forget cannot undo a landed deposit.
+
+### Outbox blocks quiescence (DECISIONS #29)
+
+Quiescence `ready` requires `outbox_retryable == 0`. Deposit enqueue (and
+requeue after failed delivery) keeps the coordinator not-ready until drain.

@@ -699,4 +699,26 @@ mod tests {
         // bal: 1M + 3.5M refund = 4.5M; wdr: 1M + 1M refund_wdr = 2M
         assert_eq!(led.balance("a"), (4_500_000, 2_000_000));
     }
+
+    #[test]
+    fn settle_consumes_reserved_withdrawable_when_charge_exceeds_non_wdr() {
+        let mut led = MemoryLedger::default();
+        // 1M non-wdr + 3M wdr
+        led.credit("a", 1_000_000, 0);
+        led.credit("a", 3_000_000, 3_000_000);
+        // Reserve 3M → 1M non-wdr + 2M wdr reserved
+        let res = led
+            .reserve(OperationKey("r".into()), "j", "a", 3_000_000)
+            .unwrap();
+        assert_eq!(res.provenance.withdrawable.0, 2_000_000);
+        assert_eq!(led.balance("a"), (1_000_000, 1_000_000));
+        led.mark_start_authorized("j").unwrap();
+        // Charge 2.5M → consumes all 1M non-wdr + 1.5M of reserved wdr
+        // refund = 0.5M, refund_wdr = 2M - 1.5M = 0.5M
+        assert!(led
+            .settle(OperationKey("s".into()), "j", "a", 2_500_000, "d-cw")
+            .unwrap());
+        // bal: 1M + 0.5M = 1.5M; wdr: 1M + 0.5M = 1.5M
+        assert_eq!(led.balance("a"), (1_500_000, 1_500_000));
+    }
 }

@@ -25,6 +25,8 @@ pub struct AppState {
     /// Pilot ledger (process-local). Postgres/SQLx replaces this in M4.
     pub ledger: Arc<Mutex<MemoryLedger>>,
     pub pilot_account: String,
+    /// Comma-separated pilot API keys (env DARKBLOOM_PILOT_API_KEYS). Empty = open.
+    pub pilot_api_keys: Arc<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -42,8 +44,45 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/ws/provider", get(provider_ws))
+        .route("/v1/admin/quiescence", get(quiescence))
         .fallback(unsupported)
         .with_state(Arc::new(state))
+}
+
+fn extract_bearer(headers: &axum::http::HeaderMap) -> Option<String> {
+    let auth = headers.get(axum::http::header::AUTHORIZATION)?.to_str().ok()?;
+    auth.strip_prefix("Bearer ")
+        .or_else(|| auth.strip_prefix("bearer "))
+        .map(|s| s.trim().to_string())
+}
+
+fn authorize_pilot(state: &AppState, headers: &axum::http::HeaderMap) -> Result<(), StatusCode> {
+    if state.pilot_api_keys.is_empty() {
+        return Ok(());
+    }
+    let Some(token) = extract_bearer(headers) else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    if state.pilot_api_keys.iter().any(|k| k == &token) {
+        Ok(())
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
+async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Warm-plane inventory — expand as workers land.
+    let (bal, wdr) = {
+        let led = state.ledger.lock().await;
+        led.balance(&state.pilot_account)
+    };
+    Json(json!({
+        "ready": true,
+        "pilot_account_balance_micro_usd": bal,
+        "pilot_account_withdrawable_micro_usd": wdr,
+        "fleet_actor": "up",
+        "note": "full quiescence counters land with RequestTask tracking"
+    }))
 }
 
 async fn health() -> Json<Value> {
@@ -95,8 +134,18 @@ struct ChatRequest {
 
 async fn chat_completions(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<ChatRequest>,
 ) -> impl IntoResponse {
+    if let Err(status) = authorize_pilot(&state, &headers) {
+        return (
+            status,
+            Json(json!({
+                "error": { "message": "invalid pilot api key", "type": "invalid_request_error", "code": "invalid_api_key" }
+            })),
+        )
+            .into_response();
+    }
     // Warm-plane stub: admit against fleet; without providers return 429.
     let decision = match state
         .fleet

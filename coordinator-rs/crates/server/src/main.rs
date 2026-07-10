@@ -17,6 +17,14 @@ async fn main() {
         std::env::var("DARKBLOOM_PILOT_ACCOUNT").unwrap_or_else(|_| "pilot-account".into());
     // Seed pilot balance ($100) so mock settle path can charge.
     ledger.credit(&pilot_account, 100_000_000, 0);
+    let pilot_api_keys: Arc<Vec<String>> = Arc::new(
+        std::env::var("DARKBLOOM_PILOT_API_KEYS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+    );
     let state = AppState {
         fleet,
         encryption_kid: std::env::var("DARKBLOOM_ENCRYPTION_KID").unwrap_or_else(|_| "dev".into()),
@@ -28,6 +36,7 @@ async fn main() {
         }],
         ledger: Arc::new(Mutex::new(ledger)),
         pilot_account,
+        pilot_api_keys,
     };
 
     let app = router(state);

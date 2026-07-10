@@ -1030,7 +1030,7 @@ async fn deposit_outbox_blocks_quiescence_until_drained() {
     {
         let mut box_ = outbox.lock().await;
         let entry = box_.try_claim().expect("pending outbox entry");
-        box_.ack_done(entry.id);
+        let _ = box_.ack_done(entry.id);
     }
     assert!(outbox.lock().await.is_empty());
 

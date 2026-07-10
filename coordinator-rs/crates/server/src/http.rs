@@ -606,10 +606,12 @@ async fn admin_recover_undispatched(
 
     let action = {
         let mut led = state.ledger.lock().await;
-        if led.job_funded_start(&req.job_id) {
-            "skipped"
-        } else if led.job_reserved_total(&req.job_id).is_none() {
+        if led.job_disposition(&req.job_id).is_some()
+            || led.job_reserved_total(&req.job_id).is_none()
+        {
             "already_terminal"
+        } else if led.job_funded_start(&req.job_id) {
+            "skipped"
         } else {
             match led.release(
                 crate::ledger::OperationKey(format!("recovery_release:{}", req.job_id)),

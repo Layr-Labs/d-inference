@@ -143,6 +143,7 @@ Date: 2026-07-10
 | 134 | Mock settle fenced on ownership | `complete_authorized_job` settles via `settle_capped_fenced`; epoch mismatch leaves job held and returns ownership_lost |
 | 135 | Outbox-drain epoch fence | Drain binds to start fencing epoch; re-checks under outbox lock; SQL ack/drain gated on holder+epoch so steal/re-acquire cannot drop critical side effects |
 | 136 | Money-fx barrier for quiescence | `AppState.money_fx` serializes deposit/force-settle money+outbox against quiescence snapshots so ready cannot observe settle without the critical side effect |
+| 137 | Chat settle under money_fx | Chat/mock/live settle deferred into a single money_fx section with terminal+outbox; release_job_with_outbox also holds the barrier |
 
 ## Deleted Go mechanisms (do not port)
 

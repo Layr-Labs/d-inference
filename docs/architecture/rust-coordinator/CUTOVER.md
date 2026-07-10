@@ -786,3 +786,10 @@ release+re-acquire with a new epoch aborts with `ownership_lost` and leaves
 remaining entries pending. SQL `ack_done` / `drain_ack_all` docs gate DELETE
 on `coordinator_ownership` holder+epoch.
 
+### Money-fx barrier for quiescence (DECISIONS #136)
+
+`AppState.money_fx` is held across deposit credit+critical outbox and
+force-settle money+terminal+outbox, and across the entire quiescence
+snapshot. Quiescence cannot observe a funded/settled ledger without the
+matching critical side effect still being recorded.
+

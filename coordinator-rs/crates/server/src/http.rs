@@ -420,6 +420,8 @@ async fn release_job_with_outbox(
         return Err(crate::ledger::LedgerError::OwnershipLost);
     }
     let epoch = state.ownership.epoch().0;
+    // Hold money_fx across release + terminal/outbox (DECISIONS #136/#137).
+    let _fx = state.money_fx.lock().await;
     let refunded = {
         let mut led = state.ledger.lock().await;
         let reserved = led.job_reserved_total(job_id).map(|m| m.0).unwrap_or(0);
@@ -3380,7 +3382,8 @@ async fn chat_completions(
                     .unwrap_or("")
                     .to_string();
                 // Pilot pricing: 10 µUSD per completion token until public price tables land.
-                let charged = (completion_tokens as i64) * 10;
+                // Actual charge is applied under money_fx below (DECISIONS #137).
+                let _priced = (completion_tokens as i64) * 10;
                 // Stream: defer settle until after chunk checkpoint (DECISIONS #49).
                 let live_completion = if req.stream {
                     let reserved = {
@@ -3416,34 +3419,8 @@ async fn chat_completions(
                         &permit.provider_id,
                         "started",
                     );
-                    if let Err(err) = ledger.settle_capped_fenced(
-                        state.ownership.epoch().0,
-                        crate::ledger::OperationKey(format!("settle:{}", job_id.as_str())),
-                        job_id.as_str(),
-                        &state.pilot_account,
-                        charged,
-                        charged,
-                        &digest,
-                    ) {
-                        let (status, code) = match &err {
-                            crate::ledger::LedgerError::OwnershipLost => (
-                                StatusCode::SERVICE_UNAVAILABLE,
-                                "ownership_lost",
-                            ),
-                            _ => (StatusCode::CONFLICT, "live_settle_conflict"),
-                        };
-                        return (
-                            status,
-                            Json(json!({
-                                "error": {
-                                    "message": format!("live settle failed: {err}"),
-                                    "type": "server_error",
-                                    "code": code
-                                }
-                            })),
-                        )
-                            .into_response();
-                    }
+                    // Defer settle until money_fx critical section with outbox
+                    // (DECISIONS #137).
                     let reserved = ledger
                         .job_reserved_total(job_id.as_str())
                         .unwrap_or(darkbloom_core::MicroUsd(0));
@@ -3459,7 +3436,7 @@ async fn chat_completions(
                         prompt_tokens,
                         completion_tokens,
                         reserved,
-                        charged: darkbloom_core::MicroUsd(charged.max(0)),
+                        charged: darkbloom_core::MicroUsd(0),
                         terminal_digest: digest,
                         se_signature,
                         mode: "rust-live".into(),
@@ -3483,7 +3460,7 @@ async fn chat_completions(
                     lease: lease.clone(),
                 });
                 let mut ledger = state.ledger.lock().await;
-                // Stream defers settle until after chunk checkpoint (DECISIONS #49).
+                // Always defer settle to money_fx section (DECISIONS #49/#137).
                 complete_authorized_job(
                     &mut ledger,
                     &state.pilot_account,
@@ -3493,7 +3470,7 @@ async fn chat_completions(
                     user_text,
                     "rust-mock",
                     None,
-                    !req.stream,
+                    false,
                     state.ownership.epoch().0,
                 )
             };
@@ -3510,7 +3487,11 @@ async fn chat_completions(
                     });
                     let _ = task.apply(ControlEvent::FinalizeDone);
 
+                    // Hold money_fx across settle + terminal + outbox (DECISIONS #137).
+                    let _fx = state.money_fx.lock().await;
+
                     // Stream: checkpoint accepted tokens, then settle (DECISIONS #49).
+                    // Non-stream: settle deferred content now under the same barrier.
                     let stream_body = if req.stream {
                         let (pipe, _reader) = crate::chunk_pipe::bounded_chunk_pipe(16, 64 * 1024);
                         let mut cp = ChunkCheckpoint::default();
@@ -3596,6 +3577,55 @@ async fn chat_completions(
                             chunk, done
                         ))
                     } else {
+                        // Non-stream settle under money_fx (DECISIONS #137).
+                        let actual = if completion.mode == "rust-mock" {
+                            1_000i64
+                        } else {
+                            (completion.completion_tokens as i64) * 10
+                        };
+                        if let Err(resp) = require_holding(&state) {
+                            return resp;
+                        }
+                        {
+                            let mut ledger = state.ledger.lock().await;
+                            match ledger.settle_capped_fenced(
+                                state.ownership.epoch().0,
+                                crate::ledger::OperationKey(format!(
+                                    "settle:{}",
+                                    completion.job_id
+                                )),
+                                &completion.job_id,
+                                &state.pilot_account,
+                                actual,
+                                actual,
+                                &completion.terminal_digest,
+                            ) {
+                                Ok(_) => {
+                                    completion.charged =
+                                        darkbloom_core::MicroUsd(actual.max(0));
+                                }
+                                Err(err) => {
+                                    let (status, code) = match &err {
+                                        crate::ledger::LedgerError::OwnershipLost => (
+                                            StatusCode::SERVICE_UNAVAILABLE,
+                                            "ownership_lost",
+                                        ),
+                                        _ => (StatusCode::CONFLICT, "chat_settle_conflict"),
+                                    };
+                                    return (
+                                        status,
+                                        Json(json!({
+                                            "error": {
+                                                "message": format!("chat settle failed: {err}"),
+                                                "type": "server_error",
+                                                "code": code
+                                            }
+                                        })),
+                                    )
+                                        .into_response();
+                                }
+                            }
+                        }
                         None
                     };
 
@@ -3635,6 +3665,7 @@ async fn chat_completions(
                             )
                             .expect("critical outbox enqueue must not fail for valid kind");
                     }
+                    drop(_fx);
                     state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
                         name: "inference.settled".into(),
                         tags: vec![

@@ -166,6 +166,31 @@ async fn terminal_ingest_known_and_late() {
 }
 
 #[tokio::test]
+async fn admin_deposit_rejects_missing_auth_when_keys_configured() {
+    let mut state = test_state(true);
+    state.pilot_api_keys = Arc::new(vec!["good-key".into()]);
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/deposits")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "event_id": "evt_no_auth",
+                        "amount_micro_usd": 10_000
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn admin_deposit_accepts_valid_pilot_key() {
     let mut state = test_state(true);
     state.pilot_api_keys = Arc::new(vec!["good-key".into()]);

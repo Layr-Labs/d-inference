@@ -724,6 +724,11 @@ impl MemoryLedger {
         self.jobs.get(job_id).map(|j| j.provenance.total)
     }
 
+    /// Account that owns an active (or disposed) job — used by batch clear paths.
+    pub fn job_account_id(&self, job_id: &str) -> Option<String> {
+        self.jobs.get(job_id).map(|j| j.account_id.clone())
+    }
+
     pub fn attempt(&self, attempt_id: &str) -> Option<&AttemptRecord> {
         self.attempts.get(attempt_id)
     }

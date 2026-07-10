@@ -465,3 +465,9 @@ re-run clear-orphans → outbox-drain. Jobs already adopted keep fencing until
 the new owner rebinds via adopt inside clear-orphans. `drain_ack_all_sql`
 documents the durable outbox drain CTE.
 
+### Per-job account on clear/batch (DECISIONS #88)
+
+clear-orphans and batch recover/force-settle refund/charge the job's own
+`account_id` (not a single caller account). Optional request `account` filters
+to that owner only — prevents silent no-ops when pilot account ≠ job owner.
+

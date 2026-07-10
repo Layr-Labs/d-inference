@@ -734,9 +734,7 @@ async fn admin_force_settle_batch(
         )
             .into_response();
     }
-    let account = req
-        .account
-        .unwrap_or_else(|| state.pilot_account.clone());
+    let account_filter = req.account.clone();
 
     let ids = {
         let led = state.ledger.lock().await;
@@ -761,13 +759,23 @@ async fn admin_force_settle_batch(
         let digest = format!("force-settle-batch:{job_id}");
         let (action, charged) = {
             let mut led = state.ledger.lock().await;
+            let Some(job_acct) = led.job_account_id(&job_id) else {
+                failed.push(json!({ "job_id": job_id, "error": "unknown_job" }));
+                continue;
+            };
+            if let Some(ref filter) = account_filter {
+                if job_acct != *filter {
+                    skipped.push(json!({ "job_id": job_id, "action": "account_mismatch" }));
+                    continue;
+                }
+            }
             let reserved = led.job_reserved_total(&job_id).map(|m| m.0).unwrap_or(0);
             let charge = req.actual_micro_usd.min(reserved).max(0);
             match force_settle_held_on(
                 &mut led,
                 epoch,
                 &job_id,
-                &account,
+                &job_acct,
                 req.actual_micro_usd,
                 &digest,
             ) {
@@ -821,10 +829,13 @@ async fn admin_force_settle_batch(
         }
     }
 
+    let report_account = account_filter
+        .clone()
+        .unwrap_or_else(|| state.pilot_account.clone());
     let (bal, held, active) = {
         let led = state.ledger.lock().await;
         (
-            led.balance(&account).0,
+            led.balance(&report_account).0,
             led.held_start_authorized_count(),
             led.active_job_count(),
         )
@@ -833,7 +844,7 @@ async fn admin_force_settle_batch(
         StatusCode::OK,
         Json(json!({
             "action": "force_settled_batch",
-            "account": account,
+            "account": report_account,
             "settled": settled,
             "skipped": skipped,
             "failed": failed,
@@ -963,9 +974,7 @@ async fn admin_recover_undispatched_batch(
     if let Err(resp) = require_holding(&state) {
         return resp;
     }
-    let account = req
-        .account
-        .unwrap_or_else(|| state.pilot_account.clone());
+    let account_filter = req.account.clone();
 
     let mut released = Vec::new();
     let mut skipped = Vec::new();
@@ -989,9 +998,19 @@ async fn admin_recover_undispatched_batch(
         let epoch = state.ownership.epoch().0;
         let (action, refunded) = {
             let mut led = state.ledger.lock().await;
+            let Some(job_acct) = led.job_account_id(&job_id) else {
+                failed.push(json!({ "job_id": job_id, "error": "unknown_job" }));
+                continue;
+            };
+            if let Some(ref filter) = account_filter {
+                if job_acct != *filter {
+                    skipped.push(json!({ "job_id": job_id, "action": "account_mismatch" }));
+                    continue;
+                }
+            }
             let reserved = led.job_reserved_total(&job_id).map(|m| m.0).unwrap_or(0);
-            match recover_undispatched_on(&mut led, epoch, &job_id, &account) {
-                Ok(RecoveryAction::Released) => ("released", Some(reserved)),
+            match recover_undispatched_on(&mut led, epoch, &job_id, &job_acct) {
+                Ok(RecoveryAction::Released) => ("released", Some((reserved, job_acct))),
                 Ok(RecoveryAction::AlreadyTerminal) => ("already_terminal", None),
                 Ok(RecoveryAction::Skipped) | Ok(RecoveryAction::HeldForReview) => {
                     ("skipped", None)
@@ -1007,13 +1026,13 @@ async fn admin_recover_undispatched_batch(
         };
         match action {
             "released" => {
-                if let Some(amount) = refunded {
+                if let Some((amount, job_acct)) = refunded {
                     {
                         let mut terms = state.terminals.lock().await;
                         crate::terminal_ingest::record_released_disposition(&mut terms, &job_id);
                     }
                     let mut box_ = state.outbox.lock().await;
-                    let _ = box_.enqueue_released(&job_id, &account, amount);
+                    let _ = box_.enqueue_released(&job_id, &job_acct, amount);
                     refund_total += amount;
                 }
                 released.push(job_id);
@@ -1024,15 +1043,18 @@ async fn admin_recover_undispatched_batch(
         }
     }
 
+    let report_account = account_filter
+        .clone()
+        .unwrap_or_else(|| state.pilot_account.clone());
     let (bal, active) = {
         let led = state.ledger.lock().await;
-        (led.balance(&account).0, led.active_job_count())
+        (led.balance(&report_account).0, led.active_job_count())
     };
     (
         StatusCode::OK,
         Json(json!({
             "action": "recovered_batch",
-            "account": account,
+            "account": report_account,
             "released": released,
             "skipped": skipped,
             "failed": failed,
@@ -1245,9 +1267,7 @@ async fn admin_clear_orphans(
         )
             .into_response();
     }
-    let account = req
-        .account
-        .unwrap_or_else(|| state.pilot_account.clone());
+    let account_filter = req.account.clone();
     let epoch = state.ownership.epoch().0;
 
     // 1) Adopt all active jobs to current epoch.
@@ -1259,6 +1279,11 @@ async fn admin_clear_orphans(
         };
         let mut led = state.ledger.lock().await;
         for job_id in ids {
+            if let Some(ref filter) = account_filter {
+                if led.job_account_id(&job_id).as_deref() != Some(filter.as_str()) {
+                    continue;
+                }
+            }
             if led.adopt_fencing_epoch(&job_id, epoch).is_ok() {
                 adopted.push(job_id);
             }
@@ -1279,7 +1304,7 @@ async fn admin_clear_orphans(
         );
     }
 
-    // 2) Recover reserved-not-started.
+    // 2) Recover reserved-not-started (per-job account — DECISIONS #88).
     let mut released = Vec::new();
     let mut refund_total = 0_i64;
     {
@@ -1302,19 +1327,27 @@ async fn admin_clear_orphans(
             let epoch = state.ownership.epoch().0;
             let refunded = {
                 let mut led = state.ledger.lock().await;
+                let Some(job_acct) = led.job_account_id(&job_id) else {
+                    continue;
+                };
+                if let Some(ref filter) = account_filter {
+                    if job_acct != *filter {
+                        continue;
+                    }
+                }
                 let reserved = led.job_reserved_total(&job_id).map(|m| m.0).unwrap_or(0);
-                match recover_undispatched_on(&mut led, epoch, &job_id, &account) {
-                    Ok(RecoveryAction::Released) => Some(reserved),
+                match recover_undispatched_on(&mut led, epoch, &job_id, &job_acct) {
+                    Ok(RecoveryAction::Released) => Some((reserved, job_acct)),
                     _ => None,
                 }
             };
-            if let Some(amount) = refunded {
+            if let Some((amount, job_acct)) = refunded {
                 {
                     let mut terms = state.terminals.lock().await;
                     crate::terminal_ingest::record_released_disposition(&mut terms, &job_id);
                 }
                 let mut box_ = state.outbox.lock().await;
-                let _ = box_.enqueue_released(&job_id, &account, amount);
+                let _ = box_.enqueue_released(&job_id, &job_acct, amount);
                 refund_total += amount;
                 released.push(job_id);
             }
@@ -1334,7 +1367,7 @@ async fn admin_clear_orphans(
         );
     }
 
-    // 3) Force-settle remaining holds.
+    // 3) Force-settle remaining holds (per-job account — DECISIONS #88).
     let mut settled = Vec::new();
     let mut charged_total = 0_i64;
     {
@@ -1358,13 +1391,21 @@ async fn admin_clear_orphans(
             let digest = format!("clear-orphans:{job_id}");
             let charged = {
                 let mut led = state.ledger.lock().await;
+                let Some(job_acct) = led.job_account_id(&job_id) else {
+                    continue;
+                };
+                if let Some(ref filter) = account_filter {
+                    if job_acct != *filter {
+                        continue;
+                    }
+                }
                 let reserved = led.job_reserved_total(&job_id).map(|m| m.0).unwrap_or(0);
                 let charge = req.actual_micro_usd.min(reserved).max(0);
                 match force_settle_held_on(
                     &mut led,
                     epoch,
                     &job_id,
-                    &account,
+                    &job_acct,
                     req.actual_micro_usd,
                     &digest,
                 ) {
@@ -1404,10 +1445,13 @@ async fn admin_clear_orphans(
         }
     }
 
+    let report_account = account_filter
+        .clone()
+        .unwrap_or_else(|| state.pilot_account.clone());
     let (bal, active, held) = {
         let led = state.ledger.lock().await;
         (
-            led.balance(&account).0,
+            led.balance(&report_account).0,
             led.active_job_count(),
             led.held_start_authorized_count(),
         )
@@ -1416,7 +1460,8 @@ async fn admin_clear_orphans(
         StatusCode::OK,
         Json(json!({
             "action": "cleared_orphans",
-            "account": account,
+            "account": report_account,
+            "account_filter": account_filter,
             "adopted_count": adopted.len(),
             "adopted": adopted,
             "released_count": released.len(),

@@ -70,6 +70,82 @@ impl PostgresLedgerStub {
         "#
     }
 
+    /// Resize reservation + mark start_authorized in one round-trip (plan §12).
+    /// Parameters: $1 account, $2 job_id, $3 new_amount, $4 operation_key
+    pub fn resize_and_authorize_sql() -> &'static str {
+        r#"
+        WITH job AS (
+          SELECT job_id, reserved_total_micro_usd AS reserved,
+                 reserved_withdrawable_micro_usd AS reserved_wdr,
+                 terminal_disposition, state, account_id
+          FROM rust_coord.inference_jobs
+          WHERE job_id = $2
+          FOR UPDATE
+        ), guard AS (
+          SELECT 1 FROM job
+          WHERE terminal_disposition IS NULL
+            AND state = 'reserved'
+            AND account_id = $1
+            AND $3::bigint > 0
+        ), bal AS (
+          SELECT balance_micro_usd AS bal, withdrawable_micro_usd AS wdr
+          FROM balances WHERE account_id = $1 FOR UPDATE
+        ), calc AS (
+          SELECT
+            j.reserved AS old_total,
+            j.reserved_wdr AS old_wdr,
+            $3::bigint - j.reserved AS delta,
+            GREATEST(0, $3::bigint - j.reserved) AS need,
+            GREATEST(0, j.reserved - $3::bigint) AS refund
+          FROM job j
+          WHERE EXISTS (SELECT 1 FROM guard)
+        ), funds AS (
+          SELECT
+            c.*,
+            CASE WHEN c.delta > 0 THEN
+              LEAST(b.wdr, GREATEST(0, c.need - GREATEST(0, b.bal - b.wdr)))
+            ELSE 0 END AS add_wdr,
+            CASE WHEN c.delta < 0 THEN
+              c.refund - LEAST(c.refund, GREATEST(0, c.old_total - c.old_wdr))
+            ELSE 0 END AS refund_wdr
+          FROM calc c CROSS JOIN bal b
+          WHERE c.delta <= 0 OR b.bal >= c.need
+        ), debit AS (
+          UPDATE balances b
+          SET balance_micro_usd = CASE
+                WHEN f.delta > 0 THEN b.balance_micro_usd - f.delta
+                WHEN f.delta < 0 THEN b.balance_micro_usd + f.refund
+                ELSE b.balance_micro_usd END,
+              withdrawable_micro_usd = CASE
+                WHEN f.delta > 0 THEN b.withdrawable_micro_usd - f.add_wdr
+                WHEN f.delta < 0 THEN b.withdrawable_micro_usd + f.refund_wdr
+                ELSE b.withdrawable_micro_usd END,
+              updated_at = NOW()
+          FROM funds f
+          WHERE b.account_id = $1
+          RETURNING f.old_wdr, f.add_wdr, f.refund_wdr, f.delta
+        ), mark AS (
+          UPDATE rust_coord.inference_jobs j
+          SET reserved_total_micro_usd = $3,
+              reserved_withdrawable_micro_usd = CASE
+                WHEN d.delta > 0 THEN d.old_wdr + d.add_wdr
+                WHEN d.delta < 0 THEN d.old_wdr - d.refund_wdr
+                ELSE d.old_wdr END,
+              state = 'start_authorized',
+              updated_at = NOW()
+          FROM debit d
+          WHERE j.job_id = $2
+          RETURNING j.job_id, j.reserved_total_micro_usd, j.reserved_withdrawable_micro_usd
+        ), op AS (
+          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
+          VALUES ($4, $2, 'resize_authorize', $3)
+          ON CONFLICT (operation_key) DO NOTHING
+          RETURNING operation_key
+        )
+        SELECT reserved_total_micro_usd, reserved_withdrawable_micro_usd FROM mark
+        "#
+    }
+
     /// The SQL that will back settle once SQLx is wired (mirrors MemoryLedger.settle).
     /// Parameters: $1 account, $2 job_id, $3 actual, $4 terminal_digest, $5 operation_key, $6 epoch
     pub fn settle_sql() -> &'static str {
@@ -201,6 +277,16 @@ mod tests {
         assert!(sql.contains("terminal_disposition"));
         assert!(sql.contains("refund_wdr"));
         assert!(sql.contains("'settle'"));
+    }
+
+    #[test]
+    fn resize_and_authorize_sql_marks_start_authorized() {
+        let sql = PostgresLedgerStub::resize_and_authorize_sql();
+        assert!(sql.contains("rust_coord.inference_jobs"));
+        assert!(sql.contains("start_authorized"));
+        assert!(sql.contains("resize_authorize"));
+        assert!(sql.contains("FOR UPDATE"));
+        assert!(sql.contains("financial_operations"));
     }
 
     #[test]

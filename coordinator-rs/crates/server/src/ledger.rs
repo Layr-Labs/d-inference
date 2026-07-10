@@ -9,13 +9,13 @@ use thiserror::Error;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OperationKey(pub String);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReservationProvenance {
     pub total: MicroUsd,
     pub withdrawable: MicroUsd,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReserveResult {
     pub job_id: String,
     pub provenance: ReservationProvenance,
@@ -156,6 +156,98 @@ impl MemoryLedger {
         job.funded_start = true;
         job.state = "start_authorized".into();
         Ok(())
+    }
+
+    /// Atomically resize the reservation to `new_amount` and mark start_authorized.
+    /// Mirrors the one-round-trip Postgres CTE (plan §12 / M4 ledger service).
+    /// Idempotent on `op`; conflicts if already authorized or disposed.
+    pub fn resize_and_authorize(
+        &mut self,
+        op: OperationKey,
+        job_id: &str,
+        account: &str,
+        new_amount: i64,
+    ) -> Result<ReserveResult, LedgerError> {
+        if new_amount <= 0 {
+            return Err(LedgerError::InvalidAmount);
+        }
+        if !self.ops.insert(op.0.clone()) {
+            let provenance = self
+                .jobs
+                .get(job_id)
+                .map(|j| j.provenance.clone())
+                .unwrap_or(ReservationProvenance {
+                    total: MicroUsd(new_amount),
+                    withdrawable: MicroUsd(0),
+                });
+            return Ok(ReserveResult {
+                job_id: job_id.to_string(),
+                provenance,
+                applied: false,
+            });
+        }
+        let job = match self.jobs.get(job_id) {
+            Some(j) => j,
+            None => {
+                self.ops.remove(&op.0);
+                return Err(LedgerError::Conflict("unknown job".into()));
+            }
+        };
+        if job.disposition.is_some() {
+            self.ops.remove(&op.0);
+            return Err(LedgerError::Conflict(format!(
+                "job {job_id} already disposed"
+            )));
+        }
+        if job.funded_start {
+            self.ops.remove(&op.0);
+            return Err(LedgerError::Conflict("already start_authorized".into()));
+        }
+        if job.account_id != account {
+            self.ops.remove(&op.0);
+            return Err(LedgerError::Conflict("account mismatch".into()));
+        }
+        let old_total = job.provenance.total.0;
+        let old_wdr = job.provenance.withdrawable.0;
+        let delta = new_amount - old_total;
+
+        let (bal, wdr) = self.balances.entry(account.to_string()).or_insert((0, 0));
+        let (new_total, new_wdr) = if delta > 0 {
+            if *bal < delta {
+                self.ops.remove(&op.0);
+                return Err(LedgerError::InsufficientBalance);
+            }
+            let non_wdr = (*bal - *wdr).max(0);
+            let add_wdr = (delta - non_wdr).max(0).min(*wdr);
+            *bal -= delta;
+            *wdr -= add_wdr;
+            (new_amount, old_wdr + add_wdr)
+        } else if delta < 0 {
+            let refund = -delta;
+            // Prefer refunding non-withdrawable first (mirror settle provenance).
+            let non_wdr_reserved = old_total - old_wdr;
+            let refund_non_wdr = refund.min(non_wdr_reserved);
+            let refund_wdr = refund - refund_non_wdr;
+            *bal += refund;
+            *wdr += refund_wdr;
+            (new_amount, old_wdr - refund_wdr)
+        } else {
+            (old_total, old_wdr)
+        };
+
+        let provenance = ReservationProvenance {
+            total: MicroUsd(new_total),
+            withdrawable: MicroUsd(new_wdr),
+        };
+        let job = self.jobs.get_mut(job_id).expect("job checked above");
+        job.provenance = provenance.clone();
+        job.funded_start = true;
+        job.state = "start_authorized".into();
+        Ok(ReserveResult {
+            job_id: job_id.to_string(),
+            provenance,
+            applied: true,
+        })
     }
 
     pub fn record_attempt(
@@ -1111,5 +1203,91 @@ mod tests {
             .unwrap());
         // reserved 1M, charged 500k → refund 500k → bal = 5M-1M+500k = 4.5M
         assert_eq!(led.balance("a").0, 4_500_000);
+    }
+
+    #[test]
+    fn resize_and_authorize_up_debits_and_funds_start() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 10_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        let res = led
+            .resize_and_authorize(OperationKey("ra".into()), "j", "a", 2_500_000)
+            .unwrap();
+        assert!(res.applied);
+        assert_eq!(res.provenance.total.0, 2_500_000);
+        assert!(led.job_funded_start("j"));
+        assert_eq!(led.held_start_authorized_count(), 1);
+        // 10M - 1M - 1.5M = 7.5M
+        assert_eq!(led.balance("a").0, 7_500_000);
+        // Second call with same op is idempotent.
+        let again = led
+            .resize_and_authorize(OperationKey("ra".into()), "j", "a", 2_500_000)
+            .unwrap();
+        assert!(!again.applied);
+        assert_eq!(led.balance("a").0, 7_500_000);
+    }
+
+    #[test]
+    fn resize_and_authorize_down_refunds_unused() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 10_000_000, 4_000_000).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 5_000_000)
+            .unwrap();
+        // After reserve: bal=5M, wdr consumed from non-wdr first.
+        let res = led
+            .resize_and_authorize(OperationKey("ra".into()), "j", "a", 2_000_000)
+            .unwrap();
+        assert!(res.applied);
+        assert_eq!(res.provenance.total.0, 2_000_000);
+        assert!(led.job_funded_start("j"));
+        // 10M - 5M + 3M refund = 8M
+        assert_eq!(led.balance("a").0, 8_000_000);
+    }
+
+    #[test]
+    fn resize_and_authorize_rejects_already_authorized() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        assert!(matches!(
+            led.resize_and_authorize(OperationKey("ra".into()), "j", "a", 2_000_000),
+            Err(LedgerError::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn resize_and_authorize_insufficient_balance_on_upsize() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 1_500_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        // Remaining bal = 500k; need +1M more → insufficient.
+        assert_eq!(
+            led.resize_and_authorize(OperationKey("ra".into()), "j", "a", 2_000_000),
+            Err(LedgerError::InsufficientBalance)
+        );
+        assert!(!led.job_funded_start("j"));
+        assert_eq!(led.balance("a").0, 500_000);
+        // Failed op key must not poison a later successful resize.
+        let res = led
+            .resize_and_authorize(OperationKey("ra".into()), "j", "a", 1_200_000)
+            .unwrap();
+        assert!(res.applied);
+        assert_eq!(led.balance("a").0, 300_000);
+    }
+
+    #[test]
+    fn resize_and_authorize_zero_amount_invalid() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        assert_eq!(
+            led.resize_and_authorize(OperationKey("ra".into()), "j", "a", 0),
+            Err(LedgerError::InvalidAmount)
+        );
     }
 }

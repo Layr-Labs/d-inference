@@ -521,6 +521,9 @@ func TestConnectWebhookTransferReversedOnPaidRowNeedsHuman(t *testing.T) {
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rev_p")); w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
 	}
+	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rev_p")); w.Code != http.StatusOK {
+		t.Fatalf("redelivery got %d: %s", w.Code, w.Body.String())
+	}
 	wd, _ := st.GetStripeWithdrawal("wd-rev-paid")
 	if wd.Status != "review_pending" || wd.Refunded {
 		t.Errorf("row = status %q refunded=%v, want review_pending/false", wd.Status, wd.Refunded)

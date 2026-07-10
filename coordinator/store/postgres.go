@@ -4221,16 +4221,18 @@ func (s *PostgresStore) RefundStripeWithdrawalOnReversal(id string) (bool, bool,
 		}
 		return false, false, fmt.Errorf("store: lock reversed withdrawal: %w", err)
 	}
-	if withdrawal.Status == "paid" {
-		if _, err := tx.Exec(ctx,
-			`UPDATE stripe_withdrawals
-			 SET status = 'review_pending',
-			     failure_reason = 'transfer_reversed_after_paid',
-			     updated_at = NOW()
-			 WHERE id = $1`,
-			id,
-		); err != nil {
-			return false, false, fmt.Errorf("store: persist paid reversal review: %w", err)
+	if withdrawal.Status == "paid" || withdrawal.Status == "review_pending" {
+		if withdrawal.Status == "paid" {
+			if _, err := tx.Exec(ctx,
+				`UPDATE stripe_withdrawals
+				 SET status = 'review_pending',
+				     failure_reason = 'transfer_reversed_after_paid',
+				     updated_at = NOW()
+				 WHERE id = $1`,
+				id,
+			); err != nil {
+				return false, false, fmt.Errorf("store: persist paid reversal review: %w", err)
+			}
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return false, false, fmt.Errorf("store: commit paid reversal review: %w", err)

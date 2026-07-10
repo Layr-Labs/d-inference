@@ -68,6 +68,16 @@ func TestPayoutPaidAndTransferReversalSerializeWithoutDoublePayment(t *testing.T
 				default:
 					t.Fatalf("unexpected terminal race status %q", withdrawal.Status)
 				}
+				if withdrawal.Status == "review_pending" {
+					refunded, manualReview, err := backend.RefundStripeWithdrawalOnReversal(withdrawalID)
+					if err != nil || refunded || !manualReview {
+						t.Fatalf("review redelivery = refunded:%t manual:%t err:%v",
+							refunded, manualReview, err)
+					}
+					if balance := backend.GetBalance(accountID); balance != 0 {
+						t.Fatalf("review redelivery credited balance %d", balance)
+					}
+				}
 			}
 		})
 	}

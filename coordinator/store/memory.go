@@ -2575,10 +2575,12 @@ func (s *MemoryStore) RefundStripeWithdrawalOnReversal(id string) (bool, bool, e
 	if !ok {
 		return false, false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
 	}
-	if w.Status == "paid" {
-		w.Status = "review_pending"
-		w.FailureReason = "transfer_reversed_after_paid"
-		w.UpdatedAt = time.Now()
+	if w.Status == "paid" || w.Status == "review_pending" {
+		if w.Status == "paid" {
+			w.Status = "review_pending"
+			w.FailureReason = "transfer_reversed_after_paid"
+			w.UpdatedAt = time.Now()
+		}
 		return false, true, nil
 	}
 	if w.Refunded {

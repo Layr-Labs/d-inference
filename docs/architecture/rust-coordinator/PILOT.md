@@ -50,5 +50,8 @@ PORT=8080 DARKBLOOM_PILOT_API_KEYS=sk-pilot \
 Apply schema before paid path:
 
 ```bash
+make migrate
+# or:
 psql "$DATABASE_URL" -f migrations/0001_rust_coord.sql
+psql "$DATABASE_URL" -f migrations/0002_late_terminals.sql
 ```

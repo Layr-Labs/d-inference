@@ -267,9 +267,9 @@ impl MemoryLedger {
         );
     }
 
-    /// Settle: charge `actual`, refund unused provenance, mark terminal.
-    /// Enforces at most one funded start / one settle per job via op key.
-    /// Settle charging min(actual, billable_cap) when a chunk checkpoint caps tokens.
+    /// Settle charging min(actual, billable_cap, reserved) when a chunk checkpoint caps tokens.
+    /// Clamping to reservation prevents fail-closed holds when the pipe reports more tokens
+    /// than the provisional reservation covered (stream billing kill-boundary).
     pub fn settle_capped(
         &mut self,
         op: OperationKey,
@@ -279,7 +279,12 @@ impl MemoryLedger {
         billable_cap: i64,
         terminal_digest: &str,
     ) -> Result<bool, LedgerError> {
-        let charge = actual.min(billable_cap).max(0);
+        let reserved = self
+            .jobs
+            .get(job_id)
+            .map(|j| j.provenance.total.0)
+            .unwrap_or(0);
+        let charge = actual.min(billable_cap).min(reserved).max(0);
         self.settle(op, job_id, account, charge, terminal_digest)
     }
 
@@ -1188,9 +1193,7 @@ mod tests {
         led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
             .unwrap();
         led.mark_start_authorized("j").unwrap();
-        // Cap clamps charge, but settle still validates actual against reservation
-        // before capping in settle_capped — charge = min(actual, cap).
-        // With actual=2M and cap=500k → charge=500k which is within reservation.
+        // charge = min(actual, cap, reserved) = min(2M, 500k, 1M) = 500k
         assert!(led
             .settle_capped(
                 OperationKey("s".into()),
@@ -1203,6 +1206,29 @@ mod tests {
             .unwrap());
         // reserved 1M, charged 500k → refund 500k → bal = 5M-1M+500k = 4.5M
         assert_eq!(led.balance("a").0, 4_500_000);
+    }
+
+    #[test]
+    fn settle_capped_clamps_to_reservation_when_cap_exceeds() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        // Stream checkpoint / provider both claim above reservation — charge reserved.
+        assert!(led
+            .settle_capped(
+                OperationKey("s".into()),
+                "j",
+                "a",
+                9_000_000,
+                8_000_000,
+                "d-res-clamp"
+            )
+            .unwrap());
+        // reserved 1M, charged 1M → refund 0 → bal = 5M-1M = 4M
+        assert_eq!(led.balance("a").0, 4_000_000);
+        assert_eq!(led.active_job_count(), 0);
     }
 
     #[test]

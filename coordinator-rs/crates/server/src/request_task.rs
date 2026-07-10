@@ -119,11 +119,21 @@ impl RequestTask {
                 if matches!(mapped, RequestEvent::StartAuthorized { .. }) {
                     self.funded_start = true;
                 }
+                let was_prepare =
+                    matches!(mapped, RequestEvent::PrepareExpired);
                 self.state = self
                     .state
                     .clone()
                     .transition(mapped)
                     .map_err(|_| RequestTaskError::InvalidTransition)?;
+                if was_prepare && matches!(self.state, RequestState::Admitting) {
+                    // At most one sequential alternate after prepare expiry (plan §11.7).
+                    if self.sequential_alternate_used {
+                        self.state = RequestState::Finalizing;
+                    } else {
+                        self.sequential_alternate_used = true;
+                    }
+                }
             }
         }
         Ok(())
@@ -276,6 +286,29 @@ mod tests {
         task.apply(ControlEvent::PrepareExpired).unwrap();
         assert_eq!(task.state, RequestState::Admitting);
         assert!(!task.funded_start);
+        assert!(task.sequential_alternate_used);
+
+        // Second prepare expiry after one alternate → finalize (no infinite ladder).
+        let attempt2 = AttemptId::new("a2");
+        let lease2 = LeaseId::new("l2");
+        let permit2 = DispatchPermit {
+            attempt: attempt2.clone(),
+            provider_id: "p2".into(),
+            model: "m".into(),
+            expires_after: Duration::from_secs(2),
+        };
+        task.apply(ControlEvent::Admitted {
+            attempt: attempt2.clone(),
+            permit: permit2,
+        })
+        .unwrap();
+        task.apply(ControlEvent::Prepared {
+            attempt: attempt2,
+            lease: lease2,
+        })
+        .unwrap();
+        task.apply(ControlEvent::PrepareExpired).unwrap();
+        assert_eq!(task.state, RequestState::Finalizing);
     }
 }
 

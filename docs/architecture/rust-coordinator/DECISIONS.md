@@ -88,6 +88,7 @@ Date: 2026-07-10
 | 79 | clear-orphans one-shot | `POST /v1/admin/clear-orphans` runs adopt → recover reserved → force-settle held in one admin call for cutover drain |
 | 80 | CLI demo-clear-orphans | `--demo-clear-orphans` proves adopt→recover→force-settle on mixed reserved+held orphans restores balance |
 | 81 | orphan_summary + clear-orphans race | Quiescence `orphan_summary` counts needs_adopt/reserved/held. Concurrent clear-orphans conserves money; outbox must be acked for ready |
+| 82 | Admin outbox-drain | `POST /v1/admin/outbox-drain` claim+acks all outbox entries so quiescence can become ready after clear-orphans |
 
 ## Deleted Go mechanisms (do not port)
 

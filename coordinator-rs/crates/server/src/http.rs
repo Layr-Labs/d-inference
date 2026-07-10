@@ -94,6 +94,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/adopt-job", post(admin_adopt_job))
         .route("/v1/admin/adopt-jobs", post(admin_adopt_jobs))
         .route("/v1/admin/clear-orphans", post(admin_clear_orphans))
+        .route("/v1/admin/outbox-drain", post(admin_outbox_drain))
         .route("/v1/admin/cancel-attempt", post(admin_cancel_attempt))
         .fallback(unsupported)
         .with_state(Arc::new(state))
@@ -1333,6 +1334,43 @@ async fn admin_clear_orphans(
             "balance_micro_usd": bal,
             "active_jobs": active,
             "held_start_authorized": held,
+        })),
+    )
+        .into_response()
+}
+
+/// Pilot cutover: claim+ack all outbox entries so quiescence can become ready
+/// (DECISIONS #82). Requires ownership + pilot key. Does not move money.
+async fn admin_outbox_drain(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
+    }
+    if let Err(resp) = require_holding(&state) {
+        return resp;
+    }
+    let (acked, kinds) = {
+        let mut box_ = state.outbox.lock().await;
+        box_.drain_ack_all()
+    };
+    let (pending, retryable, active) = {
+        let box_ = state.outbox.lock().await;
+        let led = state.ledger.lock().await;
+        (box_.len(), box_.pending_under_retry_cap(), led.active_job_count())
+    };
+    let ready = active == 0 && retryable == 0;
+    (
+        StatusCode::OK,
+        Json(json!({
+            "action": "outbox_drained",
+            "acked_count": acked,
+            "kinds": kinds,
+            "outbox_pending": pending,
+            "outbox_retryable": retryable,
+            "active_jobs": active,
+            "ready": ready,
         })),
     )
         .into_response()

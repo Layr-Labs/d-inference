@@ -167,6 +167,25 @@ impl Outbox {
     pub fn in_flight_len(&self) -> usize {
         self.in_flight.len()
     }
+
+    /// Pilot/cutover: claim all pending and ack everything in-flight (DECISIONS #82).
+    /// Returns (acked_count, kinds). Does not requeue.
+    pub fn drain_ack_all(&mut self) -> (usize, Vec<String>) {
+        let mut kinds = Vec::new();
+        while let Some(e) = self.try_claim() {
+            kinds.push(e.kind.clone());
+            let _ = self.ack_done(e.id);
+        }
+        // Also ack any pre-existing in-flight (e.g. critical left by worker).
+        let inflight_ids: Vec<u64> = self.in_flight.keys().copied().collect();
+        for id in inflight_ids {
+            if let Some(e) = self.in_flight.get(&id) {
+                kinds.push(e.kind.clone());
+            }
+            let _ = self.ack_done(id);
+        }
+        (kinds.len(), kinds)
+    }
 }
 
 /// Documented SQL for durable enqueue.

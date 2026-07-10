@@ -17,6 +17,7 @@ The Rust pilot **never proxies** to Go. Excluded production surfaces return
 | `POST /v1/admin/force-settle` | Supported (ops clear start_authorized hold) |
 | `POST /v1/admin/force-settle-batch` | Supported (bulk force-settle held jobs) |
 | `POST /v1/admin/clear-orphans` | Supported (one-shot adopt → recover → force-settle) |
+| `POST /v1/admin/outbox-drain` | Supported (claim+ack all outbox for cutover ready) |
 | `POST /v1/admin/recover-undispatched` | Supported (release reserved-not-started) |
 | `POST /v1/admin/recover-undispatched-batch` | Supported (bulk release reserved-not-started) |
 | `POST /v1/admin/held-review` | Supported (classify held jobs; no money move) |

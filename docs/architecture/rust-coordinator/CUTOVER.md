@@ -429,3 +429,9 @@ Quiescence includes `orphan_summary` (`needs_adopt_count`,
 clear, critical outbox still blocks `ready` until acked — drain outbox before
 cutover.
 
+### Admin outbox-drain (DECISIONS #82)
+
+`POST /v1/admin/outbox-drain` claim+acks all pending/in-flight outbox entries
+(pilot cutover). Cutover sequence: clear-orphans → outbox-drain → quiescence
+`ready=true`.
+

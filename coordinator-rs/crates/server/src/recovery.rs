@@ -381,7 +381,8 @@ mod tests {
             Err(LedgerError::Conflict(_))
         ));
         assert_eq!(led.active_job_count(), 1);
-        assert_eq!(led.balance("a").0, 4_900_000); // j1 charged 100k, j2 still reserved
+        // 5M - j1 reserve 100k - j1 charge 100k (no refund) - j2 reserve 100k = 4.8M
+        assert_eq!(led.balance("a").0, 4_800_000);
     }
 
     #[test]

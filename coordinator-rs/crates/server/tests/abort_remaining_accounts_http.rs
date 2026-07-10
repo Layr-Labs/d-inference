@@ -80,7 +80,7 @@ async fn clear_orphans_abort_lists_remaining_accounts() {
         action == json!("clear_orphans_aborted") || code == json!("ownership_lost"),
         "expected abort, got action={action} code={code} body={v}"
     );
-    let mut accounts = if action == json!("clear_orphans_aborted") {
+    let accounts = if action == json!("clear_orphans_aborted") {
         assert_eq!(v["phase"], "after_adopt");
         assert_eq!(v["needs_adopt_count"], 0); // adopted before abort
         assert_eq!(v["active_jobs"], 3);

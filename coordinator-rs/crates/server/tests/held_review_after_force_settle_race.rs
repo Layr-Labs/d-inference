@@ -37,5 +37,6 @@ fn concurrent_held_review_after_force_settle_all_already_terminal() {
     assert_eq!(g.active_job_count(), 0);
     assert_eq!(g.held_start_authorized_count(), 0);
     assert_eq!(g.job_disposition("j"), Some("force_settled"));
-    assert_eq!(g.balance("a").0, 4_850_000);
+    // 5M − 50k charged (200k reserved, 150k refunded) = 4.95M
+    assert_eq!(g.balance("a").0, 4_950_000);
 }

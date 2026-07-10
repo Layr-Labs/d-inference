@@ -2798,6 +2798,20 @@ func (s *PostgresStore) CreditReservationRelease(accountID string, totalMicroUSD
 	}
 	defer tx.Rollback(ctx)
 
+	// Idempotent on (account_id, reference) when reference is non-empty — matches MemoryStore.
+	if reference != "" {
+		var n int
+		if err := tx.QueryRow(ctx, `
+			SELECT COUNT(*) FROM ledger_entries
+			WHERE account_id = $1 AND reference = $2 AND type = $3`,
+			accountID, reference, entryType).Scan(&n); err != nil {
+			return fmt.Errorf("store: check release idempotency: %w", err)
+		}
+		if n > 0 {
+			return tx.Commit(ctx)
+		}
+	}
+
 	if err := creditTx(ctx, tx, accountID, totalMicroUSD, entryType, reference, time.Time{}); err != nil {
 		return err
 	}

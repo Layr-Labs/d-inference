@@ -28,7 +28,7 @@ pub use http::{router, AppState, ModelCard};
 pub use ledger::{MemoryLedger, OperationKey, ReservationProvenance};
 pub use provider_hub::{InboundReply, OutboundCmd, ProviderHub, SharedHub};
 pub use provider_session::{spawn_session, Lane, ProviderSessionHandle, SessionError};
-pub use recovery::{recover_undispatched, RecoveryAction};
+pub use recovery::{recover_start_authorized_held, recover_undispatched, RecoveryAction};
 pub use request_task::{spawn_request_task, ControlEvent, RequestTaskHandle};
 pub use sealed::decrypt_request_body;
 pub use stream_billing::{accept_pipe_chunk, billable_cap_from_checkpoint, pipe_and_checkpoint};

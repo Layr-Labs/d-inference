@@ -10,6 +10,8 @@ pub enum RecoveryAction {
     Released,
     AlreadyTerminal,
     Skipped,
+    /// start_authorized job left held for human/ops review (DECISIONS #16).
+    HeldForReview,
 }
 
 /// Release reserved jobs that never reached start_authorized.
@@ -35,6 +37,26 @@ pub fn recover_undispatched(
         Ok(false) => Ok(RecoveryAction::AlreadyTerminal),
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// Classify a start_authorized job that never reached a provider terminal.
+/// Does not move money — ops must settle or force-release via explicit review.
+pub fn recover_start_authorized_held(
+    ledger: &Arc<Mutex<MemoryLedger>>,
+    job_id: &str,
+) -> Result<RecoveryAction, String> {
+    let g = ledger.lock().map_err(|e| e.to_string())?;
+    if g.job_reserved_total(job_id).is_none() {
+        return Ok(RecoveryAction::AlreadyTerminal);
+    }
+    if !g.job_funded_start(job_id) {
+        return Ok(RecoveryAction::Skipped);
+    }
+    if g.active_job_count() == 0 {
+        // Disposition already set.
+        return Ok(RecoveryAction::AlreadyTerminal);
+    }
+    Ok(RecoveryAction::HeldForReview)
 }
 
 #[cfg(test)]
@@ -69,6 +91,40 @@ mod tests {
         }
         assert_eq!(
             recover_undispatched(&led, "j1", "a").unwrap(),
+            RecoveryAction::Skipped
+        );
+    }
+
+    #[test]
+    fn held_for_review_when_start_authorized_and_active() {
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        {
+            let mut g = led.lock().unwrap();
+            g.credit("a", 1_000_000, 0).unwrap();
+            g.reserve(OperationKey("r".into()), "j1", "a", 100_000)
+                .unwrap();
+            g.mark_start_authorized("j1").unwrap();
+        }
+        assert_eq!(
+            recover_start_authorized_held(&led, "j1").unwrap(),
+            RecoveryAction::HeldForReview
+        );
+        // Money still held.
+        assert_eq!(led.lock().unwrap().balance("a").0, 900_000);
+        assert_eq!(led.lock().unwrap().active_job_count(), 1);
+    }
+
+    #[test]
+    fn held_helper_skips_when_not_start_authorized() {
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        {
+            let mut g = led.lock().unwrap();
+            g.credit("a", 1_000_000, 0).unwrap();
+            g.reserve(OperationKey("r".into()), "j1", "a", 100_000)
+                .unwrap();
+        }
+        assert_eq!(
+            recover_start_authorized_held(&led, "j1").unwrap(),
             RecoveryAction::Skipped
         );
     }

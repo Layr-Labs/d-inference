@@ -42,6 +42,8 @@ impl AppState {
 #[derive(Debug, Serialize)]
 struct HealthResponse {
     status: &'static str,
+    #[serde(skip_serializing_if = "is_false")]
+    draining: bool,
     providers: usize,
     version: &'static str,
     build_commit: &'static str,
@@ -65,6 +67,7 @@ pub fn router(state: AppState) -> Router {
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
+        draining: state.draining.load(Ordering::Acquire),
         providers: state.providers.load(Ordering::Acquire),
         version: option_env!("DARKBLOOM_BUILD_VERSION").unwrap_or("dev"),
         build_commit: option_env!("DARKBLOOM_BUILD_COMMIT").unwrap_or("unknown"),
@@ -75,8 +78,18 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
     let draining = state.draining.load(Ordering::Acquire);
     let inflight = state.inflight.load(Ordering::Acquire);
-    match (draining, state.database.ping().await) {
-        (false, Ok(())) => (
+    if draining {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ReadinessResponse {
+                draining,
+                inflight,
+                ready: false,
+            }),
+        );
+    }
+    match state.database.ping().await {
+        Ok(()) => (
             StatusCode::OK,
             Json(ReadinessResponse {
                 draining,
@@ -84,10 +97,8 @@ async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
                 ready: true,
             }),
         ),
-        (_, database) => {
-            if let Err(error) = database {
-                tracing::warn!(error = %error, "readiness database check failed");
-            }
+        Err(error) => {
+            tracing::warn!(error = %error, "readiness database check failed");
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(ReadinessResponse {
@@ -98,4 +109,8 @@ async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
             )
         }
     }
+}
+
+const fn is_false(value: &bool) -> bool {
+    !*value
 }

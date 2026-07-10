@@ -20,8 +20,9 @@ make coordinator-rs-lint
 ```
 
 `coordinator-rs/crates/server/tests/postgres.rs` uses a real PostgreSQL
-instance when `DATABASE_URL` is set. CI supplies an isolated PostgreSQL 16
-service. Tests never point at production.
+instance only when `DARKBLOOM_TEST_DATABASE_URL` is set. CI supplies an
+isolated PostgreSQL 16 service. Tests never fall back to the runtime database
+URL and never point at production.
 
 Cross-language migration contracts are committed under `tests/contracts/`:
 

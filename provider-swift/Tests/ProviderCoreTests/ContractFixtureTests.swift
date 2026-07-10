@@ -91,6 +91,7 @@ private struct CryptoContract: Decodable {
     let recipientPrivateKeyBase64: String
     let payload: CryptoPayload
     let tamperedPayload: CryptoPayload
+    let statusCanonical: StatusCanonicalFixture
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -98,6 +99,19 @@ private struct CryptoContract: Decodable {
         case recipientPrivateKeyBase64 = "recipient_private_key_base64"
         case payload
         case tamperedPayload = "tampered_payload"
+        case statusCanonical = "status_canonical"
+    }
+}
+
+private struct StatusCanonicalFixture: Decodable {
+    let currentBase64: String
+    let legacyHypervisorFalseBase64: String
+    let explicitSecurityFalseBase64: String
+
+    enum CodingKeys: String, CodingKey {
+        case currentBase64 = "current_base64"
+        case legacyHypervisorFalseBase64 = "legacy_hypervisor_false_base64"
+        case explicitSecurityFalseBase64 = "explicit_security_false_base64"
     }
 }
 
@@ -136,6 +150,42 @@ private struct CryptoPayload: Decodable {
     } catch {
         // Authentication failure is required.
     }
+
+    let currentExpected = try #require(
+        Data(base64Encoded: fixture.statusCanonical.currentBase64)
+    )
+    let current = try StatusCanonical.build(StatusCanonicalInput(
+        nonce: "test-nonce",
+        timestamp: "2026-04-16T12:00:00Z",
+        rdmaDisabled: true,
+        sipEnabled: true,
+        secureBootEnabled: true,
+        binaryHash: "binhash",
+        activeModelHash: "activemodel",
+        pythonHash: "pyhash",
+        runtimeHash: "rthash",
+        templateHashes: ["chatml": "tmplhash1", "gemma": "tmplhash2"],
+        modelHashes: ["qwen": "modelhash1", "trinity": "modelhash2"]
+    ))
+    #expect(current == currentExpected)
+
+    let explicitFalseExpected = try #require(
+        Data(base64Encoded: fixture.statusCanonical.explicitSecurityFalseBase64)
+    )
+    let explicitFalse = try StatusCanonical.build(StatusCanonicalInput(
+        nonce: "n",
+        timestamp: "t",
+        sipEnabled: false
+    ))
+    #expect(explicitFalse == explicitFalseExpected)
+
+    let legacy = try #require(
+        Data(base64Encoded: fixture.statusCanonical.legacyHypervisorFalseBase64)
+    )
+    let legacyObject = try #require(
+        JSONSerialization.jsonObject(with: legacy) as? [String: Any]
+    )
+    #expect(legacyObject["hypervisor_active"] as? Bool == false)
 }
 
 private func loadProtocolContract(_ name: String) throws -> ProtocolContractFile {

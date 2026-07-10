@@ -180,7 +180,7 @@ func routeAuth(path, handler string) string {
 	case path == "/v1/releases":
 		return "release_key"
 	case path == "/v1/telemetry/events":
-		return "handler_mixed"
+		return "optional_provider_token_privy_api_key_or_anonymous"
 	default:
 		return "public"
 	}

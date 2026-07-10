@@ -51,6 +51,7 @@ func TestRouteAuthClassification(t *testing.T) {
 		{"/v1/keys", "requirePrivyAuth(handleListAPIKeys)", "privy_jwt"},
 		{"/v1/models", "requireAuth(handleListModels)", "api_key_or_privy"},
 		{"/v1/billing/stripe/webhook", "handleStripeWebhook", "stripe_signature"},
+		{"/v1/telemetry/events", "handleTelemetryIngest", "optional_provider_token_privy_api_key_or_anonymous"},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {

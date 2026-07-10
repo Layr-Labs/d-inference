@@ -34,3 +34,6 @@ EIGENINFERENCE_RUST_SHUTDOWN_GRACE_SECONDS   default 30
 
 Application startup never applies DDL. Checked SQL metadata is committed under
 `.sqlx/`; schema changes will be applied by a separate migration command.
+Real PostgreSQL integration tests use the dedicated
+`DARKBLOOM_TEST_DATABASE_URL`; they refuse to fall back to a runtime database
+URL.

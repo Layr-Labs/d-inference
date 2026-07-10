@@ -31,8 +31,7 @@ struct HttpResponse {
 }
 
 fn database_url() -> Option<String> {
-    std::env::var("DATABASE_URL")
-        .or_else(|_| std::env::var("EIGENINFERENCE_DATABASE_URL"))
+    std::env::var("DARKBLOOM_TEST_DATABASE_URL")
         .ok()
         .filter(|value| !value.trim().is_empty())
 }
@@ -43,7 +42,7 @@ async fn health_and_readiness_use_real_postgres() {
         assert_ne!(
             std::env::var("CI").as_deref(),
             Ok("true"),
-            "DATABASE_URL is required in CI"
+            "DARKBLOOM_TEST_DATABASE_URL is required in CI"
         );
         eprintln!("DATABASE_URL is unset; skipping real PostgreSQL integration test");
         return;
@@ -60,6 +59,19 @@ async fn health_and_readiness_use_real_postgres() {
 
     state.set_inflight(3);
     state.set_draining(true);
+    let (status, payload) = request_json(&app, "/health").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        payload,
+        serde_json::json!({
+            "status": "ok",
+            "draining": true,
+            "providers": 0,
+            "version": "dev",
+            "build_commit": "unknown",
+            "build_date": "unknown"
+        })
+    );
     let (status, payload) = request_json(&app, "/readyz").await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
@@ -68,7 +80,11 @@ async fn health_and_readiness_use_real_postgres() {
     );
 
     state.set_draining(false);
-    database.clone().close().await;
+    database
+        .clone()
+        .close(Duration::from_secs(1))
+        .await
+        .expect("close test database pool");
     let (status, payload) = request_json(&app, "/readyz").await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
@@ -76,7 +92,10 @@ async fn health_and_readiness_use_real_postgres() {
         serde_json::json!({"draining": false, "inflight": 3, "ready": false})
     );
     drop(app);
-    database.close().await;
+    database
+        .close(Duration::from_secs(1))
+        .await
+        .expect("close database pool");
 }
 
 async fn assert_matches_contract(app: &axum::Router, path: &str, contract: &HttpResponse) {

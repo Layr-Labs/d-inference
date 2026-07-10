@@ -1003,7 +1003,7 @@
       "method": "POST",
       "path": "/v1/telemetry/events",
       "handler": "handleTelemetryIngest",
-      "auth": "handler_mixed",
+      "auth": "optional_provider_token_privy_api_key_or_anonymous",
       "area": "telemetry",
       "side_effects": "write",
       "rust_owner": "full-surface adapter",

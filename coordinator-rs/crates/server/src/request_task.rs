@@ -43,6 +43,8 @@ pub struct RequestTask {
     pub funded_start: bool,
     pub sequential_alternate_used: bool,
     pub hedge_used: bool,
+    pub hedge_budget: darkbloom_core::HedgeBudget,
+    pub hedge_policy: darkbloom_core::HedgePolicy,
     control_rx: mpsc::Receiver<ControlEvent>,
 }
 
@@ -72,6 +74,8 @@ pub fn spawn_request_task(job_id: JobId, absolute_deadline: Duration) -> (Reques
         funded_start: false,
         sequential_alternate_used: false,
         hedge_used: false,
+        hedge_budget: darkbloom_core::HedgeBudget::default(),
+        hedge_policy: darkbloom_core::HedgePolicy::default(),
         control_rx: rx,
     };
     (handle, task)
@@ -121,6 +125,21 @@ impl RequestTask {
             }
         }
         Ok(())
+    }
+
+    /// Decide whether to fire a prepare hedge for a slow primary.
+    pub fn maybe_hedge(&mut self, primary_prepare_elapsed: Duration) -> bool {
+        self.hedge_budget.record_admit();
+        let fire = self.hedge_budget.should_hedge_on_timer(
+            &self.hedge_policy,
+            primary_prepare_elapsed,
+            self.hedge_used,
+            self.funded_start,
+        );
+        if fire {
+            self.hedge_used = true;
+        }
+        fire
     }
 
     pub async fn run(mut self) -> RequestState {

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,6 +96,35 @@ func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
 // Close shuts down the connection pool.
 func (s *PostgresStore) Close() {
 	s.pool.Close()
+}
+
+// RustCoordHasActiveWork reports whether additive rust_coord tables hold
+// nonterminal jobs, attempts, or outbox work. Missing schema → (false, nil).
+func (s *PostgresStore) RustCoordHasActiveWork(ctx context.Context) (bool, error) {
+	const q = `
+SELECT EXISTS (
+  SELECT 1 FROM rust_coord.inference_jobs
+  WHERE state NOT IN ('settled', 'released', 'settled_reviewed', 'released_reviewed')
+     OR review_pending = TRUE
+)
+OR EXISTS (
+  SELECT 1 FROM rust_coord.inference_attempts
+  WHERE state NOT IN ('acknowledged', 'aborted', 'terminal_recorded')
+)
+OR EXISTS (
+  SELECT 1 FROM rust_coord.outbox WHERE attempts < 100
+)`
+	var active bool
+	err := s.pool.QueryRow(ctx, q).Scan(&active)
+	if err != nil {
+		// Pre-Rust databases lack the schema — treat as inactive.
+		if strings.Contains(strings.ToLower(err.Error()), "does not exist") ||
+			strings.Contains(err.Error(), "42P01") {
+			return false, nil
+		}
+		return false, err
+	}
+	return active, nil
 }
 
 // migrate runs the schema creation statements.

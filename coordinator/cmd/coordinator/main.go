@@ -43,6 +43,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/ownership"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
@@ -99,6 +100,26 @@ func main() {
 		defer pgStore.Close()
 		st = pgStore
 		logger.Info("using PostgreSQL store")
+
+		// Rollback-safe refuse: if rust_coord still has active jobs/leases,
+		// do not admit new work unless recovery mode is set.
+		ownGate := ownership.NewGate(true)
+		if os.Getenv("EIGENINFERENCE_RUST_RECOVERY_MODE") == "true" {
+			ownGate.EnableRecoveryMode()
+		}
+		if err := ownGate.ApplyProbe(ctx, func(ctx context.Context) (bool, string, error) {
+			active, err := pgStore.RustCoordHasActiveWork(ctx)
+			return active, "", err
+		}); err != nil {
+			logger.Error("rust_coord activity probe failed", "error", err)
+			os.Exit(1)
+		}
+		if err := ownGate.CheckStartup(ctx); err != nil {
+			logger.Error("refusing unsafe Go startup while rust_coord work is active",
+				"error", err,
+				"hint", "run same-release Rust recovery, or set EIGENINFERENCE_RUST_RECOVERY_MODE=true for recovery-only")
+			os.Exit(1)
+		}
 
 		// If an admin key is set, seed it in the database.
 		if adminKey != "" {

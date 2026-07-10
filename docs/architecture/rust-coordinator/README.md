@@ -21,3 +21,10 @@ coordinator-rs/
 ```bash
 cd coordinator-rs && cargo test --workspace
 ```
+
+## Ops docs
+
+- [DECISIONS.md](./DECISIONS.md) — locked §29 defaults
+- [PILOT.md](./PILOT.md) — Milestone 5 isolated pilot
+- [CUTOVER.md](./CUTOVER.md) — Milestones 7–8 cutover/rollback
+- Contracts: [contracts/](./contracts/)

@@ -66,6 +66,7 @@ Date: 2026-07-10
 | 57 | Live SE signature on disposition | Live `provider_terminal.se_signature` is copied onto `MockCompletion` and persisted via `record_bound`; replay ingest with a mismatched SE signature returns `disposition=conflict` |
 | 58 | Force-settle records disposition | Admin `force-settle` calls `record_bound` with `force_settled` so provider reconnect ingest ACKs without recording late |
 | 59 | Fenced recovery helpers | `force_settle_held_fenced` / `recover_undispatched_fenced` require matching fencing epoch before money moves. Unfenced wrappers pass epoch `0` (unbound jobs only). CLI demos bind epoch via `reserve_with_epoch` |
+| 60 | Release records disposition | `release_job_with_outbox` persists `released` via `record_bound` with digest `release:{job_id}` so recover/cancel releases are auditable and ingestable |
 
 ## Deleted Go mechanisms (do not port)
 

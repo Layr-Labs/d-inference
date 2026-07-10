@@ -295,3 +295,9 @@ ownership loss when the job's fencing epoch does not match. Legacy unfenced
 wrappers pass epoch `0` (safe only for unbound jobs). CLI demos bind epoch
 at reserve time.
 
+### Release records disposition (DECISIONS #60)
+
+`release_job_with_outbox` (recover-undispatched, prepare-fail, pre-start cancel)
+persists a `released` disposition with digest `release:{job_id}` so releases
+are auditable and terminal-ingestable.
+

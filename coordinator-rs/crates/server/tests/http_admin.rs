@@ -1535,18 +1535,27 @@ async fn admin_recover_undispatched_releases_reserved() {
         let _ = box_.ack_done(e.id);
     }
 
-    let q = app
+    // Released disposition recorded for audit/ingest (DECISIONS #60).
+    let ingest = app
         .oneshot(
             Request::builder()
-                .method("GET")
-                .uri("/v1/admin/quiescence")
-                .body(Body::empty())
+                .method("POST")
+                .uri("/v1/admin/terminal-ingest")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "undisp-1",
+                        "attempt_id": "a-any",
+                        "terminal_digest": "release:undisp-1"
+                    })
+                    .to_string(),
+                ))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(q.status(), StatusCode::OK);
-    assert_eq!(body_json(q).await["ready"], true);
+    assert_eq!(ingest.status(), StatusCode::OK);
+    assert_eq!(body_json(ingest).await["disposition"], "released");
 }
 
 #[tokio::test]

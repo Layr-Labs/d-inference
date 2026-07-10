@@ -159,6 +159,20 @@ async fn live_terminal_valid_settles_and_conserves() {
     )
     .unwrap();
     assert_eq!(ack["disposition"], "conflict");
+    // Wrong lease also conflicts (DECISIONS #53) — disposition bound lease from settle.
+    let ack_lease = darkbloom_coordinator::ingest_terminal(
+        &mut terms,
+        darkbloom_coordinator::TerminalIngest {
+            job_id: String::new(),
+            attempt_id: "any".into(),
+            terminal_digest: "sha256:live-ok".into(),
+            lease_id: "lease-attacker".into(),
+            se_signature: "se-sig-live-ok".into(),
+            outcome: String::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(ack_lease["disposition"], "conflict");
     let ack_ok = darkbloom_coordinator::ingest_terminal(
         &mut terms,
         darkbloom_coordinator::TerminalIngest {

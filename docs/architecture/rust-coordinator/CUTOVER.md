@@ -263,3 +263,10 @@ non-stream), the chat path returns `ownership_lost` and leaves the reservation
 `start_authorized` held. Never charge after a mid-flight fencing loss — even
 when the in-process chunk checkpoint already advanced.
 
+### Atomic reserve+epoch bind (DECISIONS #55)
+
+Chat reserves via `reserve_with_epoch` so `fencing_epoch` is set in the same
+critical section as the debit. Idempotent op-key replay with a mismatched
+epoch is `OwnershipLost`. No unbound (`fencing_epoch=0`) window after a
+successful funded reserve under an active coordinator.
+

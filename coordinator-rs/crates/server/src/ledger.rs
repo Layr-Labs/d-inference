@@ -190,6 +190,29 @@ impl MemoryLedger {
         })
     }
 
+    /// Reserve and bind fencing epoch atomically (DECISIONS #55).
+    /// Avoids a window where a reserved job is unbound (`fencing_epoch=0`).
+    pub fn reserve_with_epoch(
+        &mut self,
+        op: OperationKey,
+        job_id: &str,
+        account: &str,
+        amount: i64,
+        fencing_epoch: u64,
+    ) -> Result<ReserveResult, LedgerError> {
+        let result = self.reserve(op, job_id, account, amount)?;
+        if result.applied {
+            // Fresh reserve — bind epoch in the same critical section.
+            if let Some(job) = self.jobs.get_mut(job_id) {
+                job.fencing_epoch = fencing_epoch;
+            }
+        } else if fencing_epoch != 0 {
+            // Idempotent replay: refuse if a prior bind used a different epoch.
+            self.require_fencing_epoch(job_id, fencing_epoch)?;
+        }
+        Ok(result)
+    }
+
     /// Bind the job to the coordinator fencing epoch at reserve time (DECISIONS #52).
     pub fn bind_fencing_epoch(&mut self, job_id: &str, epoch: u64) -> Result<(), LedgerError> {
         let job = self
@@ -1680,5 +1703,28 @@ mod tests {
         led.reserve(OperationKey("r2".into()), "j2", "a", 50_000)
             .unwrap();
         assert!(led.require_fencing_epoch("j2", 99).is_ok());
+    }
+
+    #[test]
+    fn reserve_with_epoch_binds_atomically() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve_with_epoch(OperationKey("r".into()), "j", "a", 100_000, 7)
+            .unwrap();
+        assert!(led.require_fencing_epoch("j", 7).is_ok());
+        assert!(matches!(
+            led.require_fencing_epoch("j", 8),
+            Err(LedgerError::OwnershipLost)
+        ));
+        // Idempotent replay with matching epoch is fine.
+        let again = led
+            .reserve_with_epoch(OperationKey("r".into()), "j", "a", 100_000, 7)
+            .unwrap();
+        assert!(!again.applied);
+        // Replay with mismatched epoch is OwnershipLost.
+        assert!(matches!(
+            led.reserve_with_epoch(OperationKey("r".into()), "j", "a", 100_000, 9),
+            Err(LedgerError::OwnershipLost)
+        ));
     }
 }

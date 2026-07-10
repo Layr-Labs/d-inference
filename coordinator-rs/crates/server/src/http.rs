@@ -906,11 +906,12 @@ async fn chat_completions(
                     return resp;
                 }
                 let mut ledger = state.ledger.lock().await;
-                if let Err(err) = ledger.reserve(
+                if let Err(err) = ledger.reserve_with_epoch(
                     crate::ledger::OperationKey(format!("reserve:{}", job_id.as_str())),
                     job_id.as_str(),
                     &state.pilot_account,
                     100_000,
+                    state.ownership.epoch().0,
                 ) {
                     return (
                         StatusCode::PAYMENT_REQUIRED,
@@ -924,8 +925,6 @@ async fn chat_completions(
                     )
                         .into_response();
                 }
-                // Bind job to this coordinator's fencing epoch (DECISIONS #52).
-                let _ = ledger.bind_fencing_epoch(job_id.as_str(), state.ownership.epoch().0);
             }
 
             // Prefer live provider prepare/start when the hub has a session.

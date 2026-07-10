@@ -21,6 +21,7 @@ public enum PreparedLeaseEvent: Sendable, Equatable {
     case journalTerminal
     case ackTerminal
     case abort(leaseId: String)
+    case expirePrepared
 }
 
 public enum PreparedLeaseError: Error, Sendable, Equatable {
@@ -63,6 +64,9 @@ public enum PreparedLeaseReducer {
             return .acknowledged
 
         case (.preparing, .abort(let lease)), (.prepared, .abort(let lease)):
+            return .aborted(leaseId: lease)
+
+        case (.prepared(_, _, let lease, _), .expirePrepared):
             return .aborted(leaseId: lease)
 
         case (.running(let job, let attempt, let lease, let durable, let emitting), .start):

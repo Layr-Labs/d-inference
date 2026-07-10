@@ -22,6 +22,17 @@ final class PreparedLeaseTests: XCTestCase {
         }
     }
 
+    func testExpirePreparedBecomesAbortTombstone() throws {
+        var state = PreparedLeaseState.idle
+        state = try PreparedLeaseReducer.transition(state, .beginPrepare(jobId: "j", attemptId: "a"))
+        state = try PreparedLeaseReducer.transition(state, .markPrepared(leaseId: "l", prefillRunning: true))
+        state = try PreparedLeaseReducer.transition(state, .expirePrepared)
+        XCTAssertEqual(state, .aborted(leaseId: "l"))
+        XCTAssertThrowsError(try PreparedLeaseReducer.transition(state, .start)) { err in
+            XCTAssertEqual(err as? PreparedLeaseError, .abortTombstone)
+        }
+    }
+
     func testHappyPathToAck() throws {
         var state = PreparedLeaseState.idle
         state = try PreparedLeaseReducer.transition(state, .beginPrepare(jobId: "j", attemptId: "a"))

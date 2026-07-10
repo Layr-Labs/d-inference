@@ -55,11 +55,14 @@ pub fn force_settle_held(
     if g.active_job_count() == 0 || g.job_reserved_total(job_id).is_none() {
         return Ok(RecoveryAction::AlreadyTerminal);
     }
-    match g.settle(
+    // Clamp via settle_capped so ops amounts above reservation never fail-close.
+    let reserved = g.job_reserved_total(job_id).map(|m| m.0).unwrap_or(0);
+    match g.settle_capped(
         OperationKey(format!("force_settle:{job_id}")),
         job_id,
         account,
         actual,
+        reserved,
         terminal_digest,
     ) {
         Ok(true) => Ok(RecoveryAction::Released), // settled — reuse Released as "cleared"
@@ -214,6 +217,26 @@ mod tests {
             RecoveryAction::Skipped
         );
         assert_eq!(led.lock().unwrap().active_job_count(), 1);
+    }
+
+    #[test]
+    fn force_settle_held_clamps_actual_above_reservation() {
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        {
+            let mut g = led.lock().unwrap();
+            g.credit("a", 1_000_000, 0).unwrap();
+            g.reserve(OperationKey("r".into()), "j1", "a", 100_000)
+                .unwrap();
+            g.mark_start_authorized("j1").unwrap();
+        }
+        assert_eq!(
+            force_settle_held(&led, "j1", "a", 9_999_999, "force-over").unwrap(),
+            RecoveryAction::Released
+        );
+        let g = led.lock().unwrap();
+        // Charged full reservation; no refund.
+        assert_eq!(g.balance("a").0, 900_000);
+        assert_eq!(g.active_job_count(), 0);
     }
 
     #[test]

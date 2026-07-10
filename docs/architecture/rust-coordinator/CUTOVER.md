@@ -514,3 +514,9 @@ cutover-drain uses per-job `account_id` for money moves. Optional
 `actual_micro_usd` charges held jobs. Optional `account` filter scopes owners;
 foreign orphans remain and `ready` stays false until a full (unfiltered) drain.
 
+### Batch recover/force mid-flight steal (DECISIONS #96)
+
+`recover-undispatched-batch` and `force-settle-batch` re-assert OwnershipGate
+before each job. A steal after the first money move returns 503 and leaves
+remaining orphans for adopt + cutover-drain.
+

@@ -1,0 +1,130 @@
+//! Mid-flight ownership steal aborts batch recover/force-settle (DECISIONS #96).
+
+mod common;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use common::{body_json, pilot_app_state};
+use darkbloom_coordinator::{router, set_admin_batch_job_hook};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use tower::ServiceExt;
+
+static HOOK_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_hook() -> std::sync::MutexGuard<'static, ()> {
+    HOOK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+}
+
+#[tokio::test]
+async fn force_settle_batch_aborts_after_first_job_on_steal() {
+    let _guard = lock_hook();
+    set_admin_batch_job_hook(None);
+    let state = pilot_app_state(true);
+    let ownership = state.ownership.clone();
+    let epoch = ownership.epoch().0;
+    {
+        let mut led = state.ledger.lock().await;
+        for id in ["fsb-a", "fsb-b"] {
+            led.reserve_with_epoch(
+                darkbloom_coordinator::OperationKey(format!("r-{id}")),
+                id,
+                "pilot-account",
+                50_000,
+                epoch,
+            )
+            .unwrap();
+            led.mark_start_authorized_fenced(epoch, id, "pilot-account")
+                .unwrap();
+        }
+    }
+
+    let gate = ownership.clone();
+    let seen = Arc::new(AtomicUsize::new(0));
+    let seen2 = seen.clone();
+    set_admin_batch_job_hook(Some(Arc::new(move |_job| {
+        // Release before the second job's money move.
+        if seen2.fetch_add(1, Ordering::SeqCst) == 1 {
+            gate.release();
+        }
+    })));
+
+    let app = router(state.clone());
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/force-settle-batch")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"actual_micro_usd":0}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    set_admin_batch_job_hook(None);
+
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body_json(res).await["error"]["code"], "ownership_lost");
+    // Exactly one hold cleared; one remains.
+    assert_eq!(state.ledger.lock().await.held_start_authorized_count(), 1);
+    assert_eq!(state.ledger.lock().await.active_job_count(), 1);
+    assert_eq!(
+        state.ledger.lock().await.balance("pilot-account").0,
+        1_000_000 - 50_000
+    );
+}
+
+#[tokio::test]
+async fn recover_batch_aborts_after_first_job_on_steal() {
+    let _guard = lock_hook();
+    set_admin_batch_job_hook(None);
+    let state = pilot_app_state(true);
+    let ownership = state.ownership.clone();
+    let epoch = ownership.epoch().0;
+    {
+        let mut led = state.ledger.lock().await;
+        for id in ["rbb-a", "rbb-b"] {
+            led.reserve_with_epoch(
+                darkbloom_coordinator::OperationKey(format!("r-{id}")),
+                id,
+                "pilot-account",
+                40_000,
+                epoch,
+            )
+            .unwrap();
+        }
+    }
+
+    let gate = ownership.clone();
+    let seen = Arc::new(AtomicUsize::new(0));
+    let seen2 = seen.clone();
+    set_admin_batch_job_hook(Some(Arc::new(move |_job| {
+        if seen2.fetch_add(1, Ordering::SeqCst) == 1 {
+            gate.release();
+        }
+    })));
+
+    let app = router(state.clone());
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/recover-undispatched-batch")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    set_admin_batch_job_hook(None);
+
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body_json(res).await["error"]["code"], "ownership_lost");
+    assert_eq!(state.ledger.lock().await.active_job_count(), 1);
+    assert_eq!(
+        state.ledger.lock().await.balance("pilot-account").0,
+        1_000_000 - 40_000
+    );
+}

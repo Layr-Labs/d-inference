@@ -62,15 +62,32 @@ static CLEAR_ORPHANS_PHASE_HOOK: std::sync::Mutex<
     Option<Arc<dyn Fn(&str) + Send + Sync>>,
 > = std::sync::Mutex::new(None);
 
+/// Test hook: invoked with job_id before each batch money move (DECISIONS #96).
+static ADMIN_BATCH_JOB_HOOK: std::sync::Mutex<Option<Arc<dyn Fn(&str) + Send + Sync>>> =
+    std::sync::Mutex::new(None);
+
 /// Install/clear the clear-orphans phase hook (tests only).
 pub fn set_clear_orphans_phase_hook(hook: Option<Arc<dyn Fn(&str) + Send + Sync>>) {
     *CLEAR_ORPHANS_PHASE_HOOK.lock().unwrap() = hook;
+}
+
+/// Install/clear the admin batch per-job hook (tests only).
+pub fn set_admin_batch_job_hook(hook: Option<Arc<dyn Fn(&str) + Send + Sync>>) {
+    *ADMIN_BATCH_JOB_HOOK.lock().unwrap() = hook;
 }
 
 fn invoke_clear_orphans_phase(phase: &str) {
     if let Ok(guard) = CLEAR_ORPHANS_PHASE_HOOK.lock() {
         if let Some(hook) = guard.as_ref() {
             hook(phase);
+        }
+    }
+}
+
+fn invoke_admin_batch_job(job_id: &str) {
+    if let Ok(guard) = ADMIN_BATCH_JOB_HOOK.lock() {
+        if let Some(hook) = guard.as_ref() {
+            hook(job_id);
         }
     }
 }
@@ -788,7 +805,8 @@ async fn admin_force_settle_batch(
     let mut charged_total = 0_i64;
 
     for job_id in ids {
-        // Re-check holding per job (DECISIONS #85).
+        invoke_admin_batch_job(&job_id);
+        // Re-check holding per job (DECISIONS #85/#96).
         if let Err(resp) = require_holding(&state) {
             return resp;
         }
@@ -1059,7 +1077,8 @@ async fn admin_recover_undispatched_batch(
     };
 
     for job_id in ids {
-        // Re-check holding per job (DECISIONS #85).
+        invoke_admin_batch_job(&job_id);
+        // Re-check holding per job (DECISIONS #85/#96).
         if let Err(resp) = require_holding(&state) {
             return resp;
         }

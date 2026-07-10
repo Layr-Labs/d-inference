@@ -35,7 +35,7 @@ pub use external_events::{
     ExternalEventInbox,
 };
 pub use fleet_actor::{spawn_fleet_actor, FleetError, FleetHandle};
-pub use http::{router, set_clear_orphans_phase_hook, AppState, ModelCard};
+pub use http::{router, set_admin_batch_job_hook, set_clear_orphans_phase_hook, AppState, ModelCard};
 pub use ledger::{LedgerError, MemoryLedger, OperationKey, ReservationProvenance};
 pub use outbox::{ack_done_sql, requeue_sql, Outbox, OutboxEntry, OutboxError};
 pub use ownership::{

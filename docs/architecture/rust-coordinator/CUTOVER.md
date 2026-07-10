@@ -496,3 +496,9 @@ If ownership is stolen mid clear-orphans inside cutover-drain, the response is
 the clear abort (503) and outbox is left untouched. Quiescence `cutover_hint`
 is `cutover-drain` whenever active jobs remain.
 
+### Resume cutover-drain + concurrent race (DECISIONS #93)
+
+After a mid-flight cutover-drain abort, re-acquire ownership and re-run
+cutover-drain to reach `ready`. Concurrent cutover-drain calls clear orphans
+exactly once and leave outbox empty.
+

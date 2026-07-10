@@ -1,0 +1,26 @@
+[
+  {
+    "model": "pilot-text-model",
+    "hardware_class": "m2-max",
+    "predicted_ttft_ms": 250.0,
+    "actual_ttft_ms": 210.0,
+    "selected_provider": "provider-a",
+    "alternate_providers": ["provider-b"]
+  },
+  {
+    "model": "pilot-text-model",
+    "hardware_class": "m2-max",
+    "predicted_ttft_ms": 250.0,
+    "actual_ttft_ms": 280.0,
+    "selected_provider": "provider-a",
+    "alternate_providers": []
+  },
+  {
+    "model": "pilot-text-model",
+    "hardware_class": "m3-ultra",
+    "predicted_ttft_ms": 180.0,
+    "actual_ttft_ms": 160.0,
+    "selected_provider": "provider-c",
+    "alternate_providers": ["provider-a"]
+  }
+]

@@ -17,7 +17,7 @@ pub mod request_task;
 pub mod sealed;
 pub mod telemetry;
 
-pub use abort::{abort_frame, abort_losing_hedge};
+pub use abort::{abort_frame, abort_losing_hedge, cancel_attempt, cancel_frame};
 pub use chunk_pipe::{bounded_chunk_pipe, ChunkPipe, PipeError};
 pub use crypto_keys::CoordinatorKeys;
 pub use fleet_actor::{spawn_fleet_actor, FleetError, FleetHandle};

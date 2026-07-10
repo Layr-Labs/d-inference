@@ -97,6 +97,7 @@ impl PostgresLedgerStub {
     /// Mark start_authorized without resizing (same-amount fund path).
     /// Parameters: $1 job_id, $2 account_id, $3 operation_key
     /// Account bind: job row must match caller account (DECISIONS #24/#31).
+    /// Op claim gates the state transition (DECISIONS #33).
     pub fn mark_start_authorized_sql() -> &'static str {
         r#"
         WITH job AS (
@@ -109,6 +110,11 @@ impl PostgresLedgerStub {
           SELECT 1 FROM job
           WHERE terminal_disposition IS NULL
             AND state = 'reserved'
+        ), op AS (
+          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
+          SELECT $3, $1, 'start_authorize', 0 FROM guard
+          ON CONFLICT (operation_key) DO NOTHING
+          RETURNING operation_key
         ), mark AS (
           UPDATE rust_coord.inference_jobs j
           SET state = 'start_authorized',
@@ -116,12 +122,14 @@ impl PostgresLedgerStub {
           WHERE j.job_id = $1
             AND j.account_id = $2
             AND EXISTS (SELECT 1 FROM guard)
+            AND EXISTS (SELECT 1 FROM op)
           RETURNING j.job_id
-        ), op AS (
-          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-          SELECT $3, $1, 'start_authorize', 0 FROM mark
-          ON CONFLICT (operation_key) DO NOTHING
-          RETURNING operation_key
+        ), cleanup_op AS (
+          DELETE FROM rust_coord.financial_operations fo
+          WHERE fo.operation_key = $3
+            AND EXISTS (SELECT 1 FROM op)
+            AND NOT EXISTS (SELECT 1 FROM mark)
+          RETURNING fo.operation_key
         )
         SELECT job_id FROM mark
         "#
@@ -129,6 +137,7 @@ impl PostgresLedgerStub {
 
     /// Resize reservation + mark start_authorized in one round-trip (plan §12).
     /// Parameters: $1 account, $2 job_id, $3 new_amount, $4 operation_key
+    /// Op claim gates debit/mark so reused op keys cannot move funds (DECISIONS #33).
     pub fn resize_and_authorize_sql() -> &'static str {
         r#"
         WITH job AS (
@@ -167,6 +176,11 @@ impl PostgresLedgerStub {
             ELSE 0 END AS refund_wdr
           FROM calc c CROSS JOIN bal b
           WHERE c.delta <= 0 OR b.bal >= c.need
+        ), op AS (
+          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
+          SELECT $4, $2, 'resize_authorize', $3 FROM funds
+          ON CONFLICT (operation_key) DO NOTHING
+          RETURNING operation_key
         ), debit AS (
           UPDATE balances b
           SET balance_micro_usd = CASE
@@ -180,6 +194,7 @@ impl PostgresLedgerStub {
               updated_at = NOW()
           FROM funds f
           WHERE b.account_id = $1
+            AND EXISTS (SELECT 1 FROM op)
           RETURNING f.old_wdr, f.add_wdr, f.refund_wdr, f.delta
         ), mark AS (
           UPDATE rust_coord.inference_jobs j
@@ -193,11 +208,12 @@ impl PostgresLedgerStub {
           FROM debit d
           WHERE j.job_id = $2
           RETURNING j.job_id, j.reserved_total_micro_usd, j.reserved_withdrawable_micro_usd
-        ), op AS (
-          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-          SELECT $4, $2, 'resize_authorize', $3 FROM mark
-          ON CONFLICT (operation_key) DO NOTHING
-          RETURNING operation_key
+        ), cleanup_op AS (
+          DELETE FROM rust_coord.financial_operations fo
+          WHERE fo.operation_key = $4
+            AND EXISTS (SELECT 1 FROM op)
+            AND NOT EXISTS (SELECT 1 FROM mark)
+          RETURNING fo.operation_key
         )
         SELECT reserved_total_micro_usd, reserved_withdrawable_micro_usd FROM mark
         "#
@@ -427,6 +443,7 @@ impl PostgresLedgerStub {
 
     /// Release SQL for reserved-but-not-start_authorized jobs (mirrors MemoryLedger.release).
     /// Parameters: $1 account, $2 job_id, $3 operation_key
+    /// Op claim gates credit/mark so reused op keys cannot refund (DECISIONS #33).
     pub fn release_sql() -> &'static str {
         r#"
         WITH job AS (
@@ -442,6 +459,12 @@ impl PostgresLedgerStub {
           SELECT 1 FROM job
           WHERE terminal_disposition IS NULL
             AND state <> 'start_authorized'
+        ), op AS (
+          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
+          SELECT $3, $2, 'release', j.reserved FROM job j
+          WHERE EXISTS (SELECT 1 FROM guard)
+          ON CONFLICT (operation_key) DO NOTHING
+          RETURNING operation_key
         ), credit AS (
           UPDATE balances b
           SET balance_micro_usd = b.balance_micro_usd + j.reserved,
@@ -450,6 +473,7 @@ impl PostgresLedgerStub {
           FROM job j
           WHERE b.account_id = $1
             AND EXISTS (SELECT 1 FROM guard)
+            AND EXISTS (SELECT 1 FROM op)
           RETURNING j.reserved, j.reserved_wdr
         ), mark AS (
           UPDATE rust_coord.inference_jobs j
@@ -458,13 +482,14 @@ impl PostgresLedgerStub {
               updated_at = NOW()
           WHERE j.job_id = $2
             AND EXISTS (SELECT 1 FROM guard)
+            AND EXISTS (SELECT 1 FROM op)
           RETURNING j.job_id
-        ), op AS (
-          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-          SELECT $3, $2, 'release', reserved FROM job
-          WHERE EXISTS (SELECT 1 FROM guard)
-          ON CONFLICT (operation_key) DO NOTHING
-          RETURNING operation_key
+        ), cleanup_op AS (
+          DELETE FROM rust_coord.financial_operations fo
+          WHERE fo.operation_key = $3
+            AND EXISTS (SELECT 1 FROM op)
+            AND NOT EXISTS (SELECT 1 FROM mark)
+          RETURNING fo.operation_key
         )
         SELECT reserved, reserved_wdr FROM credit
         "#
@@ -550,6 +575,8 @@ mod tests {
         assert!(sql.contains("FOR UPDATE"));
         assert!(sql.contains("'release'"));
         assert!(sql.contains("account_id = $1"));
+        assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
+        assert!(sql.contains("cleanup_op"));
     }
 
     #[test]
@@ -561,7 +588,9 @@ mod tests {
         assert!(sql.contains("FOR UPDATE"));
         assert!(sql.contains("financial_operations"));
         assert!(sql.contains("account_id = $1"));
-        assert!(sql.contains("SELECT $4, $2, 'resize_authorize', $3 FROM mark"));
+        assert!(sql.contains("SELECT $4, $2, 'resize_authorize', $3 FROM funds"));
+        assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
+        assert!(sql.contains("cleanup_op"));
     }
 
     #[test]
@@ -573,7 +602,9 @@ mod tests {
         assert!(sql.contains("state = 'reserved'"));
         assert!(sql.contains("FOR UPDATE"));
         assert!(sql.contains("account_id = $2"));
-        assert!(sql.contains("SELECT $3, $1, 'start_authorize', 0 FROM mark"));
+        assert!(sql.contains("SELECT $3, $1, 'start_authorize', 0 FROM guard"));
+        assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
+        assert!(sql.contains("cleanup_op"));
     }
 
     #[test]

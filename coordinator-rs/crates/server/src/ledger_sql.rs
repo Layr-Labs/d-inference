@@ -41,29 +41,43 @@ impl PostgresLedgerStub {
 
     /// The SQL that will back reserve once SQLx is wired (mirrors MemoryLedger).
     /// Debits the shared Go `balances` table (not rust_coord.*) for money continuity.
+    /// Job insert is gated first; debit/op only run when the job row is newly created
+    /// (DECISIONS #15 single-use job_id — never debit on conflict).
+    /// Parameters: $1 account, $2 amount, $3 job_id, $4 model, $5 epoch, $6 operation_key
     pub fn reserve_sql() -> &'static str {
         r#"
-        WITH pre AS (
+        WITH bal AS (
           SELECT balance_micro_usd AS bal, withdrawable_micro_usd AS wdr
           FROM balances WHERE account_id = $1 FOR UPDATE
+        ), existing AS (
+          SELECT 1 FROM rust_coord.inference_jobs WHERE job_id = $3 FOR UPDATE
         ), calc AS (
-          SELECT GREATEST(0, $2::bigint - GREATEST(0, bal - wdr)) AS reserved_wdr FROM pre
-        ), debit AS (
-          UPDATE balances b
-          SET balance_micro_usd = b.balance_micro_usd - $2,
-              withdrawable_micro_usd = b.withdrawable_micro_usd - c.reserved_wdr,
-              updated_at = NOW()
-          FROM calc c WHERE b.account_id = $1
-          RETURNING c.reserved_wdr
+          SELECT
+            GREATEST(0, $2::bigint - GREATEST(0, bal - wdr)) AS reserved_wdr
+          FROM bal
+          WHERE NOT EXISTS (SELECT 1 FROM existing)
+            AND $2::bigint > 0
+            AND bal >= $2::bigint
         ), job AS (
           INSERT INTO rust_coord.inference_jobs (
             job_id, account_id, public_model, concrete_model, state,
             reserved_total_micro_usd, reserved_withdrawable_micro_usd, coordinator_epoch
-          ) VALUES ($3, $1, $4, $4, 'reserved', $2, (SELECT reserved_wdr FROM debit), $5)
+          )
+          SELECT $3, $1, $4, $4, 'reserved', $2, c.reserved_wdr, $5
+          FROM calc c
           ON CONFLICT (job_id) DO NOTHING
+          RETURNING job_id, reserved_withdrawable_micro_usd AS reserved_wdr
+        ), debit AS (
+          UPDATE balances b
+          SET balance_micro_usd = b.balance_micro_usd - $2,
+              withdrawable_micro_usd = b.withdrawable_micro_usd - j.reserved_wdr,
+              updated_at = NOW()
+          FROM job j
+          WHERE b.account_id = $1
+          RETURNING j.reserved_wdr
         ), op AS (
           INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-          VALUES ($6, $3, 'reserve', $2)
+          SELECT $6, $3, 'reserve', $2 FROM job
           ON CONFLICT (operation_key) DO NOTHING
           RETURNING operation_key
         )
@@ -430,6 +444,10 @@ mod tests {
         assert!(sql.contains("reserved_withdrawable_micro_usd"));
         assert!(sql.contains("financial_operations"));
         assert!(sql.contains("FOR UPDATE"));
+        assert!(sql.contains("NOT EXISTS (SELECT 1 FROM existing)"));
+        assert!(sql.contains("FROM job j"));
+        assert!(sql.contains("SELECT $6, $3, 'reserve', $2 FROM job"));
+        assert!(sql.contains("FROM calc c"));
     }
 
     #[test]

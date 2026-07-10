@@ -89,6 +89,13 @@ static CHAT_PRE_RESIZE_HOOK: std::sync::Mutex<Option<Arc<dyn Fn(&str) + Send + S
 /// Serializes tests that install CHAT_PRE_RESIZE_HOOK.
 static CHAT_PRE_RESIZE_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Test-only: invoked with job_id immediately before chat settle under money_fx (DECISIONS #154).
+static CHAT_PRE_SETTLE_HOOK: std::sync::Mutex<Option<Arc<dyn Fn(&str) + Send + Sync>>> =
+    std::sync::Mutex::new(None);
+
+/// Serializes tests that install CHAT_PRE_SETTLE_HOOK.
+static CHAT_PRE_SETTLE_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Install/clear the clear-orphans phase hook (tests only).
 pub fn set_clear_orphans_phase_hook(hook: Option<Arc<dyn Fn(&str) + Send + Sync>>) {
     *CLEAR_ORPHANS_PHASE_HOOK.lock().unwrap() = hook;
@@ -137,6 +144,18 @@ pub fn lock_chat_pre_resize_hook_tests() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|p| p.into_inner())
 }
 
+/// Install/clear the chat pre-settle hook (tests only).
+pub fn set_chat_pre_settle_hook(hook: Option<Arc<dyn Fn(&str) + Send + Sync>>) {
+    *CHAT_PRE_SETTLE_HOOK.lock().unwrap() = hook;
+}
+
+/// Hold while installing/using the chat pre-settle hook (tests only).
+pub fn lock_chat_pre_settle_hook_tests() -> std::sync::MutexGuard<'static, ()> {
+    CHAT_PRE_SETTLE_HOOK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+}
+
 fn invoke_clear_orphans_phase(phase: &str) {
     if let Ok(guard) = CLEAR_ORPHANS_PHASE_HOOK.lock() {
         if let Some(hook) = guard.as_ref() {
@@ -163,6 +182,14 @@ fn invoke_outbox_drain_entry(kind: &str) {
 
 fn invoke_chat_pre_resize(job_id: &str) {
     if let Ok(guard) = CHAT_PRE_RESIZE_HOOK.lock() {
+        if let Some(hook) = guard.as_ref() {
+            hook(job_id);
+        }
+    }
+}
+
+fn invoke_chat_pre_settle(job_id: &str) {
+    if let Ok(guard) = CHAT_PRE_SETTLE_HOOK.lock() {
         if let Some(hook) = guard.as_ref() {
             hook(job_id);
         }
@@ -3534,11 +3561,16 @@ async fn chat_completions(
                     });
                     let _ = task.apply(ControlEvent::FinalizeDone);
 
+                    // Pre-settle hook before money_fx so admin force-settle can run
+                    // without deadlocking on the barrier (DECISIONS #154).
+                    invoke_chat_pre_settle(completion.job_id.as_str());
                     // Hold money_fx across settle + terminal + outbox (DECISIONS #137).
                     let _fx = state.money_fx.lock().await;
 
                     // Stream: checkpoint accepted tokens, then settle (DECISIONS #49).
                     // Non-stream: settle deferred content now under the same barrier.
+                    // settle_applied gates outbox — Ok(false) means already disposed (DECISIONS #154).
+                    let settle_applied;
                     let stream_body = if req.stream {
                         let (pipe, _reader) = crate::chunk_pipe::bounded_chunk_pipe(16, 64 * 1024);
                         let mut cp = ChunkCheckpoint::default();
@@ -3569,6 +3601,10 @@ async fn chat_completions(
                         }
                         {
                             let mut ledger = state.ledger.lock().await;
+                            let reserved = ledger
+                                .job_reserved_total(&completion.job_id)
+                                .map(|m| m.0)
+                                .unwrap_or(0);
                             if completion.mode == "rust-live" {
                                 ledger.record_attempt(
                                     &completion.attempt_id,
@@ -3589,11 +3625,14 @@ async fn chat_completions(
                                 billable_cap,
                                 &completion.terminal_digest,
                             ) {
-                                Ok(_) => {
-                                    completion.charged = darkbloom_core::MicroUsd(
-                                        actual.min(billable_cap).max(0),
-                                    );
-                                    completion.completion_tokens = billable_tokens as i32;
+                                Ok(applied) => {
+                                    settle_applied = applied;
+                                    if applied {
+                                        completion.charged = darkbloom_core::MicroUsd(
+                                            actual.min(billable_cap).min(reserved).max(0),
+                                        );
+                                        completion.completion_tokens = billable_tokens as i32;
+                                    }
                                 }
                                 Err(err) => {
                                     let (status, code) = match &err {
@@ -3635,6 +3674,10 @@ async fn chat_completions(
                         }
                         {
                             let mut ledger = state.ledger.lock().await;
+                            let reserved = ledger
+                                .job_reserved_total(&completion.job_id)
+                                .map(|m| m.0)
+                                .unwrap_or(0);
                             match ledger.settle_capped_fenced(
                                 state.ownership.epoch().0,
                                 crate::ledger::OperationKey(format!(
@@ -3647,9 +3690,13 @@ async fn chat_completions(
                                 actual,
                                 &completion.terminal_digest,
                             ) {
-                                Ok(_) => {
-                                    completion.charged =
-                                        darkbloom_core::MicroUsd(actual.max(0));
+                                Ok(applied) => {
+                                    settle_applied = applied;
+                                    if applied {
+                                        completion.charged = darkbloom_core::MicroUsd(
+                                            actual.min(reserved).max(0),
+                                        );
+                                    }
                                 }
                                 Err(err) => {
                                     let (status, code) = match &err {
@@ -3676,51 +3723,64 @@ async fn chat_completions(
                         None
                     };
 
-                    // Record disposition for replay ACK (plan §4.6) + outbox side effect.
-                    {
-                        let ack = json!({
-                            "type": "terminal_ack",
-                            "job_id": completion.job_id,
-                            "attempt_id": completion.attempt_id,
-                            "lease_id": lease.as_str(),
-                            "terminal_digest": completion.terminal_digest,
-                            "disposition": "settled",
+                    // Record disposition + outbox only when settle actually applied
+                    // (DECISIONS #154) — Ok(false) means concurrent dispose already billed.
+                    if settle_applied {
+                        {
+                            let ack = json!({
+                                "type": "terminal_ack",
+                                "job_id": completion.job_id,
+                                "attempt_id": completion.attempt_id,
+                                "lease_id": lease.as_str(),
+                                "terminal_digest": completion.terminal_digest,
+                                "disposition": "settled",
+                            });
+                            let mut terms = state.terminals.lock().await;
+                            terms.record_bound(
+                                &completion.job_id,
+                                &completion.attempt_id,
+                                &completion.terminal_digest,
+                                "settled",
+                                Some(ack),
+                                lease.as_str(),
+                                &completion.se_signature,
+                            );
+                        }
+                        {
+                            let mut box_ = state.outbox.lock().await;
+                            box_
+                                .enqueue_critical(
+                                    "inference.settled",
+                                    &json!({
+                                        "job_id": completion.job_id,
+                                        "attempt_id": completion.attempt_id,
+                                        "terminal_digest": completion.terminal_digest,
+                                        "charged_micro_usd": completion.charged.0,
+                                    })
+                                    .to_string(),
+                                )
+                                .expect("critical outbox enqueue must not fail for valid kind");
+                        }
+                    } else {
+                        state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
+                            name: "inference.settle_noop_disposed".into(),
+                            tags: vec![
+                                ("job_id".into(), completion.job_id.clone()),
+                                ("model".into(), completion.model.clone()),
+                            ],
                         });
-                        let mut terms = state.terminals.lock().await;
-                        terms.record_bound(
-                            &completion.job_id,
-                            &completion.attempt_id,
-                            &completion.terminal_digest,
-                            "settled",
-                            Some(ack),
-                            lease.as_str(),
-                            &completion.se_signature,
-                        );
-                    }
-                    {
-                        let mut box_ = state.outbox.lock().await;
-                        box_
-                            .enqueue_critical(
-                                "inference.settled",
-                                &json!({
-                                    "job_id": completion.job_id,
-                                    "attempt_id": completion.attempt_id,
-                                    "terminal_digest": completion.terminal_digest,
-                                    "charged_micro_usd": completion.charged.0,
-                                })
-                                .to_string(),
-                            )
-                            .expect("critical outbox enqueue must not fail for valid kind");
                     }
                     drop(_fx);
-                    state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
-                        name: "inference.settled".into(),
-                        tags: vec![
-                            ("model".into(), completion.model.clone()),
-                            ("mode".into(), completion.mode.clone()),
-                            ("provider".into(), completion.provider_id.clone()),
-                        ],
-                    });
+                    if settle_applied {
+                        state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
+                            name: "inference.settled".into(),
+                            tags: vec![
+                                ("model".into(), completion.model.clone()),
+                                ("mode".into(), completion.mode.clone()),
+                                ("provider".into(), completion.provider_id.clone()),
+                            ],
+                        });
+                    }
                     // Online calibration sample from this request's observed latency.
                     let actual_ttft_ms = admit_started.elapsed().as_secs_f64() * 1000.0;
                     state.fleet.record_ttft(

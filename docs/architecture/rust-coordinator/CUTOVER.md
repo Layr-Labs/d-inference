@@ -904,3 +904,16 @@ require `funded_start` / `state = 'start_authorized'` before moving money —
 matching `force_settle_sql`. Reserved-only jobs must `release` or
 `resize_and_authorize` first; the op key is unclaimed on refusal.
 
+### Chat settle outbox only if applied (DECISIONS #154)
+
+Chat completions only record terminal disposition and enqueue
+`inference.settled` when `settle_capped_fenced` returns `Ok(true)`.
+`Ok(false)` (concurrent admin force-settle) leaves charged=0 and skips
+the outbox so providers are not double-credited. Charged amounts are
+clamped to `min(actual, billable_cap, reserved)`.
+
+### Release disposed unclaims op (DECISIONS #155)
+
+`MemoryLedger::release` unclaims the op key when the job is already
+disposed — matching settle #150 and SQL release guard semantics.
+

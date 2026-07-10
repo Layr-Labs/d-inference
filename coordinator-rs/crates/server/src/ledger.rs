@@ -750,6 +750,8 @@ impl MemoryLedger {
             )));
         }
         if job.disposition.is_some() {
+            // Do not poison the op key on a no-op disposed release (DECISIONS #155).
+            self.unclaim_op(&op.0);
             return Ok(false);
         }
         // Once start is authorized, release is forbidden — must settle or
@@ -1318,6 +1320,28 @@ mod tests {
             .unwrap());
         assert_eq!(led.active_job_count(), 0);
         assert_eq!(led.balance("a").0, 4_900_000);
+    }
+
+    #[test]
+    fn release_on_disposed_does_not_poison_op_key() {
+        // DECISIONS #155: unclaim on disposed release no-op.
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r1".into()), "j1", "a", 1_000_000)
+            .unwrap();
+        assert!(led
+            .release(OperationKey("rel1".into()), "j1", "a")
+            .unwrap());
+        assert!(!led
+            .release(OperationKey("shared-rel".into()), "j1", "a")
+            .unwrap());
+        led.reserve(OperationKey("r2".into()), "j2", "a", 500_000)
+            .unwrap();
+        assert!(led
+            .release(OperationKey("shared-rel".into()), "j2", "a")
+            .unwrap());
+        assert_eq!(led.active_job_count(), 0);
+        assert_eq!(led.balance("a").0, 5_000_000);
     }
 
     #[test]

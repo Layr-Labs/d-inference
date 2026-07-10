@@ -37,9 +37,10 @@ pub use external_events::{
 };
 pub use fleet_actor::{spawn_fleet_actor, FleetError, FleetHandle};
 pub use http::{
-    lock_admin_batch_hook_tests, lock_chat_pre_resize_hook_tests, lock_clear_orphans_hook_tests,
-    lock_outbox_drain_hook_tests, router, set_admin_batch_job_hook, set_chat_pre_resize_hook,
-    set_clear_orphans_phase_hook, set_outbox_drain_entry_hook, AppState, ModelCard,
+    lock_admin_batch_hook_tests, lock_chat_pre_resize_hook_tests, lock_chat_pre_settle_hook_tests,
+    lock_clear_orphans_hook_tests, lock_outbox_drain_hook_tests, router, set_admin_batch_job_hook,
+    set_chat_pre_resize_hook, set_chat_pre_settle_hook, set_clear_orphans_phase_hook,
+    set_outbox_drain_entry_hook, AppState, ModelCard,
 };
 pub use ledger::{CutoverStatus, LedgerError, MemoryLedger, OperationKey, ReservationProvenance};
 pub use outbox::{ack_done_sql, requeue_sql, Outbox, OutboxEntry, OutboxError};

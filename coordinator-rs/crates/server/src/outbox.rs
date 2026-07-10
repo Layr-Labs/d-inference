@@ -237,6 +237,8 @@ pub fn enqueue_sql() -> &'static str {
 
 /// Documented SQL for SKIP LOCKED claim.
 /// Claim increments attempts in-place; row remains until ack_done DELETE.
+/// Only claims rows whose available_at has elapsed so requeue backoff is
+/// honoured (DECISIONS #156). Drain paths intentionally omit this filter.
 pub fn claim_sql() -> &'static str {
     r#"
     UPDATE rust_coord.outbox o
@@ -244,6 +246,7 @@ pub fn claim_sql() -> &'static str {
     WHERE o.id = (
       SELECT id FROM rust_coord.outbox
       WHERE attempts < 100
+        AND available_at <= NOW()
       ORDER BY id
       FOR UPDATE SKIP LOCKED
       LIMIT 1
@@ -408,6 +411,10 @@ mod tests {
     #[test]
     fn sql_docs_mention_skip_locked() {
         assert!(claim_sql().contains("SKIP LOCKED"));
+        assert!(
+            claim_sql().contains("available_at <= NOW()"),
+            "claim_sql must respect available_at for retry backoff (DECISIONS #156)"
+        );
         assert!(enqueue_sql().contains("rust_coord.outbox"));
         assert!(ack_done_sql().contains("DELETE FROM rust_coord.outbox"));
         assert!(ack_done_sql().contains("fencing_epoch"));
@@ -418,6 +425,16 @@ mod tests {
         assert!(drain_ack_all_sql().contains("DELETE FROM rust_coord.outbox"));
         assert!(drain_ack_all_sql().contains("fencing_epoch"));
         assert!(drain_ack_all_sql().contains("coordinator_ownership"));
+        // Drain intentionally does NOT filter available_at (force-clear at cutover).
+        assert!(!drain_ack_all_sql().contains("available_at <= NOW()"));
+    }
+
+    #[test]
+    fn claim_sql_respects_available_at() {
+        let sql = claim_sql();
+        assert!(sql.contains("available_at <= NOW()"));
+        assert!(sql.contains("attempts < 100"));
+        assert!(sql.contains("SKIP LOCKED"));
     }
 
     #[test]

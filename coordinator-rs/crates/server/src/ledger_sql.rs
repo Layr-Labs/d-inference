@@ -48,13 +48,20 @@ impl PostgresLedgerStub {
     /// Parameters: $1 account, $2 amount, $3 job_id, $4 model, $5 epoch, $6 operation_key
     /// Op params bind account+amount+job (DECISIONS #34/#138): mismatched reuse
     /// sets param_conflict=true so the caller must refuse (not treat as replay).
+    /// Idempotent replay also surfaces epoch_conflict when the existing job's
+    /// coordinator_epoch mismatches $5 (MemoryLedger reserve_with_epoch parity —
+    /// DECISIONS #157).
     pub fn reserve_sql() -> &'static str {
         r#"
         WITH bal AS (
           SELECT balance_micro_usd AS bal, withdrawable_micro_usd AS wdr
           FROM balances WHERE account_id = $1 FOR UPDATE
         ), existing AS (
-          SELECT 1 FROM rust_coord.inference_jobs WHERE job_id = $3 FOR UPDATE
+          SELECT coordinator_epoch
+          FROM rust_coord.inference_jobs WHERE job_id = $3 FOR UPDATE
+        ), epoch_ok AS (
+          SELECT 1 FROM existing
+          WHERE coordinator_epoch = 0 OR coordinator_epoch = $5::bigint
         ), eligible AS (
           SELECT
             GREATEST(0, $2::bigint - GREATEST(0, bal - wdr)) AS reserved_wdr
@@ -111,7 +118,8 @@ impl PostgresLedgerStub {
         )
         SELECT
           (SELECT reserved_wdr FROM debit) AS reserved_wdr,
-          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict
+          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict,
+          (EXISTS (SELECT 1 FROM existing) AND NOT EXISTS (SELECT 1 FROM epoch_ok)) AS epoch_conflict
         "#
     }
 
@@ -796,9 +804,19 @@ mod tests {
         assert!(sql.contains("op_ok"));
         assert!(sql.contains("op_conflict"));
         assert!(sql.contains("param_conflict"));
+        assert!(sql.contains("epoch_ok"));
+        assert!(sql.contains("epoch_conflict"));
         assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));
         assert!(sql.contains("FROM eligible e"));
+    }
+
+    #[test]
+    fn reserve_sql_surfaces_epoch_conflict_on_replay() {
+        // DECISIONS #157: zombie coordinator retry must not look like clean replay.
+        let sql = PostgresLedgerStub::reserve_sql();
+        assert!(sql.contains("epoch_conflict"));
+        assert!(sql.contains("coordinator_epoch = 0 OR coordinator_epoch = $5"));
     }
 
     #[test]

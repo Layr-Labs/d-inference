@@ -162,6 +162,8 @@ Date: 2026-07-10
 | 153 | Settle requires start_authorized | MemoryLedger + `settle_sql` / `settle_capped_sql` refuse settle on reserved-only jobs (force_settle parity) |
 | 154 | Chat settle outbox only if applied | Chat gates terminal/outbox on `settle_capped_fenced` returning `Ok(true)`; clamps charged to reserved; no duplicate settle after force-settle |
 | 155 | Release disposed unclaims op | `MemoryLedger::release` unclaims the op key on disposed no-op (settle #150 parity) |
+| 156 | Outbox claim respects available_at | `claim_sql` filters `available_at <= NOW()` so requeue backoff is honoured (drain still force-clears) |
+| 157 | Reserve SQL epoch conflict on replay | `reserve_sql` surfaces `epoch_conflict` when existing job fencing epoch mismatches caller (MemoryLedger parity) |
 
 ## Deleted Go mechanisms (do not port)
 

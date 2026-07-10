@@ -1320,9 +1320,10 @@ async fn chat_completions(
                         let mut cp = ChunkCheckpoint::default();
                         // Billable tokens = min(provider claim, content-derived estimate)
                         // so inflated completion_tokens cannot overcharge.
-                        let provider_tokens = completion.completion_tokens.max(0) as u64;
-                        let content_tokens = ((completion.content.len() / 4) as u64).max(1);
-                        let tokens = content_tokens.min(provider_tokens);
+                        let tokens = crate::stream_billing::stream_billable_tokens(
+                            completion.completion_tokens.max(0) as u64,
+                            completion.content.len(),
+                        );
                         let _ = crate::stream_billing::pipe_and_checkpoint(
                             &pipe,
                             &mut cp,

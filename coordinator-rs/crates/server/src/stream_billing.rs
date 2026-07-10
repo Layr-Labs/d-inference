@@ -30,6 +30,13 @@ pub fn billable_cap_micro_usd(cp: &ChunkCheckpoint, micro_per_token: i64) -> i64
     (cp.billable_completion_tokens() as i64).saturating_mul(micro_per_token.max(0))
 }
 
+/// Stream billable token count: never trust an inflated provider claim above
+/// what the accepted content can justify (DECISIONS #49).
+pub fn stream_billable_tokens(provider_tokens: u64, content_len: usize) -> u64 {
+    let content_tokens = ((content_len / 4) as u64).max(1);
+    content_tokens.min(provider_tokens.max(0))
+}
+
 /// Helper used by streaming settle: enqueue mock content through the pipe and
 /// advance the checkpoint with the assigned sequence.
 pub fn pipe_and_checkpoint(
@@ -83,5 +90,13 @@ mod tests {
         pipe_and_checkpoint(&pipe, &mut cp, b"hi", 5, "h").unwrap();
         assert_eq!(billable_cap_from_checkpoint(&cp), 5);
         assert_eq!(billable_cap_micro_usd(&cp, 10), 50);
+    }
+
+    #[test]
+    fn stream_billable_tokens_clamps_inflated_provider_claim() {
+        assert_eq!(stream_billable_tokens(500, 40), 10); // 40/4 = 10
+        assert_eq!(stream_billable_tokens(3, 40), 3); // provider lower wins
+        assert_eq!(stream_billable_tokens(0, 0), 0); // empty + zero claim
+        assert_eq!(stream_billable_tokens(100, 0), 1); // empty content → 1 token floor
     }
 }

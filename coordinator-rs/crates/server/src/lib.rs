@@ -22,6 +22,7 @@ pub mod request_task;
 pub mod sealed;
 pub mod stream_billing;
 pub mod telemetry;
+pub mod terminal_ingest;
 
 pub use abort::{abort_frame, abort_losing_hedge, cancel_attempt, cancel_frame};
 pub use cancel::{cancel_before_or_after_content, CancelOutcome};
@@ -43,6 +44,9 @@ pub use request_task::{spawn_request_task, ControlEvent, RequestTaskHandle};
 pub use sealed::decrypt_request_body;
 pub use stream_billing::{accept_pipe_chunk, billable_cap_from_checkpoint, pipe_and_checkpoint};
 pub use telemetry::{bounded_telemetry, TelemetryEvent, TelemetrySink};
+pub use terminal_ingest::{
+    ingest_terminal, MemoryTerminalStore, TerminalDisposition, TerminalIngest, TerminalIngestError,
+};
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

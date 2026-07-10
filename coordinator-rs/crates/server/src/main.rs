@@ -1,7 +1,8 @@
 use darkbloom_coordinator::cli::{parse_and_is_recovery, run_recovery};
 use darkbloom_coordinator::{
-    bounded_telemetry, router, spawn_fleet_actor, AppState, CoordinatorKeys, Epoch, MemoryLedger,
-    ModelCard, OwnershipGate, ProviderHub,
+    bounded_telemetry, router, spawn_fleet_actor, AppState, CoordinatorKeys, Epoch,
+    ExternalEventInbox, MemoryLedger, MemoryTerminalStore, ModelCard, Outbox, OwnershipGate,
+    ProviderHub,
 };
 use darkbloom_core::PlacementController;
 use std::net::SocketAddr;
@@ -79,6 +80,26 @@ async fn main() {
         }
     });
     let ownership_for_shutdown = ownership.clone();
+    let outbox_for_worker = Arc::new(Mutex::new(Outbox::default()));
+    let outbox_for_state = outbox_for_worker.clone();
+    tokio::spawn(async move {
+        // Best-effort outbox drain (Datadog/projection forwarder lands with SQLx).
+        loop {
+            let claimed = {
+                let mut box_ = outbox_for_worker.lock().await;
+                box_.try_claim()
+            };
+            match claimed {
+                Some(entry) => {
+                    tracing::debug!(id = entry.id, kind = %entry.kind, "outbox delivered");
+                    // Success path: entry already removed by try_claim.
+                }
+                None => {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            }
+        }
+    });
     let state = AppState {
         fleet,
         hub,
@@ -96,6 +117,9 @@ async fn main() {
         pilot_api_keys,
         coordinator_epoch,
         ownership,
+        external_events: Arc::new(Mutex::new(ExternalEventInbox::new())),
+        outbox: outbox_for_state,
+        terminals: Arc::new(Mutex::new(MemoryTerminalStore::new())),
     };
 
     let app = router(state);

@@ -12,15 +12,18 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::crypto_keys::CoordinatorKeys;
+use crate::external_events::ExternalEventInbox;
 use crate::fleet_actor::FleetHandle;
 use crate::ledger::MemoryLedger;
 use crate::mock_provider::{complete_authorized_job, openai_chat_response};
+use crate::outbox::Outbox;
 use crate::ownership::Gate as OwnershipGate;
 use crate::provider_hub::{OutboundCmd, ProviderHub, SharedHub};
 use crate::provider_ws::provider_ws;
 use crate::request_task::{spawn_request_task, ControlEvent};
 use crate::sealed::decrypt_request_body;
 use crate::telemetry::TelemetrySink;
+use crate::terminal_ingest::MemoryTerminalStore;
 use darkbloom_core::{ChunkCheckpoint, AttemptId, JobId, LeaseId, PlacementController};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -41,6 +44,12 @@ pub struct AppState {
     pub coordinator_epoch: u64,
     /// Single-active fencing gate (plan §20).
     pub ownership: Arc<OwnershipGate>,
+    /// Stripe / external-event idempotency inbox (plan §12).
+    pub external_events: Arc<Mutex<ExternalEventInbox>>,
+    /// Durable side-effect outbox (plan §12); process-local until SQLx.
+    pub outbox: Arc<Mutex<Outbox>>,
+    /// Terminal disposition store for replay ACK without double settle.
+    pub terminals: Arc<Mutex<MemoryTerminalStore>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -144,7 +153,14 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             .collect();
         (p.version().0, demand)
     };
-    let ready = active_jobs == 0;
+    let external_events_seen = state.external_events.lock().await.len();
+    let (outbox_pending, outbox_retryable) = {
+        let box_ = state.outbox.lock().await;
+        (box_.len(), box_.pending_under_retry_cap())
+    };
+    let late_terminals = state.terminals.lock().await.late_count();
+    // Quiescent only when no active jobs and no retryable outbox work.
+    let ready = active_jobs == 0 && outbox_retryable == 0;
     let status = if ready {
         StatusCode::OK
     } else {
@@ -166,6 +182,10 @@ async fn quiescence(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             "fleet_actor": "up",
             "ownership_holding": state.ownership.holding(),
             "ownership_epoch": state.ownership.epoch().0,
+            "external_events_seen": external_events_seen,
+            "outbox_pending": outbox_pending,
+            "outbox_retryable": outbox_retryable,
+            "late_terminals": late_terminals,
         })),
     )
 }
@@ -606,6 +626,37 @@ async fn chat_completions(
                         lease: lease.clone(),
                     });
                     let _ = task.apply(ControlEvent::FinalizeDone);
+                    // Record disposition for replay ACK (plan §4.6) + outbox side effect.
+                    {
+                        let ack = json!({
+                            "type": "terminal_ack",
+                            "job_id": completion.job_id,
+                            "attempt_id": completion.attempt_id,
+                            "lease_id": lease.as_str(),
+                            "terminal_digest": completion.terminal_digest,
+                            "disposition": "settled",
+                        });
+                        let mut terms = state.terminals.lock().await;
+                        terms.record(
+                            &completion.attempt_id,
+                            &completion.terminal_digest,
+                            "settled",
+                            Some(ack),
+                        );
+                    }
+                    {
+                        let mut box_ = state.outbox.lock().await;
+                        let _ = box_.enqueue(
+                            "inference.settled",
+                            &json!({
+                                "job_id": completion.job_id,
+                                "attempt_id": completion.attempt_id,
+                                "terminal_digest": completion.terminal_digest,
+                                "charged_micro_usd": completion.charged.0,
+                            })
+                            .to_string(),
+                        );
+                    }
                     state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
                         name: "inference.settled".into(),
                         tags: vec![

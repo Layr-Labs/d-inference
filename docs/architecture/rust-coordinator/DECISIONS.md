@@ -157,6 +157,8 @@ Date: 2026-07-10
 | 148 | Settle/force op stores clamped charge | MemoryLedger capped settle/force_settle records `charge` (not raw actual); force_settle billable_cap=None (SQL parity) |
 | 149 | Resize fail drops money_fx before release | Chat resize+authorize scopes `money_fx` so `release_job_with_outbox` can re-acquire (tokio Mutex not reentrant) |
 | 150 | Settle disposed unclaims op | `settle_as_inner` unclaims the op key on disposed no-op so the key is not poisoned |
+| 151 | Settle/force SQL disposed replay | `settle_capped_sql` / `force_settle_sql` `op_ok` LEFT JOINs charge so identical disposed replay is not false `param_conflict` |
+| 152 | Release SQL jsonb outbox | `release_sql` uses `jsonb_build_object` (not `json_build_object(...)::text`) for outbox payload |
 
 ## Deleted Go mechanisms (do not port)
 

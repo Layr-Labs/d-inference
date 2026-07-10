@@ -428,11 +428,18 @@ impl PostgresLedgerStub {
         ), op_row AS (
           SELECT * FROM rust_coord.financial_operations WHERE operation_key = $6
         ), op_ok AS (
+          -- LEFT JOIN charge: disposed jobs have empty charge; still validate
+          -- amount against LEAST(actual,cap,reserved) so mismatched replay
+          -- conflicts (MemoryLedger parity — DECISIONS #151).
           SELECT 1 FROM op_row o
-          JOIN charge c ON TRUE
+          LEFT JOIN charge c ON TRUE
+          JOIN job j ON TRUE
           WHERE o.job_id = $2
             AND o.op_type = 'settle_capped'
-            AND o.amount_micro_usd = c.amount
+            AND o.amount_micro_usd = COALESCE(
+              c.amount,
+              LEAST(GREATEST(0, $3::bigint), GREATEST(0, $4::bigint), j.reserved)
+            )
             AND o.account_id = $1
             AND COALESCE(o.terminal_digest, '') = COALESCE($5, '')
             AND o.billable_cap_micro_usd IS NOT DISTINCT FROM $4::bigint
@@ -541,11 +548,17 @@ impl PostgresLedgerStub {
         ), op_row AS (
           SELECT * FROM rust_coord.financial_operations WHERE operation_key = $5
         ), op_ok AS (
+          -- LEFT JOIN charge: disposed jobs have empty charge; still validate
+          -- amount against LEAST(actual,reserved) (DECISIONS #151).
           SELECT 1 FROM op_row o
-          JOIN charge c ON TRUE
+          LEFT JOIN charge c ON TRUE
+          JOIN job j ON TRUE
           WHERE o.job_id = $2
             AND o.op_type = 'force_settle'
-            AND o.amount_micro_usd = c.amount
+            AND o.amount_micro_usd = COALESCE(
+              c.amount,
+              LEAST(GREATEST(0, $3::bigint), j.reserved)
+            )
             AND o.account_id = $1
             AND COALESCE(o.terminal_digest, '') = COALESCE($4, '')
             AND o.billable_cap_micro_usd IS NULL
@@ -690,12 +703,12 @@ impl PostgresLedgerStub {
           -- Money refund + durable side effect commit together (DECISIONS #43).
           INSERT INTO rust_coord.outbox (kind, payload, attempts)
           SELECT 'inference.released',
-                 json_build_object(
+                 jsonb_build_object(
                    'job_id', m.job_id,
                    'account', m.account_id,
                    'disposition', 'released',
                    'refunded_micro_usd', c.reserved
-                 )::text,
+                 ),
                  0
           FROM mark m
           CROSS JOIN credit c
@@ -829,11 +842,32 @@ mod tests {
         assert!(sql.contains("op_conflict"));
         assert!(sql.contains("param_conflict"));
         assert!(sql.contains("billable_cap_micro_usd"));
+        assert!(sql.contains("LEFT JOIN charge"));
+        assert!(sql.contains("COALESCE("));
         assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
         assert!(sql.contains("cleanup_op"));
         assert!(sql.contains("rust_coord.outbox"));
         assert!(sql.contains("inference.settled"));
         assert!(sql.contains("coordinator_epoch = $10"));
+    }
+
+    #[test]
+    fn settle_capped_and_force_settle_op_ok_tolerate_disposed_replay() {
+        // DECISIONS #151: disposed jobs empty `charge`; op_ok must LEFT JOIN
+        // so identical replay is not a false param_conflict.
+        for sql in [
+            PostgresLedgerStub::settle_capped_sql(),
+            PostgresLedgerStub::force_settle_sql(),
+        ] {
+            assert!(
+                sql.contains("LEFT JOIN charge"),
+                "op_ok must LEFT JOIN charge for disposed-job replay"
+            );
+            assert!(
+                sql.contains("COALESCE(") && sql.contains("c.amount"),
+                "op_ok must COALESCE charge amount with LEAST(...) for disposed replay"
+            );
+        }
     }
 
     #[test]
@@ -894,6 +928,8 @@ mod tests {
         assert!(sql.contains("cleanup_op"));
         assert!(sql.contains("rust_coord.outbox"));
         assert!(sql.contains("inference.released"));
+        assert!(sql.contains("jsonb_build_object"));
+        assert!(!sql.contains("json_build_object"));
         assert!(sql.contains("FROM mark m"));
         assert!(sql.contains("coordinator_epoch = $4"));
     }

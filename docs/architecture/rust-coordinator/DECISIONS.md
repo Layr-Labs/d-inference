@@ -166,6 +166,8 @@ Date: 2026-07-10
 | 157 | Reserve SQL epoch conflict on replay | `reserve_sql` surfaces `epoch_conflict` when existing job fencing epoch mismatches caller (MemoryLedger parity) |
 | 158 | Cutover-drain-all ready under money_fx | `cutover-drain-all` readiness snapshots hold `money_fx` across ledger+outbox reads (quiescence/#147 parity) |
 | 159 | Settle SQL cross-job digest conflict | `settle_sql` / `settle_capped_sql` / `force_settle_sql` surface `digest_conflict` when terminal_digest is bound to another job |
+| 160 | Cutover-drain-all atomic ready fields | Ready/`all_remaining` come from the same money_fx snapshot as outbox_len — no post-snapshot naked ledger re-read |
+| 161 | Money SQL epoch_conflict | settle/settle_capped/force/release/mark_start/resize SQL surface `epoch_conflict` (reserve #157 parity); settle job CTE selects `state` |
 
 ## Deleted Go mechanisms (do not port)
 

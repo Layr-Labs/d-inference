@@ -2512,28 +2512,29 @@ async fn admin_cutover_drain_all(
                 .into_response();
         }
 
-        // Hold money_fx across ledger+outbox snapshot so a concurrent settle
-        // cannot enqueue inference.settled between the two reads (DECISIONS #158).
-        let (accounts, outbox_len) = {
+        // Hold money_fx across the full readiness snapshot — including the
+        // all_remaining fields used for `ready` — so a concurrent settle cannot
+        // enqueue inference.settled after we release the barrier (DECISIONS #158/#160).
+        let (accounts, outbox_len, all_remaining, needs_adopt) = {
             let _fx = state.money_fx.lock().await;
             let led = state.ledger.lock().await;
+            let status = led.cutover_status(state.ownership.epoch().0);
             let accts = filter_accounts(
-                led.cutover_status(state.ownership.epoch().0)
-                    .accounts_needing_cutover,
+                status.accounts_needing_cutover.clone(),
                 allowlist.as_ref(),
             );
             let box_ = state.outbox.lock().await;
-            (accts, box_.len())
+            (
+                accts,
+                box_.len(),
+                status.accounts_needing_cutover,
+                status.needs_adopt_count,
+            )
         };
 
         // Scoped ready: allowlisted (or all) accounts clear + outbox fully empty
         // (including retry-exhausted rows — DECISIONS #133).
         if accounts.is_empty() && outbox_len == 0 {
-            let (all_remaining, needs_adopt) = {
-                let led = state.ledger.lock().await;
-                let status = led.cutover_status(state.ownership.epoch().0);
-                (status.accounts_needing_cutover, status.needs_adopt_count)
-            };
             return (
                 StatusCode::OK,
                 Json(json!({
@@ -2717,24 +2718,24 @@ async fn admin_cutover_drain_all(
         }));
 
         // Re-check within the same round so max_rounds=1 can still finish (DECISIONS #118).
-        // Hold money_fx across both reads (DECISIONS #158).
-        let (accounts_after, outbox_after) = {
+        // Full readiness snapshot under money_fx (DECISIONS #158/#160).
+        let (accounts_after, outbox_after, all_remaining, needs_adopt) = {
             let _fx = state.money_fx.lock().await;
             let led = state.ledger.lock().await;
+            let status = led.cutover_status(state.ownership.epoch().0);
             let accts = filter_accounts(
-                led.cutover_status(state.ownership.epoch().0)
-                    .accounts_needing_cutover,
+                status.accounts_needing_cutover.clone(),
                 allowlist.as_ref(),
             );
             let box_ = state.outbox.lock().await;
-            (accts, box_.len())
+            (
+                accts,
+                box_.len(),
+                status.accounts_needing_cutover,
+                status.needs_adopt_count,
+            )
         };
         if accounts_after.is_empty() && outbox_after == 0 {
-            let (all_remaining, needs_adopt) = {
-                let led = state.ledger.lock().await;
-                let status = led.cutover_status(state.ownership.epoch().0);
-                (status.accounts_needing_cutover, status.needs_adopt_count)
-            };
             return (
                 StatusCode::OK,
                 Json(json!({

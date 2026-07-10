@@ -181,7 +181,14 @@ impl PostgresLedgerStub {
         )
         SELECT
           (SELECT job_id FROM mark) AS job_id,
-          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict
+          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict,
+          (
+            EXISTS (SELECT 1 FROM job)
+            AND NOT EXISTS (
+              SELECT 1 FROM job
+              WHERE coordinator_epoch = 0 OR coordinator_epoch = $4::bigint
+            )
+          ) AS epoch_conflict
         "#
     }
 
@@ -287,7 +294,14 @@ impl PostgresLedgerStub {
         SELECT
           (SELECT reserved_total_micro_usd FROM mark) AS reserved_total_micro_usd,
           (SELECT reserved_withdrawable_micro_usd FROM mark) AS reserved_withdrawable_micro_usd,
-          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict
+          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict,
+          (
+            EXISTS (SELECT 1 FROM job)
+            AND NOT EXISTS (
+              SELECT 1 FROM job
+              WHERE coordinator_epoch = 0 OR coordinator_epoch = $5::bigint
+            )
+          ) AS epoch_conflict
         "#
     }
 
@@ -303,7 +317,7 @@ impl PostgresLedgerStub {
         WITH job AS (
           SELECT job_id, account_id, reserved_total_micro_usd AS reserved,
                  reserved_withdrawable_micro_usd AS reserved_wdr,
-                 terminal_disposition, coordinator_epoch
+                 terminal_disposition, state, coordinator_epoch
           FROM rust_coord.inference_jobs
           WHERE job_id = $2
             AND account_id = $1
@@ -408,7 +422,14 @@ impl PostgresLedgerStub {
               WHERE terminal_digest = $4
                 AND job_id <> $2
             )
-          ) AS digest_conflict
+          ) AS digest_conflict,
+          (
+            EXISTS (SELECT 1 FROM job)
+            AND NOT EXISTS (
+              SELECT 1 FROM job
+              WHERE coordinator_epoch = 0 OR coordinator_epoch = $9::bigint
+            )
+          ) AS epoch_conflict
         "#
     }
 
@@ -423,7 +444,7 @@ impl PostgresLedgerStub {
         WITH job AS (
           SELECT job_id, account_id, reserved_total_micro_usd AS reserved,
                  reserved_withdrawable_micro_usd AS reserved_wdr,
-                 terminal_disposition, coordinator_epoch
+                 terminal_disposition, state, coordinator_epoch
           FROM rust_coord.inference_jobs
           WHERE job_id = $2
             AND account_id = $1
@@ -542,7 +563,14 @@ impl PostgresLedgerStub {
               WHERE terminal_digest = $5
                 AND job_id <> $2
             )
-          ) AS digest_conflict
+          ) AS digest_conflict,
+          (
+            EXISTS (SELECT 1 FROM job)
+            AND NOT EXISTS (
+              SELECT 1 FROM job
+              WHERE coordinator_epoch = 0 OR coordinator_epoch = $10::bigint
+            )
+          ) AS epoch_conflict
         "#
     }
 
@@ -673,7 +701,14 @@ impl PostgresLedgerStub {
               WHERE terminal_digest = $4
                 AND job_id <> $2
             )
-          ) AS digest_conflict
+          ) AS digest_conflict,
+          (
+            EXISTS (SELECT 1 FROM job)
+            AND NOT EXISTS (
+              SELECT 1 FROM job
+              WHERE coordinator_epoch = 0 OR coordinator_epoch = $9::bigint
+            )
+          ) AS epoch_conflict
         "#
     }
 
@@ -767,7 +802,14 @@ impl PostgresLedgerStub {
         SELECT
           (SELECT reserved FROM credit) AS reserved,
           (SELECT reserved_wdr FROM credit) AS reserved_wdr,
-          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict
+          EXISTS (SELECT 1 FROM op_conflict) AS param_conflict,
+          (
+            EXISTS (SELECT 1 FROM job)
+            AND NOT EXISTS (
+              SELECT 1 FROM job
+              WHERE coordinator_epoch = 0 OR coordinator_epoch = $4::bigint
+            )
+          ) AS epoch_conflict
         "#
     }
 
@@ -850,6 +892,24 @@ mod tests {
         let sql = PostgresLedgerStub::reserve_sql();
         assert!(sql.contains("epoch_conflict"));
         assert!(sql.contains("coordinator_epoch = 0 OR coordinator_epoch = $5"));
+    }
+
+    #[test]
+    fn money_sql_surfaces_epoch_conflict_on_zombie_retry() {
+        // DECISIONS #161: all money-moving SQL surfaces epoch_conflict.
+        for (name, sql) in [
+            ("settle", PostgresLedgerStub::settle_sql()),
+            ("settle_capped", PostgresLedgerStub::settle_capped_sql()),
+            ("force_settle", PostgresLedgerStub::force_settle_sql()),
+            ("release", PostgresLedgerStub::release_sql()),
+            ("mark_start", PostgresLedgerStub::mark_start_authorized_sql()),
+            ("resize", PostgresLedgerStub::resize_and_authorize_sql()),
+        ] {
+            assert!(
+                sql.contains("epoch_conflict"),
+                "{name} SQL must surface epoch_conflict for zombie retry"
+            );
+        }
     }
 
     #[test]

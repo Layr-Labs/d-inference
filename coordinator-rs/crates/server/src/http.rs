@@ -3052,6 +3052,8 @@ async fn chat_completions(
                 if let Err(resp) = require_holding(&state) {
                     return resp;
                 }
+                // Hold money_fx across reserve so quiescence cannot race the debit (DECISIONS #146).
+                let _fx = state.money_fx.lock().await;
                 let mut ledger = state.ledger.lock().await;
                 if let Err(err) = ledger.reserve_with_epoch(
                     crate::ledger::OperationKey(format!("reserve:{}", job_id.as_str())),
@@ -3172,6 +3174,8 @@ async fn chat_completions(
                 if let Err(resp) = require_holding(&state) {
                     return resp;
                 }
+                // Hold money_fx across resize+authorize (DECISIONS #146).
+                let _fx = state.money_fx.lock().await;
                 let resize_err = {
                     let mut ledger = state.ledger.lock().await;
                     let reserved = ledger

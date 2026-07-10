@@ -152,6 +152,7 @@ Date: 2026-07-10
 | 143 | Recover under money_fx | Single-job `recover-undispatched` holds `money_fx` across release + disposition/outbox |
 | 144 | Release op amount bind | MemoryLedger `release` stores reserved amount in OperationRecord (SQL `j.reserved` parity) |
 | 145 | Deposit claim_op | MemoryLedger `credit_deposit` claims `deposit:{source}:{event_id}` with account/amount/wdr/digest bind; `apply_stripe_deposit` uses it |
+| 146 | Chat reserve under money_fx | Chat path holds `money_fx` across `reserve_with_epoch` and `resize_and_authorize_fenced` |
 
 ## Deleted Go mechanisms (do not port)
 

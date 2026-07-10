@@ -853,3 +853,9 @@ account/amount/withdrawable/digest bound on the OperationRecord (SQL
 `deposit_sql` parity). `apply_stripe_deposit` credits via this path so
 bypassing the inbox cannot silently double-credit the same deposit key.
 
+### Chat reserve under money_fx (DECISIONS #146)
+
+Chat completions hold `money_fx` across provisional `reserve_with_epoch`
+and `resize_and_authorize_fenced` so quiescence cannot observe a mid-flight
+debit/authorize outside the money barrier (settle already covered by #137).
+

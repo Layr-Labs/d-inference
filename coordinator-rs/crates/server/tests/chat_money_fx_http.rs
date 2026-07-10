@@ -69,7 +69,13 @@ async fn mock_chat_settle_blocks_while_money_fx_held() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         !chat.is_finished(),
-        "chat must wait on money_fx during settle+outbox"
+        "chat must wait on money_fx during reserve/settle+outbox"
+    );
+    // Reserve also holds money_fx (DECISIONS #146) — no active job until barrier releases.
+    assert_eq!(
+        state.ledger.lock().await.active_job_count(),
+        0,
+        "reserve must not complete while money_fx is held"
     );
 
     drop(hold);

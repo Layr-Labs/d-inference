@@ -520,4 +520,31 @@ mod tests {
             .unwrap());
         assert_eq!(led.balance("a").0, 5_000_000);
     }
+
+    #[test]
+    fn job_reserved_total_tracks_provenance_until_disposition() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 2_000_000);
+        assert!(led.job_reserved_total("j").is_none());
+        let res = led
+            .reserve(OperationKey("r".into()), "j", "a", 3_000_000)
+            .unwrap();
+        assert!(res.applied);
+        assert_eq!(led.job_reserved_total("j").unwrap().0, 3_000_000);
+        // After settle, job row remains but disposition is set; reserved total still readable.
+        led.mark_start_authorized("j").unwrap();
+        assert!(led
+            .settle(OperationKey("s".into()), "j", "a", 1_000_000, "d1")
+            .unwrap());
+        assert_eq!(led.job_reserved_total("j").unwrap().0, 3_000_000);
+        assert_eq!(led.active_job_count(), 0);
+    }
+
+    #[test]
+    fn credit_accumulates_total_and_withdrawable() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 1_000_000, 0);
+        led.credit("a", 500_000, 500_000);
+        assert_eq!(led.balance("a"), (1_500_000, 500_000));
+    }
 }

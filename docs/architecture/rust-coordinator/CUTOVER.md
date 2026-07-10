@@ -85,11 +85,11 @@ restores the key so a retry can succeed. Durable shape: `deposit_sql()`.
 `force_settle_held` uses the same clamp so an over-sized review amount
 never fail-closes a held job. SQL: `settle_capped_sql()` / `force_settle_sql()`.
 
-### Account bind + gated digests (DECISIONS #24)
+### Account bind + gated digests (DECISIONS #24 / #31)
 
-Money-moving CTEs require `inference_jobs.account_id = caller`. Digest and
-op-key inserts are `INSERT … SELECT … FROM guard|charge|calc` so a failed
-settle cannot pin a terminal digest or poison an operation key.
+Money-moving CTEs and `mark_start_authorized` require
+`inference_jobs.account_id = caller`. Digest and op-key inserts are gated so a
+failed settle cannot pin a terminal digest or poison an operation key.
 
 ### Terminal ingest attempt drift (DECISIONS #25)
 
@@ -97,10 +97,12 @@ settle cannot pin a terminal digest or poison an operation key.
 to digest-only so empty or drifted attempt_id at settle still ACKs.
 Go `ownership.IngestTerminal` mirrors this via optional `DigestTerminalLookup`.
 
-### Reserve SQL job-first (DECISIONS #26)
+### Reserve SQL job-first + op-first (DECISIONS #26 / #33)
 
-`reserve_sql` inserts the job before debiting; debit/op only run when the job
-row is newly created — job_id conflict never drains balances.
+`reserve_sql` claims `financial_operations` from an eligible row, then inserts
+the job and debits only when the op claim succeeded. Orphaned op claims (job
+conflict) are deleted in-statement via `cleanup_op`. The same op-first pattern
+applies to settle / settle_capped / force_settle / release / resize / mark_start.
 
 ### Force-settle disposition (DECISIONS #27)
 
@@ -123,3 +125,9 @@ requeue after failed delivery) keeps the coordinator not-ready until drain.
 `/v1/admin/quiescence` stays readable when not holding so cutover ops can
 observe drain state (`ownership_holding=false`). Mutating admin routes
 (deposits, terminal-ingest) still require ownership.
+
+### Critical outbox enqueue (DECISIONS #32)
+
+Money side effects (`billing.deposit_applied`, `inference.settled`) use
+`Outbox::enqueue_critical`, which extends past the bounded capacity so a full
+queue cannot silently drop the entry. Quiescence still blocks on overflow.

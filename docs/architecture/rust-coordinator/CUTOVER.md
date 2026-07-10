@@ -369,3 +369,9 @@ Same orphan path after start-wait steal: adopt then force-settle. Quiescence
 includes `active_job_ids` so cutover ops can list reserved/held orphans without
 ledger internals.
 
+### Bulk adopt-jobs (DECISIONS #72)
+
+`POST /v1/admin/adopt-jobs` rebinds all active jobs (or an explicit `job_ids`
+list) to the current fencing epoch. Quiescence remains readable without
+ownership and lists `active_job_ids` for discovery after steal.
+

@@ -84,6 +84,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/held-review", post(admin_held_review))
         .route("/v1/admin/terminal-ingest", post(admin_terminal_ingest))
         .route("/v1/admin/adopt-job", post(admin_adopt_job))
+        .route("/v1/admin/adopt-jobs", post(admin_adopt_jobs))
         .route("/v1/admin/cancel-attempt", post(admin_cancel_attempt))
         .fallback(unsupported)
         .with_state(Arc::new(state))
@@ -820,6 +821,69 @@ async fn admin_adopt_job(
             "job_id": req.job_id,
             "previous_fencing_epoch": prev,
             "fencing_epoch": current,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AdminAdoptJobsRequest {
+    /// Optional explicit ids; empty/omitted = all active jobs (DECISIONS #72).
+    #[serde(default)]
+    job_ids: Vec<String>,
+}
+
+/// Bulk-rebind active jobs to the current fencing epoch (DECISIONS #72).
+async fn admin_adopt_jobs(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AdminAdoptJobsRequest>,
+) -> impl IntoResponse {
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
+    }
+    if let Err(resp) = require_holding(&state) {
+        return resp;
+    }
+    let epoch = state.ownership.epoch().0;
+    let mut adopted = Vec::new();
+    let mut failed = Vec::new();
+    {
+        let mut led = state.ledger.lock().await;
+        let ids = if req.job_ids.is_empty() {
+            led.active_job_ids()
+        } else {
+            req.job_ids.clone()
+        };
+        for job_id in ids {
+            match led.adopt_fencing_epoch(&job_id, epoch) {
+                Ok(prev) => {
+                    adopted.push(json!({
+                        "job_id": job_id,
+                        "previous_fencing_epoch": prev,
+                        "fencing_epoch": epoch,
+                    }));
+                }
+                Err(err) => {
+                    failed.push(json!({
+                        "job_id": job_id,
+                        "error": format!("{err}"),
+                    }));
+                }
+            }
+        }
+    }
+    let adopted_count = adopted.len();
+    let failed_count = failed.len();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "action": "adopted_batch",
+            "fencing_epoch": epoch,
+            "adopted": adopted,
+            "failed": failed,
+            "adopted_count": adopted_count,
+            "failed_count": failed_count,
         })),
     )
         .into_response()

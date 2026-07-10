@@ -78,6 +78,7 @@ Date: 2026-07-10
 | 69 | Adopt fencing SQL docs | `adopt_fencing_epoch_sql` rebinds `inference_jobs.coordinator_epoch` gated on active ownership holder + non-disposed job (no money CTEs) |
 | 70 | Prepare-steal adopt-recover e2e | After prepare-wait ownership steal, re-acquire + `adopt-job` + `recover-undispatched` clears the orphaned reserved job and restores balance |
 | 71 | Start-steal adopt-force-settle e2e + quiescence active ids | After start-wait ownership steal, adopt + force-settle clears the hold. Quiescence reports `active_job_ids` for orphan discovery |
+| 72 | Bulk adopt-jobs + quiescence without ownership lists ids | `POST /v1/admin/adopt-jobs` rebinds all (or listed) active jobs. Quiescence without holding still returns `active_job_ids` so cutover ops can discover orphans after steal |
 
 ## Deleted Go mechanisms (do not port)
 

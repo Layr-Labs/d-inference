@@ -20,7 +20,7 @@ use crate::provider_ws::provider_ws;
 use crate::request_task::{spawn_request_task, ControlEvent};
 use crate::sealed::decrypt_request_body;
 use crate::telemetry::TelemetrySink;
-use darkbloom_core::{AttemptId, JobId, LeaseId, PlacementController};
+use darkbloom_core::{ChunkCheckpoint, AttemptId, JobId, LeaseId, PlacementController};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -535,8 +535,20 @@ async fn chat_completions(
                         OutboundCmd::Text(ack.to_string()),
                     );
                     if req.stream {
-                        let chunk = openai_chat_response(&completion, true);
-                        let done = json!({"id": completion.job_id, "object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
+                        // Stream through ChunkCheckpoint so billable tokens track
+                        // last-accepted sequence (plan §10.6).
+                        let mut cp = ChunkCheckpoint::default();
+                        let tokens = completion.completion_tokens.max(0) as u64;
+                        if let darkbloom_core::ChunkAccept::Accepted(next) =
+                            cp.accept(1, tokens, completion.terminal_digest.clone())
+                        {
+                            cp = next;
+                        }
+                        let billable = cp.billable_completion_tokens() as i32;
+                        let mut streamed = completion;
+                        streamed.completion_tokens = billable;
+                        let chunk = openai_chat_response(&streamed, true);
+                        let done = json!({"id": streamed.job_id, "object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
                         let body = format!(
                             "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
                             chunk, done

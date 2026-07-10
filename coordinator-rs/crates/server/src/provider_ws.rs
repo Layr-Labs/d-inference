@@ -182,12 +182,44 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                         };
                 let _ = state.fleet.upsert_heartbeat(snap);
             }
-            darkbloom_protocol::MessageType::Prepared
-            | darkbloom_protocol::MessageType::Started
-            | darkbloom_protocol::MessageType::Aborted
-            | darkbloom_protocol::MessageType::Cancelled
-            | darkbloom_protocol::MessageType::ProviderTerminal
-            | darkbloom_protocol::MessageType::StructuredError => {
+                    darkbloom_protocol::MessageType::ModelReady => {
+                        let Some(id) = provider_id.clone() else { continue; };
+                        let model = wire
+                            .rest
+                            .get("model")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let rev = wire
+                            .rest
+                            .get("state_revision")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        if !model.is_empty() {
+                            state.fleet.model_ready(id, model.to_string(), rev);
+                        }
+                    }
+                    darkbloom_protocol::MessageType::ModelGone => {
+                        let Some(id) = provider_id.clone() else { continue; };
+                        let model = wire
+                            .rest
+                            .get("model")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let rev = wire
+                            .rest
+                            .get("state_revision")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        if !model.is_empty() {
+                            state.fleet.model_gone(id, model.to_string(), rev);
+                        }
+                    }
+                    darkbloom_protocol::MessageType::Prepared
+                    | darkbloom_protocol::MessageType::Started
+                    | darkbloom_protocol::MessageType::Aborted
+                    | darkbloom_protocol::MessageType::Cancelled
+                    | darkbloom_protocol::MessageType::ProviderTerminal
+                    | darkbloom_protocol::MessageType::StructuredError => {
                 let Some(id) = provider_id.as_deref() else {
                     continue;
                 };

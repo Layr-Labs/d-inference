@@ -22,6 +22,16 @@ pub enum FleetCommand {
         predicted_ms: f64,
         actual_ms: f64,
     },
+    ModelReady {
+        provider_id: String,
+        model: String,
+        state_revision: u64,
+    },
+    ModelGone {
+        provider_id: String,
+        model: String,
+        state_revision: u64,
+    },
     Snapshot(oneshot::Sender<FleetState>),
 }
 
@@ -84,6 +94,22 @@ impl FleetHandle {
             model,
             predicted_ms,
             actual_ms,
+        });
+    }
+
+    pub fn model_ready(&self, provider_id: String, model: String, state_revision: u64) {
+        let _ = self.lifecycle_tx.try_send(FleetCommand::ModelReady {
+            provider_id,
+            model,
+            state_revision,
+        });
+    }
+
+    pub fn model_gone(&self, provider_id: String, model: String, state_revision: u64) {
+        let _ = self.lifecycle_tx.try_send(FleetCommand::ModelGone {
+            provider_id,
+            model,
+            state_revision,
         });
     }
 }
@@ -164,6 +190,24 @@ impl FleetActor {
                 actual_ms,
             } => {
                 self.state.record_ttft_sample(&model, predicted_ms, actual_ms);
+            }
+            FleetCommand::ModelReady {
+                provider_id,
+                model,
+                state_revision,
+            } => {
+                let _ = self
+                    .state
+                    .apply_model_ready(&provider_id, &model, state_revision);
+            }
+            FleetCommand::ModelGone {
+                provider_id,
+                model,
+                state_revision,
+            } => {
+                let _ = self
+                    .state
+                    .apply_model_gone(&provider_id, &model, state_revision);
             }
             FleetCommand::Snapshot(reply) => {
                 let _ = reply.send(self.state.clone());

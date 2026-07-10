@@ -38,6 +38,8 @@ pub struct AdmitRequest {
 pub struct FleetState {
     pub providers: HashMap<String, ProviderSnapshot>,
     pub calibrator: TtftCalibrator,
+    /// provider_id -> last applied model-lifecycle state_revision
+    pub model_revisions: HashMap<String, u64>,
 }
 
 impl FleetState {
@@ -47,6 +49,46 @@ impl FleetState {
 
     pub fn record_ttft_sample(&mut self, model_id: &str, predicted_ms: f64, actual_ms: f64) {
         self.calibrator.record(model_id, predicted_ms, actual_ms);
+    }
+
+    /// Apply versioned `model_ready`. Ignores older revisions for this provider.
+    pub fn apply_model_ready(
+        &mut self,
+        provider_id: &str,
+        model: &str,
+        state_revision: u64,
+    ) -> bool {
+        let last = self.model_revisions.get(provider_id).copied().unwrap_or(0);
+        if state_revision < last {
+            return false;
+        }
+        self.model_revisions
+            .insert(provider_id.to_string(), state_revision);
+        if let Some(p) = self.providers.get_mut(provider_id) {
+            p.ready_models.insert(model.to_string());
+            return true;
+        }
+        false
+    }
+
+    /// Apply versioned `model_gone`. Ignores older revisions for this provider.
+    pub fn apply_model_gone(
+        &mut self,
+        provider_id: &str,
+        model: &str,
+        state_revision: u64,
+    ) -> bool {
+        let last = self.model_revisions.get(provider_id).copied().unwrap_or(0);
+        if state_revision < last {
+            return false;
+        }
+        self.model_revisions
+            .insert(provider_id.to_string(), state_revision);
+        if let Some(p) = self.providers.get_mut(provider_id) {
+            p.ready_models.remove(model);
+            return true;
+        }
+        false
     }
 
     /// One admission operation: hard gates → calibrated score → prepare permit.
@@ -208,5 +250,20 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         assert!((fleet.calibrator.calibrate("m", 50.0) - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn model_gone_ignores_stale_revision() {
+        let mut fleet = FleetState::default();
+        fleet.upsert(base("p", "m", 10.0));
+        assert!(fleet.apply_model_ready("p", "m2", 5));
+        assert!(fleet.providers["p"].ready_models.contains("m2"));
+        assert!(!fleet.apply_model_gone("p", "m2", 4)); // stale
+        assert!(fleet.providers["p"].ready_models.contains("m2"));
+        assert!(fleet.apply_model_gone("p", "m2", 6));
+        assert!(!fleet.providers["p"].ready_models.contains("m2"));
+        // Delayed ready with older revision cannot resurrect.
+        assert!(!fleet.apply_model_ready("p", "m2", 5));
+        assert!(!fleet.providers["p"].ready_models.contains("m2"));
     }
 }

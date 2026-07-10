@@ -133,6 +133,7 @@ Date: 2026-07-10
 | 124 | adopt-jobs / batch return remaining accounts | `adopt-jobs`, `force-settle-batch`, and `recover-undispatched-batch` success include `accounts_needing_cutover` + `needs_adopt_count` for chaining without quiescence |
 | 125 | Abort responses list remaining accounts | clear-orphans / batch abort responses include `accounts_needing_cutover` + `needs_adopt_count` so ops resume cutover without quiescence |
 | 126 | outbox/held-review/cutover remaining accounts | outbox-drain success+abort, held-review-batch, and cutover-drain include `accounts_needing_cutover` + `needs_adopt_count`; outbox ready also requires no remaining accounts |
+| 127 | Single-job admin remaining accounts | force-settle / recover-undispatched / held-review success include `accounts_needing_cutover` + `needs_adopt_count` for per-job chaining |
 
 ## Deleted Go mechanisms (do not port)
 

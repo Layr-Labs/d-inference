@@ -714,3 +714,17 @@ clear-orphans and batch recover/force-settle abort responses include
 After re-acquire, ops can feed the abort account list into cutover-drain-all
 without a quiescence poll.
 
+### outbox/held-review/cutover remaining accounts (DECISIONS #126)
+
+`POST /v1/admin/outbox-drain` (success + abort), `held-review-batch`, and
+`cutover-drain` include `accounts_needing_cutover` + `needs_adopt_count`.
+Outbox-drain `ready` also requires no remaining accounts (not only empty
+outbox), so a drain that leaves held jobs reports ready=false.
+
+### Single-job admin remaining accounts (DECISIONS #127)
+
+`POST /v1/admin/force-settle`, `recover-undispatched`, and `held-review`
+success responses include `accounts_needing_cutover` + `needs_adopt_count`
+(plus charged amount on force-settle). Ops can settle/recover one job then
+feed remaining accounts into cutover-drain-all without quiescence.
+

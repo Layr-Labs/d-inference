@@ -912,9 +912,17 @@ async fn admin_force_settle(
         );
     }
 
-    let (bal, held) = {
+    let (bal, held, active, accounts, needs_adopt) = {
         let led = state.ledger.lock().await;
-        (led.balance(&account).0, led.held_start_authorized_count())
+        let epoch = state.ownership.epoch().0;
+        let (na, _, _) = led.orphan_summary_counts(epoch);
+        (
+            led.balance(&account).0,
+            led.held_start_authorized_count(),
+            led.active_job_count(),
+            accounts_needing_cutover_from(&led, epoch),
+            na,
+        )
     };
     (
         StatusCode::OK,
@@ -923,8 +931,12 @@ async fn admin_force_settle(
             "job_id": req.job_id,
             "account": account,
             "terminal_digest": digest,
+            "charged_micro_usd": charged,
             "balance_micro_usd": bal,
             "held_start_authorized": held,
+            "active_jobs": active,
+            "accounts_needing_cutover": accounts,
+            "needs_adopt_count": needs_adopt,
         })),
     )
         .into_response()
@@ -1235,9 +1247,17 @@ async fn admin_recover_undispatched(
         let _ = box_.enqueue_released(&req.job_id, &account, amount);
     }
 
-    let (bal, active) = {
+    let (bal, active, held, accounts, needs_adopt) = {
         let led = state.ledger.lock().await;
-        (led.balance(&account).0, led.active_job_count())
+        let epoch = state.ownership.epoch().0;
+        let (na, _, _) = led.orphan_summary_counts(epoch);
+        (
+            led.balance(&account).0,
+            led.active_job_count(),
+            led.held_start_authorized_count(),
+            accounts_needing_cutover_from(&led, epoch),
+            na,
+        )
     };
     (
         StatusCode::OK,
@@ -1247,6 +1267,9 @@ async fn admin_recover_undispatched(
             "account": account,
             "balance_micro_usd": bal,
             "active_jobs": active,
+            "held_start_authorized": held,
+            "accounts_needing_cutover": accounts,
+            "needs_adopt_count": needs_adopt,
         })),
     )
         .into_response()
@@ -1427,7 +1450,7 @@ async fn admin_held_review(
         return resp;
     }
 
-    let (action, bal, held, reserved) = {
+    let (action, bal, held, reserved, active, accounts, needs_adopt, account) = {
         let led = state.ledger.lock().await;
         let classified = crate::recovery::classify_held_job(&led, &req.job_id);
         let action = match classified {
@@ -1436,11 +1459,20 @@ async fn admin_held_review(
             crate::recovery::RecoveryAction::AlreadyTerminal => "already_terminal",
             crate::recovery::RecoveryAction::Released => "already_terminal",
         };
+        let epoch = state.ownership.epoch().0;
+        let (na, _, _) = led.orphan_summary_counts(epoch);
+        let account = led
+            .job_account_id(&req.job_id)
+            .unwrap_or_else(|| state.pilot_account.clone());
         (
             action,
-            led.balance(&state.pilot_account).0,
+            led.balance(&account).0,
             led.held_start_authorized_count(),
             led.job_reserved_total(&req.job_id).map(|m| m.0).unwrap_or(0),
+            led.active_job_count(),
+            accounts_needing_cutover_from(&led, epoch),
+            na,
+            account,
         )
     };
     (
@@ -1448,9 +1480,13 @@ async fn admin_held_review(
         Json(json!({
             "action": action,
             "job_id": req.job_id,
+            "account": account,
             "reserved_micro_usd": reserved,
             "balance_micro_usd": bal,
             "held_start_authorized": held,
+            "active_jobs": active,
+            "accounts_needing_cutover": accounts,
+            "needs_adopt_count": needs_adopt,
         })),
     )
         .into_response()

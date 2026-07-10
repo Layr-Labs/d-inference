@@ -4,7 +4,7 @@ use darkbloom_core::{score_replay, ReplaySample};
 
 #[test]
 fn scores_checked_in_fixture() {
-    let raw = include_str!("../../tests/routing-replay/samples.json");
+    let raw = include_str!("../../../tests/routing-replay/samples.json");
     let samples: Vec<ReplaySample> = serde_json::from_str(raw).unwrap();
     let report = score_replay(&samples);
     assert_eq!(report.samples, 3);

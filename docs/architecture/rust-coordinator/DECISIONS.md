@@ -38,6 +38,8 @@ Date: 2026-07-10
 | 29 | Outbox blocks quiescence | Quiescence `ready` requires `outbox_retryable == 0`; deposit enqueue makes ready=false until claim+ack (or requeue keeps retryable) |
 | 30 | Quiescence without ownership | `/v1/admin/quiescence` remains readable when not holding (reports `ownership_holding=false`) so cutover ops can observe drain; mutating admin routes still require holding |
 | 31 | Mark-start account bind | `mark_start_authorized(job_id, account)` refuses wrong-account callers (Conflict); SQL binds `account_id = $2` so knowing a job id alone cannot advance the funded-start kill boundary |
+| 32 | Critical outbox enqueue | Money side effects (`billing.deposit_applied`, `inference.settled`) use `Outbox::enqueue_critical` which extends past the bounded capacity so a full queue cannot silently drop the entry; quiescence still blocks on the overflow |
+| 33 | SQL op-key gates money | Durable ledger CTEs claim `financial_operations` **before** debit/credit/digest/mark; money CTEs require `EXISTS (SELECT 1 FROM op)`; orphaned op claims (digest/job conflict) are deleted in-statement via `cleanup_op` |
 
 ## Deleted Go mechanisms (do not port)
 

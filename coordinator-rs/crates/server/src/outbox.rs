@@ -54,6 +54,19 @@ impl Outbox {
         if self.pending.len() >= self.max {
             return Err(OutboxError::Full);
         }
+        Ok(self.push(kind, payload))
+    }
+
+    /// Money-critical side effects must never be dropped when the bounded queue
+    /// is full (DECISIONS #32). Extends past `max` so quiescence still blocks.
+    pub fn enqueue_critical(&mut self, kind: &str, payload: &str) -> Result<u64, OutboxError> {
+        if kind.is_empty() {
+            return Err(OutboxError::InvalidKind);
+        }
+        Ok(self.push(kind, payload))
+    }
+
+    fn push(&mut self, kind: &str, payload: &str) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         self.pending.push_back(OutboxEntry {
@@ -62,7 +75,7 @@ impl Outbox {
             payload: payload.to_string(),
             attempts: 0,
         });
-        Ok(id)
+        id
     }
 
     /// Claim the next entry with attempts < MAX_ATTEMPTS (SKIP LOCKED analogue).
@@ -182,6 +195,23 @@ mod tests {
         box_.enqueue("a", "{}").unwrap();
         box_.enqueue("b", "{}").unwrap();
         assert_eq!(box_.enqueue("c", "{}"), Err(OutboxError::Full));
+    }
+
+    #[test]
+    fn enqueue_critical_extends_past_capacity() {
+        let mut box_ = Outbox::new(1);
+        box_.enqueue("a", "{}").unwrap();
+        assert_eq!(box_.enqueue("b", "{}"), Err(OutboxError::Full));
+        let id = box_
+            .enqueue_critical("billing.deposit_applied", r#"{"n":1}"#)
+            .unwrap();
+        assert_eq!(id, 2);
+        assert_eq!(box_.len(), 2);
+        assert_eq!(box_.pending_under_retry_cap(), 2);
+        assert_eq!(
+            box_.enqueue_critical("", "{}"),
+            Err(OutboxError::InvalidKind)
+        );
     }
 
     #[test]

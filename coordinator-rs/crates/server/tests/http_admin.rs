@@ -1078,3 +1078,54 @@ async fn outbox_requeue_keeps_quiescence_not_ready() {
     assert_eq!(v["ready"], false);
     assert_eq!(v["outbox_retryable"], 1);
 }
+
+#[tokio::test]
+async fn deposit_critical_outbox_extends_when_full() {
+    let mut state = test_state(true);
+    state.outbox = Arc::new(Mutex::new(Outbox::new(1)));
+    let outbox = state.outbox.clone();
+    {
+        let mut box_ = outbox.lock().await;
+        box_.enqueue("filler", "{}").unwrap();
+        assert!(box_.enqueue("overflow", "{}").is_err());
+    }
+    let app = router(state);
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/deposits")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "event_id": "evt_critical_full",
+                        "amount_micro_usd": 40_000,
+                        "withdrawable_micro_usd": 0
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["applied"], true);
+    assert_eq!(outbox.lock().await.len(), 2);
+
+    let q = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/quiescence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(q.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let qv = body_json(q).await;
+    assert_eq!(qv["ready"], false);
+    assert_eq!(qv["outbox_retryable"], 2);
+}

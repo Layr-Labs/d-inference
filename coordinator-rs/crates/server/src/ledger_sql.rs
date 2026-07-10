@@ -41,8 +41,10 @@ impl PostgresLedgerStub {
 
     /// The SQL that will back reserve once SQLx is wired (mirrors MemoryLedger).
     /// Debits the shared Go `balances` table (not rust_coord.*) for money continuity.
-    /// Job insert is gated first; debit/op only run when the job row is newly created
-    /// (DECISIONS #15 single-use job_id — never debit on conflict).
+    /// Op claim gates job insert + debit (DECISIONS #15/#33): reused op keys cannot
+    /// debit a second job. Job insert is gated first among money CTEs; debit only
+    /// runs when the job row is newly created. Orphaned op claims (job conflict)
+    /// are cleaned up in-statement.
     /// Parameters: $1 account, $2 amount, $3 job_id, $4 model, $5 epoch, $6 operation_key
     pub fn reserve_sql() -> &'static str {
         r#"
@@ -51,20 +53,26 @@ impl PostgresLedgerStub {
           FROM balances WHERE account_id = $1 FOR UPDATE
         ), existing AS (
           SELECT 1 FROM rust_coord.inference_jobs WHERE job_id = $3 FOR UPDATE
-        ), calc AS (
+        ), eligible AS (
           SELECT
             GREATEST(0, $2::bigint - GREATEST(0, bal - wdr)) AS reserved_wdr
           FROM bal
           WHERE NOT EXISTS (SELECT 1 FROM existing)
             AND $2::bigint > 0
             AND bal >= $2::bigint
+        ), op AS (
+          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
+          SELECT $6, $3, 'reserve', $2 FROM eligible
+          ON CONFLICT (operation_key) DO NOTHING
+          RETURNING operation_key
         ), job AS (
           INSERT INTO rust_coord.inference_jobs (
             job_id, account_id, public_model, concrete_model, state,
             reserved_total_micro_usd, reserved_withdrawable_micro_usd, coordinator_epoch
           )
-          SELECT $3, $1, $4, $4, 'reserved', $2, c.reserved_wdr, $5
-          FROM calc c
+          SELECT $3, $1, $4, $4, 'reserved', $2, e.reserved_wdr, $5
+          FROM eligible e
+          WHERE EXISTS (SELECT 1 FROM op)
           ON CONFLICT (job_id) DO NOTHING
           RETURNING job_id, reserved_withdrawable_micro_usd AS reserved_wdr
         ), debit AS (
@@ -75,11 +83,12 @@ impl PostgresLedgerStub {
           FROM job j
           WHERE b.account_id = $1
           RETURNING j.reserved_wdr
-        ), op AS (
-          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-          SELECT $6, $3, 'reserve', $2 FROM job
-          ON CONFLICT (operation_key) DO NOTHING
-          RETURNING operation_key
+        ), cleanup_op AS (
+          DELETE FROM rust_coord.financial_operations fo
+          WHERE fo.operation_key = $6
+            AND EXISTS (SELECT 1 FROM op)
+            AND NOT EXISTS (SELECT 1 FROM job)
+          RETURNING fo.operation_key
         )
         SELECT reserved_wdr FROM debit
         "#
@@ -197,6 +206,7 @@ impl PostgresLedgerStub {
     /// The SQL that will back settle once SQLx is wired (mirrors MemoryLedger.settle).
     /// Parameters: $1 account, $2 job_id, $3 actual, $4 terminal_digest, $5 operation_key,
     ///             $6 attempt_id
+    /// Op claim gates digest + money (DECISIONS #32/#33): reused op keys cannot move funds.
     /// Digest/op inserts are gated on guard so failed settles cannot poison digests/op keys.
     pub fn settle_sql() -> &'static str {
         r#"
@@ -213,12 +223,18 @@ impl PostgresLedgerStub {
           WHERE terminal_disposition IS NULL
             AND $3::bigint >= 0
             AND $3::bigint <= reserved
+        ), op AS (
+          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
+          SELECT $5, $2, 'settle', $3 FROM guard
+          ON CONFLICT (operation_key) DO NOTHING
+          RETURNING operation_key
         ), digest AS (
           INSERT INTO rust_coord.provider_terminals (
             terminal_digest, job_id, attempt_id, disposition
           )
           SELECT $4, $2, $6, 'settled'
           FROM guard
+          WHERE EXISTS (SELECT 1 FROM op)
           ON CONFLICT (terminal_digest) DO NOTHING
           RETURNING terminal_digest
         ), calc AS (
@@ -230,6 +246,7 @@ impl PostgresLedgerStub {
             ) AS refund_wdr
           FROM job j
           WHERE EXISTS (SELECT 1 FROM guard)
+            AND EXISTS (SELECT 1 FROM op)
             AND EXISTS (SELECT 1 FROM digest)
         ), credit AS (
           UPDATE balances b
@@ -247,11 +264,12 @@ impl PostgresLedgerStub {
           FROM calc
           WHERE j.job_id = $2
           RETURNING j.job_id
-        ), op AS (
-          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-          SELECT $5, $2, 'settle', $3 FROM calc
-          ON CONFLICT (operation_key) DO NOTHING
-          RETURNING operation_key
+        ), cleanup_op AS (
+          DELETE FROM rust_coord.financial_operations fo
+          WHERE fo.operation_key = $5
+            AND EXISTS (SELECT 1 FROM op)
+            AND NOT EXISTS (SELECT 1 FROM digest)
+          RETURNING fo.operation_key
         )
         SELECT refund, refund_wdr FROM credit
         "#
@@ -260,6 +278,7 @@ impl PostgresLedgerStub {
     /// Settle-capped SQL: charge = LEAST(actual, billable_cap, reserved) (DECISIONS #23).
     /// Parameters: $1 account, $2 job_id, $3 actual, $4 billable_cap, $5 terminal_digest,
     ///             $6 operation_key, $7 attempt_id
+    /// Op claim gates digest + money so reused op keys cannot move funds (DECISIONS #33).
     pub fn settle_capped_sql() -> &'static str {
         r#"
         WITH job AS (
@@ -278,12 +297,18 @@ impl PostgresLedgerStub {
           ) AS amount
           FROM job j
           WHERE j.terminal_disposition IS NULL
+        ), op AS (
+          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
+          SELECT $6, $2, 'settle_capped', c.amount FROM charge c
+          ON CONFLICT (operation_key) DO NOTHING
+          RETURNING operation_key
         ), digest AS (
           INSERT INTO rust_coord.provider_terminals (
             terminal_digest, job_id, attempt_id, disposition
           )
           SELECT $5, $2, $7, 'settled'
           FROM charge
+          WHERE EXISTS (SELECT 1 FROM op)
           ON CONFLICT (terminal_digest) DO NOTHING
           RETURNING terminal_digest
         ), calc AS (
@@ -296,7 +321,8 @@ impl PostgresLedgerStub {
             c.amount
           FROM job j
           CROSS JOIN charge c
-          WHERE EXISTS (SELECT 1 FROM digest)
+          WHERE EXISTS (SELECT 1 FROM op)
+            AND EXISTS (SELECT 1 FROM digest)
         ), credit AS (
           UPDATE balances b
           SET balance_micro_usd = b.balance_micro_usd + x.refund,
@@ -313,11 +339,12 @@ impl PostgresLedgerStub {
           FROM calc
           WHERE j.job_id = $2
           RETURNING j.job_id
-        ), op AS (
-          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-          SELECT $6, $2, 'settle_capped', amount FROM calc
-          ON CONFLICT (operation_key) DO NOTHING
-          RETURNING operation_key
+        ), cleanup_op AS (
+          DELETE FROM rust_coord.financial_operations fo
+          WHERE fo.operation_key = $6
+            AND EXISTS (SELECT 1 FROM op)
+            AND NOT EXISTS (SELECT 1 FROM digest)
+          RETURNING fo.operation_key
         )
         SELECT refund, refund_wdr, amount FROM credit
         "#
@@ -345,12 +372,18 @@ impl PostgresLedgerStub {
           SELECT LEAST(GREATEST(0, $3::bigint), j.reserved) AS amount
           FROM job j
           WHERE EXISTS (SELECT 1 FROM guard)
+        ), op AS (
+          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
+          SELECT $5, $2, 'force_settle', c.amount FROM charge c
+          ON CONFLICT (operation_key) DO NOTHING
+          RETURNING operation_key
         ), digest AS (
           INSERT INTO rust_coord.provider_terminals (
             terminal_digest, job_id, attempt_id, disposition
           )
           SELECT $4, $2, $6, 'force_settled'
           FROM charge
+          WHERE EXISTS (SELECT 1 FROM op)
           ON CONFLICT (terminal_digest) DO NOTHING
           RETURNING terminal_digest
         ), calc AS (
@@ -363,7 +396,8 @@ impl PostgresLedgerStub {
             c.amount
           FROM job j
           CROSS JOIN charge c
-          WHERE EXISTS (SELECT 1 FROM digest)
+          WHERE EXISTS (SELECT 1 FROM op)
+            AND EXISTS (SELECT 1 FROM digest)
         ), credit AS (
           UPDATE balances b
           SET balance_micro_usd = b.balance_micro_usd + x.refund,
@@ -380,11 +414,12 @@ impl PostgresLedgerStub {
           FROM calc
           WHERE j.job_id = $2
           RETURNING j.job_id
-        ), op AS (
-          INSERT INTO rust_coord.financial_operations (operation_key, job_id, op_type, amount_micro_usd)
-          SELECT $5, $2, 'force_settle', amount FROM calc
-          ON CONFLICT (operation_key) DO NOTHING
-          RETURNING operation_key
+        ), cleanup_op AS (
+          DELETE FROM rust_coord.financial_operations fo
+          WHERE fo.operation_key = $5
+            AND EXISTS (SELECT 1 FROM op)
+            AND NOT EXISTS (SELECT 1 FROM digest)
+          RETURNING fo.operation_key
         )
         SELECT refund, refund_wdr, amount FROM credit
         "#
@@ -449,8 +484,10 @@ mod tests {
         assert!(sql.contains("FOR UPDATE"));
         assert!(sql.contains("NOT EXISTS (SELECT 1 FROM existing)"));
         assert!(sql.contains("FROM job j"));
-        assert!(sql.contains("SELECT $6, $3, 'reserve', $2 FROM job"));
-        assert!(sql.contains("FROM calc c"));
+        assert!(sql.contains("SELECT $6, $3, 'reserve', $2 FROM eligible"));
+        assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
+        assert!(sql.contains("cleanup_op"));
+        assert!(sql.contains("FROM eligible e"));
     }
 
     #[test]
@@ -466,7 +503,9 @@ mod tests {
         assert!(sql.contains("account_id = $1"));
         assert!(sql.contains("SELECT $4, $2, $6, 'settled'"));
         assert!(sql.contains("FROM guard"));
-        assert!(sql.contains("SELECT $5, $2, 'settle', $3 FROM calc"));
+        assert!(sql.contains("SELECT $5, $2, 'settle', $3 FROM guard"));
+        assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
+        assert!(sql.contains("cleanup_op"));
     }
 
     #[test]
@@ -480,6 +519,8 @@ mod tests {
         assert!(sql.contains("account_id = $1"));
         assert!(sql.contains("SELECT $5, $2, $7, 'settled'"));
         assert!(sql.contains("FROM charge"));
+        assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
+        assert!(sql.contains("cleanup_op"));
     }
 
     #[test]
@@ -496,6 +537,8 @@ mod tests {
         assert!(sql.contains("account_id = $1"));
         assert!(sql.contains("SELECT $4, $2, $6, 'force_settled'"));
         assert!(sql.contains("FROM charge"));
+        assert!(sql.contains("WHERE EXISTS (SELECT 1 FROM op)"));
+        assert!(sql.contains("cleanup_op"));
     }
 
     #[test]

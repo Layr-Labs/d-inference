@@ -363,17 +363,19 @@ async fn admin_deposit(
     };
     if applied {
         let mut box_ = state.outbox.lock().await;
-        let _ = box_.enqueue(
-            "billing.deposit_applied",
-            &json!({
-                "source": req.source,
-                "event_id": req.event_id,
-                "account": account,
-                "amount_micro_usd": req.amount_micro_usd,
-                "withdrawable_micro_usd": req.withdrawable_micro_usd,
-            })
-            .to_string(),
-        );
+        box_
+            .enqueue_critical(
+                "billing.deposit_applied",
+                &json!({
+                    "source": req.source,
+                    "event_id": req.event_id,
+                    "account": account,
+                    "amount_micro_usd": req.amount_micro_usd,
+                    "withdrawable_micro_usd": req.withdrawable_micro_usd,
+                })
+                .to_string(),
+            )
+            .expect("critical outbox enqueue must not fail for valid kind");
     }
     let (bal, wdr) = {
         let ledger = state.ledger.lock().await;
@@ -845,16 +847,18 @@ async fn chat_completions(
                     }
                     {
                         let mut box_ = state.outbox.lock().await;
-                        let _ = box_.enqueue(
-                            "inference.settled",
-                            &json!({
-                                "job_id": completion.job_id,
-                                "attempt_id": completion.attempt_id,
-                                "terminal_digest": completion.terminal_digest,
-                                "charged_micro_usd": completion.charged.0,
-                            })
-                            .to_string(),
-                        );
+                        box_
+                            .enqueue_critical(
+                                "inference.settled",
+                                &json!({
+                                    "job_id": completion.job_id,
+                                    "attempt_id": completion.attempt_id,
+                                    "terminal_digest": completion.terminal_digest,
+                                    "charged_micro_usd": completion.charged.0,
+                                })
+                                .to_string(),
+                            )
+                            .expect("critical outbox enqueue must not fail for valid kind");
                     }
                     state.telemetry.try_emit(crate::telemetry::TelemetryEvent {
                         name: "inference.settled".into(),

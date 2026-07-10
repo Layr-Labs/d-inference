@@ -243,4 +243,101 @@ struct EngineV2PagedParityLiveTests {
         print("[xback] paged:      \(fullTexts[0].prefix(160))")
         print("[xback] contiguous: \(fullTexts[1].prefix(160))")
     }
+
+    /// The LOOP-PATH drill this suite originally lost (PR #531 Codex P1):
+    /// load gpt-oss through the REAL `ProviderLoop.ensureModelLoaded` —
+    /// pre-load estimate gate, weights, re-slice, engine build with the
+    /// eager slab commit, and BOTH measured-headroom guards — and require
+    /// the slot to come up PAGED and serve. Before the backend-aware
+    /// post-bridge guard, this failed deterministically: the slab consumed
+    /// the entire KV budget and the 1 GiB floor unloaded every paged slot.
+    ///
+    /// The operator reserve (40 GiB) sizes the slab to ~43 GiB on a 128 GB
+    /// box so the drill is safe under concurrent dev load, while leaving
+    /// the pre-load free-memory gate (`availableBytes − reserve ≥ weights
+    /// estimate`) ~22 GiB of margin on a typically-loaded box — the test
+    /// skips (not fails) if the box is too busy, like every live suite.
+    @Test("loop path: paged gpt-oss survives the load guards and serves")
+    func pagedSlotSurvivesLoadGuardsThroughProviderLoop() async throws {
+        guard LiveInferenceFixtures.liveTestsEnabled else { return }
+        guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
+            throw LiveFixtureSkip.missingMetallib
+        }
+        guard case .found = LiveInferenceFixtures.locate(Self.gptossModelID) else {
+            throw LiveFixtureSkip.modelNotInCache(Self.gptossModelID)
+        }
+        let gib: UInt64 = 1 << 30
+        let reserveGiB: UInt64 = 40
+
+        let config = ProviderLoopConfig(
+            coordinatorURL: "ws://127.0.0.1:0/ignored",
+            hardware: HardwareInfo(
+                machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4,
+                chipTier: .max,
+                memoryGb: ProcessInfo.processInfo.physicalMemory / gib,
+                memoryAvailableGb: max(1, ProcessInfo.processInfo.physicalMemory / gib - 4),
+                cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
+                gpuCores: 40, memoryBandwidthGbs: 546
+            ),
+            models: [
+                ModelInfo(
+                    id: Self.gptossModelID, modelType: "gpt_oss",
+                    sizeBytes: 13 * gib, estimatedMemoryGb: 14.0)
+            ],
+            config: ProviderConfig(
+                provider: ProviderSettings(
+                    name: "paged-loop-live", memoryReserveGB: reserveGiB),
+                backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1),
+                coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
+            )
+        )
+        let loop = try ProviderLoop(
+            config: config, purgeLegacyFiles: false, attestationSigner: nil)
+        let runtime = EngineV2Runtime()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        defer {
+            Task {
+                await loop.unloadModel(Self.gptossModelID)
+                MLX.Memory.clearCache()
+            }
+        }
+
+        do {
+            try await loop.ensureModelLoaded(modelId: Self.gptossModelID)
+        } catch {
+            // A busy box legitimately fails the PRE-load free-memory gate;
+            // that is a box condition, not a regression — skip loudly.
+            // The post-bridge guard failure this test exists for reads
+            // "engine build left insufficient KV headroom" and must FAIL.
+            let text = String(describing: error)
+            if text.contains("engine build left insufficient KV headroom") {
+                Issue.record("post-bridge guard unloaded the paged slot: \(text)")
+                return
+            }
+            print("[paged-loop] skipping — load gate refused on this box: \(text)")
+            return
+        }
+
+        let bridge = try #require(await loop.slotBridgeForTesting(modelId: Self.gptossModelID))
+        let servedKind = await bridge.kvBackendKind
+        #expect(servedKind == .paged, "loop path must serve gpt-oss PAGED")
+        let out = await {
+            var text = ""
+            var error: String?
+            for await event in await bridge.submit(
+                request: ChatCompletionRequest(
+                    model: Self.gptossModelID,
+                    messages: [ChatMessage(role: "user", content: "Say OK.")],
+                    temperature: 0, max_tokens: 8),
+                requestId: "paged-loop-1")
+            {
+                if case .chunk(let c) = event { text += c }
+                if case .error(let e) = event { error = e }
+            }
+            return (text, error)
+        }()
+        #expect(out.1 == nil, "paged slot must serve after passing the guards: \(out.1 ?? "")")
+        #expect(!out.0.isEmpty)
+        await loop.unloadModel(Self.gptossModelID)
+    }
 }

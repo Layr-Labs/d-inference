@@ -567,6 +567,13 @@ public actor EngineV2Bridge {
         modelLoadTimeMs = max(0, ms)
     }
 
+    /// The slot's PHYSICAL KV capacity (paged: the committed pool;
+    /// contiguous: the admission ceiling). Input to the post-build
+    /// serveable-KV guard (`KVHeadroomProbe.postBuildServeable`).
+    public func kvBackendPoolBytes() -> UInt64 {
+        UInt64(max(0, engine.capacity().kvBytesBackendCapacity))
+    }
+
     /// Runtime fan-out helper: cancel iff this bridge owns the request-id.
     func cancelIfOwned(requestId: String) -> Bool {
         guard let cbv2Id = idMap[requestId] else { return false }

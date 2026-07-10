@@ -1057,8 +1057,14 @@ public actor StandaloneServer {
             // memory beyond the weights. Re-measure so a box whose full
             // load-time footprint leaves no serveable KV tears down instead
             // of publishing a model whose every request the KV gate rejects.
+            // BACKEND-AWARE (PR #531 Codex P1): a PAGED slot commits its
+            // whole grant as the pool at construction — the floor is held
+            // against the committed pool, not the residue it consumed.
             MLX.Memory.clearCache()
-            if !KVHeadroomProbe.hasServeableKVHeadroom() {
+            let postBridgeServeable = KVHeadroomProbe.postBuildServeable(
+                kvBackendKind: bridge.kvBackendKind,
+                pagedPoolBytes: await bridge.kvBackendPoolBytes())
+            if !postBridgeServeable {
                 let headroomGb = String(
                     format: "%.1f",
                     Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))

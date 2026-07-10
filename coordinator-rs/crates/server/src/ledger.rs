@@ -997,4 +997,48 @@ mod tests {
         // reserved 1M, charged 200k → refund 800k → bal = 5M-1M+800k = 4.8M
         assert_eq!(led.balance("a").0, 4_800_000);
     }
+
+    #[test]
+    fn release_then_re_reserve_same_job_id_is_allowed() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r1".into()), "j", "a", 1_000_000)
+            .unwrap();
+        assert!(led
+            .release(OperationKey("rel1".into()), "j", "a")
+            .unwrap());
+        // Job row remains with disposition=released; a new reserve for same job_id
+        // must not silently reuse a disposed job — current impl overwrites via insert.
+        let res = led
+            .reserve(OperationKey("r2".into()), "j", "a", 500_000)
+            .unwrap();
+        assert!(res.applied);
+        assert_eq!(led.active_job_count(), 1);
+        assert!(!led.job_funded_start("j"));
+        assert_eq!(led.job_reserved_total("j").unwrap().0, 500_000);
+    }
+
+    #[test]
+    fn settle_capped_actual_above_reservation_still_errors() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        // Cap clamps charge, but settle still validates actual against reservation
+        // before capping in settle_capped — charge = min(actual, cap).
+        // With actual=2M and cap=500k → charge=500k which is within reservation.
+        assert!(led
+            .settle_capped(
+                OperationKey("s".into()),
+                "j",
+                "a",
+                2_000_000,
+                500_000,
+                "d-clamp"
+            )
+            .unwrap());
+        // reserved 1M, charged 500k → refund 500k → bal = 5M-1M+500k = 4.5M
+        assert_eq!(led.balance("a").0, 4_500_000);
+    }
 }

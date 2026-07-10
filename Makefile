@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help \
         coordinator-test coordinator-build coordinator-build-linux coordinator \
-        coordinator-rs-test coordinator-rs-build coordinator-rs \
+        coordinator-rs-test coordinator-rs-build coordinator-rs migrate \
         provider-build provider-test provider \
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
@@ -34,6 +34,9 @@ coordinator-rs-build: ## Build the Rust coordinator binary
 	cd coordinator-rs && cargo build --release -p darkbloom-coordinator
 
 coordinator-rs: coordinator-rs-test coordinator-rs-build ## Test + build Rust coordinator
+
+migrate: ## Apply external SQL migrations (requires EIGENINFERENCE_DATABASE_URL)
+	cd coordinator && go run ./cmd/migrate -dir ../coordinator-rs/migrations
 
 # ---- Provider (Swift, Apple Silicon) --------------------------------------
 

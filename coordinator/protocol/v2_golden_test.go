@@ -93,3 +93,21 @@ func TestV2Goldens_TerminalAck(t *testing.T) {
 		t.Fatalf("terminal_ack: %+v", msg)
 	}
 }
+
+func TestV2Goldens_Cancelled(t *testing.T) {
+	dir := goldenDir(t)
+	b, err := os.ReadFile(filepath.Join(dir, "cancelled.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pm ProviderMessage
+	if err := json.Unmarshal(b, &pm); err != nil {
+		t.Fatal(err)
+	}
+	if pm.Type != TypeCancelled {
+		t.Fatalf("type=%q", pm.Type)
+	}
+	if _, ok := pm.Payload.(*CancelledMessage); !ok {
+		t.Fatalf("payload=%T", pm.Payload)
+	}
+}

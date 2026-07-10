@@ -29,6 +29,14 @@ func TestPostgresCoordinatorOwnershipIsSingleActive(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "ownership is already held") {
 		t.Fatalf("second coordinator error = %v", err)
 	}
+	disabled, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
+	if disabled != nil {
+		disabled.Close()
+		t.Fatal("ownership-disabled coordinator started after activation")
+	}
+	if err == nil || !strings.Contains(err.Error(), "cannot be disabled") {
+		t.Fatalf("ownership disable error = %v", err)
+	}
 }
 
 func TestPostgresOwnershipConnectionLossFencesMutations(t *testing.T) {

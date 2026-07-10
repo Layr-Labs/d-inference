@@ -1131,7 +1131,9 @@ func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provi
 	// fit, the request fails with 402. Checked BEFORE charging the top-up.
 	if pr.KeyID != "" && pr.KeyLimitMicroUSD != nil {
 		since := store.KeySpendWindowStart(pr.KeyLimitReset, time.Now())
-		if s.store.KeySpendSince(pr.KeyID, since)+required > *pr.KeyLimitMicroUSD {
+		spent := s.store.KeySpendSince(pr.KeyID, since)
+		if spent >= *pr.KeyLimitMicroUSD ||
+			required > *pr.KeyLimitMicroUSD-spent {
 			return pr.ReservedMicroUSD, store.ErrInsufficientBalance
 		}
 	}

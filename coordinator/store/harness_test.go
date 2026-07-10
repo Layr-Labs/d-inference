@@ -22,7 +22,7 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	s, err := NewPostgres(ctx, Config{DatabaseURL: dbURL})
+	s, err := NewPostgres(ctx, Config{DatabaseURL: dbURL, OwnershipEnabled: true})
 	if err != nil {
 		t.Fatalf("NewPostgres: %v", err)
 	}

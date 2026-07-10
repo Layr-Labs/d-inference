@@ -871,6 +871,7 @@ func main() {
 	if ownershipFailed {
 		// A stale coordinator must stop issuing/receiving provider work
 		// immediately; do not spend the normal inference drain grace.
+		srv.StopCompletionProcessing()
 		srv.FenceProviderSessions()
 	}
 

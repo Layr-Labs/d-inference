@@ -1449,8 +1449,14 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 	// terminal error to the consumer goroutine.
 	select {
 	case pr.ChunkCh <- chunkData:
+		if !isBoilerplateChunk(chunkData) {
+			pr.MarkContentChunkAccepted()
+		}
 	default:
 		if sendChunkWithGrace(pr, chunkData) {
+			if !isBoilerplateChunk(chunkData) {
+				pr.MarkContentChunkAccepted()
+			}
 			return
 		}
 		s.logger.Error("chunk buffer overflow — failing request instead of corrupting stream",
@@ -1582,6 +1588,24 @@ func boundedProviderUsage(pr *registry.PendingRequest, usage protocol.UsageInfo)
 		usage.CompletionTokens > pr.RequestedMaxTokens {
 		usage.CompletionTokens = pr.RequestedMaxTokens
 		capped = true
+	}
+	if pr != nil && pr.SessionPrivKey != nil {
+		promptUpper := int64(max(1024, pr.EstimatedPromptTokens*8))
+		if promptUpper > math.MaxInt32 {
+			promptUpper = math.MaxInt32
+		}
+		if int64(usage.PromptTokens) > promptUpper {
+			usage.PromptTokens = int(promptUpper)
+			capped = true
+		}
+		acceptedUpper := pr.AcceptedContentChunks() * 10
+		if acceptedUpper > math.MaxInt32 {
+			acceptedUpper = math.MaxInt32
+		}
+		if int64(usage.CompletionTokens) > acceptedUpper {
+			usage.CompletionTokens = int(acceptedUpper)
+			capped = true
+		}
 	}
 	if usage.ReasoningTokens > usage.CompletionTokens {
 		usage.ReasoningTokens = usage.CompletionTokens
@@ -1834,6 +1858,13 @@ func (s *Server) handleClaimedComplete(
 		providerPublicKey = settlementProvider.PublicKey
 		settlementProvider.Mu().Unlock()
 	}
+	payoutAccountID := providerAccountID
+	if payoutAccountID == "" {
+		payoutAccountID = providerPublicKey
+	}
+	if payoutAccountID == "" {
+		payoutAccountID = "provider:" + providerID
+	}
 	platformFee := payments.PlatformFeeWithPercent(totalCost, feePercent)
 	referrerAccountID, referralReward := "", int64(0)
 	if platformFee > 0 && s.billing != nil && s.billing.Referral() != nil {
@@ -1853,9 +1884,9 @@ func (s *Server) handleClaimedComplete(
 			pr.ReservationID = pr.RequestID
 		}
 		var earning *store.ProviderEarning
-		if providerAccountID != "" && !freeSelfRoute && providerPayout > 0 {
+		if payoutAccountID != "" && !freeSelfRoute && providerPayout > 0 {
 			earning = &store.ProviderEarning{
-				AccountID: providerAccountID, ProviderID: providerID,
+				AccountID: payoutAccountID, ProviderID: providerID,
 				ProviderKey: providerPublicKey, JobID: msg.RequestID,
 				Model: pr.Model, AmountMicroUSD: providerPayout,
 				PromptTokens:     msg.Usage.PromptTokens,
@@ -2059,10 +2090,10 @@ func (s *Server) handleClaimedComplete(
 			}
 			// Credit the provider only when there is an actual payout. A zero
 			// payout means either free self-route or an uncollected charge.
-			if providerAccountID != "" && !freeSelfRoute && providerPayout > 0 {
+			if payoutAccountID != "" && !freeSelfRoute && providerPayout > 0 {
 				start := time.Now()
 				if err := s.store.CreditProviderAccount(&store.ProviderEarning{
-					AccountID:        providerAccountID,
+					AccountID:        payoutAccountID,
 					ProviderID:       providerID,
 					ProviderKey:      providerPublicKey,
 					JobID:            msg.RequestID,
@@ -2074,7 +2105,7 @@ func (s *Server) handleClaimedComplete(
 				}); err != nil {
 					s.logger.Error("failed to credit linked provider account",
 						"provider_id", providerID,
-						"account_id", providerAccountID,
+						"account_id", payoutAccountID,
 						"request_id", msg.RequestID,
 						"error", err,
 					)

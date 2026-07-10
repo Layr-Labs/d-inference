@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -45,6 +46,8 @@ type PostgresStore struct {
 	ownershipStop     chan struct{}
 	ownershipDone     chan struct{}
 	ownershipLostOnce sync.Once
+	ownershipID       string
+	ownershipEpoch    int64
 
 	// In-memory cache for model prices. Keyed by "accountID:model".
 	// Eliminates a DB round trip on every inference request for
@@ -95,6 +98,23 @@ func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
 		pool:       pool,
 		priceCache: make(map[string]cachedPrice),
 	}
+	if err := s.migrate(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("store: run migrations: %w", err)
+	}
+	var ownershipActivated bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM schema_migrations WHERE id = 'coordinator_ownership_activated'
+		)`,
+	).Scan(&ownershipActivated); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("store: read coordinator ownership activation: %w", err)
+	}
+	if ownershipActivated && !scfg.OwnershipEnabled {
+		pool.Close()
+		return nil, errors.New("store: coordinator ownership was activated and cannot be disabled")
+	}
 	if scfg.OwnershipEnabled {
 		ownershipConn, err := pool.Acquire(ctx)
 		if err != nil {
@@ -120,13 +140,38 @@ func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
 		s.ownershipLost = make(chan struct{})
 		s.ownershipStop = make(chan struct{})
 		s.ownershipDone = make(chan struct{})
-	}
-	if err := s.migrate(ctx); err != nil {
-		if s.ownershipConn != nil {
+		s.ownershipID = uuid.NewString()
+		if err := ownershipConn.QueryRow(ctx,
+			`INSERT INTO coordinator_ownership (singleton, epoch, owner_id, acquired_at)
+			 VALUES (TRUE, 1, $1, NOW())
+			 ON CONFLICT (singleton) DO UPDATE SET
+				epoch = coordinator_ownership.epoch + 1,
+				owner_id = EXCLUDED.owner_id,
+				acquired_at = NOW()
+			 RETURNING epoch`,
+			s.ownershipID,
+		).Scan(&s.ownershipEpoch); err != nil {
+			_, _ = ownershipConn.Exec(
+				ctx,
+				`SELECT pg_advisory_unlock(hashtextextended('darkbloom-coordinator-owner', 0))`,
+			)
 			s.ownershipConn.Release()
+			pool.Close()
+			return nil, fmt.Errorf("store: advance coordinator ownership epoch: %w", err)
 		}
-		pool.Close()
-		return nil, fmt.Errorf("store: run migrations: %w", err)
+		if _, err := ownershipConn.Exec(ctx,
+			`INSERT INTO schema_migrations (id)
+			 VALUES ('coordinator_ownership_activated')
+			 ON CONFLICT (id) DO NOTHING`,
+		); err != nil {
+			_, _ = ownershipConn.Exec(
+				ctx,
+				`SELECT pg_advisory_unlock(hashtextextended('darkbloom-coordinator-owner', 0))`,
+			)
+			ownershipConn.Release()
+			pool.Close()
+			return nil, fmt.Errorf("store: persist coordinator ownership activation: %w", err)
+		}
 	}
 
 	if s.ownershipEnabled {
@@ -140,6 +185,12 @@ func (s *PostgresStore) Close() {
 	if s.ownershipConn != nil {
 		close(s.ownershipStop)
 		<-s.ownershipDone
+		_, _ = s.ownershipConn.Exec(
+			context.Background(),
+			`UPDATE coordinator_ownership SET owner_id = ''
+			 WHERE singleton = TRUE AND epoch = $1 AND owner_id = $2`,
+			s.ownershipEpoch, s.ownershipID,
+		)
 		_, _ = s.ownershipConn.Exec(
 			context.Background(),
 			`SELECT pg_advisory_unlock(hashtextextended('darkbloom-coordinator-owner', 0))`,
@@ -159,6 +210,32 @@ func (s *PostgresStore) OwnershipLost() <-chan struct{} {
 
 func (s *PostgresStore) ensureOwnership() error {
 	if s.ownershipEnabled && !s.ownershipHealthy.Load() {
+		return ErrOwnershipLost
+	}
+	return nil
+}
+
+func (s *PostgresStore) verifyOwnershipTx(ctx context.Context, tx pgx.Tx) error {
+	if !s.ownershipEnabled {
+		return nil
+	}
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
+	var valid bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM coordinator_ownership
+			WHERE singleton = TRUE AND epoch = $1 AND owner_id = $2
+			FOR SHARE
+		)`,
+		s.ownershipEpoch, s.ownershipID,
+	).Scan(&valid); err != nil {
+		return fmt.Errorf("store: verify coordinator ownership: %w", err)
+	}
+	if !valid {
+		s.ownershipHealthy.Store(false)
+		s.ownershipLostOnce.Do(func() { close(s.ownershipLost) })
 		return ErrOwnershipLost
 	}
 	return nil
@@ -196,6 +273,12 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS schema_migrations (
 			id TEXT PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS coordinator_ownership (
+			singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+			epoch BIGINT NOT NULL,
+			owner_id TEXT NOT NULL,
+			acquired_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 
 		`CREATE TABLE IF NOT EXISTS providers (
@@ -3236,6 +3319,9 @@ func (s *PostgresStore) ApplyStripeDeposit(eventID, billingSessionID, checkoutSe
 		return nil, fmt.Errorf("store: begin Stripe deposit: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return nil, err
+	}
 
 	tag, err := tx.Exec(ctx,
 		`INSERT INTO stripe_deposit_events
@@ -3793,6 +3879,9 @@ func (s *PostgresStore) CreateStripeWithdrawalWithDebit(w *StripeWithdrawal, ent
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
 
 	// Same guarded dual-column debit as DebitWithdrawable: both the total
 	// and withdrawable balances must cover the amount.

@@ -30,6 +30,9 @@ func (s *PostgresStore) ReserveInferenceBalance(accountID string, amountMicroUSD
 		return 0, false, fmt.Errorf("store: begin inference reservation: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return 0, false, err
+	}
 	if err := lockFinancialOperation(ctx, tx, operationKey); err != nil {
 		return 0, false, err
 	}
@@ -112,6 +115,9 @@ func (s *PostgresStore) ReleaseInferenceReservation(accountID string, amountMicr
 		return false, fmt.Errorf("store: begin reservation release: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return false, err
+	}
 	if err := lockFinancialOperation(ctx, tx, operationKey); err != nil {
 		return false, err
 	}
@@ -179,6 +185,9 @@ func (s *PostgresStore) RecoverStaleInferenceReservations(before time.Time) (int
 		return 0, fmt.Errorf("store: begin stale reservation recovery: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return 0, err
+	}
 	rows, err := tx.Query(ctx,
 		`SELECT operation_key, account_id, amount_micro_usd, withdrawable_micro_usd
 		 FROM balance_reservation_operations AS reserve

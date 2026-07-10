@@ -177,6 +177,30 @@ func TestSettlementAndReviewDispositionsAreMutuallyExclusive(t *testing.T) {
 	}
 }
 
+func TestPreDebitedSettlementRequiresMatchingDurableReservation(t *testing.T) {
+	for name, backend := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			requestID := uniqueID("unfunded-request")
+			settlement := &InferenceSettlement{
+				ReservationID: uniqueID("missing-reservation"), RequestID: requestID,
+				ConsumerAccountID: uniqueID("consumer"), ReservedMicroUSD: 100,
+				ReservationPreDebited: true, CostMicroUSD: 100,
+				ProviderEarning: &ProviderEarning{
+					AccountID: uniqueID("provider"), ProviderID: "provider-id",
+					ProviderKey: "provider-key", JobID: requestID,
+					Model: "model", AmountMicroUSD: 100,
+				},
+			}
+			if _, err := backend.SettleInference(settlement); !errors.Is(err, ErrFinancialOperationConflict) {
+				t.Fatalf("unfunded settlement error = %v", err)
+			}
+			if balance := backend.GetBalance(settlement.ProviderEarning.AccountID); balance != 0 {
+				t.Fatalf("unfunded settlement minted provider balance %d", balance)
+			}
+		})
+	}
+}
+
 func fundedSettlementFixture(t *testing.T, backend Store, reservationID string) *InferenceSettlement {
 	t.Helper()
 	consumer := uniqueID("settlement-consumer")

@@ -33,6 +33,9 @@ func (s *PostgresStore) RecordInferenceSettlementReview(
 		return "", fmt.Errorf("store: begin settlement review: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return "", err
+	}
 	if err := lockFinancialOperation(ctx, tx, "finalize:"+settlement.ReservationID); err != nil {
 		return "", err
 	}
@@ -118,6 +121,9 @@ func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (Infere
 		return "", fmt.Errorf("store: begin inference settlement: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return "", err
+	}
 	finalizationKey := "finalize:" + settlement.ReservationID
 	if err := lockFinancialOperation(ctx, tx, finalizationKey); err != nil {
 		return "", err
@@ -159,6 +165,19 @@ func (s *PostgresStore) SettleInference(settlement *InferenceSettlement) (Infere
 			return "", fmt.Errorf("store: commit late terminal disposition: %w", err)
 		}
 		return InferenceSettlementAlreadyReleased, nil
+	}
+	if settlement.ReservationPreDebited {
+		accountID, total, withdrawable, found, err := reservationFundingTx(
+			ctx, tx, settlement.ReservationID,
+		)
+		if err != nil {
+			return "", err
+		}
+		if !found || accountID != settlement.ConsumerAccountID ||
+			total != settlement.ReservedMicroUSD ||
+			withdrawable != settlement.ReservedWithdrawableMicroUSD {
+			return "", ErrFinancialOperationConflict
+		}
 	}
 
 	refund, refundWithdrawable := int64(0), int64(0)
@@ -330,6 +349,44 @@ func lockSettlementAccounts(ctx context.Context, tx pgx.Tx, settlement *Inferenc
 		}
 	}
 	return rows.Err()
+}
+
+func reservationFundingTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	reservationID string,
+) (accountID string, total, withdrawable int64, found bool, err error) {
+	var accountCount int
+	err = tx.QueryRow(ctx,
+		`SELECT
+			COALESCE(MIN(account_id), ''),
+			COUNT(DISTINCT account_id),
+			COALESCE(SUM(amount_micro_usd), 0),
+			COALESCE(SUM(withdrawable_micro_usd), 0),
+			COUNT(*) > 0
+		 FROM balance_reservation_operations AS reserve
+		 WHERE reserve.kind = 'reserve'
+		   AND (
+		       reserve.operation_key = $1
+		       OR position('topup:' || $1 || ':' IN reserve.operation_key) = 1
+		   )
+		   AND (
+		       reserve.operation_key = $1
+		       OR NOT EXISTS (
+		           SELECT 1 FROM balance_reservation_operations AS released
+		           WHERE released.operation_key =
+		                 'topup-release:' || substring(reserve.operation_key FROM 7)
+		       )
+		   )`,
+		reservationID,
+	).Scan(&accountID, &accountCount, &total, &withdrawable, &found)
+	if err != nil {
+		return "", 0, 0, false, fmt.Errorf("store: read reservation funding: %w", err)
+	}
+	if accountCount > 1 {
+		return "", 0, 0, false, ErrFinancialOperationConflict
+	}
+	return accountID, total, withdrawable, found, nil
 }
 
 func compactStrings(values []string) []string {

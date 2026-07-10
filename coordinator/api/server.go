@@ -752,6 +752,9 @@ func (s *Server) submitTelemetry(name string, fn func()) {
 // best-effort routing-telemetry sink. It is idempotent.
 func (s *Server) BeginShutdown() {
 	s.SetDraining(true)
+}
+
+func (s *Server) StopCompletionProcessing() {
 	if s.completions != nil {
 		s.completions.stop()
 	}
@@ -777,6 +780,7 @@ func (s *Server) Close() {
 	s.BeginShutdown()
 	s.FenceProviderSessions()
 	s.providerSessions.Wait()
+	s.StopCompletionProcessing()
 	if s.settlements != nil {
 		s.settlements.close()
 	}

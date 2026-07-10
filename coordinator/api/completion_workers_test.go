@@ -275,7 +275,7 @@ func TestSettlementRetryStopsDuringBoundedShutdown(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("settlement retry did not start")
 	}
-	srv.BeginShutdown()
+	srv.StopCompletionProcessing()
 	select {
 	case err := <-result:
 		if !errors.Is(err, errCompletionStopping) {

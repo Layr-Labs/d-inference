@@ -40,6 +40,10 @@ func validateInferenceSettlement(settlement *InferenceSettlement) error {
 			settlement.CostMicroUSD-providerPayout-settlement.PlatformFeeMicroUSD {
 		return fmt.Errorf("%w: beneficiary credits exceed collected cost", ErrFinancialOperationConflict)
 	}
+	if settlement.ReferralRewardMicroUSD !=
+		settlement.CostMicroUSD-providerPayout-settlement.PlatformFeeMicroUSD {
+		return fmt.Errorf("%w: beneficiary credits do not conserve collected cost", ErrFinancialOperationConflict)
+	}
 	if settlement.Usage != nil {
 		if settlement.Usage.RequestID != settlement.RequestID ||
 			settlement.Usage.CostMicroUSD != settlement.CostMicroUSD {

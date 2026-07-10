@@ -1,6 +1,9 @@
 package store
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 func (s *MemoryStore) SettleInference(settlement *InferenceSettlement) (InferenceSettlementDisposition, error) {
 	if err := validateInferenceSettlement(settlement); err != nil {
@@ -19,6 +22,32 @@ func (s *MemoryStore) SettleInference(settlement *InferenceSettlement) (Inferenc
 			return "", ErrFinancialOperationConflict
 		}
 		return InferenceSettlementReviewPending, nil
+	}
+	if settlement.ReservationPreDebited {
+		total, withdrawable, found := int64(0), int64(0), false
+		for operationKey, operation := range s.balanceReservationOperations {
+			isBase := operationKey == settlement.ReservationID
+			isTopUp := strings.HasPrefix(operationKey, "topup:"+settlement.ReservationID+":")
+			if operation.kind != "reserve" || (!isBase && !isTopUp) {
+				continue
+			}
+			if isTopUp {
+				releaseKey := "topup-release:" + strings.TrimPrefix(operationKey, "topup:")
+				if _, released := s.balanceReservationOperations[releaseKey]; released {
+					continue
+				}
+			}
+			if operation.accountID != settlement.ConsumerAccountID {
+				return "", ErrFinancialOperationConflict
+			}
+			found = true
+			total += operation.amountMicroUSD
+			withdrawable += operation.withdrawableMicroUSD
+		}
+		if !found || total != settlement.ReservedMicroUSD ||
+			withdrawable != settlement.ReservedWithdrawableMicroUSD {
+			return "", ErrFinancialOperationConflict
+		}
 	}
 	finalizationKey := "finalize:" + settlement.ReservationID
 	if _, finalized := s.balanceReservationOperations[finalizationKey]; finalized {

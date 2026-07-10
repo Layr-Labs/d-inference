@@ -1,0 +1,1 @@
+{"type":"load_model_status","model_id":"qwen-3-8b-4bit","status":"failed","error":"GPU OOM"}

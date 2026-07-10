@@ -16,6 +16,12 @@ rand = { workspace = true }
 secrecy = { workspace = true }
 zeroize = { workspace = true }
 thiserror = { workspace = true }
+# Shared-key precompute compatible with Go `box.Precompute` /
+# `box.OpenAfterPrecomputation` (crypto_box does not expose the derived key).
+hex = "0.4"
+curve25519-dalek = "4"
+salsa20 = "0.10"
+crypto_secretbox = { version = "0.1", features = ["salsa20"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -1,0 +1,1 @@
+{"type":"inference_request","request_id":"req-42","body":{"model":"qwen-3-8b-4bit","messages":[{"role":"system","content":"You are helpful."},{"role":"user","content":"こんにちは 🌍"}],"stream":true,"max_tokens":1024,"temperature":0.7,"endpoint":"/v1/chat/completions"}}

@@ -531,13 +531,20 @@ async fn admin_force_settle(
                 Ok(true) => ("released".to_string(), charge),
                 Ok(false) => ("already_terminal".to_string(), 0),
                 Err(err) => {
+                    let (status, code) = match &err {
+                        crate::ledger::LedgerError::OwnershipLost => (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "ownership_lost",
+                        ),
+                        _ => (StatusCode::CONFLICT, "force_settle_failed"),
+                    };
                     return (
-                        StatusCode::CONFLICT,
+                        status,
                         Json(json!({
                             "error": {
                                 "message": format!("{err}"),
                                 "type": "invalid_request_error",
-                                "code": "force_settle_failed"
+                                "code": code
                             }
                         })),
                     )
@@ -624,13 +631,20 @@ async fn admin_recover_undispatched(
                 Ok(true) => "released".to_string(),
                 Ok(false) => "already_terminal".to_string(),
                 Err(err) => {
+                    let (status, code) = match &err {
+                        crate::ledger::LedgerError::OwnershipLost => (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "ownership_lost",
+                        ),
+                        _ => (StatusCode::CONFLICT, "recover_undispatched_failed"),
+                    };
                     return (
-                        StatusCode::CONFLICT,
+                        status,
                         Json(json!({
                             "error": {
                                 "message": format!("{err}"),
                                 "type": "invalid_request_error",
-                                "code": "recover_undispatched_failed"
+                                "code": code
                             }
                         })),
                     )

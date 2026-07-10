@@ -168,6 +168,8 @@ Date: 2026-07-10
 | 159 | Settle SQL cross-job digest conflict | `settle_sql` / `settle_capped_sql` / `force_settle_sql` surface `digest_conflict` when terminal_digest is bound to another job |
 | 160 | Cutover-drain-all atomic ready fields | Ready/`all_remaining` come from the same money_fx snapshot as outbox_len — no post-snapshot naked ledger re-read |
 | 161 | Money SQL epoch_conflict | settle/settle_capped/force/release/mark_start/resize SQL surface `epoch_conflict` (reserve #157 parity); settle job CTE selects `state` |
+| 162 | Cancel release under money_fx | `cancel_before_or_after_content` holds optional `money_fx` across pre-start release + terminal/outbox |
+| 163 | Settle SQL needs_start_authorized | `settle_sql` / `settle_capped_sql` surface `needs_start_authorized` so reserved-only settle is Conflict, not silent no-op |
 
 ## Deleted Go mechanisms (do not port)
 

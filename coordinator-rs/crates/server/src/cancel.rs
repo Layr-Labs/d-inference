@@ -38,6 +38,7 @@ pub async fn cancel_before_or_after_content(
     outbox: Option<&Arc<AsyncMutex<Outbox>>>,
     ownership: Option<&OwnershipGate>,
     terminals: Option<&Arc<AsyncMutex<MemoryTerminalStore>>>,
+    money_fx: Option<&Arc<AsyncMutex<()>>>,
 ) -> Result<CancelOutcome, String> {
     let _ = task.apply(ControlEvent::Cancel);
     if had_first_content {
@@ -86,6 +87,12 @@ pub async fn cancel_before_or_after_content(
             return Err("ownership_lost: refusing cancel release".into());
         }
     }
+    // Hold money_fx across release + terminal/outbox so quiescence cannot
+    // observe a refund without the critical side effect (DECISIONS #162).
+    let _fx = match money_fx {
+        Some(m) => Some(m.lock().await),
+        None => None,
+    };
     let (released, refunded) = {
         let mut g = ledger.lock().map_err(|e| e.to_string())?;
         let reserved = g.job_reserved_total(job_id).map(|m| m.0).unwrap_or(0);
@@ -109,6 +116,7 @@ pub async fn cancel_before_or_after_content(
             let _ = b.enqueue_released(job_id, account, refunded);
         }
     }
+    drop(_fx);
     if task.hedge_used {
         Ok(CancelOutcome::Aborted)
     } else {
@@ -175,6 +183,7 @@ mod tests {
             Some(&outbox),
             None,
             Some(&terminals),
+            None,
         )
         .await
         .unwrap();
@@ -254,6 +263,7 @@ mod tests {
             Some(&outbox),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -311,6 +321,7 @@ mod tests {
             "d",
             true,
             Some(&outbox),
+            None,
             None,
             None,
         )
@@ -372,6 +383,7 @@ mod tests {
             Some(&outbox),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -412,6 +424,7 @@ mod tests {
             Some(&outbox),
             Some(&gate),
             None,
+            None,
         )
         .await
         .unwrap_err();
@@ -419,5 +432,80 @@ mod tests {
         assert_eq!(led.lock().unwrap().balance("a").0, 950_000);
         assert_eq!(led.lock().unwrap().active_job_count(), 1);
         assert_eq!(outbox.lock().await.len(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pre_start_cancel_holds_money_fx_across_release_outbox() {
+        // DECISIONS #162: cancel release waits on money_fx like release_job_with_outbox.
+        let led = Arc::new(Mutex::new(MemoryLedger::default()));
+        let outbox = Arc::new(AsyncMutex::new(Outbox::default()));
+        let terminals = Arc::new(AsyncMutex::new(MemoryTerminalStore::new()));
+        let money_fx = Arc::new(AsyncMutex::new(()));
+        {
+            let mut g = led.lock().unwrap();
+            g.credit("a", 1_000_000, 0).unwrap();
+            g.reserve(OperationKey("r".into()), "j-fx", "a", 40_000)
+                .unwrap();
+        }
+        let hub = ProviderHub::new();
+        let (tx, mut rx) = mpsc::channel(4);
+        hub.attach("p".into(), 1, tx).await;
+        let hub2 = hub.clone();
+        tokio::spawn(async move {
+            while let Some(crate::provider_hub::OutboundCmd::Text(t)) = rx.recv().await {
+                let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                let attempt = v["attempt_id"].as_str().unwrap_or("a1").to_string();
+                let reply = crate::provider_hub::InboundReply::Aborted(serde_json::json!({
+                    "type": "aborted",
+                    "attempt_id": attempt
+                }));
+                hub2.deliver_reply("p", &attempt, reply).await;
+            }
+        });
+
+        let hold = money_fx.lock().await;
+        let led_c = led.clone();
+        let out_c = outbox.clone();
+        let terms_c = terminals.clone();
+        let fx_c = money_fx.clone();
+        let hub_c = hub.clone();
+        let cancel = tokio::spawn(async move {
+            let (_h, mut task) = spawn_request_task(JobId::new("j-fx"), Duration::from_secs(30));
+            cancel_before_or_after_content(
+                &mut task,
+                &hub_c,
+                &led_c,
+                "a",
+                "p",
+                "j-fx",
+                "a1",
+                "l1",
+                0,
+                "n",
+                "d",
+                false,
+                Some(&out_c),
+                None,
+                Some(&terms_c),
+                Some(&fx_c),
+            )
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(
+            !cancel.is_finished(),
+            "cancel release must wait on money_fx"
+        );
+        drop(hold);
+
+        let out = tokio::time::timeout(Duration::from_secs(3), cancel)
+            .await
+            .expect("cancel should complete")
+            .unwrap()
+            .unwrap();
+        assert_eq!(out, CancelOutcome::DiscardedLocal);
+        assert_eq!(led.lock().unwrap().balance("a").0, 1_000_000);
+        assert_eq!(outbox.lock().await.len(), 1);
     }
 }

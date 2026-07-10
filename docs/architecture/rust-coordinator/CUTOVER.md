@@ -958,3 +958,17 @@ all surface `epoch_conflict` when the job row's fencing epoch mismatches
 the caller — matching reserve #157. Settle job CTEs also SELECT `state`
 so the start_authorized guard is valid SQL.
 
+### Cancel release under money_fx (DECISIONS #162)
+
+`cancel_before_or_after_content` accepts an optional `money_fx` and holds
+it across pre-start `release_fenced` + disposition/outbox — same barrier
+as `release_job_with_outbox` so quiescence cannot observe a refund without
+the critical side effect.
+
+### Settle SQL needs_start_authorized (DECISIONS #163)
+
+`settle_sql` / `settle_capped_sql` return `needs_start_authorized` when
+the job exists but is not `start_authorized` and no op row was claimed —
+so SQLx callers map to Conflict (MemoryLedger #153 parity) instead of
+treating NULL refund as idempotent no-op.
+

@@ -429,7 +429,12 @@ impl PostgresLedgerStub {
               SELECT 1 FROM job
               WHERE coordinator_epoch = 0 OR coordinator_epoch = $9::bigint
             )
-          ) AS epoch_conflict
+          ) AS epoch_conflict,
+          (
+            EXISTS (SELECT 1 FROM job)
+            AND NOT EXISTS (SELECT 1 FROM job WHERE state = 'start_authorized')
+            AND NOT EXISTS (SELECT 1 FROM op_row)
+          ) AS needs_start_authorized
         "#
     }
 
@@ -570,7 +575,12 @@ impl PostgresLedgerStub {
               SELECT 1 FROM job
               WHERE coordinator_epoch = 0 OR coordinator_epoch = $10::bigint
             )
-          ) AS epoch_conflict
+          ) AS epoch_conflict,
+          (
+            EXISTS (SELECT 1 FROM job)
+            AND NOT EXISTS (SELECT 1 FROM job WHERE state = 'start_authorized')
+            AND NOT EXISTS (SELECT 1 FROM op_row)
+          ) AS needs_start_authorized
         "#
     }
 
@@ -983,6 +993,20 @@ mod tests {
             assert!(
                 sql.contains("job_id <> $2") || sql.contains("job_id <> $2"),
                 "digest_conflict must compare against a different job_id"
+            );
+        }
+    }
+
+    #[test]
+    fn settle_sql_surfaces_needs_start_authorized() {
+        // DECISIONS #163: reserved-only settle must not look like idempotent no-op.
+        for sql in [
+            PostgresLedgerStub::settle_sql(),
+            PostgresLedgerStub::settle_capped_sql(),
+        ] {
+            assert!(
+                sql.contains("needs_start_authorized"),
+                "settle SQL must surface needs_start_authorized for reserved-only jobs"
             );
         }
     }

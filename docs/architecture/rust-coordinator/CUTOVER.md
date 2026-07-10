@@ -508,3 +508,9 @@ exactly once and leave outbox empty.
 drain. Concurrent deposits and cutover-drain conserve money (balance = start +
 deposits; outbox empty).
 
+### Multi-account + charged cutover-drain (DECISIONS #95)
+
+cutover-drain uses per-job `account_id` for money moves. Optional
+`actual_micro_usd` charges held jobs. Optional `account` filter scopes owners;
+foreign orphans remain and `ready` stays false until a full (unfiltered) drain.
+

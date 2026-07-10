@@ -101,6 +101,7 @@ Date: 2026-07-10
 | 92 | cutover-drain abort on steal + hint | cutover-drain returns clear abort without draining outbox. Quiescence `cutover_hint` prefers `cutover-drain` when active jobs remain |
 | 93 | Resume cutover-drain + concurrent race | After steal abort, re-acquire → cutover-drain reaches ready. Concurrent cutover-drain clears orphans once and drains outbox |
 | 94 | CLI cutover-drain + deposit race | `--demo-cutover-drain` clears+drains outbox. Concurrent deposits ∥ cutover-drain conserve balance |
+| 95 | Multi-account + charged cutover-drain | cutover-drain refunds each job owner; `actual_micro_usd` charges holds; account filter leaves foreign jobs (ready=false) |
 
 ## Deleted Go mechanisms (do not port)
 

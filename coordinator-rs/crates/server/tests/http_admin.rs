@@ -878,6 +878,32 @@ async fn admin_deposit_rejects_empty_source() {
 }
 
 #[tokio::test]
+async fn admin_deposit_without_ownership_returns_503() {
+    let app = router(test_state(false));
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/deposits")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "event_id": "evt_no_own",
+                        "amount_micro_usd": 100_000,
+                        "withdrawable_micro_usd": 0
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let v = body_json(res).await;
+    assert_eq!(v["error"]["code"], "ownership_lost");
+}
+
+#[tokio::test]
 async fn admin_terminal_ingest_force_settled_disposition() {
     let state = test_state(true);
     {

@@ -86,6 +86,7 @@ Date: 2026-07-10
 | 77 | needs_adopt + recover-undispatched-batch | Quiescence `needs_adopt` flags fencing mismatch vs current owner. `POST /v1/admin/recover-undispatched-batch` releases all reserved-not-started jobs after adopt |
 | 78 | force-settle-batch | `POST /v1/admin/force-settle-batch` force-settles all held jobs (default actual=0 full refund); pair with recover-batch after adopt for mixed orphans |
 | 79 | clear-orphans one-shot | `POST /v1/admin/clear-orphans` runs adopt → recover reserved → force-settle held in one admin call for cutover drain |
+| 80 | CLI demo-clear-orphans | `--demo-clear-orphans` proves adopt→recover→force-settle on mixed reserved+held orphans restores balance |
 
 ## Deleted Go mechanisms (do not port)
 

@@ -416,3 +416,8 @@ quiescence → adopt-jobs → recover-undispatched-batch → force-settle-batch.
 active → recover reserved → force-settle held (default full refund). Prefer
 for cutover drain after re-acquire; use stepwise endpoints for partial triage.
 
+### CLI demo-clear-orphans (DECISIONS #80)
+
+`recovery --demo-clear-orphans --confirm-same-release` dry-runs the same
+pipeline in-process for operator rehearsal without HTTP.
+

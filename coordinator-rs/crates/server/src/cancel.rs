@@ -106,8 +106,27 @@ mod tests {
         }
         let (_h, mut task) = spawn_request_task(JobId::new("j1"), Duration::from_secs(30));
         let hub = ProviderHub::new();
-        let (tx, _rx) = mpsc::channel(4);
+        let (tx, mut rx) = mpsc::channel(4);
         hub.attach("p".into(), 1, tx).await;
+        let hub2 = hub.clone();
+        tokio::spawn(async move {
+            while let Some(crate::provider_hub::OutboundCmd::Text(t)) = rx.recv().await {
+                let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                let attempt = v["attempt_id"].as_str().unwrap_or("a1").to_string();
+                let reply = if v["type"] == "abort" {
+                    crate::provider_hub::InboundReply::Aborted(serde_json::json!({
+                        "type": "aborted",
+                        "attempt_id": attempt
+                    }))
+                } else {
+                    crate::provider_hub::InboundReply::Cancelled(serde_json::json!({
+                        "type": "cancelled",
+                        "attempt_id": attempt
+                    }))
+                };
+                hub2.deliver_reply("p", &attempt, reply).await;
+            }
+        });
         let out = cancel_before_or_after_content(
             &mut task, &hub, &led, "a", "p", "j1", "a1", "l1", 1, "n", "d", false,
         )

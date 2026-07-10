@@ -256,3 +256,9 @@ digest but mismatched lease or SE signature returns `disposition=conflict`
 and never settles or records late. `lookup_sql` binds `$4`/`$5`. Chat settle
 records dispositions via `record_bound` so rollback ACK is lease-bound.
 
+### Live settle ownership steal hold (DECISIONS #54)
+
+If ownership is released after live `start` but before settle, the chat path
+returns `ownership_lost` and leaves the reservation `start_authorized` held.
+Never charge after a mid-flight fencing loss.
+

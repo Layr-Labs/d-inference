@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "direction": "provider_to_coordinator",
+  "encoding": "json_text",
+  "cases": [
+    {
+      "name": "register_minimal",
+      "message_type": "register",
+      "wire": "{\"type\":\"register\",\"hardware\":{\"machine_model\":\"\",\"chip_name\":\"\",\"chip_family\":\"\",\"chip_tier\":\"\",\"memory_gb\":0,\"memory_available_gb\":0,\"cpu_cores\":{\"total\":0,\"performance\":0,\"efficiency\":0},\"gpu_cores\":0,\"memory_bandwidth_gbs\":0},\"models\":[],\"backend\":\"mlx-swift\"}",
+      "exact_bytes": false,
+      "notes": "Optional fields are omitted."
+    },
+    {
+      "name": "register_full_raw_attestation",
+      "message_type": "register",
+      "wire": "{\"type\":\"register\",\"hardware\":{\"machine_model\":\"Mac15,8\",\"chip_name\":\"Apple M3 Max\",\"chip_family\":\"M3\",\"chip_tier\":\"Max\",\"memory_gb\":64,\"memory_available_gb\":58.5,\"cpu_cores\":{\"total\":16,\"performance\":12,\"efficiency\":4},\"gpu_cores\":40,\"memory_bandwidth_gbs\":400},\"models\":[{\"id\":\"model-a\",\"size_bytes\":123456789,\"model_type\":\"chat\",\"quantization\":\"4bit\",\"weight_hash\":\"weight-sha256\",\"is_vision\":true,\"template_render_ok\":false}],\"backend\":\"mlx-swift\",\"version\":\"0.7.5\",\"public_key\":\"provider-x25519\",\"encrypted_response_chunks\":true,\"attestation\":{\"signature\":\"sig\",\"attestation\":{\"z\":1,\"a\":[true,false]}},\"prefill_tps\":321.5,\"decode_tps\":42.25,\"auth_token\":\"provider-token\",\"private_only\":true,\"apns_device_token\":\"device-token\",\"apns_environment\":\"production\",\"runtime_hash\":\"runtime-sha256\",\"template_hashes\":{\"mlx_metallib\":\"template-sha256\"},\"privacy_capabilities\":{\"text_backend_inprocess\":true,\"text_proxy_disabled\":true,\"python_runtime_locked\":true,\"dangerous_modules_blocked\":true,\"sip_enabled\":true,\"anti_debug_enabled\":true,\"core_dumps_disabled\":true,\"env_scrubbed\":true}}",
+      "exact_bytes": true,
+      "notes": "The nested attestation value is signed; consumers must preserve its exact raw bytes."
+    },
+    {
+      "name": "heartbeat_no_active_model",
+      "message_type": "heartbeat",
+      "wire": "{\"type\":\"heartbeat\",\"status\":\"idle\",\"active_model\":null,\"stats\":{\"requests_served\":0,\"tokens_generated\":0},\"system_metrics\":{\"memory_pressure\":0,\"cpu_usage\":0,\"thermal_state\":\"\"}}",
+      "exact_bytes": false,
+      "notes": "Go emits active_model:null; decoders must also accept omission from Swift."
+    },
+    {
+      "name": "heartbeat_full",
+      "message_type": "heartbeat",
+      "wire": "{\"type\":\"heartbeat\",\"status\":\"serving\",\"active_model\":\"model-a\",\"stats\":{\"requests_served\":11,\"tokens_generated\":22,\"cancellations_received\":3,\"cancellations_before_output\":4,\"cancellations_partial_complete\":5,\"generation_errors_after_output\":6,\"chunk_encryption_errors\":7,\"stream_closed_without_terminal\":8,\"cancel_during_model_load\":9,\"usage_gaps\":10},\"warm_models\":[\"model-a\"],\"system_metrics\":{\"memory_pressure\":0.2,\"cpu_usage\":0.3,\"thermal_state\":\"nominal\"},\"backend_capacity\":{\"slots\":[{\"model\":\"model-a\",\"state\":\"idle\",\"num_running\":0,\"num_waiting\":0,\"max_concurrency\":4,\"active_tokens\":0,\"max_tokens_potential\":0,\"observed_decode_tps\":42.25,\"active_token_budget_used\":1024,\"active_token_budget_max\":32768,\"kv_bytes_per_token\":393216}],\"gpu_memory_active_gb\":8,\"gpu_memory_peak_gb\":9,\"gpu_memory_cache_gb\":1,\"total_memory_gb\":64,\"free_for_load_gb\":20.5},\"apns_device_token\":\"rotated-token\",\"apns_environment\":\"production\"}",
+      "exact_bytes": false
+    },
+    {
+      "name": "inference_accepted",
+      "message_type": "inference_accepted",
+      "wire": "{\"type\":\"inference_accepted\",\"request_id\":\"request-a\"}",
+      "exact_bytes": false
+    },
+    {
+      "name": "inference_response_chunk_plain",
+      "message_type": "inference_response_chunk",
+      "wire": "{\"type\":\"inference_response_chunk\",\"request_id\":\"request-a\",\"data\":\"data: {\\\"choices\\\":[]}\\n\\n\"}",
+      "exact_bytes": false
+    },
+    {
+      "name": "inference_response_chunk_encrypted",
+      "message_type": "inference_response_chunk",
+      "wire": "{\"type\":\"inference_response_chunk\",\"request_id\":\"request-a\",\"encrypted_data\":{\"ephemeral_public_key\":\"sender-key\",\"ciphertext\":\"nonce-and-box\"}}",
+      "exact_bytes": false
+    },
+    {
+      "name": "inference_complete",
+      "message_type": "inference_complete",
+      "wire": "{\"type\":\"inference_complete\",\"request_id\":\"request-a\",\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":34,\"reasoning_tokens\":5},\"se_signature\":\"se-signature\",\"response_hash\":\"response-sha256\"}",
+      "exact_bytes": false
+    },
+    {
+      "name": "inference_error",
+      "message_type": "inference_error",
+      "wire": "{\"type\":\"inference_error\",\"request_id\":\"request-a\",\"error\":\"model unavailable\",\"status_code\":503,\"error_reason\":\"model_load\"}",
+      "exact_bytes": false
+    },
+    {
+      "name": "attestation_response_current",
+      "message_type": "attestation_response",
+      "wire": "{\"type\":\"attestation_response\",\"nonce\":\"nonce\",\"signature\":\"signature\",\"status_signature\":\"status-signature\",\"public_key\":\"se-public-key\",\"rdma_disabled\":true,\"sip_enabled\":true,\"secure_boot_enabled\":true,\"binary_hash\":\"binary-sha256\",\"active_model_hash\":\"model-sha256\",\"runtime_hash\":\"runtime-sha256\",\"template_hashes\":{\"chat\":\"template-sha256\"},\"model_hashes\":{\"model-a\":\"model-sha256\"}}",
+      "exact_bytes": false
+    },
+    {
+      "name": "attestation_response_legacy_hypervisor_false",
+      "message_type": "attestation_response",
+      "wire": "{\"type\":\"attestation_response\",\"nonce\":\"nonce\",\"signature\":\"signature\",\"public_key\":\"se-public-key\",\"hypervisor_active\":false}",
+      "exact_bytes": false,
+      "notes": "Legacy signed payload compatibility; explicit false must survive decoding."
+    },
+    {
+      "name": "code_attestation_response",
+      "message_type": "code_attestation_response",
+      "wire": "{\"type\":\"code_attestation_response\",\"nonce\":\"nonce\",\"signature\":\"signature\"}",
+      "exact_bytes": false
+    },
+    {
+      "name": "load_model_status_started",
+      "message_type": "load_model_status",
+      "wire": "{\"type\":\"load_model_status\",\"model_id\":\"model-a\",\"status\":\"started\"}",
+      "exact_bytes": false
+    },
+    {
+      "name": "load_model_status_failed",
+      "message_type": "load_model_status",
+      "wire": "{\"type\":\"load_model_status\",\"model_id\":\"model-a\",\"status\":\"failed\",\"error\":\"provider draining for update\"}",
+      "exact_bytes": false
+    },
+    {
+      "name": "prefetch_model_status_downloading",
+      "message_type": "prefetch_model_status",
+      "wire": "{\"type\":\"prefetch_model_status\",\"model_id\":\"model-a\",\"status\":\"downloading\",\"bytes_done\":1024,\"bytes_total\":4096}",
+      "exact_bytes": false
+    },
+    {
+      "name": "prefetch_model_status_verified",
+      "message_type": "prefetch_model_status",
+      "wire": "{\"type\":\"prefetch_model_status\",\"model_id\":\"model-a\",\"status\":\"verified\"}",
+      "exact_bytes": false,
+      "notes": "Zero progress and empty error fields are omitted."
+    },
+    {
+      "name": "models_update",
+      "message_type": "models_update",
+      "wire": "{\"type\":\"models_update\",\"models\":[{\"id\":\"model-a\",\"size_bytes\":0,\"model_type\":\"\",\"quantization\":\"\",\"weight_hash\":\"weight-sha256\"}]}",
+      "exact_bytes": false
+    }
+  ]
+}

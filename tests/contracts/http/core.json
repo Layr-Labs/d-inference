@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "exchanges": [
+    {
+      "name": "health",
+      "request": {
+        "method": "GET",
+        "path": "/health"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"build_commit\":\"unknown\",\"build_date\":\"unknown\",\"providers\":0,\"status\":\"ok\",\"version\":\"dev\"}"
+      }
+    },
+    {
+      "name": "readiness",
+      "request": {
+        "method": "GET",
+        "path": "/readyz"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"draining\":false,\"inflight\":0,\"ready\":true}"
+      }
+    },
+    {
+      "name": "encryption_key_unconfigured",
+      "request": {
+        "method": "GET",
+        "path": "/v1/encryption-key"
+      },
+      "response": {
+        "status": 503,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"error\":{\"code\":\"encryption_unavailable\",\"message\":\"sender→coordinator encryption is not configured on this coordinator\",\"type\":\"encryption_unavailable\"}}"
+      }
+    },
+    {
+      "name": "models_missing_auth",
+      "request": {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"error\":{\"code\":\"authentication_error\",\"message\":\"missing credentials — use Authorization: Bearer \\u003ctoken\\u003e\",\"type\":\"authentication_error\"}}"
+      }
+    },
+    {
+      "name": "models_empty",
+      "request": {
+        "method": "GET",
+        "path": "/v1/models",
+        "headers": {
+          "Authorization": "Bearer contract-admin-key"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"data\":[],\"object\":\"list\"}"
+      }
+    },
+    {
+      "name": "chat_invalid_json",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {
+          "Authorization": "Bearer contract-admin-key",
+          "Content-Type": "application/json"
+        },
+        "body": "{"
+      },
+      "response": {
+        "status": 400,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"error\":{\"code\":\"invalid_request_error\",\"message\":\"invalid JSON: unexpected end of JSON input\",\"type\":\"invalid_request_error\"}}"
+      }
+    },
+    {
+      "name": "unimplemented_endpoint",
+      "request": {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "headers": {
+          "Authorization": "Bearer contract-admin-key",
+          "Content-Type": "application/json"
+        },
+        "body": "{\"model\":\"model-a\",\"input\":\"hello\"}"
+      },
+      "response": {
+        "status": 404,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"error\":{\"code\":\"invalid_request_error\",\"message\":\"endpoint POST /v1/embeddings is not implemented\",\"type\":\"invalid_request_error\"}}"
+      }
+    }
+  ],
+  "response_shapes": [
+    {
+      "name": "chat_non_streaming",
+      "content_type": "application/json",
+      "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"hello\",\"role\":\"assistant\"}}],\"created\":1700000000,\"id\":\"chatcmpl-contract\",\"model\":\"model-a\",\"object\":\"chat.completion\",\"response_hash\":\"response-sha256\",\"se_signature\":\"se-signature\",\"usage\":{\"completion_tokens\":1,\"prompt_tokens\":2,\"total_tokens\":3}}"
+    },
+    {
+      "name": "responses_non_streaming",
+      "content_type": "application/json",
+      "body": "{\"created_at\":1700000000,\"error\":null,\"id\":\"resp_contract\",\"incomplete_details\":null,\"instructions\":null,\"max_output_tokens\":null,\"metadata\":{},\"model\":\"model-a\",\"object\":\"response\",\"output\":[],\"parallel_tool_calls\":false,\"status\":\"completed\",\"temperature\":null,\"tool_choice\":null,\"tools\":[],\"top_p\":null,\"usage\":{\"input_tokens\":2,\"input_tokens_details\":{\"cached_tokens\":0,\"reasoning_tokens\":0},\"output_tokens\":1,\"output_tokens_details\":{\"cached_tokens\":0,\"reasoning_tokens\":0}}}"
+    },
+    {
+      "name": "chat_streaming_sse",
+      "content_type": "text/event-stream",
+      "body": "data: {\"id\":\"chatcmpl-contract\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"model-a\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-contract\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"model-a\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n"
+    }
+  ]
+}

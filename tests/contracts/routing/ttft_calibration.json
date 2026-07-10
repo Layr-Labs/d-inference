@@ -1,0 +1,188 @@
+{
+  "schema_version": 1,
+  "model": "mlx-community/Qwen3.5-9B-Instruct-4bit",
+  "providers": 70,
+  "prompt_data": "synthetic token counts only; no prompt or response content",
+  "scenarios": [
+    {
+      "name": "legacy_ratio_hard_gate",
+      "prefill_to_decode_ratio": 4,
+      "soft_ttft_gate": false,
+      "total": 1500,
+      "served": 351,
+      "machine_busy": 0,
+      "ttft_too_slow": 1149,
+      "estimated_cliff_tokens": 601,
+      "buckets": [
+        {
+          "label": "0-500",
+          "total": 250,
+          "served": 250,
+          "machine_busy": 0,
+          "ttft_too_slow": 0,
+          "other_rejects": 0
+        },
+        {
+          "label": "500-750",
+          "total": 250,
+          "served": 101,
+          "machine_busy": 0,
+          "ttft_too_slow": 149,
+          "other_rejects": 0
+        },
+        {
+          "label": "750-1000",
+          "total": 250,
+          "served": 0,
+          "machine_busy": 0,
+          "ttft_too_slow": 250,
+          "other_rejects": 0
+        },
+        {
+          "label": "1000-2000",
+          "total": 250,
+          "served": 0,
+          "machine_busy": 0,
+          "ttft_too_slow": 250,
+          "other_rejects": 0
+        },
+        {
+          "label": "2000-4000",
+          "total": 250,
+          "served": 0,
+          "machine_busy": 0,
+          "ttft_too_slow": 250,
+          "other_rejects": 0
+        },
+        {
+          "label": "4000+",
+          "total": 250,
+          "served": 0,
+          "machine_busy": 0,
+          "ttft_too_slow": 250,
+          "other_rejects": 0
+        }
+      ]
+    },
+    {
+      "name": "calibrated_ratio_hard_gate",
+      "prefill_to_decode_ratio": 12,
+      "soft_ttft_gate": false,
+      "total": 1500,
+      "served": 1048,
+      "machine_busy": 0,
+      "ttft_too_slow": 452,
+      "estimated_cliff_tokens": 2384,
+      "buckets": [
+        {
+          "label": "0-500",
+          "total": 250,
+          "served": 250,
+          "machine_busy": 0,
+          "ttft_too_slow": 0,
+          "other_rejects": 0
+        },
+        {
+          "label": "500-750",
+          "total": 250,
+          "served": 250,
+          "machine_busy": 0,
+          "ttft_too_slow": 0,
+          "other_rejects": 0
+        },
+        {
+          "label": "750-1000",
+          "total": 250,
+          "served": 250,
+          "machine_busy": 0,
+          "ttft_too_slow": 0,
+          "other_rejects": 0
+        },
+        {
+          "label": "1000-2000",
+          "total": 250,
+          "served": 250,
+          "machine_busy": 0,
+          "ttft_too_slow": 0,
+          "other_rejects": 0
+        },
+        {
+          "label": "2000-4000",
+          "total": 250,
+          "served": 48,
+          "machine_busy": 0,
+          "ttft_too_slow": 202,
+          "other_rejects": 0
+        },
+        {
+          "label": "4000+",
+          "total": 250,
+          "served": 0,
+          "machine_busy": 0,
+          "ttft_too_slow": 250,
+          "other_rejects": 0
+        }
+      ]
+    },
+    {
+      "name": "calibrated_ratio_soft_gate",
+      "prefill_to_decode_ratio": 12,
+      "soft_ttft_gate": true,
+      "total": 1500,
+      "served": 1500,
+      "machine_busy": 0,
+      "ttft_too_slow": 0,
+      "estimated_cliff_tokens": 0,
+      "buckets": [
+        {
+          "label": "0-500",
+          "total": 250,
+          "served": 250,
+          "machine_busy": 0,
+          "ttft_too_slow": 0,
+          "other_rejects": 0
+        },
+        {
+          "label": "500-750",
+          "total": 250,
+          "served": 250,
+          "machine_busy": 0,
+          "ttft_too_slow": 0,
+          "other_rejects": 0
+        },
+        {
+          "label": "750-1000",
+          "total": 250,
+          "served": 250,
+          "machine_busy": 0,
+          "ttft_too_slow": 0,
+          "other_rejects": 0
+        },
+        {
+          "label": "1000-2000",
+          "total": 250,
+          "served": 250,
+          "machine_busy": 0,
+          "ttft_too_slow": 0,
+          "other_rejects": 0
+        },
+        {
+          "label": "2000-4000",
+          "total": 250,
+          "served": 250,
+          "machine_busy": 0,
+          "ttft_too_slow": 0,
+          "other_rejects": 0
+        },
+        {
+          "label": "4000+",
+          "total": 250,
+          "served": 250,
+          "machine_busy": 0,
+          "ttft_too_slow": 0,
+          "other_rejects": 0
+        }
+      ]
+    }
+  ]
+}

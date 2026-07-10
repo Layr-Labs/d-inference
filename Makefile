@@ -1,5 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help \
+        contracts-check contracts-update \
         coordinator-test coordinator-build coordinator-build-linux coordinator \
         provider-build provider-test provider \
         ui-install ui-build ui-lint ui-test ui \
@@ -9,6 +10,14 @@
 help:
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage: make <target>\n\nTargets:\n"} \
 	     /^[a-zA-Z0-9_-]+:.*##/ {printf "  %-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+# ---- Cross-language contracts ---------------------------------------------
+
+contracts-check: ## Verify committed HTTP, protocol, crypto, and routing contracts
+	go run ./coordinator/cmd/contract-fixtures
+
+contracts-update: ## Regenerate committed cross-language contracts
+	go run ./coordinator/cmd/contract-fixtures -update
 
 # ---- Coordinator (Go) ------------------------------------------------------
 

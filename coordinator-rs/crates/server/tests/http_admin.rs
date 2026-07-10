@@ -764,3 +764,36 @@ async fn admin_deposit_creates_new_account() {
     // Pilot account unchanged.
     assert_eq!(ledger.lock().await.balance("pilot-account").0, 1_000_000);
 }
+
+#[tokio::test]
+async fn admin_terminal_ingest_digest_fallback_acks_settled() {
+    let state = test_state(true);
+    {
+        let mut terms = state.terminals.lock().await;
+        // Settle wrote empty attempt_id; ingest arrives with real attempt_id.
+        terms.record("", "d-http-fb", "settled", None);
+    }
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/terminal-ingest")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "job_id": "j-fb",
+                        "attempt_id": "real-attempt",
+                        "terminal_digest": "d-http-fb"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["disposition"], "settled");
+    assert_eq!(v["type"], "terminal_ack");
+}

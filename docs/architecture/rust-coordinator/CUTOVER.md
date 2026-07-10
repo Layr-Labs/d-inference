@@ -410,3 +410,9 @@ releases all reserved-not-started jobs (skips held); use after adopt-jobs.
 jobs (default `actual_micro_usd=0` = full refund). Ops flow for mixed orphans:
 quiescence → adopt-jobs → recover-undispatched-batch → force-settle-batch.
 
+### clear-orphans one-shot (DECISIONS #79)
+
+`POST /v1/admin/clear-orphans` collapses that flow into one call: adopt all
+active → recover reserved → force-settle held (default full refund). Prefer
+for cutover drain after re-acquire; use stepwise endpoints for partial triage.
+

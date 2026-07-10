@@ -93,6 +93,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/terminal-ingest", post(admin_terminal_ingest))
         .route("/v1/admin/adopt-job", post(admin_adopt_job))
         .route("/v1/admin/adopt-jobs", post(admin_adopt_jobs))
+        .route("/v1/admin/clear-orphans", post(admin_clear_orphans))
         .route("/v1/admin/cancel-attempt", post(admin_cancel_attempt))
         .fallback(unsupported)
         .with_state(Arc::new(state))
@@ -1153,6 +1154,178 @@ async fn admin_adopt_jobs(
             "failed": failed,
             "adopted_count": adopted_count,
             "failed_count": failed_count,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AdminClearOrphansRequest {
+    #[serde(default)]
+    account: Option<String>,
+    /// Charge per held job (clamped). Default 0 = full refund.
+    #[serde(default)]
+    actual_micro_usd: i64,
+}
+
+/// One-shot cutover orphan clear: adopt → recover reserved → force-settle held
+/// (DECISIONS #79). Default actual=0 fully refunds holds.
+async fn admin_clear_orphans(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AdminClearOrphansRequest>,
+) -> impl IntoResponse {
+    if let Err(resp) = require_admin(&state, &headers) {
+        return resp;
+    }
+    if let Err(resp) = require_holding(&state) {
+        return resp;
+    }
+    if req.actual_micro_usd < 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": "actual_micro_usd must be >= 0",
+                    "type": "invalid_request_error",
+                    "code": "invalid_actual"
+                }
+            })),
+        )
+            .into_response();
+    }
+    let account = req
+        .account
+        .unwrap_or_else(|| state.pilot_account.clone());
+    let epoch = state.ownership.epoch().0;
+
+    // 1) Adopt all active jobs to current epoch.
+    let mut adopted = Vec::new();
+    {
+        let ids = {
+            let led = state.ledger.lock().await;
+            led.active_job_ids()
+        };
+        let mut led = state.ledger.lock().await;
+        for job_id in ids {
+            if led.adopt_fencing_epoch(&job_id, epoch).is_ok() {
+                adopted.push(job_id);
+            }
+        }
+    }
+
+    // 2) Recover reserved-not-started.
+    let mut released = Vec::new();
+    let mut refund_total = 0_i64;
+    {
+        let ids = {
+            let led = state.ledger.lock().await;
+            led.reserved_not_started_job_ids()
+        };
+        for job_id in ids {
+            let refunded = {
+                let mut led = state.ledger.lock().await;
+                let reserved = led.job_reserved_total(&job_id).map(|m| m.0).unwrap_or(0);
+                match recover_undispatched_on(&mut led, epoch, &job_id, &account) {
+                    Ok(RecoveryAction::Released) => Some(reserved),
+                    _ => None,
+                }
+            };
+            if let Some(amount) = refunded {
+                {
+                    let mut terms = state.terminals.lock().await;
+                    crate::terminal_ingest::record_released_disposition(&mut terms, &job_id);
+                }
+                let mut box_ = state.outbox.lock().await;
+                let _ = box_.enqueue_released(&job_id, &account, amount);
+                refund_total += amount;
+                released.push(job_id);
+            }
+        }
+    }
+
+    // 3) Force-settle remaining holds.
+    let mut settled = Vec::new();
+    let mut charged_total = 0_i64;
+    {
+        let ids = {
+            let led = state.ledger.lock().await;
+            led.held_start_authorized_job_ids()
+        };
+        for job_id in ids {
+            let digest = format!("clear-orphans:{job_id}");
+            let charged = {
+                let mut led = state.ledger.lock().await;
+                let reserved = led.job_reserved_total(&job_id).map(|m| m.0).unwrap_or(0);
+                let charge = req.actual_micro_usd.min(reserved).max(0);
+                match force_settle_held_on(
+                    &mut led,
+                    epoch,
+                    &job_id,
+                    &account,
+                    req.actual_micro_usd,
+                    &digest,
+                ) {
+                    Ok(RecoveryAction::Released) => Some(charge),
+                    _ => None,
+                }
+            };
+            if let Some(charge) = charged {
+                {
+                    let mut terms = state.terminals.lock().await;
+                    let ack = json!({
+                        "type": "terminal_ack",
+                        "job_id": job_id,
+                        "attempt_id": "",
+                        "lease_id": "",
+                        "terminal_digest": digest,
+                        "disposition": "force_settled",
+                    });
+                    terms.record_bound(
+                        &job_id, "", &digest, "force_settled", Some(ack), "", "",
+                    );
+                }
+                let mut box_ = state.outbox.lock().await;
+                let _ = box_.enqueue_critical(
+                    "inference.settled",
+                    &json!({
+                        "job_id": job_id,
+                        "terminal_digest": digest,
+                        "charged_micro_usd": charge,
+                        "disposition": "force_settled",
+                    })
+                    .to_string(),
+                );
+                charged_total += charge;
+                settled.push(job_id);
+            }
+        }
+    }
+
+    let (bal, active, held) = {
+        let led = state.ledger.lock().await;
+        (
+            led.balance(&account).0,
+            led.active_job_count(),
+            led.held_start_authorized_count(),
+        )
+    };
+    (
+        StatusCode::OK,
+        Json(json!({
+            "action": "cleared_orphans",
+            "account": account,
+            "adopted_count": adopted.len(),
+            "adopted": adopted,
+            "released_count": released.len(),
+            "released": released,
+            "refunded_micro_usd": refund_total,
+            "settled_count": settled.len(),
+            "settled": settled,
+            "charged_micro_usd": charged_total,
+            "balance_micro_usd": bal,
+            "active_jobs": active,
+            "held_start_authorized": held,
         })),
     )
         .into_response()

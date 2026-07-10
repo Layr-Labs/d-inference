@@ -285,17 +285,17 @@ func TestCompletionRetriesAtomicSettlementWithoutPartialProjection(t *testing.T)
 	}
 }
 
-func TestAmbiguousSettlementCommitResolvesReplayAndReleasesServiceHold(t *testing.T) {
-	srv, backing := newReservationTestServer(t, ServerConfig{ServiceReservations: true}, nil)
+func TestAmbiguousSettlementCommitResolvesDurableReplay(t *testing.T) {
+	srv, backing := newReservationTestServer(t, ServerConfig{}, nil)
 	createServiceUser(t, backing, "svc-ambiguous")
 	if err := backing.Credit("svc-ambiguous", 1_000_000, store.LedgerDeposit, "seed"); err != nil {
 		t.Fatal(err)
 	}
 	const hold int64 = 500_000
-	serviceMode, _, err := srv.reserveInitialBalance(
+	serviceMode, reservedWithdrawable, err := srv.reserveInitialBalance(
 		"svc-ambiguous", "ambiguous-model", hold, "reserve-ambiguous",
 	)
-	if err != nil || !serviceMode {
+	if err != nil || serviceMode {
 		t.Fatalf("reserve service=%t err=%v", serviceMode, err)
 	}
 	ambiguous := &ambiguousInferenceSettlementStore{Store: backing}
@@ -304,8 +304,10 @@ func TestAmbiguousSettlementCommitResolvesReplayAndReleasesServiceHold(t *testin
 		Models: []protocol.ModelInfo{{ID: "ambiguous-model", ModelType: "chat", Quantization: "4bit"}},
 	})
 	pr := &registry.PendingRequest{
-		RequestID: "ambiguous-attempt", Model: "ambiguous-model",
-		ConsumerKey: "svc-ambiguous", ReservedMicroUSD: hold, ServiceReservation: true,
+		RequestID: "ambiguous-attempt", ReservationID: "reserve-ambiguous",
+		Model: "ambiguous-model", ConsumerKey: "svc-ambiguous",
+		ReservedMicroUSD: hold, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: hold, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
 		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
 		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
 	}
@@ -322,10 +324,9 @@ func TestAmbiguousSettlementCommitResolvesReplayAndReleasesServiceHold(t *testin
 	default:
 		t.Fatal("committed replay did not signal completion")
 	}
-	if err := srv.serviceReservations.Reserve("svc-ambiguous", 900_000); err != nil {
-		t.Fatalf("service hold remained after committed replay: %v", err)
+	if balance := backing.GetBalance("svc-ambiguous"); balance != 999_750 {
+		t.Fatalf("ambiguous replay balance = %d, want 999750", balance)
 	}
-	srv.serviceReservations.Release("svc-ambiguous", 900_000)
 }
 
 func TestCompletionSettlementFailureDoesNotSignalSuccessOrMoveBeneficiaryMoney(t *testing.T) {

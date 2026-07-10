@@ -35,6 +35,9 @@ var _ Store = (*PostgresStore)(nil)
 // PostgresStore is a PostgreSQL-backed implementation of Store.
 type PostgresStore struct {
 	pool *pgxpool.Pool
+	// ownershipConn holds the process-wide coordinator advisory lock for the
+	// lifetime of this store. Losing/closing the connection releases authority.
+	ownershipConn *pgxpool.Conn
 
 	// In-memory cache for model prices. Keyed by "accountID:model".
 	// Eliminates a DB round trip on every inference request for
@@ -85,7 +88,27 @@ func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
 		pool:       pool,
 		priceCache: make(map[string]cachedPrice),
 	}
+	ownershipConn, err := pool.Acquire(ctx)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("store: acquire coordinator ownership connection: %w", err)
+	}
+	var ownsCoordinator bool
+	if err := ownershipConn.QueryRow(ctx,
+		`SELECT pg_try_advisory_lock(hashtextextended('darkbloom-coordinator-owner', 0))`,
+	).Scan(&ownsCoordinator); err != nil {
+		ownershipConn.Release()
+		pool.Close()
+		return nil, fmt.Errorf("store: acquire coordinator ownership lock: %w", err)
+	}
+	if !ownsCoordinator {
+		ownershipConn.Release()
+		pool.Close()
+		return nil, errors.New("store: coordinator ownership is already held by another process")
+	}
+	s.ownershipConn = ownershipConn
 	if err := s.migrate(ctx); err != nil {
+		ownershipConn.Release()
 		pool.Close()
 		return nil, fmt.Errorf("store: run migrations: %w", err)
 	}
@@ -95,6 +118,14 @@ func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
 
 // Close shuts down the connection pool.
 func (s *PostgresStore) Close() {
+	if s.ownershipConn != nil {
+		_, _ = s.ownershipConn.Exec(
+			context.Background(),
+			`SELECT pg_advisory_unlock(hashtextextended('darkbloom-coordinator-owner', 0))`,
+		)
+		s.ownershipConn.Release()
+		s.ownershipConn = nil
+	}
 	s.pool.Close()
 }
 

@@ -394,10 +394,6 @@ type Server struct {
 	// service accounts bypass rate limiting entirely.
 	serviceRateLimiter *ratelimit.Limiter
 
-	// serviceReservations avoids hot-row pre-router ledger debits for trusted
-	// service accounts when enabled. Normal consumers still use ledger debits.
-	serviceReservations *serviceReservationManager
-
 	// consumerTokenLimiter / serviceTokenLimiter enforce per-account input
 	// (ITPM) and output (OTPM) token-per-minute limits on inference endpoints,
 	// the industry-standard token throttle alongside RPM. Nil means no token
@@ -706,7 +702,6 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		settlements:          newSettlementHolder(),
 		completions:          newCompletionWorkerPool(logger, defaultCompletionCapacity, defaultCompletionWorkers),
 		zombieCanceller:      newZombieStreamCanceller(),
-		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
 		routeTelemetry:       newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 		providerConnections:  make(map[*websocket.Conn]struct{}),
 	}

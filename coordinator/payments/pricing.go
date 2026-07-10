@@ -159,13 +159,25 @@ func ProviderPayout(totalCost int64) int64 {
 // PlatformFeeWithPercent returns Darkbloom's routing fee using a per-account
 // override when provided (nil = global default). A 0% override yields no fee.
 func PlatformFeeWithPercent(totalCost int64, feePercent *int64) int64 {
-	return totalCost * resolveFeePercent(feePercent) / 100
+	return PercentOf(totalCost, resolveFeePercent(feePercent))
 }
 
 // ProviderPayoutWithPercent returns the amount the provider receives after the
 // (possibly overridden) platform fee.
 func ProviderPayoutWithPercent(totalCost int64, feePercent *int64) int64 {
 	return totalCost - PlatformFeeWithPercent(totalCost, feePercent)
+}
+
+// PercentOf computes a bounded integer percentage without overflowing the
+// intermediate multiplication.
+func PercentOf(total, percent int64) int64 {
+	if total <= 0 || percent <= 0 {
+		return 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	return (total/100)*percent + (total%100)*percent/100
 }
 
 // FormatPerTokenUSD converts a price expressed in micro-USD per 1,000,000

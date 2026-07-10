@@ -132,17 +132,23 @@ func main() {
 		})
 	}
 
-	// Recover durable Go reservations orphaned by a prior process crash. The
-	// cutoff exceeds the maximum normal inference lifetime; active/reviewed/
-	// settled reservations are excluded transactionally by the store.
-	const staleReservationAge = 20 * time.Minute
-	recovered, err := st.RecoverStaleInferenceReservations(time.Now().Add(-staleReservationAge))
-	if err != nil {
-		logger.Error("failed to recover stale inference reservations", "error", err)
-		os.Exit(1)
+	// NewPostgres holds the global single-active ownership lock, so every
+	// unfinalized reservation visible before admission starts belongs to a dead
+	// prior process. Drain all batches; review/settled rows are excluded.
+	recoveredTotal := 0
+	for {
+		recovered, err := st.RecoverStaleInferenceReservations(time.Now())
+		if err != nil {
+			logger.Error("failed to recover orphaned inference reservations", "error", err)
+			os.Exit(1)
+		}
+		recoveredTotal += recovered
+		if recovered == 0 {
+			break
+		}
 	}
-	if recovered > 0 {
-		logger.Warn("recovered stale inference reservations", "count", recovered)
+	if recoveredTotal > 0 {
+		logger.Warn("recovered orphaned inference reservations", "count", recoveredTotal)
 	}
 
 	// Reconcile provider sessions left open by a previous coordinator process

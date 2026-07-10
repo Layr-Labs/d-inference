@@ -1879,7 +1879,7 @@ func (s *Server) handleClaimedComplete(
 			ConsumerAccountID:            pr.ConsumerKey,
 			ReservedMicroUSD:             pr.ReservedMicroUSD,
 			ReservedWithdrawableMicroUSD: pr.ReservedWithdrawableMicroUSD,
-			ReservationPreDebited:        !pr.ServiceReservation,
+			ReservationPreDebited:        true,
 			CostMicroUSD:                 totalCost, ProviderEarning: earning,
 			PlatformFeeMicroUSD:    platformFee,
 			ReferrerAccountID:      referrerAccountID,
@@ -1918,15 +1918,11 @@ func (s *Server) handleClaimedComplete(
 			)
 		default:
 			atomicSettlement = true
-			if pr.ServiceReservation {
-				s.releaseServiceReservation(pr, "finalize")
-				s.ddHistogram("billing.service_settlement_micro_usd", float64(totalCost), []string{"model:" + pr.Model})
-			}
 			refund := pr.ReservedMicroUSD - totalCost
-			if !pr.ServiceReservation && refund > 0 {
+			if refund > 0 {
 				s.ddHistogram("billing.settlement_refund_micro_usd", float64(refund), []string{"model:" + pr.Model})
 			}
-			s.ddHistogram("store.settlement.latency_ms", float64(time.Since(start).Milliseconds()), []string{"mode:" + reservationMetricMode(pr.ServiceReservation)})
+			s.ddHistogram("store.settlement.latency_ms", float64(time.Since(start).Milliseconds()), []string{"mode:ledger"})
 		}
 	} else if !freeSelfRoute {
 		start := time.Now()

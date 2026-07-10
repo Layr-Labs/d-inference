@@ -145,6 +145,15 @@ func (s *Server) recordSettlementReviewWithRetry(
 		if err == nil {
 			return
 		}
+		if store.IsPermanentFinancialError(err) {
+			if s.logger != nil {
+				s.logger.Error("failed to update durable settlement review",
+					"reservation_id", settlement.ReservationID,
+					"error", err,
+				)
+			}
+			return
+		}
 		delay := time.Duration(min(attempt+1, 100)) * 50 * time.Millisecond
 		time.Sleep(delay)
 	}

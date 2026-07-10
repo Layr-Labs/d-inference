@@ -16,6 +16,12 @@ func TestCalculateCostSaturatesInsteadOfOverflowing(t *testing.T) {
 	if got := CalculateCostWithOverrides("model", -1, -1, math.MaxInt64, math.MaxInt64, true); got < 0 {
 		t.Fatalf("negative usage produced negative cost %d", got)
 	}
+	feePercent := int64(50)
+	fee := PlatformFeeWithPercent(math.MaxInt64, &feePercent)
+	payout := ProviderPayoutWithPercent(math.MaxInt64, &feePercent)
+	if fee < 0 || payout < 0 || fee+payout != math.MaxInt64 {
+		t.Fatalf("overflowing split = fee:%d payout:%d", fee, payout)
+	}
 }
 
 func TestFallbackPricesForAnyModel(t *testing.T) {

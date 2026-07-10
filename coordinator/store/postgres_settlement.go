@@ -25,7 +25,15 @@ func (s *PostgresStore) RecordInferenceSettlementReview(
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	tag, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin settlement review: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := lockFinancialOperation(ctx, tx, "finalize:"+settlement.ReservationID); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx,
 		`INSERT INTO inference_settlement_reviews
 			(reservation_id, request_id, reason, payload)
 		 VALUES ($1, $2, $3, $4)
@@ -41,6 +49,9 @@ func (s *PostgresStore) RecordInferenceSettlementReview(
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrFinancialOperationConflict
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit settlement review: %v: %w", err, ErrCommitOutcomeUnknown)
 	}
 	return nil
 }

@@ -1008,10 +1008,6 @@ func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference st
 	}
 	start := time.Now()
 	finalized, err := pr.FinalizeReservation(func() error {
-		if pr.ServiceReservation {
-			s.releaseServiceReservation(pr, "refund")
-			return nil
-		}
 		if pr.ReservationID == "" {
 			pr.ReservationID = pr.RequestID
 		}
@@ -1038,10 +1034,8 @@ func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference st
 	}
 	tags := []string{"model:" + pr.Model, "mode:" + reservationMetricMode(pr.ServiceReservation)}
 	s.ddIncr("billing.reservation_refunds", tags)
-	if !pr.ServiceReservation {
-		s.ddIncr("billing.reservation_releases", append(tags, "reason:refund"))
-		s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
-	}
+	s.ddIncr("billing.reservation_releases", append(tags, "reason:refund"))
+	s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
 	return true
 }
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -212,7 +213,7 @@ func (r *ReferralService) ResolveReferralReward(consumerKey string, platformFee 
 	if err != nil {
 		return "", 0, platformFee
 	}
-	referralReward := platformFee * r.referralSharePercent / 100
+	referralReward := payments.PercentOf(platformFee, r.referralSharePercent)
 	if referralReward <= 0 {
 		return "", 0, platformFee
 	}

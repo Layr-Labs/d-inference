@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"sync"
@@ -134,29 +135,31 @@ func TestServiceReservationDisabledUsesLedgerDebit(t *testing.T) {
 	}
 }
 
-func TestServiceReservationConcurrentAvoidsDebitHotRow(t *testing.T) {
-	srv, st := newReservationTestServer(t, ServerConfig{ServiceReservations: true}, errors.New("hot row unavailable"))
-	createServiceUser(t, st, "svc-hotrow")
-	if err := st.Credit("svc-hotrow", 10_000_000, store.LedgerDeposit, "seed"); err != nil {
+func TestServiceConsumersUseDurableConcurrentReservations(t *testing.T) {
+	srv, st := newReservationTestServer(t, ServerConfig{}, nil)
+	createServiceUser(t, st, "svc-durable")
+	if err := st.Credit("svc-durable", 10_000_000, store.LedgerDeposit, "seed"); err != nil {
 		t.Fatal(err)
 	}
 
 	const workers = 32
 	var wg sync.WaitGroup
 	errs := make(chan error, workers)
-	for range workers {
+	for i := range workers {
 		wg.Add(1)
-		go func() {
+		go func(index int) {
 			defer wg.Done()
-			serviceMode, _, err := srv.reserveInitialBalance("svc-hotrow", "model", 100_000, "reserve-hotrow")
+			serviceMode, _, err := srv.reserveInitialBalance(
+				"svc-durable", "model", 100_000, fmt.Sprintf("reserve-durable-%d", index),
+			)
 			if err != nil {
 				errs <- err
 				return
 			}
-			if !serviceMode {
-				errs <- errors.New("expected service reservation mode")
+			if serviceMode {
+				errs <- errors.New("service consumer used process-local hold")
 			}
-		}()
+		}(i)
 	}
 	wg.Wait()
 	close(errs)
@@ -165,35 +168,16 @@ func TestServiceReservationConcurrentAvoidsDebitHotRow(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := st.DebitCount(); got != 0 {
-		t.Fatalf("Debit calls = %d, want 0", got)
+	if got := st.DebitCount(); got != workers {
+		t.Fatalf("durable reserve calls = %d, want %d", got, workers)
 	}
-}
-
-func TestServiceReservationUsesPostSettlementBalanceBeforeReadmitting(t *testing.T) {
-	backing := store.NewMemory(store.Config{})
-	const accountID = "service-readmit"
-	if err := backing.Credit(accountID, 1_000_000, store.LedgerStripeDeposit, "deposit"); err != nil {
-		t.Fatal(err)
-	}
-	manager := newServiceReservationManager(backing, true)
-	if err := manager.Reserve(accountID, 600_000); err != nil {
-		t.Fatal(err)
-	}
-	if err := backing.Debit(accountID, 500_000, store.LedgerCharge, "settlement"); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.Reserve(accountID, 300_000); !errors.Is(err, store.ErrInsufficientBalance) {
-		t.Fatalf("readmission against post-settlement balance error = %v", err)
-	}
-	manager.Release(accountID, 600_000)
-	if err := manager.Reserve(accountID, 300_000); err != nil {
-		t.Fatalf("readmission after old hold release: %v", err)
+	if balance := st.GetBalance("svc-durable"); balance != 6_800_000 {
+		t.Fatalf("durable service balance = %d, want 6800000", balance)
 	}
 }
 
 func TestNormalConsumerStillUsesSynchronousDebit(t *testing.T) {
-	srv, st := newReservationTestServer(t, ServerConfig{ServiceReservations: true}, store.ErrInsufficientBalance)
+	srv, st := newReservationTestServer(t, ServerConfig{}, store.ErrInsufficientBalance)
 	if err := st.Credit("consumer", 1_000_000, store.LedgerDeposit, "seed"); err != nil {
 		t.Fatal(err)
 	}
@@ -279,18 +263,23 @@ func TestProviderTopUpResolvesAmbiguousCommitAndCanRefund(t *testing.T) {
 	}
 }
 
-func TestServiceReservationRefundReleasesHoldWithoutCredit(t *testing.T) {
-	srv, st := newReservationTestServer(t, ServerConfig{ServiceReservations: true}, nil)
+func TestServiceConsumerRefundRestoresDurableReservation(t *testing.T) {
+	srv, st := newReservationTestServer(t, ServerConfig{}, nil)
 	createServiceUser(t, st, "svc-refund")
 	if err := st.Credit("svc-refund", 1_000_000, store.LedgerDeposit, "seed"); err != nil {
 		t.Fatal(err)
 	}
-	serviceMode, _, err := srv.reserveInitialBalance("svc-refund", "model", 250_000, "reserve-svc-refund")
-	if err != nil || !serviceMode {
+	serviceMode, reservedWithdrawable, err := srv.reserveInitialBalance("svc-refund", "model", 250_000, "reserve-svc-refund")
+	if err != nil || serviceMode {
 		t.Fatalf("reserve serviceMode=%v err=%v", serviceMode, err)
 	}
 
-	pr := &registry.PendingRequest{RequestID: "svc-refund", Model: "model", ConsumerKey: "svc-refund", ReservedMicroUSD: 250_000, ServiceReservation: true}
+	pr := &registry.PendingRequest{
+		RequestID: "svc-refund", ReservationID: "reserve-svc-refund",
+		Model: "model", ConsumerKey: "svc-refund",
+		ReservedMicroUSD: 250_000, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: 250_000, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+	}
 	if !srv.refundReservedBalance(pr, "test") {
 		t.Fatal("refundReservedBalance returned false")
 	}
@@ -302,8 +291,8 @@ func TestServiceReservationRefundReleasesHoldWithoutCredit(t *testing.T) {
 	}
 }
 
-func TestServiceReservationCompletionDebitsActualAndReleasesHold(t *testing.T) {
-	srv, st := newReservationTestServer(t, ServerConfig{ServiceReservations: true}, nil)
+func TestServiceConsumerCompletionSettlesDurableReservation(t *testing.T) {
+	srv, st := newReservationTestServer(t, ServerConfig{}, nil)
 	createServiceUser(t, st, "svc-complete")
 	if err := st.Credit("svc-complete", 1_000_000, store.LedgerDeposit, "seed"); err != nil {
 		t.Fatal(err)
@@ -311,21 +300,24 @@ func TestServiceReservationCompletionDebitsActualAndReleasesHold(t *testing.T) {
 	if err := st.SetModelPrice("platform", "svc-model", 1_000_000, 2_000_000); err != nil {
 		t.Fatal(err)
 	}
-	serviceMode, _, err := srv.reserveInitialBalance("svc-complete", "svc-model", 500_000, "reserve-svc-complete")
-	if err != nil || !serviceMode {
+	serviceMode, reservedWithdrawable, err := srv.reserveInitialBalance("svc-complete", "svc-model", 500_000, "reserve-svc-complete")
+	if err != nil || serviceMode {
 		t.Fatalf("reserve serviceMode=%v err=%v", serviceMode, err)
 	}
 
 	provider := srv.registry.Register("svc-provider", nil, &protocol.RegisterMessage{Models: []protocol.ModelInfo{{ID: "svc-model", ModelType: "chat", Quantization: "4bit"}}})
 	pr := &registry.PendingRequest{
-		RequestID:          "svc-complete",
-		Model:              "svc-model",
-		ConsumerKey:        "svc-complete",
-		ReservedMicroUSD:   500_000,
-		ServiceReservation: true,
-		ChunkCh:            make(chan string, 1),
-		CompleteCh:         make(chan protocol.UsageInfo, 1),
-		ErrorCh:            make(chan protocol.InferenceErrorMessage, 1),
+		RequestID:                        "svc-complete",
+		ReservationID:                    "reserve-svc-complete",
+		Model:                            "svc-model",
+		ConsumerKey:                      "svc-complete",
+		ReservedMicroUSD:                 500_000,
+		ReservedWithdrawableMicroUSD:     reservedWithdrawable,
+		BaseReservedMicroUSD:             500_000,
+		BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh:                          make(chan string, 1),
+		CompleteCh:                       make(chan protocol.UsageInfo, 1),
+		ErrorCh:                          make(chan protocol.InferenceErrorMessage, 1),
 	}
 	provider.AddPending(pr)
 
@@ -334,15 +326,15 @@ func TestServiceReservationCompletionDebitsActualAndReleasesHold(t *testing.T) {
 	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID, Usage: usage})
 
 	if got := st.DebitCount(); got != 1 {
-		t.Fatalf("Debit calls = %d, want 1 completion settlement debit", got)
+		t.Fatalf("durable reserve calls = %d, want 1 pre-debit", got)
 	}
 	if got := st.GetBalance("svc-complete"); got != 1_000_000-expected {
 		t.Fatalf("balance = %d, want %d", got, 1_000_000-expected)
 	}
 }
 
-func TestServiceReservationCannotSettleAboveFundedHold(t *testing.T) {
-	srv, st := newReservationTestServer(t, ServerConfig{ServiceReservations: true}, nil)
+func TestServiceConsumerCannotSettleAboveFundedReservation(t *testing.T) {
+	srv, st := newReservationTestServer(t, ServerConfig{}, nil)
 	createServiceUser(t, st, "svc-funded-cap")
 	if err := st.Credit("svc-funded-cap", 1_000_000, store.LedgerDeposit, "seed"); err != nil {
 		t.Fatal(err)
@@ -351,10 +343,10 @@ func TestServiceReservationCannotSettleAboveFundedHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	const hold int64 = 100_000
-	serviceMode, _, err := srv.reserveInitialBalance(
+	serviceMode, reservedWithdrawable, err := srv.reserveInitialBalance(
 		"svc-funded-cap", "svc-cap-model", hold, "reserve-svc-cap",
 	)
-	if err != nil || !serviceMode {
+	if err != nil || serviceMode {
 		t.Fatalf("reserve serviceMode=%v err=%v", serviceMode, err)
 	}
 	provider := srv.registry.Register("svc-cap-provider", nil, &protocol.RegisterMessage{
@@ -364,8 +356,10 @@ func TestServiceReservationCannotSettleAboveFundedHold(t *testing.T) {
 	provider.AccountID = "svc-cap-provider-account"
 	provider.Mu().Unlock()
 	pr := &registry.PendingRequest{
-		RequestID: "svc-cap-attempt", Model: "svc-cap-model", ConsumerKey: "svc-funded-cap",
-		ReservedMicroUSD: hold, ServiceReservation: true,
+		RequestID: "svc-cap-attempt", ReservationID: "reserve-svc-cap",
+		Model: "svc-cap-model", ConsumerKey: "svc-funded-cap",
+		ReservedMicroUSD: hold, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: hold, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
 		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
 		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
 	}

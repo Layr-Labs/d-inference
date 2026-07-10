@@ -608,4 +608,43 @@ mod tests {
         assert_eq!(led.balance("a").0, 5_000_000);
         assert_eq!(led.active_job_count(), 0);
     }
+
+    #[test]
+    fn settle_exact_reservation_charges_full_amount() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 1_000_000);
+        led.reserve(OperationKey("r".into()), "j", "a", 2_000_000)
+            .unwrap();
+        // Non-wdr first: reserved_wdr = max(0, 2M - 4M) = 0
+        assert_eq!(led.balance("a"), (3_000_000, 1_000_000));
+        led.mark_start_authorized("j").unwrap();
+        assert!(led
+            .settle(OperationKey("s".into()), "j", "a", 2_000_000, "d-full")
+            .unwrap());
+        // Full charge, zero refund.
+        assert_eq!(led.balance("a"), (3_000_000, 1_000_000));
+        assert_eq!(led.active_job_count(), 0);
+    }
+
+    #[test]
+    fn settle_capped_never_exceeds_actual() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0);
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        // Cap higher than actual → charge actual only.
+        assert!(led
+            .settle_capped(
+                OperationKey("s".into()),
+                "j",
+                "a",
+                300_000,
+                900_000,
+                "d-cap"
+            )
+            .unwrap());
+        // reserved 1M, charged 300k → refund 700k → bal = 5M-1M+700k = 4.7M
+        assert_eq!(led.balance("a").0, 4_700_000);
+    }
 }

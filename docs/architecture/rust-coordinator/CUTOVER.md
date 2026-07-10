@@ -645,3 +645,9 @@ accounts are empty, outbox-drain; repeat until ready (max_rounds). Ownership
 loss aborts with partial `accounts_cleared`. Quiescence `cutover_hint` is
 `cutover-drain-all` when active jobs remain.
 
+### cutover-drain-all allowlist + races (DECISIONS #116)
+
+Optional `accounts` allowlist scopes which tenants are cleared (`scoped_ready`
+vs global `ready`). Concurrent cutover-drain-all calls and deposits racing the
+drain conserve balances. Idempotent when already quiescent (`rounds_run=0`).
+

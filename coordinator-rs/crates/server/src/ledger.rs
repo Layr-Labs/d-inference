@@ -422,4 +422,22 @@ mod tests {
         assert_eq!(led.balance("a").0, 4_000_000);
         assert_eq!(led.active_job_count(), 1);
     }
+
+    #[test]
+    fn reserve_fails_on_insufficient_balance() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 100_000, 0);
+        assert_eq!(
+            led.reserve(OperationKey("r".into()), "j", "a", 100_001)
+                .unwrap_err(),
+            LedgerError::InsufficientBalance
+        );
+        assert_eq!(led.balance("a").0, 100_000);
+        assert_eq!(led.active_job_count(), 0);
+        // Op key must not stick after failed reserve.
+        assert!(led
+            .reserve(OperationKey("r".into()), "j", "a", 50_000)
+            .unwrap()
+            .applied);
+    }
 }

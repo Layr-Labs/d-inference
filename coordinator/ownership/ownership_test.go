@@ -62,3 +62,17 @@ func TestGate_EpochFencingMonotonicAcquire(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestGate_RefuseOnRustFalseIgnoresActiveRust(t *testing.T) {
+	g := NewGate(false)
+	g.SetRustActive(true)
+	if err := g.CheckStartup(nil); err != nil {
+		t.Fatalf("refuseOnRust=false should allow: %v", err)
+	}
+	if err := g.Acquire(3); err != nil {
+		t.Fatal(err)
+	}
+	if !g.Holding() || g.Epoch() != 3 {
+		t.Fatalf("holding=%v epoch=%d", g.Holding(), g.Epoch())
+	}
+}

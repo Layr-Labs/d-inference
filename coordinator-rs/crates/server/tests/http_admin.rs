@@ -948,3 +948,32 @@ async fn deposit_outbox_blocks_quiescence_until_drained() {
     assert_eq!(v2["ready"], true);
     assert_eq!(v2["outbox_retryable"], 0);
 }
+
+#[tokio::test]
+async fn outbox_requeue_keeps_quiescence_not_ready() {
+    let state = test_state(true);
+    let outbox = state.outbox.clone();
+    {
+        let mut box_ = outbox.lock().await;
+        box_
+            .enqueue("billing.deposit_applied", r#"{"event_id":"evt_rq"}"#)
+            .unwrap();
+        let entry = box_.try_claim().unwrap();
+        box_.requeue(entry).unwrap();
+    }
+    let app = router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/admin/quiescence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let v = body_json(res).await;
+    assert_eq!(v["ready"], false);
+    assert_eq!(v["outbox_retryable"], 1);
+}

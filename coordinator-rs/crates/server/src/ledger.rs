@@ -882,4 +882,36 @@ mod tests {
         ));
         assert_eq!(led.balance("a"), (0, 0));
     }
+
+    #[test]
+    fn settle_capped_zero_actual_refunds_full_even_with_positive_cap() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 5_000_000, 0).unwrap();
+        led.reserve(OperationKey("r".into()), "j", "a", 1_000_000)
+            .unwrap();
+        led.mark_start_authorized("j").unwrap();
+        // actual=0, cap=500k → charge min(0,500k)=0 → full refund
+        assert!(led
+            .settle_capped(
+                OperationKey("s".into()),
+                "j",
+                "a",
+                0,
+                500_000,
+                "d-za"
+            )
+            .unwrap());
+        assert_eq!(led.balance("a").0, 5_000_000);
+        assert_eq!(led.active_job_count(), 0);
+    }
+
+    #[test]
+    fn credit_zero_amounts_is_allowed_noop() {
+        let mut led = MemoryLedger::default();
+        led.credit("a", 0, 0).unwrap();
+        assert_eq!(led.balance("a"), (0, 0));
+        led.credit("a", 1_000_000, 0).unwrap();
+        led.credit("a", 0, 0).unwrap();
+        assert_eq!(led.balance("a"), (1_000_000, 0));
+    }
 }

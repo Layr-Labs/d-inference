@@ -15,7 +15,7 @@ darkbloom-coordinator-core = { version = "0.1.0", path = "../core" }
 darkbloom-coordinator-protocol = { version = "0.1.0", path = "../protocol" }
 futures-util = { version = "0.3.32", features = ["sink"] }
 hmac = "0.13.0"
-jsonwebtoken = "10.4.0"
+jsonwebtoken = { version = "10.4.0", features = ["rust_crypto", "p256"] }
 p256 = { version = "0.14.0", features = ["ecdsa", "pkcs8", "pem"] }
 rand = "0.10.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "stream", "rustls"] }

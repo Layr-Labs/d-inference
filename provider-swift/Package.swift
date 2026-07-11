@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "ProviderCore", targets: ["ProviderCore"]),
         .executable(name: "darkbloom", targets: ["darkbloom"]),
         .executable(name: "darkbloom-enclave", targets: ["DarkbloomEnclaveCLI"]),
+        .executable(name: "darkbloom-fan-helper", targets: ["DarkbloomFanHelper"]),
         .executable(name: "darkbloom-publish", targets: ["darkbloom-publish"]),
     ],
     dependencies: [
@@ -67,6 +68,17 @@ let package = Package(
             path: "Sources/ProviderCoreFoundation"
         ),
 
+        .target(
+            name: "FanControlIPC",
+            path: "Sources/FanControlIPC"
+        ),
+
+        .target(
+            name: "FanControlCore",
+            dependencies: ["FanControlIPC"],
+            path: "Sources/FanControlCore"
+        ),
+
         // ----------------------------------------------------------------
         // ProviderCore: shared library that holds protocol, hardware,
         // crypto, models, security, telemetry, coordinator client,
@@ -114,9 +126,8 @@ let package = Package(
         ),
 
         // ----------------------------------------------------------------
-        // darkbloom: command-line entry point. Subcommands: serve / start /
-        // stop / status / doctor / models / login / logout / benchmark /
-        // update / verify (Phase 0 fidelity check).
+        // darkbloom: command-line entry point and unprivileged fan-helper XPC
+        // client. Privileged AppleSMC writes live only in DarkbloomFanHelper.
         //
         // The Swift cutover is CLI-only — the legacy `app/EigenInference/`
         // SwiftUI menu bar app has been deleted from the repo. No in-process
@@ -127,9 +138,17 @@ let package = Package(
             dependencies: [
                 "ProviderCore",
                 "ProviderBenchmark",
+                "FanControlCore",
+                "FanControlIPC",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/darkbloom"
+        ),
+
+        .executableTarget(
+            name: "DarkbloomFanHelper",
+            dependencies: ["FanControlCore", "FanControlIPC"],
+            path: "Sources/darkbloom-fan-helper"
         ),
 
         // ----------------------------------------------------------------
@@ -181,6 +200,12 @@ let package = Package(
                 .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
             ],
             path: "Tests/ProviderCoreTests"
+        ),
+
+        .testTarget(
+            name: "FanControlCoreTests",
+            dependencies: ["FanControlCore", "FanControlIPC"],
+            path: "Tests/FanControlCoreTests"
         ),
 
         // ----------------------------------------------------------------

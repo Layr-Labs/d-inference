@@ -1,4 +1,5 @@
 import ArgumentParser
+import FanControlCore
 import Foundation
 import ProviderCore
 
@@ -7,13 +8,12 @@ struct Fan: AsyncParsableCommand {
         commandName: "fan",
         abstract: "Boost cooling during hot inference requests.",
         discussion: """
-        Runs a foreground, root-only cooling controller. It watches the local
-        provider's live request state and boosts every fan only while inference
-        is active and the hottest readable sensor is at or above the threshold.
-        Press Ctrl-C to return fan control to macOS.
+        Runs a foreground cooling client. A separately installed, signed helper
+        performs the privileged fan writes and restores macOS control if this
+        client exits or stops renewing its short lease.
 
-        Apple does not provide a supported fan-control API. This command uses
-        the undocumented AppleSMC interface and is optional.
+        Apple does not provide a supported fan-control API. This optional
+        command uses the undocumented AppleSMC interface.
         """
     )
 
@@ -31,15 +31,21 @@ struct Fan: AsyncParsableCommand {
 
     @Option(
         name: .long,
-        help: "Provider and sensor polling interval in seconds (default: 2)."
+        help: "Provider and helper polling interval in seconds (default: 2)."
     )
     var pollInterval = FanCoolingConfiguration.defaultPollIntervalSeconds
 
     @Option(
         name: .long,
-        help: "Provider daemon-state path (normally inferred through sudo)."
+        help: "Provider activity path (default: ~/.darkbloom/inference-activity.json)."
     )
-    var stateFile: String?
+    var activityFile: String?
+
+    @Flag(
+        name: .long,
+        help: "Open the signed one-time privileged-helper installer, then exit."
+    )
+    var installHelper = false
 
     @Flag(
         name: .long,
@@ -49,17 +55,24 @@ struct Fan: AsyncParsableCommand {
 
     mutating func run() async throws {
         Darkbloom.ensureLogging()
+        guard !(installHelper && reset) else {
+            throw ValidationError(
+                "--install-helper and --reset cannot be used together"
+            )
+        }
 
-        print("Warning: fan control uses Apple's undocumented AppleSMC interface.")
-        if reset {
-            try FanCoolingRunner.resetToAutomatic()
-            print("All fans returned to macOS automatic control.")
+        if installHelper {
+            try FanHelperInstaller.openInstaller()
+            print(
+                "Opened the signed Darkbloom fan-helper installer. "
+                    + "Complete the admin prompt, then run `darkbloom fan`."
+            )
             return
         }
 
-        let configuration: FanCoolingConfiguration
+        let cooling: FanCoolingConfiguration
         do {
-            configuration = try FanCoolingConfiguration(
+            cooling = try FanCoolingConfiguration(
                 speedPercent: speed,
                 triggerTemperatureCelsius: temperature,
                 pollIntervalSeconds: pollInterval
@@ -68,114 +81,123 @@ struct Fan: AsyncParsableCommand {
             throw ValidationError(error.localizedDescription)
         }
 
-        let stateURL = Self.resolveStateFile(
-            explicitPath: stateFile
+        let client = FanHelperClient()
+        do {
+            try client.verifyProtocol()
+        } catch {
+            throw ValidationError(
+                "\(error.localizedDescription). Install it with "
+                    + "`darkbloom fan --install-helper`."
+            )
+        }
+
+        if reset {
+            try client.restoreAutomatic()
+            print("All fans returned to macOS automatic control.")
+            return
+        }
+
+        let stateURL = Self.resolveActivityFile(
+            explicitPath: activityFile
+        )
+        let activity = FanProviderActivityReader(
+            stateFile: stateURL,
+            maximumStateAge: max(15, pollInterval * 3)
         )
         let monitor = FanTerminationMonitor()
-        let runner = try FanCoolingRunner(
-            configuration: configuration,
-            stateFile: stateURL
+        let lease = try client.acquireLease(
+            speedPercent: cooling.speedPercent,
+            triggerTemperatureCelsius:
+                cooling.triggerTemperatureCelsius
         )
-        try runner.run(
-            shouldStop: { monitor.isTerminationRequested },
-            wait: { monitor.wait(for: $0) },
-            onEvent: Self.printEvent
+
+        print("Warning: fan control uses Apple's undocumented AppleSMC interface.")
+        print("Watching provider activity: \(stateURL.path)")
+        print(
+            "Boost policy: \(Int(cooling.speedPercent))% at "
+                + "\(String(format: "%.1f", cooling.triggerTemperatureCelsius))°C."
         )
+        print("Press Ctrl-C to stop; the helper lease restores macOS control.")
+
+        var sequence: UInt64 = 0
+        var previouslyEngaged = false
+        var operationError: Error?
+        do {
+            while !monitor.isTerminationRequested {
+                sequence &+= 1
+                let status = try client.renewLease(
+                    lease,
+                    sequence: sequence,
+                    inferenceActive: activity.inferenceActive()
+                )
+                Self.printTransition(
+                    status,
+                    previouslyEngaged: previouslyEngaged
+                )
+                previouslyEngaged = status.engaged
+                if monitor.wait(for: cooling.pollIntervalSeconds) {
+                    break
+                }
+            }
+        } catch {
+            operationError = error
+        }
+
+        do {
+            try client.releaseLease(lease)
+            if previouslyEngaged {
+                print("macOS automatic fan control restored.")
+            }
+        } catch let releaseError {
+            if let operationError {
+                throw ValidationError(
+                    "\(operationError.localizedDescription); helper release "
+                        + "also failed: \(releaseError.localizedDescription)"
+                )
+            }
+            throw releaseError
+        }
+        if let operationError {
+            throw operationError
+        }
     }
 
-    static func resolveStateFile(
+    static func resolveActivityFile(
         explicitPath: String?,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        currentHome: URL = FileManager.default.homeDirectoryForCurrentUser,
-        homeForUser: (String) -> URL? = {
-            FileManager.default.homeDirectory(forUser: $0)
-        }
+        currentHome: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
-        let invokingUser = environment["SUDO_USER"].flatMap {
-            $0.isEmpty || $0 == "root" ? nil : $0
-        }
-        let providerHome = invokingUser.flatMap(homeForUser) ?? currentHome
         let rawPath = explicitPath
-            ?? environment["DARKBLOOM_STATE_FILE"]
-
+            ?? environment["DARKBLOOM_INFERENCE_ACTIVITY_FILE"]
         guard let rawPath, !rawPath.isEmpty else {
-            return providerHome
+            return currentHome
                 .appendingPathComponent(".darkbloom")
-                .appendingPathComponent("daemon-state.json")
+                .appendingPathComponent("inference-activity.json")
         }
         if rawPath == "~" {
-            return providerHome
+            return currentHome
         }
         if rawPath.hasPrefix("~/") {
-            return providerHome.appendingPathComponent(
+            return currentHome.appendingPathComponent(
                 String(rawPath.dropFirst(2))
             )
         }
         return URL(fileURLWithPath: rawPath).standardizedFileURL
     }
 
-    private static func printEvent(_ event: FanCoolingEvent) {
-        switch event {
-        case .ready(let summary):
-            print("Watching provider activity: \(summary.stateFile.path)")
-            print("Temperature sensors: \(summary.temperatureSensorCount)")
-            for fan in summary.fans {
-                print(
-                    "Fan \(fan.index): \(fan.minimumRPM)-\(fan.maximumRPM) RPM, "
-                        + "boost target \(fan.plannedRPM) RPM"
-                )
-            }
-            print("Press Ctrl-C to stop and restore automatic fan control.")
-        case .boosted(let sample, let targets):
-            let temperature = formatTemperature(sample)
-            print(
-                "Inference hot (\(temperature)); boosting fans to "
-                    + targets.map(String.init).joined(separator: "/")
-                    + " RPM."
-            )
-        case .released(let reason, let sample):
-            print(
-                "\(releaseMessage(reason)) "
-                    + "macOS automatic fan control restored"
-                    + temperatureSuffix(sample)
-                    + "."
-            )
-        case .warning(let message):
-            printError("Warning: \(message)")
-        case .restored:
-            print("macOS automatic fan control restored.")
+    private static func printTransition(
+        _ status: FanHelperStatus,
+        previouslyEngaged: Bool
+    ) {
+        guard status.engaged != previouslyEngaged else { return }
+        let temperature = status.temperatureCelsius.map {
+            String(format: "%.1f°C", $0)
+        } ?? "temperature unavailable"
+        if status.engaged {
+            let targets = status.targetRPMs.map { " at \($0) RPM" } ?? ""
+            print("Inference hot (\(temperature)); fan boost engaged\(targets).")
+        } else {
+            print("Cooling boost released at \(temperature); macOS control restored.")
         }
-    }
-
-    private static func releaseMessage(
-        _ reason: FanCoolingReleaseReason
-    ) -> String {
-        switch reason {
-        case .providerIdle:
-            return "Inference is idle;"
-        case .cooled:
-            return "Machine cooled below the release threshold;"
-        case .temperatureUnavailable:
-            return "Temperature became unavailable;"
-        case .systemThermalPressure:
-            return "macOS reported elevated thermal pressure;"
-        case .stopped:
-            return "Fan controller stopped;"
-        }
-    }
-
-    private static func formatTemperature(_ sample: FanCoolingSample) -> String {
-        guard let temperature = sample.hottestTemperatureCelsius else {
-            return "temperature unavailable"
-        }
-        let sensor = sample.hottestSensor.map { " \($0)" } ?? ""
-        return String(format: "%.1f°C%@", temperature, sensor)
-    }
-
-    private static func temperatureSuffix(_ sample: FanCoolingSample) -> String {
-        guard sample.hottestTemperatureCelsius != nil else {
-            return ""
-        }
-        return " at \(formatTemperature(sample))"
     }
 }

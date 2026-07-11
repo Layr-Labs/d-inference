@@ -211,40 +211,47 @@ This toggles `provider.auto_update` in `provider.toml`.
 Run an optional foreground cooling controller during inference:
 
 ```bash
-sudo darkbloom fan [--speed <percent>] [--temperature <celsius>] [--poll-interval <seconds>]
+# One-time setup: opens a signed Installer package and admin prompt.
+darkbloom fan --install-helper
+
+# Normal use stays unprivileged.
+darkbloom fan [--speed <percent>] [--temperature <celsius>] [--poll-interval <seconds>]
 ```
 
 The default policy boosts each fan to 90% of its advertised maximum RPM only
 when both conditions are true:
 
-- The local provider's fresh `daemon-state.json` reports active inference.
-- The hottest usable SMC temperature sensor is at least 40°C.
+- The local provider's fresh `inference-activity.json` reports an active
+  coordinator, unified-local, or standalone request.
+- The hottest usable CPU/GPU SMC sensor is at least 40°C.
 
 The controller returns the fans to macOS when inference becomes idle, the
 temperature falls to 37°C (3°C hysteresis), sensor data becomes unavailable, or
-macOS reports serious/critical thermal pressure. Ctrl-C and SIGTERM also trigger
-verified restoration.
+macOS reports serious/critical thermal pressure.
 
 | Flag | Description |
 |------|-------------|
-| `--speed <percent>` | Percentage of each fan's maximum RPM (1–100, default 90) |
+| `--speed <percent>` | Percentage of each fan's maximum RPM (90–100, default 90) |
 | `--temperature <celsius>` | Activation threshold (20–110°C, default 40) |
-| `--poll-interval <seconds>` | Sampling interval (0.5–30s, default 2) |
-| `--state-file <path>` | Override the provider daemon-state path |
+| `--poll-interval <seconds>` | Lease renewal interval (0.5–5s, default 2) |
+| `--activity-file <path>` | Override the provider inference-activity path |
+| `--install-helper` | Verify and open the signed one-time helper installer |
 | `--reset` | Force every fan back to macOS automatic control and exit |
 
-`sudo` normally changes the effective home directory, so the command resolves
-`SUDO_USER` to find the provider state under the invoking user's
-`~/.darkbloom/`. Use `--state-file` for unusual service layouts.
+The CLI never runs as root. Its signed, minimal launchd helper owns AppleSMC and
+accepts only code-signature-authenticated lease/restore calls—no arbitrary keys,
+bytes, paths, or commands. A lease expires after 10 seconds without renewal, XPC
+disconnect releases immediately, and a root-owned recovery marker makes launchd
+restore automatic control after a helper crash. The helper refuses to coexist
+with another manual fan utility and never writes firmware minimum/maximum limits.
 
-Apple exposes thermal pressure but no public API for fan overrides. This command
-therefore uses the undocumented AppleSMC interface, refuses to coexist with
-another manual fan controller, and stays attached to the terminal so normal
-termination can restore automatic control. A forced process kill, kernel
-failure, or firmware behavior change can bypass user-space cleanup; recover with:
+Apple exposes thermal pressure but no public API for fan overrides, so this
+feature remains optional and uses the undocumented AppleSMC interface. Kernel or
+firmware failure can defeat any user-space recovery guarantee. While macOS is
+operational, manually request restoration with:
 
 ```bash
-sudo darkbloom fan --reset
+darkbloom fan --reset
 ```
 
 ## `darkbloom beta`

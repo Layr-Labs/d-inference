@@ -63,6 +63,7 @@ extension ProviderLoop {
         }
 
         if requestToModel.removeValue(forKey: requestId) != nil {
+            InferenceActivityTracker.shared.end(requestId)
             if !hadInflightTask {
                 stats.incrementCancelDuringModelLoad()
             }
@@ -87,6 +88,9 @@ extension ProviderLoop {
         if !requestToModel.isEmpty {
             powerAssertion.releaseAll()
         }
+        for requestId in requestToModel.keys {
+            InferenceActivityTracker.shared.end(requestId)
+        }
         // Preserve wedge-recovery pins: they are NOT inflight requests —
         // they keep the idle monitor and the eviction filters off a slot
         // whose engine is mid-rebuild (ProviderLoop+EngineV2Liveness), and
@@ -102,6 +106,7 @@ extension ProviderLoop {
     internal func finishInflightRequest(requestId: String) async {
         let hadRegisteredTask = inflightTasks.removeValue(forKey: requestId) != nil
         let modelId = requestToModel.removeValue(forKey: requestId)
+        InferenceActivityTracker.shared.end(requestId)
         if !hadRegisteredTask, modelId != nil {
             completedBeforeTaskRegistration.insert(requestId)
         }

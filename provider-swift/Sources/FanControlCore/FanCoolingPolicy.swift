@@ -47,14 +47,9 @@ enum FanCoolingPolicy {
         speedPercent: Double
     ) -> Int {
         let requested = maximumRPM * speedPercent / 100
-        return Int(requested.rounded()).clamped(
-            to: Int(minimumRPM.rounded())...Int(maximumRPM.rounded())
+        return min(
+            max(Int(requested.rounded()), Int(minimumRPM.rounded())),
+            Int(maximumRPM.rounded())
         )
-    }
-}
-
-private extension Comparable {
-    func clamped(to range: ClosedRange<Self>) -> Self {
-        min(max(self, range.lowerBound), range.upperBound)
     }
 }

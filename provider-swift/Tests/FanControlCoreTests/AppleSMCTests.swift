@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@testable import ProviderCore
+@testable import FanControlCore
 
 @Suite("AppleSMC value codecs")
 struct AppleSMCTests {
@@ -53,5 +53,14 @@ struct AppleSMCTests {
             bytes: [0x2a, 0x80]
         )
         #expect(value.numeric == 42.5)
+    }
+
+    @Test("only live CPU and GPU keys qualify as heat sensors")
+    func sensorKeyClassification() {
+        #expect(FanHardwareDiscovery.isLiveComputeTemperatureKey("Tp09"))
+        #expect(FanHardwareDiscovery.isLiveComputeTemperatureKey("Tg0D"))
+        #expect(!FanHardwareDiscovery.isLiveComputeTemperatureKey("TsTP"))
+        #expect(!FanHardwareDiscovery.isLiveComputeTemperatureKey("TB0T"))
+        #expect(!FanHardwareDiscovery.isLiveComputeTemperatureKey("F0Tg"))
     }
 }

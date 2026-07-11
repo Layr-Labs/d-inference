@@ -91,23 +91,19 @@ enum FanHardwareDiscovery {
         return hottest
     }
 
+    static func isLiveComputeTemperatureKey(_ name: String) -> Bool {
+        name.count == 4
+            && (name.hasPrefix("Tp") || name.hasPrefix("Tg"))
+    }
+
     private static func discoverFans(on smc: AppleSMC) throws -> [SMCFan] {
         let count = try fanCount(on: smc)
         return try (0..<count).map { index in
             let mode = try resolveModeKey(index: index, on: smc)
             let targetKey = SMCKey("F\(index)Tg")
-            let minimum = try numericValue(
-                SMCKey("F\(index)Mn"),
-                on: smc
-            )
-            let maximum = try numericValue(
-                SMCKey("F\(index)Mx"),
-                on: smc
-            )
-            let actual = try numericValue(
-                SMCKey("F\(index)Ac"),
-                on: smc
-            )
+            let minimum = try numericValue(SMCKey("F\(index)Mn"), on: smc)
+            let maximum = try numericValue(SMCKey("F\(index)Mx"), on: smc)
+            let actual = try numericValue(SMCKey("F\(index)Ac"), on: smc)
             let target = try smc.read(targetKey)
             guard target.dataTypeName == "flt " || target.dataTypeName == "fpe2",
                   let targetRPM = target.numeric else {
@@ -213,7 +209,7 @@ enum FanHardwareDiscovery {
 
         for index in 0..<count {
             guard let key = try? smc.key(at: index),
-                  key.name.first == "T",
+                  isLiveComputeTemperatureKey(key.name),
                   let value = try? smc.read(key),
                   value.dataTypeName == "flt " || value.dataTypeName == "sp78",
                   let temperature = value.numeric,

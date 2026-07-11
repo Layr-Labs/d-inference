@@ -107,9 +107,12 @@ extension ProviderLoop {
         // Fast-path drain/shutdown reject; an authoritative re-check follows the
         // `await` below, right before the reservation is taken (see comment there).
         try throwIfRefusingNewLocalWork()
+        let activityID = "local:\(UUID().uuidString)"
+        InferenceActivityTracker.shared.begin(activityID)
         do {
             try await ensureModelLoaded(modelId: modelId)
         } catch let err as InferenceError {
+            InferenceActivityTracker.shared.end(activityID)
             // Map load failures to the engine's typed errors (404 / 503).
             switch err {
             case .invalidModelDirectory, .noModelLoaded:
@@ -117,8 +120,12 @@ extension ProviderLoop {
             default:
                 throw MultiModelBatchSchedulerEngineError.queueFull("local capacity unavailable for \(modelId)")
             }
+        } catch {
+            InferenceActivityTracker.shared.end(activityID)
+            throw error
         }
         guard let slot = modelSlots[modelId] else {
+            InferenceActivityTracker.shared.end(activityID)
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
         }
         // Authoritative re-check: `ensureModelLoaded` above is a suspension
@@ -126,11 +133,17 @@ extension ProviderLoop {
         // No `await` sits between this check and `reserve`, so on the actor it
         // is atomic — the reservation is either refused or counted in
         // `hasInflightWork` before any drain snapshot can miss it.
-        try throwIfRefusingNewLocalWork()
+        do {
+            try throwIfRefusingNewLocalWork()
+        } catch {
+            InferenceActivityTracker.shared.end(activityID)
+            throw error
+        }
         localReservations.reserve(modelId)
         modelSlots[modelId]?.lastInferenceAt = .now
         let release: @Sendable (String) async -> Void = { [weak self] mid in
             await self?.releaseLocalReservation(mid)
+            InferenceActivityTracker.shared.end(activityID)
         }
         return MultiModelBatchSchedulerEngine.AcquiredModel(
             tokenizer: slot.tokenizer,

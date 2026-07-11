@@ -21,16 +21,18 @@ public enum FanControlError: Error, LocalizedError, Sendable {
     case noTemperatureSensors
     case writeNotApplied(String)
     case invalidConfiguration(String)
-    case anotherControllerRunning
-    case lockFailed(String)
+    case leaseBusy
+    case leaseNotFound
+    case staleLeaseSequence
     case interrupted
+    case journalFailed(String)
     case restoreFailed([String])
     case operationAndRestoreFailed(operation: String, restore: String)
 
     public var errorDescription: String? {
         switch self {
         case .rootRequired:
-            return "fan control requires root privileges; run `sudo darkbloom fan`"
+            return "the fan helper must run as root"
         case .unsupportedArchitecture:
             return "fan control is supported only on Apple Silicon Macs"
         case .appleSMCUnavailable:
@@ -46,7 +48,7 @@ public enum FanControlError: Error, LocalizedError, Sendable {
         case .smcKeyNotFound(let key):
             return "AppleSMC key \(key) was not found"
         case .smcPermissionDenied:
-            return "AppleSMC denied the write; run `sudo darkbloom fan`"
+            return "AppleSMC denied the privileged write"
         case .invalidSMCData(let detail):
             return "invalid AppleSMC data: \(detail)"
         case .unsupportedSMCType(let key, let type):
@@ -58,23 +60,27 @@ public enum FanControlError: Error, LocalizedError, Sendable {
         case .fanModeKeyMissing(let index):
             return "fan \(index) has no supported manual-mode key"
         case .ambiguousFanModeKeys(let index):
-            return "fan \(index) exposes multiple manual-mode keys; refusing an ambiguous write"
+            return "fan \(index) exposes multiple manual-mode keys"
         case .fanAlreadyControlled(let index):
-            return "fan \(index) is already in manual mode; quit the other fan utility or run `sudo darkbloom fan --reset`"
+            return "fan \(index) is already controlled by another utility"
         case .fanTestModeActive:
-            return "AppleSMC fan test mode is already active; quit the other fan utility or run `sudo darkbloom fan --reset`"
+            return "AppleSMC fan test mode is already owned by another utility"
         case .noTemperatureSensors:
-            return "AppleSMC exposed no usable temperature sensors"
+            return "AppleSMC exposed no usable CPU or GPU temperature sensors"
         case .writeNotApplied(let key):
             return "AppleSMC accepted the \(key) write but did not apply it"
         case .invalidConfiguration(let detail):
             return detail
-        case .anotherControllerRunning:
-            return "another `darkbloom fan` process is already running"
-        case .lockFailed(let detail):
-            return "could not acquire the fan-control lock: \(detail)"
+        case .leaseBusy:
+            return "another fan-control lease is active"
+        case .leaseNotFound:
+            return "the fan-control lease is no longer active"
+        case .staleLeaseSequence:
+            return "the fan-control lease update is stale"
         case .interrupted:
             return "fan control was interrupted"
+        case .journalFailed(let detail):
+            return "fan recovery journal failed: \(detail)"
         case .restoreFailed(let failures):
             return "could not fully return fan control to macOS: \(failures.joined(separator: "; "))"
         case .operationAndRestoreFailed(let operation, let restore):
@@ -100,21 +106,29 @@ public struct FanCoolingConfiguration: Sendable, Equatable {
         pollIntervalSeconds: Double = Self.defaultPollIntervalSeconds,
         hysteresisCelsius: Double = Self.defaultHysteresisCelsius
     ) throws {
-        guard speedPercent.isFinite, (1...100).contains(speedPercent) else {
-            throw FanControlError.invalidConfiguration("--speed must be between 1 and 100 percent")
+        guard speedPercent.isFinite, (90...100).contains(speedPercent) else {
+            throw FanControlError.invalidConfiguration(
+                "--speed must be between 90 and 100 percent"
+            )
         }
         guard triggerTemperatureCelsius.isFinite,
               (20...110).contains(triggerTemperatureCelsius) else {
-            throw FanControlError.invalidConfiguration("--temperature must be between 20 and 110 degrees Celsius")
+            throw FanControlError.invalidConfiguration(
+                "--temperature must be between 20 and 110 degrees Celsius"
+            )
         }
         guard pollIntervalSeconds.isFinite,
-              (0.5...30).contains(pollIntervalSeconds) else {
-            throw FanControlError.invalidConfiguration("--poll-interval must be between 0.5 and 30 seconds")
+              (0.5...5).contains(pollIntervalSeconds) else {
+            throw FanControlError.invalidConfiguration(
+                "--poll-interval must be between 0.5 and 5 seconds"
+            )
         }
         guard hysteresisCelsius.isFinite,
               hysteresisCelsius >= 0,
               hysteresisCelsius < triggerTemperatureCelsius else {
-            throw FanControlError.invalidConfiguration("temperature hysteresis is invalid")
+            throw FanControlError.invalidConfiguration(
+                "temperature hysteresis is invalid"
+            )
         }
 
         self.speedPercent = speedPercent
@@ -156,43 +170,25 @@ public enum FanCoolingReleaseReason: String, Sendable, Equatable {
     case cooled
     case temperatureUnavailable
     case systemThermalPressure
+    case leaseExpired
     case stopped
 }
 
-public struct FanCoolingFanSummary: Sendable, Equatable {
-    public let index: Int
-    public let minimumRPM: Int
-    public let maximumRPM: Int
-    public let plannedRPM: Int
-
-    public init(index: Int, minimumRPM: Int, maximumRPM: Int, plannedRPM: Int) {
-        self.index = index
-        self.minimumRPM = minimumRPM
-        self.maximumRPM = maximumRPM
-        self.plannedRPM = plannedRPM
-    }
-}
-
-public struct FanCoolingSummary: Sendable, Equatable {
-    public let stateFile: URL
-    public let temperatureSensorCount: Int
-    public let fans: [FanCoolingFanSummary]
+public struct FanLeaseStatus: Sendable, Equatable {
+    public let engaged: Bool
+    public let temperatureCelsius: Double?
+    public let temperatureSensor: String?
+    public let targetRPMs: [Int]
 
     public init(
-        stateFile: URL,
-        temperatureSensorCount: Int,
-        fans: [FanCoolingFanSummary]
+        engaged: Bool,
+        temperatureCelsius: Double?,
+        temperatureSensor: String?,
+        targetRPMs: [Int]
     ) {
-        self.stateFile = stateFile
-        self.temperatureSensorCount = temperatureSensorCount
-        self.fans = fans
+        self.engaged = engaged
+        self.temperatureCelsius = temperatureCelsius
+        self.temperatureSensor = temperatureSensor
+        self.targetRPMs = targetRPMs
     }
-}
-
-public enum FanCoolingEvent: Sendable, Equatable {
-    case ready(FanCoolingSummary)
-    case boosted(sample: FanCoolingSample, targetRPMs: [Int])
-    case released(reason: FanCoolingReleaseReason, sample: FanCoolingSample)
-    case warning(String)
-    case restored
 }

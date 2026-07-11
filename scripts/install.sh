@@ -8,7 +8,7 @@ set -euo pipefail
 #
 # This script:
 #   1. Fetches the latest signed release from the coordinator
-#   2. Downloads the provider bundle (darkbloom + darkbloom-enclave + mlx.metallib)
+#   2. Downloads the provider bundle (CLI, enclave, metallib, optional signed fan-helper package)
 #   3. Verifies bundle SHA-256 + Apple Developer ID code signature
 #   4. Sets up the Secure Enclave identity
 #   5. Kicks off MDM enrollment (non-blocking)
@@ -108,7 +108,7 @@ echo "  Installing into $INSTALL_DIR ..."
 # Older flat bundles (bin/darkbloom directly) are also handled.
 tar xzf "$TARBALL" -C "$INSTALL_DIR"
 
-# New .app bundle layout: Darkbloom.app/Contents/MacOS/{darkbloom,darkbloom-enclave,mlx.metallib}
+# New .app bundle layout includes the CLI binaries, metallib, and optional fan-helper package.
 if [ -d "$INSTALL_DIR/Darkbloom.app" ]; then
     APP_BIN="$INSTALL_DIR/Darkbloom.app/Contents/MacOS"
     chmod +x "$APP_BIN/darkbloom" "$APP_BIN/darkbloom-enclave" 2>/dev/null || true
@@ -154,13 +154,23 @@ if [ -n "$METALLIB_HASH" ] && [ -f "$BIN_DIR/mlx.metallib" ]; then
     echo "  Metallib hash verified ✓"
 fi
 
-# Verify code signature (codesign is base macOS, no CLT prompt).
-if codesign --verify --verbose "$BIN_DIR/darkbloom" 2>/dev/null; then
-    TEAM=$(codesign -dvv "$BIN_DIR/darkbloom" 2>&1 | grep "TeamIdentifier=" | cut -d= -f2)
-    echo "  Code signature verified ✓ (Team: $TEAM)"
-else
-    echo "  ⚠ Code signature could not be verified — proceed with caution."
+# Verify the complete app resource seal and the production signing identity.
+# This is fail-closed because the optional fan feature carries a privileged,
+# separately authenticated helper installer inside the app bundle.
+SIGNING_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
+if [ -d "$INSTALL_DIR/Darkbloom.app" ]; then
+    if ! codesign --verify --deep --strict -R="$SIGNING_REQUIREMENT" "$INSTALL_DIR/Darkbloom.app" 2>/dev/null; then
+        echo "  ✗ Darkbloom.app signature or resource seal is invalid."
+        rm -rf "$INSTALL_DIR/Darkbloom.app" "$BIN_DIR"
+        exit 1
+    fi
 fi
+if ! codesign --verify --strict -R="$SIGNING_REQUIREMENT" "$BIN_DIR/darkbloom" 2>/dev/null; then
+    echo "  ✗ Darkbloom binary signature is invalid."
+    rm -rf "$INSTALL_DIR/Darkbloom.app" "$BIN_DIR"
+    exit 1
+fi
+echo "  Code signature verified ✓ (Team: SLDQ2GJ6TL)"
 
 # Make available in PATH. Try /usr/local/bin symlink, fall back to shell rc.
 if ln -sf "$BIN_DIR/darkbloom" /usr/local/bin/darkbloom 2>/dev/null; then

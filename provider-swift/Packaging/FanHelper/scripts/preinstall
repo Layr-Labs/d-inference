@@ -1,0 +1,10 @@
+#!/bin/bash
+set -euo pipefail
+
+LABEL="io.darkbloom.provider.fan-helper"
+
+if /bin/launchctl print "system/$LABEL" >/dev/null 2>&1; then
+    /bin/launchctl bootout "system/$LABEL" || exit 1
+fi
+
+exit 0

@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@testable import ProviderCore
+@testable import FanControlCore
 
 @Suite("Fan cooling policy")
 struct FanCoolingPolicyTests {
@@ -18,7 +18,7 @@ struct FanCoolingPolicyTests {
     @Test("configuration rejects unsafe or nonsensical values")
     func validatesConfiguration() {
         #expect(throws: FanControlError.self) {
-            try FanCoolingConfiguration(speedPercent: 0)
+            try FanCoolingConfiguration(speedPercent: 89)
         }
         #expect(throws: FanControlError.self) {
             try FanCoolingConfiguration(triggerTemperatureCelsius: 150)
@@ -97,11 +97,6 @@ struct FanCoolingPolicyTests {
             maximumRPM: 6_000,
             speedPercent: 90
         ) == 5_400)
-        #expect(FanCoolingPolicy.plannedRPM(
-            minimumRPM: 2_000,
-            maximumRPM: 6_000,
-            speedPercent: 10
-        ) == 2_000)
     }
 
     private func sample(

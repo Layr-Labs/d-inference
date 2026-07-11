@@ -217,6 +217,7 @@ extension ProviderLoop {
         // 6. Mark the request before loading so concurrent preloads cannot
         // evict the model this accepted request is waiting for.
         requestToModel[requestId] = modelId
+        InferenceActivityTracker.shared.begin(requestId)
         powerAssertion.acquire()
         syncWarmModelState()
         let token = await cancellationRegistry.register(requestId: requestId)
@@ -230,6 +231,7 @@ extension ProviderLoop {
             try await ensureModelLoaded(modelId: modelId)
         } catch {
             if requestToModel.removeValue(forKey: requestId) != nil {
+                InferenceActivityTracker.shared.end(requestId)
                 powerAssertion.release()
                 syncWarmModelState()
                 await updateAggregateCapacity()
@@ -249,6 +251,7 @@ extension ProviderLoop {
 
         guard let slot = modelSlots[modelId] else {
             if requestToModel.removeValue(forKey: requestId) != nil {
+                InferenceActivityTracker.shared.end(requestId)
                 powerAssertion.release()
                 syncWarmModelState()
                 await updateAggregateCapacity()

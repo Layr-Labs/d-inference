@@ -7,9 +7,11 @@ The provider bundle is built and signed in CI via
 
 High-level flow:
 
-1. Build the `darkbloom` and `darkbloom-enclave` binaries.
-2. Sign with the Developer ID Application certificate.
-3. Notarize with Apple.
+1. Build `darkbloom`, `darkbloom-enclave`, and `darkbloom-fan-helper`.
+2. Sign the optional fan helper with Developer ID Application, package it with
+   Developer ID Installer, then notarize and staple that package.
+3. Embed the helper package in `Darkbloom.app`, sign with Developer ID
+   Application, and notarize with Apple.
 4. Compute SHA-256 hashes **after** code signing.
 5. Upload to R2.
 6. Register the release with the coordinator.

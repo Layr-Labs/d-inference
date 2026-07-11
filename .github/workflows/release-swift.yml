@@ -57,9 +57,11 @@ permissions:
 
 env:
   DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
+  INSTALLER_ID: 'Developer ID Installer: Eigen Labs, Inc. (SLDQ2GJ6TL)'
   APPLE_TEAM_ID: 'SLDQ2GJ6TL'
   CLI_NAME: 'darkbloom'
   ENCLAVE_NAME: 'darkbloom-enclave'
+  FAN_HELPER_NAME: 'io.darkbloom.provider.fan-helper'
   MIN_MACOS: '14.0'
   # The mlx.metallib (compiled Metal GPU kernels) is BUILT FROM SOURCE from the
   # MLX fork pinned at libs/mlx-swift/Source/Cmlx/mlx — NOT fetched from a PyPI
@@ -176,10 +178,17 @@ jobs:
         env:
           P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          INSTALLER_P12_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_P12 }}
+          INSTALLER_P12_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
+          if [ -z "${P12_BASE64:-}" ] || [ -z "${INSTALLER_P12_BASE64:-}" ]; then
+            echo "::error::Both Developer ID Application and Installer certificates are required"
+            exit 1
+          fi
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
           echo "$P12_BASE64" | base64 --decode > /tmp/cert.p12
+          echo "$INSTALLER_P12_BASE64" | base64 --decode > /tmp/installer-cert.p12
 
           security create-keychain -p "build" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -187,12 +196,15 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
           security import /tmp/cert.p12 -k "$KEYCHAIN_PATH" \
             -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productsign -f pkcs12
+          security import /tmp/installer-cert.p12 -k "$KEYCHAIN_PATH" \
+            -P "$INSTALLER_P12_PASSWORD" -T /usr/bin/pkgbuild -T /usr/bin/productsign -f pkcs12
           security set-key-partition-list -S apple-tool:,apple: \
             -s -k "build" "$KEYCHAIN_PATH"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+          security find-identity -v -p basic "$KEYCHAIN_PATH"
 
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-          rm -f /tmp/cert.p12
+          rm -f /tmp/cert.p12 /tmp/installer-cert.p12
 
       - name: Install awscli (R2)
         run: |
@@ -319,9 +331,11 @@ jobs:
           set -euo pipefail
           swift build -c release --product darkbloom
           swift build -c release --product darkbloom-enclave
+          swift build -c release --product darkbloom-fan-helper
           BIN_DIR=$(swift build -c release --show-bin-path)
           test -x "$BIN_DIR/$CLI_NAME"
           test -x "$BIN_DIR/$ENCLAVE_NAME"
+          test -x "$BIN_DIR/darkbloom-fan-helper"
           echo "BIN_DIR=$BIN_DIR" >> "$GITHUB_ENV"
           ls -la "$BIN_DIR" | head -50
 
@@ -342,6 +356,70 @@ jobs:
       # ----------------------------------------------------------------------
       # Stage the bundle: bin/darkbloom, bin/darkbloom-enclave, bin/mlx.metallib
       # ----------------------------------------------------------------------
+
+      - name: Build, sign, and notarize fan helper package
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/darkbloom-fan-helper-root
+          PKG=/tmp/DarkbloomFanHelper.pkg
+          rm -rf "$ROOT" "$PKG"
+          mkdir -p \
+            "$ROOT/Library/PrivilegedHelperTools" \
+            "$ROOT/Library/LaunchDaemons"
+
+          cp "$BIN_DIR/darkbloom-fan-helper" \
+            "$ROOT/Library/PrivilegedHelperTools/$FAN_HELPER_NAME"
+          cp "provider-swift/Packaging/FanHelper/$FAN_HELPER_NAME.plist" \
+            "$ROOT/Library/LaunchDaemons/$FAN_HELPER_NAME.plist"
+          chmod 0755 "$ROOT/Library/PrivilegedHelperTools/$FAN_HELPER_NAME"
+          chmod 0644 "$ROOT/Library/LaunchDaemons/$FAN_HELPER_NAME.plist"
+
+          codesign --force --options runtime --timestamp \
+            --identifier "$FAN_HELPER_NAME" \
+            --entitlements provider-swift/entitlements-fan-helper.plist \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$DEVELOPER_ID" \
+            "$ROOT/Library/PrivilegedHelperTools/$FAN_HELPER_NAME"
+          codesign --verify --strict --verbose=2 \
+            -R="anchor apple generic and identifier \"$FAN_HELPER_NAME\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\"" \
+            "$ROOT/Library/PrivilegedHelperTools/$FAN_HELPER_NAME"
+          plutil -lint "$ROOT/Library/LaunchDaemons/$FAN_HELPER_NAME.plist"
+
+          pkgbuild \
+            --root "$ROOT" \
+            --scripts provider-swift/Packaging/FanHelper/scripts \
+            --identifier "$FAN_HELPER_NAME.pkg" \
+            --version "$VERSION" \
+            --install-location / \
+            --ownership recommended \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$INSTALLER_ID" \
+            "$PKG"
+
+          xcrun notarytool submit "$PKG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 15m \
+            --output-format json | tee /tmp/fan-helper-notary.json
+          python3 - <<'PY'
+          import json
+
+          with open('/tmp/fan-helper-notary.json', encoding='utf-8') as result_file:
+              result = json.load(result_file)
+          if result.get('status') != 'Accepted':
+              raise SystemExit(
+                  f"fan-helper notarization failed: id={result.get('id')} "
+                  f"status={result.get('status')}"
+              )
+          PY
+          xcrun stapler staple "$PKG"
+          xcrun stapler validate "$PKG"
+          pkgutil --check-signature "$PKG"
+          spctl --assess --type install --verbose=4 "$PKG"
 
       - name: Embed provisioning profile
         env:
@@ -437,11 +515,12 @@ jobs:
           # Wrap the CLI in a minimal .app bundle so the provisioning profile
           # authorizes keychain-access-groups for the persistent SE key.
           APP="$STAGE/Darkbloom.app"
-          mkdir -p "$APP/Contents/MacOS"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
           cp "$BIN_DIR/$CLI_NAME" "$APP/Contents/MacOS/"
           cp "$BIN_DIR/$ENCLAVE_NAME" "$APP/Contents/MacOS/"
           cp "${{ steps.metallib.outputs.metallib }}" "$APP/Contents/MacOS/mlx.metallib"
+          cp /tmp/DarkbloomFanHelper.pkg "$APP/Contents/Resources/"
 
           cat > "$APP/Contents/Info.plist" << PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -629,6 +708,7 @@ jobs:
           grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/darkbloom-enclave' /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/mlx.metallib' /tmp/darkbloom-bundle-files.txt
+          grep -qx './Darkbloom.app/Contents/Resources/DarkbloomFanHelper.pkg' /tmp/darkbloom-bundle-files.txt
 
           BINARY_HASH=$(shasum -a 256 "${{ steps.bundle.outputs.stage }}/bin/$CLI_NAME" | cut -d' ' -f1)
           BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)

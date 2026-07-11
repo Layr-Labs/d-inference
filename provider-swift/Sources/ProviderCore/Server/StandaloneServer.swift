@@ -796,14 +796,18 @@ public actor StandaloneServer {
     /// reservation if the lookup somehow fails so a partial-acquire
     /// doesn't pin a missing model forever.
     func acquireModel(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
+        let activityID = "standalone:\(UUID().uuidString)"
+        InferenceActivityTracker.shared.begin(activityID)
         do {
             try await ensureModelLoaded(modelId)
         } catch StandaloneServerError.modelNotFound {
+            InferenceActivityTracker.shared.end(activityID)
             // Unknown model id → 404 via mapInferenceErrorToStatus.
             // StandaloneServerError never crosses the HTTP layer;
             // translate to the typed engine error.
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
         } catch let StandaloneServerError.capacityUnavailable(message) {
+            InferenceActivityTracker.shared.end(activityID)
             // Cache full / memory-headroom / re-slice-floor / engine
             // refusal → 503 via mapInferenceErrorToStatus
             // (`.tokenBudgetExhausted` maps to 503, signalling
@@ -812,16 +816,21 @@ public actor StandaloneServer {
             throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
                 "token_budget_exhausted: \(message)"
             )
+        } catch {
+            InferenceActivityTracker.shared.end(activityID)
+            throw error
         }
         reserveSlot(modelId)
         guard let slot = slots[modelId], !evictingModels.contains(modelId) else {
             // Roll the reservation back; the model is gone (evicted
             // mid-load) and we cannot honor the acquisition.
             releaseSlot(modelId)
+            InferenceActivityTracker.shared.end(activityID)
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
         }
         let releaseClosure: @Sendable (String) async -> Void = { [weak self] mid in
             await self?.releaseSlot(mid)
+            InferenceActivityTracker.shared.end(activityID)
         }
         let token = OneShotRelease(
             release: releaseClosure,

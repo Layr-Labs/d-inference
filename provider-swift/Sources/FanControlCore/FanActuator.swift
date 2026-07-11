@@ -27,7 +27,7 @@ final class FanActuator {
             if fan.initialMode == 1 {
                 throw FanControlError.fanAlreadyControlled(fan.index)
             }
-            guard fan.initialMode == 0 || fan.initialMode == 3 else {
+            guard Self.isAutomaticMode(fan.initialMode) else {
                 throw FanControlError.invalidSMCData(
                     "\(fan.modeKey.name) has unknown mode \(fan.initialMode)"
                 )
@@ -37,16 +37,6 @@ final class FanActuator {
 
     deinit {
         try? restoreAutomatic()
-    }
-
-    func plannedRPMs(speedPercent: Double) -> [Int] {
-        fans.map {
-            FanCoolingPolicy.plannedRPM(
-                minimumRPM: $0.minimumRPM,
-                maximumRPM: $0.maximumRPM,
-                speedPercent: speedPercent
-            )
-        }
     }
 
     func engage(
@@ -61,10 +51,10 @@ final class FanActuator {
         mutationStarted = true
 
         do {
-            try engageManualModes(shouldStop: shouldStop)
             targetRPMs = try fans.map {
                 try targetRPM(for: $0, speedPercent: speedPercent)
             }
+            try engageManualModes(shouldStop: shouldStop)
             try applyTargets()
             isControlling = true
             return targetRPMs
@@ -89,13 +79,25 @@ final class FanActuator {
 
         let modes = try fans.map { try readMode($0) }
         if modes.contains(where: { $0 != 1 }) {
+            try raiseTargetsToCurrentHardwareValues()
             try engageManualModes(shouldStop: shouldStop)
         }
 
-        for (fan, target) in zip(fans, targetRPMs) {
+        for index in fans.indices {
+            let fan = fans[index]
+            let target = targetRPMs[index]
             let current = try smc.read(fan.targetKey).numeric
             let tolerance = max(25, Double(target) * 0.01)
-            if current == nil || abs((current ?? 0) - Double(target)) > tolerance {
+            guard let current, current.isFinite else {
+                try writeTarget(target, for: fan)
+                continue
+            }
+            if current > Double(target) + tolerance {
+                targetRPMs[index] = min(
+                    Int(current.rounded()),
+                    Int(fan.maximumRPM.rounded())
+                )
+            } else if current < Double(target) - tolerance {
                 try writeTarget(target, for: fan)
             }
         }
@@ -118,9 +120,8 @@ final class FanActuator {
         if fanTestEnabledByUs {
             do {
                 try smc.write(Self.fanTestKey, bytes: [0])
-                let value = try smc.read(Self.fanTestKey).uint8
-                if value != 0 {
-                    failures.append("Ftst: write did not stick")
+                guard try smc.read(Self.fanTestKey).uint8 == 0 else {
+                    throw FanControlError.writeNotApplied(Self.fanTestKey.name)
                 }
             } catch {
                 failures.append("Ftst: \(error.localizedDescription)")
@@ -129,8 +130,9 @@ final class FanActuator {
 
         for fan in fans {
             do {
-                if try readMode(fan) == 1 {
-                    failures.append("\(fan.modeKey.name): still manual")
+                let mode = try readMode(fan)
+                if !Self.isAutomaticMode(mode) {
+                    failures.append("\(fan.modeKey.name): mode \(mode)")
                 }
             } catch {
                 failures.append("\(fan.modeKey.name): verification failed")
@@ -160,15 +162,23 @@ final class FanActuator {
         if hardware.hasFanTestKey {
             do {
                 try smc.write(fanTestKey, bytes: [0])
+                guard try smc.read(fanTestKey).uint8 == 0 else {
+                    throw FanControlError.writeNotApplied(fanTestKey.name)
+                }
             } catch {
                 failures.append("Ftst: \(error.localizedDescription)")
             }
         }
 
+        Thread.sleep(forTimeInterval: modeRetryInterval)
         for fan in hardware.fans {
             do {
-                if try smc.read(fan.modeKey).uint8 == 1 {
-                    failures.append("\(fan.modeKey.name): still manual")
+                let value = try smc.read(fan.modeKey)
+                guard value.dataTypeName == "ui8 ",
+                      let mode = value.uint8,
+                      isAutomaticMode(mode) else {
+                    failures.append("\(fan.modeKey.name): not automatic")
+                    continue
                 }
             } catch {
                 failures.append("\(fan.modeKey.name): verification failed")
@@ -197,17 +207,17 @@ final class FanActuator {
         do {
             try setAllModesManual()
             return
-        } catch {
-            if case FanControlError.interrupted = error {
-                throw error
+        } catch let directError {
+            if case FanControlError.interrupted = directError {
+                throw directError
             }
-            guard hasFanTestKey else {
-                throw error
+            guard hasFanTestKey, Self.isThermalManagerRejection(directError) else {
+                throw directError
             }
         }
 
-        try smc.write(Self.fanTestKey, bytes: [1])
         fanTestEnabledByUs = true
+        try smc.write(Self.fanTestKey, bytes: [1])
         guard try smc.read(Self.fanTestKey).uint8 == 1 else {
             throw FanControlError.writeNotApplied(Self.fanTestKey.name)
         }
@@ -257,10 +267,12 @@ final class FanActuator {
             maximumRPM: fan.maximumRPM,
             speedPercent: speedPercent
         ))
-        let actual = (try? smc.read(SMCKey("F\(fan.index)Ac")).numeric)
-            ?? fan.initialActualRPM
-        let existingTarget = (try? smc.read(fan.targetKey).numeric)
-            ?? fan.initialTargetRPM
+        let actual = finiteRPM(
+            try? smc.read(SMCKey("F\(fan.index)Ac")).numeric
+        ) ?? fan.initialActualRPM
+        let existingTarget = finiteRPM(
+            try? smc.read(fan.targetKey).numeric
+        ) ?? fan.initialTargetRPM
         return Int(
             min(
                 fan.maximumRPM,
@@ -270,6 +282,25 @@ final class FanActuator {
                 )
             ).rounded()
         )
+    }
+
+    private func raiseTargetsToCurrentHardwareValues() throws {
+        for index in fans.indices {
+            let fan = fans[index]
+            let actual = finiteRPM(
+                try smc.read(SMCKey("F\(fan.index)Ac")).numeric
+            ) ?? 0
+            let currentTarget = finiteRPM(
+                try smc.read(fan.targetKey).numeric
+            ) ?? 0
+            targetRPMs[index] = min(
+                Int(fan.maximumRPM.rounded()),
+                max(
+                    targetRPMs[index],
+                    Int(max(actual, currentTarget).rounded())
+                )
+            )
+        }
     }
 
     private func applyTargets() throws {
@@ -286,6 +317,7 @@ final class FanActuator {
         )
         Thread.sleep(forTimeInterval: 0.05)
         guard let applied = try smc.read(fan.targetKey).numeric,
+              applied.isFinite,
               abs(applied - Double(target)) <= max(25, Double(target) * 0.01) else {
             throw FanControlError.writeNotApplied(fan.targetKey.name)
         }
@@ -297,7 +329,7 @@ final class FanActuator {
             do {
                 try smc.write(fan.modeKey, bytes: [0])
                 Thread.sleep(forTimeInterval: Self.modeRetryInterval)
-                if try readMode(fan) != 1 {
+                if Self.isAutomaticMode(try readMode(fan)) {
                     return
                 }
                 lastError = FanControlError.writeNotApplied(fan.modeKey.name)
@@ -319,6 +351,11 @@ final class FanActuator {
         return mode
     }
 
+    private func finiteRPM(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, value >= 0 else { return nil }
+        return value
+    }
+
     private func cancellableSleep(
         _ duration: TimeInterval,
         shouldStop: () -> Bool
@@ -334,6 +371,20 @@ final class FanActuator {
                     max(0, deadline.timeIntervalSinceNow)
                 )
             )
+        }
+    }
+
+    private static func isAutomaticMode(_ mode: UInt8) -> Bool {
+        mode == 0 || mode == 3
+    }
+
+    private static func isThermalManagerRejection(_ error: Error) -> Bool {
+        switch error {
+        case FanControlError.smcRejected(_, 0x82),
+             FanControlError.writeNotApplied(_):
+            return true
+        default:
+            return false
         }
     }
 }

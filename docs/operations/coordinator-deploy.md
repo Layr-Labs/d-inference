@@ -159,10 +159,13 @@ in-process and rebuilt on reconnect; durable state is in RDS and on the persiste
 
 Provider releases are built and shipped by `.github/workflows/release-swift.yml` (CLI-only Swift). The workflow:
 
-1. Builds `darkbloom` and `darkbloom-enclave` from `provider-swift/`.
+1. Builds `darkbloom`, `darkbloom-enclave`, and the minimal
+   `darkbloom-fan-helper` from `provider-swift/`.
 2. Fetches a matching `mlx.metallib` (built from the MLX source nested in `libs/mlx-swift`).
-3. Embeds the provisioning profile and signs with Developer ID Application.
-4. Notarizes with Apple.
+3. Signs the optional root helper with Developer ID Application, packages it
+   with Developer ID Installer, and notarizes/staples the package.
+4. Embeds that package and the provisioning profile in `Darkbloom.app`, signs
+   the app with Developer ID Application, and notarizes it with Apple.
 5. Computes SHA-256 hashes **after** signing/notarization.
 6. Uploads the tarball to R2 under `releases/v${VERSION}` and `releases/latest`.
 7. Registers the release with `POST /v1/releases` using `RELEASE_KEY`.
@@ -200,6 +203,7 @@ The workflow resolves prefixed secrets (`DEV_*` / `PROD_*`) with legacy unprefix
 | `RELEASE_KEY` / `DEV_RELEASE_KEY` / `PROD_RELEASE_KEY` | `POST /v1/releases` registration key |
 | `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`, `R2_BUCKET`, `R2_PUBLIC_URL` | R2 artifact storage |
 | `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD` | Developer ID signing |
+| `APPLE_INSTALLER_CERTIFICATE_P12`, `APPLE_INSTALLER_CERTIFICATE_PASSWORD` | Developer ID Installer signing for the optional fan-helper package |
 | `APPLE_ID`, `APPLE_APP_PASSWORD` | Notarization |
 | `PROVISIONING_PROFILE_BASE64` | Grants `keychain-access-groups` and `aps-environment=production` |
 

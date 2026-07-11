@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+
+LABEL="io.darkbloom.provider.fan-helper"
+HELPER="/Library/PrivilegedHelperTools/$LABEL"
+PLIST="/Library/LaunchDaemons/$LABEL.plist"
+
+/usr/sbin/chown root:wheel "$HELPER" "$PLIST"
+/bin/chmod 0755 "$HELPER"
+/bin/chmod 0644 "$PLIST"
+/usr/bin/plutil -lint "$PLIST"
+/bin/launchctl bootstrap system "$PLIST"
+/bin/launchctl enable "system/$LABEL"
+/bin/launchctl kickstart -k "system/$LABEL"
+
+exit 0

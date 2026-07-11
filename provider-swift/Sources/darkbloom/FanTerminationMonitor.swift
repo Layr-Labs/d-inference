@@ -9,10 +9,15 @@ final class FanTerminationMonitor: @unchecked Sendable {
     private var sources: [DispatchSourceSignal] = []
 
     init() {
-        signal(SIGINT, SIG_IGN)
-        signal(SIGTERM, SIG_IGN)
-
-        for signalNumber in [SIGINT, SIGTERM] {
+        for signalNumber in [
+            SIGINT,
+            SIGTERM,
+            SIGHUP,
+            SIGQUIT,
+            SIGPIPE,
+            SIGTSTP,
+        ] {
+            signal(signalNumber, SIG_IGN)
             let source = DispatchSource.makeSignalSource(
                 signal: signalNumber,
                 queue: .global(qos: .userInitiated)

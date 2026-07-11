@@ -20,7 +20,6 @@ struct FanProviderActivityTests {
         #expect(FanProviderActivityReader.inferenceActive(
             state: state,
             now: 110,
-            processAlive: { _ in true },
             readIdentity: { _ in identity }
         ))
     }
@@ -60,44 +59,75 @@ struct FanProviderActivityTests {
                 identity: identity
             ),
             now: 101,
-            processAlive: { _ in true },
             readIdentity: { _ in replacement }
         ))
     }
 
-    @Test("legacy state requires a live PID")
-    func legacyStateChecksPID() {
+    @Test("legacy and future-dated state fail closed")
+    func malformedStateFailsClosed() {
         let state = makeState(
             writtenAt: 100,
             inferenceActive: true,
             identity: nil
         )
-        #expect(FanProviderActivityReader.inferenceActive(
-            state: state,
-            now: 101,
-            processAlive: { $0 == 123 },
-            readIdentity: { _ in nil }
-        ))
         #expect(!FanProviderActivityReader.inferenceActive(
             state: state,
             now: 101,
-            processAlive: { _ in false },
             readIdentity: { _ in nil }
         ))
+
+        #expect(!FanProviderActivityReader.inferenceActive(
+            state: makeState(
+                writtenAt: 1_000,
+                inferenceActive: true,
+                identity: identity
+            ),
+            now: 101,
+            readIdentity: { _ in identity }
+        ))
+    }
+
+    @Test("request tracker publishes exact idempotent transitions")
+    func trackerTransitions() {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "inference-activity-\(UUID().uuidString).json"
+            )
+        defer { try? FileManager.default.removeItem(at: path) }
+        let tracker = InferenceActivityTracker(path: path)
+
+        tracker.begin("request-a")
+        tracker.begin("request-a")
+        tracker.begin("request-b")
+        #expect(
+            InferenceActivityFile.read(from: path)?
+                .activeRequestCount == 2
+        )
+
+        tracker.end("request-a")
+        tracker.end("request-a")
+        #expect(
+            InferenceActivityFile.read(from: path)?
+                .activeRequestCount == 1
+        )
+
+        tracker.end("request-b")
+        #expect(
+            InferenceActivityFile.read(from: path)?
+                .activeRequestCount == 0
+        )
     }
 
     private func makeState(
         writtenAt: Double,
         inferenceActive: Bool,
         identity: ProcessIdentity?
-    ) -> DaemonState {
-        DaemonState(
+    ) -> InferenceActivityState {
+        InferenceActivityState(
             pid: 123,
             processIdentity: identity,
-            version: "test",
             writtenAt: writtenAt,
-            startedAt: 1,
-            inferenceActive: inferenceActive
+            activeRequestCount: inferenceActive ? 1 : 0
         )
     }
 }

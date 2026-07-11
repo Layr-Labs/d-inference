@@ -214,7 +214,7 @@ final class AppleSMC {
     func readIfPresent(_ key: SMCKey) throws -> SMCValue? {
         do {
             return try read(key)
-        } catch FanControlError.smcKeyNotFound {
+        } catch FanControlError.smcKeyNotFound(_) {
             return nil
         }
     }

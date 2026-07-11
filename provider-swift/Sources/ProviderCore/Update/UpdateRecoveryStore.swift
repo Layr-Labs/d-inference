@@ -164,7 +164,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         var state = try loadState()
 
         if try liveMatches(transaction.target, layout: transaction.layout) {
-            try ensureCanonicalLinks()
+            try ensureCanonicalLinks(layout: transaction.layout)
             try finalizeRecovered(transaction, state: &state, now: now)
             try cleanupTransaction(transaction)
             return
@@ -187,7 +187,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
                 throw StoreError.interruptedRecoveryFailed(
                     "target hashes do not match after replay")
             }
-            try ensureCanonicalLinks()
+            try ensureCanonicalLinks(layout: transaction.layout)
             try finalizeRecovered(transaction, state: &state, now: now)
             try cleanupTransaction(transaction)
             return
@@ -306,7 +306,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         try faultInjector(.transactionPersisted)
 
         try installFromStaging(stagingRoot, layout: predecessor.layout)
-        try ensureCanonicalLinks()
+        try ensureCanonicalLinks(layout: predecessor.layout)
         try faultInjector(.liveLayoutExchanged)
         transaction.phase = .liveReplaced
         try persist(transaction)

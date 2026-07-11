@@ -4,6 +4,20 @@ import Testing
 
 @Suite("SelfUpdater")
 struct SelfUpdaterTests {
+    @Test("production public init always verifies code signatures")
+    func productionInitVerifiesSignatures() {
+        // The only way to disable the signature pin is the internal
+        // `verifyCodeSignatures:` seam used by tests/fixtures; the public
+        // production initializer must never select the unsigned path.
+        #expect(SelfUpdater(coordinatorBaseURL: "https://api.example").verifiesCodeSignatures)
+        #expect(
+            SelfUpdater(
+                coordinatorBaseURL: "https://api.example",
+                urlSession: SelfUpdater.watchdogURLSession()
+            ).verifiesCodeSignatures
+        )
+    }
+
     @Test("SemVer prerelease ordering is exact")
     func semverPrereleaseOrdering() {
         #expect(SelfUpdater.isNewer(

@@ -19,6 +19,13 @@ public struct DaemonState: Codable, Sendable, Equatable {
 
     public var schema: Int
     public var pid: Int32
+    /// The provider's kernel process identity (pid + start time) at the moment
+    /// this state was written. The watchdog cross-checks a live PID's start
+    /// time against this before treating it as the provider — a PID the kernel
+    /// has since reused (e.g. by a manual `darkbloom update`) must NOT be
+    /// force-killed as a stale lock owner. Optional for backward compatibility
+    /// with state files written before this field existed.
+    public var processIdentity: ProcessIdentity?
     public var version: String
     public var writtenAt: Double // epoch seconds; staleness check
     public var startedAt: Double // epoch seconds; uptime
@@ -106,6 +113,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
     public init(
         schema: Int = DaemonState.currentSchema,
         pid: Int32,
+        processIdentity: ProcessIdentity? = nil,
         version: String,
         writtenAt: Double,
         startedAt: Double,
@@ -121,6 +129,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
     ) {
         self.schema = schema
         self.pid = pid
+        self.processIdentity = processIdentity
         self.version = version
         self.writtenAt = writtenAt
         self.startedAt = startedAt

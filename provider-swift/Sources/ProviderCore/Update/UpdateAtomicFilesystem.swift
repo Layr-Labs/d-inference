@@ -109,6 +109,25 @@ enum UpdateAtomicFilesystem {
         try syncDirectory(parent)
     }
 
+    /// Remove a file/tree so the ORIGINAL path vanishes atomically. The path is
+    /// first renamed to a sibling `asidePrefix<uuid>` (a single atomic rename,
+    /// then the parent is fsync'd), and only afterwards is the renamed copy
+    /// deleted. A crash mid-delete can never leave the original path partially
+    /// populated — it is already gone — it only leaves an orphaned sibling for
+    /// the caller to sweep. Used to retire a stale `Darkbloom.app` during a flat
+    /// install/rollback without a window where a half-deleted app could be
+    /// mistaken for a valid install.
+    static func atomicRemove(_ url: URL, asidePrefix: String) throws {
+        guard itemExists(url) else { return }
+        let parent = url.deletingLastPathComponent()
+        let aside = parent.appendingPathComponent("\(asidePrefix)\(UUID().uuidString)")
+        guard rename(url.path, aside.path) == 0 else {
+            throw filesystemError("rename \(url.path) aside for removal")
+        }
+        try syncDirectory(parent)
+        try? FileManager.default.removeItem(at: aside)
+    }
+
     static func createDirectoryDurably(_ directory: URL) throws {
         let fm = FileManager.default
         if fm.fileExists(atPath: directory.path) {

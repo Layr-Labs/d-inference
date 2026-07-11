@@ -10,7 +10,12 @@ struct UpdateRecoveryFixture {
     let release: ReleaseInfo
     let oldVersion: String
     let newVersion: String
+    /// Layout of the initially-installed (predecessor) tree.
     let layout: VerifiedPredecessor.Layout
+    /// Layout of the release the update installs. Defaults to `layout`; set it
+    /// differently to model a legacy flat install updating to an .app candidate
+    /// (the flat→app→rollback path).
+    let candidateLayout: VerifiedPredecessor.Layout
     private let preservedFiles: [String: String] = [
         "provider.toml": "provider-config",
         "auth-token": "provider-token",
@@ -22,7 +27,8 @@ struct UpdateRecoveryFixture {
     init(
         oldVersion: String = "1.0.0",
         newVersion: String = "2.0.0",
-        layout: VerifiedPredecessor.Layout = .app
+        layout: VerifiedPredecessor.Layout = .app,
+        candidateLayout: VerifiedPredecessor.Layout? = nil
     ) throws {
         let fm = FileManager.default
         root = fm.temporaryDirectory.appendingPathComponent(
@@ -34,6 +40,7 @@ struct UpdateRecoveryFixture {
         self.oldVersion = oldVersion
         self.newVersion = newVersion
         self.layout = layout
+        self.candidateLayout = candidateLayout ?? layout
 
         if layout == .app {
             try Self.writeApp(version: oldVersion, root: installRoot)
@@ -52,7 +59,7 @@ struct UpdateRecoveryFixture {
 
         let releaseSource = root.appendingPathComponent("release-source", isDirectory: true)
         let flatBin = releaseSource.appendingPathComponent("bin", isDirectory: true)
-        if layout == .app {
+        if self.candidateLayout == .app {
             try Self.writeApp(version: newVersion, root: releaseSource)
             try fm.createDirectory(at: flatBin, withIntermediateDirectories: true)
             let appBin = releaseSource.appendingPathComponent("Darkbloom.app/Contents/MacOS")
@@ -110,6 +117,23 @@ struct UpdateRecoveryFixture {
         return try String(
             contentsOf: installRoot.appendingPathComponent(relative),
             encoding: .utf8
+        )
+    }
+
+    /// Contents that `bin/darkbloom` RESOLVES to (following any symlink into a
+    /// Darkbloom.app). After a flat rollback this must be the flat predecessor's
+    /// real binary, not a symlink pointing back into a leftover candidate app.
+    func liveFlatBinaryResolvedContents() throws -> String {
+        try String(
+            contentsOf: installRoot.appendingPathComponent("bin/darkbloom"),
+            encoding: .utf8
+        )
+    }
+
+    /// Whether a `Darkbloom.app` bundle is present at the install root.
+    func appBundleExists() -> Bool {
+        FileManager.default.fileExists(
+            atPath: installRoot.appendingPathComponent("Darkbloom.app").path
         )
     }
 

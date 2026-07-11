@@ -55,6 +55,28 @@ public enum WatchdogProbe {
         return !daemonState.isStale(now: now)
     }
 
+    /// The provider's process identity for stale-lock-owner attribution.
+    ///
+    /// A daemon-state PID is trusted ONLY when the currently-live process at
+    /// that PID has the SAME kernel start time the daemon recorded. If the PID
+    /// was reused (the recorded process died and the kernel handed its PID to
+    /// an unrelated process — e.g. a manual `darkbloom update` that now holds
+    /// the update lock), the start times differ and we fall back to the launchd
+    /// snapshot's process. This prevents the watchdog from force-killing a live,
+    /// unrelated process that merely inherited the provider's old PID.
+    public static func providerIdentity(
+        daemonState: DaemonState?,
+        launchSnapshotProcess: ProcessIdentity?,
+        readIdentity: (Int32) -> ProcessIdentity? = ProcessIdentity.read
+    ) -> ProcessIdentity? {
+        if let recorded = daemonState?.processIdentity,
+           let live = readIdentity(recorded.pid),
+           live == recorded {
+            return live
+        }
+        return launchSnapshotProcess
+    }
+
     /// Parse `launchctl print` for a live process: `state = running` or a
     /// non-zero `pid` (and not `state = not running`). Pure, for testing.
     static func parseRunning(_ output: String) -> Bool {

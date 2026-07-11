@@ -53,6 +53,35 @@ extension ProviderLoop {
     /// warmup) indefinitely.
     internal static let startupSelfTestTimeout: Duration = .seconds(180)
 
+    /// Cadence for refreshing the daemon-state liveness stamp while the startup
+    /// preload gate defers registration. Comfortably under the daemon-state
+    /// staleness window (90s) so a slow preload never reads as a wedged/down
+    /// process to the crash-recovery watchdog.
+    internal static let preloadLivenessRefreshInterval: Duration = .seconds(30)
+
+    /// While the startup preload gate defers registration (up to
+    /// `startup_preload_timeout_secs`, which an operator may raise well past the
+    /// 90s daemon-state staleness window), keep refreshing the liveness stamp
+    /// so the crash-recovery watchdog sees the slow-but-healthy candidate as
+    /// alive — and does NOT take the down-grace restart path and charge a false
+    /// failed start toward rollback/quarantine. The post-registration
+    /// capacity-refresh loop takes over once the gate returns; the caller
+    /// cancels this task then.
+    internal func startPreloadLivenessRefresh() -> Task<Void, Never> {
+        let me = self
+        return Task.detached(priority: .utility) {
+            while !Task.isCancelled {
+                do {
+                    try await taskSleep(Self.preloadLivenessRefreshInterval)
+                } catch {
+                    return  // cancelled
+                }
+                if Task.isCancelled { return }
+                await me.writeDaemonState()
+            }
+        }
+    }
+
     // MARK: - Loaded-model set persistence
 
     internal func loadedModelsFileURL() -> URL {

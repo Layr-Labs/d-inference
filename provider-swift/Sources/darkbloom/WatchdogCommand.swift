@@ -49,9 +49,14 @@ struct Watchdog: AsyncParsableCommand {
             daemonState: daemonState,
             now: now
         )
-        let providerIdentity = daemonState.flatMap {
-            ProcessIdentity.read(pid: $0.pid)
-        } ?? LaunchAgent.launchSnapshot()?.process
+        // Only trust the daemon-state PID when its live kernel start time still
+        // matches what the daemon recorded; a reused PID (e.g. a manual
+        // `darkbloom update` holding the lock) falls back to the launchd
+        // snapshot so the watchdog never force-kills an unrelated live process.
+        let providerIdentity = WatchdogProbe.providerIdentity(
+            daemonState: daemonState,
+            launchSnapshotProcess: LaunchAgent.launchSnapshot()?.process
+        )
         let state = WatchdogStateStore.read()
         // Ignore a downSince left over from a previous boot (fresh window per outage).
         let bootTime = now - ProcessInfo.processInfo.systemUptime
@@ -96,6 +101,7 @@ struct Watchdog: AsyncParsableCommand {
             let outcome = await recovery.recoverDownProvider(
                 autoUpdateEnabled: settings.autoUpdate,
                 inactiveProviderIdentity: providerIdentity,
+                providerProcessAlive: liveness.running,
                 now: now
             )
             persistenceDecision = Self.recordRecoveryOutcome(
@@ -116,9 +122,13 @@ struct Watchdog: AsyncParsableCommand {
             if case .inactiveCandidate(let attemptStartedAt) = health {
                 Self.log(
                     "new version has no fresh heartbeat \(Int(now - attemptStartedAt))s after launch — treating it as a failed start")
+                // The candidate is already past its startup window here (that is
+                // exactly what .inactiveCandidate means), so the process-alive
+                // grace below is a no-op; passed for call-site consistency.
                 let outcome = await recovery.recoverDownProvider(
                     autoUpdateEnabled: settings.autoUpdate,
                     inactiveProviderIdentity: providerIdentity,
+                    providerProcessAlive: liveness.running,
                     now: now
                 )
                 _ = Self.recordRecoveryOutcome(

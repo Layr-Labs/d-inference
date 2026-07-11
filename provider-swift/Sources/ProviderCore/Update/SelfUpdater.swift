@@ -63,6 +63,16 @@ public struct SelfUpdater: Sendable {
     private let urlSession: URLSession
     private let now: @Sendable () -> Double
 
+    /// Whether this updater verifies the pinned Darkbloom code signature on
+    /// staged/committed/installed artifacts. Always `true` for the public
+    /// production initializer; `false` is reachable ONLY through the internal
+    /// test seam (the `verifyCodeSignatures:` overload used by the `*ForTesting`
+    /// helpers and fixtures, which stage synthetic unsigned binaries). Exposed
+    /// so a test can assert the production path never selects the unsigned path.
+    internal var verifiesCodeSignatures: Bool { verifyCodeSignatures }
+
+    /// Production initializer: signature verification is ALWAYS on. There is no
+    /// public way to construct a `SelfUpdater` that skips signature checks.
     public init(coordinatorBaseURL: String, urlSession: URLSession = .shared) {
         self.init(
             coordinatorBaseURL: coordinatorBaseURL,
@@ -93,6 +103,11 @@ public struct SelfUpdater: Sendable {
         return URLSession(configuration: configuration)
     }
 
+    /// Test-only seam. Passing `verifyCodeSignatures: false` disables the
+    /// signature pin so tests can stage synthetic unsigned binaries; NO
+    /// production call site does this (the public init hard-codes `true`, and
+    /// the only `verifyCodeSignatures: false` callers are the `*ForTesting`
+    /// helpers below). Do not add a production caller that passes `false`.
     internal init(
         coordinatorBaseURL: String,
         installRoot: URL?,
@@ -314,6 +329,10 @@ public struct SelfUpdater: Sendable {
         )
     }
 
+    /// TEST-ONLY. Stages without signature verification so tests can use
+    /// synthetic unsigned binaries. Never call from production — the production
+    /// path is `stageBundle(from:release:session:)`, which derives verification
+    /// from the session's store (always `true` for a production session).
     internal func stageBundleForTesting(
         from downloadedFile: URL,
         release: ReleaseInfo,
@@ -527,6 +546,8 @@ public struct SelfUpdater: Sendable {
         }
     }
 
+    /// TEST-ONLY. Commits without signature verification. Never call from
+    /// production — the production path is `commitStagedBundle(_:session:)`.
     internal func commitStagedBundleForTesting(
         _ staged: StagedBundle
     ) -> Result<Void, UpdateError> {
@@ -756,6 +777,9 @@ public struct SelfUpdater: Sendable {
         }
     }
 
+    /// TEST-ONLY. Installs without signature verification. Never call from
+    /// production — production installs go through `update(session:...)` or
+    /// `installBundle(from:release:session:)` with a signed session.
     internal func installBundleForTesting(
         from downloadedFile: URL,
         release: ReleaseInfo,

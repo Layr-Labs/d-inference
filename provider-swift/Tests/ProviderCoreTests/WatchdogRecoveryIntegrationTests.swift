@@ -168,6 +168,102 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(state.candidate?.failureCount == 0)
     }
 
+    @Test("alive candidate within startup window defers the down-grace restart path — no false failure")
+    func slowPreloadCandidateDefersRestartPath() async throws {
+        // preload=420s → candidate startup window = max(300, 420+180) = 600s.
+        // installedCandidate arms attemptStartedAt=100 via the install at now=100.
+        let window = WatchdogRecoveryService.candidateStartupTimeout(
+            preloadTimeoutSecs: 420
+        )
+        let context = try await installedCandidate(
+            candidateStartupTimeoutSeconds: window
+        )
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+
+        let restartsBefore = context.restarts.value  // 1 from the install
+
+        // now=550: well past the 300s generic down-grace, but within the 600s
+        // candidate window; the process is still ALIVE (legitimately preloading).
+        // The pre-fix down-grace path charged a failed start here and restarted.
+        let outcome = await context.service.recoverDownProvider(
+            autoUpdateEnabled: false,
+            providerProcessAlive: true,
+            now: 550
+        )
+        guard case .retryBackoff(let until, let reason) = outcome else {
+            Issue.record("expected startup-window backoff, got \(outcome)")
+            return
+        }
+        #expect(until == 700)  // attemptStartedAt(100) + window(600)
+        #expect(reason.contains("startup window"))
+        #expect(context.restarts.value == restartsBefore)  // no restart issued
+
+        let state = try recoveryStore(context.fixture).loadState()
+        #expect(state.candidate?.failureCount == 0)         // no failed start charged
+        #expect(state.candidate?.pendingAttemptID != nil)   // attempt still pending
+        #expect(state.quarantine == nil)                    // no quarantine
+        #expect(try context.fixture.liveBinaryContents() == "2.0.0-darkbloom")  // no rollback
+
+        // Contrast: a DEAD candidate at the same instant IS charged a failed
+        // start — proving the defer is gated on the process being alive.
+        let dead = await context.service.recoverDownProvider(
+            autoUpdateEnabled: false,
+            providerProcessAlive: false,
+            now: 560
+        )
+        #expect(dead == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        #expect(try recoveryStore(context.fixture)
+            .loadState().candidate?.failureCount == 1)
+    }
+
+    @Test("flat rollback after an app candidate runs the flat predecessor, not the quarantined app")
+    func flatToAppRollbackRunsFlatPredecessor() async throws {
+        // Legacy .flat install updates to an .app candidate (leaves Darkbloom.app
+        // in installRoot); the candidate fails 3x and rolls back to the flat
+        // predecessor. The live bin/darkbloom must resolve to the flat
+        // predecessor binary — NOT a symlink back into the quarantined app.
+        let fixture = try UpdateRecoveryFixture(layout: .flat, candidateLayout: .app)
+        defer { fixture.cleanup() }
+        let mock = MockCoordinator(
+            release: fixture.mockReleaseFixture(),
+            releaseArtifact: fixture.artifact
+        )
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let restarts = RecoveryRestartCounter()
+        let service = makeService(
+            updater: fixture.updater(baseURL: baseURL),
+            restarts: restarts
+        )
+
+        let install = await service.recoverDownProvider(
+            autoUpdateEnabled: true,
+            now: 100
+        )
+        #expect(install == .restartIssued(updatedTo: "2.0.0", rolledBackTo: nil))
+        #expect(fixture.appBundleExists())  // candidate app is now on disk
+        #expect(try fixture.liveFlatBinaryResolvedContents() == "2.0.0-darkbloom")
+
+        _ = await service.recoverDownProvider(autoUpdateEnabled: false, now: 200)
+        _ = await service.recoverDownProvider(autoUpdateEnabled: false, now: 300)
+        let third = await service.recoverDownProvider(autoUpdateEnabled: false, now: 400)
+        #expect(third == .restartIssued(updatedTo: nil, rolledBackTo: "1.0.0"))
+
+        // The fix: stale Darkbloom.app is retired and bin/darkbloom is the real
+        // flat predecessor. Without it, ensureCanonicalLinks would re-point
+        // bin/darkbloom into the leftover candidate app (→ "2.0.0-darkbloom").
+        #expect(try fixture.liveFlatBinaryResolvedContents() == "1.0.0-darkbloom")
+        #expect(!fixture.appBundleExists())
+        #expect(try fixture.persistentStateIsIntact())
+
+        let state = try recoveryStore(fixture).loadState()
+        #expect(state.candidate == nil)
+        #expect(state.current?.version == "1.0.0")
+        #expect(state.quarantine?.version == "2.0.0")
+    }
+
     @Test("exhausted tick budget skips the update at a safe point but still restarts")
     func tickDeadlineSkipsUpdateSafely() async throws {
         let fixture = try UpdateRecoveryFixture()

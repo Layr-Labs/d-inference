@@ -21,16 +21,23 @@ public struct ProcessIdentity: Codable, Sendable, Equatable {
         #if canImport(Darwin)
         guard pid > 0 else { return nil }
         var info = proc_bsdinfo()
+        let expectedSize = Int32(MemoryLayout<proc_bsdinfo>.size)
         let size = withUnsafeMutablePointer(to: &info) {
             proc_pidinfo(
                 pid,
                 PROC_PIDTBSDINFO,
                 0,
                 $0,
-                Int32(MemoryLayout<proc_bsdinfo>.size)
+                expectedSize
             )
         }
-        guard size == Int32(MemoryLayout<proc_bsdinfo>.size) else {
+        // proc_pidinfo returns the number of bytes actually written: 0 for a
+        // dead/nonexistent PID, a negative value on error, or a short count on
+        // a partial read. Require the FULL struct before reading the start-time
+        // fields — otherwise a dead PID would yield a zeroed identity
+        // (startTimeMicros == 0) that could spuriously match another zeroed
+        // identity during stale-lock-owner attribution.
+        guard size == expectedSize else {
             return nil
         }
         let micros = UInt64(info.pbi_start_tvsec) * 1_000_000

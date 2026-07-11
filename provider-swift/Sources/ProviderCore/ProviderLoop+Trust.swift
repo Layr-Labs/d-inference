@@ -28,6 +28,7 @@ extension ProviderLoop {
         let cap = state.backendCapacity
         let snapshot = DaemonState(
             pid: getpid(),
+            processIdentity: ProcessIdentity.current(),
             version: ProviderCore.version,
             writtenAt: Date().timeIntervalSince1970,
             startedAt: startedAtEpoch,

@@ -233,6 +233,87 @@ struct ProviderLaunchSnapshotTests {
     }
 }
 
+@Suite("Watchdog provider identity (PID reuse)")
+struct WatchdogProviderIdentityTests {
+    private func stateWithIdentity(_ identity: ProcessIdentity?) -> DaemonState {
+        DaemonState(
+            pid: 4242,
+            processIdentity: identity,
+            version: "2.0.0",
+            writtenAt: 100,
+            startedAt: 50
+        )
+    }
+
+    @Test("a reused daemon-state PID whose start time differs is NOT the provider identity")
+    func reusedPidIsNotProviderIdentity() {
+        let recorded = ProcessIdentity(pid: 4242, startTimeMicros: 111)
+        let state = stateWithIdentity(recorded)
+        // The PID is live again but with a DIFFERENT start time — the kernel
+        // reused it (e.g. for a manual `darkbloom update` holding the lock). It
+        // must NOT be treated as the provider (which would force-kill it); we
+        // fall back to the launchd snapshot (nil here).
+        let reused = ProcessIdentity(pid: 4242, startTimeMicros: 999)
+        #expect(
+            WatchdogProbe.providerIdentity(
+                daemonState: state,
+                launchSnapshotProcess: nil,
+                readIdentity: { _ in reused }
+            ) == nil
+        )
+        // A MATCHING live start time IS trusted.
+        #expect(
+            WatchdogProbe.providerIdentity(
+                daemonState: state,
+                launchSnapshotProcess: nil,
+                readIdentity: { _ in recorded }
+            ) == recorded
+        )
+    }
+
+    @Test("a dead daemon-state PID falls back to the launchd snapshot")
+    func deadPidFallsBackToSnapshot() {
+        let state = stateWithIdentity(ProcessIdentity(pid: 4242, startTimeMicros: 111))
+        let fallback = ProcessIdentity(pid: 77, startTimeMicros: 3)
+        #expect(
+            WatchdogProbe.providerIdentity(
+                daemonState: state,
+                launchSnapshotProcess: fallback,
+                readIdentity: { _ in nil }
+            ) == fallback
+        )
+    }
+
+    @Test("a daemon-state without a recorded identity uses the launchd snapshot")
+    func missingRecordedIdentityUsesSnapshot() {
+        let state = stateWithIdentity(nil)
+        let fallback = ProcessIdentity(pid: 77, startTimeMicros: 3)
+        #expect(
+            WatchdogProbe.providerIdentity(
+                daemonState: state,
+                launchSnapshotProcess: fallback,
+                readIdentity: { _ in ProcessIdentity(pid: 4242, startTimeMicros: 5) }
+            ) == fallback
+        )
+    }
+
+    @Test("ProcessIdentity.read returns nil for a nonexistent pid")
+    func readReturnsNilForDeadPid() throws {
+        // Deterministic: PIDs never reach Int32.max on macOS; proc_pidinfo
+        // returns a zero-length read, which the size guard rejects.
+        #expect(ProcessIdentity.read(pid: Int32.max) == nil)
+        #expect(ProcessIdentity.read(pid: 0) == nil)
+        #expect(ProcessIdentity.read(pid: -1) == nil)
+
+        // A real, reaped process is the realistic "nonexistent pid" case.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try process.run()
+        process.waitUntilExit()
+        #expect(ProcessIdentity.read(pid: process.processIdentifier) == nil)
+    }
+}
+
 /// The watchdog launchd plist shape.
 @Suite("Watchdog agent plist")
 struct WatchdogAgentPlistTests {

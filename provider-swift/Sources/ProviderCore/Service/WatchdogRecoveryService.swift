@@ -106,6 +106,7 @@ public struct WatchdogRecoveryService: Sendable {
     public func recoverDownProvider(
         autoUpdateEnabled: Bool,
         inactiveProviderIdentity: ProcessIdentity? = nil,
+        providerProcessAlive: Bool = false,
         now: Double
     ) async -> DownOutcome {
         let session: SelfUpdater.UpdateSession
@@ -147,10 +148,35 @@ public struct WatchdogRecoveryService: Sendable {
         var rolledBackTo: String?
         do {
             var state = try session.readState()
+            let beforeReconcile = state
             _ = state.reconcileLaunchIntent(
                 snapshot: deps.launchSnapshot(),
                 now: now
             )
+
+            // A candidate that is still ALIVE and inside its config-derived
+            // startup window (max(300, startup_preload_timeout_secs + 180)) is a
+            // legitimately slow start (a long model preload writes no heartbeat
+            // yet), NOT a failed launch. The generic down-grace must defer to
+            // that window: do not charge a failed start and do not restart the
+            // candidate. A DEAD candidate (providerProcessAlive == false) is
+            // still charged and restarted so a real crash-loop rolls back.
+            if providerProcessAlive,
+               let candidate = state.candidate,
+               let attemptStartedAt = candidate.attemptStartedAt,
+               now - attemptStartedAt < candidateStartupTimeoutSeconds
+            {
+                if state != beforeReconcile { try session.writeState(state) }
+                let until = attemptStartedAt + candidateStartupTimeoutSeconds
+                deps.log(
+                    "v\(candidate.release.version) is alive and within its "
+                        + "\(Int(candidateStartupTimeoutSeconds))s startup window; deferring restart")
+                return .retryBackoff(
+                    until: until,
+                    reason: "candidate still within startup window"
+                )
+            }
+
             if let count = state.recordPendingAttemptFailure(now: now) {
                 try session.writeState(state)
                 deps.log(

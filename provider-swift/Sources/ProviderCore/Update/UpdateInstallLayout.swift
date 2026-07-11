@@ -125,12 +125,13 @@ extension UpdateRecoveryStore {
     func installStagedBundle(_ staged: SelfUpdater.StagedBundle) throws {
         if let app = staged.extractedApp {
             try installApp(from: app)
+            try ensureCanonicalLinks(layout: .app)
         } else {
             try installFlatDirectory(
                 from: staged.stagingRoot.appendingPathComponent("bin")
             )
+            try ensureCanonicalLinks(layout: .flat)
         }
-        try ensureCanonicalLinks()
     }
 
     func installFromStaging(
@@ -147,27 +148,68 @@ extension UpdateRecoveryStore {
         }
     }
 
-    func ensureCanonicalLinks() throws {
-        guard fm.fileExists(atPath: installRoot.appendingPathComponent("Darkbloom.app").path) else {
+    /// Point the canonical `bin/` entries at the just-installed layout.
+    ///
+    /// The intended layout is passed EXPLICITLY rather than inferred from
+    /// whether `Darkbloom.app` happens to exist: after a flat rollback that
+    /// followed a `.app` candidate, a stale `Darkbloom.app` is still on disk,
+    /// and inferring `.app` would re-point `bin/darkbloom` back into the
+    /// quarantined candidate (and let `liveLayout()` later re-adopt it as a
+    /// predecessor). For a `.flat` layout we therefore first retire any stale
+    /// `Darkbloom.app` and leave `bin/`'s real flat binaries in place.
+    func ensureCanonicalLinks(layout: VerifiedPredecessor.Layout) throws {
+        switch layout {
+        case .flat:
+            try removeStaleAppBundle()
             let legacy = installRoot.appendingPathComponent("bin/eigeninference-enclave")
             try UpdateAtomicFilesystem.replaceSymlink(at: legacy, target: "darkbloom-enclave")
-            return
-        }
-        let bin = installRoot.appendingPathComponent("bin")
-        try fm.createDirectory(at: bin, withIntermediateDirectories: true)
-        let appBin = "../Darkbloom.app/Contents/MacOS"
-        for (name, target) in [
-            ("mlx.metallib", "\(appBin)/mlx.metallib"),
-            ("darkbloom-enclave", "\(appBin)/darkbloom-enclave"),
-            ("eigeninference-enclave", "darkbloom-enclave"),
-            ("darkbloom", "\(appBin)/darkbloom"),
-        ] {
-            try UpdateAtomicFilesystem.replaceSymlink(
-                at: bin.appendingPathComponent(name),
-                target: target
-            )
+        case .app:
+            guard fm.fileExists(
+                atPath: installRoot.appendingPathComponent("Darkbloom.app").path
+            ) else {
+                throw StoreError.filesystem(
+                    "app layout requested for canonical links but Darkbloom.app is missing")
+            }
+            let bin = installRoot.appendingPathComponent("bin")
+            try fm.createDirectory(at: bin, withIntermediateDirectories: true)
+            let appBin = "../Darkbloom.app/Contents/MacOS"
+            for (name, target) in [
+                ("mlx.metallib", "\(appBin)/mlx.metallib"),
+                ("darkbloom-enclave", "\(appBin)/darkbloom-enclave"),
+                ("eigeninference-enclave", "darkbloom-enclave"),
+                ("darkbloom", "\(appBin)/darkbloom"),
+            ] {
+                try UpdateAtomicFilesystem.replaceSymlink(
+                    at: bin.appendingPathComponent(name),
+                    target: target
+                )
+            }
         }
     }
+
+    /// Retire a `Darkbloom.app` left over from a prior `.app` candidate before
+    /// a flat install/rollback links or snapshots the tree. Orphaned aside
+    /// copies from an interrupted prior removal are swept first (the whole
+    /// operation runs under the update lock, so the sweep is race-free).
+    private func removeStaleAppBundle() throws {
+        if let entries = try? fm.contentsOfDirectory(
+            at: installRoot,
+            includingPropertiesForKeys: nil
+        ) {
+            for entry in entries
+            where entry.lastPathComponent.hasPrefix(Self.staleAppAsidePrefix) {
+                try? fm.removeItem(at: entry)
+            }
+        }
+        let app = installRoot.appendingPathComponent("Darkbloom.app")
+        guard UpdateAtomicFilesystem.itemExists(app) else { return }
+        try UpdateAtomicFilesystem.atomicRemove(
+            app,
+            asidePrefix: Self.staleAppAsidePrefix
+        )
+    }
+
+    static let staleAppAsidePrefix = ".stale-app-"
 
     func liveMatches(
         _ record: InstalledReleaseRecord,
@@ -275,7 +317,7 @@ extension UpdateRecoveryStore {
         try copyPredecessor(predecessor, to: staging)
         try verifyStagedPredecessor(predecessor, at: staging)
         try installFromStaging(staging, layout: predecessor.layout)
-        try ensureCanonicalLinks()
+        try ensureCanonicalLinks(layout: predecessor.layout)
         try UpdateAtomicFilesystem.removeDurably(staging)
     }
 

@@ -54,7 +54,9 @@ extension Start {
         let autoRestartOn = config.provider.autoRestart
         if autoRestartOn {
             do {
-                try WatchdogAgent.installAndStart()
+                try WatchdogAgent.installAndStart(
+                    configPath: snapshot.configPath
+                )
             } catch {
                 printError("note: could not install crash-recovery watchdog: \(error)")
             }

@@ -91,6 +91,9 @@ struct Update: AsyncParsableCommand {
             if LaunchAgent.isLoaded() {
                 print("Restarting provider via launchd...")
                 do {
+                    try updater.prepareCandidateLaunch(
+                        operation: "manual-update-restart"
+                    )
                     try ProcessLifecycle.restartAfterUpdate()
                 } catch {
                     try? updater.cancelPendingCandidateAttempt(
@@ -106,6 +109,9 @@ struct Update: AsyncParsableCommand {
             if LaunchAgent.isLoaded() {
                 print("Restarting provider via launchd...")
                 do {
+                    try updater.prepareCandidateLaunch(
+                        operation: "manual-candidate-restart"
+                    )
                     try ProcessLifecycle.restartAfterUpdate()
                 } catch {
                     try? updater.cancelPendingCandidateAttempt(

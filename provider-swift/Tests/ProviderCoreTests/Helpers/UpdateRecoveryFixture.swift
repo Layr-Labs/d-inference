@@ -10,6 +10,7 @@ struct UpdateRecoveryFixture {
     let release: ReleaseInfo
     let oldVersion: String
     let newVersion: String
+    let layout: VerifiedPredecessor.Layout
     private let preservedFiles: [String: String] = [
         "provider.toml": "provider-config",
         "auth-token": "provider-token",
@@ -18,7 +19,11 @@ struct UpdateRecoveryFixture {
         "io.darkbloom.provider.plist": "launchd-selection",
     ]
 
-    init(oldVersion: String = "1.0.0", newVersion: String = "2.0.0") throws {
+    init(
+        oldVersion: String = "1.0.0",
+        newVersion: String = "2.0.0",
+        layout: VerifiedPredecessor.Layout = .app
+    ) throws {
         let fm = FileManager.default
         root = fm.temporaryDirectory.appendingPathComponent(
             "update-recovery-\(UUID().uuidString)",
@@ -28,9 +33,14 @@ struct UpdateRecoveryFixture {
         tarball = root.appendingPathComponent("release.tar.gz")
         self.oldVersion = oldVersion
         self.newVersion = newVersion
+        self.layout = layout
 
-        try Self.writeApp(version: oldVersion, root: installRoot)
-        try Self.writeCanonicalLinks(root: installRoot)
+        if layout == .app {
+            try Self.writeApp(version: oldVersion, root: installRoot)
+            try Self.writeCanonicalLinks(root: installRoot)
+        } else {
+            try Self.writeFlat(version: oldVersion, root: installRoot)
+        }
         for (relativePath, contents) in preservedFiles {
             let file = installRoot.appendingPathComponent(relativePath)
             try fm.createDirectory(
@@ -41,15 +51,19 @@ struct UpdateRecoveryFixture {
         }
 
         let releaseSource = root.appendingPathComponent("release-source", isDirectory: true)
-        try Self.writeApp(version: newVersion, root: releaseSource)
         let flatBin = releaseSource.appendingPathComponent("bin", isDirectory: true)
-        try fm.createDirectory(at: flatBin, withIntermediateDirectories: true)
-        let appBin = releaseSource.appendingPathComponent("Darkbloom.app/Contents/MacOS")
-        for name in ["darkbloom", "darkbloom-enclave", "mlx.metallib"] {
-            try fm.copyItem(
-                at: appBin.appendingPathComponent(name),
-                to: flatBin.appendingPathComponent(name)
-            )
+        if layout == .app {
+            try Self.writeApp(version: newVersion, root: releaseSource)
+            try fm.createDirectory(at: flatBin, withIntermediateDirectories: true)
+            let appBin = releaseSource.appendingPathComponent("Darkbloom.app/Contents/MacOS")
+            for name in ["darkbloom", "darkbloom-enclave", "mlx.metallib"] {
+                try fm.copyItem(
+                    at: appBin.appendingPathComponent(name),
+                    to: flatBin.appendingPathComponent(name)
+                )
+            }
+        } else {
+            try Self.writeFlat(version: newVersion, root: releaseSource)
         }
 
         try Self.runTar(source: releaseSource, destination: tarball)
@@ -90,9 +104,11 @@ struct UpdateRecoveryFixture {
     }
 
     func liveBinaryContents() throws -> String {
-        try String(
-            contentsOf: installRoot
-                .appendingPathComponent("Darkbloom.app/Contents/MacOS/darkbloom"),
+        let relative = layout == .app
+            ? "Darkbloom.app/Contents/MacOS/darkbloom"
+            : "bin/darkbloom"
+        return try String(
+            contentsOf: installRoot.appendingPathComponent(relative),
             encoding: .utf8
         )
     }
@@ -134,6 +150,25 @@ struct UpdateRecoveryFixture {
         try fm.createSymbolicLink(
             atPath: bin.appendingPathComponent("mlx.metallib").path,
             withDestinationPath: "../Darkbloom.app/Contents/MacOS/mlx.metallib"
+        )
+        try fm.createSymbolicLink(
+            atPath: bin.appendingPathComponent("eigeninference-enclave").path,
+            withDestinationPath: "darkbloom-enclave"
+        )
+    }
+
+    static func writeFlat(version: String, root: URL) throws {
+        let fm = FileManager.default
+        let bin = root.appendingPathComponent("bin")
+        try fm.createDirectory(at: bin, withIntermediateDirectories: true)
+        try Data("\(version)-darkbloom".utf8).write(
+            to: bin.appendingPathComponent("darkbloom")
+        )
+        try Data("\(version)-enclave".utf8).write(
+            to: bin.appendingPathComponent("darkbloom-enclave")
+        )
+        try Data("\(version)-metallib".utf8).write(
+            to: bin.appendingPathComponent("mlx.metallib")
         )
         try fm.createSymbolicLink(
             atPath: bin.appendingPathComponent("eigeninference-enclave").path,

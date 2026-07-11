@@ -217,6 +217,74 @@ struct WatchdogRecoveryIntegrationTests {
         ))
     }
 
+    @Test("every app and flat transaction boundary is restart-safe")
+    func allPowerLossBoundaries() throws {
+        enum PowerLoss: Error { case injected }
+
+        for layout in [
+            VerifiedPredecessor.Layout.app,
+            VerifiedPredecessor.Layout.flat,
+        ] {
+            for point in UpdateRecoveryStore.FaultPoint.allCases {
+                let fixture = try UpdateRecoveryFixture(layout: layout)
+                defer { fixture.cleanup() }
+                let updater = SelfUpdater(
+                    coordinatorBaseURL: "http://127.0.0.1:1",
+                    installRoot: fixture.installRoot,
+                    verifyCodeSignatures: false,
+                    currentVersion: fixture.oldVersion
+                )
+                guard case .success(let staged) = updater.stageBundleForTesting(
+                    from: fixture.tarball,
+                    release: fixture.release,
+                    installDir: fixture.installRoot
+                ) else {
+                    Issue.record("failed to stage \(layout) at \(point)")
+                    continue
+                }
+                let store = UpdateRecoveryStore(
+                    installRoot: fixture.installRoot,
+                    verifyCodeSignatures: false,
+                    faultInjector: { hit in
+                        if hit == point { throw PowerLoss.injected }
+                    }
+                )
+                let lock = try UpdateProcessLock.acquire(
+                    at: store.lockPath,
+                    operation: "power-loss-\(point)"
+                )
+                do {
+                    try store.commit(
+                        staged: staged,
+                        currentVersion: fixture.oldVersion,
+                        now: 100
+                    )
+                    Issue.record("fault \(point) did not interrupt commit")
+                } catch PowerLoss.injected {
+                    // Expected process-death boundary.
+                }
+                lock.release()
+
+                let recovered = UpdateRecoveryStore(
+                    installRoot: fixture.installRoot,
+                    verifyCodeSignatures: false
+                )
+                let recoveryLock = try UpdateProcessLock.acquire(
+                    at: recovered.lockPath,
+                    operation: "power-loss-recovery"
+                )
+                try recovered.recoverInterruptedTransaction(now: 101)
+                recoveryLock.release()
+
+                let expected = point == .predecessorPromoted
+                    ? "1.0.0-darkbloom"
+                    : "2.0.0-darkbloom"
+                #expect(try fixture.liveBinaryContents() == expected)
+                #expect(try fixture.persistentStateIsIntact())
+            }
+        }
+    }
+
     @Test("corrupt predecessor is refused without touching current install")
     func corruptPredecessorRefused() async throws {
         let context = try await installedCandidate()
@@ -253,6 +321,27 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(state.quarantine == nil)
     }
 
+    @Test("flat predecessor enclave and full tree are verified")
+    func flatPredecessorEnclaveVerification() async throws {
+        let context = try await installedCandidate(layout: .flat)
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        let store = recoveryStore(context.fixture)
+        let state = try store.loadState()
+        guard let predecessor = state.predecessor else {
+            Issue.record("missing flat predecessor")
+            return
+        }
+        try Data("tampered enclave".utf8).write(
+            to: context.fixture.installRoot.appendingPathComponent(
+                "recovery/predecessor/bin/darkbloom-enclave"
+            )
+        )
+        #expect(throws: (any Error).self) {
+            try store.verifyPredecessor(predecessor)
+        }
+    }
+
     @Test("missing predecessor enters retry backoff without touching live install")
     func missingPredecessorBackoff() async throws {
         let fixture = try UpdateRecoveryFixture()
@@ -265,6 +354,8 @@ struct WatchdogRecoveryIntegrationTests {
             installedBundleHash: try UpdateAtomicFilesystem.treeHash(root: app),
             binaryHash: try UpdateAtomicFilesystem.sha256(
                 file: appBin.appendingPathComponent("darkbloom")),
+            enclaveHash: try UpdateAtomicFilesystem.sha256(
+                file: appBin.appendingPathComponent("darkbloom-enclave")),
             metallibHash: try UpdateAtomicFilesystem.sha256(
                 file: appBin.appendingPathComponent("mlx.metallib")),
             installGeneration: 1,
@@ -275,6 +366,7 @@ struct WatchdogRecoveryIntegrationTests {
             candidate: PendingReleaseCandidate(
                 release: record,
                 failureCount: 2,
+                launchIntent: nil,
                 pendingAttemptID: "third-attempt",
                 attemptStartedAt: 50,
                 healthySince: nil,
@@ -493,7 +585,10 @@ struct WatchdogRecoveryIntegrationTests {
         let result = await updater.update(manualOverride: true)
         #expect(result.isUpdated(to: "2.0.0"))
         #expect(try fixture.liveBinaryContents() == "2.0.0-darkbloom")
-        #expect(try store.loadState().quarantine == nil)
+        let installed = try store.loadState()
+        #expect(installed.quarantine == nil)
+        #expect(installed.candidate?.pendingAttemptID == nil)
+        #expect(installed.candidate?.attemptStartedAt == nil)
     }
 
     @Test("intentional stop remains unmanaged")
@@ -517,9 +612,10 @@ struct WatchdogRecoveryIntegrationTests {
     }
 
     private func installedCandidate(
-        stabilizationSeconds: Double = 180
+        stabilizationSeconds: Double = 180,
+        layout: VerifiedPredecessor.Layout = .app
     ) async throws -> InstalledContext {
-        let fixture = try UpdateRecoveryFixture()
+        let fixture = try UpdateRecoveryFixture(layout: layout)
         let mock = MockCoordinator(
             release: fixture.mockReleaseFixture(),
             releaseArtifact: fixture.artifact

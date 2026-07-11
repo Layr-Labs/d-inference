@@ -175,6 +175,12 @@ public struct SelfUpdater: Sendable {
                 binaryHash: json["binary_hash"] as? String,
                 metallibHash: json["metallib_hash"] as? String
             )
+            guard SemanticVersion(version) != nil,
+                  SemanticVersion(currentVersion) != nil
+            else {
+                return .checkFailed(
+                    reason: "release or current version is not valid SemVer")
+            }
 
             if recoveryState.quarantineBlocks(version: version, manualOverride: manualOverride) {
                 return .quarantined(
@@ -337,15 +343,15 @@ public struct SelfUpdater: Sendable {
 
             // Use the flat bin/ copies for hash verification (release hashes
             // are computed from the flat layout).
-            let flatDarkbloom = try requiredBundleFile(
+            var flatDarkbloom = try requiredBundleFile(
                 names: ["bin/darkbloom", "darkbloom"],
                 root: stagingRoot
             )
-            let flatEnclave = try requiredBundleFile(
+            var flatEnclave = try requiredBundleFile(
                 names: ["bin/darkbloom-enclave", "darkbloom-enclave", "bin/eigeninference-enclave", "eigeninference-enclave"],
                 root: stagingRoot
             )
-            let flatMetallib = try requiredBundleFile(
+            var flatMetallib = try requiredBundleFile(
                 names: ["bin/mlx.metallib", "mlx.metallib"],
                 root: stagingRoot
             )
@@ -364,6 +370,41 @@ public struct SelfUpdater: Sendable {
             // to SIGKILL the process.
             let extractedApp = stagingRoot.appendingPathComponent("Darkbloom.app")
             let hasAppBundle = fm.fileExists(atPath: extractedApp.path)
+            if !hasAppBundle {
+                let canonicalBin = stagingRoot.appendingPathComponent("bin")
+                try fm.createDirectory(
+                    at: canonicalBin,
+                    withIntermediateDirectories: true
+                )
+                func canonicalize(_ source: URL, name: String) throws -> URL {
+                    let destination = canonicalBin.appendingPathComponent(name)
+                    if source.standardizedFileURL != destination.standardizedFileURL {
+                        try fm.moveItem(at: source, to: destination)
+                    }
+                    return destination
+                }
+                flatDarkbloom = try canonicalize(
+                    flatDarkbloom,
+                    name: "darkbloom"
+                )
+                flatEnclave = try canonicalize(
+                    flatEnclave,
+                    name: "darkbloom-enclave"
+                )
+                flatMetallib = try canonicalize(
+                    flatMetallib,
+                    name: "mlx.metallib"
+                )
+                let legacy = canonicalBin.appendingPathComponent(
+                    "eigeninference-enclave"
+                )
+                if !UpdateAtomicFilesystem.itemExists(legacy) {
+                    try fm.createSymbolicLink(
+                        atPath: legacy.path,
+                        withDestinationPath: "darkbloom-enclave"
+                    )
+                }
+            }
             if verifyCodeSignatures {
                 if hasAppBundle {
                     let appDarkbloom = extractedApp
@@ -396,7 +437,9 @@ public struct SelfUpdater: Sendable {
             }
 
             let stagedTreeHash = try UpdateAtomicFilesystem.treeHash(
-                root: hasAppBundle ? extractedApp : stagingRoot
+                root: hasAppBundle
+                    ? extractedApp
+                    : stagingRoot.appendingPathComponent("bin")
             )
             return .success(StagedBundle(
                 stagingRoot: stagingRoot,
@@ -433,7 +476,8 @@ public struct SelfUpdater: Sendable {
             return .failure(.replaceFailed("staged bundle belongs to a different install root"))
         }
         do {
-            let stagedRoot = staged.extractedApp ?? staged.stagingRoot
+            let stagedRoot = staged.extractedApp
+                ?? staged.stagingRoot.appendingPathComponent("bin")
             let currentTreeHash = try UpdateAtomicFilesystem.treeHash(root: stagedRoot)
             guard currentTreeHash == staged.stagedTreeHash else {
                 return .failure(.replaceFailed(
@@ -535,7 +579,16 @@ public struct SelfUpdater: Sendable {
             )
             return UpdateSession(processLock: processLock, store: store)
         } catch let error as UpdateProcessLock.LockError {
-            throw UpdateError.busy(error.description)
+            let owner: UpdateProcessLock.Owner?
+            if case .busy(let recorded) = error {
+                owner = recorded
+            } else {
+                owner = nil
+            }
+            throw UpdateError.lockBusy(
+                reason: error.description,
+                owner: owner
+            )
         }
     }
 
@@ -556,13 +609,59 @@ public struct SelfUpdater: Sendable {
         }
     }
 
-    public func armPendingCandidateAttempt(
+    public func prepareCandidateLaunch(
+        session: UpdateSession,
+        baseline: ProviderLaunchSnapshot?,
+        now: Double = Date().timeIntervalSince1970
+    ) throws {
+        var state = try session.readState()
+        let before = state
+        _ = state.prepareLaunchIntent(now: now, baseline: baseline)
+        if state != before {
+            try session.writeState(state)
+        }
+    }
+
+    public func prepareCandidateLaunch(
+        operation: String,
+        baseline: ProviderLaunchSnapshot? = LaunchAgent.launchSnapshot()
+    ) throws {
+        let session = try beginUpdateSession(operation: operation, timeout: 1)
+        defer { session.release() }
+        try session.recover()
+        try prepareCandidateLaunch(
+            session: session,
+            baseline: baseline,
+            now: now()
+        )
+    }
+
+    public func markCandidateLaunchIssued(
         session: UpdateSession,
         now: Double = Date().timeIntervalSince1970
     ) throws {
         var state = try session.readState()
         let before = state
-        _ = state.armCandidateAttempt(now: now)
+        _ = state.markLaunchIssued(now: now)
+        if state != before {
+            try session.writeState(state)
+        }
+    }
+
+    public func confirmRunningCandidateLaunch(
+        processStartedAt: Double,
+        operation: String = "candidate-process-confirmation"
+    ) throws {
+        let session = try beginUpdateSession(operation: operation, timeout: 1)
+        defer { session.release() }
+        try session.recover()
+        var state = try session.readState()
+        let before = state
+        _ = state.confirmRunningCandidate(
+            version: currentVersion,
+            processStartedAt: processStartedAt,
+            now: now()
+        )
         if state != before {
             try session.writeState(state)
         }
@@ -686,7 +785,7 @@ public struct SelfUpdater: Sendable {
         do {
             session = try beginUpdateSession(operation: "update", timeout: 0)
             try session.recover()
-        } catch UpdateError.busy(let reason) {
+        } catch UpdateError.lockBusy(let reason, _) {
             return .busy(reason: reason)
         } catch {
             return .replaceFailed(reason: "update recovery failed: \(error)")
@@ -710,12 +809,6 @@ public struct SelfUpdater: Sendable {
             return .alreadyUpToDate(version: version)
 
         case .restartRequired(let current, let installed):
-            do {
-                try armPendingCandidateAttempt(session: session)
-            } catch {
-                return .replaceFailed(
-                    reason: "could not persist candidate restart attempt: \(error)")
-            }
             return .restartRequired(from: current, to: installed)
 
         case .quarantined(let version, let reason):
@@ -738,7 +831,7 @@ public struct SelfUpdater: Sendable {
                     return .downloadFailed(reason: "invalid download URL: \(url)")
                 case .replaceFailed(let reason):
                     return .replaceFailed(reason: reason)
-                case .busy(let reason):
+                case .lockBusy(let reason, _):
                     return .busy(reason: reason)
                 }
 
@@ -760,7 +853,8 @@ public struct SelfUpdater: Sendable {
                     return .updated(from: current, to: release.version)
                 case .failure(let error):
                     switch error {
-                    case .replaceFailed(let reason), .busy(let reason):
+                    case .replaceFailed(let reason),
+                         .lockBusy(let reason, _):
                         return .replaceFailed(reason: reason)
                     default:
                         return .replaceFailed(reason: "\(error)")
@@ -777,22 +871,12 @@ public struct SelfUpdater: Sendable {
     /// Handles versions like "0.4.0-swift", "0.4.1", etc. The suffix after '-' is
     /// stripped for comparison (pre-release suffixes are ignored for ordering).
     internal static func isNewer(latest: String, current: String) -> Bool {
-        let latestParts = parseVersion(latest)
-        let currentParts = parseVersion(current)
-
-        for i in 0..<max(latestParts.count, currentParts.count) {
-            let l = i < latestParts.count ? latestParts[i] : 0
-            let c = i < currentParts.count ? currentParts[i] : 0
-            if l > c { return true }
-            if l < c { return false }
+        guard let latest = SemanticVersion(latest),
+              let current = SemanticVersion(current)
+        else {
+            return false
         }
-        return false
-    }
-
-    private static func parseVersion(_ version: String) -> [Int] {
-        // Strip pre-release suffix (e.g. "-swift", "-beta1")
-        let base = version.split(separator: "-").first ?? Substring(version)
-        return base.split(separator: ".").compactMap { Int($0) }
+        return latest > current
     }
 
     private func isNewer(latest: String, current: String) -> Bool {
@@ -826,16 +910,7 @@ public struct SelfUpdater: Sendable {
     ) throws {
         #if canImport(Darwin)
         do {
-            var arguments = [
-                "--verify",
-                "--strict",
-                "--verbose=2",
-            ]
-            if deep {
-                arguments.append("--deep")
-            }
-            arguments.append(file.path)
-            try runProcess("/usr/bin/codesign", arguments: arguments)
+            try DarkbloomCodeSignature.verify(file, deep: deep)
         } catch {
             throw UpdateError.replaceFailed("\(label) code signature verification failed: \(error.localizedDescription)")
         }
@@ -866,5 +941,5 @@ public enum UpdateError: Error, Sendable {
     case downloadFailed(String)
     case hashMismatch(expected: String, got: String)
     case replaceFailed(String)
-    case busy(String)
+    case lockBusy(reason: String, owner: UpdateProcessLock.Owner?)
 }

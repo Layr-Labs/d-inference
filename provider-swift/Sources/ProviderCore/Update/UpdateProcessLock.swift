@@ -14,11 +14,25 @@ import Glibc
 public final class UpdateProcessLock: @unchecked Sendable {
     public struct Owner: Codable, Sendable, Equatable {
         public let pid: Int32
+        public let processIdentity: ProcessIdentity?
         public let operation: String
         public let acquiredAt: Double
 
+        public init(
+            pid: Int32,
+            processIdentity: ProcessIdentity?,
+            operation: String,
+            acquiredAt: Double
+        ) {
+            self.pid = pid
+            self.processIdentity = processIdentity
+            self.operation = operation
+            self.acquiredAt = acquiredAt
+        }
+
         enum CodingKeys: String, CodingKey {
             case pid
+            case processIdentity = "process_identity"
             case operation
             case acquiredAt = "acquired_at"
         }
@@ -65,11 +79,9 @@ public final class UpdateProcessLock: @unchecked Sendable {
         operation: String,
         timeout: TimeInterval = 0
     ) throws -> UpdateProcessLock {
-        let fm = FileManager.default
         do {
-            try fm.createDirectory(
-                at: path.deletingLastPathComponent(),
-                withIntermediateDirectories: true
+            try UpdateAtomicFilesystem.createDirectoryDurably(
+                path.deletingLastPathComponent()
             )
         } catch {
             throw LockError.openFailed(error.localizedDescription)
@@ -102,6 +114,7 @@ public final class UpdateProcessLock: @unchecked Sendable {
 
         let owner = Owner(
             pid: getpid(),
+            processIdentity: ProcessIdentity.current(),
             operation: operation,
             acquiredAt: Date().timeIntervalSince1970
         )

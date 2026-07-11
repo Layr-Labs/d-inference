@@ -251,8 +251,6 @@ extension ProviderLoop {
         }
         stagedUpdateBundle = nil
         let result = updater.commitStagedBundle(staged, session: session)
-        session.release()
-        updateSession = nil
         switch result {
         case .success:
             return .completed
@@ -268,7 +266,10 @@ extension ProviderLoop {
             return .failed("cross-process update lease was lost before candidate restart")
         }
         do {
-            try updater.armPendingCandidateAttempt(session: session)
+            try updater.prepareCandidateLaunch(
+                session: session,
+                baseline: LaunchAgent.launchSnapshot()
+            )
             session.release()
             updateSession = nil
             return .completed

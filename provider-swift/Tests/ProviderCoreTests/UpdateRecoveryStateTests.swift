@@ -4,6 +4,63 @@ import Testing
 
 @Suite("Update recovery state")
 struct UpdateRecoveryStateTests {
+    @Test("directory durability failures are surfaced")
+    func directoryFsyncFailsClosed() {
+        #expect(throws: (any Error).self) {
+            try UpdateAtomicFilesystem.syncDirectory(
+                URL(fileURLWithPath: "/dev/null/not-a-directory")
+            )
+        }
+    }
+
+    @Test("installation and pre-launch power loss do not count a start")
+    func installDoesNotCountBeforeLaunch() {
+        var state = makeCandidateState()
+        state.candidate?.pendingAttemptID = nil
+        state.candidate?.attemptStartedAt = nil
+        let baseline = ProviderLaunchSnapshot(
+            label: "io.darkbloom.provider",
+            runs: 10,
+            process: nil
+        )
+        let prepared = state.prepareLaunchIntent(now: 100, baseline: baseline)
+        let noFailure = state.recordPendingAttemptFailure(now: 101)
+        let reconciled = state.reconcileLaunchIntent(
+            snapshot: baseline,
+            now: 102
+        )
+        #expect(prepared)
+        #expect(noFailure == nil)
+        #expect(!reconciled)
+        #expect(state.candidate?.failureCount == 0)
+        #expect(state.candidate?.pendingAttemptID == nil)
+    }
+
+    @Test("launchd run-count advancement proves issuance after crash")
+    func launchReceiptReconcilesAfterCrash() {
+        var state = makeCandidateState()
+        state.candidate?.pendingAttemptID = nil
+        state.candidate?.attemptStartedAt = nil
+        let baseline = ProviderLaunchSnapshot(
+            label: "io.darkbloom.provider",
+            runs: 10,
+            process: nil
+        )
+        _ = state.prepareLaunchIntent(now: 100, baseline: baseline)
+        let launched = ProviderLaunchSnapshot(
+            label: "io.darkbloom.provider",
+            runs: 11,
+            process: nil
+        )
+        let reconciled = state.reconcileLaunchIntent(
+            snapshot: launched,
+            now: 105
+        )
+        let failure = state.recordPendingAttemptFailure(now: 106)
+        #expect(reconciled)
+        #expect(failure == 1)
+    }
+
     @Test("failed start is counted once per armed attempt")
     func countsOneFailurePerAttempt() {
         var state = makeCandidateState()
@@ -13,10 +70,11 @@ struct UpdateRecoveryStateTests {
         #expect(duplicateTick == nil)
         #expect(state.candidate?.failureCount == 1)
 
-        let armed = state.armCandidateAttempt(now: 200)
+        let prepared = state.prepareLaunchIntent(now: 199, baseline: nil)
+        let armed = state.markLaunchIssued(now: 200)
         let secondFailure = state.recordPendingAttemptFailure(now: 201)
         let secondDuplicate = state.recordPendingAttemptFailure(now: 202)
-        #expect(armed)
+        #expect(prepared && armed)
         #expect(secondFailure == 2)
         #expect(secondDuplicate == nil)
     }
@@ -120,6 +178,7 @@ struct UpdateRecoveryStateTests {
             releaseBundleHash: "release-old",
             installedBundleHash: "bundle-old",
             binaryHash: "binary-old",
+            enclaveHash: "enclave-old",
             metallibHash: "metallib-old",
             installGeneration: 0,
             installedAt: 1
@@ -129,6 +188,7 @@ struct UpdateRecoveryStateTests {
             layout: .app,
             bundlePath: "predecessor/Darkbloom.app",
             binaryPath: "predecessor/Darkbloom.app/Contents/MacOS/darkbloom",
+            enclavePath: "predecessor/Darkbloom.app/Contents/MacOS/darkbloom-enclave",
             metallibPath: "predecessor/Darkbloom.app/Contents/MacOS/mlx.metallib",
             verifiedAt: 2
         )
@@ -137,6 +197,7 @@ struct UpdateRecoveryStateTests {
             releaseBundleHash: "release-new",
             installedBundleHash: "bundle-new",
             binaryHash: "binary-new",
+            enclaveHash: "enclave-new",
             metallibHash: "metallib-new",
             installGeneration: 1,
             installedAt: 3
@@ -147,6 +208,7 @@ struct UpdateRecoveryStateTests {
             candidate: PendingReleaseCandidate(
                 release: candidateRecord,
                 failureCount: failures,
+                launchIntent: nil,
                 pendingAttemptID: "attempt",
                 attemptStartedAt: 4,
                 healthySince: nil,

@@ -1,9 +1,9 @@
 /// The crash-recovery watchdog's launchd agent (`io.darkbloom.watchdog`),
-/// separate from the provider service. Runs `darkbloom watchdog` once a minute
-/// (`StartInterval`) as a check-and-exit one-shot, so a wedged tick can't stall
-/// recovery. Lifecycle mirrors the provider agent: `start` installs+loads it
+/// separate from the provider service. It keeps one lightweight
+/// `darkbloom watchdog` process alive; that process owns a monotonic timer.
+/// Lifecycle mirrors the provider agent: `start` installs+loads it
 /// (re-enabling any persistent disable), `stop` bootouts it AND persistently
-/// disables it so RunAtLoad/StartInterval can't resurrect it at the next
+/// disables it so KeepAlive/RunAtLoad can't resurrect it at the next
 /// login/reboot (plist stays on disk), `stop --uninstall` deletes it.
 
 import Foundation
@@ -34,12 +34,19 @@ public enum WatchdogAgent: Sendable {
     }
 
     /// Write the plist and (re)load it; idempotent.
-    public static func installAndStart() throws {
+    public static func installAndStart(
+        configPath: URL? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws {
         if isLoaded() {
             try bootout()
             Thread.sleep(forTimeInterval: 0.2)
         }
-        try writePlist(binaryPath: LaunchctlControl.currentExecutablePath())
+        try writePlist(
+            binaryPath: LaunchctlControl.currentExecutablePath(),
+            configPath: configPath,
+            environment: environment
+        )
         try loadService()
     }
 
@@ -63,32 +70,65 @@ public enum WatchdogAgent: Sendable {
         }
     }
 
-    private static func writePlist(binaryPath: String) throws {
+    private static func writePlist(
+        binaryPath: String,
+        configPath: URL?,
+        environment: [String: String]
+    ) throws {
         let plist = plistPath()
         try FileManager.default.createDirectory(at: plist.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var arguments = [binaryPath, "watchdog"]
+        if let configPath {
+            arguments.append(contentsOf: ["--config", configPath.path])
+        }
         let dict = makeWatchdogPlist(
             label: label,
-            programArguments: [binaryPath, "watchdog"],
+            programArguments: arguments,
             logPath: logPath().path,
-            intervalSeconds: checkIntervalSeconds
+            environment: environment
         )
         let data = try PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
         try data.write(to: plist, options: .atomic)
     }
 
-    /// Pure plist builder (testable). KeepAlive=false (cadence is StartInterval's
-    /// job); RunAtLoad=true (guard immediately + at login); Background priority.
-    static func makeWatchdogPlist(label: String, programArguments: [String], logPath: String, intervalSeconds: Int) -> [String: Any] {
-        [
+    static let passthroughEnvKeys = [
+        "DARKBLOOM_NO_UPDATE_CHECK",
+        "DARKBLOOM_STATE_FILE",
+        "DARKBLOOM_WATCHDOG_STATE",
+    ]
+
+    static func passthroughEnvironment(
+        from environment: [String: String]
+    ) -> [String: String] {
+        Dictionary(uniqueKeysWithValues: passthroughEnvKeys.compactMap { key in
+            guard let value = environment[key], !value.isEmpty else { return nil }
+            return (key, value)
+        })
+    }
+
+    /// Persistent job: launchd starts it at login and keeps it alive. This
+    /// avoids StartInterval jobs being stranded by GUI on-demand-only mode.
+    static func makeWatchdogPlist(
+        label: String,
+        programArguments: [String],
+        logPath: String,
+        environment: [String: String] = [:]
+    ) -> [String: Any] {
+        var plist: [String: Any] = [
             "Label": label,
             "ProgramArguments": programArguments,
-            "StartInterval": intervalSeconds,
             "RunAtLoad": true,
-            "KeepAlive": false,
+            "KeepAlive": true,
+            "ThrottleInterval": 10,
             "StandardOutPath": logPath,
             "StandardErrorPath": logPath,
             "ProcessType": "Background",
         ]
+        let passed = passthroughEnvironment(from: environment)
+        if !passed.isEmpty {
+            plist["EnvironmentVariables"] = passed
+        }
+        return plist
     }
 
     private static func loadService() throws {

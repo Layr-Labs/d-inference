@@ -150,7 +150,7 @@ struct AutoUpdateControllerTests {
         // Strict order: download/stage happens BEFORE we stop accepting work,
         // and the live-layout commit happens strictly AFTER the drain so no
         // request can observe a half-replaced bundle.
-        #expect(recorder.events == ["claim", "check", "stage", "beginDraining", "waitForDrain", "commit", "restart"])
+        #expect(recorder.events == ["claim", "check", "stage", "beginDraining", "waitForDrain", "commit", "prepareRestart", "restart"])
         #expect(!recorder.events.contains("forceCancel"))
         #expect(!recorder.events.contains("resume")) // restart succeeded → no resume
     }
@@ -193,7 +193,7 @@ struct AutoUpdateControllerTests {
         let outcome = await controller.run()
 
         #expect(outcome == .restarted(from: "1.0.0", to: "2.0.0", drained: false))
-        #expect(recorder.events == ["claim", "check", "stage", "beginDraining", "waitForDrain", "forceCancel", "commit", "restart"])
+        #expect(recorder.events == ["claim", "check", "stage", "beginDraining", "waitForDrain", "forceCancel", "commit", "prepareRestart", "restart"])
     }
 
     @Test("commit failure: resumes serving on the old binary, never restarts")
@@ -223,6 +223,6 @@ struct AutoUpdateControllerTests {
             Issue.record("expected .restartFailed, got \(outcome)")
             return
         }
-        #expect(recorder.events == ["claim", "check", "stage", "beginDraining", "waitForDrain", "commit", "restart", "resume"])
+        #expect(recorder.events == ["claim", "check", "stage", "beginDraining", "waitForDrain", "commit", "prepareRestart", "restart", "resume"])
     }
 }

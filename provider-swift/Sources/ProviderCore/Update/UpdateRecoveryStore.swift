@@ -4,11 +4,13 @@ import Foundation
 /// recovery, and rollback. Concrete install-layout operations live in
 /// `UpdateInstallLayout`; callers must hold `UpdateProcessLock`.
 final class UpdateRecoveryStore: @unchecked Sendable {
-    enum FaultPoint: Sendable, Equatable {
+    enum FaultPoint: Sendable, Equatable, CaseIterable {
         case predecessorPromoted
         case transactionPersisted
+        case liveLayoutExchanged
         case liveLayoutReplaced
         case statePersisted
+        case transactionRemoved
     }
 
     enum StoreError: Error, CustomStringConvertible {
@@ -164,7 +166,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         if try liveMatches(transaction.target, layout: transaction.layout) {
             try ensureCanonicalLinks()
             try finalizeRecovered(transaction, state: &state, now: now)
-            cleanupTransaction(transaction)
+            try cleanupTransaction(transaction)
             return
         }
 
@@ -187,7 +189,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             }
             try ensureCanonicalLinks()
             try finalizeRecovered(transaction, state: &state, now: now)
-            cleanupTransaction(transaction)
+            try cleanupTransaction(transaction)
             return
         }
 
@@ -214,7 +216,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             )
         }
         try writeState(state)
-        cleanupTransaction(transaction)
+        try cleanupTransaction(transaction)
     }
 
     func commit(
@@ -255,6 +257,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         try faultInjector(.transactionPersisted)
 
         try installStagedBundle(staged)
+        try faultInjector(.liveLayoutExchanged)
         transaction.phase = .liveReplaced
         try persist(transaction)
         try faultInjector(.liveLayoutReplaced)
@@ -262,7 +265,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         state.installCandidate(candidate, predecessor: predecessor, now: now)
         try writeState(state)
         try faultInjector(.statePersisted)
-        finish(remove: staged.stagingRoot)
+        try finish(remove: staged.stagingRoot)
     }
 
     func rollback(now: Double, reason: String) throws -> String {
@@ -304,6 +307,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
 
         try installFromStaging(stagingRoot, layout: predecessor.layout)
         try ensureCanonicalLinks()
+        try faultInjector(.liveLayoutExchanged)
         transaction.phase = .liveReplaced
         try persist(transaction)
         try faultInjector(.liveLayoutReplaced)
@@ -312,16 +316,18 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         state.completeRollback(now: now, reason: reason)
         try writeState(state)
         try faultInjector(.statePersisted)
-        finish(remove: stagingRoot)
+        try finish(remove: stagingRoot)
         return predecessor.release.version
     }
 
     func verifyPredecessor(_ predecessor: VerifiedPredecessor) throws {
         let bundle = try resolvedRecoveryPath(predecessor.bundlePath)
         let binary = try resolvedRecoveryPath(predecessor.binaryPath)
+        let enclave = try resolvedRecoveryPath(predecessor.enclavePath)
         let metallib = try resolvedRecoveryPath(predecessor.metallibPath)
         guard fm.fileExists(atPath: bundle.path),
               fm.fileExists(atPath: binary.path),
+              fm.fileExists(atPath: enclave.path),
               fm.fileExists(atPath: metallib.path)
         else {
             throw StoreError.predecessorVerificationFailed(
@@ -337,6 +343,11 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             guard binaryHash == predecessor.release.binaryHash else {
                 throw StoreError.predecessorVerificationFailed(
                     "binary hash mismatch (expected \(predecessor.release.binaryHash), got \(binaryHash))")
+            }
+            let enclaveHash = try UpdateAtomicFilesystem.sha256(file: enclave)
+            guard enclaveHash == predecessor.release.enclaveHash else {
+                throw StoreError.predecessorVerificationFailed(
+                    "enclave hash mismatch (expected \(predecessor.release.enclaveHash), got \(enclaveHash))")
             }
             let metallibHash = try UpdateAtomicFilesystem.sha256(file: metallib)
             guard metallibHash == predecessor.release.metallibHash else {
@@ -439,19 +450,20 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         try UpdateAtomicFilesystem.writeJSON(transaction, to: transactionPath)
     }
 
-    private func finish(remove staging: URL) {
-        try? fm.removeItem(at: transactionPath)
-        try? fm.removeItem(at: staging)
+    private func finish(remove staging: URL) throws {
+        try UpdateAtomicFilesystem.removeDurably(transactionPath)
+        try faultInjector(.transactionRemoved)
+        try UpdateAtomicFilesystem.removeDurably(staging)
         cleanupOrphanedRecoveryTemps()
     }
 
-    private func cleanupTransaction(_ transaction: Transaction) {
-        try? fm.removeItem(at: transactionPath)
+    private func cleanupTransaction(_ transaction: Transaction) throws {
+        try UpdateAtomicFilesystem.removeDurably(transactionPath)
         let staging = URL(
             fileURLWithPath: transaction.stagingRoot
         ).standardizedFileURL
         if UpdateAtomicFilesystem.isDescendant(staging, of: installRoot) {
-            try? fm.removeItem(at: staging)
+            try UpdateAtomicFilesystem.removeDurably(staging)
         }
         cleanupOrphanedRecoveryTemps()
     }

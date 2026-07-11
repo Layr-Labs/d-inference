@@ -246,6 +246,13 @@ public struct AutoUpdateController: Sendable {
 
                 case .completed:
                     deps.log("auto-update: restarting into v\(release.version)")
+                    switch await deps.prepareInstalledRestart() {
+                    case .failed(let reason):
+                        await deps.resumeServing()
+                        return .restartFailed(reason)
+                    case .completed:
+                        break
+                    }
                     do {
                         try deps.restart()
                     } catch {

@@ -4,6 +4,74 @@ import Testing
 
 @Suite("SelfUpdater")
 struct SelfUpdaterTests {
+    @Test("SemVer prerelease ordering is exact")
+    func semverPrereleaseOrdering() {
+        #expect(SelfUpdater.isNewer(
+            latest: "0.8.0-dev.2",
+            current: "0.8.0-dev.1"
+        ))
+        #expect(SelfUpdater.isNewer(
+            latest: "0.8.0",
+            current: "0.8.0-dev.9"
+        ))
+        #expect(!SelfUpdater.isNewer(
+            latest: "0.8.0-dev.1",
+            current: "0.8.0"
+        ))
+        #expect(SelfUpdater.isNewer(
+            latest: "0.8.0-rc.1",
+            current: "0.8.0-beta.11"
+        ))
+        #expect(!SelfUpdater.isNewer(
+            latest: "0.8.0-dev.01",
+            current: "0.8.0-dev.1"
+        ))
+    }
+
+    #if canImport(Darwin)
+    @Test("real packaged code signature is verified and production pin rejects ad hoc signer")
+    func realPackagedSignatureVerification() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "codesign-fixture-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let app = root.appendingPathComponent("Darkbloom.app")
+        let contents = app.appendingPathComponent("Contents")
+        let bin = contents.appendingPathComponent("MacOS")
+        try FileManager.default.createDirectory(
+            at: bin,
+            withIntermediateDirectories: true
+        )
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <plist version="1.0"><dict>
+        <key>CFBundleIdentifier</key><string>io.darkbloom.provider</string>
+        <key>CFBundleExecutable</key><string>darkbloom</string>
+        <key>CFBundlePackageType</key><string>APPL</string>
+        </dict></plist>
+        """
+        try Data(plist.utf8).write(
+            to: contents.appendingPathComponent("Info.plist")
+        )
+        for name in ["darkbloom", "darkbloom-enclave", "mlx.metallib"] {
+            try FileManager.default.copyItem(
+                at: URL(fileURLWithPath: "/usr/bin/true"),
+                to: bin.appendingPathComponent(name)
+            )
+        }
+        try runCodesign(["--force", "--deep", "--sign", "-", app.path])
+
+        try DarkbloomCodeSignature.verify(
+            app,
+            deep: true,
+            policy: .structuralForIsolatedTest
+        )
+        #expect(throws: (any Error).self) {
+            try DarkbloomCodeSignature.verify(app, deep: true)
+        }
+    }
+    #endif
 
     @Test("release endpoint preserves bundle, binary, and metallib hashes")
     func releaseEndpointPreservesAllHashes() async throws {
@@ -381,6 +449,17 @@ private func runTarCreate(sourceDir: URL, tarball: URL) throws {
     try process.run()
     process.waitUntilExit()
     #expect(process.terminationStatus == 0)
+}
+
+private func runCodesign(_ arguments: [String]) throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+    process.arguments = arguments
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        throw CocoaError(.fileWriteUnknown)
+    }
 }
 
 // MARK: - installRoot derivation (symlink regression)

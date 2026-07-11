@@ -211,32 +211,101 @@ struct WatchdogProbeParseTests {
     }
 }
 
+@Suite("Provider launch receipt")
+struct ProviderLaunchSnapshotTests {
+    @Test("launchctl runs and PID produce crash-safe launch proof")
+    func parsesAndCompares() {
+        let identity = ProcessIdentity(pid: 42, startTimeMicros: 7)
+        let baseline = LaunchAgent.parseLaunchSnapshot(
+            label: LaunchAgent.label,
+            output: "runs = 10\npid = 42",
+            identityReader: { _ in identity }
+        )
+        let advanced = LaunchAgent.parseLaunchSnapshot(
+            label: LaunchAgent.label,
+            output: "runs = 11\npid = 42",
+            identityReader: { _ in identity }
+        )
+        #expect(baseline.runs == 10)
+        #expect(baseline.process == identity)
+        #expect(advanced.provesLaunch(after: baseline))
+        #expect(!baseline.provesLaunch(after: baseline))
+    }
+}
+
 /// The watchdog launchd plist shape.
 @Suite("Watchdog agent plist")
 struct WatchdogAgentPlistTests {
-    @Test("plist runs `darkbloom watchdog` on a one-minute interval at load")
+    @Test("plist keeps one persistent watchdog alive and delegates cadence internally")
     func plistShape() {
         let plist = WatchdogAgent.makeWatchdogPlist(
             label: "io.darkbloom.watchdog",
             programArguments: ["/usr/local/bin/darkbloom", "watchdog"],
-            logPath: "/tmp/watchdog.log",
-            intervalSeconds: 60
+            logPath: "/tmp/watchdog.log"
         )
         #expect(plist["Label"] as? String == "io.darkbloom.watchdog")
         #expect(plist["ProgramArguments"] as? [String] == ["/usr/local/bin/darkbloom", "watchdog"])
-        #expect(plist["StartInterval"] as? Int == 60)
+        #expect(plist["StartInterval"] == nil)
         #expect(plist["RunAtLoad"] as? Bool == true)
-        // Cadence is StartInterval's job; the watchdog must not KeepAlive.
-        #expect(plist["KeepAlive"] as? Bool == false)
+        #expect(plist["KeepAlive"] as? Bool == true)
+        #expect(plist["ThrottleInterval"] as? Int == 10)
         #expect(plist["ProcessType"] as? String == "Background")
         #expect(plist["StandardOutPath"] as? String == "/tmp/watchdog.log")
         #expect(plist["StandardErrorPath"] as? String == "/tmp/watchdog.log")
+    }
+
+    @Test("plist propagates custom config and update opt-out environment")
+    func configAndEnvironment() {
+        let arguments = [
+            "/opt/darkbloom",
+            "watchdog",
+            "--config",
+            "/tmp/provider.toml",
+        ]
+        let plist = WatchdogAgent.makeWatchdogPlist(
+            label: "io.darkbloom.watchdog",
+            programArguments: arguments,
+            logPath: "/tmp/watchdog.log",
+            environment: [
+                "DARKBLOOM_NO_UPDATE_CHECK": "1",
+                "UNRELATED_SECRET": "no",
+            ]
+        )
+        #expect(plist["ProgramArguments"] as? [String] == arguments)
+        let environment = plist["EnvironmentVariables"] as? [String: String]
+        #expect(environment == ["DARKBLOOM_NO_UPDATE_CHECK": "1"])
     }
 
     @Test("the watchdog label is distinct from the provider label")
     func distinctLabel() {
         #expect(WatchdogAgent.label != LaunchAgent.label)
         #expect(LaunchAgent.supportedLabels.contains(LaunchAgent.label))
+    }
+}
+
+@Suite("Watchdog persistent cadence", .serialized)
+struct WatchdogSchedulerTests {
+    @Test("real monotonic timer repeats and cancels without spinning")
+    func cadenceAndCancellation() async throws {
+        let (stream, continuation) = AsyncStream<Double>.makeStream()
+        let task = Task {
+            await WatchdogScheduler(interval: .milliseconds(20)).run {
+                continuation.yield(ProcessInfo.processInfo.systemUptime)
+            }
+        }
+        var times: [Double] = []
+        for await time in stream {
+            times.append(time)
+            if times.count == 3 { break }
+        }
+        task.cancel()
+        await task.value
+        continuation.finish()
+
+        #expect(times.count == 3)
+        for pair in zip(times, times.dropFirst()) {
+            #expect(pair.1 - pair.0 >= 0.012)
+        }
     }
 }
 

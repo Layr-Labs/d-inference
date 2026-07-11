@@ -5,6 +5,7 @@ public struct InstalledReleaseRecord: Codable, Sendable, Equatable {
     public var releaseBundleHash: String?
     public var installedBundleHash: String
     public var binaryHash: String
+    public var enclaveHash: String
     public var metallibHash: String
     public var installGeneration: UInt64
     public var installedAt: Double
@@ -14,6 +15,7 @@ public struct InstalledReleaseRecord: Codable, Sendable, Equatable {
         case releaseBundleHash = "release_bundle_hash"
         case installedBundleHash = "installed_bundle_hash"
         case binaryHash = "binary_hash"
+        case enclaveHash = "enclave_hash"
         case metallibHash = "metallib_hash"
         case installGeneration = "install_generation"
         case installedAt = "installed_at"
@@ -31,6 +33,7 @@ public struct VerifiedPredecessor: Codable, Sendable, Equatable {
     /// Paths are relative to the recovery root and validated before use.
     public var bundlePath: String
     public var binaryPath: String
+    public var enclavePath: String
     public var metallibPath: String
     public var verifiedAt: Double
 
@@ -39,14 +42,22 @@ public struct VerifiedPredecessor: Codable, Sendable, Equatable {
         case layout
         case bundlePath = "bundle_path"
         case binaryPath = "binary_path"
+        case enclavePath = "enclave_path"
         case metallibPath = "metallib_path"
         case verifiedAt = "verified_at"
     }
 }
 
 public struct PendingReleaseCandidate: Codable, Sendable, Equatable {
+    public struct LaunchIntent: Codable, Sendable, Equatable {
+        public var id: String
+        public var preparedAt: Double
+        public var baseline: ProviderLaunchSnapshot?
+    }
+
     public var release: InstalledReleaseRecord
     public var failureCount: Int
+    public var launchIntent: LaunchIntent?
     public var pendingAttemptID: String?
     public var attemptStartedAt: Double?
     public var healthySince: Double?
@@ -57,6 +68,7 @@ public struct PendingReleaseCandidate: Codable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey {
         case release
         case failureCount = "failure_count"
+        case launchIntent = "launch_intent"
         case pendingAttemptID = "pending_attempt_id"
         case attemptStartedAt = "attempt_started_at"
         case healthySince = "healthy_since"
@@ -137,8 +149,9 @@ public struct UpdateRecoveryState: Codable, Sendable, Equatable {
         candidate = PendingReleaseCandidate(
             release: release,
             failureCount: 0,
-            pendingAttemptID: UUID().uuidString,
-            attemptStartedAt: now,
+            launchIntent: nil,
+            pendingAttemptID: nil,
+            attemptStartedAt: nil,
             healthySince: nil,
             healthyProcessStartedAt: nil,
             retryNotBefore: nil,
@@ -147,6 +160,72 @@ public struct UpdateRecoveryState: Codable, Sendable, Equatable {
         if quarantine?.version == release.version {
             quarantine = nil
         }
+    }
+
+    public mutating func prepareLaunchIntent(
+        now: Double,
+        baseline: ProviderLaunchSnapshot?
+    ) -> Bool {
+        guard var candidate, candidate.pendingAttemptID == nil else {
+            return false
+        }
+        if let retryNotBefore = candidate.retryNotBefore,
+           now < retryNotBefore {
+            return false
+        }
+        candidate.launchIntent = PendingReleaseCandidate.LaunchIntent(
+            id: UUID().uuidString,
+            preparedAt: now,
+            baseline: baseline
+        )
+        candidate.retryNotBefore = nil
+        candidate.rollbackBlockedReason = nil
+        self.candidate = candidate
+        return true
+    }
+
+    public mutating func markLaunchIssued(now: Double) -> Bool {
+        guard var candidate, candidate.launchIntent != nil else { return false }
+        candidate.pendingAttemptID = candidate.launchIntent?.id
+        candidate.attemptStartedAt = now
+        candidate.launchIntent = nil
+        candidate.healthySince = nil
+        candidate.healthyProcessStartedAt = nil
+        self.candidate = candidate
+        return true
+    }
+
+    public mutating func reconcileLaunchIntent(
+        snapshot: ProviderLaunchSnapshot?,
+        now: Double
+    ) -> Bool {
+        guard let intent = candidate?.launchIntent else { return false }
+        if snapshot?.provesLaunch(after: intent.baseline) == true {
+            return markLaunchIssued(now: now)
+        }
+        candidate?.launchIntent = nil
+        return false
+    }
+
+    public mutating func confirmRunningCandidate(
+        version: String,
+        processStartedAt: Double,
+        now: Double
+    ) -> Bool {
+        guard var candidate,
+              candidate.release.version == version,
+              candidate.pendingAttemptID == nil
+        else {
+            return false
+        }
+        candidate.pendingAttemptID = candidate.launchIntent?.id
+            ?? UUID().uuidString
+        candidate.attemptStartedAt = now
+        candidate.launchIntent = nil
+        candidate.healthySince = now
+        candidate.healthyProcessStartedAt = processStartedAt
+        self.candidate = candidate
+        return true
     }
 
     /// Count a failed launch exactly once. Repeated watchdog ticks cannot
@@ -159,6 +238,7 @@ public struct UpdateRecoveryState: Codable, Sendable, Equatable {
         }
         candidate.pendingAttemptID = nil
         candidate.attemptStartedAt = nil
+        candidate.launchIntent = nil
         candidate.healthySince = nil
         candidate.healthyProcessStartedAt = nil
         candidate.retryNotBefore = nil
@@ -167,26 +247,9 @@ public struct UpdateRecoveryState: Codable, Sendable, Equatable {
         return candidate.failureCount
     }
 
-    /// Arm one launch attempt. Returns false when an attempt is already pending
-    /// or the candidate is still inside rollback-failure backoff.
-    @discardableResult
-    public mutating func armCandidateAttempt(now: Double) -> Bool {
-        guard var candidate, candidate.pendingAttemptID == nil else { return false }
-        if let retryNotBefore = candidate.retryNotBefore, now < retryNotBefore {
-            return false
-        }
-        candidate.pendingAttemptID = UUID().uuidString
-        candidate.attemptStartedAt = now
-        candidate.healthySince = nil
-        candidate.healthyProcessStartedAt = nil
-        candidate.retryNotBefore = nil
-        candidate.rollbackBlockedReason = nil
-        self.candidate = candidate
-        return true
-    }
-
     public mutating func cancelPendingAttempt() {
         guard var candidate else { return }
+        candidate.launchIntent = nil
         candidate.pendingAttemptID = nil
         candidate.attemptStartedAt = nil
         self.candidate = candidate

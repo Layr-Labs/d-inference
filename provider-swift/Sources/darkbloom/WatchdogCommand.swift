@@ -2,13 +2,13 @@ import Foundation
 import ArgumentParser
 import ProviderCore
 
-/// `darkbloom watchdog` — one crash-recovery check, then exit. Run every minute
-/// by `WatchdogAgent` (launchd StartInterval). Hidden: machine-invoked, not a
-/// user verb. The thin I/O shell around `WatchdogPolicy`.
+/// Persistent launchd watchdog. Cadence is owned by a monotonic in-process
+/// scheduler because GUI-domain StartInterval jobs can become permanently
+/// stranded in launchd's on-demand-only mode.
 struct Watchdog: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "watchdog",
-        abstract: "Internal: one provider crash-recovery check (run by launchd).",
+        abstract: "Internal: persistent provider recovery watchdog.",
         shouldDisplay: false
     )
 
@@ -16,9 +16,22 @@ struct Watchdog: AsyncParsableCommand {
 
     mutating func run() async throws {
         Darkbloom.ensureLogging()
+        let configPath = configOptions.config
+        let scheduler = Task {
+            await WatchdogScheduler(
+                interval: .seconds(WatchdogAgent.checkIntervalSeconds)
+            ).run {
+                await Self.runTick(configPath: configPath)
+            }
+        }
+        await WatchdogSignalTrap.waitForTermination()
+        scheduler.cancel()
+        await scheduler.value
+    }
 
+    static func runTick(configPath: String?) async {
         let now = Date().timeIntervalSince1970
-        let settings = Self.settings(configPath: configOptions.config)
+        let settings = Self.settings(configPath: configPath)
         let liveness = WatchdogProbe.probeProvider(now: now)
         let daemonState = DaemonStateFile.read()
         let providerActive = WatchdogProbe.providerActive(
@@ -26,6 +39,9 @@ struct Watchdog: AsyncParsableCommand {
             daemonState: daemonState,
             now: now
         )
+        let providerIdentity = daemonState.flatMap {
+            ProcessIdentity.read(pid: $0.pid)
+        } ?? LaunchAgent.launchSnapshot()?.process
         let state = WatchdogStateStore.read()
         // Ignore a downSince left over from a previous boot (fresh window per outage).
         let bootTime = now - ProcessInfo.processInfo.systemUptime
@@ -46,6 +62,14 @@ struct Watchdog: AsyncParsableCommand {
                 providerStillLoaded: {
                     LaunchAgent.isAnySupportedLabelLoaded()
                 },
+                terminateStaleLockOwner: { owner in
+                    guard owner.processIdentity == providerIdentity,
+                          let identity = owner.processIdentity
+                    else {
+                        return false
+                    }
+                    return ProcessLifecycle.terminate(identity)
+                },
                 log: { Self.log($0) }
             )
         )
@@ -56,6 +80,7 @@ struct Watchdog: AsyncParsableCommand {
         case .restart:
             let outcome = await recovery.recoverDownProvider(
                 autoUpdateEnabled: settings.autoUpdate,
+                inactiveProviderIdentity: providerIdentity,
                 now: now
             )
             persistenceDecision = Self.recordRecoveryOutcome(
@@ -78,6 +103,7 @@ struct Watchdog: AsyncParsableCommand {
                     "new version has no fresh heartbeat \(Int(now - attemptStartedAt))s after launch — treating it as a failed start")
                 let outcome = await recovery.recoverDownProvider(
                     autoUpdateEnabled: settings.autoUpdate,
+                    inactiveProviderIdentity: providerIdentity,
                     now: now
                 )
                 _ = Self.recordRecoveryOutcome(
@@ -105,21 +131,26 @@ struct Watchdog: AsyncParsableCommand {
         let coordinatorURL: String
     }
 
-    static func settings(configPath: String?) -> Settings {
+    static func settings(
+        configPath: String?,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Settings {
         if let configPath {
             let path = URL(fileURLWithPath: (configPath as NSString).expandingTildeInPath)
             let config = (try? ConfigManager.load(from: path))
                 ?? ProviderConfig(provider: ProviderSettings(name: "darkbloom"))
             return Settings(
                 autoRestart: config.provider.autoRestart,
-                autoUpdate: config.provider.autoUpdate,
+                autoUpdate: config.provider.autoUpdate
+                    && environment["DARKBLOOM_NO_UPDATE_CHECK"] == nil,
                 coordinatorURL: config.coordinator.url
             )
         }
         let config = ConfigManager.loadDefault()
         return Settings(
             autoRestart: config.provider.autoRestart,
-            autoUpdate: config.provider.autoUpdate,
+            autoUpdate: config.provider.autoUpdate
+                && environment["DARKBLOOM_NO_UPDATE_CHECK"] == nil,
             coordinatorURL: config.coordinator.url
         )
     }

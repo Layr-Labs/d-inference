@@ -6,19 +6,29 @@ import Foundation
 public struct WatchdogRecoveryService: Sendable {
     public struct Dependencies: Sendable {
         public var kickstartIfLoaded: @Sendable () throws -> Bool
+        public var launchSnapshot: @Sendable () -> ProviderLaunchSnapshot?
         public var providerStillLoaded: @Sendable () -> Bool
         public var processAlive: @Sendable (Int32) -> Bool
+        public var terminateStaleLockOwner:
+            @Sendable (UpdateProcessLock.Owner) -> Bool
         public var log: @Sendable (String) -> Void
 
         public init(
             kickstartIfLoaded: @escaping @Sendable () throws -> Bool,
+            launchSnapshot: @escaping @Sendable () -> ProviderLaunchSnapshot? = {
+                LaunchAgent.launchSnapshot()
+            },
             providerStillLoaded: @escaping @Sendable () -> Bool = { true },
             processAlive: @escaping @Sendable (Int32) -> Bool = daemonProcessAlive,
+            terminateStaleLockOwner:
+                @escaping @Sendable (UpdateProcessLock.Owner) -> Bool = { _ in false },
             log: @escaping @Sendable (String) -> Void
         ) {
             self.kickstartIfLoaded = kickstartIfLoaded
+            self.launchSnapshot = launchSnapshot
             self.providerStillLoaded = providerStillLoaded
             self.processAlive = processAlive
+            self.terminateStaleLockOwner = terminateStaleLockOwner
             self.log = log
         }
     }
@@ -62,16 +72,33 @@ public struct WatchdogRecoveryService: Sendable {
     /// failure, then an allowed newer release is installed before kickstart.
     public func recoverDownProvider(
         autoUpdateEnabled: Bool,
+        inactiveProviderIdentity: ProcessIdentity? = nil,
         now: Double
     ) async -> DownOutcome {
         let session: SelfUpdater.UpdateSession
         do {
-            session = try updater.beginUpdateSession(
-                operation: "watchdog-recovery",
-                timeout: 0
-            )
+            do {
+                session = try updater.beginUpdateSession(
+                    operation: "watchdog-recovery",
+                    timeout: 1
+                )
+            } catch UpdateError.lockBusy(let reason, let owner) {
+                guard let owner,
+                      owner.processIdentity == inactiveProviderIdentity,
+                      deps.terminateStaleLockOwner(owner)
+                else {
+                    throw UpdateError.lockBusy(
+                        reason: reason,
+                        owner: owner
+                    )
+                }
+                session = try updater.beginUpdateSession(
+                    operation: "watchdog-recovery-after-stale-owner",
+                    timeout: 3
+                )
+            }
             try session.recover(now: now)
-        } catch UpdateError.busy(let reason) {
+        } catch UpdateError.lockBusy(let reason, _) {
             deps.log("update/recovery lock busy: \(reason)")
             return .lockBusy(reason)
         } catch {
@@ -87,6 +114,10 @@ public struct WatchdogRecoveryService: Sendable {
         var rolledBackTo: String?
         do {
             var state = try session.readState()
+            _ = state.reconcileLaunchIntent(
+                snapshot: deps.launchSnapshot(),
+                now: now
+            )
             if let count = state.recordPendingAttemptFailure(now: now) {
                 try session.writeState(state)
                 deps.log(
@@ -172,8 +203,12 @@ public struct WatchdogRecoveryService: Sendable {
 
         do {
             var state = try session.readState()
-            if state.candidate?.pendingAttemptID == nil {
-                _ = state.armCandidateAttempt(now: now)
+            if state.candidate?.pendingAttemptID == nil,
+               state.candidate?.launchIntent == nil {
+                _ = state.prepareLaunchIntent(
+                    now: now,
+                    baseline: deps.launchSnapshot()
+                )
                 try session.writeState(state)
             }
 
@@ -184,6 +219,8 @@ public struct WatchdogRecoveryService: Sendable {
                     try session.writeState(state)
                     return .noLongerLoaded
                 }
+                _ = state.markLaunchIssued(now: now)
+                try session.writeState(state)
             } catch {
                 state.cancelPendingAttempt()
                 try session.writeState(state)
@@ -212,7 +249,7 @@ public struct WatchdogRecoveryService: Sendable {
                 timeout: 0
             )
             try session.recover(now: now)
-        } catch UpdateError.busy {
+        } catch UpdateError.lockBusy {
             return .lockBusy
         } catch {
             return .failed("\(error)")

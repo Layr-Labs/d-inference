@@ -156,6 +156,13 @@ extension Start {
         let (models, modelHashes, modelHashFingerprints) = attachWeightHashes(to: selectedModels)
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
         let authToken = AuthTokenStore.load()
+        if let identity = ProcessIdentity.current() {
+            try? SelfUpdater(
+                coordinatorBaseURL: coordinatorURL
+            ).confirmRunningCandidateLaunch(
+                processStartedAt: Double(identity.startTimeMicros) / 1_000_000
+            )
+        }
 
         if config.provider.autoUpdate {
             try await runStartupAutoUpdate(coordinatorURL: coordinatorURL)
@@ -174,7 +181,9 @@ extension Start {
         // (manual start, login, or auto-update relaunch). Idempotent (skip when
         // already loaded → no churn on restarts) + best-effort.
         if config.provider.autoRestart, !WatchdogAgent.isLoaded() {
-            try? WatchdogAgent.installAndStart()
+            try? WatchdogAgent.installAndStart(
+                configPath: snapshot.configPath
+            )
         }
 
         // ----- Telemetry: configure now so reconnect/inference/panic events flow. -----
@@ -280,6 +289,9 @@ extension Start {
         case .updated(let from, let to):
             print("Updated provider: v\(from) -> v\(to). Restarting into new binary...")
             do {
+                try updater.prepareCandidateLaunch(
+                    operation: "startup-update-exec"
+                )
                 try ProcessLifecycle.execCurrentProcess()
             } catch {
                 try? updater.cancelPendingCandidateAttempt(
@@ -289,6 +301,9 @@ extension Start {
         case .restartRequired(let from, let to):
             print("Provider v\(to) is already installed (running v\(from)); restarting into it...")
             do {
+                try updater.prepareCandidateLaunch(
+                    operation: "startup-candidate-exec"
+                )
                 try ProcessLifecycle.execCurrentProcess()
             } catch {
                 try? updater.cancelPendingCandidateAttempt(

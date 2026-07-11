@@ -73,6 +73,23 @@ struct WatchdogCommandTests {
         #expect(!settings.autoUpdate)
     }
 
+    @Test("DARKBLOOM_NO_UPDATE_CHECK disables only watchdog updates")
+    func environmentUpdateOptOut() {
+        let url = writeTempConfig("""
+        [provider]
+        name = "x"
+        auto_update = true
+        auto_restart = true
+        """)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let settings = Watchdog.settings(
+            configPath: url.path,
+            environment: ["DARKBLOOM_NO_UPDATE_CHECK": "1"]
+        )
+        #expect(settings.autoRestart)
+        #expect(!settings.autoUpdate)
+    }
+
     @Test("manual quarantine override is explicit and parseable")
     func manualOverrideParses() throws {
         let command = try Darkbloom.parseAsRoot([

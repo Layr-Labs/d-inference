@@ -160,6 +160,28 @@ public enum ProcessLifecycle {
         }
     }
 
+    /// Terminate only the exact kernel process identity supplied by the caller.
+    /// PID reuse can never redirect the signal to an unrelated process.
+    public static func terminate(
+        _ identity: ProcessIdentity,
+        gracePeriod: TimeInterval = 2
+    ) -> Bool {
+        guard identity.isCurrent() else { return false }
+        _ = kill(identity.pid, SIGTERM)
+        let deadline = Date().addingTimeInterval(gracePeriod)
+        while Date() < deadline, identity.isCurrent() {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if identity.isCurrent() {
+            _ = kill(identity.pid, SIGKILL)
+        }
+        let killDeadline = Date().addingTimeInterval(1)
+        while Date() < killDeadline, identity.isCurrent() {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        return !identity.isCurrent()
+    }
+
     // MARK: - Internals
 
     private static func readPID(at url: URL) -> Int32? {

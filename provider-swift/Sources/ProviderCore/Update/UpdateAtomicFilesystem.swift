@@ -17,7 +17,7 @@ enum UpdateAtomicFilesystem {
     static func write(_ data: Data, to destination: URL) throws {
         let fm = FileManager.default
         let directory = destination.deletingLastPathComponent()
-        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        try createDirectoryDurably(directory)
         let temporary = directory.appendingPathComponent(
             ".\(destination.lastPathComponent).tmp-\(UUID().uuidString)")
 
@@ -51,7 +51,7 @@ enum UpdateAtomicFilesystem {
             throw filesystemError("rename \(temporary.path) -> \(destination.path)")
         }
         shouldRemove = false
-        syncDirectory(directory)
+        try syncDirectory(directory)
     }
 
     /// Atomically exchange two same-volume paths. Both names always reference
@@ -68,9 +68,9 @@ enum UpdateAtomicFilesystem {
         guard result == 0 else {
             throw filesystemError("exchange \(first.path) <-> \(second.path)")
         }
-        syncDirectory(first.deletingLastPathComponent())
+        try syncDirectory(first.deletingLastPathComponent())
         if first.deletingLastPathComponent() != second.deletingLastPathComponent() {
-            syncDirectory(second.deletingLastPathComponent())
+            try syncDirectory(second.deletingLastPathComponent())
         }
         #else
         throw CocoaError(.featureUnsupported)
@@ -84,7 +84,7 @@ enum UpdateAtomicFilesystem {
             guard rename(source.path, destination.path) == 0 else {
                 throw filesystemError("rename \(source.path) -> \(destination.path)")
             }
-            syncDirectory(destination.deletingLastPathComponent())
+            try syncDirectory(destination.deletingLastPathComponent())
         }
     }
 
@@ -99,7 +99,27 @@ enum UpdateAtomicFilesystem {
         guard rename(temporary.path, destination.path) == 0 else {
             throw filesystemError("replace symlink \(destination.path)")
         }
-        syncDirectory(directory)
+        try syncDirectory(directory)
+    }
+
+    static func removeDurably(_ url: URL) throws {
+        guard itemExists(url) else { return }
+        let parent = url.deletingLastPathComponent()
+        try FileManager.default.removeItem(at: url)
+        try syncDirectory(parent)
+    }
+
+    static func createDirectoryDurably(_ directory: URL) throws {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: directory.path) {
+            return
+        }
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        try syncDirectory(directory)
+        let parent = directory.deletingLastPathComponent()
+        if parent.path != directory.path {
+            try syncDirectory(parent)
+        }
     }
 
     static func sha256(file: URL) throws -> String {
@@ -187,7 +207,7 @@ enum UpdateAtomicFilesystem {
             }
         }
         for directory in directories.reversed() {
-            syncDirectory(directory)
+            try syncDirectory(directory)
         }
     }
 
@@ -213,11 +233,18 @@ enum UpdateAtomicFilesystem {
         hasher.update(data: Data((line + "\n").utf8))
     }
 
-    private static func syncDirectory(_ directory: URL) {
+    static func syncDirectory(_ directory: URL) throws {
         let descriptor = open(directory.path, O_RDONLY | O_CLOEXEC)
-        guard descriptor >= 0 else { return }
-        _ = fsync(descriptor)
+        guard descriptor >= 0 else {
+            throw filesystemError("open directory \(directory.path)")
+        }
+        let result = fsync(descriptor)
+        let code = errno
         _ = close(descriptor)
+        guard result == 0 else {
+            errno = code
+            throw filesystemError("fsync directory \(directory.path)")
+        }
     }
 
     private static func filesystemError(_ operation: String) -> Error {

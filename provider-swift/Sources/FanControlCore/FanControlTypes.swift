@@ -18,6 +18,7 @@ public enum FanControlError: Error, LocalizedError, Sendable {
     case ambiguousFanModeKeys(Int)
     case fanAlreadyControlled(Int)
     case fanTestModeActive
+    case fanControlOwnershipLost
     case noTemperatureSensors
     case writeNotApplied(String)
     case invalidConfiguration(String)
@@ -65,6 +66,8 @@ public enum FanControlError: Error, LocalizedError, Sendable {
             return "fan \(index) is already controlled by another utility"
         case .fanTestModeActive:
             return "AppleSMC fan test mode is already owned by another utility"
+        case .fanControlOwnershipLost:
+            return "another utility changed fan control; Darkbloom relinquished its lease"
         case .noTemperatureSensors:
             return "AppleSMC exposed no usable CPU or GPU temperature sensors"
         case .writeNotApplied(let key):

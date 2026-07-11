@@ -5,8 +5,11 @@ protocol FanHardwareDriving: AnyObject {
     var targetRPMs: [Int] { get }
 
     func sample(inferenceActive: Bool) -> FanCoolingSample
-    func engage(speedPercent: Double) throws -> [Int]
-    func maintain() throws
+    func engage(
+        speedPercent: Double,
+        shouldStop: () -> Bool
+    ) throws -> [Int]
+    func maintain(shouldStop: () -> Bool) throws
     func restoreAutomatic() throws
     func forceAutomatic() throws
 }
@@ -16,17 +19,8 @@ final class SMCFanHardwareDriver: FanHardwareDriving {
     private var hardware: FanHardware
     private var actuator: FanActuator
 
-    init(recoverStaleControl: Bool) throws {
+    init() throws {
         let smc = try AppleSMC()
-        if recoverStaleControl {
-            let recoveryHardware = try FanHardwareDiscovery.discoverForReset(
-                on: smc
-            )
-            try FanActuator.forceAutomatic(
-                smc: smc,
-                hardware: recoveryHardware
-            )
-        }
         let hardware = try FanHardwareDiscovery.discover(
             on: smc,
             includeTemperatures: true
@@ -34,6 +28,12 @@ final class SMCFanHardwareDriver: FanHardwareDriving {
         self.smc = smc
         self.hardware = hardware
         actuator = try FanActuator(smc: smc, hardware: hardware)
+    }
+
+    static func recoverStaleControl() throws {
+        let smc = try AppleSMC()
+        let hardware = try FanHardwareDiscovery.discoverForReset(on: smc)
+        try FanActuator.forceAutomatic(smc: smc, hardware: hardware)
     }
 
     var isControlling: Bool {
@@ -57,15 +57,18 @@ final class SMCFanHardwareDriver: FanHardwareDriving {
         )
     }
 
-    func engage(speedPercent: Double) throws -> [Int] {
+    func engage(
+        speedPercent: Double,
+        shouldStop: () -> Bool
+    ) throws -> [Int] {
         try actuator.engage(
             speedPercent: speedPercent,
-            shouldStop: { false }
+            shouldStop: shouldStop
         )
     }
 
-    func maintain() throws {
-        try actuator.maintain(shouldStop: { false })
+    func maintain(shouldStop: () -> Bool) throws {
+        try actuator.maintain(shouldStop: shouldStop)
     }
 
     func restoreAutomatic() throws {

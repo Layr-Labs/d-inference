@@ -3,12 +3,13 @@ import FanControlIPC
 import Foundation
 
 final class FanHelperSession: NSObject, FanControlXPCProtocol {
-    private let controller: FanLeaseController
+    private let provider: FanControllerProvider
     private let stateLock = NSLock()
     private var leaseID: UUID?
+    private var invalidated = false
 
-    init(controller: FanLeaseController) {
-        self.controller = controller
+    init(provider: FanControllerProvider) {
+        self.provider = provider
     }
 
     func getProtocolVersion(
@@ -22,18 +23,28 @@ final class FanHelperSession: NSObject, FanControlXPCProtocol {
         triggerTemperatureCelsius: Double,
         withReply reply: @escaping (NSString?, NSString?) -> Void
     ) {
-        if stateLock.withLock({ leaseID != nil }) {
-            reply(nil, "this connection already owns a lease")
+        if stateLock.withLock({ invalidated || leaseID != nil }) {
+            reply(nil, "this connection cannot acquire another lease")
             return
         }
 
         do {
+            let controller = try provider.controller()
             let id = try controller.acquireLease(
                 speedPercent: speedPercent,
                 triggerTemperatureCelsius: triggerTemperatureCelsius
             )
-            stateLock.withLock {
+            let connectionClosed = stateLock.withLock {
+                if invalidated {
+                    return true
+                }
                 leaseID = id
+                return false
+            }
+            if connectionClosed {
+                controller.cancelLease(id)
+                reply(nil, "the XPC connection closed during lease acquisition")
+                return
             }
             reply(id.uuidString as NSString, nil)
         } catch {
@@ -59,6 +70,7 @@ final class FanHelperSession: NSObject, FanControlXPCProtocol {
         }
 
         do {
+            let controller = try provider.controller()
             let status = try controller.renewLease(
                 id,
                 sequence: sequence,
@@ -75,9 +87,11 @@ final class FanHelperSession: NSObject, FanControlXPCProtocol {
                 nil
             )
         } catch {
-            try? controller.releaseLease(id)
+            provider.cancelLeaseIfLoaded(id)
             stateLock.withLock {
-                self.leaseID = nil
+                if self.leaseID == id {
+                    self.leaseID = nil
+                }
             }
             reply(false, -1, nil, error.localizedDescription as NSString)
         }
@@ -87,14 +101,28 @@ final class FanHelperSession: NSObject, FanControlXPCProtocol {
         _ leaseID: NSString,
         withReply reply: @escaping (NSString?) -> Void
     ) {
-        guard let id = UUID(uuidString: leaseID as String),
-              stateLock.withLock({ self.leaseID == id }) else {
+        guard let id = UUID(uuidString: leaseID as String) else {
+            reply("lease does not belong to this connection")
+            return
+        }
+        let ownedLease = stateLock.withLock { self.leaseID }
+        guard let ownedLease else {
+            reply(nil)
+            return
+        }
+        guard ownedLease == id else {
             reply("lease does not belong to this connection")
             return
         }
 
         do {
+            let controller = try provider.controller()
             try controller.releaseLease(id)
+            stateLock.withLock {
+                self.leaseID = nil
+            }
+            reply(nil)
+        } catch FanControlError.leaseNotFound {
             stateLock.withLock {
                 self.leaseID = nil
             }
@@ -108,6 +136,7 @@ final class FanHelperSession: NSObject, FanControlXPCProtocol {
         withReply reply: @escaping (NSString?) -> Void
     ) {
         do {
+            let controller = try provider.controller()
             try controller.restoreAutomatic()
             stateLock.withLock {
                 leaseID = nil
@@ -120,11 +149,12 @@ final class FanHelperSession: NSObject, FanControlXPCProtocol {
 
     func connectionInvalidated() {
         let id = stateLock.withLock { () -> UUID? in
+            invalidated = true
             defer { leaseID = nil }
             return leaseID
         }
         if let id {
-            try? controller.releaseLease(id)
+            provider.cancelLeaseIfLoaded(id)
         }
     }
 }

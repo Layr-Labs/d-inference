@@ -6,7 +6,7 @@ final class FanActuator {
     private static let modeUnlockDelay: TimeInterval = 3
     private static let modeUnlockTimeout: TimeInterval = 10
 
-    private let smc: AppleSMC
+    private let smc: SMCReadingWriting
     private let fans: [SMCFan]
     private let hasFanTestKey: Bool
     private var fanTestEnabledByUs = false
@@ -14,7 +14,7 @@ final class FanActuator {
     private(set) var targetRPMs: [Int] = []
     private(set) var isControlling = false
 
-    init(smc: AppleSMC, hardware: FanHardware) throws {
+    init(smc: SMCReadingWriting, hardware: FanHardware) throws {
         self.smc = smc
         fans = hardware.fans
         hasFanTestKey = hardware.hasFanTestKey
@@ -43,6 +43,9 @@ final class FanActuator {
         speedPercent: Double,
         shouldStop: () -> Bool
     ) throws -> [Int] {
+        if shouldStop() {
+            throw FanControlError.interrupted
+        }
         guard !isControlling else {
             try maintain(shouldStop: shouldStop)
             return targetRPMs
@@ -55,7 +58,7 @@ final class FanActuator {
                 try targetRPM(for: $0, speedPercent: speedPercent)
             }
             try engageManualModes(shouldStop: shouldStop)
-            try applyTargets()
+            try applyTargets(shouldStop: shouldStop)
             isControlling = true
             return targetRPMs
         } catch let operationError {
@@ -79,8 +82,15 @@ final class FanActuator {
 
         let modes = try fans.map { try readMode($0) }
         if modes.contains(where: { $0 != 1 }) {
-            try raiseTargetsToCurrentHardwareValues()
-            try engageManualModes(shouldStop: shouldStop)
+            relinquishOwnership()
+            throw FanControlError.fanControlOwnershipLost
+        }
+        if hasFanTestKey {
+            let expected: UInt8 = fanTestEnabledByUs ? 1 : 0
+            if try smc.read(Self.fanTestKey).uint8 != expected {
+                relinquishOwnership()
+                throw FanControlError.fanControlOwnershipLost
+            }
         }
 
         for index in fans.indices {
@@ -88,17 +98,11 @@ final class FanActuator {
             let target = targetRPMs[index]
             let current = try smc.read(fan.targetKey).numeric
             let tolerance = max(25, Double(target) * 0.01)
-            guard let current, current.isFinite else {
-                try writeTarget(target, for: fan)
-                continue
-            }
-            if current > Double(target) + tolerance {
-                targetRPMs[index] = min(
-                    Int(current.rounded()),
-                    Int(fan.maximumRPM.rounded())
-                )
-            } else if current < Double(target) - tolerance {
-                try writeTarget(target, for: fan)
+            guard let current,
+                  current.isFinite,
+                  abs(current - Double(target)) <= tolerance else {
+                relinquishOwnership()
+                throw FanControlError.fanControlOwnershipLost
             }
         }
     }
@@ -149,7 +153,10 @@ final class FanActuator {
         fanTestEnabledByUs = false
     }
 
-    static func forceAutomatic(smc: AppleSMC, hardware: FanHardware) throws {
+    static func forceAutomatic(
+        smc: SMCReadingWriting,
+        hardware: FanHardware
+    ) throws {
         var failures: [String] = []
         for fan in hardware.fans {
             do {
@@ -205,7 +212,7 @@ final class FanActuator {
 
     private func engageManualModes(shouldStop: () -> Bool) throws {
         do {
-            try setAllModesManual()
+            try setAllModesManual(shouldStop: shouldStop)
             return
         } catch let directError {
             if case FanControlError.interrupted = directError {
@@ -233,7 +240,7 @@ final class FanActuator {
                 throw FanControlError.interrupted
             }
             do {
-                try setAllModesManual()
+                try setAllModesManual(shouldStop: shouldStop)
                 return
             } catch {
                 lastError = error
@@ -246,12 +253,18 @@ final class FanActuator {
         throw lastError
     }
 
-    private func setAllModesManual() throws {
+    private func setAllModesManual(shouldStop: () -> Bool) throws {
         for fan in fans {
+            if shouldStop() {
+                throw FanControlError.interrupted
+            }
             try smc.write(fan.modeKey, bytes: [1])
         }
         Thread.sleep(forTimeInterval: Self.modeRetryInterval)
         for fan in fans {
+            if shouldStop() {
+                throw FanControlError.interrupted
+            }
             if try readMode(fan) != 1 {
                 throw FanControlError.writeNotApplied(fan.modeKey.name)
             }
@@ -284,27 +297,11 @@ final class FanActuator {
         )
     }
 
-    private func raiseTargetsToCurrentHardwareValues() throws {
-        for index in fans.indices {
-            let fan = fans[index]
-            let actual = finiteRPM(
-                try smc.read(SMCKey("F\(fan.index)Ac")).numeric
-            ) ?? 0
-            let currentTarget = finiteRPM(
-                try smc.read(fan.targetKey).numeric
-            ) ?? 0
-            targetRPMs[index] = min(
-                Int(fan.maximumRPM.rounded()),
-                max(
-                    targetRPMs[index],
-                    Int(max(actual, currentTarget).rounded())
-                )
-            )
-        }
-    }
-
-    private func applyTargets() throws {
+    private func applyTargets(shouldStop: () -> Bool) throws {
         for (fan, target) in zip(fans, targetRPMs) {
+            if shouldStop() {
+                throw FanControlError.interrupted
+            }
             try writeTarget(target, for: fan)
         }
     }
@@ -354,6 +351,13 @@ final class FanActuator {
     private func finiteRPM(_ value: Double?) -> Double? {
         guard let value, value.isFinite, value >= 0 else { return nil }
         return value
+    }
+
+    private func relinquishOwnership() {
+        targetRPMs = []
+        isControlling = false
+        mutationStarted = false
+        fanTestEnabledByUs = false
     }
 
     private func cancellableSleep(

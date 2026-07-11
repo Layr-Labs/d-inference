@@ -1,5 +1,4 @@
 import Dispatch
-import FanControlCore
 import FanControlIPC
 import Foundation
 import Darwin
@@ -11,14 +10,9 @@ func fail(_ message: String) -> Never {
     exit(EXIT_FAILURE)
 }
 
-let controller: FanLeaseController
-do {
-    controller = try FanLeaseController()
-} catch {
-    fail(error.localizedDescription)
-}
-
-let delegate = FanHelperListener(controller: controller)
+let provider = FanControllerProvider()
+provider.prepare()
+let delegate = FanHelperListener(provider: provider)
 let listener = NSXPCListener(
     machServiceName: FanControlIPC.machServiceName
 )
@@ -34,7 +28,7 @@ for signalNumber in [SIGTERM, SIGINT, SIGHUP, SIGQUIT] {
     )
     source.setEventHandler {
         do {
-            try controller.shutdown()
+            try provider.shutdown()
             exit(EXIT_SUCCESS)
         } catch {
             fail(error.localizedDescription)

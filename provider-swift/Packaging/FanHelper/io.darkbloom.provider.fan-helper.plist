@@ -13,14 +13,18 @@
         <key>io.darkbloom.provider.fan-helper</key>
         <true/>
     </dict>
-    <key>RunAtLoad</key>
-    <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>PathState</key>
+        <dict>
+            <key>/Library/Application Support/Darkbloom/fan-recovery</key>
+            <true/>
+        </dict>
+    </dict>
     <key>ProcessType</key>
     <string>Background</string>
     <key>ThrottleInterval</key>
-    <integer>2</integer>
+    <integer>10</integer>
     <key>Umask</key>
     <integer>63</integer>
     <key>AssociatedBundleIdentifiers</key>

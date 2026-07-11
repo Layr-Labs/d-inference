@@ -162,6 +162,106 @@ struct FanLeaseControllerTests {
         #expect(driver.restoreCount == 1)
     }
 
+    @Test("lease TTL starts after a slow hardware operation completes")
+    func ttlStartsAfterOperation() throws {
+        let driver = MockFanDriver()
+        let journal = MockFanJournal()
+        var now = 100.0
+        driver.engageAction = {
+            now = 115
+        }
+        let controller = makeController(
+            driver: driver,
+            journal: journal,
+            now: { now }
+        )
+        let lease = try controller.acquireLease(
+            speedPercent: 90,
+            triggerTemperatureCelsius: 40
+        )
+
+        _ = try controller.renewLease(
+            lease,
+            sequence: 1,
+            inferenceActive: true
+        )
+        now = 124
+
+        #expect(throws: FanControlError.self) {
+            try controller.acquireLease(
+                speedPercent: 90,
+                triggerTemperatureCelsius: 40
+            )
+        }
+    }
+
+    @Test("operation deadline interrupts hardware work and restores")
+    func operationDeadlineRestores() throws {
+        let events = EventLog()
+        let driver = MockFanDriver(events: events)
+        let journal = MockFanJournal(events: events)
+        var now = 100.0
+        driver.engageAction = {
+            now += FanLeaseController.operationTimeoutSeconds + 1
+        }
+        let controller = makeController(
+            driver: driver,
+            journal: journal,
+            now: { now }
+        )
+        let lease = try controller.acquireLease(
+            speedPercent: 90,
+            triggerTemperatureCelsius: 40
+        )
+
+        #expect(throws: FanControlError.self) {
+            try controller.renewLease(
+                lease,
+                sequence: 1,
+                inferenceActive: true
+            )
+        }
+        #expect(!journal.required)
+        #expect(events.values == [
+            "journal.mark",
+            "driver.force",
+            "journal.clear",
+        ])
+    }
+
+    @Test("ownership drift is not overwritten during cleanup")
+    func ownershipDriftRelinquishes() throws {
+        let events = EventLog()
+        let driver = MockFanDriver(events: events)
+        let journal = MockFanJournal(events: events)
+        let controller = makeController(driver: driver, journal: journal)
+        let lease = try controller.acquireLease(
+            speedPercent: 90,
+            triggerTemperatureCelsius: 40
+        )
+        _ = try controller.renewLease(
+            lease,
+            sequence: 1,
+            inferenceActive: true
+        )
+        driver.maintainAction = {
+            driver.isControlling = false
+            driver.targetRPMs = []
+            throw FanControlError.fanControlOwnershipLost
+        }
+
+        #expect(throws: FanControlError.self) {
+            try controller.renewLease(
+                lease,
+                sequence: 2,
+                inferenceActive: true
+            )
+        }
+        #expect(Array(events.values.suffix(1)) == ["journal.clear"])
+        #expect(!events.values.contains("driver.restore"))
+        #expect(!events.values.contains("driver.force"))
+    }
+
     private func makeController(
         driver: MockFanDriver,
         journal: MockFanJournal,
@@ -185,6 +285,8 @@ private final class MockFanDriver: FanHardwareDriving {
     var temperature = 60.0
     var pressure = FanThermalPressure.nominal
     var restoreCount = 0
+    var engageAction: (() throws -> Void)?
+    var maintainAction: (() throws -> Void)?
     private let events: EventLog?
 
     init(events: EventLog? = nil) {
@@ -200,14 +302,26 @@ private final class MockFanDriver: FanHardwareDriving {
         )
     }
 
-    func engage(speedPercent: Double) throws -> [Int] {
+    func engage(
+        speedPercent: Double,
+        shouldStop: () -> Bool
+    ) throws -> [Int] {
         events?.values.append("driver.engage")
+        try engageAction?()
+        if shouldStop() {
+            throw FanControlError.interrupted
+        }
         isControlling = true
         targetRPMs = [Int(6_000 * speedPercent / 100)]
         return targetRPMs
     }
 
-    func maintain() throws {}
+    func maintain(shouldStop: () -> Bool) throws {
+        try maintainAction?()
+        if shouldStop() {
+            throw FanControlError.interrupted
+        }
+    }
 
     func restoreAutomatic() throws {
         events?.values.append("driver.restore")

@@ -9,8 +9,10 @@ PLIST="/Library/LaunchDaemons/$LABEL.plist"
 /bin/chmod 0755 "$HELPER"
 /bin/chmod 0644 "$PLIST"
 /usr/bin/plutil -lint "$PLIST"
+if /bin/launchctl print "system/$LABEL" >/dev/null 2>&1; then
+    /bin/launchctl bootout "system/$LABEL"
+fi
 /bin/launchctl bootstrap system "$PLIST"
 /bin/launchctl enable "system/$LABEL"
-/bin/launchctl kickstart -k "system/$LABEL"
 
 exit 0

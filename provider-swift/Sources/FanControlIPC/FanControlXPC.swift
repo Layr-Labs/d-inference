@@ -2,6 +2,7 @@ import Foundation
 
 public enum FanControlIPC {
     public static let protocolVersion = 1
+    public static let replyTimeoutSeconds: TimeInterval = 30
     public static let machServiceName = "io.darkbloom.provider.fan-helper"
     public static let clientBundleIdentifier = "io.darkbloom.provider"
     public static let helperBundleIdentifier = "io.darkbloom.provider.fan-helper"

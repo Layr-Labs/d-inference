@@ -4,6 +4,7 @@ import Darwin
 
 public final class FanLeaseController: @unchecked Sendable {
     public static let leaseTTLSeconds: TimeInterval = 10
+    static let operationTimeoutSeconds: TimeInterval = 20
 
     private struct Lease {
         let id: UUID
@@ -19,6 +20,10 @@ public final class FanLeaseController: @unchecked Sendable {
     private let journal: FanRecoveryJournaling
     private let now: () -> TimeInterval
     private let log: (String) -> Void
+    private let cancellationLock = NSLock()
+    private var cancelledLeaseIDs: Set<UUID> = []
+    private var interruptAllOperations = false
+    private var shuttingDown = false
     private var lease: Lease?
     private var timer: DispatchSourceTimer!
 
@@ -33,12 +38,11 @@ public final class FanLeaseController: @unchecked Sendable {
 
         let journal = FanRecoveryJournal()
         let recoveryRequired = try journal.recoveryRequired()
-        let driver = try SMCFanHardwareDriver(
-            recoverStaleControl: recoveryRequired
-        )
         if recoveryRequired {
+            try SMCFanHardwareDriver.recoverStaleControl()
             try journal.clear()
         }
+        let driver = try SMCFanHardwareDriver()
         self.init(
             driver: driver,
             journal: journal,
@@ -91,6 +95,9 @@ public final class FanLeaseController: @unchecked Sendable {
         triggerTemperatureCelsius: Double
     ) throws -> UUID {
         try queue.sync {
+            guard !cancellationLock.withLock({ shuttingDown }) else {
+                throw FanControlError.interrupted
+            }
             try expireLeaseIfNeeded()
             guard lease == nil else {
                 throw FanControlError.leaseBusy
@@ -102,6 +109,7 @@ public final class FanLeaseController: @unchecked Sendable {
                 triggerTemperatureCelsius: triggerTemperatureCelsius
             )
             let id = UUID()
+            clearCancellation(for: id)
             lease = Lease(
                 id: id,
                 configuration: configuration,
@@ -125,9 +133,13 @@ public final class FanLeaseController: @unchecked Sendable {
             guard sequence > current.lastSequence else {
                 throw FanControlError.staleLeaseSequence
             }
-            current.lastSequence = sequence
-            current.expiresAt = now() + Self.leaseTTLSeconds
-            lease = current
+            let operationDeadline = now() + Self.operationTimeoutSeconds
+            let shouldStop = {
+                self.operationShouldStop(
+                    leaseID: id,
+                    deadline: operationDeadline
+                )
+            }
 
             let sample = driver.sample(
                 inferenceActive: inferenceActive
@@ -141,17 +153,33 @@ public final class FanLeaseController: @unchecked Sendable {
                 case .engage:
                     try journal.markRecoveryRequired()
                     _ = try driver.engage(
-                        speedPercent: current.configuration.speedPercent
+                        speedPercent: current.configuration.speedPercent,
+                        shouldStop: shouldStop
                     )
                 case .maintain:
                     if driver.isControlling {
-                        try driver.maintain()
+                        try driver.maintain(shouldStop: shouldStop)
                     }
                 case .release:
                     try restoreOwnedControl()
                 }
+                if shouldStop() {
+                    throw FanControlError.interrupted
+                }
             } catch let operationError {
                 lease = nil
+                defer { clearCancellation(for: id) }
+                if case FanControlError.fanControlOwnershipLost = operationError {
+                    do {
+                        try journal.clear()
+                    } catch {
+                        throw FanControlError.operationAndRestoreFailed(
+                            operation: operationError.localizedDescription,
+                            restore: error.localizedDescription
+                        )
+                    }
+                    throw operationError
+                }
                 do {
                     try restoreOwnedControl()
                 } catch let restoreError {
@@ -163,6 +191,9 @@ public final class FanLeaseController: @unchecked Sendable {
                 throw operationError
             }
 
+            current.lastSequence = sequence
+            current.expiresAt = now() + Self.leaseTTLSeconds
+            lease = current
             return FanLeaseStatus(
                 engaged: driver.isControlling,
                 temperatureCelsius: sample.hottestTemperatureCelsius,
@@ -173,7 +204,9 @@ public final class FanLeaseController: @unchecked Sendable {
     }
 
     public func releaseLease(_ id: UUID) throws {
+        requestCancellation(for: id)
         try queue.sync {
+            defer { clearCancellation(for: id) }
             guard let current = lease, current.id == id else {
                 throw FanControlError.leaseNotFound
             }
@@ -182,7 +215,34 @@ public final class FanLeaseController: @unchecked Sendable {
         }
     }
 
+    public func cancelLease(_ id: UUID) {
+        requestCancellation(for: id)
+        queue.async { [weak self] in
+            guard let self else { return }
+            defer { self.clearCancellation(for: id) }
+            guard let current = self.lease, current.id == id else {
+                return
+            }
+            self.lease = nil
+            do {
+                try self.restoreOwnedControl()
+            } catch {
+                self.log(
+                    "cancelled lease recovery failed: \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
     public func restoreAutomatic() throws {
+        cancellationLock.withLock {
+            interruptAllOperations = true
+        }
+        defer {
+            cancellationLock.withLock {
+                interruptAllOperations = false
+            }
+        }
         try queue.sync {
             lease = nil
             try driver.forceAutomatic()
@@ -191,6 +251,9 @@ public final class FanLeaseController: @unchecked Sendable {
     }
 
     public func shutdown() throws {
+        cancellationLock.withLock {
+            shuttingDown = true
+        }
         try queue.sync {
             lease = nil
             try restoreOwnedControl()
@@ -207,6 +270,7 @@ public final class FanLeaseController: @unchecked Sendable {
         }
 
         lease = nil
+        clearCancellation(for: current.id)
         log("lease expired; restoring automatic fan control")
         try restoreOwnedControl()
     }
@@ -224,6 +288,32 @@ public final class FanLeaseController: @unchecked Sendable {
             try driver.forceAutomatic()
         }
         try journal.clear()
+    }
+
+    private func requestCancellation(for id: UUID) {
+        cancellationLock.withLock {
+            cancelledLeaseIDs.insert(id)
+        }
+    }
+
+    private func clearCancellation(for id: UUID) {
+        cancellationLock.withLock {
+            cancelledLeaseIDs.remove(id)
+        }
+    }
+
+    private func operationShouldStop(
+        leaseID: UUID,
+        deadline: TimeInterval
+    ) -> Bool {
+        if now() >= deadline {
+            return true
+        }
+        return cancellationLock.withLock {
+            shuttingDown
+                || interruptAllOperations
+                || cancelledLeaseIDs.contains(leaseID)
+        }
     }
 
     private static func monotonicSeconds() -> TimeInterval {

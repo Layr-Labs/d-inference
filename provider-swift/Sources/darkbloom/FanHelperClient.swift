@@ -175,7 +175,7 @@ private final class PendingFanReply<Value>: @unchecked Sendable {
     }
 
     func wait(
-        timeout: TimeInterval = 5
+        timeout: TimeInterval = FanControlIPC.replyTimeoutSeconds
     ) throws -> Value {
         guard semaphore.wait(timeout: .now() + timeout) == .success else {
             throw FanHelperClientError.timeout

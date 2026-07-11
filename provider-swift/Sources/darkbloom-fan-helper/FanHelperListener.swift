@@ -3,10 +3,10 @@ import FanControlIPC
 import Foundation
 
 final class FanHelperListener: NSObject, NSXPCListenerDelegate {
-    private let controller: FanLeaseController
+    private let provider: FanControllerProvider
 
-    init(controller: FanLeaseController) {
-        self.controller = controller
+    init(provider: FanControllerProvider) {
+        self.provider = provider
     }
 
     func listener(
@@ -20,7 +20,7 @@ final class FanHelperListener: NSObject, NSXPCListenerDelegate {
             with: FanControlXPCProtocol.self
         )
 
-        let session = FanHelperSession(controller: controller)
+        let session = FanHelperSession(provider: provider)
         connection.exportedObject = session
         connection.invalidationHandler = { [weak session] in
             session?.connectionInvalidated()

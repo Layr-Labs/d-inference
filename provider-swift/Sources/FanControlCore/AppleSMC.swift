@@ -145,7 +145,13 @@ private struct SMCParameter {
     )
 }
 
-final class AppleSMC {
+protocol SMCReadingWriting: AnyObject {
+    func read(_ key: SMCKey) throws -> SMCValue
+    func readIfPresent(_ key: SMCKey) throws -> SMCValue?
+    func write(_ key: SMCKey, bytes: [UInt8]) throws
+}
+
+final class AppleSMC: SMCReadingWriting {
     static let parameterSize = MemoryLayout<SMCParameter>.stride
 
     private enum Command: UInt8 {

@@ -586,6 +586,33 @@ public actor TerminalJournal {
         return start
     }
 
+    /// Returns durable reconciliation state only for the exact full identity.
+    /// An attempt-ID collision is quarantinable evidence, never `unknown`.
+    public func attemptStatus(
+        for identity: AttemptIdentity
+    ) throws -> V2AttemptStatus? {
+        let attemptID = identity.attemptID.description
+        guard let entry = entries[attemptID] else { return nil }
+        let historicalIdentity = try TerminalAttemptIdentity(identity)
+        switch entry {
+        case .start(let start):
+            guard start.identity == historicalIdentity else {
+                throw TerminalJournalError.conflictingStart(attemptID)
+            }
+            return try V2AttemptStatus(identity: identity, state: .started)
+        case .terminal(let terminal):
+            guard terminal.terminal.identity == historicalIdentity else {
+                throw TerminalJournalError.conflictingTerminal(attemptID)
+            }
+            return try V2AttemptStatus(
+                identity: identity,
+                state: .terminal,
+                terminalDigest: ProtocolV2Digest(
+                    bytes: terminal.terminalDigest.bytes)!
+            )
+        }
+    }
+
     /// Returns true only when the exact attempt identity already has a durable
     /// terminal. An attempt-ID collision is a conflict, never an idempotent
     /// duplicate.

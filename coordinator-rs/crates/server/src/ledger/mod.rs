@@ -1,15 +1,19 @@
 //! Durable, replay-safe financial services.
 
 mod deposit;
+mod lifecycle;
 mod release;
+mod release_terminal;
 mod reserve;
 mod resize;
+mod review;
 mod settle;
 pub mod types;
 mod withdrawal;
 
 use crate::{database::Database, db::ownership::DurableDatabase};
 
+pub use review::review_resolution_operation;
 pub use types::*;
 
 /// Concrete durable ledger service. It is intentionally not hidden behind a

@@ -22,8 +22,8 @@ func TestPostgresMigrationsFreshDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(result.Applied) != "[1 2 3 4]" {
-		t.Fatalf("applied = %v, want [1 2 3 4]", result.Applied)
+	if fmt.Sprint(result.Applied) != "[1 2 3 4 5]" {
+		t.Fatalf("applied = %v, want [1 2 3 4 5]", result.Applied)
 	}
 	if result.DatabaseVersion != MaximumSupportedSchemaVersion {
 		t.Fatalf("database version = %d", result.DatabaseVersion)
@@ -72,9 +72,9 @@ func TestPostgresMigrationsFreshDatabase(t *testing.T) {
 		LIMIT 1`).Scan(&rustSchemaVersion, &minimumPublic, &maximumPublic); err != nil {
 		t.Fatal(err)
 	}
-	if rustSchemaVersion != 2 || minimumPublic != 4 || maximumPublic != 4 {
+	if rustSchemaVersion != 3 || minimumPublic != 5 || maximumPublic != 5 {
 		t.Fatalf(
-			"Rust schema compatibility = version %d public [%d,%d], want version 2 public [4,4]",
+			"Rust schema compatibility = version %d public [%d,%d], want version 3 public [5,5]",
 			rustSchemaVersion,
 			minimumPublic,
 			maximumPublic,
@@ -107,6 +107,9 @@ func TestPostgresMigrationsUpgradePublicV3AndRustV1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := configureMigrationTimeouts(ctx, conn, MigrationOptions{}.withDefaults()); err != nil {
+		t.Fatal(err)
+	}
 	for index, item := range catalog[:3] {
 		if err := applyMigration(ctx, conn, item, index > 0); err != nil {
 			t.Fatalf("apply pre-upgrade migration %d: %v", item.Version, err)
@@ -134,8 +137,8 @@ func TestPostgresMigrationsUpgradePublicV3AndRustV1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(result.Applied) != "[4]" {
-		t.Fatalf("upgrade applied = %v, want [4]", result.Applied)
+	if fmt.Sprint(result.Applied) != "[4 5]" {
+		t.Fatalf("upgrade applied = %v, want [4 5]", result.Applied)
 	}
 	if err := validateRustSchemaV2Shape(ctx, conn); err != nil {
 		t.Fatalf("upgraded Rust schema shape: %v", err)
@@ -155,12 +158,14 @@ func TestPostgresRustDurableSchemaRejectsInvalidStateIdentityAndForeignKey(t *te
 		INSERT INTO rust_coord.inference_jobs (
 			job_id, request_id, reservation_id, reserve_operation_key,
 			account_id, owner_epoch, state, reserved_total_micro_usd,
-			reserved_withdrawable_micro_usd, reservation_pre_debited
+			reserved_withdrawable_micro_usd, reservation_pre_debited,
+			request_deadline
 		) VALUES (
 			'00000000-0000-0000-0000-000000000001',
 			'00000000-0000-0000-0000-000000000002',
 			'00000000-0000-0000-0000-000000000003',
-			'reserve:test', 'account:test', 1, 'unknown_state', 10, 5, true
+			'reserve:test', 'account:test', 1, 'unknown_state', 10, 5, true,
+			NOW() + INTERVAL '1 minute'
 		)`)
 	if err == nil || !strings.Contains(err.Error(), "inference_jobs_state_check") {
 		t.Fatalf("invalid job state error = %v", err)
@@ -276,8 +281,8 @@ func TestPostgresMigrationsSuccessfullyAdoptLegacyDatabaseExplicitly(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(result.Applied) != "[1 2 3 4]" {
-		t.Fatalf("legacy adoption applied = %v, want [1 2 3 4]", result.Applied)
+	if fmt.Sprint(result.Applied) != "[1 2 3 4 5]" {
+		t.Fatalf("legacy adoption applied = %v, want [1 2 3 4 5]", result.Applied)
 	}
 	var balance, withdrawable int64
 	if err := conn.QueryRow(ctx, `
@@ -433,8 +438,8 @@ func TestPostgresMigrationRecoversInvalidConcurrentIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(result.Applied) != "[2 3 4]" {
-		t.Fatalf("recovery applied = %v, want [2 3 4]", result.Applied)
+	if fmt.Sprint(result.Applied) != "[2 3 4 5]" {
+		t.Fatalf("recovery applied = %v, want [2 3 4 5]", result.Applied)
 	}
 	if valid, err := concurrentIndexDefinitionMatches(ctx, conn, "idx_provider_earnings_job"); err != nil {
 		t.Fatal(err)
@@ -517,8 +522,8 @@ func TestPostgresMigrationRepairsValidWrongConcurrentIndex(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if fmt.Sprint(result.Applied) != "[2 3 4]" {
-				t.Fatalf("repair applied = %v, want [2 3 4]", result.Applied)
+			if fmt.Sprint(result.Applied) != "[2 3 4 5]" {
+				t.Fatalf("repair applied = %v, want [2 3 4 5]", result.Applied)
 			}
 			if matches, err := concurrentIndexDefinitionMatches(
 				ctx,
@@ -644,6 +649,7 @@ func assertMigrationVersionCount(t *testing.T, conn *pgx.Conn, version int64, wa
 func resetRustSchemaToV1(t *testing.T, conn *pgx.Conn) {
 	t.Helper()
 	if _, err := conn.Exec(context.Background(), `
+		DROP TABLE IF EXISTS rust_coord.review_resolution_journal CASCADE;
 		DROP TABLE IF EXISTS rust_coord.fee_projection_checkpoints CASCADE;
 		DROP TABLE IF EXISTS rust_coord.fee_allocations CASCADE;
 		DROP TABLE IF EXISTS rust_coord.outbox CASCADE;
@@ -653,7 +659,7 @@ func resetRustSchemaToV1(t *testing.T, conn *pgx.Conn) {
 		DROP TABLE IF EXISTS rust_coord.inference_attempts CASCADE;
 		DROP TABLE IF EXISTS rust_coord.inference_jobs CASCADE;
 		DROP TABLE IF EXISTS rust_coord.provider_hard_untrust_epochs CASCADE;
-		DELETE FROM rust_coord.schema_versions WHERE version = 2`); err != nil {
+		DELETE FROM rust_coord.schema_versions WHERE version >= 2`); err != nil {
 		t.Fatalf("reset Rust schema to compatibility version 1: %v", err)
 	}
 }

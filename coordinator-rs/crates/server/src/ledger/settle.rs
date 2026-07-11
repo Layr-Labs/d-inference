@@ -5,7 +5,7 @@ use super::{
     reserve::{json_i64, json_uuid},
     types::{
         JobId, LedgerAmount, LedgerError, MutationDisposition, SettleRequest, SettlementResult,
-        Version, json_digest,
+        Version, canonical_json_digest,
     },
 };
 use crate::db::ownership::{Authority, DurableDatabase, OperationRecord};
@@ -53,7 +53,7 @@ impl LedgerService {
             "job_id": request.job_id.as_uuid(),
             "settlement_operation_key": request.operation.key.as_str(),
         });
-        let outbox_digest = json_digest(&outbox_payload)?;
+        let outbox_digest = canonical_json_digest(&outbox_payload)?;
         let recovery_worker = request
             .terminal
             .recovery_lease
@@ -64,6 +64,11 @@ impl LedgerService {
             .recovery_lease
             .as_ref()
             .map(|lease| lease.version.as_i64());
+        let review_resolution_id = request.review.as_ref().map(|review| review.resolution_id);
+        let review_reason = request
+            .review
+            .as_ref()
+            .map(|review| review.operator_reason.as_ref());
         self.db
             .bounded(
                 sqlx::query_as_unchecked!(
@@ -94,16 +99,47 @@ impl LedgerService {
                           AND jobs.owner_epoch = $2
                           AND jobs.version = $4
                           AND jobs.state = $5
+                          AND (
+                              $36::UUID IS NOT NULL
+                              OR jobs.request_deadline > NOW()
+                          )
                           AND attempts.owner_epoch = $2
                           AND attempts.version = $7
-                          AND attempts.state = 'started'
+                          AND attempts.state IN (
+                              'queued',
+                              'on_wire',
+                              'sent_unknown',
+                              'started'
+                          )
                           AND attempts.provider_id = $8
                           AND attempts.provider_process_generation_id = $9
                           AND attempts.session_epoch = $10
+                          AND (
+                              $36::UUID IS NOT NULL
+                              OR NOT EXISTS (
+                                  SELECT 1
+                                  FROM rust_coord.provider_hard_untrust_epochs
+                                      AS untrusted
+                                  WHERE untrusted.provider_id = $8
+                                    AND untrusted.hard_untrust_epoch >= $10
+                              )
+                          )
                           AND jobs.provider_id = $8
                           AND jobs.request_digest = attempts.request_digest
+                          AND jobs.consumer_key_hash = $31
+                          AND $14::TEXT = 'completed'
+                          AND $15::TEXT IS NULL
                           AND jobs.billable_input_tokens = $16
                           AND $17::BIGINT <= jobs.bounded_output_tokens
+                          AND $17::BIGINT <= $38::BIGINT
+                          AND $18::BIGINT <= $17::BIGINT
+                          AND $22::BIGINT = $17::BIGINT
+                          AND $38::BIGINT <= jobs.bounded_output_tokens
+                          AND (
+                              $34::UUID IS NULL
+                              OR $38::BIGINT
+                                 <= jobs.accepted_cumulative_tokens
+                          )
                           AND $27::BIGINT <= jobs.reserved_total_micro_usd
                           AND $28::BIGINT <= jobs.provider_payout_micro_usd
                           AND $29::BIGINT <= jobs.platform_fee_micro_usd
@@ -123,6 +159,14 @@ impl LedgerService {
                           )
                           AND $27::NUMERIC = (
                               $28::NUMERIC + $29::NUMERIC + $30::NUMERIC
+                          )
+                          AND $28::NUMERIC = FLOOR(
+                              $27::NUMERIC
+                              * jobs.provider_share_ppm::NUMERIC
+                              / 1000000
+                          )
+                          AND $29::NUMERIC = (
+                              $27::NUMERIC - $28::NUMERIC - $30::NUMERIC
                           )
                           AND $30::NUMERIC = FLOOR(
                               ($29::NUMERIC + $30::NUMERIC)
@@ -154,6 +198,19 @@ impl LedgerService {
                         CROSS JOIN locked
                         WHERE jsonb_typeof($13::JSONB) = 'object'
                           AND octet_length($20::BYTEA) > 0
+                          AND (
+                              (
+                                  $36::UUID IS NULL
+                                  AND $37::TEXT IS NULL
+                                  AND locked.state <> 'review_pending'
+                              )
+                              OR (
+                                  $36::UUID IS NOT NULL
+                                  AND $37::TEXT IS NOT NULL
+                                  AND $37::TEXT <> ''
+                                  AND locked.state = 'review_pending'
+                              )
+                          )
                     ),
                     credit_components AS MATERIALIZED (
                         SELECT
@@ -257,19 +314,31 @@ impl LedgerService {
                             $21,
                             $22,
                             $20,
-                            'settled',
+                            CASE
+                                WHEN $36::UUID IS NULL THEN 'settled'
+                                ELSE 'settled_reviewed'
+                            END,
                             $2,
                             NOW()
                         FROM credit_gate
                         ON CONFLICT (terminal_id) DO UPDATE SET
-                            status = 'settled',
+                            status = CASE
+                                WHEN $36::UUID IS NULL THEN 'settled'
+                                ELSE 'settled_reviewed'
+                            END,
                             owner_epoch = $2,
                             version = terminals.version + 1,
                             worker_owner = NULL,
                             lease_until = NULL,
                             updated_at = NOW(),
                             disposition_at = NOW()
-                        WHERE terminals.status = 'pending'
+                        WHERE (
+                                terminals.status = 'pending'
+                                OR (
+                                    $36::UUID IS NOT NULL
+                                    AND terminals.status IN ('conflict', 'rejected')
+                                )
+                              )
                           AND terminals.job_id = EXCLUDED.job_id
                           AND terminals.attempt_id = EXCLUDED.attempt_id
                           AND terminals.provider_id = EXCLUDED.provider_id
@@ -344,6 +413,10 @@ impl LedgerService {
                             jsonb_build_object(
                                 'job_id', credit_gate.job_id,
                                 'version', $4::BIGINT + 1,
+                                'state', CASE
+                                    WHEN $36::UUID IS NULL THEN 'settled'
+                                    ELSE 'settled_reviewed'
+                                END,
                                 'charged', $27::BIGINT,
                                 'charged_withdrawable',
                                     credit_gate.reserved_withdrawable_micro_usd
@@ -423,12 +496,19 @@ impl LedgerService {
                     job_update AS (
                         UPDATE rust_coord.inference_jobs AS jobs
                         SET
-                            state = 'settled',
+                            state = CASE
+                                WHEN $36::UUID IS NULL THEN 'settled'
+                                ELSE 'settled_reviewed'
+                            END,
                             outcome = $14,
                             error_class = $15,
                             usage_prompt_tokens = $16,
                             usage_completion_tokens = $17,
                             usage_reasoning_tokens = $18,
+                            accepted_cumulative_tokens = GREATEST(
+                                jobs.accepted_cumulative_tokens,
+                                $38::BIGINT
+                            ),
                             response_digest = $19,
                             provider_payout_micro_usd = $28,
                             platform_fee_micro_usd = $29,
@@ -447,6 +527,35 @@ impl LedgerService {
                             jobs.version,
                             gate.refund_total
                     ),
+                    review_journal AS (
+                        INSERT INTO rust_coord.review_resolution_journal (
+                            resolution_id,
+                            job_id,
+                            disposition,
+                            operator_reason,
+                            owner_epoch
+                        )
+                        SELECT
+                            $36,
+                            job_update.job_id,
+                            'settled_reviewed',
+                            $37,
+                            $2
+                        FROM job_update
+                        WHERE $36::UUID IS NOT NULL
+                        ON CONFLICT (job_id) DO NOTHING
+                        RETURNING job_id
+                    ),
+                    review_gate AS MATERIALIZED (
+                        SELECT job_update.*
+                        FROM job_update
+                        WHERE $36::UUID IS NULL
+                           OR EXISTS (
+                               SELECT 1
+                               FROM review_journal
+                               WHERE review_journal.job_id = job_update.job_id
+                           )
+                    ),
                     attempt_update AS (
                         UPDATE rust_coord.inference_attempts AS attempts
                         SET
@@ -455,10 +564,15 @@ impl LedgerService {
                             updated_at = NOW(),
                             worker_owner = NULL,
                             lease_until = NULL
-                        FROM job_update
+                        FROM review_gate
                         WHERE attempts.attempt_id = $6
                           AND attempts.version = $7
-                          AND attempts.state = 'started'
+                          AND attempts.state IN (
+                              'queued',
+                              'on_wire',
+                              'sent_unknown',
+                              'started'
+                          )
                         RETURNING attempts.attempt_id
                     ),
                     usage_insert AS (
@@ -594,21 +708,21 @@ impl LedgerService {
                             operation_insert.operation_id,
                             $33,
                             $2
-                        FROM gate, operation_insert, job_update, attempt_update,
+                        FROM gate, operation_insert, review_gate, attempt_update,
                              usage_insert, usage_totals_update
                         RETURNING outbox_id
                     )
                     SELECT
-                        job_update.job_id,
-                        job_update.version,
+                        review_gate.job_id,
+                        review_gate.version,
                         $27::BIGINT AS charged,
                         credit_gate.reserved_withdrawable_micro_usd
                             - credit_gate.refund_withdrawable
                             AS charged_withdrawable,
-                        job_update.refund_total AS refunded,
+                        review_gate.refund_total AS refunded,
                         credit_gate.refund_withdrawable
                             AS refunded_withdrawable
-                    FROM job_update
+                    FROM review_gate
                     CROSS JOIN operation_insert
                     CROSS JOIN outbox_insert
                     CROSS JOIN credit_gate
@@ -648,6 +762,10 @@ impl LedgerService {
                     Json(&outbox_payload),
                     recovery_worker,
                     recovery_version,
+                    review_resolution_id,
+                    review_reason,
+                    i64::try_from(request.accepted_cumulative_tokens)
+                        .map_err(|_| crate::ledger::InputError::ArithmeticOverflow)?,
                 )
                 .fetch_optional(self.db.pool()),
             )
@@ -664,28 +782,42 @@ impl LedgerService {
             return settlement_from_operation(operation, request);
         }
         if ambiguous {
-            return Err(LedgerError::CommitOutcomeUnknown(
-                request.operation.key.clone(),
-            ));
+            return Err(LedgerError::CommitOutcomeUnknown {
+                operation: request.operation.key.clone(),
+                diagnostic: "ambiguous settlement commit was not found during reconciliation"
+                    .into(),
+            });
         }
-        let current = self
+        let diagnostic = self
             .db
             .bounded(
-                sqlx::query_scalar_unchecked!(
+                sqlx::query_as_unchecked!(
+                    SettleDiagnostic,
                     r#"
                     WITH authority AS MATERIALIZED (
                         SELECT 1
                         FROM public.coordinator_ownership
                         WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2
                     )
-                    SELECT EXISTS (
-                        SELECT 1
-                        FROM rust_coord.inference_jobs
-                        WHERE job_id = $3
-                          AND owner_epoch = $2
-                          AND version = $4
-                          AND state = $5
-                    ) AS "current!"
+                    SELECT
+                        EXISTS (
+                            SELECT 1
+                            FROM rust_coord.inference_jobs
+                            WHERE job_id = $3
+                              AND owner_epoch = $2
+                              AND version = $4
+                              AND state = $5
+                        ) AS "current!",
+                        (
+                            $8::UUID IS NOT NULL
+                            OR NOT EXISTS (
+                                SELECT 1
+                                FROM rust_coord.provider_hard_untrust_epochs
+                                    AS untrusted
+                                WHERE untrusted.provider_id = $6
+                                  AND untrusted.hard_untrust_epoch >= $7
+                            )
+                        ) AS "provider_trusted!"
                     FROM authority
                     "#,
                     authority.owner_id(),
@@ -693,13 +825,17 @@ impl LedgerService {
                     request.job_id.as_uuid(),
                     request.expected_job_version.as_i64(),
                     request.expected_job_state.as_str(),
+                    request.terminal.provider_id,
+                    request.terminal.origin_session_epoch.as_i64(),
+                    request.review.as_ref().map(|review| review.resolution_id),
                 )
                 .fetch_optional(self.db.pool()),
             )
             .await?;
-        match current {
-            Some(true) => Err(LedgerError::OperationConflict),
-            Some(false) => Err(LedgerError::StaleVersion),
+        match diagnostic {
+            Some(row) if !row.current => Err(LedgerError::StaleVersion),
+            Some(row) if !row.provider_trusted => Err(LedgerError::ProviderHardUntrusted),
+            Some(_) => Err(LedgerError::OperationConflict),
             None => Err(LedgerError::OwnershipLost),
         }
     }
@@ -714,6 +850,12 @@ impl LedgerService {
         };
         settlement_from_operation(operation, request)
     }
+}
+
+#[derive(Debug, FromRow)]
+struct SettleDiagnostic {
+    current: bool,
+    provider_trusted: bool,
 }
 
 #[derive(Debug, FromRow)]

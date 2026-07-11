@@ -30,19 +30,20 @@ func TestPostgresRollbackGuardRejectsUnresolvedRustState(t *testing.T) {
 	}
 	catalogRenamed = false
 	if err := backend.CheckRollbackSafe(ctx); err != nil {
-		t.Fatalf("empty Rust schema v2: %v", err)
+		t.Fatalf("empty Rust schema v3: %v", err)
 	}
 	if _, err := backend.pool.Exec(ctx, `
 		INSERT INTO rust_coord.inference_jobs (
 			job_id, request_id, reservation_id, reserve_operation_key,
 			account_id, owner_epoch, state, reserved_total_micro_usd,
-			reserved_withdrawable_micro_usd, reservation_pre_debited
+			reserved_withdrawable_micro_usd, reservation_pre_debited,
+			request_deadline
 		) VALUES (
 			'10000000-0000-0000-0000-000000000001',
 			'10000000-0000-0000-0000-000000000002',
 			'10000000-0000-0000-0000-000000000003',
 			'reserve:rollback', 'account:rollback', 1, 'running',
-			0, 0, true
+			0, 0, true, NOW() + INTERVAL '1 minute'
 		)`); err == nil {
 		t.Fatal("running job without frozen terms unexpectedly passed schema checks")
 	}
@@ -50,13 +51,14 @@ func TestPostgresRollbackGuardRejectsUnresolvedRustState(t *testing.T) {
 		INSERT INTO rust_coord.inference_jobs (
 			job_id, request_id, reservation_id, reserve_operation_key,
 			account_id, owner_epoch, state, reserved_total_micro_usd,
-			reserved_withdrawable_micro_usd, reservation_pre_debited
+			reserved_withdrawable_micro_usd, reservation_pre_debited,
+			request_deadline
 		) VALUES (
 			'10000000-0000-0000-0000-000000000001',
 			'10000000-0000-0000-0000-000000000002',
 			'10000000-0000-0000-0000-000000000003',
 			'reserve:rollback', 'account:rollback', 1, 'reserved',
-			10, 4, true
+			10, 4, true, NOW() + INTERVAL '1 minute'
 		)`); err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +123,11 @@ func TestPostgresRollbackGuardRejectsUnresolvedRustState(t *testing.T) {
 	}
 	if _, err := backend.pool.Exec(ctx, `
 		UPDATE rust_coord.provider_terminals
-		SET status = 'rejected', disposition_at = NOW(), updated_at = NOW();
+		SET status = 'released_reviewed', conflict = TRUE,
+		    disposition_at = NOW(), updated_at = NOW();
+		UPDATE rust_coord.inference_jobs
+		SET state = 'released_reviewed', updated_at = NOW()
+		WHERE job_id = '10000000-0000-0000-0000-000000000001';
 		INSERT INTO rust_coord.financial_operations (
 			operation_id, operation_key, operation_digest, kind, status,
 			account_id, amount_total_micro_usd,
@@ -217,14 +223,14 @@ func TestPostgresRollbackGuardRejectsUnresolvedRustState(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := backend.CheckRollbackSafe(ctx); err != nil {
-		t.Fatalf("terminal Rust schema v2 state rejected: %v", err)
+		t.Fatalf("terminal Rust schema v3 state rejected: %v", err)
 	}
 	if _, err := backend.pool.Exec(ctx,
 		`CREATE TABLE rust_coord.unrecognized_work (id BIGINT PRIMARY KEY)`); err != nil {
 		t.Fatal(err)
 	}
 	if err := backend.CheckRollbackSafe(ctx); err == nil ||
-		!strings.Contains(err.Error(), "unknown Rust schema v2 shape") {
+		!strings.Contains(err.Error(), "unknown Rust schema v3 shape") {
 		t.Fatalf("unknown Rust relation guard error = %v", err)
 	}
 	if _, err := backend.pool.Exec(ctx, `
@@ -240,12 +246,12 @@ func TestPostgresRollbackGuardRejectsUnresolvedRustState(t *testing.T) {
 		ALTER TABLE rust_coord.inference_jobs DROP COLUMN future_shape;
 		INSERT INTO rust_coord.schema_versions (
 			version, minimum_public_schema_version, maximum_public_schema_version
-		) VALUES (3, 4, 4)`); err != nil {
+		) VALUES (4, 6, 6)`); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_, _ = backend.pool.Exec(context.Background(),
-			`DELETE FROM rust_coord.schema_versions WHERE version = 3`)
+			`DELETE FROM rust_coord.schema_versions WHERE version = 4`)
 	})
 	if err := backend.CheckRollbackSafe(ctx); err == nil ||
 		!strings.Contains(err.Error(), "unsupported Rust schema history") {

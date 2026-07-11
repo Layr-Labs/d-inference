@@ -30,7 +30,7 @@ struct HttpResponse {
 #[tokio::test]
 async fn health_and_readiness_use_real_postgres() {
     with_isolated_database(|url| async move {
-        reset_schema(&url, 4, 2, 4, 4).await;
+        reset_schema(&url, 5, 3, 5, 5).await;
         let database = Database::connect(&url, 2, Duration::from_secs(3))
             .await
             .expect("connect real PostgreSQL");

@@ -1,12 +1,20 @@
 //! Bounded SKIP LOCKED recovery services.
 
 mod external;
+mod invariants;
 mod jobs;
+mod terminal;
+mod worker;
 
 use crate::{database::Database, db::ownership::DurableDatabase};
 
 pub use external::{ExternalDisposition, ExternalEventLease, OutboxDisposition, OutboxLease};
-pub use jobs::{JobRecoveryAction, JobRecoveryLease, TerminalRecoveryLease};
+pub use invariants::{InvariantReport, InvariantViolation};
+pub use jobs::{
+    AuthorizedAttemptRecovery, JobRecoveryAction, JobRecoveryLease, TerminalRecoveryLease,
+};
+pub use terminal::RecoveredTerminalDisposition;
+pub use worker::{RecoveryRuntime, RecoveryRuntimeConfig, RecoveryRuntimeError};
 
 /// Concrete recovery claimant for durable jobs, terminals, external events,
 /// and outbox work.

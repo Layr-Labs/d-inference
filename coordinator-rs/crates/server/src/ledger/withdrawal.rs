@@ -5,7 +5,7 @@ use super::{
     reserve::json_string,
     types::{
         LedgerError, MutationDisposition, WithdrawalDisposition, WithdrawalId, WithdrawalRequest,
-        WithdrawalResult, WithdrawalStatus, WithdrawalTransition, json_digest,
+        WithdrawalResult, WithdrawalStatus, WithdrawalTransition, canonical_json_digest,
     },
 };
 use crate::db::ownership::{Authority, DurableDatabase, OperationRecord};
@@ -23,7 +23,10 @@ impl LedgerService {
         if !request.external_payload.is_object() {
             return Err(crate::ledger::types::InputError::TerminalPayloadNotObject.into());
         }
-        let payload_digest = json_digest(&request.external_payload)?;
+        let payload_digest = canonical_json_digest(&request.external_payload)?;
+        if payload_digest != request.payload_digest {
+            return Err(LedgerError::OperationConflict);
+        }
         let authority = self.db.authority()?;
         let mut attempt = 0;
         loop {
@@ -34,7 +37,9 @@ impl LedgerService {
             match result {
                 Ok(Some(row)) => return withdrawal_from_row(row, false),
                 Ok(None) => {
-                    return self.resolve_create_withdrawal(&authority, request).await;
+                    return self
+                        .resolve_create_withdrawal(&authority, request, payload_digest, false)
+                        .await;
                 }
                 Err(LedgerError::Database(ref source))
                     if DurableDatabase::may_retry(attempt, source) =>
@@ -46,21 +51,12 @@ impl LedgerService {
                     if DurableDatabase::is_operation_conflict(source) =>
                 {
                     return self
-                        .resolve_withdrawal_conflict(
-                            &authority,
-                            &request.operation,
-                            &request.withdrawal_id,
-                        )
+                        .resolve_create_withdrawal(&authority, request, payload_digest, false)
                         .await;
                 }
                 Err(error) if DurableDatabase::is_ambiguous(&error) => {
                     return self
-                        .resolve_withdrawal(
-                            &authority,
-                            &request.operation,
-                            &request.withdrawal_id,
-                            true,
-                        )
+                        .resolve_create_withdrawal(&authority, request, payload_digest, true)
                         .await;
                 }
                 Err(error) => return Err(error),
@@ -313,6 +309,14 @@ impl LedgerService {
             match result {
                 Ok(Some(row)) => return withdrawal_from_row(row, false),
                 Ok(None) => {
+                    if transition.expected_status == WithdrawalStatus::Paid
+                        && target == WithdrawalStatus::Transferred
+                        && transition.sweep_payout_id.is_some()
+                    {
+                        return self
+                            .resolve_failed_sweep_tombstone(&authority, transition)
+                            .await;
+                    }
                     return self
                         .resolve_withdrawal(
                             &authority,
@@ -354,6 +358,56 @@ impl LedgerService {
         }
     }
 
+    async fn resolve_failed_sweep_tombstone(
+        &self,
+        authority: &Authority,
+        transition: &WithdrawalTransition,
+    ) -> Result<WithdrawalResult, LedgerError> {
+        let sweep_id = transition
+            .sweep_payout_id
+            .as_ref()
+            .ok_or(crate::ledger::types::InputError::Empty("sweep payout id"))?;
+        let row = self
+            .db
+            .bounded(
+                sqlx::query_as::<_, WithdrawalRow>(
+                    r#"
+                    WITH authority AS MATERIALIZED (
+                        SELECT 1
+                        FROM public.coordinator_ownership
+                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2
+                    )
+                    SELECT
+                        withdrawals.id AS withdrawal_id,
+                        withdrawals.status,
+                        withdrawals.refunded,
+                        withdrawals.status = 'review_pending' AS manual_review
+                    FROM public.stripe_withdrawals AS withdrawals
+                    WHERE withdrawals.id = $3
+                      AND EXISTS (
+                          SELECT 1
+                          FROM public.stripe_sweep_failures AS failures
+                          WHERE failures.payout_id = $4
+                      )
+                      AND EXISTS (SELECT 1 FROM authority)
+                    "#,
+                )
+                .bind(authority.owner_id())
+                .bind(authority.epoch())
+                .bind(transition.withdrawal_id.as_str())
+                .bind(sweep_id.as_str())
+                .fetch_optional(self.db.pool()),
+            )
+            .await?;
+        match row {
+            Some(row) => withdrawal_from_row(row, true),
+            None => {
+                self.db.verify_authority(authority).await?;
+                Err(LedgerError::StaleVersion)
+            }
+        }
+    }
+
     async fn transition_once(
         &self,
         authority: &Authority,
@@ -373,7 +427,21 @@ impl LedgerService {
             .as_ref()
             .map_or("", |value| value.as_str());
         let failure = transition.failure_reason.as_deref().unwrap_or("");
+        let serialization_key = if sweep_id.is_empty() {
+            format!("stripe-withdrawal:{}", transition.withdrawal_id.as_str())
+        } else {
+            format!("stripe-sweep:{sweep_id}")
+        };
+        let mut transaction = self.db.bounded(self.db.pool().begin()).await?;
         self.db
+            .bounded(
+                sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+                    .bind(serialization_key)
+                    .execute(&mut *transaction),
+            )
+            .await?;
+        let row = self
+            .db
             .bounded(
                 sqlx::query_as_unchecked!(
                     WithdrawalRow,
@@ -382,6 +450,21 @@ impl LedgerService {
                         SELECT 1
                         FROM public.coordinator_ownership
                         WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2
+                    ),
+                    failure_tombstone AS (
+                        INSERT INTO public.stripe_sweep_failures (
+                            payout_id,
+                            failure_reason
+                        )
+                        SELECT $8, $9
+                        FROM authority
+                        WHERE $4 = 'paid'
+                          AND $5 = 'transferred'
+                          AND $8 <> ''
+                          AND $9 <> ''
+                        ON CONFLICT (payout_id) DO UPDATE SET
+                            failure_reason = EXCLUDED.failure_reason
+                        RETURNING payout_id
                     ),
                     withdrawal_update AS (
                         UPDATE public.stripe_withdrawals AS withdrawals
@@ -405,6 +488,10 @@ impl LedgerService {
                             END,
                             updated_at = NOW()
                         FROM authority
+                        LEFT JOIN (
+                            SELECT COUNT(*) AS recorded
+                            FROM failure_tombstone
+                        ) AS failure_record ON TRUE
                         WHERE withdrawals.id = $3
                           AND withdrawals.status = $4
                           AND withdrawals.refunded = FALSE
@@ -427,6 +514,15 @@ impl LedgerService {
                               $5 <> 'paid'
                               OR $8 = ''
                               OR withdrawals.sweep_payout_id <> $8
+                          )
+                          AND (
+                              $5 <> 'paid'
+                              OR $8 = ''
+                              OR NOT EXISTS (
+                                  SELECT 1
+                                  FROM public.stripe_sweep_failures AS failures
+                                  WHERE failures.payout_id = $8
+                              )
                           )
                         RETURNING withdrawals.id, withdrawals.account_id
                     ),
@@ -486,9 +582,11 @@ impl LedgerService {
                     transition.operation.key.as_str(),
                     transition.operation.digest.as_bytes().as_slice(),
                 )
-                .fetch_optional(self.db.pool()),
+                .fetch_optional(&mut *transaction),
             )
-            .await
+            .await?;
+        self.db.bounded(transaction.commit()).await?;
+        Ok(row)
     }
 
     /// Handles transfer reversal with a paid-vs-not-paid status CAS. A reversal
@@ -720,7 +818,11 @@ impl LedgerService {
             return withdrawal_from_operation(record, operation, withdrawal_id);
         }
         if ambiguous {
-            Err(LedgerError::CommitOutcomeUnknown(operation.key.clone()))
+            Err(LedgerError::CommitOutcomeUnknown {
+                operation: operation.key.clone(),
+                diagnostic: "ambiguous withdrawal commit was not found during reconciliation"
+                    .into(),
+            })
         } else {
             Err(LedgerError::StaleVersion)
         }
@@ -730,8 +832,12 @@ impl LedgerService {
         &self,
         authority: &Authority,
         request: &WithdrawalRequest,
+        payload_digest: darkbloom_coordinator_core::ids::Digest,
+        ambiguous: bool,
     ) -> Result<WithdrawalResult, LedgerError> {
         if let Some(record) = self.db.operation(authority, &request.operation.key).await? {
+            self.validate_withdrawal_payload(authority, request, payload_digest)
+                .await?;
             return withdrawal_from_operation(record, &request.operation, &request.withdrawal_id);
         }
         let diagnostic = self
@@ -774,7 +880,57 @@ impl LedgerService {
         match diagnostic {
             Some(row) if row.withdrawal_conflict => Err(LedgerError::OperationConflict),
             Some(row) if !row.funded => Err(LedgerError::InsufficientBalance),
+            Some(_) if ambiguous => Err(LedgerError::CommitOutcomeUnknown {
+                operation: request.operation.key.clone(),
+                diagnostic:
+                    "ambiguous withdrawal intent commit was not found during reconciliation".into(),
+            }),
             Some(_) => Err(LedgerError::OperationConflict),
+            None => Err(LedgerError::OwnershipLost),
+        }
+    }
+
+    async fn validate_withdrawal_payload(
+        &self,
+        authority: &Authority,
+        request: &WithdrawalRequest,
+        payload_digest: darkbloom_coordinator_core::ids::Digest,
+    ) -> Result<(), LedgerError> {
+        let matches = self
+            .db
+            .bounded(
+                sqlx::query_scalar::<_, bool>(
+                    r#"
+                    WITH authority AS MATERIALIZED (
+                        SELECT 1
+                        FROM public.coordinator_ownership
+                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2
+                    )
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM rust_coord.outbox
+                        JOIN rust_coord.financial_operations AS operations
+                          ON operations.operation_id = outbox.financial_operation_id
+                        WHERE outbox.outbox_id = $3
+                          AND outbox.payload_digest = $4
+                          AND outbox.payload = $5
+                          AND operations.operation_key = $6
+                    )
+                    FROM authority
+                    "#,
+                )
+                .bind(authority.owner_id())
+                .bind(authority.epoch())
+                .bind(request.outbox_id.as_uuid())
+                .bind(payload_digest.as_bytes().as_slice())
+                .bind(Json(&request.external_payload))
+                .bind(request.operation.key.as_str())
+                .fetch_optional(self.db.pool()),
+            )
+            .await?;
+        match matches {
+            Some(true) => Ok(()),
+            Some(false) => Err(LedgerError::OperationConflict),
             None => Err(LedgerError::OwnershipLost),
         }
     }

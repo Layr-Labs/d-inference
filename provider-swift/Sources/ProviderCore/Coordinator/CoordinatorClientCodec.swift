@@ -195,6 +195,9 @@ public enum CoordinatorClientCodec {
         case .startAck(let message):
             return .startAck(message)
 
+        case .attemptStatus(let message):
+            return .attemptStatus(message)
+
         case .abortAck(let message):
             return .abortAck(message)
 
@@ -255,6 +258,7 @@ public enum CoordinatorClientCodec {
         switch message {
         case .prepare(let value): .prepare(value)
         case .start(let value): .start(value)
+        case .queryAttempt(let value): .queryAttempt(value)
         case .abort(let value): .abort(value)
         case .v2Cancel(let value): .cancel(value)
         case .terminalAck(let value): .terminalAck(value)
@@ -269,6 +273,7 @@ public enum CoordinatorClientCodec {
         switch outbound {
         case .prepared(let value): .prepared(value)
         case .startAck(let value): .startAck(value)
+        case .attemptStatus(let value): .attemptStatus(value)
         case .abortAck(let value): .abortAck(value)
         case .cancelAck(let value): .cancelAck(value)
         case .providerTerminal(let value): .terminal(value)

@@ -418,7 +418,25 @@ impl ProviderReader {
         match message {
             ProviderControlMessage::Terminal(terminal) => self.validate_terminal(terminal),
             ProviderControlMessage::Prepared(message) => self.validate_attempt(&message.identity),
-            ProviderControlMessage::StartAck(message) => self.validate_attempt(&message.identity),
+            ProviderControlMessage::StartAck(message) => {
+                if self.identity.matches_attempt(&message.identity)
+                    || self.can_reconcile_historical_attempt(&message.identity)
+                {
+                    Ok(())
+                } else {
+                    Err(ProviderReadError::StaleControlIdentity)
+                }
+            }
+            ProviderControlMessage::AttemptStatus(message) => {
+                if !message.digest_shape_is_valid()
+                    || message.identity.provider_id != self.identity.provider_id
+                    || message.identity.session_epoch > self.identity.session_epoch
+                {
+                    Err(ProviderReadError::StaleControlIdentity)
+                } else {
+                    Ok(())
+                }
+            }
             ProviderControlMessage::AbortAck(message) => self.validate_attempt(&message.identity),
             ProviderControlMessage::CancelAck(message) => self.validate_attempt(&message.identity),
             ProviderControlMessage::StructuredError(message) => {
@@ -461,6 +479,18 @@ impl ProviderReader {
         } else {
             Err(ProviderReadError::StaleControlIdentity)
         }
+    }
+
+    fn can_reconcile_historical_attempt(
+        &self,
+        identity: &darkbloom_coordinator_protocol::v2::AttemptIdentity,
+    ) -> bool {
+        matches!(
+            &self.protocol,
+            NegotiatedProtocol::V2(capabilities) if capabilities.attempt_reconciliation
+        ) && identity.provider_id == self.identity.provider_id
+            && identity.provider_process_generation == self.identity.provider_process_generation
+            && identity.session_epoch <= self.identity.session_epoch
     }
 
     fn validate_terminal(&self, terminal: &ProviderTerminal) -> Result<(), ProviderReadError> {
@@ -576,6 +606,7 @@ fn is_v2_control(message_type: &str) -> bool {
         "prepared"
             | "start_ack"
             | "started"
+            | "attempt_status"
             | "abort_ack"
             | "aborted"
             | "cancel_ack"
@@ -591,10 +622,11 @@ fn is_v2_control(message_type: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use darkbloom_coordinator_protocol::v2::{
-        AttemptId, AttemptIdentity, BinaryFrameFlags, BinaryFrameHeader, BinaryFrameKind, Digest,
-        LeaseId, ProtocolCapabilities, ProviderId, ProviderProcessGenerationId, ProviderTerminal,
-        ReplayFenceAck, ReplayFenceProofId, RequestId, ReservationId, SessionEpoch,
-        TerminalOutcome, TerminalSignature, encode_binary_frame,
+        AbortAck, AttemptId, AttemptIdentity, AttemptStatus, AttemptStatusState, BinaryFrameFlags,
+        BinaryFrameHeader, BinaryFrameKind, Digest, LeaseId, ProtocolCapabilities, ProviderId,
+        ProviderProcessGenerationId, ProviderTerminal, ReplayFenceAck, ReplayFenceProofId,
+        RequestId, ReservationId, SessionEpoch, StartAck, TerminalOutcome, TerminalSignature,
+        encode_binary_frame,
     };
 
     use super::*;
@@ -623,6 +655,7 @@ mod tests {
             model_lifecycle_events: true,
             binary_payload_frames: true,
             coordinator_replay_fences: true,
+            attempt_reconciliation: true,
         }
     }
 
@@ -773,6 +806,68 @@ mod tests {
     }
 
     #[test]
+    fn historical_attempt_status_is_classified_and_shape_checked() {
+        let status = ProviderControlMessage::AttemptStatus(AttemptStatus {
+            identity: attempt(3, 1),
+            state: AttemptStatusState::Started,
+            terminal_digest: None,
+        });
+        let wire = serde_json::to_vec(&status).expect("attempt status JSON");
+        assert!(matches!(
+            reader(NegotiatedProtocol::V2(capabilities())).parse_text(&wire),
+            Ok(SessionEvent::V2Control { .. })
+        ));
+
+        let invalid = ProviderControlMessage::AttemptStatus(AttemptStatus {
+            identity: attempt(3, 1),
+            state: AttemptStatusState::Terminal,
+            terminal_digest: None,
+        });
+        let wire = serde_json::to_vec(&invalid).expect("invalid attempt status JSON");
+        assert_eq!(
+            reader(NegotiatedProtocol::V2(capabilities()))
+                .parse_text(&wire)
+                .expect_err("missing terminal digest"),
+            ProviderReadError::StaleControlIdentity
+        );
+    }
+
+    #[test]
+    fn historical_start_ack_is_accepted_only_from_same_process_reconnect() {
+        let historical = ProviderControlMessage::StartAck(StartAck {
+            identity: attempt(6, 1),
+        });
+        let wire = serde_json::to_vec(&historical).expect("historical StartAck JSON");
+        assert!(matches!(
+            reader(NegotiatedProtocol::V2(capabilities())).parse_text(&wire),
+            Ok(SessionEvent::V2Control { .. })
+        ));
+
+        let mut foreign_process = attempt(6, 1);
+        foreign_process.provider_process_generation = ProviderProcessGenerationId::new([9; 16]);
+        let wire = serde_json::to_vec(&ProviderControlMessage::StartAck(StartAck {
+            identity: foreign_process,
+        }))
+        .expect("foreign StartAck JSON");
+        assert_eq!(
+            reader(NegotiatedProtocol::V2(capabilities()))
+                .parse_text(&wire)
+                .expect_err("foreign process generation"),
+            ProviderReadError::StaleControlIdentity
+        );
+
+        let mut without_reconciliation = capabilities();
+        without_reconciliation.attempt_reconciliation = false;
+        let wire = serde_json::to_vec(&historical).expect("historical StartAck JSON");
+        assert_eq!(
+            reader(NegotiatedProtocol::V2(without_reconciliation))
+                .parse_text(&wire)
+                .expect_err("historical StartAck without reconciliation"),
+            ProviderReadError::StaleControlIdentity
+        );
+    }
+
+    #[test]
     fn terminal_from_other_provider_or_future_epoch_is_rejected() {
         for (terminal, expected) in [
             (terminal(3, 9), ProviderReadError::TerminalProviderMismatch),
@@ -790,11 +885,10 @@ mod tests {
     }
 
     #[test]
-    fn every_nonterminal_v2_control_requires_current_identity() {
-        let message =
-            ProviderControlMessage::StartAck(darkbloom_coordinator_protocol::v2::StartAck {
-                identity: attempt(6, 1),
-            });
+    fn non_reconciliation_v2_control_requires_current_identity() {
+        let message = ProviderControlMessage::AbortAck(AbortAck {
+            identity: attempt(6, 1),
+        });
         let wire = serde_json::to_vec(&message).expect("JSON");
         assert_eq!(
             reader(NegotiatedProtocol::V2(capabilities()))

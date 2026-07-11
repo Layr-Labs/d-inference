@@ -10,6 +10,7 @@ pub mod fleet;
 pub mod http;
 pub mod ledger;
 mod mutation_fence;
+pub mod operator;
 pub mod ownership;
 pub mod pilot;
 pub mod projection;

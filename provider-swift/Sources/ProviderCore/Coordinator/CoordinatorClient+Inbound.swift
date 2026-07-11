@@ -38,7 +38,9 @@ extension CoordinatorClient {
                 let session = try v2Negotiation.accept(acknowledgement)
                 if let session {
                     markRegistrationSucceeded()
-                    v2SessionEventContinuation.yield(.negotiated(session))
+                    guard publishV2SessionEvent(.negotiated(session)) else {
+                        return
+                    }
                     logger.info(
                         "Negotiated protocol v2.\(session.capabilities.protocolMinor) for session \(session.identity.sessionEpoch)"
                     )
@@ -174,8 +176,8 @@ extension CoordinatorClient {
                 status: ts.status,
                 reason: ts.reason
             ))
-        case .registerAck, .prepare, .start, .abort, .v2Cancel, .terminalAck,
-            .coordinatorReplayFence:
+        case .registerAck, .prepare, .start, .queryAttempt, .abort, .v2Cancel,
+            .terminalAck, .coordinatorReplayFence:
             // Handled by the negotiated-v2 gates above.
             return
         }

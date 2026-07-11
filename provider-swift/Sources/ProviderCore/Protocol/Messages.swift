@@ -16,6 +16,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case modelsUpdate(ModelsUpdate)
     case prepared(V2Prepared)
     case startAck(V2StartAck)
+    case attemptStatus(V2AttemptStatus)
     case abortAck(V2AbortAck)
     case cancelAck(V2CancelAck)
     case providerTerminal(V2ProviderTerminal)
@@ -345,6 +346,7 @@ extension ProviderMessage: Codable {
         case prepared
         case startAck = "start_ack"
         case started
+        case attemptStatus = "attempt_status"
         case abortAck = "abort_ack"
         case aborted
         case cancelAck = "cancel_ack"
@@ -544,6 +546,8 @@ extension ProviderMessage: Codable {
             try V2ProviderControlMessage.prepared(message).encode(to: encoder)
         case .startAck(let message):
             try V2ProviderControlMessage.startAck(message).encode(to: encoder)
+        case .attemptStatus(let message):
+            try V2ProviderControlMessage.attemptStatus(message).encode(to: encoder)
         case .abortAck(let message):
             try V2ProviderControlMessage.abortAck(message).encode(to: encoder)
         case .cancelAck(let message):
@@ -715,6 +719,8 @@ extension ProviderMessage: Codable {
             self = .prepared(try V2Prepared(from: decoder))
         case .startAck, .started:
             self = .startAck(try V2StartAck(from: decoder))
+        case .attemptStatus:
+            self = .attemptStatus(try V2AttemptStatus(from: decoder))
         case .abortAck, .aborted:
             self = .abortAck(try V2AbortAck(from: decoder))
         case .cancelAck, .cancelled:
@@ -747,6 +753,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
     case registerAck(V2RegisterAcknowledgement)
     case prepare(V2Prepare)
     case start(V2Start)
+    case queryAttempt(V2QueryAttempt)
     case abort(V2Abort)
     case v2Cancel(V2Cancel)
     case terminalAck(V2TerminalAck)
@@ -869,6 +876,7 @@ extension CoordinatorMessage: Codable {
         case registerAck = "register_ack"
         case prepare
         case start
+        case queryAttempt = "query_attempt"
         case abort
         case terminalAck = "terminal_ack"
         case coordinatorReplayFence = "coordinator_replay_fence"
@@ -962,6 +970,8 @@ extension CoordinatorMessage: Codable {
             try V2CoordinatorControlMessage.prepare(message).encode(to: encoder)
         case .start(let message):
             try V2CoordinatorControlMessage.start(message).encode(to: encoder)
+        case .queryAttempt(let message):
+            try V2CoordinatorControlMessage.queryAttempt(message).encode(to: encoder)
         case .abort(let message):
             try V2CoordinatorControlMessage.abort(message).encode(to: encoder)
         case .v2Cancel(let message):
@@ -1057,6 +1067,8 @@ extension CoordinatorMessage: Codable {
             self = .prepare(try V2Prepare(from: decoder))
         case .start:
             self = .start(try V2Start(from: decoder))
+        case .queryAttempt:
+            self = .queryAttempt(try V2QueryAttempt(from: decoder))
         case .abort:
             self = .abort(try V2Abort(from: decoder))
         case .terminalAck:

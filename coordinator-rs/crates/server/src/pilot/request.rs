@@ -9,7 +9,6 @@ use darkbloom_coordinator_core::{
     ids::{FundingId, ModelId, RequestId as CoreRequestId},
     money::MicroUsd,
     request::{AttemptKind, ProviderFence, RequestContext},
-    terminal::TerminalDisposition as CoreTerminalDisposition,
     tokens::{KvBytes, TokenCount},
     traits::{Capability, RequestTraits},
 };
@@ -36,6 +35,7 @@ use crate::{
         AdmissionRequest, FleetCommandError, FleetHandle, FleetHandleError, PermitLease,
         PermitReleaseReason, WriterHeadroom,
     },
+    ledger::StartDispatchDisposition,
     request::{
         BytePipeLimits, BytePipeReceiver, CancellationReason, CommitmentLimits,
         InboundAttemptEvent, OutputLimits, OutputMode, RequestCancellation, RequestExecutionError,
@@ -44,6 +44,7 @@ use crate::{
 };
 
 use super::{
+    durable::DurableExecution,
     provider::fence_provider,
     state::{
         PilotSession, RequestRouteRegistration, RequestTable, RequestTableError, SessionDirectory,
@@ -62,6 +63,8 @@ const MAXIMUM_TOOL_CALLS_PER_MESSAGE: usize = 128;
 
 /// Parsed, authenticated consumer work retained in the bounded request lane.
 pub struct PilotRequestJob {
+    pub identity: super::billing::DurableRequestIdentity,
+    pub billing: super::billing::BillingContext,
     pub plaintext: Vec<u8>,
     pub model: ModelId,
     pub output_mode: OutputMode,
@@ -116,6 +119,7 @@ pub struct RequestServices {
     pub permit_lease_ttl: Duration,
     pub maximum_output_bytes: usize,
     pub maximum_output_chunks: usize,
+    pub durable: Option<super::runtime::DurablePilotServices>,
 }
 
 impl RequestOwner {
@@ -385,7 +389,8 @@ async fn execute_request(
         .ok_or_else(|| PilotRequestError::Internal(Arc::from("request deadline overflow")))?;
     let deadline = AbsoluteDeadline::new(deadline_at)
         .map_err(|error| PilotRequestError::Internal(Arc::from(error.to_string())))?;
-    let core_request_id = CoreRequestId::random();
+    let core_request_id = CoreRequestId::new(job.identity.request_id)
+        .map_err(|error| PilotRequestError::Internal(Arc::from(error.to_string())))?;
     let wire_request_id = RequestId::new(*core_request_id.as_uuid().as_bytes());
     let profile = AdmissionProfile {
         model: job.model.clone(),
@@ -398,10 +403,12 @@ async fn execute_request(
     let primary = admit_primary(&profile, services).await?;
     let primary_plan = build_attempt_plan(
         primary,
-        wire_request_id,
+        &job.identity,
+        0,
         &job.model,
         &job.plaintext,
         job.output_mode,
+        job.demand,
     )?;
     let runtime_deadline = tokio::time::Instant::now() + services.request_timeout;
     let target = Arc::new(CancellationTarget::default());
@@ -423,10 +430,19 @@ async fn execute_request(
         wire_request_id,
         deadline,
         funding_id: FundingId::random(),
-        funding_amount: MicroUsd::new(1),
+        funding_amount: MicroUsd::new(
+            services
+                .durable
+                .as_ref()
+                .and_then(|durable| durable.billing.as_ref())
+                .map_or(1, |billing| {
+                    u64::try_from(billing.policy().base_reservation.as_i64())
+                        .expect("ledger amount is nonnegative")
+                }),
+        ),
         model: job.model.clone(),
         request_digest: primary_plan.prepare.request_digest,
-        maximum_prompt_tokens: MAX_PROMPT_TOKENS,
+        maximum_prompt_tokens: job.demand.prompt_tokens().get(),
         output_mode: job.output_mode,
         output_limits: OutputLimits {
             maximum_chunk_bytes: darkbloom_coordinator_protocol::MAX_V2_CIPHERTEXT_LEN,
@@ -460,6 +476,23 @@ async fn execute_request(
 
     let mut provider_context = vec![primary_plan.session.fence.clone()];
     let primary_provider = primary_plan.session.identity.provider_id;
+    let mut durable = DurableExecution::new(
+        job.identity.clone(),
+        job.billing.clone(),
+        services.durable.clone(),
+    )?;
+    if let Err(error) = durable
+        .reserve(&primary_plan, &job.model, &job.plaintext, deadline_at)
+        .await
+    {
+        release_permit(
+            &services.fleet,
+            primary_plan.lease.lease_id(),
+            PermitReleaseReason::BeforeWriterEnqueue,
+        )
+        .await?;
+        return Err(error);
+    }
     let primary_result = run_attempt(
         &mut task,
         &mut inbound,
@@ -471,44 +504,59 @@ async fn execute_request(
         runtime_deadline,
         response_sender,
         &mut response_body,
+        &mut durable,
+        0,
     )
     .await;
 
     let result = match primary_result {
         Ok(()) => Ok(()),
         Err(failure) if failure.precontent && !task.is_committed() => {
-            if let Some(alternate) = admit_alternate(&profile, primary_provider, services).await? {
-                let plan = build_attempt_plan(
-                    alternate,
-                    wire_request_id,
-                    &job.model,
-                    &job.plaintext,
-                    job.output_mode,
-                )?;
-                provider_context.push(plan.session.fence.clone());
-                target.install(&plan.session, &plan.identity);
-                registration.replace_attempt(
-                    plan.seal.clone(),
-                    plan.session.provider_key,
-                    plan.session.identity,
-                    plan.identity.clone(),
-                )?;
-                run_attempt(
-                    &mut task,
-                    &mut inbound,
-                    plan,
-                    AttemptKind::Alternate,
-                    &provider_context,
-                    services,
-                    shutdown,
-                    runtime_deadline,
-                    response_sender,
-                    &mut response_body,
-                )
-                .await
-                .map_err(|failure| failure.error)
-            } else {
-                Err(failure.error)
+            match admit_alternate(&profile, primary_provider, services).await {
+                Err(error) => Err(error),
+                Ok(None) => Err(failure.error),
+                Ok(Some(alternate)) => {
+                    match build_attempt_plan(
+                        alternate,
+                        &job.identity,
+                        1,
+                        &job.model,
+                        &job.plaintext,
+                        job.output_mode,
+                        job.demand,
+                    ) {
+                        Err(error) => Err(error),
+                        Ok(plan) => {
+                            provider_context.push(plan.session.fence.clone());
+                            target.install(&plan.session, &plan.identity);
+                            if let Err(error) = registration.replace_attempt(
+                                plan.seal.clone(),
+                                plan.session.provider_key,
+                                plan.session.identity,
+                                plan.identity.clone(),
+                            ) {
+                                Err(error.into())
+                            } else {
+                                run_attempt(
+                                    &mut task,
+                                    &mut inbound,
+                                    plan,
+                                    AttemptKind::Alternate,
+                                    &provider_context,
+                                    services,
+                                    shutdown,
+                                    runtime_deadline,
+                                    response_sender,
+                                    &mut response_body,
+                                    &mut durable,
+                                    1,
+                                )
+                                .await
+                                .map_err(|failure| failure.error)
+                            }
+                        }
+                    }
+                }
             }
         }
         Err(failure) => Err(failure.error),
@@ -524,6 +572,13 @@ async fn execute_request(
             },
             &request_context(&provider_context)?,
         );
+        if !durable.is_authorized()
+            && let Err(release_error) = durable.release("request ended before authorization").await
+        {
+            return Err(PilotRequestError::Internal(Arc::from(format!(
+                "{error}; durable release failed: {release_error}"
+            ))));
+        }
         return Err(error);
     }
     registration.remove();
@@ -542,6 +597,8 @@ async fn run_attempt(
     runtime_deadline: tokio::time::Instant,
     response_sender: &mut Option<oneshot::Sender<Result<PilotResponse, PilotRequestError>>>,
     response_body: &mut Option<BytePipeReceiver<Vec<u8>>>,
+    durable: &mut DurableExecution,
+    attempt_ordinal: u8,
 ) -> Result<(), AttemptFailure> {
     let lease_id = plan.lease.lease_id();
     let result = run_attempt_inner(
@@ -555,9 +612,12 @@ async fn run_attempt(
         runtime_deadline,
         response_sender,
         response_body,
+        durable,
+        attempt_ordinal,
     )
     .await;
     if result.is_err()
+        && !durable.is_authorized()
         && let Err(error) = release_permit(
             &services.fleet,
             lease_id,
@@ -582,8 +642,14 @@ async fn run_attempt_inner(
     runtime_deadline: tokio::time::Instant,
     response_sender: &mut Option<oneshot::Sender<Result<PilotResponse, PilotRequestError>>>,
     response_body: &mut Option<BytePipeReceiver<Vec<u8>>>,
+    durable: &mut DurableExecution,
+    attempt_ordinal: u8,
 ) -> Result<(), AttemptFailure> {
     let context = request_context(providers).map_err(AttemptFailure::fatal)?;
+    durable
+        .ensure_provider_trusted(&plan.identity)
+        .await
+        .map_err(AttemptFailure::fatal)?;
     let (attempt_id, prepare_receipt) = match task.enqueue_prepare(
         kind,
         plan.prepare.clone(),
@@ -636,9 +702,10 @@ async fn run_attempt_inner(
         plan.lease.lease_id(),
         services.permit_lease_ttl,
         runtime_deadline,
+        durable.execution_lease_renewal(),
     );
     let delivery = match renewal
-        .wait_delivery(prepare_receipt, task.cancellation(), shutdown)
+        .wait_delivery(prepare_receipt, task.cancellation(), shutdown, false)
         .await
     {
         Ok(delivery) => delivery,
@@ -686,12 +753,55 @@ async fn run_attempt_inner(
     }
 
     match renewal
-        .next_event(inbound, &plan.identity, task.cancellation(), shutdown)
+        .next_event(
+            inbound,
+            &plan.identity,
+            task.cancellation(),
+            shutdown,
+            false,
+        )
         .await
         .map_err(AttemptFailure::fatal)?
     {
         InboundAttemptEvent::Prepared(prepared) => {
+            let prepared_facts = prepared.clone();
+            if prepared.reserved_kv_bytes > plan.maximum_reserved_kv_bytes
+                || prepared.reserved_media_bytes != 0
+                || !prepared.prefill_can_begin
+            {
+                durable
+                    .review_provider(
+                        &prepared.identity,
+                        "prepared_resource_bounds_mismatch",
+                        &serde_json::to_vec(&prepared).unwrap_or_default(),
+                        0,
+                    )
+                    .await
+                    .map_err(AttemptFailure::fatal)?;
+                fence_provider(
+                    plan.session.identity,
+                    "provider Prepared exceeded coordinator resource bounds",
+                    &services.directory,
+                    &services.requests,
+                    &services.fleet,
+                )
+                .await;
+                task.fail_pre_authorization(attempt_id, &context)
+                    .map_err(AttemptFailure::fatal)?;
+                return Err(AttemptFailure::fatal(PilotRequestError::Protocol(
+                    Arc::from("provider Prepared resource facts exceed coordinator bounds"),
+                )));
+            }
             if let Err(error) = task.accept_prepared(prepared) {
+                durable
+                    .review_provider(
+                        &prepared_facts.identity,
+                        "prepared_identity_or_digest_mismatch",
+                        &serde_json::to_vec(&prepared_facts).unwrap_or_default(),
+                        0,
+                    )
+                    .await
+                    .map_err(AttemptFailure::fatal)?;
                 fence_provider(
                     plan.session.identity,
                     "provider returned invalid Prepared facts",
@@ -709,10 +819,21 @@ async fn run_attempt_inner(
                     .map_err(AttemptFailure::fatal)?;
                 task.fail_pre_authorization(attempt_id, &context)
                     .map_err(AttemptFailure::fatal)?;
-                return Err(AttemptFailure::precontent(PilotRequestError::Execution(
-                    error,
-                )));
+                return Err(AttemptFailure::fatal(PilotRequestError::Execution(error)));
             }
+            let remaining = runtime_deadline.saturating_duration_since(tokio::time::Instant::now());
+            let provider_lease = Duration::from_millis(prepared_facts.lease_ttl_ms);
+            let start_deadline = remaining.min(provider_lease);
+            durable
+                .authorize(
+                    &plan,
+                    &prepared_facts,
+                    kind,
+                    attempt_ordinal,
+                    start_deadline,
+                )
+                .await
+                .map_err(AttemptFailure::fatal)?;
         }
         InboundAttemptEvent::StructuredError(error) => {
             task.fail_pre_authorization(attempt_id, &context)
@@ -735,11 +856,11 @@ async fn run_attempt_inner(
         }
     }
 
-    let start_receipt = match task.enqueue_start(
+    let staged_start = match task.enqueue_start(
         attempt_id,
         &request_context(providers).map_err(AttemptFailure::fatal)?,
     ) {
-        Ok(receipt) => receipt,
+        Ok(staged) => staged,
         Err(error) => {
             if matches!(&error, RequestExecutionError::OutboundRejected(_)) {
                 fence_provider(
@@ -754,8 +875,19 @@ async fn run_attempt_inner(
             return Err(AttemptFailure::fatal(PilotRequestError::Execution(error)));
         }
     };
+    durable
+        .record_start_dispatch(StartDispatchDisposition::Queued)
+        .await
+        .map_err(AttemptFailure::fatal)?;
+    let start_receipt = staged_start.commit();
+    let wait_for_durable_terminal = durable.is_paid();
     let delivery = match renewal
-        .wait_delivery(start_receipt, task.cancellation(), shutdown)
+        .wait_delivery(
+            start_receipt,
+            task.cancellation(),
+            shutdown,
+            wait_for_durable_terminal,
+        )
         .await
     {
         Ok(delivery) => delivery,
@@ -776,6 +908,17 @@ async fn run_attempt_inner(
     report_writer_receipt(&services.fleet, &plan.session)
         .await
         .map_err(AttemptFailure::fatal)?;
+    match &delivery {
+        crate::provider::DeliveryState::OnWire => durable
+            .record_start_dispatch(StartDispatchDisposition::OnWire)
+            .await
+            .map_err(AttemptFailure::fatal)?,
+        crate::provider::DeliveryState::SentUnknown => durable
+            .record_start_dispatch(StartDispatchDisposition::SentUnknown)
+            .await
+            .map_err(AttemptFailure::fatal)?,
+        crate::provider::DeliveryState::Failed(_) | crate::provider::DeliveryState::Queued => {}
+    }
     if matches!(
         &delivery,
         crate::provider::DeliveryState::SentUnknown | crate::provider::DeliveryState::Failed(_)
@@ -789,17 +932,32 @@ async fn run_attempt_inner(
         )
         .await;
     }
-    task.observe_start_delivery(attempt_id, delivery)
-        .map_err(|error| AttemptFailure::fatal(PilotRequestError::Execution(error)))?;
+    match task.observe_start_delivery(attempt_id, delivery) {
+        Ok(_) => {}
+        Err(RequestExecutionError::SentUnknown) if durable.is_paid() => {}
+        Err(error) => {
+            return Err(AttemptFailure::fatal(PilotRequestError::Execution(error)));
+        }
+    }
 
     match renewal
-        .next_event(inbound, &plan.identity, task.cancellation(), shutdown)
+        .next_event(
+            inbound,
+            &plan.identity,
+            task.cancellation(),
+            shutdown,
+            wait_for_durable_terminal,
+        )
         .await
         .map_err(AttemptFailure::fatal)?
     {
         InboundAttemptEvent::StartAck(ack) => {
             task.accept_start_ack(&ack)
                 .map_err(|error| AttemptFailure::fatal(PilotRequestError::Execution(error)))?;
+            durable
+                .record_start_dispatch(StartDispatchDisposition::Running)
+                .await
+                .map_err(AttemptFailure::fatal)?;
         }
         InboundAttemptEvent::StructuredError(error) => {
             return Err(AttemptFailure::fatal(structured_error(error.class)));
@@ -815,7 +973,13 @@ async fn run_attempt_inner(
 
     loop {
         let event = renewal
-            .next_event(inbound, &plan.identity, task.cancellation(), shutdown)
+            .next_event(
+                inbound,
+                &plan.identity,
+                task.cancellation(),
+                shutdown,
+                wait_for_durable_terminal,
+            )
             .await
             .map_err(AttemptFailure::fatal)?;
         match event {
@@ -851,7 +1015,7 @@ async fn run_attempt_inner(
             }
             InboundAttemptEvent::Terminal(terminal) => {
                 let outcome = terminal.outcome;
-                accept_terminal(task, &terminal, &plan.session, providers, services)
+                accept_terminal(task, &terminal, &plan.session, providers, services, durable)
                     .await
                     .map_err(AttemptFailure::fatal)?;
                 release_permit(
@@ -906,69 +1070,222 @@ async fn accept_terminal(
     session: &PilotSession,
     providers: &[ProviderFence],
     services: &RequestServices,
+    durable: &mut DurableExecution,
 ) -> Result<(), PilotRequestError> {
     let key = TerminalKey::from(&terminal.identity);
-    let terminal_store = services.terminal_store.clone();
-    let terminal_digest = terminal.terminal_digest;
-    let historical = services
-        .durable_io
-        .run("resolve provider terminal disposition", move || {
-            terminal_store.resolve_historical(key, terminal_digest)
-        })
-        .await
-        .map_err(|error| PilotRequestError::Internal(Arc::from(error.to_string())))?;
-    if matches!(historical, TerminalResolution::Conflict { .. }) {
-        task.cancellation()
-            .cancel(CancellationReason::ProtocolViolation);
-        return Err(PilotRequestError::Protocol(Arc::from(
-            "provider terminal conflicts with durable disposition",
-        )));
+    if !durable.is_paid() {
+        let terminal_store = services.terminal_store.clone();
+        let terminal_digest = terminal.terminal_digest;
+        let historical = services
+            .durable_io
+            .run("resolve provider terminal disposition", move || {
+                terminal_store.resolve_historical(key, terminal_digest)
+            })
+            .await
+            .map_err(|error| PilotRequestError::Internal(Arc::from(error.to_string())))?;
+        if matches!(historical, TerminalResolution::Conflict { .. }) {
+            task.cancellation()
+                .cancel(CancellationReason::ProtocolViolation);
+            return Err(PilotRequestError::Protocol(Arc::from(
+                "provider terminal conflicts with durable disposition",
+            )));
+        }
     }
-    let (core_disposition, wire_disposition) = match terminal.outcome {
-        TerminalOutcome::Completed => (
-            CoreTerminalDisposition::Settled {
-                charged: MicroUsd::new(1),
-            },
-            TerminalDisposition::Settled,
-        ),
-        TerminalOutcome::Cancelled | TerminalOutcome::Error => (
-            CoreTerminalDisposition::Released,
-            TerminalDisposition::Released,
-        ),
-    };
-    task.accept_terminal(
+    if durable.is_paid() {
+        match durable.lookup_terminal(terminal).await? {
+            crate::ledger::TerminalLookup::Absent => {}
+            crate::ledger::TerminalLookup::Known(disposition) => {
+                if let Err(error) = terminal.validate_with(
+                    &terminal.identity,
+                    |provider, generation, digest, signature| {
+                        session.verifies_terminal(provider, generation, digest, signature)
+                    },
+                ) {
+                    let accepted_cumulative_tokens = task.accepted_completion_tokens();
+                    if terminal_facts_are_persistable(terminal) {
+                        durable
+                            .persist_terminal_conflict(
+                                terminal,
+                                "terminal_replay_signature_or_digest_mismatch",
+                                accepted_cumulative_tokens,
+                            )
+                            .await?;
+                    } else {
+                        durable
+                            .review_provider(
+                                &terminal.identity,
+                                "terminal_replay_signature_or_digest_mismatch",
+                                &serde_json::to_vec(terminal).unwrap_or_default(),
+                                accepted_cumulative_tokens,
+                            )
+                            .await?;
+                    }
+                    fence_provider(
+                        session.identity,
+                        "provider terminal replay failed signature validation",
+                        &services.directory,
+                        &services.requests,
+                        &services.fleet,
+                    )
+                    .await;
+                    return Err(PilotRequestError::Protocol(Arc::from(error.to_string())));
+                }
+                let Some(disposition) = durable_terminal_disposition(disposition) else {
+                    return Err(PilotRequestError::Unavailable(Arc::from(
+                        "provider terminal is awaiting durable review",
+                    )));
+                };
+                send_terminal_ack(session, terminal, disposition, services).await?;
+                return Ok(());
+            }
+            crate::ledger::TerminalLookup::Conflict { job_id } => {
+                if job_id != durable.job_id() {
+                    return Err(PilotRequestError::Protocol(Arc::from(
+                        "terminal conflict resolved to another durable job",
+                    )));
+                }
+                let accepted_cumulative_tokens = task.accepted_completion_tokens();
+                if terminal_facts_are_persistable(terminal) {
+                    durable
+                        .persist_terminal_conflict(
+                            terminal,
+                            "terminal_digest_conflict",
+                            accepted_cumulative_tokens,
+                        )
+                        .await?;
+                } else {
+                    durable
+                        .review_provider(
+                            &terminal.identity,
+                            "terminal_digest_conflict",
+                            &serde_json::to_vec(terminal).unwrap_or_default(),
+                            accepted_cumulative_tokens,
+                        )
+                        .await?;
+                }
+                fence_provider(
+                    session.identity,
+                    "provider terminal conflicts with durable evidence",
+                    &services.directory,
+                    &services.requests,
+                    &services.fleet,
+                )
+                .await;
+                return Err(PilotRequestError::Protocol(Arc::from(
+                    "provider terminal conflicts with durable evidence",
+                )));
+            }
+        }
+    }
+    let core_disposition = durable.core_disposition(terminal)?;
+    let summary = match task.accept_terminal(
         terminal,
         core_disposition,
         &request_context(providers)?,
         |provider, generation, digest, signature| {
             session.verifies_terminal(provider, generation, digest, signature)
         },
-    )?;
-    let record = TerminalRecord {
-        key,
-        terminal_digest: terminal.terminal_digest,
-        disposition: wire_disposition,
+    ) {
+        Ok(summary) => summary,
+        Err(error) => {
+            let accepted_cumulative_tokens = task.accepted_completion_tokens();
+            if !terminal_facts_are_persistable(terminal) {
+                durable
+                    .review_provider(
+                        &terminal.identity,
+                        "terminal_signature_digest_or_bounds_mismatch",
+                        &serde_json::to_vec(terminal).unwrap_or_default(),
+                        accepted_cumulative_tokens,
+                    )
+                    .await?;
+            } else {
+                durable
+                    .persist_terminal_conflict(
+                        terminal,
+                        "terminal_signature_digest_or_bounds_mismatch",
+                        accepted_cumulative_tokens,
+                    )
+                    .await?;
+            }
+            fence_provider(
+                session.identity,
+                "provider terminal failed signed bounds validation",
+                &services.directory,
+                &services.requests,
+                &services.fleet,
+            )
+            .await;
+            return Err(error.into());
+        }
     };
-    let terminal_store = services.terminal_store.clone();
-    let resolution = services
-        .durable_io
-        .run("finalize provider terminal", move || {
-            terminal_store.finalize(record)
-        })
-        .await
-        .map_err(|error| PilotRequestError::Internal(Arc::from(error.to_string())))??;
-    if matches!(resolution, TerminalResolution::Conflict { .. }) {
-        return Err(PilotRequestError::Protocol(Arc::from(
-            "provider terminal conflicts with durable disposition",
-        )));
-    }
+    let wire_disposition = if durable.is_paid() {
+        durable.settle(terminal, summary).await?
+    } else {
+        let record = TerminalRecord {
+            key,
+            terminal_digest: terminal.terminal_digest,
+            disposition: match terminal.outcome {
+                TerminalOutcome::Completed => TerminalDisposition::Settled,
+                TerminalOutcome::Cancelled | TerminalOutcome::Error => {
+                    TerminalDisposition::Released
+                }
+            },
+        };
+        let terminal_store = services.terminal_store.clone();
+        let resolution = services
+            .durable_io
+            .run("finalize provider terminal", move || {
+                terminal_store.finalize(record)
+            })
+            .await
+            .map_err(|error| PilotRequestError::Internal(Arc::from(error.to_string())))??;
+        if matches!(resolution, TerminalResolution::Conflict { .. }) {
+            return Err(PilotRequestError::Protocol(Arc::from(
+                "provider terminal conflicts with durable disposition",
+            )));
+        }
+        resolution.disposition()
+    };
+    send_terminal_ack(session, terminal, wire_disposition, services).await
+}
+
+fn terminal_facts_are_persistable(terminal: &ProviderTerminal) -> bool {
+    terminal_facts_fit_storage(
+        !terminal.signature.as_bytes().is_empty(),
+        terminal.prompt_tokens,
+        terminal.completion_tokens,
+        terminal.reasoning_tokens,
+        terminal.final_generated_tokens,
+    )
+}
+
+fn terminal_facts_fit_storage(
+    has_signature: bool,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    reasoning_tokens: u64,
+    final_generated_tokens: u64,
+) -> bool {
+    has_signature
+        && prompt_tokens <= i32::MAX as u64
+        && completion_tokens <= i32::MAX as u64
+        && reasoning_tokens <= i64::MAX as u64
+        && final_generated_tokens <= i64::MAX as u64
+}
+
+async fn send_terminal_ack(
+    session: &PilotSession,
+    terminal: &ProviderTerminal,
+    disposition: TerminalDisposition,
+    services: &RequestServices,
+) -> Result<(), PilotRequestError> {
     if let Err(error) =
         session
             .writer
             .try_send_control_json(&CoordinatorControlMessage::TerminalAck(TerminalAck {
                 identity: terminal.identity.clone(),
                 terminal_digest: terminal.terminal_digest,
-                disposition: resolution.disposition(),
+                disposition,
             }))
     {
         fence_provider(
@@ -982,6 +1299,22 @@ async fn accept_terminal(
         return Err(error.into());
     }
     Ok(())
+}
+
+fn durable_terminal_disposition(
+    disposition: crate::ledger::DurableTerminalDisposition,
+) -> Option<TerminalDisposition> {
+    match disposition {
+        crate::ledger::DurableTerminalDisposition::Settled
+        | crate::ledger::DurableTerminalDisposition::SettledReviewed => {
+            Some(TerminalDisposition::Settled)
+        }
+        crate::ledger::DurableTerminalDisposition::Released
+        | crate::ledger::DurableTerminalDisposition::ReleasedReviewed
+        | crate::ledger::DurableTerminalDisposition::Late => Some(TerminalDisposition::Released),
+        crate::ledger::DurableTerminalDisposition::Conflict
+        | crate::ledger::DurableTerminalDisposition::ReviewPending => None,
+    }
 }
 
 async fn report_writer_receipt(
@@ -1101,21 +1434,24 @@ struct AdmittedSession {
     session: PilotSession,
 }
 
-struct AttemptPlan {
-    lease: PermitLease,
-    session: PilotSession,
-    seal: Arc<crate::crypto::ProviderRequestSeal>,
-    identity: AttemptIdentity,
-    prepare: Prepare,
-    output_mode: OutputMode,
+pub(super) struct AttemptPlan {
+    pub(super) lease: PermitLease,
+    pub(super) session: PilotSession,
+    pub(super) seal: Arc<crate::crypto::ProviderRequestSeal>,
+    pub(super) identity: AttemptIdentity,
+    pub(super) prepare: Prepare,
+    pub(super) output_mode: OutputMode,
+    pub(super) maximum_reserved_kv_bytes: u64,
 }
 
 fn build_attempt_plan(
     admitted: AdmittedSession,
-    request_id: RequestId,
+    durable_identity: &super::billing::DurableRequestIdentity,
+    attempt_ordinal: u8,
     model: &ModelId,
     plaintext: &[u8],
     output_mode: OutputMode,
+    demand: AdmissionDemand,
 ) -> Result<AttemptPlan, PilotRequestError> {
     let seal = Arc::new(
         seal_request_for_provider(admitted.session.provider_key, plaintext)
@@ -1125,9 +1461,15 @@ fn build_attempt_plan(
         provider_id: admitted.session.identity.provider_id,
         provider_process_generation: admitted.session.identity.provider_process_generation,
         session_epoch: admitted.session.identity.session_epoch,
-        request_id,
-        attempt_id: AttemptId::new(*Uuid::new_v4().as_bytes()),
-        reservation_id: ReservationId::new(*Uuid::new_v4().as_bytes()),
+        request_id: RequestId::new(*durable_identity.request_id.as_bytes()),
+        attempt_id: AttemptId::new(
+            *durable_identity
+                .attempt_id(attempt_ordinal, admitted.session.identity.provider_id)
+                .map_err(|error| PilotRequestError::Internal(Arc::from(error.to_string())))?
+                .as_uuid()
+                .as_bytes(),
+        ),
+        reservation_id: ReservationId::new(*durable_identity.reservation_id.as_uuid().as_bytes()),
         lease_id: LeaseId::new(*admitted.lease.lease_id().as_uuid().as_bytes()),
     };
     let request_digest = Prepare::encrypted_payload_digest(seal.payload())
@@ -1145,6 +1487,7 @@ fn build_attempt_plan(
         identity,
         prepare,
         output_mode,
+        maximum_reserved_kv_bytes: demand.kv_bytes().get(),
     })
 }
 
@@ -1154,6 +1497,15 @@ struct PermitRenewal {
     ttl: Duration,
     deadline: tokio::time::Instant,
     interval: tokio::time::Interval,
+    execution_lease: Option<ExecutionLeaseRenewal>,
+}
+
+#[derive(Clone)]
+pub(super) struct ExecutionLeaseRenewal {
+    pub(super) ledger: crate::ledger::LedgerService,
+    pub(super) job_id: crate::ledger::JobId,
+    pub(super) worker_id: Uuid,
+    pub(super) lease_for: Duration,
 }
 
 impl PermitRenewal {
@@ -1162,6 +1514,7 @@ impl PermitRenewal {
         lease_id: darkbloom_coordinator_core::ids::LeaseId,
         ttl: Duration,
         deadline: tokio::time::Instant,
+        execution_lease: Option<ExecutionLeaseRenewal>,
     ) -> Self {
         let cadence = ttl
             .checked_div(2)
@@ -1175,6 +1528,7 @@ impl PermitRenewal {
             ttl,
             deadline,
             interval,
+            execution_lease,
         }
     }
 
@@ -1183,12 +1537,15 @@ impl PermitRenewal {
         receipt: crate::provider::DeliveryReceipt,
         cancellation: &RequestCancellation,
         shutdown: &CancellationToken,
+        authorized: bool,
     ) -> Result<crate::provider::DeliveryState, PilotRequestError> {
         let receipt = receipt.wait();
         let cancellation_token = cancellation.token();
         let deadline = tokio::time::sleep_until(self.deadline);
         tokio::pin!(receipt);
         tokio::pin!(deadline);
+        let mut cancellation_observed = false;
+        let mut deadline_observed = false;
         loop {
             tokio::select! {
                 biased;
@@ -1198,12 +1555,19 @@ impl PermitRenewal {
                         "pilot runtime is shutting down"
                     )));
                 }
-                () = cancellation_token.cancelled() => {
-                    return Err(PilotRequestError::Cancelled);
+                () = cancellation_token.cancelled(), if !cancellation_observed => {
+                    cancellation.cancel(CancellationReason::ClientCancelled);
+                    if !authorized {
+                        return Err(PilotRequestError::Cancelled);
+                    }
+                    cancellation_observed = true;
                 }
-                () = &mut deadline => {
+                () = &mut deadline, if !deadline_observed => {
                     cancellation.cancel(CancellationReason::DeadlineExpired);
-                    return Err(PilotRequestError::Timeout);
+                    if !authorized {
+                        return Err(PilotRequestError::Timeout);
+                    }
+                    deadline_observed = true;
                 }
                 result = &mut receipt => {
                     return result.map_err(|error| {
@@ -1221,10 +1585,13 @@ impl PermitRenewal {
         expected: &AttemptIdentity,
         cancellation: &RequestCancellation,
         shutdown: &CancellationToken,
+        authorized: bool,
     ) -> Result<InboundAttemptEvent, PilotRequestError> {
         let cancellation_token = cancellation.token();
         let deadline = tokio::time::sleep_until(self.deadline);
         tokio::pin!(deadline);
+        let mut cancellation_observed = false;
+        let mut deadline_observed = false;
         loop {
             tokio::select! {
                 biased;
@@ -1234,12 +1601,19 @@ impl PermitRenewal {
                         "pilot runtime is shutting down"
                     )));
                 }
-                () = cancellation_token.cancelled() => {
-                    return Err(PilotRequestError::Cancelled);
+                () = cancellation_token.cancelled(), if !cancellation_observed => {
+                    cancellation.cancel(CancellationReason::ClientCancelled);
+                    if !authorized {
+                        return Err(PilotRequestError::Cancelled);
+                    }
+                    cancellation_observed = true;
                 }
-                () = &mut deadline => {
+                () = &mut deadline, if !deadline_observed => {
                     cancellation.cancel(CancellationReason::DeadlineExpired);
-                    return Err(PilotRequestError::Timeout);
+                    if !authorized {
+                        return Err(PilotRequestError::Timeout);
+                    }
+                    deadline_observed = true;
                 }
                 result = inbound.recv() => {
                     let event = result
@@ -1258,15 +1632,23 @@ impl PermitRenewal {
 
     async fn renew(&self, cancellation: &RequestCancellation) -> Result<(), PilotRequestError> {
         match self.fleet.renew_permit(self.lease_id, self.ttl).await {
-            Ok(_) => Ok(()),
+            Ok(_) => {}
             Err(FleetHandleError::Command(FleetCommandError::LeaseNotFound(_))) => {
                 cancellation.cancel(CancellationReason::RequestEnded);
-                Err(PilotRequestError::Provider(Arc::from(
+                return Err(PilotRequestError::Provider(Arc::from(
                     "provider capacity lease expired",
-                )))
+                )));
             }
-            Err(error) => Err(map_fleet_error(error)),
+            Err(error) => return Err(map_fleet_error(error)),
         }
+        if let Some(execution) = &self.execution_lease {
+            execution
+                .ledger
+                .renew_execution_lease(execution.job_id, execution.worker_id, execution.lease_for)
+                .await
+                .map_err(map_ledger_error)?;
+        }
+        Ok(())
     }
 }
 
@@ -1391,6 +1773,22 @@ fn structured_error(class: StructuredErrorClass) -> PilotRequestError {
     }
 }
 
+fn map_ledger_error(error: crate::ledger::LedgerError) -> PilotRequestError {
+    match error {
+        crate::ledger::LedgerError::InsufficientBalance => PilotRequestError::PaymentRequired,
+        crate::ledger::LedgerError::ProviderHardUntrusted => {
+            PilotRequestError::Provider(Arc::from(error.to_string()))
+        }
+        crate::ledger::LedgerError::OwnershipUnavailable
+        | crate::ledger::LedgerError::OwnershipLost
+        | crate::ledger::LedgerError::Timeout
+        | crate::ledger::LedgerError::CommitOutcomeUnknown { .. } => {
+            PilotRequestError::Unavailable(Arc::from(error.to_string()))
+        }
+        other => PilotRequestError::Internal(Arc::from(other.to_string())),
+    }
+}
+
 fn request_contains_image(value: &Value) -> bool {
     value
         .get("messages")
@@ -1432,6 +1830,8 @@ pub enum PilotRequestError {
     ModelNotFound(Arc<str>),
     #[error("pilot fleet is at capacity")]
     Capacity,
+    #[error("consumer account has insufficient credit")]
+    PaymentRequired,
     #[error("pilot request timed out")]
     Timeout,
     #[error("pilot request was cancelled")]
@@ -1469,5 +1869,30 @@ impl From<PilotRequestError> for AttemptFailure {
 impl From<crate::provider::WriterEnqueueError> for AttemptFailure {
     fn from(error: crate::provider::WriterEnqueueError) -> Self {
         Self::fatal(PilotRequestError::Writer(error))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::terminal_facts_fit_storage;
+
+    #[test]
+    fn malformed_terminal_conflict_evidence_is_not_persistable() {
+        assert!(!terminal_facts_fit_storage(false, 1, 1, 0, 1));
+        assert!(!terminal_facts_fit_storage(
+            true,
+            i32::MAX as u64 + 1,
+            1,
+            0,
+            1,
+        ));
+        assert!(!terminal_facts_fit_storage(
+            true,
+            1,
+            1,
+            i64::MAX as u64 + 1,
+            1,
+        ));
+        assert!(terminal_facts_fit_storage(true, 1, 1, 0, 1));
     }
 }

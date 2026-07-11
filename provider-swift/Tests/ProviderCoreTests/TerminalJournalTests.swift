@@ -274,6 +274,46 @@ func fundedStartAndTerminalSurviveCrashReopenWithoutPlaintext() async throws {
 }
 
 @Test
+func attemptReconciliationSurvivesStartAndTerminalJournalReopen() async throws {
+    let fixture = try JournalFixture()
+    defer { fixture.cleanup() }
+    let start = try fundedStart(attempt: 153)
+    let identity = start.identity.protocolV2
+
+    do {
+        let journal = try fixture.journal()
+        _ = try await journal.reserveFundedStart(start)
+        let status = try #require(await journal.attemptStatus(for: identity))
+        #expect(status.state == .started)
+        #expect(status.terminalDigest == nil)
+    }
+    let frozen: FrozenProviderTerminal
+    do {
+        let reopened = try fixture.journal()
+        let started = try #require(await reopened.attemptStatus(for: identity))
+        #expect(started.state == .started)
+        frozen = try await reopened.freezeAndPersistTerminal(
+            attemptID: start.identity.attemptID,
+            draft: terminalDraft(),
+            signer: SoftwareTerminalSigner()
+        )
+        let terminal = try #require(await reopened.attemptStatus(for: identity))
+        #expect(terminal.state == .terminal)
+        #expect(terminal.terminalDigest == frozen.terminalDigest.protocolV2)
+    }
+    do {
+        let crashReopen = try fixture.journal()
+        let terminal = try #require(await crashReopen.attemptStatus(for: identity))
+        #expect(terminal.state == .terminal)
+        #expect(terminal.terminalDigest == frozen.terminalDigest.protocolV2)
+        let conflicting = try journalIdentity(attempt: 153, lease: 99_999).protocolV2
+        await #expect(throws: TerminalJournalError.self) {
+            _ = try await crashReopen.attemptStatus(for: conflicting)
+        }
+    }
+}
+
+@Test
 func terminalReplayRejectsMismatchedAckAndDeletesDurablyAfterMatch() async throws {
     let fixture = try JournalFixture()
     defer { fixture.cleanup() }

@@ -5,6 +5,7 @@ use super::{
     reserve::json_string,
     types::{
         AccountId, DepositResult, LedgerAmount, LedgerError, MutationDisposition, StripeDeposit,
+        canonical_json_digest,
     },
 };
 use crate::db::ownership::{Authority, DurableDatabase, OperationRecord};
@@ -14,6 +15,10 @@ impl LedgerService {
     pub async fn deposit(&self, deposit: &StripeDeposit) -> Result<DepositResult, LedgerError> {
         if !deposit.payload.is_object() {
             return Err(crate::ledger::types::InputError::TerminalPayloadNotObject.into());
+        }
+        let payload_digest = canonical_json_digest(&deposit.payload)?;
+        if payload_digest != deposit.payload_digest {
+            return Err(LedgerError::OperationConflict);
         }
         if !deposit.currency.eq_ignore_ascii_case("usd") {
             return Err(LedgerError::OperationConflict);
@@ -25,10 +30,14 @@ impl LedgerService {
         let mut attempt = 0;
         loop {
             authority.ensure_healthy()?;
-            let result = self.deposit_once(&authority, deposit).await;
+            let result = self.deposit_once(&authority, deposit, payload_digest).await;
             match result {
                 Ok(Some(row)) => return deposit_from_row(row, MutationDisposition::Applied),
-                Ok(None) => return self.resolve_deposit(&authority, deposit, false).await,
+                Ok(None) => {
+                    return self
+                        .resolve_deposit(&authority, deposit, payload_digest, false)
+                        .await;
+                }
                 Err(LedgerError::Database(ref source))
                     if DurableDatabase::may_retry(attempt, source) =>
                 {
@@ -38,10 +47,14 @@ impl LedgerService {
                 Err(LedgerError::Database(ref source))
                     if DurableDatabase::is_operation_conflict(source) =>
                 {
-                    return self.resolve_deposit_conflict(&authority, deposit).await;
+                    return self
+                        .resolve_deposit_conflict(&authority, deposit, payload_digest)
+                        .await;
                 }
                 Err(error) if DurableDatabase::is_ambiguous(&error) => {
-                    return self.resolve_deposit(&authority, deposit, true).await;
+                    return self
+                        .resolve_deposit(&authority, deposit, payload_digest, true)
+                        .await;
                 }
                 Err(error) => return Err(error),
             }
@@ -52,6 +65,7 @@ impl LedgerService {
         &self,
         authority: &Authority,
         deposit: &StripeDeposit,
+        payload_digest: darkbloom_coordinator_core::ids::Digest,
     ) -> Result<Option<DepositRow>, LedgerError> {
         self.db
             .bounded(
@@ -254,7 +268,7 @@ impl LedgerService {
                     deposit.event_id.as_str(),
                     Json(&deposit.payload),
                     deposit.external_event_id.as_uuid(),
-                    deposit.payload_digest.as_bytes().as_slice(),
+                    payload_digest.as_bytes().as_slice(),
                 )
                 .fetch_optional(self.db.pool()),
             )
@@ -265,15 +279,19 @@ impl LedgerService {
         &self,
         authority: &Authority,
         deposit: &StripeDeposit,
+        payload_digest: darkbloom_coordinator_core::ids::Digest,
         ambiguous: bool,
     ) -> Result<DepositResult, LedgerError> {
         if let Some(operation) = self.db.operation(authority, &deposit.operation.key).await? {
+            self.validate_deposit_event(authority, deposit, payload_digest)
+                .await?;
             return deposit_from_operation(operation, deposit);
         }
         if ambiguous {
-            return Err(LedgerError::CommitOutcomeUnknown(
-                deposit.operation.key.clone(),
-            ));
+            return Err(LedgerError::CommitOutcomeUnknown {
+                operation: deposit.operation.key.clone(),
+                diagnostic: "ambiguous deposit commit was not found during reconciliation".into(),
+            });
         }
         Err(LedgerError::OperationConflict)
     }
@@ -282,11 +300,63 @@ impl LedgerService {
         &self,
         authority: &Authority,
         deposit: &StripeDeposit,
+        payload_digest: darkbloom_coordinator_core::ids::Digest,
     ) -> Result<DepositResult, LedgerError> {
         let Some(operation) = self.db.operation(authority, &deposit.operation.key).await? else {
             return Err(LedgerError::OperationConflict);
         };
+        self.validate_deposit_event(authority, deposit, payload_digest)
+            .await?;
         deposit_from_operation(operation, deposit)
+    }
+
+    async fn validate_deposit_event(
+        &self,
+        authority: &Authority,
+        deposit: &StripeDeposit,
+        payload_digest: darkbloom_coordinator_core::ids::Digest,
+    ) -> Result<(), LedgerError> {
+        let matches = self
+            .db
+            .bounded(
+                sqlx::query_scalar::<_, bool>(
+                    r#"
+                    WITH authority AS MATERIALIZED (
+                        SELECT 1
+                        FROM public.coordinator_ownership
+                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2
+                    )
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM rust_coord.external_events AS events
+                        JOIN rust_coord.financial_operations AS operations
+                          ON operations.operation_id = events.financial_operation_id
+                        WHERE events.external_event_id = $3
+                          AND events.source = 'stripe'
+                          AND events.event_id = $4
+                          AND events.event_kind = 'checkout.session.completed'
+                          AND events.payload_digest = $5
+                          AND events.payload = $6
+                          AND operations.operation_key = $7
+                    )
+                    FROM authority
+                    "#,
+                )
+                .bind(authority.owner_id())
+                .bind(authority.epoch())
+                .bind(deposit.external_event_id.as_uuid())
+                .bind(deposit.event_id.as_str())
+                .bind(payload_digest.as_bytes().as_slice())
+                .bind(Json(&deposit.payload))
+                .bind(deposit.operation.key.as_str())
+                .fetch_optional(self.db.pool()),
+            )
+            .await?;
+        match matches {
+            Some(true) => Ok(()),
+            Some(false) => Err(LedgerError::OperationConflict),
+            None => Err(LedgerError::OwnershipLost),
+        }
     }
 }
 

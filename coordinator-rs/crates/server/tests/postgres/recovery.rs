@@ -5,18 +5,22 @@ use darkbloom_coordinator_server::{
     database::Database,
     db::catalog::CatalogService,
     ledger::{
-        AccountId, JobId, LedgerAmount, LedgerService, Operation, OperationKey, ReservationId,
-        ReserveRequest,
+        AccountId, JobId, LedgerAmount, LedgerError, LedgerService, Operation, OperationKey,
+        RecoveryTerminalRecordResult, ReservationId, ReserveRequest, TerminalFacts, TerminalId,
+        TerminalOutcome, Version,
     },
     ownership::CoordinatorOwnership,
     projection::FeeProjectionService,
-    recovery::{JobRecoveryAction, RecoveryService},
+    recovery::{JobRecoveryAction, RecoveryRuntime, RecoveryRuntimeConfig, RecoveryService},
 };
 use sqlx::PgPool;
 use tokio::time::sleep;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::support::{seed_service_schema, with_isolated_database};
+
+const TEST_REQUEST_DEADLINE_EPOCH_MILLIS: u64 = 4_102_444_800_000;
 
 #[tokio::test]
 async fn skip_locked_workers_claim_distinct_jobs_and_expired_lease_is_taken_over() {
@@ -79,6 +83,490 @@ async fn skip_locked_workers_claim_distinct_jobs_and_expired_lease_is_taken_over
                 .iter()
                 .any(|lease| lease.job_id == remaining[0].job_id)
         );
+
+        shutdown(database, ownership, pool).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn live_execution_lease_blocks_recovery_until_expiry() {
+    with_isolated_database(|url| async move {
+        let (database, ownership, pool) = service_database(&url).await;
+        sqlx::query(
+            "INSERT INTO public.balances (account_id, balance_micro_usd, withdrawable_micro_usd) VALUES ('consumer', 1000, 1000)",
+        )
+        .execute(&pool)
+        .await
+        .expect("balance");
+        let worker_id = Uuid::new_v4();
+        let mut request = reserve_request(59);
+        request.execution_worker_id = Some(worker_id);
+        request.execution_lease_millis = Some(30_000);
+        let job = LedgerService::new(database.clone())
+            .reserve(&request)
+            .await
+            .expect("leased reserve");
+        let recovery = RecoveryService::new(database.clone());
+        assert!(
+            recovery
+                .claim_jobs(Uuid::new_v4(), 10, Duration::from_secs(1))
+                .await
+                .expect("claim around active execution")
+                .is_empty()
+        );
+        LedgerService::new(database.clone())
+            .renew_execution_lease(job.job_id, worker_id, Duration::from_secs(30))
+            .await
+            .expect("renew active execution");
+        sqlx::query(
+            "UPDATE rust_coord.inference_jobs SET lease_until = NOW() - INTERVAL '1 second' WHERE job_id = $1",
+        )
+        .bind(job.job_id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("expire execution lease");
+        let claimed = recovery
+            .claim_jobs(Uuid::new_v4(), 10, Duration::from_secs(1))
+            .await
+            .expect("claim expired execution");
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].job_id, job.job_id);
+
+        shutdown(database, ownership, pool).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn review_queues_are_never_claimed_or_version_bumped_by_recovery_polling() {
+    with_isolated_database(|url| async move {
+        let (database, ownership, pool) = service_database(&url).await;
+        sqlx::query(
+            "INSERT INTO public.balances (account_id, balance_micro_usd, withdrawable_micro_usd) VALUES ('consumer', 10000, 10000)",
+        )
+        .execute(&pool)
+        .await
+        .expect("balance");
+        let ledger = LedgerService::new(database.clone());
+        let pending = ledger
+            .reserve(&reserve_request(56))
+            .await
+            .expect("reserve review-pending job");
+        sqlx::query(
+            "UPDATE rust_coord.inference_jobs SET state = 'review_pending' WHERE job_id = $1",
+        )
+        .bind(pending.job_id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("move job to operator review");
+
+        let reviewed = ledger
+            .reserve(&reserve_request(57))
+            .await
+            .expect("reserve reviewed job");
+        let reviewed_attempt = Uuid::new_v4();
+        let reviewed_provider = Uuid::new_v4();
+        let reviewed_generation = Uuid::new_v4();
+        sqlx::query(
+            "UPDATE rust_coord.inference_jobs SET state = 'released_reviewed', terminal_at = NOW() WHERE job_id = $1",
+        )
+        .bind(reviewed.job_id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("mark job reviewed");
+        sqlx::query(
+            r#"
+            INSERT INTO rust_coord.inference_attempts (
+                attempt_id, job_id, provider_id,
+                provider_process_generation_id, session_epoch, owner_epoch,
+                lease_id, permit_id, dispatch_nonce, request_digest, kind, state
+            ) VALUES ($1, $2, $3, $4, 1, 1, $5, $6, $7, $8, 'primary', 'acknowledged')
+            "#,
+        )
+        .bind(reviewed_attempt)
+        .bind(reviewed.job_id.as_uuid())
+        .bind(reviewed_provider)
+        .bind(reviewed_generation)
+        .bind(Uuid::new_v4())
+        .bind(Uuid::new_v4())
+        .bind(digest(70).as_bytes().as_slice())
+        .bind(digest(71).as_bytes().as_slice())
+        .execute(&pool)
+        .await
+        .expect("reviewed attempt");
+        sqlx::query(
+            r#"
+            INSERT INTO rust_coord.provider_terminals (
+                terminal_id, job_id, attempt_id, provider_id,
+                provider_process_generation_id, origin_session_epoch,
+                terminal_digest, raw_terminal, outcome, prompt_tokens,
+                completion_tokens, reasoning_tokens, response_digest,
+                rolling_digest, final_generated_tokens, provider_signature,
+                status, owner_epoch, disposition_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, 1, $6, '{}'::jsonb, 'cancelled',
+                0, 0, 0, $7, $8, 0, '\x01'::bytea,
+                'released_reviewed', 1, NOW()
+            )
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(reviewed.job_id.as_uuid())
+        .bind(reviewed_attempt)
+        .bind(reviewed_provider)
+        .bind(reviewed_generation)
+        .bind(digest(72).as_bytes().as_slice())
+        .bind(digest(73).as_bytes().as_slice())
+        .bind(digest(74).as_bytes().as_slice())
+        .execute(&pool)
+        .await
+        .expect("reviewed terminal");
+
+        let recovery = RecoveryService::new(database.clone());
+        for _ in 0..4 {
+            assert!(
+                recovery
+                    .claim_jobs(Uuid::new_v4(), 10, Duration::from_millis(10))
+                    .await
+                    .expect("poll jobs")
+                    .is_empty()
+            );
+            assert!(
+                recovery
+                    .claim_terminals(Uuid::new_v4(), 10, Duration::from_millis(10))
+                    .await
+                    .expect("poll terminals")
+                    .is_empty()
+            );
+        }
+        let versions: Vec<(Uuid, i64)> = sqlx::query_as(
+            "SELECT job_id, version FROM rust_coord.inference_jobs WHERE job_id IN ($1, $2) ORDER BY job_id",
+        )
+        .bind(pending.job_id.as_uuid())
+        .bind(reviewed.job_id.as_uuid())
+        .fetch_all(&pool)
+        .await
+        .expect("review job versions");
+        assert!(versions.iter().all(|(_, version)| *version == 1));
+        let attempt_version: i64 = sqlx::query_scalar(
+            "SELECT version FROM rust_coord.inference_attempts WHERE attempt_id = $1",
+        )
+        .bind(reviewed_attempt)
+        .fetch_one(&pool)
+        .await
+        .expect("review attempt version");
+        assert_eq!(attempt_version, 1);
+        let terminal_version: i64 = sqlx::query_scalar(
+            "SELECT version FROM rust_coord.provider_terminals WHERE attempt_id = $1",
+        )
+        .bind(reviewed_attempt)
+        .fetch_one(&pool)
+        .await
+        .expect("review terminal version");
+        assert_eq!(terminal_version, 1);
+
+        shutdown(database, ownership, pool).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn recovery_releases_expired_not_sent_and_reviews_lost_queued_provider_state() {
+    with_isolated_database(|url| async move {
+        let (database, ownership, pool) = service_database(&url).await;
+        sqlx::query(
+            "INSERT INTO public.balances (account_id, balance_micro_usd, withdrawable_micro_usd) VALUES ('consumer', 1000, 1000)",
+        )
+        .execute(&pool)
+        .await
+        .expect("balance");
+        let ledger = LedgerService::new(database.clone());
+        let not_sent = ledger
+            .reserve(&reserve_request(54))
+            .await
+            .expect("reserve not-sent job");
+        let queued = ledger
+            .reserve(&reserve_request(55))
+            .await
+            .expect("reserve queued job");
+        let not_sent_provider = Uuid::new_v4();
+        let queued_provider = Uuid::new_v4();
+        let not_sent_attempt = Uuid::new_v4();
+        let queued_attempt = Uuid::new_v4();
+        for (job_id, provider_id) in [
+            (not_sent.job_id.as_uuid(), not_sent_provider),
+            (queued.job_id.as_uuid(), queued_provider),
+        ] {
+            sqlx::query(
+                r#"
+                UPDATE rust_coord.inference_jobs
+                SET state = 'start_authorized',
+                    concrete_model = 'model/build',
+                    public_model = 'model',
+                    pricing_version = 1,
+                    rounding_version = 1,
+                    billable_input_tokens = 1,
+                    bounded_output_tokens = 1,
+                    provider_id = $2,
+                    provider_account_id = 'provider',
+                    provider_payout_micro_usd = 50,
+                    platform_fee_micro_usd = 50,
+                    request_digest = $3,
+                    start_authorized_at = NOW() - INTERVAL '2 seconds',
+                    start_deadline = NOW() - INTERVAL '1 second'
+                WHERE job_id = $1
+                "#,
+            )
+            .bind(job_id)
+            .bind(provider_id)
+            .bind(digest(75).as_bytes().as_slice())
+            .execute(&pool)
+            .await
+            .expect("authorize recovery job");
+        }
+        for (job_id, attempt_id, provider_id, state) in [
+            (
+                not_sent.job_id.as_uuid(),
+                not_sent_attempt,
+                not_sent_provider,
+                "not_sent",
+            ),
+            (
+                queued.job_id.as_uuid(),
+                queued_attempt,
+                queued_provider,
+                "queued",
+            ),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO rust_coord.inference_attempts (
+                    attempt_id, job_id, provider_id,
+                    provider_process_generation_id, session_epoch, owner_epoch,
+                    lease_id, permit_id, dispatch_nonce, request_digest, kind, state
+                ) VALUES ($1, $2, $3, $4, 1, 1, $5, $6, $7, $8, 'primary', $9)
+                "#,
+            )
+            .bind(attempt_id)
+            .bind(job_id)
+            .bind(provider_id)
+            .bind(Uuid::new_v4())
+            .bind(Uuid::new_v4())
+            .bind(Uuid::new_v4())
+            .bind(digest(76).as_bytes().as_slice())
+            .bind(digest(75).as_bytes().as_slice())
+            .bind(state)
+            .execute(&pool)
+            .await
+            .expect("recovery attempt");
+        }
+
+        let runtime = RecoveryRuntime::new(
+            database.clone(),
+            None,
+            RecoveryRuntimeConfig {
+                batch_size: 4,
+                lease_duration: Duration::from_millis(50),
+                poll_interval: Duration::from_millis(5),
+                outbox_retry_after: Duration::from_millis(10),
+            },
+        )
+        .expect("recovery runtime");
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let worker = tokio::spawn(async move { runtime.run(worker_cancellation).await });
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let states: Vec<String> = sqlx::query_scalar(
+                "SELECT state FROM rust_coord.inference_jobs WHERE job_id IN ($1, $2) ORDER BY job_id",
+            )
+            .bind(not_sent.job_id.as_uuid())
+            .bind(queued.job_id.as_uuid())
+            .fetch_all(&pool)
+            .await
+            .expect("recovery states");
+            if states.iter().any(|state| state == "released")
+                && states.iter().any(|state| state == "review_pending")
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "recovery did not disposition expired delivery states: {states:?}"
+            );
+            sleep(Duration::from_millis(10)).await;
+        }
+        let not_sent_attempt_state: String = sqlx::query_scalar(
+            "SELECT state FROM rust_coord.inference_attempts WHERE attempt_id = $1",
+        )
+        .bind(not_sent_attempt)
+        .fetch_one(&pool)
+        .await
+        .expect("not-sent attempt state");
+        assert_eq!(not_sent_attempt_state, "aborted");
+        let queued_attempt_state: (String, bool) = sqlx::query_as(
+            "SELECT state, worker_owner IS NOT NULL FROM rust_coord.inference_attempts WHERE attempt_id = $1",
+        )
+        .bind(queued_attempt)
+        .fetch_one(&pool)
+        .await
+        .expect("queued attempt state");
+        assert_eq!(queued_attempt_state.0, "queued");
+        let hard_untrusted: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM rust_coord.provider_hard_untrust_epochs WHERE provider_id = $1 AND hard_untrust_epoch >= 1)",
+        )
+        .bind(queued_provider)
+        .fetch_one(&pool)
+        .await
+        .expect("lost provider hard-untrust");
+        assert!(hard_untrusted);
+        let balance: i64 = sqlx::query_scalar(
+            "SELECT balance_micro_usd FROM public.balances WHERE account_id = 'consumer'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("recovery balance");
+        assert_eq!(balance, 900, "only the not-sent reservation was released");
+
+        cancellation.cancel();
+        tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .expect("bounded recovery shutdown")
+            .expect("recovery task join")
+            .expect("recovery runtime result");
+        shutdown(database, ownership, pool).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn authorized_recovery_claim_is_retained_instead_of_hot_looped() {
+    with_isolated_database(|url| async move {
+        let (database, ownership, pool) = service_database(&url).await;
+        sqlx::query(
+            "INSERT INTO public.balances (account_id, balance_micro_usd, withdrawable_micro_usd) VALUES ('consumer', 1000, 1000)",
+        )
+        .execute(&pool)
+        .await
+        .expect("balance");
+        let job = LedgerService::new(database.clone())
+            .reserve(&reserve_request(58))
+            .await
+            .expect("reserve authorized recovery job");
+        let provider_id = Uuid::new_v4();
+        let generation_id = Uuid::new_v4();
+        let request_digest = digest(58);
+        sqlx::query(
+            r#"
+            UPDATE rust_coord.inference_jobs
+            SET state = 'start_authorized',
+                concrete_model = 'model/build',
+                public_model = 'model',
+                pricing_version = 1,
+                rounding_version = 1,
+                billable_input_tokens = 1,
+                bounded_output_tokens = 1,
+                provider_id = $2,
+                provider_account_id = 'provider',
+                provider_payout_micro_usd = 50,
+                platform_fee_micro_usd = 50,
+                request_digest = $3
+            WHERE job_id = $1
+            "#,
+        )
+        .bind(job.job_id.as_uuid())
+        .bind(provider_id)
+        .bind(request_digest.as_bytes().as_slice())
+        .execute(&pool)
+        .await
+        .expect("authorize recovery job");
+        sqlx::query(
+            r#"
+            INSERT INTO rust_coord.inference_attempts (
+                attempt_id, job_id, provider_id,
+                provider_process_generation_id, session_epoch, owner_epoch,
+                lease_id, permit_id, dispatch_nonce, request_digest, kind, state
+            ) VALUES ($1, $2, $3, $4, 1, 1, $5, $6, $7, $8, 'primary', 'started')
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(job.job_id.as_uuid())
+        .bind(provider_id)
+        .bind(generation_id)
+        .bind(Uuid::new_v4())
+        .bind(Uuid::new_v4())
+        .bind(digest(59).as_bytes().as_slice())
+        .bind(request_digest.as_bytes().as_slice())
+        .execute(&pool)
+        .await
+        .expect("authorized recovery attempt");
+
+        let runtime = RecoveryRuntime::new(
+            database.clone(),
+            None,
+            RecoveryRuntimeConfig {
+                batch_size: 4,
+                lease_duration: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(10),
+                outbox_retry_after: Duration::from_millis(10),
+            },
+        )
+        .expect("recovery runtime");
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let worker = tokio::spawn(async move { runtime.run(worker_cancellation).await });
+        sleep(Duration::from_millis(80)).await;
+        let (version, leased): (i64, bool) = sqlx::query_as(
+            r#"
+            SELECT version, worker_owner IS NOT NULL AND lease_until > NOW()
+            FROM rust_coord.inference_jobs
+            WHERE job_id = $1
+            "#,
+        )
+        .bind(job.job_id.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .expect("inspect retained authorized recovery lease");
+        assert_eq!(version, 2, "authorized job was repeatedly re-claimed");
+        assert!(leased, "authorized recovery claim was released prematurely");
+
+        cancellation.cancel();
+        tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .expect("bounded recovery shutdown")
+            .expect("recovery task join")
+            .expect("recovery runtime result");
+        shutdown(database, ownership, pool).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn recovery_supervisor_cancels_and_joins_every_worker_lane() {
+    with_isolated_database(|url| async move {
+        let (database, ownership, pool) = service_database(&url).await;
+        let runtime = RecoveryRuntime::new(
+            database.clone(),
+            None,
+            RecoveryRuntimeConfig {
+                batch_size: 4,
+                lease_duration: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(10),
+                outbox_retry_after: Duration::from_millis(10),
+            },
+        )
+        .expect("recovery runtime");
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let worker = tokio::spawn(async move { runtime.run(worker_cancellation).await });
+        sleep(Duration::from_millis(30)).await;
+        cancellation.cancel();
+        tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .expect("bounded recovery shutdown")
+            .expect("recovery task join")
+            .expect("recovery runtime result");
 
         shutdown(database, ownership, pool).await;
     })
@@ -166,36 +654,10 @@ async fn recovery_classifies_pre_and_post_authorization_without_redispatch() {
         .execute(&pool)
         .await
         .expect("authorized attempt");
-        let terminal_id = Uuid::new_v4();
-        sqlx::query(
-            r#"
-            INSERT INTO rust_coord.provider_terminals (
-                terminal_id, job_id, attempt_id, provider_id,
-                provider_process_generation_id, origin_session_epoch,
-                terminal_digest, raw_terminal, outcome, prompt_tokens,
-                completion_tokens, response_digest, rolling_digest,
-                final_generated_tokens, provider_signature, owner_epoch
-            ) VALUES (
-                $1, $2, $3, $4, $5, 1, $6, '{}', 'completed', 1, 1,
-                $7, $8, 1, '\x01', 1
-            )
-            "#,
-        )
-        .bind(terminal_id)
-        .bind(authorized_job.as_uuid())
-        .bind(attempt_id)
-        .bind(provider_id)
-        .bind(generation_id)
-        .bind(digest(65).as_bytes().as_slice())
-        .bind(digest(66).as_bytes().as_slice())
-        .bind(digest(67).as_bytes().as_slice())
-        .execute(&pool)
-        .await
-        .expect("pending terminal");
-
         let recovery = RecoveryService::new(database.clone());
+        let job_worker = Uuid::new_v4();
         let leases = recovery
-            .claim_jobs(Uuid::new_v4(), 10, Duration::from_secs(1))
+            .claim_jobs(job_worker, 10, Duration::from_secs(1))
             .await
             .expect("state claims");
         let action = |job_id| {
@@ -217,12 +679,50 @@ async fn recovery_classifies_pre_and_post_authorization_without_redispatch() {
             action(authorized_job),
             JobRecoveryAction::AwaitAuthorizedTerminal
         );
+        let terminal_id = TerminalId::new(Uuid::new_v4()).expect("terminal id");
+        let recorded = ledger
+            .record_terminal_for_recovery(&TerminalFacts {
+                terminal_id,
+                attempt_id: darkbloom_coordinator_server::ledger::AttemptId::new(attempt_id)
+                    .expect("attempt id"),
+                provider_id,
+                provider_process_generation_id: generation_id,
+                origin_session_epoch: Version::new(1).expect("session epoch"),
+                terminal_digest: digest(65),
+                raw_terminal: serde_json::json!({}),
+                outcome: TerminalOutcome::Completed,
+                error_class: None,
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                reasoning_tokens: 0,
+                response_digest: digest(66),
+                rolling_digest: digest(67),
+                final_generated_tokens: 1,
+                provider_signature: vec![1],
+                recovery_lease: None,
+            })
+            .await
+            .expect("record terminal during job recovery claim");
+        assert_eq!(
+            recorded,
+            RecoveryTerminalRecordResult::Pending {
+                job_id: authorized_job
+            }
+        );
         let terminals = recovery
             .claim_terminals(Uuid::new_v4(), 10, Duration::from_secs(1))
             .await
             .expect("terminal claim");
         assert_eq!(terminals.len(), 1);
-        assert_eq!(terminals[0].terminal_id.as_uuid(), terminal_id);
+        assert_eq!(terminals[0].terminal_id, terminal_id);
+        assert!(matches!(
+            recovery
+                .disposition_terminal(&ledger, terminals[0].clone())
+                .await,
+            Err(LedgerError::TerminalReview(
+                "terminal completion exceeds the durable accepted checkpoint"
+            ))
+        ));
 
         shutdown(database, ownership, pool).await;
     })
@@ -531,7 +1031,13 @@ fn reserve_request(index: u8) -> ReserveRequest {
         reservation_id: ReservationId::random(),
         account_id: account("consumer"),
         api_key_id: "key".into(),
+        consumer_key_hash: "consumer-key-hash".into(),
         amount: amount(100),
+        request_deadline_epoch_millis: TEST_REQUEST_DEADLINE_EPOCH_MILLIS,
+        execution_worker_id: None,
+        execution_lease_millis: None,
+        provisional_provider_id: None,
+        provisional_session_epoch: None,
     }
 }
 

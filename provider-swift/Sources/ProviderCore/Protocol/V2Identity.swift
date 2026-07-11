@@ -117,6 +117,7 @@ public struct ProtocolCapabilities: Sendable, Equatable, Codable {
     public var modelLifecycleEvents: Bool
     public var binaryPayloadFrames: Bool
     public var coordinatorReplayFences: Bool
+    public var attemptReconciliation: Bool
 
     public init(
         protocolMajor: UInt16,
@@ -131,7 +132,8 @@ public struct ProtocolCapabilities: Sendable, Equatable, Codable {
         durableTerminals: Bool = false,
         modelLifecycleEvents: Bool = false,
         binaryPayloadFrames: Bool = false,
-        coordinatorReplayFences: Bool = false
+        coordinatorReplayFences: Bool = false,
+        attemptReconciliation: Bool = false
     ) {
         self.protocolMajor = protocolMajor
         self.protocolMinor = protocolMinor
@@ -146,6 +148,7 @@ public struct ProtocolCapabilities: Sendable, Equatable, Codable {
         self.modelLifecycleEvents = modelLifecycleEvents
         self.binaryPayloadFrames = binaryPayloadFrames
         self.coordinatorReplayFences = coordinatorReplayFences
+        self.attemptReconciliation = attemptReconciliation
     }
 
     /// The complete initial v2 contract implemented by this provider.
@@ -162,7 +165,8 @@ public struct ProtocolCapabilities: Sendable, Equatable, Codable {
         durableTerminals: true,
         modelLifecycleEvents: true,
         binaryPayloadFrames: true,
-        coordinatorReplayFences: true
+        coordinatorReplayFences: true,
+        attemptReconciliation: true
     )
 
     public var supportsV2: Bool {
@@ -178,6 +182,7 @@ public struct ProtocolCapabilities: Sendable, Equatable, Codable {
             && modelLifecycleEvents
             && binaryPayloadFrames
             && coordinatorReplayFences
+            && attemptReconciliation
     }
 
     /// Computes the common feature set over the overlap of both supported
@@ -206,7 +211,9 @@ public struct ProtocolCapabilities: Sendable, Equatable, Codable {
             modelLifecycleEvents: modelLifecycleEvents && peer.modelLifecycleEvents,
             binaryPayloadFrames: binaryPayloadFrames && peer.binaryPayloadFrames,
             coordinatorReplayFences:
-                coordinatorReplayFences && peer.coordinatorReplayFences
+                coordinatorReplayFences && peer.coordinatorReplayFences,
+            attemptReconciliation:
+                attemptReconciliation && peer.attemptReconciliation
         )
     }
 
@@ -224,6 +231,7 @@ public struct ProtocolCapabilities: Sendable, Equatable, Codable {
         case modelLifecycleEvents = "model_lifecycle_events"
         case binaryPayloadFrames = "binary_payload_frames"
         case coordinatorReplayFences = "coordinator_replay_fences"
+        case attemptReconciliation = "attempt_reconciliation"
     }
 
     public init(from decoder: Decoder) throws {
@@ -253,6 +261,9 @@ public struct ProtocolCapabilities: Sendable, Equatable, Codable {
         coordinatorReplayFences =
             try container.decodeIfPresent(
                 Bool.self, forKey: .coordinatorReplayFences) ?? false
+        attemptReconciliation =
+            try container.decodeIfPresent(
+                Bool.self, forKey: .attemptReconciliation) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -273,6 +284,8 @@ public struct ProtocolCapabilities: Sendable, Equatable, Codable {
         try container.encodeIfTrue(binaryPayloadFrames, forKey: .binaryPayloadFrames)
         try container.encodeIfTrue(
             coordinatorReplayFences, forKey: .coordinatorReplayFences)
+        try container.encodeIfTrue(
+            attemptReconciliation, forKey: .attemptReconciliation)
     }
 }
 

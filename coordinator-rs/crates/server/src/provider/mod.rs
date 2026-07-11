@@ -31,7 +31,7 @@ pub use types::{
 pub use writer::{
     DeliveryReceipt, DeliveryReceiptError, DeliveryState, OutboundFrame, ProviderWriter,
     ProviderWriterConfig, ProviderWriterConfigError, ProviderWriterError, ProviderWriterHandle,
-    WriterEnqueueError, WriterLaneLimits, WriterQueueHeadroom, provider_writer,
+    StagedDelivery, WriterEnqueueError, WriterLaneLimits, WriterQueueHeadroom, provider_writer,
 };
 
 pub use darkbloom_coordinator_protocol::v2::ProviderId;

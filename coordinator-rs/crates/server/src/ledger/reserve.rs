@@ -11,6 +11,8 @@ use super::{
 };
 use crate::db::ownership::{Authority, OperationRecord};
 
+const MAX_EXECUTION_LEASE_MILLIS: u64 = 300_000;
+
 impl LedgerService {
     /// Resolves an ambiguous reserve outcome by immutable operation identity.
     /// Absence is reported as commit-unknown rather than being retried.
@@ -33,6 +35,40 @@ impl LedgerService {
         }
         if request.amount.as_i64() == 0 {
             return Err(crate::ledger::types::InputError::Empty("base reservation").into());
+        }
+        if request.consumer_key_hash.is_empty() {
+            return Err(crate::ledger::types::InputError::Empty("consumer key hash").into());
+        }
+        if request.request_deadline_epoch_millis == 0
+            || request.request_deadline_epoch_millis > i64::MAX as u64
+        {
+            return Err(crate::ledger::types::InputError::ArithmeticOverflow.into());
+        }
+        match (request.execution_worker_id, request.execution_lease_millis) {
+            (None, None) => {}
+            (Some(worker_id), Some(lease_millis))
+                if !worker_id.is_nil()
+                    && lease_millis > 0
+                    && lease_millis <= MAX_EXECUTION_LEASE_MILLIS => {}
+            (Some(worker_id), _) if worker_id.is_nil() => {
+                return Err(crate::ledger::types::InputError::NilId("execution worker").into());
+            }
+            _ => {
+                return Err(crate::ledger::types::InputError::ArithmeticOverflow.into());
+            }
+        }
+        match (
+            request.provisional_provider_id,
+            request.provisional_session_epoch,
+        ) {
+            (None, None) => {}
+            (Some(provider_id), Some(_)) if !provider_id.is_nil() => {}
+            (Some(provider_id), _) if provider_id.is_nil() => {
+                return Err(crate::ledger::types::InputError::NilId("provider id").into());
+            }
+            _ => {
+                return Err(crate::ledger::types::InputError::Empty("provider trust fence").into());
+            }
         }
         let authority = self.db.authority()?;
         let mut attempt = 0;
@@ -92,6 +128,19 @@ impl LedgerService {
                           AND balance_micro_usd >= $10
                           AND withdrawable_micro_usd >= 0
                           AND withdrawable_micro_usd <= balance_micro_usd
+                          AND TIMESTAMPTZ 'epoch'
+                              + ($17::BIGINT * INTERVAL '1 millisecond')
+                              > NOW()
+                          AND (
+                              $15::UUID IS NULL
+                              OR NOT EXISTS (
+                                  SELECT 1
+                                  FROM rust_coord.provider_hard_untrust_epochs
+                                      AS untrusted
+                                  WHERE untrusted.provider_id = $15
+                                    AND untrusted.hard_untrust_epoch >= $16
+                              )
+                          )
                         FOR UPDATE
                     ),
                     job_insert AS (
@@ -102,12 +151,16 @@ impl LedgerService {
                             reserve_operation_key,
                             account_id,
                             api_key_id,
+                            consumer_key_hash,
                             owner_epoch,
                             version,
                             state,
                             reserved_total_micro_usd,
                             reserved_withdrawable_micro_usd,
-                            reservation_pre_debited
+                            reservation_pre_debited,
+                            request_deadline,
+                            worker_owner,
+                            lease_until
                         )
                         SELECT
                             $3,
@@ -116,12 +169,21 @@ impl LedgerService {
                             $6,
                             account.account_id,
                             $9,
+                            $12,
                             $2,
                             1,
                             'reserved',
                             $10,
                             account.reserved_withdrawable,
-                            TRUE
+                            TRUE,
+                            TIMESTAMPTZ 'epoch'
+                                + ($17::BIGINT * INTERVAL '1 millisecond'),
+                            $13,
+                            CASE
+                                WHEN $13::UUID IS NULL THEN NULL
+                                ELSE NOW()
+                                    + ($14::BIGINT * INTERVAL '1 millisecond')
+                            END
                         FROM authority
                         CROSS JOIN account
                         ON CONFLICT DO NOTHING
@@ -229,6 +291,15 @@ impl LedgerService {
                     request.api_key_id.as_ref(),
                     request.amount.as_i64(),
                     request.operation.digest.as_bytes().as_slice(),
+                    request.consumer_key_hash.as_ref(),
+                    request.execution_worker_id,
+                    request.execution_lease_millis.map(|millis| {
+                        i64::try_from(millis).expect("bounded execution lease fits i64")
+                    }),
+                    request.provisional_provider_id,
+                    request.provisional_session_epoch.map(Version::as_i64),
+                    i64::try_from(request.request_deadline_epoch_millis)
+                        .expect("validated request deadline fits i64"),
                 )
                 .fetch_optional(self.db.pool()),
             )
@@ -245,9 +316,10 @@ impl LedgerService {
             return reservation_from_operation(operation, request);
         }
         if ambiguous {
-            return Err(LedgerError::CommitOutcomeUnknown(
-                request.operation.key.clone(),
-            ));
+            return Err(LedgerError::CommitOutcomeUnknown {
+                operation: request.operation.key.clone(),
+                diagnostic: "ambiguous reserve commit was not found during reconciliation".into(),
+            });
         }
         let diagnostic = self
             .db
@@ -276,7 +348,17 @@ impl LedgerService {
                                OR request_id = $6
                                OR reservation_id = $7
                                OR reserve_operation_key = $8
-                        ) AS job_conflict
+                        ) AS job_conflict,
+                        (
+                            $9::UUID IS NULL
+                            OR NOT EXISTS (
+                                SELECT 1
+                                FROM rust_coord.provider_hard_untrust_epochs
+                                    AS untrusted
+                                WHERE untrusted.provider_id = $9
+                                  AND untrusted.hard_untrust_epoch >= $10
+                            )
+                        ) AS provider_trusted
                     WHERE EXISTS (SELECT 1 FROM authority)
                     "#,
                     authority.owner_id(),
@@ -287,11 +369,14 @@ impl LedgerService {
                     request.request_id,
                     request.reservation_id.as_uuid(),
                     request.operation.key.as_str(),
+                    request.provisional_provider_id,
+                    request.provisional_session_epoch.map(Version::as_i64),
                 )
                 .fetch_optional(self.db.pool()),
             )
             .await?;
         match diagnostic {
+            Some(row) if !row.provider_trusted => Err(LedgerError::ProviderHardUntrusted),
             Some(row) if !row.funded => Err(LedgerError::InsufficientBalance),
             Some(row) if row.job_conflict => Err(LedgerError::OperationConflict),
             Some(_) => Err(LedgerError::OperationConflict),
@@ -324,6 +409,7 @@ struct ReservationRow {
 struct ReserveDiagnostic {
     funded: bool,
     job_conflict: bool,
+    provider_trusted: bool,
 }
 
 fn reservation_from_row(

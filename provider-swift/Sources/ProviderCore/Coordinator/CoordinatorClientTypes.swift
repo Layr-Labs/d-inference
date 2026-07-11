@@ -141,6 +141,7 @@ public enum OutboundMessage: Sendable {
     case modelsUpdate(models: [ModelInfo])
     case prepared(V2Prepared)
     case startAck(V2StartAck)
+    case attemptStatus(V2AttemptStatus)
     case abortAck(V2AbortAck)
     case cancelAck(V2CancelAck)
     case providerTerminal(V2ProviderTerminal)

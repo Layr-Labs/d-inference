@@ -8,7 +8,7 @@ use std::sync::Arc;
 use axum::{
     Json, Router,
     extract::{Request, State, WebSocketUpgrade},
-    http::StatusCode,
+    http::{StatusCode, header::HeaderName},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -17,7 +17,8 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use crate::pilot::{
-    PilotHandle, PilotRequestError, PilotRequestJob, PilotTelemetryEvent, parse_request_facts,
+    BillingContext, DurableRequestIdentity, PilotHandle, PilotRequestError, PilotRequestJob,
+    PilotTelemetryEvent, parse_request_facts, request_id_from_idempotency,
 };
 
 use self::{
@@ -56,7 +57,7 @@ async fn models(
     request: Request,
 ) -> Result<Json<ModelList>, ApiError> {
     let pilot = state.pilot.as_ref().ok_or_else(pilot_unavailable)?;
-    authenticate_consumer(request.headers(), pilot)?;
+    let _billing = authenticate_consumer(request.headers(), pilot)?;
     let data = pilot
         .catalog()
         .models()
@@ -78,14 +79,14 @@ async fn chat_completions(
     request: Request,
 ) -> Result<Response, ApiError> {
     let pilot = state.pilot.ok_or_else(pilot_unavailable)?;
-    if let Err(error) = authenticate_consumer(request.headers(), &pilot) {
+    let billing = authenticate_consumer(request.headers(), &pilot).inspect_err(|_| {
         pilot.telemetry().emit(PilotTelemetryEvent::RequestRejected);
-        return Err(error);
-    }
+    })?;
     if !pilot.is_ready() {
         return Err(pilot_unavailable());
     }
     let (parts, body) = request.into_parts();
+    let request_id = durable_request_id(&parts.headers, &billing)?;
     let input = read_consumer_input(&parts.headers, body, &pilot).await?;
     let model = pilot
         .catalog()
@@ -107,6 +108,15 @@ async fn chat_completions(
     let client_cancellation = CancellationToken::new();
     let mut client_guard = ClientCancellationGuard::new(client_cancellation.clone());
     let job = PilotRequestJob {
+        identity: DurableRequestIdentity::from_request_id(request_id).map_err(|error| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_idempotency_key",
+                "invalid_request_error",
+                error.to_string(),
+            )
+        })?,
+        billing,
         plaintext: input.plaintext,
         model,
         output_mode,
@@ -129,6 +139,35 @@ async fn chat_completions(
     })??;
     client_guard.disarm();
     Ok(consumer_response(response, pilot, input.sender))
+}
+
+fn durable_request_id(
+    headers: &axum::http::HeaderMap,
+    billing: &BillingContext,
+) -> Result<uuid::Uuid, ApiError> {
+    static IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
+    let Some(value) = headers.get(&IDEMPOTENCY_KEY) else {
+        return Ok(uuid::Uuid::new_v4());
+    };
+    let value = value
+        .to_str()
+        .ok()
+        .filter(|value| {
+            !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+        })
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_idempotency_key",
+                "invalid_request_error",
+                "Idempotency-Key must be 1..=256 visible bytes",
+            )
+        })?;
+    let scope = match billing {
+        BillingContext::FreeSelfRoute => "self-route",
+        BillingContext::Paid(context) => context.account_id.as_str(),
+    };
+    Ok(request_id_from_idempotency(scope, value))
 }
 
 async fn provider_websocket(

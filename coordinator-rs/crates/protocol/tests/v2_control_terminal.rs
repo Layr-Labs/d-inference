@@ -2,12 +2,13 @@ use darkbloom_coordinator_protocol::{
     TerminalError,
     v1::{EncryptedPayload, Heartbeat, ProviderMessage as V1ProviderMessage},
     v2::{
-        Abort, AttemptId, AttemptIdentity, Cancel, CoordinatorControlMessage,
-        CoordinatorReplayFenceProof, Digest, LeaseId, ModelGone, ModelReady, Prepare, Prepared,
-        ProtocolCapabilities, ProviderControlMessage, ProviderId, ProviderProcessGenerationId,
-        ProviderSessionIdentity, ProviderSessionTracker, ProviderTerminal, RegisterAcknowledgement,
-        RegistrationResponse, ReplayFenceAck, ReplayFenceProofId, RequestId, ReservationId,
-        SessionEpoch, Start, StartAck, TerminalOutcome, TerminalSignature,
+        Abort, AttemptId, AttemptIdentity, AttemptStatus, AttemptStatusState, Cancel,
+        CoordinatorControlMessage, CoordinatorReplayFenceProof, Digest, LeaseId, ModelGone,
+        ModelReady, Prepare, Prepared, ProtocolCapabilities, ProviderControlMessage, ProviderId,
+        ProviderProcessGenerationId, ProviderSessionIdentity, ProviderSessionTracker,
+        ProviderTerminal, QueryAttempt, RegisterAcknowledgement, RegistrationResponse,
+        ReplayFenceAck, ReplayFenceProofId, RequestId, ReservationId, SessionEpoch, Start,
+        StartAck, TerminalOutcome, TerminalSignature,
     },
 };
 
@@ -111,6 +112,13 @@ fn v2_control_discriminators_and_unknown_fields_are_stable() {
             "start",
         ),
         (
+            serde_json::to_value(CoordinatorControlMessage::QueryAttempt(QueryAttempt {
+                identity: identity(),
+            }))
+            .expect("query attempt"),
+            "query_attempt",
+        ),
+        (
             serde_json::to_value(CoordinatorControlMessage::Abort(Abort {
                 identity: identity(),
                 reason: None,
@@ -160,6 +168,15 @@ fn v2_control_discriminators_and_unknown_fields_are_stable() {
         serde_json::to_value(start_ack).expect("start ACK")["type"],
         "start_ack"
     );
+    let status = ProviderControlMessage::AttemptStatus(AttemptStatus {
+        identity: identity(),
+        state: AttemptStatusState::Terminal,
+        terminal_digest: Some(digest),
+    });
+    let status = serde_json::to_value(status).expect("attempt status");
+    assert_eq!(status["type"], "attempt_status");
+    assert_eq!(status["state"], "terminal");
+    assert!(serde_json::from_value::<ProviderControlMessage>(status).is_ok());
 
     let replay_ack = ProviderControlMessage::ReplayFenceAck(ReplayFenceAck {
         proof_id: ReplayFenceProofId::new([0x99; 16]),
@@ -263,6 +280,7 @@ fn capability_negotiation_requires_the_complete_v2_contract() {
         model_lifecycle_events: true,
         binary_payload_frames: true,
         coordinator_replay_fences: true,
+        attempt_reconciliation: true,
     };
     let coordinator = ProtocolCapabilities {
         protocol_major: 2,
@@ -303,6 +321,7 @@ fn register_ack_echoes_generation_and_allocates_stable_monotonic_sessions() {
         model_lifecycle_events: true,
         binary_payload_frames: true,
         coordinator_replay_fences: true,
+        attempt_reconciliation: true,
         ..Default::default()
     };
     let replay_key = {

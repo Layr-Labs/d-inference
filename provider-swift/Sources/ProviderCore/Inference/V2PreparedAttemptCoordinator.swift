@@ -324,6 +324,43 @@ public actor V2PreparedAttemptCoordinator {
         }
     }
 
+    /// Reconciles one exact historical attempt from durable journals first,
+    /// then the current prepared binding. Tombstones deliberately answer
+    /// `unknown`: they prove the queried Start cannot have begun.
+    public func attemptStatus(
+        identity: AttemptIdentity
+    ) async throws -> V2AttemptStatus {
+        await acquireTransition()
+        defer { releaseTransition() }
+        guard let journal, let tombstones else {
+            throw V2PreparedAttemptCoordinatorError.notInitialized
+        }
+        if let durable = try await journal.attemptStatus(for: identity) {
+            return durable
+        }
+        if try await tombstones.contains(identity) {
+            return try V2AttemptStatus(identity: identity, state: .unknown)
+        }
+        if let binding = bindings[identity.leaseID] {
+            guard binding.inference.identity == identity else {
+                throw V2PreparedAttemptCoordinatorError.identityConflict
+            }
+            switch await manager.state(of: identity) {
+            case .reserved:
+                return try V2AttemptStatus(identity: identity, state: .prepared)
+            case nil, .preparing, .starting, .started, .aborting, .aborted,
+                .cancelling, .cancelled, .expired, .completed, .failed:
+                return try V2AttemptStatus(identity: identity, state: .unknown)
+            }
+        }
+        if bindings.values.contains(where: {
+            $0.inference.identity.attemptID == identity.attemptID
+        }) {
+            throw V2PreparedAttemptCoordinatorError.identityConflict
+        }
+        return try V2AttemptStatus(identity: identity, state: .unknown)
+    }
+
     /// Durability order is load-bearing: abort fence validation, funded-start
     /// fsync, then engine submit. A caller may send start_ack only after this
     /// function returns successfully.

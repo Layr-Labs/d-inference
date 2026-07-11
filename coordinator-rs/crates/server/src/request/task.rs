@@ -24,7 +24,8 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::provider::{
-    DeliveryReceipt, DeliveryReceiptError, DeliveryState, ProviderWriterHandle, WriterEnqueueError,
+    DeliveryReceipt, DeliveryReceiptError, DeliveryState, ProviderWriterHandle, StagedDelivery,
+    WriterEnqueueError,
 };
 
 use super::{
@@ -81,17 +82,19 @@ pub enum DispatchState {
 #[derive(Clone, Debug)]
 pub struct DispatchTracker {
     state: Option<DispatchState>,
-    cancellation: RequestCancellation,
+}
+
+impl Default for DispatchTracker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DispatchTracker {
-    /// Creates an unqueued tracker under the already-installed cancellation.
+    /// Creates an unqueued tracker.
     #[must_use]
-    pub fn new(cancellation: RequestCancellation) -> Self {
-        Self {
-            state: None,
-            cancellation,
-        }
+    pub const fn new() -> Self {
+        Self { state: None }
     }
 
     /// Records successful finite writer admission.
@@ -128,7 +131,6 @@ impl DispatchTracker {
                     return Err(RequestExecutionError::InvalidAttemptPhase);
                 }
                 self.state = Some(DispatchState::SentUnknown);
-                self.cancellation.cancel(CancellationReason::SentUnknown);
                 Err(RequestExecutionError::SentUnknown)
             }
             DeliveryState::Failed(reason) => Err(RequestExecutionError::OutboundFailed(reason)),
@@ -308,6 +310,14 @@ impl RequestTask {
         self.commitment.is_committed()
     }
 
+    /// Returns the latest authenticated completion-token checkpoint.
+    #[must_use]
+    pub fn accepted_completion_tokens(&self) -> u64 {
+        self.output
+            .as_ref()
+            .map_or(0, OutputVerifier::cumulative_tokens)
+    }
+
     /// Returns one runtime attempt phase.
     #[must_use]
     pub fn attempt_phase(&self, attempt_id: CoreAttemptId) -> Option<AttemptPhase> {
@@ -356,7 +366,7 @@ impl RequestTask {
 
         self.state = reduction.state;
         self.event_sequence = next_sequence;
-        let mut prepare_dispatch = DispatchTracker::new(self.cancellation.clone());
+        let mut prepare_dispatch = DispatchTracker::new();
         prepare_dispatch.mark_queued()?;
         self.attempts.insert(
             attempt_id,
@@ -367,7 +377,7 @@ impl RequestTask {
                 prepared: None,
                 phase: AttemptPhase::PrepareQueued,
                 prepare_dispatch,
-                start_dispatch: DispatchTracker::new(self.cancellation.clone()),
+                start_dispatch: DispatchTracker::new(),
                 writer: writer.clone(),
             },
         );
@@ -556,7 +566,7 @@ impl RequestTask {
         &mut self,
         attempt_id: CoreAttemptId,
         context: &RequestContext,
-    ) -> Result<DeliveryReceipt, RequestExecutionError> {
+    ) -> Result<StagedDelivery, RequestExecutionError> {
         self.require_before_deadline(context.now())?;
         if self.cancellation.is_cancelled() {
             self.cancellation
@@ -580,9 +590,9 @@ impl RequestTask {
         let start = CoordinatorControlMessage::Start(Start {
             identity: attempt.identity.clone(),
         });
-        let receipt = attempt
+        let staged = attempt
             .writer
-            .try_send_control_json(&start)
+            .try_stage_control_json(&start)
             .map_err(map_enqueue_error)?;
 
         self.state = reduction.state;
@@ -629,7 +639,7 @@ impl RequestTask {
                 return Err(map_enqueue_error(error));
             }
         }
-        Ok(receipt)
+        Ok(staged)
     }
 
     /// Awaits one finite start receipt while cancellation remains selectable.
@@ -693,7 +703,7 @@ impl RequestTask {
         }
         if !matches!(
             attempt.phase,
-            AttemptPhase::StartQueued | AttemptPhase::StartOnWire
+            AttemptPhase::StartQueued | AttemptPhase::StartOnWire | AttemptPhase::SentUnknown
         ) {
             return Err(RequestExecutionError::InvalidAttemptPhase);
         }
@@ -708,7 +718,6 @@ impl RequestTask {
         plaintext: Vec<u8>,
         context: &RequestContext,
     ) -> Result<(), RequestExecutionError> {
-        self.require_before_deadline(context.now())?;
         let attempt_id = self
             .authorized
             .ok_or(RequestExecutionError::InvalidAttemptPhase)?;
@@ -764,7 +773,14 @@ impl RequestTask {
             self.event_sequence = next_sequence;
         }
         for item in output.ready {
-            self.response.try_send(item)?;
+            if let Err(error) = self.response.try_send(item) {
+                if self.cancellation.is_cancelled()
+                    && matches!(error, super::error::PipeError::Closed(_))
+                {
+                    continue;
+                }
+                return Err(error.into());
+            }
         }
         Ok(())
     }
@@ -1096,19 +1112,20 @@ mod tests {
     }
 
     #[test]
-    fn sent_unknown_is_distinct_and_cancels_exactly_once() {
+    fn sent_unknown_is_distinct_without_implying_safe_cancellation() {
         let count = Arc::new(AtomicUsize::new(0));
         let observed = count.clone();
         let cancellation = request_cancellation(move |_| {
             observed.fetch_add(1, Ordering::AcqRel);
         });
-        let mut tracker = DispatchTracker::new(cancellation.clone());
+        let mut tracker = DispatchTracker::new();
         tracker.mark_queued().expect("queued");
         assert!(matches!(
             tracker.observe(DeliveryState::SentUnknown),
             Err(RequestExecutionError::SentUnknown)
         ));
         assert_eq!(tracker.state(), Some(DispatchState::SentUnknown));
+        assert_eq!(count.load(Ordering::Acquire), 0);
         cancellation.cancel(CancellationReason::ClientCancelled);
         assert_eq!(count.load(Ordering::Acquire), 1);
     }

@@ -39,6 +39,10 @@ use crate::{
     request::next_rolling_digest,
 };
 
+#[allow(dead_code, unused_imports)]
+#[path = "../../tests/postgres/support.rs"]
+mod postgres_support;
+
 use super::routes;
 
 const PROCESS_PRIVATE: &str = "XasIfmJKikt54X+Lg4AO5m87sSkmGLb9HC+LJ/+I4Os=";
@@ -1908,6 +1912,210 @@ async fn real_v2_plain_and_sender_sealed_streaming_and_nonstreaming_round_trip()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paid_axum_websocket_request_commits_once_before_terminal_ack_and_replay() {
+    postgres_support::with_isolated_database(|url| async move {
+        let _resource_load_guard = RESOURCE_LOAD_TEST_LOCK.lock().await;
+        postgres_support::seed_service_schema(&url).await;
+        let pool = sqlx::PgPool::connect(&url)
+            .await
+            .expect("connect paid pilot assertions");
+        sqlx::query(
+            "INSERT INTO public.balances (account_id, balance_micro_usd, withdrawable_micro_usd) VALUES ('consumer', 100, 100)",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed paid consumer");
+        let database = crate::database::Database::connect(&url, 8, Duration::from_secs(3))
+            .await
+            .expect("connect paid pilot database");
+        let ownership =
+            crate::ownership::CoordinatorOwnership::configure(&database, &url, true)
+                .await
+                .expect("configure paid pilot ownership");
+
+        let mut config = test_config();
+        let state_directory = config.state_directory.clone();
+        let provider_id = darkbloom_coordinator_protocol::v2::ProviderId::new([1; 16]);
+        config.consumer_credentials = Arc::from([crate::pilot::ConsumerCredentialEntry {
+            raw_key: Arc::from(CONSUMER_KEY),
+            account_id: Some(
+                crate::ledger::AccountId::new("consumer").expect("consumer account"),
+            ),
+            api_key_id: Arc::from("paid-key"),
+        }]);
+        config.provider_beneficiaries = Arc::from([crate::pilot::ProviderBeneficiaryEntry {
+            provider_id,
+            account_id: crate::ledger::AccountId::new("provider").expect("provider account"),
+        }]);
+        config.paid_billing = Some(crate::pilot::PaidBillingPolicy {
+            platform_account_id: crate::ledger::AccountId::new("platform")
+                .expect("platform account"),
+            referral_account_id: None,
+            pricing_version: crate::ledger::Version::new(1).expect("pricing version"),
+            rounding_version: crate::ledger::Version::new(1).expect("rounding version"),
+            base_reservation: crate::ledger::LedgerAmount::new(1).expect("base reservation"),
+            input_micro_usd_per_million: crate::ledger::LedgerAmount::new(1_000_000)
+                .expect("input rate"),
+            output_micro_usd_per_million: crate::ledger::LedgerAmount::new(2_000_000)
+                .expect("output rate"),
+            provider_share_ppm: 750_000,
+            referral_share_ppm: 0,
+        });
+        config.trust_floor = crate::trust::TrustFloor::PUBLIC;
+        config.test_established_trust = Some(crate::trust::TrustLevel::Hardware);
+        let (runtime, handle) = PilotRuntime::build_durable(
+            &config,
+            database.clone(),
+            ownership.status(),
+        )
+        .await
+        .expect("paid pilot runtime");
+        let runtime_task = tokio::spawn(runtime.run());
+        wait_ready(handle.clone()).await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind paid pilot");
+        let address = listener.local_addr().expect("paid pilot address");
+        let server_handle = handle.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, routes(Some(server_handle)))
+                .await
+                .expect("serve paid pilot");
+        });
+
+        let (mut socket, _) = connect_async(format!("ws://{address}/ws/provider"))
+            .await
+            .expect("paid provider websocket");
+        let signing_key = SigningKey::generate();
+        let session = v2_handshake(
+            &mut socket,
+            &signing_key,
+            ProviderProcessGenerationId::new([42; 16]),
+        )
+        .await;
+        wait_inference_count(&handle, 1).await;
+        let replay_handle = handle.clone();
+        let provider = tokio::spawn(async move {
+            let prepare = receive_prepare(&mut socket).await;
+            let terminal =
+                serve_v2_request_from_prepare(&mut socket, &signing_key, session, 0, prepare)
+                    .await;
+            wait_active_request_count(&replay_handle, 0).await;
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&ProviderControlMessage::Terminal(terminal.clone()))
+                        .expect("terminal replay JSON")
+                        .into(),
+                ))
+                .await
+                .expect("terminal replay");
+            let acknowledgement: CoordinatorControlMessage =
+                serde_json::from_str(&next_text(&mut socket).await)
+                    .expect("terminal replay ACK JSON");
+            let CoordinatorControlMessage::TerminalAck(acknowledgement) = acknowledgement else {
+                panic!("expected replay terminal ACK");
+            };
+            assert_eq!(acknowledgement.terminal_digest, terminal.terminal_digest);
+            assert_eq!(acknowledgement.disposition, TerminalDisposition::Settled);
+            socket.close(None).await.expect("paid provider close");
+        });
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/v1/chat/completions"))
+            .bearer_auth(CONSUMER_KEY)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("idempotency-key", "paid-axum-websocket")
+            .body(
+                r#"{"model":"darkbloom/pilot-text","messages":[{"role":"user","content":"paid"}],"stream":true,"max_completion_tokens":4}"#,
+            )
+            .send()
+            .await
+            .expect("paid consumer response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.text().await.expect("paid response body");
+        assert!(body.contains("\"content\":\"hello\""));
+        provider.await.expect("paid provider task");
+
+        let job: (String, i64, i64, String, String) = sqlx::query_as(
+            r#"
+            SELECT
+                state,
+                accepted_cumulative_tokens,
+                usage_completion_tokens,
+                consumer_key_hash,
+                api_key_id
+            FROM rust_coord.inference_jobs
+            WHERE api_key_id = 'paid-key'
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("paid durable job");
+        assert_eq!(job.0, "settled");
+        assert_eq!((job.1, job.2), (1, 1));
+        assert_eq!(job.3.len(), 64);
+        assert_eq!(job.4, "paid-key");
+        let balances: Vec<(String, i64, i64)> = sqlx::query_as(
+            r#"
+            SELECT account_id, balance_micro_usd, withdrawable_micro_usd
+            FROM public.balances
+            WHERE account_id IN ('consumer', 'provider', 'platform')
+            ORDER BY account_id
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("paid balances");
+        assert_eq!(
+            balances,
+            vec![
+                ("consumer".to_owned(), 95, 95),
+                ("platform".to_owned(), 2, 0),
+                ("provider".to_owned(), 3, 3),
+            ]
+        );
+        let projection: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+            r#"
+            SELECT
+                (SELECT COUNT(*) FROM rust_coord.financial_operations),
+                (SELECT COUNT(*) FROM rust_coord.provider_terminals),
+                (SELECT COUNT(*) FROM rust_coord.provider_terminals WHERE conflict),
+                (SELECT COUNT(*) FROM public.usage),
+                (SELECT COUNT(*) FROM public.provider_earnings),
+                (SELECT COUNT(*) FROM rust_coord.outbox)
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("paid projections");
+        assert_eq!(projection, (3, 1, 0, 1, 1, 1));
+        let totals: (i64, i64, i64) = sqlx::query_as(
+            "SELECT total_requests, total_prompt_tokens, total_completion_tokens FROM public.usage_totals WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("paid usage totals");
+        assert_eq!(totals, (1, 3, 1));
+
+        handle.shutdown();
+        runtime_task
+            .await
+            .expect("paid runtime join")
+            .expect("paid runtime shutdown");
+        server.abort();
+        let _ = server.await;
+        pool.close().await;
+        database
+            .close(Duration::from_secs(2))
+            .await
+            .expect("close paid pilot database");
+        ownership.release().await.expect("release paid ownership");
+        let _ = std::fs::remove_dir_all(state_directory);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sealed_stream_rejects_four_mib_separator_flood_and_restores_global_budget() {
     let _resource_load_guard = RESOURCE_LOAD_TEST_LOCK.lock().await;
     let (runtime, handle, state_directory) = test_runtime().await;
@@ -2553,7 +2761,11 @@ fn test_config() -> PilotConfig {
         darkbloom_coordinator_protocol::v2::ProviderId::new([1; 16]),
         Arc::from(PROVIDER_TOKEN),
     )]);
-    config.consumer_api_keys = Arc::from([Arc::from(CONSUMER_KEY)]);
+    config.consumer_credentials = Arc::from([crate::pilot::ConsumerCredentialEntry {
+        raw_key: Arc::from(CONSUMER_KEY),
+        account_id: None,
+        api_key_id: Arc::from("self-route"),
+    }]);
     config.process_key_id = Arc::from("test-process-key");
     config.process_private_key = Arc::from(PROCESS_PRIVATE);
     config.process_public_key = Arc::from(PROCESS_PUBLIC);
@@ -2723,7 +2935,7 @@ fn registration_wire_v2_with_token(
             r#""start_authorization":true,"structured_errors":true,"start_ack":true,"#,
             r#""abort_ack":true,"cancel_ack":true,"durable_terminals":true,"#,
             r#""model_lifecycle_events":true,"binary_payload_frames":true,"#,
-            r#""coordinator_replay_fences":true}}}}"#
+            r#""coordinator_replay_fences":true,"attempt_reconciliation":true}}}}"#
         ),
         PROCESS_PUBLIC = PROCESS_PUBLIC,
         attestation = attestation,

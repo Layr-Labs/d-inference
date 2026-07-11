@@ -8,8 +8,6 @@ use darkbloom_coordinator_core::{
 use darkbloom_coordinator_protocol::{
     PROTOCOL_V2_MAJOR, crypto::SenderSealEnvelope, v2::ProtocolCapabilities,
 };
-use sha2::{Digest as _, Sha256};
-use subtle::{Choice, ConstantTimeEq};
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -22,6 +20,8 @@ use crate::{
         SessionEpochStoreError, TerminalDispositionStore, TerminalStoreError, X25519PublicKey,
     },
     fleet::{FleetActor, FleetActorConfig, FleetConfigError},
+    ledger::LedgerService,
+    ownership::OwnershipStatus,
     provider::{
         ProviderRegistry, ProviderRegistryConfig, ProviderRegistryConfigError,
         ProviderSessionConfig, SessionEventChannelConfigError, session_event_channel,
@@ -34,6 +34,7 @@ use crate::{
 };
 
 use super::{
+    billing::{BillingConfigurationError, BillingContext, ConsumerCredential, PilotBilling},
     config::{PilotConfig, RESPONSE_RESERVATION_BYTES},
     provider::{
         ProviderAcceptor, ProviderActivationGate, ProviderOwner, ProviderServices,
@@ -53,7 +54,6 @@ const DURABLE_IO_TIMEOUT: Duration = Duration::from_secs(10);
 const PILOT_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const PILOT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 const PILOT_ESSENTIAL_TASKS: usize = 5;
-const CONSUMER_KEY_DOMAIN: &[u8] = b"darkbloom.rust-pilot.consumer-key.v1\0";
 
 /// Cloneable ingress and readiness surface for the supervised pilot.
 #[derive(Clone)]
@@ -67,9 +67,10 @@ pub struct PilotHandle {
     request_table: Arc<RequestTable>,
     keyring: Arc<SenderSealKeyring>,
     catalog: MemoryCatalog,
-    consumer_keys: Arc<[[u8; 32]]>,
+    consumer_credentials: Arc<[ConsumerCredential]>,
     input_budget: Arc<ByteBudget>,
     response_budget: Arc<ByteBudget>,
+    attempt_queries: Arc<super::reconciliation::AttemptQueryRegistry>,
 }
 
 impl PilotHandle {
@@ -115,13 +116,122 @@ impl PilotHandle {
     }
 
     #[must_use]
-    pub fn authorize_consumer(&self, presented: &str) -> bool {
-        let presented = consumer_key_digest(presented.as_bytes());
-        let mut matched = Choice::from(0);
-        for configured in self.consumer_keys.iter() {
-            matched |= configured.ct_eq(&presented);
+    pub fn authorize_consumer(&self, presented: &str) -> Option<BillingContext> {
+        ConsumerCredential::authenticate(&self.consumer_credentials, presented)
+    }
+
+    /// Queries the currently connected stable provider for durable knowledge
+    /// of one exact historical attempt.
+    pub async fn query_recovered_attempt(
+        &self,
+        lease: &crate::recovery::JobRecoveryLease,
+    ) -> Result<Option<darkbloom_coordinator_protocol::v2::AttemptStatus>, Arc<str>> {
+        let attempt = lease
+            .attempt
+            .as_ref()
+            .ok_or_else(|| Arc::from("authorized recovery job has no durable attempt"))?;
+        let provider_id =
+            darkbloom_coordinator_protocol::v2::ProviderId::new(*attempt.provider_id.as_bytes());
+        let Some(session) = self.directory.current(provider_id) else {
+            return Ok(None);
+        };
+        let identity = recovery_attempt_identity(lease, attempt)?;
+        self.attempt_queries
+            .query(&session, identity, Duration::from_secs(5))
+            .await
+            .map(Some)
+    }
+
+    /// Re-sends Start only to the exact durable provider process and lease.
+    /// A reconnect from that same process generation may carry a newer session
+    /// epoch; the Start itself retains the historical attempt identity.
+    pub fn stage_recovered_start(
+        &self,
+        lease: &crate::recovery::JobRecoveryLease,
+    ) -> Result<Option<crate::provider::StagedDelivery>, Arc<str>> {
+        let attempt = lease
+            .attempt
+            .as_ref()
+            .ok_or_else(|| Arc::from("authorized recovery job has no durable attempt"))?;
+        let provider_id =
+            darkbloom_coordinator_protocol::v2::ProviderId::new(*attempt.provider_id.as_bytes());
+        let Some(session) = self.directory.current(provider_id) else {
+            return Ok(None);
+        };
+        if !recovery_session_can_resume(&session.identity, attempt)? {
+            return Ok(None);
         }
-        bool::from(matched)
+        let identity = recovery_attempt_identity(lease, attempt)?;
+        let staged = session
+            .writer
+            .try_stage_control_json(
+                &darkbloom_coordinator_protocol::v2::CoordinatorControlMessage::Start(
+                    darkbloom_coordinator_protocol::v2::Start { identity },
+                ),
+            )
+            .map_err(|error| Arc::from(error.to_string()))?;
+        Ok(Some(staged))
+    }
+
+    /// Sends a terminal ACK only after the recovery worker has committed the
+    /// matching database disposition. A disconnected or superseded session is
+    /// harmless: the provider's replay will use the database lookup path.
+    pub async fn ack_recovered_terminal(
+        &self,
+        lease: &crate::recovery::TerminalRecoveryLease,
+        disposition: crate::recovery::RecoveredTerminalDisposition,
+    ) -> Result<(), Arc<str>> {
+        let terminal: darkbloom_coordinator_protocol::v2::ProviderTerminal =
+            serde_json::from_value(lease.raw_terminal.clone())
+                .map_err(|error| Arc::from(error.to_string()))?;
+        if terminal.identity.attempt_id.as_bytes() != lease.attempt_id.as_uuid().as_bytes()
+            || terminal.identity.provider_id.as_bytes() != lease.provider_id.as_bytes()
+            || terminal.identity.provider_process_generation.as_bytes()
+                != lease.provider_process_generation_id.as_bytes()
+            || terminal.identity.session_epoch.0
+                != u64::try_from(lease.origin_session_epoch.as_i64())
+                    .map_err(|_| Arc::from("negative terminal session epoch"))?
+            || terminal.terminal_digest.as_bytes() != lease.terminal_digest.as_bytes()
+        {
+            return Err(Arc::from(
+                "recovered terminal JSON differs from its durable identity",
+            ));
+        }
+        let Some(session) = self.directory.current(terminal.identity.provider_id) else {
+            return Ok(());
+        };
+        let disposition = match disposition {
+            crate::recovery::RecoveredTerminalDisposition::Settled => {
+                darkbloom_coordinator_protocol::v2::TerminalDisposition::Settled
+            }
+            crate::recovery::RecoveredTerminalDisposition::Released => {
+                darkbloom_coordinator_protocol::v2::TerminalDisposition::Released
+            }
+        };
+        let receipt = session
+            .writer
+            .try_send_control_json(
+                &darkbloom_coordinator_protocol::v2::CoordinatorControlMessage::TerminalAck(
+                    darkbloom_coordinator_protocol::v2::TerminalAck {
+                        identity: terminal.identity,
+                        terminal_digest: terminal.terminal_digest,
+                        disposition,
+                    },
+                ),
+            )
+            .map_err(|error| Arc::from(error.to_string()))?;
+        match receipt
+            .wait()
+            .await
+            .map_err(|error| Arc::from(error.to_string()))?
+        {
+            crate::provider::DeliveryState::OnWire
+            | crate::provider::DeliveryState::SentUnknown => Ok(()),
+            crate::provider::DeliveryState::Queued => {
+                Err(Arc::from("terminal ACK receipt remained queued"))
+            }
+            crate::provider::DeliveryState::Failed(error) => Err(error),
+        }
     }
 
     pub fn open_sender(&self, envelope: &SenderSealEnvelope) -> Result<Vec<u8>, SenderSealError> {
@@ -204,6 +314,46 @@ impl PilotHandle {
     }
 }
 
+fn recovery_session_can_resume(
+    session: &crate::provider::SessionIdentity,
+    attempt: &crate::recovery::AuthorizedAttemptRecovery,
+) -> Result<bool, Arc<str>> {
+    let historical_epoch = u64::try_from(attempt.session_epoch.as_i64())
+        .map_err(|_| Arc::from("negative durable provider session epoch"))?;
+    Ok(session.provider_process_generation.as_bytes()
+        == attempt.provider_process_generation_id.as_bytes()
+        && session.session_epoch.0 >= historical_epoch)
+}
+
+fn recovery_attempt_identity(
+    lease: &crate::recovery::JobRecoveryLease,
+    attempt: &crate::recovery::AuthorizedAttemptRecovery,
+) -> Result<darkbloom_coordinator_protocol::v2::AttemptIdentity, Arc<str>> {
+    Ok(darkbloom_coordinator_protocol::v2::AttemptIdentity {
+        provider_id: darkbloom_coordinator_protocol::v2::ProviderId::new(
+            *attempt.provider_id.as_bytes(),
+        ),
+        provider_process_generation:
+            darkbloom_coordinator_protocol::v2::ProviderProcessGenerationId::new(
+                *attempt.provider_process_generation_id.as_bytes(),
+            ),
+        session_epoch: darkbloom_coordinator_protocol::v2::SessionEpoch(
+            u64::try_from(attempt.session_epoch.as_i64())
+                .map_err(|_| Arc::from("negative durable provider session epoch"))?,
+        ),
+        request_id: darkbloom_coordinator_protocol::v2::RequestId::new(
+            *lease.request_id.as_bytes(),
+        ),
+        attempt_id: darkbloom_coordinator_protocol::v2::AttemptId::new(
+            *attempt.attempt_id.as_uuid().as_bytes(),
+        ),
+        reservation_id: darkbloom_coordinator_protocol::v2::ReservationId::new(
+            *lease.reservation_id.as_bytes(),
+        ),
+        lease_id: darkbloom_coordinator_protocol::v2::LeaseId::new(*attempt.lease_id.as_bytes()),
+    })
+}
+
 /// Owns the supervisor that joins every essential pilot task.
 pub struct PilotRuntime {
     supervisor: Supervisor,
@@ -214,8 +364,48 @@ impl PilotRuntime {
     pub async fn build(
         config: &PilotConfig,
     ) -> Result<(Self, PilotHandle), PilotRuntimeBuildError> {
+        Self::build_inner(config, None).await
+    }
+
+    pub async fn build_durable(
+        config: &PilotConfig,
+        database: crate::database::Database,
+        ownership: OwnershipStatus,
+    ) -> Result<(Self, PilotHandle), PilotRuntimeBuildError> {
+        if !ownership.is_healthy() {
+            return Err(PilotRuntimeBuildError::OwnershipUnavailable);
+        }
+        let billing = config
+            .paid_billing
+            .clone()
+            .map(|policy| PilotBilling::new(policy, config.provider_beneficiaries.clone()))
+            .transpose()?;
+        let ledger = LedgerService::new(database);
+        Self::build_inner(
+            config,
+            Some(DurablePilotServices {
+                ledger,
+                billing,
+                ownership,
+            }),
+        )
+        .await
+    }
+
+    async fn build_inner(
+        config: &PilotConfig,
+        durable: Option<DurablePilotServices>,
+    ) -> Result<(Self, PilotHandle), PilotRuntimeBuildError> {
         if !config.enabled {
             return Err(PilotRuntimeBuildError::Disabled);
+        }
+        if config.trust_floor == crate::trust::TrustFloor::PUBLIC
+            && durable
+                .as_ref()
+                .and_then(|services| services.billing.as_ref())
+                .is_none()
+        {
+            return Err(PilotRuntimeBuildError::PaidDurabilityRequired);
         }
         let durable_io = DurableIoPool::new(DURABLE_IO_CONCURRENCY, DURABLE_IO_TIMEOUT)?;
         let state_directory = config.state_directory.clone();
@@ -345,6 +535,9 @@ impl PilotRuntime {
             .writer
             .maximum_items
             .max(request_writer_items);
+        let attempt_queries = Arc::new(super::reconciliation::AttemptQueryRegistry::new(
+            config.maximum_requests,
+        ));
 
         let provider_services = Arc::new(ProviderServices {
             credentials,
@@ -368,6 +561,12 @@ impl PilotRuntime {
                 config.maximum_sessions,
             ),
             telemetry: telemetry.clone(),
+            ledger: durable.as_ref().map(|services| services.ledger.clone()),
+            durable_terminals: durable
+                .as_ref()
+                .and_then(|services| services.billing.as_ref())
+                .is_some(),
+            attempt_queries: attempt_queries.clone(),
         });
         let (provider_owner, provider_acceptor) =
             ProviderOwner::new(config.maximum_sessions, provider_services.clone());
@@ -382,6 +581,7 @@ impl PilotRuntime {
             permit_lease_ttl: config.permit_lease_ttl,
             maximum_output_bytes: config.maximum_output_bytes,
             maximum_output_chunks: config.maximum_output_chunks,
+            durable: durable.clone(),
         });
         let (request_owner, request_dispatcher) = RequestOwner::new(
             config.request_queue_capacity,
@@ -453,7 +653,10 @@ impl PilotRuntime {
             request_table,
             keyring,
             catalog,
-            consumer_keys: consumer_key_digests(&config.consumer_api_keys)?,
+            consumer_credentials: ConsumerCredential::configured(
+                &config.consumer_credentials,
+                config.trust_floor == crate::trust::TrustFloor::PUBLIC,
+            )?,
             input_budget: Arc::new(ByteBudget::new(
                 config.input_budget_bytes,
                 super::config::INPUT_RESERVATION_BYTES,
@@ -462,6 +665,7 @@ impl PilotRuntime {
                 config.response_budget_bytes,
                 RESPONSE_RESERVATION_BYTES,
             )),
+            attempt_queries,
         };
         Ok((
             Self {
@@ -483,15 +687,37 @@ impl PilotRuntime {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct DurablePilotServices {
+    pub ledger: LedgerService,
+    pub billing: Option<PilotBilling>,
+    pub ownership: OwnershipStatus,
+}
+
 fn configured_catalog(config: &PilotConfig) -> Result<MemoryCatalog, PilotRuntimeBuildError> {
     let model = ModelId::new(config.model_id.as_ref())
         .map_err(|error| PilotRuntimeBuildError::Model(Arc::from(error.to_string())))?;
+    let (input_price, output_price) = config.paid_billing.as_ref().map_or(
+        (MicroUsd::new(50_000), MicroUsd::new(200_000)),
+        |policy| {
+            (
+                MicroUsd::new(
+                    u64::try_from(policy.input_micro_usd_per_million.as_i64())
+                        .expect("ledger amounts are nonnegative"),
+                ),
+                MicroUsd::new(
+                    u64::try_from(policy.output_micro_usd_per_million.as_i64())
+                        .expect("ledger amounts are nonnegative"),
+                ),
+            )
+        },
+    );
     let text = TextModel::new(
         model,
         [config.model_alias.clone()],
         TokenCount::new(32_768),
-        MicroUsd::new(50_000),
-        MicroUsd::new(200_000),
+        input_price,
+        output_price,
     )?;
     Ok(MemoryCatalog::new(text))
 }
@@ -511,6 +737,7 @@ fn complete_v2_capabilities() -> ProtocolCapabilities {
         model_lifecycle_events: true,
         binary_payload_frames: true,
         coordinator_replay_fences: true,
+        attempt_reconciliation: true,
     }
 }
 
@@ -518,25 +745,6 @@ fn create_state_directory(path: &std::path::Path) -> Result<(), std::io::Error> 
     std::fs::create_dir_all(path)?;
     File::open(path)?.sync_all()?;
     Ok(())
-}
-
-fn consumer_key_digests(keys: &[Arc<str>]) -> Result<Arc<[[u8; 32]]>, PilotRuntimeBuildError> {
-    let mut digests = Vec::with_capacity(keys.len());
-    for key in keys {
-        let digest = consumer_key_digest(key.as_bytes());
-        if digests.iter().any(|existing| existing == &digest) {
-            return Err(PilotRuntimeBuildError::DuplicateConsumerKey);
-        }
-        digests.push(digest);
-    }
-    Ok(digests.into())
-}
-
-fn consumer_key_digest(key: &[u8]) -> [u8; 32] {
-    let mut digest = Sha256::new();
-    digest.update(CONSUMER_KEY_DOMAIN);
-    digest.update(key);
-    digest.finalize().into()
 }
 
 #[derive(Debug)]
@@ -588,8 +796,10 @@ pub enum PilotRuntimeBuildError {
     Disabled,
     #[error("pilot resource bound arithmetic overflow")]
     ResourceBoundOverflow,
-    #[error("pilot consumer API keys must be unique")]
-    DuplicateConsumerKey,
+    #[error("public pilot mode requires durable ownership and paid billing")]
+    PaidDurabilityRequired,
+    #[error("pilot durable ownership is unavailable")]
+    OwnershipUnavailable,
     #[error("invalid pilot model: {0}")]
     Model(Arc<str>),
     #[error(transparent)]
@@ -628,4 +838,79 @@ pub enum PilotRuntimeBuildError {
     SupervisorConfig(#[from] SupervisorConfigError),
     #[error(transparent)]
     Spawn(#[from] SpawnEssentialError),
+    #[error(transparent)]
+    Billing(#[from] BillingConfigurationError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ledger::{AccountId, AttemptId, AttemptState, LedgerAmount, Version},
+        pilot::PaidBillingPolicy,
+        recovery::AuthorizedAttemptRecovery,
+    };
+
+    #[test]
+    fn paid_catalog_advertises_the_exact_configured_rates() {
+        let mut config = PilotConfig::disabled();
+        config.paid_billing = Some(PaidBillingPolicy {
+            platform_account_id: AccountId::new("platform").expect("account"),
+            referral_account_id: None,
+            pricing_version: Version::new(3).expect("version"),
+            rounding_version: Version::new(2).expect("version"),
+            base_reservation: LedgerAmount::new(1).expect("amount"),
+            input_micro_usd_per_million: LedgerAmount::new(123).expect("amount"),
+            output_micro_usd_per_million: LedgerAmount::new(456).expect("amount"),
+            provider_share_ppm: 800_000,
+            referral_share_ppm: 0,
+        });
+
+        let catalog = configured_catalog(&config).expect("catalog");
+        let model = catalog.models().next().expect("model");
+        assert_eq!(model.input_micro_usd_per_million.get(), 123);
+        assert_eq!(model.output_micro_usd_per_million.get(), 456);
+    }
+
+    #[test]
+    fn recovery_start_accepts_only_same_process_reconnects() {
+        let provider_id = uuid::Uuid::new_v4();
+        let generation_id = uuid::Uuid::new_v4();
+        let attempt = AuthorizedAttemptRecovery {
+            attempt_id: AttemptId::random(),
+            provider_id,
+            provider_process_generation_id: generation_id,
+            session_epoch: Version::new(7).expect("session epoch"),
+            lease_id: uuid::Uuid::new_v4(),
+            state: AttemptState::Queued,
+            version: Version::new(1).expect("attempt version"),
+        };
+        let session = |generation: uuid::Uuid, epoch| crate::provider::SessionIdentity {
+            provider_id: darkbloom_coordinator_protocol::v2::ProviderId::new(
+                *provider_id.as_bytes(),
+            ),
+            provider_process_generation:
+                darkbloom_coordinator_protocol::v2::ProviderProcessGenerationId::new(
+                    *generation.as_bytes(),
+                ),
+            session_epoch: darkbloom_coordinator_protocol::v2::SessionEpoch(epoch),
+        };
+
+        assert!(
+            recovery_session_can_resume(&session(generation_id, 7), &attempt)
+                .expect("same session")
+        );
+        assert!(
+            recovery_session_can_resume(&session(generation_id, 8), &attempt)
+                .expect("same-process reconnect")
+        );
+        assert!(
+            !recovery_session_can_resume(&session(generation_id, 6), &attempt)
+                .expect("older session")
+        );
+        assert!(
+            !recovery_session_can_resume(&session(uuid::Uuid::new_v4(), 8), &attempt)
+                .expect("new process generation")
+        );
+    }
 }

@@ -91,6 +91,53 @@ pub struct StartAck {
     pub identity: AttemptIdentity,
 }
 
+/// Reconciliation query for one exact historical attempt and lease.
+///
+/// The stable provider may answer this query on a newer process/session, but
+/// every field in the queried identity remains the historical start identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryAttempt {
+    #[serde(flatten)]
+    pub identity: AttemptIdentity,
+}
+
+/// Provider's durable knowledge of one exact historical attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptStatusState {
+    Unknown,
+    Prepared,
+    Started,
+    Terminal,
+}
+
+/// Reconciliation response derived from the provider's prepared state,
+/// funded-start journal, terminal journal, and abort tombstones.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptStatus {
+    #[serde(flatten)]
+    pub identity: AttemptIdentity,
+    pub state: AttemptStatusState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_digest: Option<Digest>,
+}
+
+impl AttemptStatus {
+    #[must_use]
+    pub const fn digest_shape_is_valid(&self) -> bool {
+        matches!(
+            (self.state, self.terminal_digest),
+            (AttemptStatusState::Terminal, Some(_))
+                | (
+                    AttemptStatusState::Unknown
+                        | AttemptStatusState::Prepared
+                        | AttemptStatusState::Started,
+                    None
+                )
+        )
+    }
+}
+
 /// Idempotent tombstone for a lease that has not started.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Abort {
@@ -223,6 +270,8 @@ pub enum CoordinatorControlMessage {
     Prepare(Prepare),
     #[serde(rename = "start")]
     Start(Start),
+    #[serde(rename = "query_attempt")]
+    QueryAttempt(QueryAttempt),
     #[serde(rename = "abort")]
     Abort(Abort),
     #[serde(rename = "cancel")]
@@ -241,6 +290,8 @@ pub enum ProviderControlMessage {
     Prepared(Prepared),
     #[serde(rename = "start_ack", alias = "started")]
     StartAck(StartAck),
+    #[serde(rename = "attempt_status")]
+    AttemptStatus(AttemptStatus),
     #[serde(rename = "abort_ack", alias = "aborted")]
     AbortAck(AbortAck),
     #[serde(rename = "cancel_ack", alias = "cancelled")]
@@ -283,6 +334,8 @@ pub type PrepareMessage = Prepare;
 pub type PreparedMessage = Prepared;
 pub type StartMessage = Start;
 pub type StartedMessage = StartAck;
+pub type QueryAttemptMessage = QueryAttempt;
+pub type AttemptStatusMessage = AttemptStatus;
 pub type AbortMessage = Abort;
 pub type AbortedMessage = AbortAck;
 pub type CancelMessage = Cancel;

@@ -83,6 +83,26 @@ func TestMigrationCatalogIsOrderedAndVersionBounded(t *testing.T) {
 			t.Fatalf("Rust durable schema migration is missing %q", required)
 		}
 	}
+	pilotLifecycleMigration := migrations[4]
+	if !pilotLifecycleMigration.Transactional {
+		t.Fatal("Rust pilot lifecycle migration must be transactional")
+	}
+	for _, required := range []string{
+		"CREATE TABLE rust_coord.review_resolution_journal",
+		"idx_rust_attempts_one_authorized_per_job",
+		"start_authorized_at TIMESTAMPTZ",
+		"start_deadline TIMESTAMPTZ",
+		"ALTER COLUMN request_deadline SET NOT NULL",
+		"'not_sent'",
+		"'queued'",
+		"'on_wire'",
+		"ON rust_coord.inference_jobs (state, request_deadline, updated_at)",
+		"VALUES (3, 5, 5)",
+	} {
+		if !strings.Contains(pilotLifecycleMigration.SQL, required) {
+			t.Fatalf("Rust pilot lifecycle migration is missing %q", required)
+		}
+	}
 }
 
 func TestRustDurableMigrationMirrorIsByteIdenticalAndTamperEvident(t *testing.T) {
@@ -102,6 +122,20 @@ func TestRustDurableMigrationMirrorIsByteIdenticalAndTamperEvident(t *testing.T)
 	tampered[len(tampered)/2] ^= 1
 	if bytes.Equal(canonical, tampered) {
 		t.Fatal("single-byte mirror tamper was not detected")
+	}
+}
+
+func TestRustPilotLifecycleMigrationMirrorIsByteIdentical(t *testing.T) {
+	canonical, err := os.ReadFile("migrations/000005_rust_pilot_lifecycle.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mirror, err := os.ReadFile("../../coordinator-rs/migrations/000003_rust_pilot_lifecycle.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(canonical, mirror) {
+		t.Fatal("Rust pilot lifecycle schema mirror differs from canonical Go migration")
 	}
 }
 

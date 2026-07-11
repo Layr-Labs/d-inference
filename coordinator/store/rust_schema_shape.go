@@ -25,6 +25,20 @@ var rustSchemaV2Tables = []string{
 	"schema_versions",
 }
 
+var rustSchemaV3Tables = []string{
+	"external_events",
+	"fee_allocations",
+	"fee_projection_checkpoints",
+	"financial_operations",
+	"inference_attempts",
+	"inference_jobs",
+	"outbox",
+	"provider_hard_untrust_epochs",
+	"provider_terminals",
+	"review_resolution_journal",
+	"schema_versions",
+}
+
 var rustSchemaV2ColumnNames = map[string][]string{
 	"schema_versions": {
 		"version", "minimum_public_schema_version",
@@ -101,6 +115,13 @@ var rustSchemaV2ColumnNames = map[string][]string{
 	},
 }
 
+var rustSchemaV3ColumnNames = map[string][]string{
+	"review_resolution_journal": {
+		"resolution_id", "job_id", "disposition", "operator_reason",
+		"owner_epoch", "created_at",
+	},
+}
+
 var rustSchemaV2Columns = []columnShapeRequirement{
 	{Table: "inference_jobs", Column: "job_id", Type: "uuid", NotNull: true},
 	{Table: "inference_jobs", Column: "request_id", Type: "uuid", NotNull: true},
@@ -165,6 +186,23 @@ var rustSchemaV2Columns = []columnShapeRequirement{
 	{Table: "provider_hard_untrust_epochs", Column: "version", Type: "bigint", NotNull: true},
 }
 
+var rustSchemaV3Columns = []columnShapeRequirement{
+	{Table: "inference_jobs", Column: "consumer_key_hash", Type: "text", NotNull: true},
+	{Table: "inference_jobs", Column: "accepted_chunk_sequence", Type: "bigint", NotNull: true},
+	{Table: "inference_jobs", Column: "accepted_cumulative_tokens", Type: "bigint", NotNull: true},
+	{Table: "inference_jobs", Column: "input_micro_usd_per_million", Type: "bigint", NotNull: false},
+	{Table: "inference_jobs", Column: "output_micro_usd_per_million", Type: "bigint", NotNull: false},
+	{Table: "inference_jobs", Column: "provider_share_ppm", Type: "integer", NotNull: false},
+	{Table: "inference_jobs", Column: "request_deadline", Type: "timestamp with time zone", NotNull: true},
+	{Table: "inference_jobs", Column: "start_authorized_at", Type: "timestamp with time zone", NotNull: false},
+	{Table: "inference_jobs", Column: "start_deadline", Type: "timestamp with time zone", NotNull: false},
+	{Table: "review_resolution_journal", Column: "resolution_id", Type: "uuid", NotNull: true},
+	{Table: "review_resolution_journal", Column: "job_id", Type: "uuid", NotNull: true},
+	{Table: "review_resolution_journal", Column: "disposition", Type: "text", NotNull: true},
+	{Table: "review_resolution_journal", Column: "operator_reason", Type: "text", NotNull: true},
+	{Table: "review_resolution_journal", Column: "owner_epoch", Type: "bigint", NotNull: true},
+}
+
 var rustSchemaV2Keys = []keyShapeRequirement{
 	{Table: "inference_jobs", Kind: "p", Columns: []string{"job_id"}},
 	{Table: "inference_jobs", Kind: "u", Columns: []string{"request_id"}},
@@ -185,6 +223,11 @@ var rustSchemaV2Keys = []keyShapeRequirement{
 	{Table: "fee_allocations", Kind: "u", Columns: []string{"job_id", "kind"}},
 	{Table: "fee_projection_checkpoints", Kind: "p", Columns: []string{"projection_name"}},
 	{Table: "provider_hard_untrust_epochs", Kind: "p", Columns: []string{"provider_id"}},
+}
+
+var rustSchemaV3Keys = []keyShapeRequirement{
+	{Table: "review_resolution_journal", Kind: "p", Columns: []string{"resolution_id"}},
+	{Table: "review_resolution_journal", Kind: "u", Columns: []string{"job_id"}},
 }
 
 type rustStatusShapeRequirement struct {
@@ -284,6 +327,16 @@ var rustSchemaV2ForeignKeys = []rustForeignKeyShapeRequirement{
 	},
 }
 
+var rustSchemaV3ForeignKeys = []rustForeignKeyShapeRequirement{
+	{
+		Table:             "review_resolution_journal",
+		Constraint:        "review_resolution_journal_job_fk",
+		Columns:           []string{"job_id"},
+		ReferencedTable:   "inference_jobs",
+		ReferencedColumns: []string{"job_id"},
+	},
+}
+
 var rustSchemaV2StatusShapes = []rustStatusShapeRequirement{
 	{
 		Table:      "inference_jobs",
@@ -345,35 +398,72 @@ var rustSchemaV2StatusShapes = []rustStatusShapeRequirement{
 	},
 }
 
+var rustSchemaV3StatusShapes = []rustStatusShapeRequirement{
+	{
+		Table:      "inference_attempts",
+		Constraint: "inference_attempts_state_check",
+		Column:     "state",
+		Allowed: []string{
+			"aborted", "acknowledged", "not_sent", "on_wire", "prepared",
+			"queued", "sent_unknown", "started", "terminal_recorded",
+		},
+	},
+	{
+		Table:      "review_resolution_journal",
+		Constraint: "review_resolution_journal_disposition_check",
+		Column:     "disposition",
+		Allowed:    []string{"released_reviewed", "settled_reviewed"},
+	},
+}
+
 var quotedCheckValuePattern = regexp.MustCompile(`'([^']*)'::text`)
 
 func validateRustSchemaV2Shape(ctx context.Context, queryer schemaQueryer) error {
-	if err := validateRustSchemaHistory(ctx, queryer); err != nil {
+	version, err := validateRustSchemaHistory(ctx, queryer)
+	if err != nil {
 		return err
 	}
-	if err := validateExactRustTables(ctx, queryer); err != nil {
+	if err := validateExactRustTables(ctx, queryer, version); err != nil {
 		return err
 	}
-	if err := validateExactRustColumns(ctx, queryer); err != nil {
+	if err := validateExactRustColumns(ctx, queryer, version); err != nil {
 		return err
 	}
-	if err := validateRustColumns(ctx, queryer); err != nil {
+	if err := validateRustColumns(ctx, queryer, version); err != nil {
 		return err
 	}
-	if err := validateRustKeys(ctx, queryer); err != nil {
+	if err := validateRustKeys(ctx, queryer, version); err != nil {
 		return err
 	}
-	if err := validateRustForeignKeys(ctx, queryer); err != nil {
+	if err := validateRustForeignKeys(ctx, queryer, version); err != nil {
 		return err
 	}
-	if err := validateRustStatusShapes(ctx, queryer); err != nil {
+	if err := validateRustStatusShapes(ctx, queryer, version); err != nil {
 		return err
 	}
 	return nil
 }
 
-func validateExactRustColumns(ctx context.Context, queryer schemaQueryer) error {
-	for table, want := range rustSchemaV2ColumnNames {
+func validateExactRustColumns(ctx context.Context, queryer schemaQueryer, version int64) error {
+	expected := make(map[string][]string, len(rustSchemaV2ColumnNames)+len(rustSchemaV3ColumnNames))
+	for table, columns := range rustSchemaV2ColumnNames {
+		expected[table] = columns
+	}
+	if version >= 3 {
+		expected["inference_jobs"] = append(
+			append([]string{}, rustSchemaV2ColumnNames["inference_jobs"]...),
+			"consumer_key_hash",
+			"input_micro_usd_per_million",
+			"output_micro_usd_per_million",
+			"provider_share_ppm",
+			"start_authorized_at",
+			"start_deadline",
+		)
+		for table, columns := range rustSchemaV3ColumnNames {
+			expected[table] = columns
+		}
+	}
+	for table, want := range expected {
 		rows, err := queryer.Query(ctx, `
 			SELECT attribute.attname
 			FROM pg_attribute attribute
@@ -416,13 +506,13 @@ func validateExactRustColumns(ctx context.Context, queryer schemaQueryer) error 
 	return nil
 }
 
-func validateRustSchemaHistory(ctx context.Context, queryer schemaQueryer) error {
+func validateRustSchemaHistory(ctx context.Context, queryer schemaQueryer) (int64, error) {
 	rows, err := queryer.Query(ctx, `
 		SELECT version, minimum_public_schema_version, maximum_public_schema_version
 		FROM rust_coord.schema_versions
 		ORDER BY version`)
 	if err != nil {
-		return fmt.Errorf("inspect rust_coord schema history: %w", err)
+		return 0, fmt.Errorf("inspect rust_coord schema history: %w", err)
 	}
 	defer rows.Close()
 	type compatibility struct {
@@ -434,21 +524,24 @@ func validateRustSchemaHistory(ctx context.Context, queryer schemaQueryer) error
 	for rows.Next() {
 		var item compatibility
 		if err := rows.Scan(&item.version, &item.minimum, &item.maximum); err != nil {
-			return fmt.Errorf("scan rust_coord schema history: %w", err)
+			return 0, fmt.Errorf("scan rust_coord schema history: %w", err)
 		}
 		got = append(got, item)
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate rust_coord schema history: %w", err)
+		return 0, fmt.Errorf("iterate rust_coord schema history: %w", err)
 	}
 	want := []compatibility{{1, 3, 3}, {2, 4, 4}}
-	if !slices.Equal(got, want) {
-		return fmt.Errorf("rust_coord schema history = %v, want %v", got, want)
+	if len(got) == 3 {
+		want = append(want, compatibility{3, 5, 5})
 	}
-	return nil
+	if !slices.Equal(got, want) {
+		return 0, fmt.Errorf("rust_coord schema history = %v, want %v", got, want)
+	}
+	return got[len(got)-1].version, nil
 }
 
-func validateExactRustTables(ctx context.Context, queryer schemaQueryer) error {
+func validateExactRustTables(ctx context.Context, queryer schemaQueryer, version int64) error {
 	rows, err := queryer.Query(ctx, `
 		SELECT relation.relname
 		FROM pg_class relation
@@ -471,14 +564,22 @@ func validateExactRustTables(ctx context.Context, queryer schemaQueryer) error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate rust_coord tables: %w", err)
 	}
-	if !slices.Equal(got, rustSchemaV2Tables) {
-		return fmt.Errorf("rust_coord tables = %v, want exactly %v", got, rustSchemaV2Tables)
+	want := rustSchemaV2Tables
+	if version >= 3 {
+		want = rustSchemaV3Tables
+	}
+	if !slices.Equal(got, want) {
+		return fmt.Errorf("rust_coord tables = %v, want exactly %v", got, want)
 	}
 	return nil
 }
 
-func validateRustColumns(ctx context.Context, queryer schemaQueryer) error {
-	for _, required := range rustSchemaV2Columns {
+func validateRustColumns(ctx context.Context, queryer schemaQueryer, version int64) error {
+	requirements := append([]columnShapeRequirement{}, rustSchemaV2Columns...)
+	if version >= 3 {
+		requirements = append(requirements, rustSchemaV3Columns...)
+	}
+	for _, required := range requirements {
 		var (
 			actualType string
 			notNull    bool
@@ -520,8 +621,12 @@ func validateRustColumns(ctx context.Context, queryer schemaQueryer) error {
 	return nil
 }
 
-func validateRustKeys(ctx context.Context, queryer schemaQueryer) error {
-	for _, required := range rustSchemaV2Keys {
+func validateRustKeys(ctx context.Context, queryer schemaQueryer, version int64) error {
+	requirements := append([]keyShapeRequirement{}, rustSchemaV2Keys...)
+	if version >= 3 {
+		requirements = append(requirements, rustSchemaV3Keys...)
+	}
+	for _, required := range requirements {
 		var matches bool
 		err := queryer.QueryRow(ctx, `
 			SELECT EXISTS (
@@ -560,8 +665,12 @@ func validateRustKeys(ctx context.Context, queryer schemaQueryer) error {
 	return nil
 }
 
-func validateRustForeignKeys(ctx context.Context, queryer schemaQueryer) error {
-	for _, required := range rustSchemaV2ForeignKeys {
+func validateRustForeignKeys(ctx context.Context, queryer schemaQueryer, version int64) error {
+	requirements := append([]rustForeignKeyShapeRequirement{}, rustSchemaV2ForeignKeys...)
+	if version >= 3 {
+		requirements = append(requirements, rustSchemaV3ForeignKeys...)
+	}
+	for _, required := range requirements {
 		var matches bool
 		err := queryer.QueryRow(ctx, `
 			SELECT EXISTS (
@@ -625,8 +734,25 @@ func validateRustForeignKeys(ctx context.Context, queryer schemaQueryer) error {
 	return nil
 }
 
-func validateRustStatusShapes(ctx context.Context, queryer schemaQueryer) error {
-	for _, required := range rustSchemaV2StatusShapes {
+func validateRustStatusShapes(ctx context.Context, queryer schemaQueryer, version int64) error {
+	requirements := append([]rustStatusShapeRequirement{}, rustSchemaV2StatusShapes...)
+	if version >= 3 {
+		for _, override := range rustSchemaV3StatusShapes {
+			replaced := false
+			for index := range requirements {
+				if requirements[index].Table == override.Table &&
+					requirements[index].Constraint == override.Constraint {
+					requirements[index] = override
+					replaced = true
+					break
+				}
+			}
+			if !replaced {
+				requirements = append(requirements, override)
+			}
+		}
+	}
+	for _, required := range requirements {
 		var (
 			definition string
 			validated  bool

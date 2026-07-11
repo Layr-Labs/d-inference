@@ -18,19 +18,37 @@ const MAX_LEASE_MILLIS: u64 = 300_000;
 pub enum JobRecoveryAction {
     /// No start was authorized; reconcile/release without provider dispatch.
     ReleasePreAuthorization,
-    /// Start may have reached the provider. Never redispatch this request.
+    /// Authorization committed but the staged writer gate never opened.
+    ReleaseNotSent,
+    /// Start delivery is ambiguous and must be reconciled with the provider.
+    ReconcileAuthorized,
+    /// Provider durably acknowledged Start. Await its terminal replay.
     AwaitAuthorizedTerminal,
-    /// Preserve evidence and route to explicit review.
-    Review,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JobRecoveryLease {
     pub job_id: JobId,
+    pub request_id: Uuid,
+    pub reservation_id: Uuid,
     pub version: Version,
     pub state: JobState,
     pub action: JobRecoveryAction,
+    pub attempt: Option<AuthorizedAttemptRecovery>,
+    pub start_deadline_epoch_millis: Option<i64>,
+    pub request_deadline_epoch_millis: i64,
     pub lease_until_epoch_millis: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorizedAttemptRecovery {
+    pub attempt_id: AttemptId,
+    pub provider_id: Uuid,
+    pub provider_process_generation_id: Uuid,
+    pub session_epoch: Version,
+    pub lease_id: Uuid,
+    pub state: crate::ledger::AttemptState,
+    pub version: Version,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,6 +71,9 @@ pub struct TerminalRecoveryLease {
     pub final_generated_tokens: u64,
     pub provider_signature: Vec<u8>,
     pub worker_id: Uuid,
+    pub job_version: Version,
+    pub job_state: JobState,
+    pub attempt_version: Version,
     pub version: Version,
     pub lease_until_epoch_millis: i64,
 }
@@ -114,8 +135,7 @@ impl RecoveryService {
                             'preparing',
                             'prepared',
                             'start_authorized',
-                            'running',
-                            'review_pending'
+                            'running'
                         )
                           AND (
                               jobs.worker_owner IS NULL
@@ -130,23 +150,89 @@ impl RecoveryService {
                         SET
                             owner_epoch = $2,
                             worker_owner = $3,
-                            lease_until =
-                                NOW() + ($5::BIGINT * INTERVAL '1 millisecond'),
+                            lease_until = CASE
+                                WHEN jobs.state = 'running'
+                                     AND jobs.request_deadline > NOW()
+                                THEN GREATEST(
+                                    NOW()
+                                        + ($5::BIGINT * INTERVAL '1 millisecond'),
+                                    LEAST(
+                                        jobs.request_deadline,
+                                        NOW()
+                                            + (300000::BIGINT
+                                                * INTERVAL '1 millisecond')
+                                    )
+                                )
+                                ELSE NOW()
+                                    + ($5::BIGINT * INTERVAL '1 millisecond')
+                            END,
                             version = jobs.version + 1,
                             updated_at = NOW()
                         FROM candidates, authority
                         WHERE jobs.job_id = candidates.job_id
                         RETURNING
                             jobs.job_id,
+                            jobs.request_id,
+                            jobs.reservation_id,
                             jobs.version,
                             jobs.state,
+                            jobs.lease_until AS claimed_lease_until,
+                            (
+                                EXTRACT(EPOCH FROM jobs.start_deadline) * 1000
+                            )::BIGINT AS start_deadline_epoch_millis,
+                            (
+                                EXTRACT(EPOCH FROM jobs.request_deadline) * 1000
+                            )::BIGINT AS request_deadline_epoch_millis,
                             (
                                 EXTRACT(EPOCH FROM jobs.lease_until) * 1000
                             )::BIGINT AS lease_until_epoch_millis
+                    ),
+                    attempt_claim AS (
+                        UPDATE rust_coord.inference_attempts AS attempts
+                        SET
+                            owner_epoch = $2,
+                            worker_owner = $3,
+                            lease_until = claimed.claimed_lease_until,
+                            version = attempts.version + 1,
+                            updated_at = NOW()
+                        FROM claimed
+                        WHERE attempts.job_id = claimed.job_id
+                          AND attempts.state IN (
+                              'not_sent',
+                              'queued',
+                              'on_wire',
+                              'sent_unknown',
+                              'started'
+                          )
+                        RETURNING
+                            attempts.job_id,
+                            attempts.attempt_id,
+                            attempts.provider_id,
+                            attempts.provider_process_generation_id,
+                            attempts.session_epoch,
+                            attempts.lease_id,
+                            attempts.state AS attempt_state,
+                            attempts.version AS attempt_version
                     )
-                    SELECT *
+                    SELECT
+                        claimed.job_id,
+                        claimed.request_id,
+                        claimed.reservation_id,
+                        claimed.version,
+                        claimed.state,
+                        claimed.start_deadline_epoch_millis,
+                        claimed.request_deadline_epoch_millis,
+                        claimed.lease_until_epoch_millis,
+                        attempt_claim.attempt_id,
+                        attempt_claim.provider_id,
+                        attempt_claim.provider_process_generation_id,
+                        attempt_claim.session_epoch,
+                        attempt_claim.lease_id,
+                        attempt_claim.attempt_state,
+                        attempt_claim.attempt_version
                     FROM claimed
-                    ORDER BY job_id
+                    LEFT JOIN attempt_claim USING (job_id)
+                    ORDER BY claimed.job_id
                     "#,
                     authority.owner_id(),
                     authority.epoch(),
@@ -188,13 +274,34 @@ impl RecoveryService {
                     candidates AS MATERIALIZED (
                         SELECT terminals.terminal_id
                         FROM rust_coord.provider_terminals AS terminals
+                        JOIN rust_coord.inference_jobs AS jobs
+                          ON jobs.job_id = terminals.job_id
+                        JOIN rust_coord.inference_attempts AS attempts
+                          ON attempts.attempt_id = terminals.attempt_id
+                         AND attempts.job_id = terminals.job_id
                         WHERE terminals.status = 'pending'
                           AND (
                               terminals.worker_owner IS NULL
                               OR terminals.lease_until <= NOW()
                           )
+                          AND jobs.state IN ('start_authorized', 'running')
+                          AND jobs.request_deadline > NOW()
+                          AND (
+                              jobs.worker_owner IS NULL
+                              OR jobs.lease_until <= NOW()
+                          )
+                          AND attempts.state IN (
+                              'queued',
+                              'on_wire',
+                              'sent_unknown',
+                              'started'
+                          )
+                          AND (
+                              attempts.worker_owner IS NULL
+                              OR attempts.lease_until <= NOW()
+                          )
                         ORDER BY terminals.received_at, terminals.terminal_id
-                        FOR UPDATE SKIP LOCKED
+                        FOR UPDATE OF terminals, jobs, attempts SKIP LOCKED
                         LIMIT $4
                     ),
                     claimed AS (
@@ -231,9 +338,47 @@ impl RecoveryService {
                                 EXTRACT(EPOCH FROM terminals.lease_until) * 1000
                             )::BIGINT AS lease_until_epoch_millis
                     )
-                    SELECT *
+                    ,
+                    job_claim AS (
+                        UPDATE rust_coord.inference_jobs AS jobs
+                        SET
+                            owner_epoch = $2,
+                            worker_owner = $3,
+                            lease_until =
+                                NOW() + ($5::BIGINT * INTERVAL '1 millisecond'),
+                            version = jobs.version + 1,
+                            updated_at = NOW()
+                        FROM claimed
+                        WHERE jobs.job_id = claimed.job_id
+                        RETURNING
+                            jobs.job_id,
+                            jobs.version AS job_version,
+                            jobs.state AS job_state
+                    ),
+                    attempt_claim AS (
+                        UPDATE rust_coord.inference_attempts AS attempts
+                        SET
+                            owner_epoch = $2,
+                            worker_owner = $3,
+                            lease_until =
+                                NOW() + ($5::BIGINT * INTERVAL '1 millisecond'),
+                            version = attempts.version + 1,
+                            updated_at = NOW()
+                        FROM claimed
+                        WHERE attempts.attempt_id = claimed.attempt_id
+                        RETURNING
+                            attempts.attempt_id,
+                            attempts.version AS attempt_version
+                    )
+                    SELECT
+                        claimed.*,
+                        job_claim.job_version,
+                        job_claim.job_state,
+                        attempt_claim.attempt_version
                     FROM claimed
-                    ORDER BY terminal_id
+                    JOIN job_claim USING (job_id)
+                    JOIN attempt_claim USING (attempt_id)
+                    ORDER BY claimed.terminal_id
                     "#,
                     authority.owner_id(),
                     authority.epoch(),
@@ -276,6 +421,20 @@ impl RecoveryService {
                         SELECT 1
                         FROM public.coordinator_ownership
                         WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2
+                    ),
+                    attempt_release AS (
+                        UPDATE rust_coord.inference_attempts AS attempts
+                        SET
+                            worker_owner = NULL,
+                            lease_until = NULL,
+                            version = attempts.version + 1,
+                            updated_at = NOW()
+                        FROM authority
+                        WHERE attempts.job_id = $3
+                          AND attempts.owner_epoch = $2
+                          AND attempts.worker_owner = $4
+                          AND attempts.lease_until > NOW()
+                        RETURNING attempts.attempt_id
                     )
                     UPDATE rust_coord.inference_jobs AS jobs
                     SET
@@ -284,6 +443,10 @@ impl RecoveryService {
                         version = jobs.version + 1,
                         updated_at = NOW()
                     FROM authority
+                    LEFT JOIN (
+                        SELECT COUNT(*) AS released_attempts
+                        FROM attempt_release
+                    ) AS released ON TRUE
                     WHERE jobs.job_id = $3
                       AND jobs.owner_epoch = $2
                       AND jobs.worker_owner = $4
@@ -313,9 +476,20 @@ impl RecoveryService {
 #[derive(Debug, FromRow)]
 struct JobLeaseRow {
     job_id: Uuid,
+    request_id: Uuid,
+    reservation_id: Uuid,
     version: i64,
     state: String,
     lease_until_epoch_millis: i64,
+    attempt_id: Option<Uuid>,
+    provider_id: Option<Uuid>,
+    provider_process_generation_id: Option<Uuid>,
+    session_epoch: Option<i64>,
+    lease_id: Option<Uuid>,
+    attempt_state: Option<String>,
+    attempt_version: Option<i64>,
+    start_deadline_epoch_millis: Option<i64>,
+    request_deadline_epoch_millis: i64,
 }
 
 impl JobLeaseRow {
@@ -325,18 +499,61 @@ impl JobLeaseRow {
             JobState::Reserved | JobState::Preparing | JobState::Prepared => {
                 JobRecoveryAction::ReleasePreAuthorization
             }
-            JobState::StartAuthorized | JobState::Running => {
-                JobRecoveryAction::AwaitAuthorizedTerminal
-            }
-            JobState::ReviewPending => JobRecoveryAction::Review,
+            JobState::StartAuthorized | JobState::Running => match self.attempt_state.as_deref() {
+                Some("not_sent") => JobRecoveryAction::ReleaseNotSent,
+                Some("queued" | "on_wire" | "sent_unknown") => {
+                    JobRecoveryAction::ReconcileAuthorized
+                }
+                Some("started") => JobRecoveryAction::AwaitAuthorizedTerminal,
+                _ => return Err(LedgerError::CorruptData("authorized job attempt state")),
+            },
             _ => return Err(LedgerError::CorruptData("claimed terminal job state")),
+        };
+        let attempt = match (
+            self.attempt_id,
+            self.provider_id,
+            self.provider_process_generation_id,
+            self.session_epoch,
+            self.lease_id,
+            self.attempt_state,
+            self.attempt_version,
+        ) {
+            (
+                Some(attempt_id),
+                Some(provider_id),
+                Some(provider_process_generation_id),
+                Some(session_epoch),
+                Some(lease_id),
+                Some(attempt_state),
+                Some(attempt_version),
+            ) => Some(AuthorizedAttemptRecovery {
+                attempt_id: AttemptId::new(attempt_id)
+                    .map_err(|_| LedgerError::CorruptData("stored attempt id is nil"))?,
+                provider_id,
+                provider_process_generation_id,
+                session_epoch: Version::from_database(session_epoch)?,
+                lease_id,
+                state: crate::ledger::AttemptState::from_database(&attempt_state)?,
+                version: Version::from_database(attempt_version)?,
+            }),
+            (None, None, None, None, None, None, None) => None,
+            _ => {
+                return Err(LedgerError::CorruptData(
+                    "partial authorized recovery attempt",
+                ));
+            }
         };
         Ok(JobRecoveryLease {
             job_id: JobId::new(self.job_id)
                 .map_err(|_| LedgerError::CorruptData("stored job id is nil"))?,
+            request_id: self.request_id,
+            reservation_id: self.reservation_id,
             version: Version::from_database(self.version)?,
             state,
             action,
+            attempt,
+            start_deadline_epoch_millis: self.start_deadline_epoch_millis,
+            request_deadline_epoch_millis: self.request_deadline_epoch_millis,
             lease_until_epoch_millis: self.lease_until_epoch_millis,
         })
     }
@@ -363,6 +580,9 @@ struct TerminalLeaseRow {
     provider_signature: Vec<u8>,
     version: i64,
     lease_until_epoch_millis: i64,
+    job_version: i64,
+    job_state: String,
+    attempt_version: i64,
 }
 
 impl TerminalLeaseRow {
@@ -397,6 +617,9 @@ impl TerminalLeaseRow {
             final_generated_tokens: stored_tokens(self.final_generated_tokens)?,
             provider_signature: self.provider_signature,
             worker_id,
+            job_version: Version::from_database(self.job_version)?,
+            job_state: JobState::from_database(&self.job_state)?,
+            attempt_version: Version::from_database(self.attempt_version)?,
             version: Version::from_database(self.version)?,
             lease_until_epoch_millis: self.lease_until_epoch_millis,
         })

@@ -458,6 +458,19 @@ public actor AttemptTombstones {
         tombstones[attemptID] != nil
     }
 
+    /// Returns whether the exact historical identity has a durable abort
+    /// tombstone. An attempt-ID collision remains a security conflict.
+    public func contains(_ identity: AttemptIdentity) throws -> Bool {
+        let historical = try TerminalAttemptIdentity(identity)
+        guard let tombstone = tombstones[historical.attemptID] else {
+            return false
+        }
+        guard tombstone.identity == historical else {
+            throw AttemptTombstoneError.conflictingAbort(historical.attemptID)
+        }
+        return true
+    }
+
     /// Durably expires only records covered by the explicit replay-fence
     /// policy. Each unlink is directory-fsynced before it is removed from
     /// memory; a partial failure leaves the remaining records retained.

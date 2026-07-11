@@ -9,7 +9,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "rust_coord.external_events",
+            "table": "external_events",
             "name": "external_event_id"
           }
         }
@@ -20,7 +20,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rust_coord.external_events",
+            "table": "external_events",
             "name": "source"
           }
         }
@@ -31,7 +31,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rust_coord.external_events",
+            "table": "external_events",
             "name": "event_id"
           }
         }
@@ -42,7 +42,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rust_coord.external_events",
+            "table": "external_events",
             "name": "event_kind"
           }
         }
@@ -53,7 +53,7 @@
         "type_info": "Bytea",
         "origin": {
           "Table": {
-            "table": "rust_coord.external_events",
+            "table": "external_events",
             "name": "payload_digest"
           }
         }
@@ -64,7 +64,7 @@
         "type_info": "Jsonb",
         "origin": {
           "Table": {
-            "table": "rust_coord.external_events",
+            "table": "external_events",
             "name": "payload"
           }
         }
@@ -75,7 +75,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.external_events",
+            "table": "external_events",
             "name": "version"
           }
         }

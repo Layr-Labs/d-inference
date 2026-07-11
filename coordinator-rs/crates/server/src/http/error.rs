@@ -61,6 +61,12 @@ impl From<PilotRequestError> for ApiError {
                 format!("model {model} is not available"),
             ),
             PilotRequestError::Capacity => Self::capacity("pilot fleet is at capacity"),
+            PilotRequestError::PaymentRequired => Self::new(
+                StatusCode::PAYMENT_REQUIRED,
+                "insufficient_credit",
+                "billing_error",
+                "consumer account has insufficient credit",
+            ),
             PilotRequestError::Timeout => Self::new(
                 StatusCode::GATEWAY_TIMEOUT,
                 "request_timeout",

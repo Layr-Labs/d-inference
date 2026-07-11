@@ -163,6 +163,66 @@ public struct V2StartAck: Sendable, Equatable, Codable {
     }
 }
 
+public struct V2QueryAttempt: Sendable, Equatable, Codable {
+    public var identity: AttemptIdentity
+    public init(identity: AttemptIdentity) { self.identity = identity }
+    public init(from decoder: Decoder) throws {
+        identity = try decoder.container(keyedBy: V2WireCodingKeys.self).decodeAttemptIdentity()
+    }
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: V2WireCodingKeys.self)
+        try container.encodeAttemptIdentity(identity)
+    }
+}
+
+public enum V2AttemptStatusState: String, Sendable, Equatable, Codable {
+    case unknown
+    case prepared
+    case started
+    case terminal
+}
+
+public struct V2AttemptStatus: Sendable, Equatable, Codable {
+    public var identity: AttemptIdentity
+    public var state: V2AttemptStatusState
+    public var terminalDigest: ProtocolV2Digest?
+
+    public init(
+        identity: AttemptIdentity,
+        state: V2AttemptStatusState,
+        terminalDigest: ProtocolV2Digest? = nil
+    ) throws {
+        guard (state == .terminal) == (terminalDigest != nil) else {
+            throw V2AttemptStatusError.invalidTerminalDigestShape
+        }
+        self.identity = identity
+        self.state = state
+        self.terminalDigest = terminalDigest
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: V2WireCodingKeys.self)
+        identity = try container.decodeAttemptIdentity()
+        state = try container.decode(V2AttemptStatusState.self, forKey: .state)
+        terminalDigest = try container.decodeIfPresent(
+            ProtocolV2Digest.self, forKey: .terminalDigest)
+        guard (state == .terminal) == (terminalDigest != nil) else {
+            throw V2AttemptStatusError.invalidTerminalDigestShape
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: V2WireCodingKeys.self)
+        try container.encodeAttemptIdentity(identity)
+        try container.encode(state, forKey: .state)
+        try container.encodeIfPresent(terminalDigest, forKey: .terminalDigest)
+    }
+}
+
+public enum V2AttemptStatusError: Error, Sendable, Equatable {
+    case invalidTerminalDigestShape
+}
+
 public struct V2Abort: Sendable, Equatable, Codable {
     public var identity: AttemptIdentity
     public var reason: String?
@@ -334,6 +394,7 @@ public struct V2ModelGone: Sendable, Equatable, Codable {
 public enum V2CoordinatorControlMessage: Sendable, Equatable, Codable {
     case prepare(V2Prepare)
     case start(V2Start)
+    case queryAttempt(V2QueryAttempt)
     case abort(V2Abort)
     case cancel(V2Cancel)
     case terminalAck(V2TerminalAck)
@@ -343,6 +404,7 @@ public enum V2CoordinatorControlMessage: Sendable, Equatable, Codable {
         switch self {
         case .prepare(let message): message.identity
         case .start(let message): message.identity
+        case .queryAttempt(let message): message.identity
         case .abort(let message): message.identity
         case .cancel(let message): message.identity
         case .terminalAck(let message): message.identity
@@ -355,6 +417,7 @@ public enum V2CoordinatorControlMessage: Sendable, Equatable, Codable {
         switch try container.decode(String.self, forKey: .type) {
         case "prepare": self = .prepare(try V2Prepare(from: decoder))
         case "start": self = .start(try V2Start(from: decoder))
+        case "query_attempt": self = .queryAttempt(try V2QueryAttempt(from: decoder))
         case "abort": self = .abort(try V2Abort(from: decoder))
         case "cancel": self = .cancel(try V2Cancel(from: decoder))
         case "terminal_ack": self = .terminalAck(try V2TerminalAck(from: decoder))
@@ -378,6 +441,9 @@ public enum V2CoordinatorControlMessage: Sendable, Equatable, Codable {
             try message.encode(to: encoder)
         case .start(let message):
             try container.encode("start", forKey: .type)
+            try message.encode(to: encoder)
+        case .queryAttempt(let message):
+            try container.encode("query_attempt", forKey: .type)
             try message.encode(to: encoder)
         case .abort(let message):
             try container.encode("abort", forKey: .type)
@@ -438,6 +504,7 @@ public struct V2ReplayFenceAck: Sendable, Equatable, Codable {
 public enum V2ProviderControlMessage: Sendable, Equatable, Codable {
     case prepared(V2Prepared)
     case startAck(V2StartAck)
+    case attemptStatus(V2AttemptStatus)
     case abortAck(V2AbortAck)
     case cancelAck(V2CancelAck)
     case terminal(V2ProviderTerminal)
@@ -451,6 +518,7 @@ public enum V2ProviderControlMessage: Sendable, Equatable, Codable {
         switch try container.decode(String.self, forKey: .type) {
         case "prepared": self = .prepared(try V2Prepared(from: decoder))
         case "start_ack", "started": self = .startAck(try V2StartAck(from: decoder))
+        case "attempt_status": self = .attemptStatus(try V2AttemptStatus(from: decoder))
         case "abort_ack", "aborted": self = .abortAck(try V2AbortAck(from: decoder))
         case "cancel_ack", "cancelled": self = .cancelAck(try V2CancelAck(from: decoder))
         case "provider_terminal": self = .terminal(try V2ProviderTerminal(from: decoder))
@@ -476,6 +544,9 @@ public enum V2ProviderControlMessage: Sendable, Equatable, Codable {
             try message.encode(to: encoder)
         case .startAck(let message):
             try container.encode("start_ack", forKey: .type)
+            try message.encode(to: encoder)
+        case .attemptStatus(let message):
+            try container.encode("attempt_status", forKey: .type)
             try message.encode(to: encoder)
         case .abortAck(let message):
             try container.encode("abort_ack", forKey: .type)
@@ -525,6 +596,7 @@ enum V2WireCodingKeys: String, CodingKey {
     case prefillCanBegin = "prefill_can_begin"
     case estimatedPrefillMilliseconds = "estimated_prefill_ms"
     case reason
+    case state
     case errorClass = "error_class"
     case structuredErrorClass = "class"
     case message

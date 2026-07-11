@@ -4,6 +4,8 @@ use super::database::TEMP_DATABASE_PREFIX;
 
 const DURABLE_SCHEMA_MIGRATION: &str =
     include_str!("../../../../../migrations/000002_rust_durable_schema.sql");
+const PILOT_LIFECYCLE_MIGRATION: &str =
+    include_str!("../../../../../migrations/000003_rust_pilot_lifecycle.sql");
 
 pub async fn seed_durable_schema(url: &str) {
     reset_schema(url, 3, 1, 3, 3).await;
@@ -18,6 +20,14 @@ pub async fn seed_durable_schema(url: &str) {
         .execute(&mut connection)
         .await
         .expect("record public durable schema migration");
+    sqlx::raw_sql(PILOT_LIFECYCLE_MIGRATION)
+        .execute(&mut connection)
+        .await
+        .expect("apply mirrored pilot lifecycle migration");
+    sqlx::query("INSERT INTO public.schema_migration_versions (version) VALUES (5)")
+        .execute(&mut connection)
+        .await
+        .expect("record public pilot lifecycle migration");
     connection.close().await.expect("close durable schema seed");
 }
 
@@ -92,6 +102,11 @@ pub async fn seed_service_schema(url: &str) {
             ON public.stripe_withdrawals (transfer_id) WHERE transfer_id <> '';
         CREATE UNIQUE INDEX service_withdrawal_payout
             ON public.stripe_withdrawals (payout_id) WHERE payout_id <> '';
+        CREATE TABLE public.stripe_sweep_failures (
+            payout_id TEXT PRIMARY KEY,
+            failure_reason TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
         CREATE TABLE public.usage (
             id BIGSERIAL PRIMARY KEY,
             provider_id TEXT NOT NULL,

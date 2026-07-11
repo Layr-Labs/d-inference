@@ -66,6 +66,7 @@ struct V2ProtocolTests {
                 "prepare"
             ),
             (.start(V2Start(identity: id)), "start"),
+            (.queryAttempt(V2QueryAttempt(identity: id)), "query_attempt"),
             (.abort(V2Abort(identity: id)), "abort"),
             (.cancel(V2Cancel(identity: id, reason: "consumer_gone")), "cancel"),
             (
@@ -91,6 +92,18 @@ struct V2ProtocolTests {
                 try JSONDecoder().decode(
                     V2CoordinatorControlMessage.self, from: encoded) == message)
         }
+        let query = CoordinatorMessage.queryAttempt(V2QueryAttempt(identity: id))
+        let queryWire = try ProviderProtocolCodec.encodeCoordinatorMessage(query)
+        #expect(
+            CoordinatorClientCodec.v2ControlMessage(from: query)
+                == .queryAttempt(V2QueryAttempt(identity: id))
+        )
+        #expect(
+            try ProviderProtocolCodec.decodeCoordinatorMessage(
+                from: queryWire,
+                negotiatedV2Session: true
+            ) == query
+        )
 
         let futurePrepared = Data(
             #"""
@@ -184,6 +197,12 @@ struct V2ProtocolTests {
                     prefillCanBegin: true
                 )),
             .startAck(V2StartAck(identity: id)),
+            .attemptStatus(
+                try V2AttemptStatus(
+                    identity: id,
+                    state: .terminal,
+                    terminalDigest: digest
+                )),
             .abortAck(V2AbortAck(identity: id)),
             .cancelAck(V2CancelAck(identity: id)),
             .terminal(terminal),
@@ -202,6 +221,40 @@ struct V2ProtocolTests {
                     from: encoded
                 ) == message)
         }
+        let invalidAttemptStatus = Data(
+            String(data: try sortedEncoder().encode(
+                V2ProviderControlMessage.attemptStatus(
+                    try V2AttemptStatus(
+                        identity: id,
+                        state: .terminal,
+                        terminalDigest: digest
+                    ))
+            ), encoding: .utf8)!
+                .replacingOccurrences(of: #","terminal_digest":"CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=""#, with: "")
+                .utf8
+        )
+        #expect(throws: V2AttemptStatusError.invalidTerminalDigestShape) {
+            _ = try JSONDecoder().decode(
+                V2ProviderControlMessage.self,
+                from: invalidAttemptStatus
+            )
+        }
+        let status = try V2AttemptStatus(
+            identity: id,
+            state: .terminal,
+            terminalDigest: digest
+        )
+        let statusWire = try ProviderProtocolCodec.encodeProviderMessage(
+            .attemptStatus(status)
+        )
+        #expect(
+            CoordinatorClientCodec.v2ControlMessage(from: .attemptStatus(status))
+                == .attemptStatus(status)
+        )
+        #expect(
+            try ProviderProtocolCodec.decodeProviderMessage(from: statusWire)
+                == .attemptStatus(status)
+        )
 
         let replayAck = V2ProviderControlMessage.replayFenceAck(
             V2ReplayFenceAck(
@@ -399,6 +452,7 @@ struct V2ProtocolTests {
                 "model_lifecycle_events",
                 "binary_payload_frames",
                 "coordinator_replay_fences",
+                "attempt_reconciliation",
             ])
         #expect(capabilities["protocol_major"] as? UInt16 == protocolV2Major)
         #expect(capabilities["protocol_minor"] as? UInt16 == 0)
@@ -413,6 +467,7 @@ struct V2ProtocolTests {
             "model_lifecycle_events",
             "binary_payload_frames",
             "coordinator_replay_fences",
+            "attempt_reconciliation",
         ] {
             #expect(capabilities[key] as? Bool == true)
         }

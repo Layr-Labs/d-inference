@@ -223,6 +223,69 @@ pub enum JobState {
     ReleasedReviewed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttemptState {
+    NotSent,
+    Queued,
+    OnWire,
+    SentUnknown,
+    Prepared,
+    Started,
+    TerminalRecorded,
+    Aborted,
+    Acknowledged,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DurableAttemptKind {
+    Primary,
+    Alternate,
+    Hedge,
+}
+
+impl DurableAttemptKind {
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Alternate => "alternate",
+            Self::Hedge => "hedge",
+        }
+    }
+}
+
+impl AttemptState {
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotSent => "not_sent",
+            Self::Queued => "queued",
+            Self::OnWire => "on_wire",
+            Self::SentUnknown => "sent_unknown",
+            Self::Prepared => "prepared",
+            Self::Started => "started",
+            Self::TerminalRecorded => "terminal_recorded",
+            Self::Aborted => "aborted",
+            Self::Acknowledged => "acknowledged",
+        }
+    }
+
+    pub(crate) fn from_database(value: &str) -> Result<Self, LedgerError> {
+        match value {
+            "not_sent" => Ok(Self::NotSent),
+            "queued" => Ok(Self::Queued),
+            "on_wire" => Ok(Self::OnWire),
+            "sent_unknown" => Ok(Self::SentUnknown),
+            "prepared" => Ok(Self::Prepared),
+            "started" => Ok(Self::Started),
+            "terminal_recorded" => Ok(Self::TerminalRecorded),
+            "aborted" => Ok(Self::Aborted),
+            "acknowledged" => Ok(Self::Acknowledged),
+            _ => Err(LedgerError::CorruptData("unknown stored attempt state")),
+        }
+    }
+}
+
 impl JobState {
     #[must_use]
     pub(crate) const fn as_str(self) -> &'static str {
@@ -265,7 +328,13 @@ pub struct ReserveRequest {
     pub reservation_id: ReservationId,
     pub account_id: AccountId,
     pub api_key_id: Arc<str>,
+    pub consumer_key_hash: Arc<str>,
     pub amount: LedgerAmount,
+    pub request_deadline_epoch_millis: u64,
+    pub execution_worker_id: Option<Uuid>,
+    pub execution_lease_millis: Option<u64>,
+    pub provisional_provider_id: Option<Uuid>,
+    pub provisional_session_epoch: Option<Version>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -278,6 +347,106 @@ pub struct ReservationResult {
     pub state: JobState,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StartDispatchDisposition {
+    Queued,
+    OnWire,
+    SentUnknown,
+    Running,
+}
+
+#[derive(Clone, Debug)]
+pub struct StartDispatchRequest {
+    pub job_id: JobId,
+    pub expected_job_version: Version,
+    pub expected_job_state: JobState,
+    pub attempt_id: AttemptId,
+    pub expected_attempt_version: Version,
+    pub expected_attempt_state: AttemptState,
+    pub disposition: StartDispatchDisposition,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StartDispatchResult {
+    pub job_version: Version,
+    pub job_state: JobState,
+    pub attempt_version: Version,
+    pub attempt_state: AttemptState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DurableTerminalDisposition {
+    Settled,
+    Released,
+    SettledReviewed,
+    ReleasedReviewed,
+    Late,
+    Conflict,
+    ReviewPending,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalLookup {
+    Absent,
+    Known(DurableTerminalDisposition),
+    Conflict { job_id: JobId },
+}
+
+/// Exact historical attempt identity used for database-authoritative terminal
+/// replay. Every field is compared with the durable job/attempt binding before
+/// a reviewed disposition can be returned.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DurableAttemptIdentity {
+    pub request_id: Uuid,
+    pub reservation_id: ReservationId,
+    pub attempt_id: AttemptId,
+    pub provider_id: Uuid,
+    pub provider_process_generation_id: Uuid,
+    pub session_epoch: Version,
+    pub lease_id: Uuid,
+}
+
+impl DurableAttemptIdentity {
+    pub(crate) fn validate(self) -> Result<(), InputError> {
+        if self.request_id.is_nil()
+            || self.provider_id.is_nil()
+            || self.provider_process_generation_id.is_nil()
+            || self.lease_id.is_nil()
+        {
+            return Err(InputError::NilId("durable attempt identity"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryTerminalRecordResult {
+    Pending { job_id: JobId },
+    Known(DurableTerminalDisposition),
+    Conflict { job_id: JobId },
+}
+
+#[derive(Clone, Debug)]
+pub struct ReviewRequest {
+    pub job_id: JobId,
+    pub expected_version: Version,
+    pub expected_state: JobState,
+    pub provider_id: Uuid,
+    pub hard_untrust_epoch: Version,
+    pub accepted_cumulative_tokens: u64,
+    pub reason: Arc<str>,
+    pub evidence_digest: Digest,
+}
+
+#[derive(Clone, Debug)]
+pub struct AuthorizedTerminalTimeoutRequest {
+    pub job_id: JobId,
+    pub expected_job_version: Version,
+    pub expected_job_state: JobState,
+    pub attempt_id: AttemptId,
+    pub expected_attempt_version: Version,
+}
+
 #[derive(Clone, Debug)]
 pub struct PreparedReservation {
     pub operation: Operation,
@@ -285,6 +454,7 @@ pub struct PreparedReservation {
     pub expected_version: Version,
     pub expected_state: JobState,
     pub attempt_id: AttemptId,
+    pub attempt_kind: DurableAttemptKind,
     pub provider_id: Uuid,
     pub provider_process_generation_id: Uuid,
     pub session_epoch: Version,
@@ -306,7 +476,10 @@ pub struct PreparedReservation {
     pub maximum_provider_payout: LedgerAmount,
     pub maximum_platform_fee: LedgerAmount,
     pub maximum_referral_reward: LedgerAmount,
+    pub provider_share_ppm: u32,
     pub referral_share_ppm: u32,
+    pub execution_worker_id: Option<Uuid>,
+    pub start_deadline_millis: u64,
 }
 
 impl PreparedReservation {
@@ -323,15 +496,20 @@ impl PreparedReservation {
             || self.provider_process_generation_id.is_nil()
             || self.lease_id.is_nil()
             || self.permit_id.is_nil()
+            || self
+                .execution_worker_id
+                .is_some_and(|worker| worker.is_nil())
         {
             return Err(InputError::NilId("prepared provider fact"));
         }
         if self.billable_input_tokens > i64::MAX as u64
             || self.bounded_output_tokens > i64::MAX as u64
+            || self.start_deadline_millis == 0
+            || self.start_deadline_millis > 300_000
         {
             return Err(InputError::ArithmeticOverflow);
         }
-        if self.referral_share_ppm > 1_000_000 {
+        if self.provider_share_ppm > 1_000_000 || self.referral_share_ppm > 1_000_000 {
             return Err(InputError::InvalidReferralShare);
         }
         match (
@@ -341,6 +519,12 @@ impl PreparedReservation {
             (None, 0) if self.referral_share_ppm == 0 => {}
             (Some(_), _) => {}
             _ => return Err(InputError::InvalidReferralTerms),
+        }
+        let maximum_charge = self.maximum_charge()?;
+        if proportional_amount(maximum_charge, self.provider_share_ppm)?
+            != self.maximum_provider_payout
+        {
+            return Err(InputError::AllocationMismatch);
         }
         let maximum_gross_fee = self
             .maximum_platform_fee
@@ -356,7 +540,7 @@ impl PreparedReservation {
                     self.bounded_output_tokens,
                     self.output_micro_usd_per_million,
                 )?)?;
-        if priced_maximum != self.maximum_charge()? {
+        if priced_maximum != maximum_charge {
             return Err(InputError::AllocationMismatch);
         }
         Ok(())
@@ -382,10 +566,50 @@ pub(crate) fn priced_tokens(tokens: u64, rate: LedgerAmount) -> Result<LedgerAmo
     LedgerAmount::new(u64::try_from(rounded).map_err(|_| InputError::ArithmeticOverflow)?)
 }
 
-pub(crate) fn json_digest(value: &Value) -> Result<Digest, LedgerError> {
-    let encoded = serde_json::to_vec(value)
-        .map_err(|_| LedgerError::CorruptData("JSON payload could not be serialized"))?;
+/// Hashes a JSON value after recursively sorting object keys. Callers that
+/// supply a payload digest must use this representation; insignificant source
+/// whitespace and object insertion order therefore cannot alter provenance.
+pub fn canonical_json_digest(value: &Value) -> Result<Digest, LedgerError> {
+    let mut encoded = Vec::new();
+    write_canonical_json(value, &mut encoded)?;
     Ok(Digest::new(Sha256::digest(encoded).into()))
+}
+
+fn write_canonical_json(value: &Value, output: &mut Vec<u8>) -> Result<(), LedgerError> {
+    match value {
+        Value::Null => output.extend_from_slice(b"null"),
+        Value::Bool(value) => output.extend_from_slice(if *value { b"true" } else { b"false" }),
+        Value::Number(value) => output.extend_from_slice(value.to_string().as_bytes()),
+        Value::String(value) => serde_json::to_writer(output, value)
+            .map_err(|_| LedgerError::CorruptData("JSON payload could not be serialized"))?,
+        Value::Array(values) => {
+            output.push(b'[');
+            for (index, value) in values.iter().enumerate() {
+                if index != 0 {
+                    output.push(b',');
+                }
+                write_canonical_json(value, output)?;
+            }
+            output.push(b']');
+        }
+        Value::Object(values) => {
+            output.push(b'{');
+            let mut fields: Vec<_> = values.iter().collect();
+            fields.sort_unstable_by(|left, right| left.0.cmp(right.0));
+            for (index, (key, value)) in fields.into_iter().enumerate() {
+                if index != 0 {
+                    output.push(b',');
+                }
+                serde_json::to_writer(&mut *output, key).map_err(|_| {
+                    LedgerError::CorruptData("JSON payload could not be serialized")
+                })?;
+                output.push(b':');
+                write_canonical_json(value, output)?;
+            }
+            output.push(b'}');
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -442,6 +666,41 @@ pub struct TerminalFacts {
     pub recovery_lease: Option<TerminalLeaseToken>,
 }
 
+impl TerminalFacts {
+    pub(crate) fn validate(&self) -> Result<(), InputError> {
+        if self.provider_id.is_nil() || self.provider_process_generation_id.is_nil() {
+            return Err(InputError::NilId("terminal provider fact"));
+        }
+        if !self.raw_terminal.is_object() {
+            return Err(InputError::TerminalPayloadNotObject);
+        }
+        if self.provider_signature.is_empty() {
+            return Err(InputError::Empty("provider signature"));
+        }
+        if self
+            .recovery_lease
+            .as_ref()
+            .is_some_and(|lease| lease.worker_id.is_nil())
+        {
+            return Err(InputError::NilId("terminal recovery worker"));
+        }
+        for tokens in [
+            self.prompt_tokens,
+            self.completion_tokens,
+            self.reasoning_tokens,
+            self.final_generated_tokens,
+        ] {
+            if tokens > i64::MAX as u64 {
+                return Err(InputError::ArithmeticOverflow);
+            }
+        }
+        if self.prompt_tokens > i32::MAX as u64 || self.completion_tokens > i32::MAX as u64 {
+            return Err(InputError::UsageTokenOverflow);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SettleRequest {
     pub operation: Operation,
@@ -454,45 +713,14 @@ pub struct SettleRequest {
     pub provider_payout: LedgerAmount,
     pub platform_fee: LedgerAmount,
     pub referral_reward: LedgerAmount,
+    pub accepted_cumulative_tokens: u64,
     pub consumer_key_hash: Arc<str>,
+    pub review: Option<ReviewResolutionFacts>,
 }
 
 impl SettleRequest {
     pub(crate) fn validate(&self) -> Result<(), InputError> {
-        if self.terminal.provider_id.is_nil()
-            || self.terminal.provider_process_generation_id.is_nil()
-        {
-            return Err(InputError::NilId("terminal provider fact"));
-        }
-        if !self.terminal.raw_terminal.is_object() {
-            return Err(InputError::TerminalPayloadNotObject);
-        }
-        if self.terminal.provider_signature.is_empty() {
-            return Err(InputError::Empty("provider signature"));
-        }
-        if self
-            .terminal
-            .recovery_lease
-            .as_ref()
-            .is_some_and(|lease| lease.worker_id.is_nil())
-        {
-            return Err(InputError::NilId("terminal recovery worker"));
-        }
-        for tokens in [
-            self.terminal.prompt_tokens,
-            self.terminal.completion_tokens,
-            self.terminal.reasoning_tokens,
-            self.terminal.final_generated_tokens,
-        ] {
-            if tokens > i64::MAX as u64 {
-                return Err(InputError::ArithmeticOverflow);
-            }
-        }
-        if self.terminal.prompt_tokens > i32::MAX as u64
-            || self.terminal.completion_tokens > i32::MAX as u64
-        {
-            return Err(InputError::UsageTokenOverflow);
-        }
+        self.terminal.validate()?;
         validate_text(&self.consumer_key_hash, "consumer key hash")?;
         let allocated = self
             .provider_payout
@@ -501,7 +729,77 @@ impl SettleRequest {
         if allocated != self.consumer_charge {
             return Err(InputError::AllocationMismatch);
         }
+        if self.accepted_cumulative_tokens > i64::MAX as u64 {
+            return Err(InputError::ArithmeticOverflow);
+        }
+        if self.terminal.completion_tokens > self.accepted_cumulative_tokens {
+            return Err(InputError::AllocationMismatch);
+        }
+        if self.terminal.outcome != TerminalOutcome::Completed
+            || self.terminal.error_class.is_some()
+            || self.terminal.reasoning_tokens > self.terminal.completion_tokens
+            || self.terminal.final_generated_tokens != self.terminal.completion_tokens
+        {
+            return Err(InputError::InvalidTerminalOutcome);
+        }
+        if self
+            .review
+            .as_ref()
+            .is_some_and(|review| review.operator_reason.is_empty())
+        {
+            return Err(InputError::Empty("operator review reason"));
+        }
         Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ReviewResolutionFacts {
+    pub resolution_id: Uuid,
+    pub operator_reason: Arc<str>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TerminalReleaseRequest {
+    pub operation: Operation,
+    pub job_id: JobId,
+    pub expected_job_version: Version,
+    pub expected_job_state: JobState,
+    pub expected_attempt_version: Version,
+    pub terminal: TerminalFacts,
+    pub accepted_cumulative_tokens: u64,
+    pub reason: Arc<str>,
+}
+
+impl TerminalReleaseRequest {
+    pub(crate) fn validate(&self) -> Result<(), InputError> {
+        self.terminal.validate()?;
+        if !matches!(
+            (self.terminal.outcome, self.terminal.error_class.as_deref()),
+            (TerminalOutcome::Cancelled, Some("cancelled"))
+                | (
+                    TerminalOutcome::Error,
+                    Some(
+                        "invalid_request"
+                            | "capacity"
+                            | "model_not_ready"
+                            | "draining"
+                            | "fault"
+                            | "security"
+                    )
+                )
+        ) {
+            return Err(InputError::InvalidTerminalOutcome);
+        }
+        if self.accepted_cumulative_tokens > i64::MAX as u64 {
+            return Err(InputError::ArithmeticOverflow);
+        }
+        if self.terminal.reasoning_tokens > self.terminal.completion_tokens
+            || self.terminal.final_generated_tokens < self.terminal.completion_tokens
+        {
+            return Err(InputError::InvalidTerminalUsage);
+        }
+        validate_text(&self.reason, "terminal release reason")
     }
 }
 
@@ -523,6 +821,28 @@ pub struct ReleaseRequest {
     pub expected_version: Version,
     pub expected_state: JobState,
     pub reason: Arc<str>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReviewDisposition {
+    Settle,
+    Release,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReviewResolutionRequest {
+    pub operation: Operation,
+    pub job_id: JobId,
+    pub disposition: ReviewDisposition,
+    pub operator_reason: Arc<str>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewResolutionResult {
+    pub disposition: MutationDisposition,
+    pub job_id: JobId,
+    pub state: JobState,
+    pub version: Version,
 }
 
 #[derive(Clone, Debug)]
@@ -588,6 +908,7 @@ pub struct WithdrawalRequest {
     pub amount: LedgerAmount,
     pub fee: LedgerAmount,
     pub method: Arc<str>,
+    pub payload_digest: Digest,
     pub external_payload: Value,
 }
 
@@ -652,6 +973,10 @@ pub enum InputError {
     TerminalPayloadNotObject,
     #[error("terminal usage exceeds the legacy usage table's integer range")]
     UsageTokenOverflow,
+    #[error("terminal outcome is incompatible with the requested disposition")]
+    InvalidTerminalOutcome,
+    #[error("terminal usage counters are internally inconsistent")]
+    InvalidTerminalUsage,
 }
 
 #[derive(Debug, Error)]
@@ -666,6 +991,10 @@ pub enum LedgerError {
     OperationConflict,
     #[error("insufficient account balance")]
     InsufficientBalance,
+    #[error("provider session is covered by a durable hard-untrust epoch")]
+    ProviderHardUntrusted,
+    #[error("provider terminal requires durable review: {0}")]
+    TerminalReview(&'static str),
     #[error("durable record was not found")]
     NotFound,
     #[error("status or version compare-and-swap failed")]
@@ -676,6 +1005,36 @@ pub enum LedgerError {
     Database(#[source] sqlx::Error),
     #[error("PostgreSQL operation exceeded its deadline")]
     Timeout,
-    #[error("commit outcome for operation {0} remains unknown")]
-    CommitOutcomeUnknown(OperationKey),
+    #[error("commit outcome for operation {operation} remains unknown: {diagnostic}")]
+    CommitOutcomeUnknown {
+        operation: OperationKey,
+        diagnostic: Arc<str>,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::canonical_json_digest;
+
+    #[test]
+    fn canonical_payload_digest_ignores_object_order_but_not_values() {
+        let first = serde_json::from_str(r#"{"z":[3,2,1],"a":{"right":2,"left":1}}"#)
+            .expect("first payload");
+        let reordered = serde_json::from_str(r#"{ "a": { "left": 1, "right": 2 }, "z": [3,2,1] }"#)
+            .expect("reordered payload");
+        assert_eq!(
+            canonical_json_digest(&first).expect("first digest"),
+            canonical_json_digest(&reordered).expect("reordered digest")
+        );
+        assert_ne!(
+            canonical_json_digest(&first).expect("first digest"),
+            canonical_json_digest(&json!({
+                "a": {"left": 1, "right": 3},
+                "z": [3, 2, 1]
+            }))
+            .expect("changed digest")
+        );
+    }
 }

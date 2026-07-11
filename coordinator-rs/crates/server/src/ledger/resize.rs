@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use sqlx::FromRow;
 
 use super::{
@@ -112,6 +114,24 @@ impl LedgerService {
                           AND jobs.version = $4
                           AND jobs.state = $5
                           AND jobs.reservation_pre_debited
+                          AND jobs.request_deadline > NOW()
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM rust_coord.provider_hard_untrust_epochs
+                                  AS untrusted
+                              WHERE untrusted.provider_id = $10
+                                AND untrusted.hard_untrust_epoch >= $12
+                          )
+                          AND (
+                              (
+                                  $35::UUID IS NULL
+                                  AND jobs.worker_owner IS NULL
+                              )
+                              OR (
+                                  jobs.worker_owner = $35
+                                  AND jobs.lease_until > NOW()
+                              )
+                          )
                           AND balances.balance_micro_usd >= 0
                           AND balances.withdrawable_micro_usd >= 0
                           AND balances.withdrawable_micro_usd
@@ -190,6 +210,7 @@ impl LedgerService {
                                     job.new_reserved_withdrawable,
                                 'input_rate', $31::BIGINT,
                                 'output_rate', $32::BIGINT,
+                                'provider_share_ppm', $34::BIGINT,
                                 'pricing_version', $19::BIGINT,
                                 'rounding_version', $20::BIGINT
                             ),
@@ -216,7 +237,9 @@ impl LedgerService {
                             dispatch_nonce,
                             request_digest,
                             kind,
-                            state
+                            state,
+                            worker_owner,
+                            lease_until
                         )
                         SELECT
                             $9,
@@ -229,8 +252,10 @@ impl LedgerService {
                             $14,
                             $15,
                             $16,
-                            'primary',
-                            'started'
+                            $33::TEXT,
+                            'not_sent',
+                            $35,
+                            job.lease_until
                         FROM job
                         CROSS JOIN operation_insert
                         RETURNING attempt_id
@@ -309,8 +334,14 @@ impl LedgerService {
                             provider_payout_micro_usd = $27,
                             platform_fee_micro_usd = $28,
                             referral_reward_micro_usd = $29,
+                            input_micro_usd_per_million = $31,
+                            output_micro_usd_per_million = $32,
+                            provider_share_ppm = $34,
                             referral_share_ppm = $30,
                             request_digest = $16,
+                            start_authorized_at = NOW(),
+                            start_deadline =
+                                NOW() + ($36::BIGINT * INTERVAL '1 millisecond'),
                             version = jobs.version + 1,
                             updated_at = NOW()
                         FROM job, ledger_insert
@@ -332,6 +363,7 @@ impl LedgerService {
                         job_update.reserved_withdrawable_micro_usd
                     FROM job_update
                     CROSS JOIN operation_insert
+                    CROSS JOIN attempt_insert
                     "#,
                     authority.owner_id(),
                     authority.epoch(),
@@ -365,6 +397,11 @@ impl LedgerService {
                     i64::from(prepared.referral_share_ppm),
                     prepared.input_micro_usd_per_million.as_i64(),
                     prepared.output_micro_usd_per_million.as_i64(),
+                    prepared.attempt_kind.as_str(),
+                    i64::from(prepared.provider_share_ppm),
+                    prepared.execution_worker_id,
+                    i64::try_from(prepared.start_deadline_millis)
+                        .expect("validated start deadline fits i64"),
                 )
                 .fetch_optional(self.db.pool()),
             )
@@ -378,17 +415,27 @@ impl LedgerService {
         maximum_charge: LedgerAmount,
         ambiguous: bool,
     ) -> Result<ReservationResult, LedgerError> {
-        if let Some(operation) = self
-            .db
-            .operation(authority, &prepared.operation.key)
-            .await?
-        {
+        let operation = match self.db.operation(authority, &prepared.operation.key).await {
+            Ok(operation) => operation,
+            Err(error) if ambiguous => {
+                return Err(LedgerError::CommitOutcomeUnknown {
+                    operation: prepared.operation.key.clone(),
+                    diagnostic: Arc::from(format!(
+                        "authorization reconciliation query failed after ambiguous commit: {error}"
+                    )),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(operation) = operation {
             return resize_from_operation(operation, prepared, maximum_charge);
         }
         if ambiguous {
-            return Err(LedgerError::CommitOutcomeUnknown(
-                prepared.operation.key.clone(),
-            ));
+            return Err(LedgerError::CommitOutcomeUnknown {
+                operation: prepared.operation.key.clone(),
+                diagnostic: "ambiguous authorization commit was not found during reconciliation"
+                    .into(),
+            });
         }
         let diagnostic = self
             .db
@@ -409,7 +456,14 @@ impl LedgerService {
                             >= GREATEST(
                                 0::BIGINT,
                                 $6::BIGINT - jobs.reserved_total_micro_usd
-                            ) AS funded
+                            ) AS funded,
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM rust_coord.provider_hard_untrust_epochs
+                                AS untrusted
+                            WHERE untrusted.provider_id = $7
+                              AND untrusted.hard_untrust_epoch >= $8
+                        ) AS provider_trusted
                     FROM rust_coord.inference_jobs AS jobs
                     JOIN public.balances AS balances
                       ON balances.account_id = jobs.account_id
@@ -422,6 +476,8 @@ impl LedgerService {
                     prepared.expected_version.as_i64(),
                     prepared.expected_state.as_str(),
                     maximum_charge.as_i64(),
+                    prepared.provider_id,
+                    prepared.session_epoch.as_i64(),
                 )
                 .fetch_optional(self.db.pool()),
             )
@@ -429,6 +485,7 @@ impl LedgerService {
         match diagnostic {
             None => Err(LedgerError::NotFound),
             Some(row) if !row.current => Err(LedgerError::StaleVersion),
+            Some(row) if !row.provider_trusted => Err(LedgerError::ProviderHardUntrusted),
             Some(row) if !row.funded => Err(LedgerError::InsufficientBalance),
             Some(_) => Err(LedgerError::OperationConflict),
         }
@@ -464,6 +521,7 @@ struct ResizeRow {
 struct ResizeDiagnostic {
     current: bool,
     funded: bool,
+    provider_trusted: bool,
 }
 
 fn resize_from_row(

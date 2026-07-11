@@ -547,6 +547,22 @@ extension ProviderLoop {
                 )
             }
 
+        case .queryAttempt(let message):
+            do {
+                let status = try await attempts.attemptStatus(
+                    identity: message.identity)
+                try await coordinator.sendProtocolV2ControlMessage(
+                    .attemptStatus(status))
+                if status.state == .terminal {
+                    try await sendPendingProtocolV2Terminals(
+                        attempts: attempts,
+                        coordinator: coordinator
+                    )
+                }
+            } catch {
+                sendProtocolV2Error(error, identity: message.identity, send: send)
+            }
+
         case .abort(let message):
             do {
                 _ = try await attempts.abort(

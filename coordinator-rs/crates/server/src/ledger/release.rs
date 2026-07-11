@@ -71,6 +71,19 @@ impl LedgerService {
                           AND jobs.owner_epoch = $2
                           AND jobs.version = $4
                           AND jobs.state = $5
+                          AND (
+                              jobs.state IN ('reserved', 'preparing', 'prepared')
+                              OR (
+                                  jobs.state = 'start_authorized'
+                                  AND jobs.start_deadline <= NOW()
+                                  AND EXISTS (
+                                      SELECT 1
+                                      FROM rust_coord.inference_attempts AS attempts
+                                      WHERE attempts.job_id = jobs.job_id
+                                        AND attempts.state = 'not_sent'
+                                  )
+                              )
+                          )
                           AND jobs.reservation_pre_debited
                           AND balances.balance_micro_usd >= 0
                           AND balances.withdrawable_micro_usd >= 0
@@ -166,11 +179,7 @@ impl LedgerService {
                             lease_until = NULL
                         FROM job, ledger_insert
                         WHERE attempts.job_id = job.job_id
-                          AND attempts.state IN (
-                              'queued_to_socket',
-                              'sent_unknown',
-                              'prepared'
-                          )
+                          AND attempts.state IN ('prepared', 'not_sent')
                         RETURNING attempts.attempt_id
                     ),
                     job_update AS (
@@ -228,9 +237,10 @@ impl LedgerService {
             return release_from_operation(operation, request);
         }
         if ambiguous {
-            return Err(LedgerError::CommitOutcomeUnknown(
-                request.operation.key.clone(),
-            ));
+            return Err(LedgerError::CommitOutcomeUnknown {
+                operation: request.operation.key.clone(),
+                diagnostic: "ambiguous release commit was not found during reconciliation".into(),
+            });
         }
         let current = self
             .db

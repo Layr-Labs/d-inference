@@ -214,6 +214,38 @@ public struct V2NegotiationState: Sendable, Equatable {
             }
             return
         }
+        if case .queryAttempt(let query) = message {
+            guard session.capabilities.attemptReconciliation else {
+                throw V2NegotiationError.capabilityNotNegotiated
+            }
+            guard query.identity.providerID == session.identity.providerID,
+                acknowledgedProviderID == session.identity.providerID,
+                query.identity.sessionEpoch <= session.identity.sessionEpoch
+            else {
+                throw V2NegotiationError.providerIDMismatch
+            }
+            return
+        }
+        if case .start(let start) = message,
+            start.identity.sessionEpoch < session.identity.sessionEpoch
+        {
+            guard session.capabilities.startAuthorization,
+                session.capabilities.attemptReconciliation
+            else {
+                throw V2NegotiationError.capabilityNotNegotiated
+            }
+            // A same-process reconnect may resume an exact prepared lease from
+            // the preceding socket epoch. V2PreparedAttemptCoordinator still
+            // requires the complete historical identity to match its live
+            // binding before it durably starts generation.
+            guard start.identity.providerID == session.identity.providerID,
+                start.identity.providerProcessGeneration
+                    == session.identity.processGeneration
+            else {
+                throw V2NegotiationError.identityMismatch
+            }
+            return
+        }
         guard let attemptIdentity = message.attemptIdentity,
             attemptIdentity.belongs(to: session.identity)
         else {
@@ -228,6 +260,8 @@ public struct V2NegotiationState: Sendable, Equatable {
             guard session.capabilities.startAuthorization else {
                 throw V2NegotiationError.capabilityNotNegotiated
             }
+        case .queryAttempt:
+            preconditionFailure("historical attempt query handled above")
         case .abort:
             guard session.capabilities.preparedLeases else {
                 throw V2NegotiationError.capabilityNotNegotiated
@@ -295,9 +329,30 @@ public struct V2NegotiationState: Sendable, Equatable {
                 throw V2NegotiationError.capabilityNotNegotiated
             }
         case .startAck(let value):
-            try validate(value.identity, session: session)
             guard session.capabilities.startAck else {
                 throw V2NegotiationError.capabilityNotNegotiated
+            }
+            if value.identity.sessionEpoch < session.identity.sessionEpoch {
+                guard session.capabilities.attemptReconciliation else {
+                    throw V2NegotiationError.capabilityNotNegotiated
+                }
+                guard value.identity.providerID == session.identity.providerID,
+                    value.identity.providerProcessGeneration
+                        == session.identity.processGeneration
+                else {
+                    throw V2NegotiationError.identityMismatch
+                }
+            } else {
+                try validate(value.identity, session: session)
+            }
+        case .attemptStatus(let value):
+            guard session.capabilities.attemptReconciliation else {
+                throw V2NegotiationError.capabilityNotNegotiated
+            }
+            guard value.identity.providerID == session.identity.providerID,
+                value.identity.sessionEpoch <= session.identity.sessionEpoch
+            else {
+                throw V2NegotiationError.identityMismatch
             }
         case .abortAck(let value):
             try validate(value.identity, session: session)

@@ -314,6 +314,12 @@ impl OutputVerifier {
         self.done_seen
     }
 
+    /// Returns the latest authenticated cumulative completion-token checkpoint.
+    #[must_use]
+    pub const fn cumulative_tokens(&self) -> u64 {
+        self.cumulative_tokens
+    }
+
     /// Returns the exact concatenated response hash so far.
     #[must_use]
     pub fn response_hash(&self) -> Digest {

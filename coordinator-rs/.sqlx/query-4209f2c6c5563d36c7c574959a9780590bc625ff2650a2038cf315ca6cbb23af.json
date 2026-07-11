@@ -9,7 +9,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rust_coord.fee_projection_checkpoints",
+            "table": "fee_projection_checkpoints",
             "name": "projection_name"
           }
         }
@@ -20,7 +20,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.fee_projection_checkpoints",
+            "table": "fee_projection_checkpoints",
             "name": "version"
           }
         }
@@ -37,7 +37,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "rust_coord.fee_allocations",
+            "table": "fee_allocations",
             "name": "allocation_id"
           }
         }
@@ -48,7 +48,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.fee_allocations",
+            "table": "fee_allocations",
             "name": "allocation_sequence"
           }
         }
@@ -59,7 +59,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rust_coord.fee_allocations",
+            "table": "fee_allocations",
             "name": "operation_key"
           }
         }
@@ -70,7 +70,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "rust_coord.fee_allocations",
+            "table": "fee_allocations",
             "name": "job_id"
           }
         }
@@ -81,7 +81,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rust_coord.fee_allocations",
+            "table": "fee_allocations",
             "name": "kind"
           }
         }
@@ -92,7 +92,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rust_coord.fee_allocations",
+            "table": "fee_allocations",
             "name": "source_account_id"
           }
         }
@@ -103,7 +103,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rust_coord.fee_allocations",
+            "table": "fee_allocations",
             "name": "beneficiary_account_id"
           }
         }
@@ -114,7 +114,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.fee_allocations",
+            "table": "fee_allocations",
             "name": "amount_micro_usd"
           }
         }
@@ -125,7 +125,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.fee_allocations",
+            "table": "fee_allocations",
             "name": "version"
           }
         }

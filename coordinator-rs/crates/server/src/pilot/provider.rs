@@ -111,6 +111,9 @@ pub struct ProviderServices {
     pub durable_io: DurableIoPool,
     pub activation: ProviderActivationGate,
     pub telemetry: PilotTelemetry,
+    pub ledger: Option<crate::ledger::LedgerService>,
+    pub durable_terminals: bool,
+    pub attempt_queries: Arc<super::reconciliation::AttemptQueryRegistry>,
 }
 
 enum ActivationAckEntry {
@@ -549,6 +552,15 @@ async fn serve_provider(
             epoch_store.allocate(provider_id)
         })
         .await??;
+    if let Some(ledger) = &services.ledger {
+        ledger
+            .ensure_provider_trusted(
+                Uuid::from_bytes(*provider_id.as_bytes()),
+                crate::ledger::Version::new(epoch.0)
+                    .map_err(crate::ledger::LedgerError::Invalid)?,
+            )
+            .await?;
+    }
     let reservation =
         services
             .registry
@@ -1048,14 +1060,62 @@ async fn handle_control(
         }
         ProviderControlMessage::StartAck(message) => {
             let identity = message.identity.clone();
-            if !require_transport_attempt(transport, &identity, services).await {
+            if !require_transport_recovered_attempt(transport, &identity, services).await {
                 return Ok(());
             }
-            if let Err(error) = services
+            match services
                 .requests
                 .route(&identity, InboundAttemptEvent::StartAck(message))
             {
-                handle_route_error(transport, error, services).await;
+                Ok(()) => {}
+                Err(RequestRouteError::Unknown | RequestRouteError::Stale)
+                    if services.durable_terminals =>
+                {
+                    let Some(ledger) = &services.ledger else {
+                        return Err(ProviderEventError::DurableTerminalUnavailable);
+                    };
+                    match ledger
+                        .record_recovered_start_ack(
+                            crate::ledger::AttemptId::new(Uuid::from_bytes(
+                                *identity.attempt_id.as_bytes(),
+                            ))
+                            .map_err(crate::ledger::LedgerError::Invalid)?,
+                            Uuid::from_bytes(*identity.provider_id.as_bytes()),
+                            Uuid::from_bytes(*identity.provider_process_generation.as_bytes()),
+                            crate::ledger::Version::new(identity.session_epoch.0)
+                                .map_err(crate::ledger::LedgerError::Invalid)?,
+                        )
+                        .await
+                    {
+                        Ok(()) | Err(crate::ledger::LedgerError::NotFound) => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                Err(error) => handle_route_error(transport, error, services).await,
+            }
+        }
+        ProviderControlMessage::AttemptStatus(status) => {
+            if status.identity.provider_id != transport.provider_id
+                || status.identity.session_epoch > transport.session_epoch
+            {
+                fence_provider(
+                    transport,
+                    "attempt status carried an invalid historical identity",
+                    &services.directory,
+                    &services.requests,
+                    &services.fleet,
+                )
+                .await;
+            } else if let Err(error) = services.attempt_queries.resolve(status) {
+                fence_provider(
+                    transport,
+                    "attempt status conflicted with its pending query",
+                    &services.directory,
+                    &services.requests,
+                    &services.fleet,
+                )
+                .await;
+                tracing::warn!(error = %error, "attempt reconciliation response rejected");
             }
         }
         ProviderControlMessage::StructuredError(message) => {
@@ -1085,10 +1145,16 @@ async fn handle_control(
                     &terminal.identity,
                     InboundAttemptEvent::Terminal(terminal.clone()),
                 ) {
-                    Ok(()) | Err(RequestRouteError::Stale) => {}
+                    Ok(()) => {}
                     Err(RequestRouteError::Unknown) => {
                         handle_unrouted_terminal(transport, &terminal, services).await?;
                     }
+                    Err(RequestRouteError::Stale | RequestRouteError::Closed(_))
+                        if services.durable_terminals =>
+                    {
+                        handle_unrouted_terminal(transport, &terminal, services).await?;
+                    }
+                    Err(RequestRouteError::Stale) => {}
                     Err(error) => handle_route_error(transport, error, services).await,
                 }
             } else {
@@ -1248,6 +1314,111 @@ async fn handle_unrouted_terminal(
         );
         return Ok(());
     }
+    if services.durable_terminals {
+        let Some(ledger) = &services.ledger else {
+            return Err(ProviderEventError::DurableTerminalUnavailable);
+        };
+        let lookup = ledger
+            .lookup_terminal(
+                crate::ledger::DurableAttemptIdentity {
+                    request_id: Uuid::from_bytes(*terminal.identity.request_id.as_bytes()),
+                    reservation_id: crate::ledger::ReservationId::new(Uuid::from_bytes(
+                        *terminal.identity.reservation_id.as_bytes(),
+                    ))
+                    .map_err(crate::ledger::LedgerError::Invalid)?,
+                    attempt_id: crate::ledger::AttemptId::new(Uuid::from_bytes(
+                        *terminal.identity.attempt_id.as_bytes(),
+                    ))
+                    .map_err(crate::ledger::LedgerError::Invalid)?,
+                    provider_id: Uuid::from_bytes(*terminal.identity.provider_id.as_bytes()),
+                    provider_process_generation_id: Uuid::from_bytes(
+                        *terminal.identity.provider_process_generation.as_bytes(),
+                    ),
+                    session_epoch: crate::ledger::Version::new(terminal.identity.session_epoch.0)
+                        .map_err(crate::ledger::LedgerError::Invalid)?,
+                    lease_id: Uuid::from_bytes(*terminal.identity.lease_id.as_bytes()),
+                },
+                darkbloom_coordinator_core::ids::Digest::new(*terminal.terminal_digest.as_bytes()),
+            )
+            .await?;
+        let disposition = match lookup {
+            crate::ledger::TerminalLookup::Known(disposition) => {
+                durable_terminal_disposition(disposition)
+            }
+            crate::ledger::TerminalLookup::Conflict { job_id } => {
+                let facts = recovery_terminal_facts(terminal)?;
+                ledger
+                    .record_terminal_conflict(
+                        job_id,
+                        facts.attempt_id,
+                        &facts,
+                        "terminal_digest_conflict",
+                        0,
+                    )
+                    .await?;
+                fence_provider(
+                    transport,
+                    "historical terminal conflicted with durable evidence",
+                    &services.directory,
+                    &services.requests,
+                    &services.fleet,
+                )
+                .await;
+                None
+            }
+            crate::ledger::TerminalLookup::Absent => {
+                if !terminal_epoch_is_trusted(ledger, terminal, transport, services).await? {
+                    return Ok(());
+                }
+                let facts = recovery_terminal_facts(terminal)?;
+                match ledger.record_terminal_for_recovery(&facts).await {
+                    Ok(crate::ledger::RecoveryTerminalRecordResult::Known(disposition)) => {
+                        durable_terminal_disposition(disposition)
+                    }
+                    Ok(crate::ledger::RecoveryTerminalRecordResult::Pending { .. }) => None,
+                    Ok(crate::ledger::RecoveryTerminalRecordResult::Conflict { .. }) => {
+                        fence_provider(
+                            transport,
+                            "historical terminal conflicted with durable evidence",
+                            &services.directory,
+                            &services.requests,
+                            &services.fleet,
+                        )
+                        .await;
+                        None
+                    }
+                    Err(crate::ledger::LedgerError::NotFound) => {
+                        if !is_historical
+                            && services
+                                .directory
+                                .record_unknown_terminal(transport, UNKNOWN_CURRENT_TERMINAL_LIMIT)
+                        {
+                            fence_provider(
+                                transport,
+                                "unknown current terminal flood",
+                                &services.directory,
+                                &services.requests,
+                                &services.fleet,
+                            )
+                            .await;
+                        }
+                        None
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        };
+        if let Some(disposition) = disposition {
+            session
+                .writer
+                .try_send_control_json(&CoordinatorControlMessage::TerminalAck(TerminalAck {
+                    identity: terminal.identity.clone(),
+                    terminal_digest: terminal.terminal_digest,
+                    disposition,
+                }))?;
+        }
+        return Ok(());
+    }
     let terminal_store = services.terminal_store.clone();
     let terminal_key = TerminalKey::from(&terminal.identity);
     let terminal_digest = terminal.terminal_digest;
@@ -1284,6 +1455,113 @@ async fn handle_unrouted_terminal(
             disposition: resolution.disposition(),
         }))?;
     Ok(())
+}
+
+fn durable_terminal_disposition(
+    disposition: crate::ledger::DurableTerminalDisposition,
+) -> Option<darkbloom_coordinator_protocol::v2::TerminalDisposition> {
+    use crate::ledger::DurableTerminalDisposition as Durable;
+    use darkbloom_coordinator_protocol::v2::TerminalDisposition as Wire;
+    match disposition {
+        Durable::Settled => Some(Wire::Settled),
+        Durable::Released => Some(Wire::Released),
+        Durable::SettledReviewed => Some(Wire::SettledReviewed),
+        Durable::ReleasedReviewed => Some(Wire::ReleasedReviewed),
+        Durable::Late => Some(Wire::Late),
+        Durable::Conflict => None,
+        Durable::ReviewPending => None,
+    }
+}
+
+async fn terminal_epoch_is_trusted(
+    ledger: &crate::ledger::LedgerService,
+    terminal: &ProviderTerminal,
+    transport: SessionIdentity,
+    services: &ProviderServices,
+) -> Result<bool, ProviderEventError> {
+    let provider_id = Uuid::from_bytes(*terminal.identity.provider_id.as_bytes());
+    let epoch = crate::ledger::Version::new(terminal.identity.session_epoch.0)
+        .map_err(crate::ledger::LedgerError::Invalid)?;
+    match ledger.ensure_provider_trusted(provider_id, epoch).await {
+        Ok(()) => Ok(true),
+        Err(crate::ledger::LedgerError::ProviderHardUntrusted) => {
+            fence_provider(
+                transport,
+                "historical terminal came from a hard-untrusted provider epoch",
+                &services.directory,
+                &services.requests,
+                &services.fleet,
+            )
+            .await;
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn recovery_terminal_facts(
+    terminal: &ProviderTerminal,
+) -> Result<crate::ledger::TerminalFacts, ProviderEventError> {
+    use darkbloom_coordinator_protocol::v2::{
+        StructuredErrorClass, TerminalOutcome as WireOutcome,
+    };
+
+    let mut terminal_id = [0_u8; 16];
+    terminal_id.copy_from_slice(&terminal.terminal_digest.as_bytes()[..16]);
+    terminal_id[6] = (terminal_id[6] & 0x0f) | 0x40;
+    terminal_id[8] = (terminal_id[8] & 0x3f) | 0x80;
+    let error_class = terminal.error_class.map(|class| {
+        Arc::<str>::from(match class {
+            StructuredErrorClass::InvalidRequest => "invalid_request",
+            StructuredErrorClass::Capacity => "capacity",
+            StructuredErrorClass::ModelNotReady => "model_not_ready",
+            StructuredErrorClass::Draining => "draining",
+            StructuredErrorClass::Cancelled => "cancelled",
+            StructuredErrorClass::Fault => "fault",
+            StructuredErrorClass::Security => "security",
+        })
+    });
+    Ok(crate::ledger::TerminalFacts {
+        terminal_id: crate::ledger::TerminalId::new(Uuid::from_bytes(terminal_id))
+            .map_err(crate::ledger::LedgerError::Invalid)?,
+        attempt_id: crate::ledger::AttemptId::new(Uuid::from_bytes(
+            *terminal.identity.attempt_id.as_bytes(),
+        ))
+        .map_err(crate::ledger::LedgerError::Invalid)?,
+        provider_id: Uuid::from_bytes(*terminal.identity.provider_id.as_bytes()),
+        provider_process_generation_id: Uuid::from_bytes(
+            *terminal.identity.provider_process_generation.as_bytes(),
+        ),
+        origin_session_epoch: crate::ledger::Version::new(terminal.identity.session_epoch.0)
+            .map_err(crate::ledger::LedgerError::Invalid)?,
+        terminal_digest: darkbloom_coordinator_core::ids::Digest::new(
+            *terminal.terminal_digest.as_bytes(),
+        ),
+        raw_terminal: serde_json::to_value(terminal)?,
+        outcome: match terminal.outcome {
+            WireOutcome::Completed => crate::ledger::TerminalOutcome::Completed,
+            WireOutcome::Cancelled => crate::ledger::TerminalOutcome::Cancelled,
+            WireOutcome::Error => crate::ledger::TerminalOutcome::Error,
+        },
+        error_class,
+        // Conflict evidence keeps the exact signed terminal in raw_terminal.
+        // Numeric columns are bounded to their schema representation so a
+        // malicious u64 counter can still be durably quarantined and reviewed.
+        prompt_tokens: terminal.prompt_tokens.min(i32::MAX as u64),
+        // The separate accepted checkpoint remains zero after a crash, so
+        // recovery cannot use provider-reported tokens to increase the charge.
+        completion_tokens: terminal.completion_tokens.min(i32::MAX as u64),
+        reasoning_tokens: terminal.reasoning_tokens.min(i64::MAX as u64),
+        response_digest: darkbloom_coordinator_core::ids::Digest::new(
+            *terminal.response_hash.as_bytes(),
+        ),
+        rolling_digest: darkbloom_coordinator_core::ids::Digest::new(
+            *terminal.rolling_digest.as_bytes(),
+        ),
+        final_generated_tokens: terminal.final_generated_tokens.min(i64::MAX as u64),
+        provider_signature: terminal.signature.as_bytes().to_vec(),
+        recovery_lease: None,
+    })
 }
 
 async fn retry_session_replay(
@@ -1497,6 +1775,29 @@ async fn require_transport_attempt(
     true
 }
 
+async fn require_transport_recovered_attempt(
+    transport: SessionIdentity,
+    attempt: &darkbloom_coordinator_protocol::v2::AttemptIdentity,
+    services: &ProviderServices,
+) -> bool {
+    if transport.matches_attempt(attempt)
+        || (transport.provider_id == attempt.provider_id
+            && transport.provider_process_generation == attempt.provider_process_generation
+            && transport.session_epoch.0 >= attempt.session_epoch.0)
+    {
+        return true;
+    }
+    fence_provider(
+        transport,
+        "provider recovery control carried a foreign process identity",
+        &services.directory,
+        &services.requests,
+        &services.fleet,
+    )
+    .await;
+    false
+}
+
 fn provider_session_matches(
     transport: SessionIdentity,
     identity: &darkbloom_coordinator_protocol::v2::ProviderSessionIdentity,
@@ -1568,6 +1869,8 @@ pub enum ProviderConnectionError {
     Replay(#[from] ReplayStoreError),
     #[error(transparent)]
     Event(#[from] ProviderEventError),
+    #[error(transparent)]
+    Ledger(#[from] crate::ledger::LedgerError),
 }
 
 #[derive(Debug, Error)]
@@ -1588,6 +1891,12 @@ pub enum ProviderEventError {
     Heartbeat(#[from] HeartbeatPublishError),
     #[error("provider durable event task failed to join: {0}")]
     TaskJoin(Arc<str>),
+    #[error("durable terminal service is unavailable")]
+    DurableTerminalUnavailable,
+    #[error(transparent)]
+    Ledger(#[from] crate::ledger::LedgerError),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
 }
 
 #[cfg(test)]

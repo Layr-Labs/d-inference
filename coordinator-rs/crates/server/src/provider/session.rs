@@ -477,6 +477,7 @@ mod tests {
             model_lifecycle_events: true,
             binary_payload_frames: true,
             coordinator_replay_fences: true,
+            attempt_reconciliation: true,
             ..ProtocolCapabilities::default()
         }
     }

@@ -72,6 +72,44 @@ struct V2CoordinatorNegotiationTests {
                         generation: generation,
                         sessionEpoch: 10
                     ))))
+        try state.validate(
+            .start(
+                V2Start(
+                    identity: attempt(
+                        providerID: providerID,
+                        generation: generation,
+                        sessionEpoch: 9
+                    ))))
+        #expect(throws: V2NegotiationError.identityMismatch) {
+            try state.validate(
+                .start(
+                    V2Start(
+                        identity: attempt(
+                            providerID: providerID,
+                            generation: id(0x23),
+                            sessionEpoch: 9
+                        ))))
+        }
+        try state.validate(
+            V2ProviderControlMessage.startAck(
+                V2StartAck(
+                    identity: attempt(
+                        providerID: providerID,
+                        generation: generation,
+                        sessionEpoch: 9
+                    )
+                )))
+        #expect(throws: V2NegotiationError.identityMismatch) {
+            try state.validate(
+                V2ProviderControlMessage.startAck(
+                    V2StartAck(
+                        identity: attempt(
+                            providerID: providerID,
+                            generation: id(0x23),
+                            sessionEpoch: 9
+                        )
+                    )))
+        }
     }
 
     @Test("minor ranges and every identity fence are enforced")
@@ -670,8 +708,8 @@ struct V2CoordinatorNegotiationTests {
         await client.shutdown()
     }
 
-    @Test("session lifecycle is lossless beyond the former bounded capacity")
-    func losslessSessionLifecycleStress() async throws {
+    @Test("session lifecycle overflow shuts the client down fail-closed")
+    func sessionLifecycleOverflowFailsClosed() async throws {
         let providerID = id(0x11)
         let client = CoordinatorClient(
             config: CoordinatorClientConfig(
@@ -686,48 +724,35 @@ struct V2CoordinatorNegotiationTests {
         )
         #expect(await client.installProtocolV2RuntimeHandler())
         let generation = await client.processGeneration()
-        let stream = await client.protocolV2Sessions()
-        let expectedCount = 80
-
-        for epoch in UInt64(1)...40 {
-            await client.handleIncomingText(
-                try ProviderProtocolCodec.encodeCoordinatorMessageString(
-                    .registerAck(
-                        V2RegisterAcknowledgement(
-                            providerID: providerID,
-                            providerProcessGeneration: generation,
-                            sessionEpoch: epoch,
-                            protocolCapabilities: .current,
-                            coordinatorReplayFencePublicKey: replayFenceTestPublicKey
-                        ))))
-            await client.resetV2NegotiationForReconnect()
-        }
-
-        let events = try await collectSessionEvents(
-            stream,
-            count: expectedCount,
-            timeout: .seconds(2)
+        await client.handleIncomingText(
+            try ProviderProtocolCodec.encodeCoordinatorMessageString(
+                .registerAck(
+                    V2RegisterAcknowledgement(
+                        providerID: providerID,
+                        providerProcessGeneration: generation,
+                        sessionEpoch: 1,
+                        protocolCapabilities: .current,
+                        coordinatorReplayFencePublicKey: replayFenceTestPublicKey
+                    ))))
+        let session = V2NegotiatedSession(
+            identity: ProviderSessionIdentity(
+                providerID: providerID,
+                processGeneration: generation,
+                sessionEpoch: 1
+            ),
+            capabilities: .current,
+            coordinatorReplayFencePublicKey:
+                replayFenceTestKey.publicKey.rawRepresentation
         )
-        #expect(events.count == expectedCount)
-        #expect(
-            events.first
-                == .negotiated(
-                    V2NegotiatedSession(
-                        identity: ProviderSessionIdentity(
-                            providerID: providerID,
-                            processGeneration: generation,
-                            sessionEpoch: 1
-                        ),
-                        capabilities: .current,
-                        coordinatorReplayFencePublicKey:
-                            replayFenceTestKey.publicKey.rawRepresentation
-                    )))
-        if case .ended(let final)? = events.last {
-            #expect(final.identity.sessionEpoch == 40)
-        } else {
-            Issue.record("final lossless lifecycle event was not session end")
+        var overflowed = false
+        for _ in 0...CoordinatorClient.v2SessionEventBufferCapacity {
+            if !(await client.publishV2SessionEvent(.negotiated(session))) {
+                overflowed = true
+                break
+            }
         }
-        await client.shutdown()
+        #expect(overflowed)
+        #expect(client.shutdownRequested)
     }
 
     @Test("command and binary overflow fail closed and stale queues clean on reconnect")

@@ -12,7 +12,7 @@ use futures_util::{Sink, SinkExt};
 use serde::Serialize;
 use thiserror::Error;
 use tokio::{
-    sync::{Notify, watch},
+    sync::{Notify, oneshot, watch},
     time::timeout,
 };
 use tokio_util::sync::CancellationToken;
@@ -200,6 +200,28 @@ pub struct DeliveryReceipt {
     wait_timeout: Duration,
 }
 
+/// Queue-admitted frame held behind an explicit durable release gate.
+///
+/// Dropping this value before `commit` guarantees the writer reports
+/// `Failed` without beginning a socket send.
+#[derive(Debug)]
+pub struct StagedDelivery {
+    release: Option<oneshot::Sender<()>>,
+    receipt: DeliveryReceipt,
+}
+
+impl StagedDelivery {
+    #[must_use]
+    pub fn commit(mut self) -> DeliveryReceipt {
+        let release = self
+            .release
+            .take()
+            .expect("staged delivery can only be committed once");
+        let _ = release.send(());
+        self.receipt
+    }
+}
+
 impl DeliveryReceipt {
     /// Returns the latest delivery state without waiting.
     #[must_use]
@@ -283,6 +305,7 @@ struct QueuedFrame {
     frame: OutboundFrame,
     bytes: usize,
     delivery: watch::Sender<DeliveryState>,
+    release: Option<oneshot::Receiver<()>>,
 }
 
 impl fmt::Debug for QueuedFrame {
@@ -352,6 +375,25 @@ impl WriterQueue {
         lane: WriterLane,
         frame: OutboundFrame,
     ) -> Result<DeliveryReceipt, WriterEnqueueError> {
+        let (receipt, _) = self.try_enqueue_inner(lane, frame, false)?;
+        Ok(receipt)
+    }
+
+    fn try_stage(
+        &self,
+        lane: WriterLane,
+        frame: OutboundFrame,
+    ) -> Result<StagedDelivery, WriterEnqueueError> {
+        let (receipt, release) = self.try_enqueue_inner(lane, frame, true)?;
+        Ok(StagedDelivery { release, receipt })
+    }
+
+    fn try_enqueue_inner(
+        &self,
+        lane: WriterLane,
+        frame: OutboundFrame,
+        staged: bool,
+    ) -> Result<(DeliveryReceipt, Option<oneshot::Sender<()>>), WriterEnqueueError> {
         let bytes = frame.byte_len();
         let mut state = self.lock_state();
         if let Some(reason) = &state.closed {
@@ -371,11 +413,18 @@ impl WriterQueue {
         }
 
         let (delivery, receipt) = watch::channel(DeliveryState::Queued);
+        let (release, release_wait) = if staged {
+            let (release, wait) = oneshot::channel();
+            (Some(release), Some(wait))
+        } else {
+            (None, None)
+        };
         let queued = QueuedFrame {
             lane,
             frame,
             bytes,
             delivery,
+            release: release_wait,
         };
         match lane {
             WriterLane::Control => {
@@ -392,10 +441,13 @@ impl WriterQueue {
         state.bump_revision();
         drop(state);
         self.notify.notify_one();
-        Ok(DeliveryReceipt {
-            state: receipt,
-            wait_timeout: self.config.receipt_timeout,
-        })
+        Ok((
+            DeliveryReceipt {
+                state: receipt,
+                wait_timeout: self.config.receipt_timeout,
+            },
+            release,
+        ))
     }
 
     fn has_capacity(&self, state: &QueueState, lane: WriterLane, bytes: usize) -> bool {
@@ -582,6 +634,17 @@ impl ProviderWriterHandle {
         self.try_send_control(frame)
     }
 
+    /// Reserves control-lane capacity without allowing the socket send to
+    /// begin. The caller durably records `queued` and then commits the stage.
+    pub fn try_stage_control_json<T: Serialize>(
+        &self,
+        value: &T,
+    ) -> Result<StagedDelivery, WriterEnqueueError> {
+        let frame = OutboundFrame::json(value)
+            .map_err(|error| WriterEnqueueError::Serialization(Arc::from(error.to_string())))?;
+        self.queue.try_stage(WriterLane::Control, frame)
+    }
+
     /// Enqueues ordinary request/data traffic without consuming control reserve.
     pub fn try_send_data(
         &self,
@@ -675,6 +738,20 @@ impl ProviderWriter {
             let lane = item.lane;
             let bytes = item.bytes;
             let delivery = item.delivery;
+            if let Some(release) = item.release {
+                let released = tokio::select! {
+                    biased;
+                    () = self.queue.cancellation.cancelled() => false,
+                    result = release => result.is_ok(),
+                };
+                if !released {
+                    let _ = delivery.send_replace(DeliveryState::Failed(Arc::from(
+                        "staged provider frame was not durably released",
+                    )));
+                    self.queue.complete(lane, bytes);
+                    continue;
+                }
+            }
             let send = sink.send(item.frame.into_message());
             tokio::pin!(send);
             let result = tokio::select! {
@@ -875,6 +952,62 @@ mod tests {
         receiver.recv().await.expect("wire message");
         assert_eq!(
             receipt.wait().await.expect("receipt"),
+            DeliveryState::OnWire
+        );
+        cancellation.cancel();
+        task.await.expect("join").expect("clean cancellation");
+    }
+
+    #[tokio::test]
+    async fn staged_frame_cannot_reach_the_wire_before_durable_release() {
+        let cancellation = CancellationToken::new();
+        let (writer, handle) = provider_writer(config(), cancellation.clone()).expect("writer");
+        let baseline = handle.headroom();
+        let staged = handle
+            .try_stage_control_json(&serde_json::json!({"type": "start"}))
+            .expect("stage control frame");
+        let (sender, mut receiver) = mpsc::channel(16);
+        let task = tokio::spawn(writer.run(channel_sink(sender)));
+        assert!(
+            timeout(Duration::from_millis(5), receiver.recv())
+                .await
+                .is_err(),
+            "staged Start reached the sink before its durable release"
+        );
+        drop(staged);
+        timeout(Duration::from_millis(20), async {
+            loop {
+                if handle.headroom().available_items == baseline.available_items {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("dropped staged frame releases queue capacity");
+        assert!(
+            timeout(Duration::from_millis(5), receiver.recv())
+                .await
+                .is_err(),
+            "dropped staged Start reached the sink"
+        );
+        cancellation.cancel();
+        task.await.expect("join").expect("clean cancellation");
+    }
+
+    #[tokio::test]
+    async fn durably_released_staged_frame_reports_on_wire() {
+        let cancellation = CancellationToken::new();
+        let (writer, handle) = provider_writer(config(), cancellation.clone()).expect("writer");
+        let staged = handle
+            .try_stage_control_json(&serde_json::json!({"type": "start"}))
+            .expect("stage control frame");
+        let (sender, mut receiver) = mpsc::channel(16);
+        let task = tokio::spawn(writer.run(channel_sink(sender)));
+        let receipt = staged.commit();
+        receiver.recv().await.expect("released wire message");
+        assert_eq!(
+            receipt.wait().await.expect("staged delivery receipt"),
             DeliveryState::OnWire
         );
         cancellation.cancel();

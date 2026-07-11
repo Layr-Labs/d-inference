@@ -26,6 +26,7 @@ public actor CoordinatorClient {
     static let outboundBufferCapacity = 256
     static let v2CommandBufferCapacity = 64
     static let v2BinaryBufferCapacity = 16
+    static let v2SessionEventBufferCapacity = 32
 
     internal let config: CoordinatorClientConfig
     internal let stats: AtomicProviderStats
@@ -136,7 +137,8 @@ public actor CoordinatorClient {
             AsyncStream<V2InboundCommand>.makeStream(
                 bufferingPolicy: .bufferingNewest(Self.v2CommandBufferCapacity))
         let (v2SessionEventStream, v2SessionEventContinuation) =
-            AsyncStream<V2SessionEvent>.makeStream(bufferingPolicy: .unbounded)
+            AsyncStream<V2SessionEvent>.makeStream(
+                bufferingPolicy: .bufferingOldest(Self.v2SessionEventBufferCapacity))
         let (v2BinaryStream, v2BinaryContinuation) =
             AsyncStream<V2InboundBinaryFrame>.makeStream(
                 bufferingPolicy: .bufferingNewest(Self.v2BinaryBufferCapacity))
@@ -284,6 +286,32 @@ public actor CoordinatorClient {
         shutdownFlag.request()
         runLoopTask?.cancel()
         resetV2NegotiationForReconnect()
+        closeCurrentConnection()
+        eventContinuation?.finish()
+        outboundRouter.finish()
+        v2SessionEventContinuation.finish()
+        v2CommandContinuation.finish()
+        v2BinaryContinuation.finish()
+    }
+
+    @discardableResult
+    internal func publishV2SessionEvent(_ event: V2SessionEvent) -> Bool {
+        switch v2SessionEventContinuation.yield(event) {
+        case .enqueued:
+            return true
+        case .dropped, .terminated:
+            logger.error("Protocol-v2 lifecycle lane overflowed; shutting down fail-closed")
+            terminateAfterV2LifecycleOverflow()
+            return false
+        @unknown default:
+            terminateAfterV2LifecycleOverflow()
+            return false
+        }
+    }
+
+    private func terminateAfterV2LifecycleOverflow() {
+        shutdownFlag.request()
+        runLoopTask?.cancel()
         closeCurrentConnection()
         eventContinuation?.finish()
         outboundRouter.finish()

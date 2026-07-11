@@ -22,7 +22,7 @@ func (s *PostgresStore) CheckRollbackSafe(ctx context.Context) error {
 		},
 		{
 			table:     "rust_coord.provider_terminals",
-			predicate: `status NOT IN ('settled','released','settled_reviewed','released_reviewed','duplicate','late','rejected') OR conflict OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
+			predicate: `status NOT IN ('settled','released','settled_reviewed','released_reviewed','duplicate','late','rejected') OR (conflict AND status NOT IN ('settled_reviewed','released_reviewed')) OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
 		},
 		{
 			table:     "rust_coord.financial_operations",
@@ -88,7 +88,7 @@ func (s *PostgresStore) CheckRollbackSafe(ctx context.Context) error {
 		return fmt.Errorf("store: inspect Rust schema history: %w", err)
 	}
 	if rustMinimum != 1 || rustCount != rustMaximum ||
-		(rustMaximum != 1 && rustMaximum != 2) {
+		(rustMaximum != 1 && rustMaximum != 2 && rustMaximum != 3) {
 		return fmt.Errorf(
 			"store: unsafe Go rollback: unsupported Rust schema history min=%d max=%d count=%d",
 			rustMinimum, rustMaximum, rustCount,
@@ -143,7 +143,7 @@ func (s *PostgresStore) CheckRollbackSafe(ctx context.Context) error {
 		return tx.Commit(ctx)
 	}
 	if err := validateRustSchemaV2Shape(ctx, tx); err != nil {
-		return fmt.Errorf("store: unsafe Go rollback: unknown Rust schema v2 shape: %w", err)
+		return fmt.Errorf("store: unsafe Go rollback: unknown Rust schema v%d shape: %w", rustMaximum, err)
 	}
 	for _, check := range checks {
 		var unresolved int64

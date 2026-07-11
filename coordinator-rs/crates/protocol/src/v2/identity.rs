@@ -241,6 +241,8 @@ pub struct ProtocolCapabilities {
     pub binary_payload_frames: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub coordinator_replay_fences: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub attempt_reconciliation: bool,
 }
 
 impl ProtocolCapabilities {
@@ -258,6 +260,7 @@ impl ProtocolCapabilities {
             && self.model_lifecycle_events
             && self.binary_payload_frames
             && self.coordinator_replay_fences
+            && self.attempt_reconciliation
     }
 
     /// Computes the common feature set over the overlap of both supported
@@ -295,6 +298,7 @@ impl ProtocolCapabilities {
             binary_payload_frames: self.binary_payload_frames && peer.binary_payload_frames,
             coordinator_replay_fences: self.coordinator_replay_fences
                 && peer.coordinator_replay_fences,
+            attempt_reconciliation: self.attempt_reconciliation && peer.attempt_reconciliation,
         })
     }
 }
@@ -348,6 +352,7 @@ mod tests {
         capabilities.model_lifecycle_events = true;
         capabilities.binary_payload_frames = true;
         capabilities.coordinator_replay_fences = true;
+        capabilities.attempt_reconciliation = true;
         assert!(capabilities.supports_v2());
     }
 

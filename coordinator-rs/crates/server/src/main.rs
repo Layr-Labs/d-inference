@@ -2,12 +2,16 @@ use darkbloom_coordinator_server::{
     app::{AppState, router},
     config::Config,
     database::Database,
+    operator::OperatorCommand,
     ownership::{CoordinatorOwnership, OwnershipError},
     pilot::{PilotHandle, PilotRuntime},
+    recovery::{RecoveryRuntime, RecoveryRuntimeConfig},
     runtime, shutdown,
     supervisor::SupervisorStatus,
 };
 use std::future::pending;
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -17,6 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
+    let command = OperatorCommand::from_env()?;
     let config = Config::from_env()?;
     let database = Database::connect(
         &config.database_url,
@@ -57,8 +62,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // Durable recovery belongs here when Rust-owned jobs are introduced. The
-    // ownership lock and epoch must already be active before recovery or serve.
+    if matches!(
+        command,
+        OperatorCommand::InvariantScan | OperatorCommand::ReviewResolve { .. }
+    ) {
+        let output = command.execute_one_shot(database.clone()).await;
+        let close_result = database.close(config.shutdown_grace).await;
+        let release_result = ownership.release().await;
+        let output = output?;
+        close_result?;
+        release_result?;
+        println!("{}", serde_json::to_string(&output)?);
+        return Ok(());
+    }
+    if command == OperatorCommand::Recovery {
+        let cancellation = CancellationToken::new();
+        let recovery =
+            RecoveryRuntime::new(database.clone(), None, RecoveryRuntimeConfig::default())?;
+        let run = recovery.run(cancellation.clone());
+        tokio::pin!(run);
+        let mut ownership_lost = false;
+        let recovery_ownership = ownership.status();
+        let result = tokio::select! {
+            result = &mut run => result,
+            () = shutdown::signal() => {
+                cancellation.cancel();
+                run.await
+            }
+            () = recovery_ownership.wait_until_unhealthy() => {
+                ownership_lost = true;
+                cancellation.cancel();
+                run.await
+            }
+        };
+        let close_result = database.close(config.shutdown_grace).await;
+        let release_result = ownership.release().await;
+        result?;
+        if ownership_lost {
+            return Err(OwnershipError::Lost.into());
+        }
+        close_result?;
+        release_result?;
+        return Ok(());
+    }
+
     let listener = match tokio::net::TcpListener::bind(config.bind_address).await {
         Ok(listener) => listener,
         Err(error) => {
@@ -74,7 +121,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(address = %config.bind_address, "Rust coordinator listening");
 
     let (pilot_task, pilot_handle) = if config.pilot.enabled {
-        let (pilot, handle) = match PilotRuntime::build(&config.pilot).await {
+        let (pilot, handle) = match PilotRuntime::build_durable(
+            &config.pilot,
+            database.clone(),
+            ownership.status(),
+        )
+        .await
+        {
             Ok(value) => value,
             Err(error) => {
                 if let Err(close_error) = database.close(config.shutdown_grace).await {
@@ -95,9 +148,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(handle) = pilot_handle.clone() {
         state = state.with_pilot(handle);
     }
+    let recovery_cancellation = CancellationToken::new();
+    let recovery_runtime = RecoveryRuntime::new(
+        database.clone(),
+        pilot_handle.clone(),
+        RecoveryRuntimeConfig::default(),
+    )?;
+    let (recovery_status_tx, recovery_status_rx) = watch::channel(false);
+    let recovery_task_cancellation = recovery_cancellation.clone();
+    let recovery_task = tokio::spawn(async move {
+        let result = recovery_runtime.run(recovery_task_cancellation).await;
+        let _ = recovery_status_tx.send(true);
+        result
+    });
     let shutdown_ownership = ownership.status();
     let shutdown_pilot = pilot_handle.clone();
     let monitor_pilot = pilot_handle.clone();
+    let shutdown_recovery = recovery_cancellation.clone();
     let serve_result = runtime::serve(
         listener,
         router(state),
@@ -110,7 +177,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 () = wait_for_pilot_exit(monitor_pilot) => {
                     tracing::error!("pilot supervisor ended; shutting down HTTP runtime");
                 }
+                () = wait_for_recovery_exit(recovery_status_rx) => {
+                    tracing::error!("durable recovery supervisor ended; shutting down HTTP runtime");
+                }
             }
+            shutdown_recovery.cancel();
             if let Some(pilot) = shutdown_pilot {
                 pilot.shutdown();
             }
@@ -121,6 +192,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(pilot) = &pilot_handle {
         pilot.shutdown();
     }
+    recovery_cancellation.cancel();
+    let recovery_result = match recovery_task.await {
+        Ok(result) => result.map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) }),
+        Err(error) => Err(Box::new(error) as Box<dyn std::error::Error>),
+    };
     let pilot_result = match pilot_task {
         Some(task) => match task.await {
             Ok(result) => result.map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) }),
@@ -149,6 +225,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Err(error);
     }
+    if let Err(error) = recovery_result {
+        if let Err(close_error) = close_result {
+            tracing::error!(error = %close_error, "database pool close failed after recovery error");
+        }
+        if let Err(release_error) = release_result {
+            tracing::error!(error = %release_error, "coordinator ownership release failed after recovery error");
+        }
+        return Err(error);
+    }
     if ownership_lost {
         if let Err(close_error) = close_result {
             tracing::error!(error = %close_error, "database pool close failed after ownership loss");
@@ -162,6 +247,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     release_result?;
     tracing::info!("Rust coordinator stopped");
     Ok(())
+}
+
+async fn wait_for_recovery_exit(mut status: watch::Receiver<bool>) {
+    loop {
+        if *status.borrow() {
+            return;
+        }
+        if status.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 async fn wait_for_pilot_exit(pilot: Option<PilotHandle>) {

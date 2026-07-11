@@ -141,6 +141,68 @@ private actor V2AttemptTestExecutor: PreparedInferenceExecutor {
 
 @Suite("Protocol v2 composed paid-attempt lifecycle")
 struct V2PreparedAttemptCoordinatorTests {
+    @Test("attempt reconciliation reports exact prepared, started, terminal, and tombstoned state")
+    func attemptReconciliationStates() async throws {
+        let fixture = try makeV2AttemptFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let executor = V2AttemptTestExecutor(durableRoot: fixture.directory)
+        let inference = try makeV2AttemptInference(identity: fixture.identity)
+
+        _ = try await fixture.coordinator.activate(
+            providerID: fixture.identity.providerID)
+        #expect(
+            try await fixture.coordinator.attemptStatus(identity: fixture.identity).state
+                == .unknown)
+        _ = try await fixture.coordinator.prepare(
+            inference: inference,
+            expiresAt: Date().addingTimeInterval(60),
+            using: executor
+        )
+        #expect(
+            try await fixture.coordinator.attemptStatus(identity: fixture.identity).state
+                == .prepared)
+        _ = try await fixture.coordinator.start(identity: fixture.identity)
+        #expect(
+            try await fixture.coordinator.attemptStatus(identity: fixture.identity).state
+                == .started)
+        _ = try await fixture.coordinator.cancel(identity: fixture.identity)
+        let frozen = try await fixture.coordinator.persistTerminal(
+            identity: fixture.identity,
+            draft: ProviderTerminalDraft(
+                outcome: .cancelled,
+                errorClass: .cancelled,
+                completionTokens: 0,
+                responseHash: .sha256(Data()),
+                finalGeneratedTokens: 0,
+                rollingDigest: .zero
+            )
+        )
+        let terminal = try await fixture.coordinator.attemptStatus(
+            identity: fixture.identity)
+        #expect(terminal.state == .terminal)
+        #expect(terminal.terminalDigest == frozen.protocolV2.terminalDigest)
+
+        let tombstoned = v2AttemptIdentity(attempt: 45, request: 44, lease: 47)
+        _ = try await fixture.coordinator.abort(
+            identity: tombstoned,
+            reason: "crash_before_start"
+        )
+        #expect(
+            try await fixture.coordinator.attemptStatus(identity: tombstoned).state
+                == .unknown)
+
+        let expired = v2AttemptIdentity(attempt: 48, request: 49, lease: 50)
+        _ = try await fixture.coordinator.prepare(
+            inference: makeV2AttemptInference(identity: expired),
+            expiresAt: Date().addingTimeInterval(60),
+            using: executor
+        )
+        await fixture.manager.expireLeases(at: Date().addingTimeInterval(120))
+        #expect(
+            try await fixture.coordinator.attemptStatus(identity: expired).state
+                == .unknown)
+    }
+
     @Test("funded start is durable before executor submission")
     func durableStartBeforeSubmit() async throws {
         let fixture = try makeV2AttemptFixture()

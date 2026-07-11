@@ -214,7 +214,7 @@ extension CoordinatorClient {
 
     internal func resetV2NegotiationForReconnect() {
         if let session = v2Negotiation.session {
-            v2SessionEventContinuation.yield(.ended(session))
+            _ = publishV2SessionEvent(.ended(session))
         }
         v2Negotiation.resetForReconnect()
     }

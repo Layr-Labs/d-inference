@@ -74,7 +74,7 @@ private func makeBuild(
     model: any LanguageModel,
     kvBackend: EngineV2KVBackendSelection,
     environment: [String: String] = [:],
-    pagedResourceSearchRoots: [URL]? = nil
+    pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
 ) throws -> EngineV2Factory.ProductionBuild {
     _ = LiveInferenceFixtures.ensureMetallibColocated()
     return try EngineV2Factory.makeProductionBuild(
@@ -86,7 +86,7 @@ private func makeBuild(
         kvBackend: kvBackend,
         maxContextLength: 2048,
         environment: environment,
-        pagedResourceSearchRoots: pagedResourceSearchRoots)
+        pagedPreflightOverride: pagedPreflightOverride)
 }
 
 // MARK: - Tests
@@ -160,23 +160,19 @@ struct EngineV2KVBackendGateTests {
         // headDim 80 is outside the paged kernel's {64,128,256,512}.
         let build = try makeBuild(model: try tinyGPTOSS(headDim: 80), kvBackend: .paged)
         #expect(build.kvBackendKind == .contiguous)
-        #expect(build.kvBackendFallbackReason?.hasPrefix("ineligible:") == true)
+        #expect(build.kvBackendFallbackReason?.hasPrefix("kernel_preflight:") == true)
         await build.engine.shutdown()
     }
 
-    @Test("missing packaged resource falls back to contiguous before any request")
-    func missingResourceFallsBack() async throws {
-        let empty = FileManager.default.temporaryDirectory
-            .appendingPathComponent("paged-gate-missing-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: empty) }
-
+    @Test("failed kernel preflight falls back to contiguous before slab construction")
+    func failedPreflightFallsBack() async throws {
+        struct PreflightFailure: Error {}
         let build = try makeBuild(
             model: try tinyGPTOSS(),
             kvBackend: .paged,
-            pagedResourceSearchRoots: [empty])
+            pagedPreflightOverride: { _ in throw PreflightFailure() })
         #expect(build.kvBackendKind == .contiguous)
-        #expect(build.kvBackendFallbackReason?.contains("runtime resource unavailable") == true)
+        #expect(build.kvBackendFallbackReason?.hasPrefix("kernel_preflight:") == true)
         await build.engine.shutdown()
     }
 }

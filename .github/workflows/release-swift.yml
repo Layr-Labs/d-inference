@@ -483,9 +483,10 @@ jobs:
             "$BIN_DIR" "$APP" "$RESOURCE_MANIFEST"
 
           # Package-real runtime gate. This invokes the staged executable,
-          # resolves the resource from the installed app layout, JIT-compiles
-          # the paged bulk-write kernel, and executes a tiny dispatch. The
-          # v0.7.6 artifact fails here because its bundle is absent.
+          # resolves the resource from the installed app layout, then
+          # JIT-compiles and executes GPT-OSS bulk-write, decode-part, and
+          # decode-merge variants. The v0.7.6 artifact fails here because
+          # its bundle is absent.
           DARKBLOOM_NO_UPDATE_CHECK=1 \
             "$APP/Contents/MacOS/$CLI_NAME" runtime-smoke
 
@@ -654,6 +655,9 @@ jobs:
           done < /tmp/darkbloom-swiftpm-resource-bundles.txt
           grep -qx \
             './Darkbloom.app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal' \
+            /tmp/darkbloom-bundle-files.txt
+          grep -qx \
+            './Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1' \
             /tmp/darkbloom-bundle-files.txt
 
           # Verify the FINAL archived layout, not merely the staging tree.

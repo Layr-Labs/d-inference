@@ -366,6 +366,157 @@ struct SelfUpdaterTests {
         return (tarball, release, install)
     }
 
+    private func debugBuildProduct(_ name: String) throws -> URL {
+        var packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        while !FileManager.default.fileExists(
+            atPath: packageRoot.appendingPathComponent("Package.swift").path)
+        {
+            let parent = packageRoot.deletingLastPathComponent()
+            guard parent.path != packageRoot.path else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            packageRoot = parent
+        }
+        let product = packageRoot.appendingPathComponent(".build/debug/\(name)")
+        guard FileManager.default.fileExists(atPath: product.path) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return product
+    }
+
+    private func makeSignedRuntimeFixture(
+        root: URL,
+        includeResource: Bool
+    ) throws -> (URL, ReleaseInfo, URL) {
+        let fm = FileManager.default
+        let stage = root.appendingPathComponent("signed-src", isDirectory: true)
+        let app = stage.appendingPathComponent("Darkbloom.app", isDirectory: true)
+        let appMacOS = app.appendingPathComponent("Contents/MacOS", isDirectory: true)
+        let resources = app.appendingPathComponent("Contents/Resources", isDirectory: true)
+        let bin = stage.appendingPathComponent("bin", isDirectory: true)
+        let install = root.appendingPathComponent("install", isDirectory: true)
+        try fm.createDirectory(at: appMacOS, withIntermediateDirectories: true)
+        try fm.createDirectory(at: resources, withIntermediateDirectories: true)
+        try fm.createDirectory(at: bin, withIntermediateDirectories: true)
+        try fm.createDirectory(at: install, withIntermediateDirectories: true)
+
+        let darkbloom = try debugBuildProduct("darkbloom")
+        let metallib = try debugBuildProduct("mlx.metallib")
+        try fm.copyItem(
+            at: darkbloom,
+            to: appMacOS.appendingPathComponent("darkbloom"))
+        try fm.copyItem(
+            at: darkbloom,
+            to: appMacOS.appendingPathComponent("darkbloom-enclave"))
+        try fm.copyItem(
+            at: metallib,
+            to: appMacOS.appendingPathComponent("mlx.metallib"))
+        let info: [String: Any] = [
+            "CFBundleIdentifier": "io.darkbloom.selfupdater-test",
+            "CFBundleExecutable": "darkbloom",
+            "CFBundlePackageType": "APPL",
+            "CFBundleVersion": "1",
+        ]
+        try PropertyListSerialization.data(
+            fromPropertyList: info,
+            format: .xml,
+            options: 0)
+            .write(to: app.appendingPathComponent("Contents/Info.plist"))
+        let capability = resources.appendingPathComponent(
+            "darkbloom-runtime-capabilities",
+            isDirectory: true)
+        try fm.createDirectory(at: capability, withIntermediateDirectories: true)
+        try Data("1\n".utf8).write(
+            to: capability.appendingPathComponent("paged-kernel-v1"))
+        if includeResource {
+            let builtBundle = try debugBuildProduct(
+                PackagedRuntimeSmoke.mlxLMCommonBundleName)
+            try fm.copyItem(
+                at: builtBundle,
+                to: resources.appendingPathComponent(
+                    PackagedRuntimeSmoke.mlxLMCommonBundleName,
+                    isDirectory: true))
+        }
+
+        try runTestProcess(
+            "/usr/bin/codesign",
+            ["--force", "--sign", "-", appMacOS.appendingPathComponent("mlx.metallib").path])
+        try runTestProcess(
+            "/usr/bin/codesign",
+            ["--force", "--sign", "-", appMacOS.appendingPathComponent("darkbloom-enclave").path])
+        try runTestProcess(
+            "/usr/bin/codesign",
+            ["--force", "--sign", "-", appMacOS.appendingPathComponent("darkbloom").path])
+        try runTestProcess(
+            "/usr/bin/codesign",
+            ["--force", "--sign", "-", app.path])
+        try runTestProcess(
+            "/usr/bin/codesign",
+            ["--verify", "--deep", "--strict", app.path])
+
+        try fm.copyItem(
+            at: appMacOS.appendingPathComponent("darkbloom"),
+            to: bin.appendingPathComponent("darkbloom"))
+        try fm.copyItem(
+            at: appMacOS.appendingPathComponent("darkbloom-enclave"),
+            to: bin.appendingPathComponent("darkbloom-enclave"))
+        try fm.copyItem(
+            at: appMacOS.appendingPathComponent("mlx.metallib"),
+            to: bin.appendingPathComponent("mlx.metallib"))
+        let tarball = root.appendingPathComponent(
+            includeResource ? "signed-valid.tar.gz" : "signed-missing.tar.gz")
+        try runTarCreate(sourceDir: stage, tarball: tarball)
+        let release = ReleaseInfo(
+            version: "test",
+            platform: "macos-arm64",
+            url: "file://unused",
+            bundleHash: sha256Hex(try Data(contentsOf: tarball)),
+            binaryHash: sha256Hex(
+                try Data(contentsOf: bin.appendingPathComponent("darkbloom"))),
+            metallibHash: sha256Hex(
+                try Data(contentsOf: bin.appendingPathComponent("mlx.metallib"))))
+        return (tarball, release, install)
+    }
+
+    @Test("signed extracted app runs real packaged verification before staging succeeds")
+    func signedAppRunsRealVerification() throws {
+        _ = LiveInferenceFixtures.ensureMetallibColocated()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "self-updater-signed-test-\(UUID().uuidString)",
+                isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let updater = SelfUpdater(coordinatorBaseURL: "https://api.example.test")
+
+        let (validTar, validRelease, install) = try makeSignedRuntimeFixture(
+            root: root.appendingPathComponent("valid", isDirectory: true),
+            includeResource: true)
+        guard case .success(let staged) = updater.stageSignedBundleForTesting(
+            from: validTar,
+            release: validRelease,
+            installDir: install)
+        else {
+            Issue.record("real signed/runtime-verified staging failed")
+            return
+        }
+        staged.discard()
+
+        let (missingTar, missingRelease, missingInstall) = try makeSignedRuntimeFixture(
+            root: root.appendingPathComponent("missing", isDirectory: true),
+            includeResource: false)
+        guard case .failure = updater.stageSignedBundleForTesting(
+            from: missingTar,
+            release: missingRelease,
+            installDir: missingInstall)
+        else {
+            Issue.record("paged-capable app without its resource unexpectedly staged")
+            return
+        }
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: missingInstall.appendingPathComponent("Darkbloom.app").path))
+    }
+
     @Test("staging extracts and verifies WITHOUT touching the live layout")
     func stagingDoesNotTouchLiveLayout() throws {
         let root = FileManager.default.temporaryDirectory
@@ -516,6 +667,28 @@ private func runCodesign(_ arguments: [String]) throws {
     process.waitUntilExit()
     guard process.terminationStatus == 0 else {
         throw CocoaError(.fileWriteUnknown)
+    }
+}
+
+private func runTestProcess(
+    _ executable: String,
+    _ arguments: [String]
+) throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = output
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        let message = String(
+            data: output.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        throw CocoaError(
+            .fileWriteUnknown,
+            userInfo: [NSLocalizedDescriptionKey: message])
     }
 }
 

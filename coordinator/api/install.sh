@@ -25,6 +25,227 @@ set -euo pipefail
 COORD_URL="${COORD_URL:-__DARKBLOOM_COORD_URL__}"
 INSTALL_DIR="$HOME/.darkbloom"
 BIN_DIR="$INSTALL_DIR/bin"
+EXPECTED_TEAM_ID="SLDQ2GJ6TL"
+INSTALL_TEST_MODE=0
+
+fail_install() {
+    echo "  ✗ $*" >&2
+    return 1
+}
+
+verify_file_hash() {
+    local file=$1
+    local expected=$2
+    local label=$3
+    [ -z "$expected" ] && return 0
+    local actual
+    actual=$(shasum -a 256 "$file" | cut -d' ' -f1)
+    [ "$actual" = "$expected" ] \
+        || fail_install "$label hash mismatch (expected $expected, got $actual)."
+}
+
+binary_contains_paged_code() {
+    local binary=$1
+    local count
+    count=$(strings "$binary" | grep -c 'engine_v2_kv_backend' || true)
+    [ "$count" -gt 0 ]
+}
+
+verify_staged_app() {
+    local app=$1
+    local executable="$app/Contents/MacOS/darkbloom"
+    local marker="$app/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1"
+
+    codesign --verify --deep --strict --verbose=2 "$app" >/dev/null 2>&1 \
+        || {
+            fail_install "Strict code-signature verification failed for staged Darkbloom.app."
+            return 1
+        }
+
+    if [ "$INSTALL_TEST_MODE" != "1" ]; then
+        local team
+        team=$(codesign -dvv "$executable" 2>&1 \
+            | awk -F= '/^TeamIdentifier=/{print $2; exit}')
+        [ "$team" = "$EXPECTED_TEAM_ID" ] || {
+            fail_install "Staged app signer mismatch (expected team $EXPECTED_TEAM_ID, got ${team:-none})."
+            return 1
+        }
+    fi
+
+    local code_has_paged=0
+    local marker_present=0
+    binary_contains_paged_code "$executable" && code_has_paged=1
+    [ -f "$marker" ] && marker_present=1
+    [ "$code_has_paged" -eq "$marker_present" ] || {
+        if [ "$code_has_paged" -eq 1 ]; then
+            fail_install "Paged-capable staged app is missing its signed capability marker."
+        else
+            fail_install "Staged app advertises paged capability without paged runtime code."
+        fi
+        return 1
+    }
+    [ "$marker_present" -eq 1 ] || return 0
+    [ "$(tr -d '[:space:]' < "$marker")" = "1" ] || {
+        fail_install "Paged runtime capability marker is invalid."
+        return 1
+    }
+
+    shopt -s nullglob
+    local paged_resources=(
+        "$app/Contents/Resources"/*.bundle/pagedattention.metal
+    )
+    local expected_resource="$app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
+    [ "${#paged_resources[@]}" -eq 1 ] \
+        && [ "${paged_resources[0]}" = "$expected_resource" ] \
+        && [ -s "$expected_resource" ] \
+        || {
+            fail_install "Paged-capable staged app requires exactly one sealed MLXLMCommon pagedattention.metal."
+            return 1
+        }
+
+    DARKBLOOM_NO_UPDATE_CHECK=1 "$executable" runtime-smoke >/dev/null \
+        || {
+            fail_install "Packaged paged-kernel runtime smoke failed."
+            return 1
+        }
+}
+
+commit_staged_app() {
+    local staged_app=$1
+    local install_dir=$2
+    local backup="$install_dir/.install-backup-$$-$RANDOM"
+    local destination="$install_dir/Darkbloom.app"
+    local had_previous=0
+    mkdir -p "$backup" "$install_dir/bin"
+
+    if [ -d "$destination" ]; then
+        mv "$destination" "$backup/Darkbloom.app" || {
+            rm -rf "$backup"
+            return 1
+        }
+        had_previous=1
+    fi
+    if ! mv "$staged_app" "$destination"; then
+        [ "$had_previous" -eq 1 ] \
+            && mv "$backup/Darkbloom.app" "$destination" 2>/dev/null || true
+        rm -rf "$backup"
+        return 1
+    fi
+
+    local app_bin="$destination/Contents/MacOS"
+    if ! ln -sfn "../Darkbloom.app/Contents/MacOS/darkbloom" "$install_dir/bin/darkbloom" \
+        || ! ln -sfn "../Darkbloom.app/Contents/MacOS/darkbloom-enclave" "$install_dir/bin/darkbloom-enclave" \
+        || ! ln -sfn "../Darkbloom.app/Contents/MacOS/mlx.metallib" "$install_dir/bin/mlx.metallib" \
+        || ! ln -sfn "darkbloom-enclave" "$install_dir/bin/eigeninference-enclave"
+    then
+        rm -rf "$destination"
+        [ "$had_previous" -eq 1 ] \
+            && mv "$backup/Darkbloom.app" "$destination" 2>/dev/null || true
+        rm -rf "$backup"
+        return 1
+    fi
+    chmod +x "$app_bin/darkbloom" "$app_bin/darkbloom-enclave"
+    rm -rf "$backup"
+}
+
+commit_staged_flat_bundle() {
+    local staged_bin=$1
+    local install_dir=$2
+    local backup="$install_dir/.install-backup-$$-$RANDOM"
+    local destination="$install_dir/bin"
+    mkdir -p "$backup"
+    if [ -d "$destination" ]; then
+        mv "$destination" "$backup/bin" || {
+            rm -rf "$backup"
+            return 1
+        }
+    fi
+    if ! mv "$staged_bin" "$destination"; then
+        [ -d "$backup/bin" ] && mv "$backup/bin" "$destination" 2>/dev/null || true
+        rm -rf "$backup"
+        return 1
+    fi
+    chmod +x "$destination/darkbloom" "$destination/darkbloom-enclave"
+    ln -sfn "darkbloom-enclave" "$destination/eigeninference-enclave"
+    rm -rf "$backup"
+}
+
+install_bundle_atomically() {
+    local archive=$1
+    local install_dir=$2
+    local binary_hash=${3:-}
+    local metallib_hash=${4:-}
+    local stage="$install_dir/.install-staging-$$-$RANDOM"
+    rm -rf "$stage"
+    mkdir -p "$stage"
+    if ! tar xzf "$archive" -C "$stage"; then
+        rm -rf "$stage"
+        return 1
+    fi
+
+    local flat_bin="$stage/bin"
+    [ -f "$flat_bin/darkbloom" ] \
+        && [ -f "$flat_bin/darkbloom-enclave" ] \
+        && [ -f "$flat_bin/mlx.metallib" ] \
+        || {
+            rm -rf "$stage"
+            fail_install "Release bundle is missing required flat verifier files."
+            return 1
+        }
+    verify_file_hash "$flat_bin/darkbloom" "$binary_hash" "Binary" || {
+        rm -rf "$stage"
+        return 1
+    }
+    verify_file_hash "$flat_bin/mlx.metallib" "$metallib_hash" "Metallib" || {
+        rm -rf "$stage"
+        return 1
+    }
+
+    if [ -d "$stage/Darkbloom.app" ]; then
+        verify_staged_app "$stage/Darkbloom.app" || {
+            rm -rf "$stage"
+            return 1
+        }
+        commit_staged_app "$stage/Darkbloom.app" "$install_dir" || {
+            rm -rf "$stage"
+            fail_install "Atomic app swap failed; previous install was restored."
+            return 1
+        }
+    else
+        codesign --verify --strict --verbose=2 "$flat_bin/darkbloom" >/dev/null 2>&1 \
+            || {
+                rm -rf "$stage"
+                fail_install "Strict signature verification failed for legacy flat artifact."
+                return 1
+            }
+        if [ "$INSTALL_TEST_MODE" != "1" ]; then
+            local flat_team
+            flat_team=$(codesign -dvv "$flat_bin/darkbloom" 2>&1 \
+                | awk -F= '/^TeamIdentifier=/{print $2; exit}')
+            [ "$flat_team" = "$EXPECTED_TEAM_ID" ] || {
+                rm -rf "$stage"
+                fail_install "Legacy flat artifact signer mismatch."
+                return 1
+            }
+        fi
+        commit_staged_flat_bundle "$flat_bin" "$install_dir" || {
+            rm -rf "$stage"
+            fail_install "Atomic flat-bundle swap failed; previous install was restored."
+            return 1
+        }
+    fi
+    rm -rf "$stage"
+}
+
+if [ "${1:-}" = "--install-bundle-test" ]; then
+    [ "$#" -eq 5 ] || {
+        echo "usage: $0 --install-bundle-test <archive> <install-dir> <binary-hash> <metallib-hash>" >&2
+        exit 64
+    }
+    INSTALL_TEST_MODE=1
+    install_bundle_atomically "$2" "$3" "$4" "$5"
+    exit $?
+fi
 
 # Detect interactive vs piped (curl | bash).
 if [ -t 0 ]; then
@@ -103,88 +324,14 @@ if [ "$ACTUAL_HASH" != "$BUNDLE_HASH" ]; then
 fi
 echo "  Bundle hash verified ✓"
 
-echo "  Installing into $INSTALL_DIR ..."
-# The bundle ships as Darkbloom.app/ (contains provisioning profile for
-# keychain-access-groups) with bin/ symlinks for backward compatibility.
-# Older flat bundles (bin/darkbloom directly) are also handled.
-tar xzf "$TARBALL" -C "$INSTALL_DIR"
-
-# New .app bundle layout: Darkbloom.app/Contents/MacOS/{darkbloom,darkbloom-enclave,mlx.metallib}
-if [ -d "$INSTALL_DIR/Darkbloom.app" ]; then
-    APP_BIN="$INSTALL_DIR/Darkbloom.app/Contents/MacOS"
-    chmod +x "$APP_BIN/darkbloom" "$APP_BIN/darkbloom-enclave" 2>/dev/null || true
-    # bin/ gets symlinks pointing into the .app bundle
-    mkdir -p "$BIN_DIR"
-    ln -sfn "$APP_BIN/darkbloom" "$BIN_DIR/darkbloom"
-    ln -sfn "$APP_BIN/darkbloom-enclave" "$BIN_DIR/darkbloom-enclave"
-    ln -sfn "$APP_BIN/mlx.metallib" "$BIN_DIR/mlx.metallib" 2>/dev/null || true
-    echo "  Installed .app bundle with provisioning profile"
-else
-    # Legacy flat layout fallback
-    [ -f "$INSTALL_DIR/darkbloom" ]               && mv -f "$INSTALL_DIR/darkbloom" "$BIN_DIR/darkbloom"
-    [ -f "$INSTALL_DIR/darkbloom-enclave" ]       && mv -f "$INSTALL_DIR/darkbloom-enclave" "$BIN_DIR/darkbloom-enclave"
-    if [ -f "$INSTALL_DIR/eigeninference-enclave" ] && [ ! -f "$BIN_DIR/darkbloom-enclave" ]; then
-        mv -f "$INSTALL_DIR/eigeninference-enclave" "$BIN_DIR/darkbloom-enclave"
-    fi
-    [ -f "$INSTALL_DIR/mlx.metallib" ]            && mv -f "$INSTALL_DIR/mlx.metallib" "$BIN_DIR/mlx.metallib"
-    chmod +x "$BIN_DIR/darkbloom" "$BIN_DIR/darkbloom-enclave" 2>/dev/null || true
-fi
-
-ln -sfn "$BIN_DIR/darkbloom-enclave" "$BIN_DIR/eigeninference-enclave" 2>/dev/null || true
-rm -f "$TARBALL"
-
-# Verify per-binary SHA matches what the coordinator registered. The bundle
-# hash above proves the tarball matches; this also proves codesign + notary
-# didn't quietly mutate the binary.
-if [ -n "${BINARY_HASH:-}" ]; then
-    ACTUAL_BIN=$(shasum -a 256 "$BIN_DIR/darkbloom" | cut -d' ' -f1)
-    if [ "$ACTUAL_BIN" != "$BINARY_HASH" ]; then
-        echo "  ✗ Binary hash mismatch (expected $BINARY_HASH, got $ACTUAL_BIN)."
-        rm -rf "$BIN_DIR"
-        exit 1
-    fi
-    echo "  Binary hash verified ✓"
-fi
-if [ -n "$METALLIB_HASH" ] && [ -f "$BIN_DIR/mlx.metallib" ]; then
-    ACTUAL_LIB=$(shasum -a 256 "$BIN_DIR/mlx.metallib" | cut -d' ' -f1)
-    if [ "$ACTUAL_LIB" != "$METALLIB_HASH" ]; then
-        echo "  ✗ mlx.metallib hash mismatch (expected $METALLIB_HASH, got $ACTUAL_LIB)."
-        rm -rf "$BIN_DIR"
-        exit 1
-    fi
-    echo "  Metallib hash verified ✓"
-fi
-
-# Verify the whole app when present so its sealed SwiftPM resources are
-# covered, not only the main executable.
-SIGNATURE_TARGET="$BIN_DIR/darkbloom"
-if [ -d "$INSTALL_DIR/Darkbloom.app" ]; then
-    SIGNATURE_TARGET="$INSTALL_DIR/Darkbloom.app"
-fi
-if codesign --verify --deep --strict --verbose "$SIGNATURE_TARGET" 2>/dev/null; then
-    TEAM=$(codesign -dvv "$BIN_DIR/darkbloom" 2>&1 | grep "TeamIdentifier=" | cut -d= -f2)
-    echo "  Code signature verified ✓ (Team: $TEAM)"
-else
-    echo "  ⚠ Code signature could not be verified — proceed with caution."
-fi
-
-# Execute the same installed-layout paged-kernel gate release CI ran. This
-# catches a missing/corrupt SwiftPM bundle before the provider service starts.
-shopt -s nullglob
-PAGED_RESOURCES=(
-    "$INSTALL_DIR/Darkbloom.app/Contents/Resources"/*.bundle/pagedattention.metal
-)
-if [ "${#PAGED_RESOURCES[@]}" -gt 1 ]; then
-    echo "  ✗ Multiple pagedattention.metal resources found — refusing ambiguous package."
+echo "  Staging and verifying the complete app before touching the live install ..."
+if ! install_bundle_atomically "$TARBALL" "$INSTALL_DIR" "$BINARY_HASH" "$METALLIB_HASH"; then
+    rm -f "$TARBALL"
+    echo "  Existing installation was left unchanged."
     exit 1
 fi
-if [ "${#PAGED_RESOURCES[@]}" -eq 1 ]; then
-    if ! DARKBLOOM_NO_UPDATE_CHECK=1 "$BIN_DIR/darkbloom" runtime-smoke >/dev/null; then
-        echo "  ✗ Packaged runtime smoke failed — refusing to start this provider build."
-        exit 1
-    fi
-    echo "  Runtime resource smoke verified ✓"
-fi
+rm -f "$TARBALL"
+echo "  Strict signature, runtime resources, and atomic swap verified ✓"
 
 # Make available in PATH. Try /usr/local/bin symlink, fall back to shell rc.
 if ln -sf "$BIN_DIR/darkbloom" /usr/local/bin/darkbloom 2>/dev/null; then

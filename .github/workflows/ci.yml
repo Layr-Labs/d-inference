@@ -68,6 +68,7 @@ jobs:
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/org.swift.swiftpm
             provider-swift/.build
+            libs/mlx-swift-lm/.build
           key: spm-v1-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
           restore-keys: |
             spm-v1-${{ runner.os }}-
@@ -89,6 +90,7 @@ jobs:
           # runner. Place it in both locations to cover `swift run`/built-binary
           # paths and the test runner. Fail loudly if the source isn't there.
           test -f "$metallib" || { echo "::error::mlx.metallib not found at $metallib"; exit 1; }
+          cp "$metallib" "$RUNNER_TEMP/mlx.metallib"
           cp "$metallib" .build/debug/mlx.metallib
           for bundle in .build/debug/*PackageTests.xctest; do
             macos="$bundle/Contents/MacOS"
@@ -102,6 +104,26 @@ jobs:
         # NOTE: do NOT pass --build-tests-relinking flags; the bundle is already
         # built above, so `swift test` reuses it (and our colocated metallib).
         run: swift test
+      - name: Build nested paged safety tests
+        working-directory: libs/mlx-swift-lm
+        timeout-minutes: 5
+        run: swift build --build-tests
+      - name: Run nested paged safety tests directly
+        working-directory: libs/mlx-swift-lm
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/mlx.metallib" .build/debug/mlx.metallib
+          for bundle in .build/debug/*PackageTests.xctest; do
+            macos="$bundle/Contents/MacOS"
+            if [ -d "$macos" ]; then
+              cp "$RUNNER_TEMP/mlx.metallib" "$macos/mlx.metallib"
+            fi
+          done
+          swift test --skip-build --filter CBv2PagedSafetyTests
+      - name: Run atomic installer artifact tests
+        timeout-minutes: 2
+        run: ./scripts/test-install-atomic.sh
 
   cache-swift:
     name: Swift Build + Cache

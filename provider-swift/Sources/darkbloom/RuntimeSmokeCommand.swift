@@ -9,8 +9,11 @@ struct RuntimeSmoke: ParsableCommand {
         abstract: "Internal: validate packaged runtime resources and kernels.",
         shouldDisplay: false)
 
+    @Argument(help: "Internal encoded kernel shapes.")
+    var shapes: [String] = []
+
     mutating func run() throws {
-        try PackagedRuntimeSmoke.runPagedKernel()
+        try PackagedRuntimeSmoke.runPagedKernel(arguments: shapes)
         print("paged-kernel-runtime-smoke: ok")
     }
 }

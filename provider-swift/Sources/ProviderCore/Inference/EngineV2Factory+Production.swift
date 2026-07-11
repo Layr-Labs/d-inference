@@ -152,8 +152,7 @@ extension EngineV2Factory {
         maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests,
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        pagedResourceSearchRoots: [URL]? = nil
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> any CBv2Engine {
         try makeProductionBuild(
             model: model,
@@ -163,8 +162,7 @@ extension EngineV2Factory {
             maxConcurrentRequests: maxConcurrentRequests,
             kvBackend: kvBackend,
             maxContextLength: maxContextLength,
-            environment: environment,
-            pagedResourceSearchRoots: pagedResourceSearchRoots
+            environment: environment
         ).engine
     }
 
@@ -203,7 +201,7 @@ extension EngineV2Factory {
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        pagedResourceSearchRoots: [URL]? = nil
+        pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
     ) throws -> ProductionBuild {
         guard kvBytesCapacity > 0 else {
             throw EngineV2ProductionError.noKVHeadroom
@@ -269,6 +267,19 @@ extension EngineV2Factory {
         }
 
         if resolvedKind == .paged {
+            do {
+                if let pagedPreflightOverride {
+                    try pagedPreflightOverride(layerKinds)
+                } else {
+                    try PagedKernelPreflight.run(layerKinds: layerKinds)
+                }
+            } catch {
+                resolvedKind = .contiguous
+                fallbackReason = "kernel_preflight: \(error)"
+            }
+        }
+
+        if resolvedKind == .paged {
             let maxBufferLength = MLX.GPU.deviceInfo().maxBufferSize
             let rate = PagedKVPhysicalCapacityPolicy.fp16BytesPerToken(
                 layerKinds: layerKinds) ?? 0
@@ -298,8 +309,7 @@ extension EngineV2Factory {
                             maxPrefillChunk: schedulerConfig.prefillChunkSize,
                             nominalMaxSequenceLength: max(
                                 1, maxContextLength ?? 8192),
-                            maxBufferLength: maxBufferLength,
-                            resourceSearchRoots: pagedResourceSearchRoots))
+                            maxBufferLength: maxBufferLength))
                     let pagedCaches = paged.makeLayerCaches()
                     let caches = newCaches { index, _ in pagedCaches[index] }
                     // Commit only the independently-capped PHYSICAL pool.

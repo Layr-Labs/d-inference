@@ -358,6 +358,21 @@ public struct SelfUpdater: Sendable {
     /// layout; cleaned up on the next staging pass if a crash orphans them.
     private static let stagingDirPrefix = ".update-staging-"
 
+    private struct ArtifactVerificationPolicy {
+        let codeSignaturePolicy: DarkbloomCodeSignature.Policy?
+        let verifyRuntimeCapabilities: Bool
+
+        static let production = ArtifactVerificationPolicy(
+            codeSignaturePolicy: .darkbloomProduction,
+            verifyRuntimeCapabilities: true)
+        static let unverifiedTestFixture = ArtifactVerificationPolicy(
+            codeSignaturePolicy: nil,
+            verifyRuntimeCapabilities: false)
+        static let signedTestFixture = ArtifactVerificationPolicy(
+            codeSignaturePolicy: .structuralForIsolatedTest,
+            verifyRuntimeCapabilities: true)
+    }
+
     /// A release bundle that has been extracted and fully verified (hashes and
     /// code signature) but NOT yet installed into the live layout.
     ///
@@ -410,7 +425,9 @@ public struct SelfUpdater: Sendable {
             from: downloadedFile,
             release: release,
             installDir: installDir,
-            verifyCodeSignatures: session.store.verifyCodeSignatures
+            verification: session.store.verifyCodeSignatures
+                ? .production
+                : .unverifiedTestFixture
         )
     }
 
@@ -441,15 +458,27 @@ public struct SelfUpdater: Sendable {
             from: downloadedFile,
             release: release,
             installDir: installDir,
-            verifyCodeSignatures: false
+            verification: .unverifiedTestFixture
         )
+    }
+
+    internal func stageSignedBundleForTesting(
+        from downloadedFile: URL,
+        release: ReleaseInfo,
+        installDir: URL
+    ) -> Result<StagedBundle, UpdateError> {
+        stageBundle(
+            from: downloadedFile,
+            release: release,
+            installDir: installDir,
+            verification: .signedTestFixture)
     }
 
     private func stageBundle(
         from downloadedFile: URL,
         release: ReleaseInfo,
         installDir: URL,
-        verifyCodeSignatures: Bool
+        verification: ArtifactVerificationPolicy
     ) -> Result<StagedBundle, UpdateError> {
         let fm = FileManager.default
         let stagingRoot = installDir.appendingPathComponent(
@@ -528,7 +557,7 @@ public struct SelfUpdater: Sendable {
                     )
                 }
             }
-            if verifyCodeSignatures {
+            if let signaturePolicy = verification.codeSignaturePolicy {
                 if hasAppBundle {
                     let appDarkbloom = extractedApp
                         .appendingPathComponent("Contents/MacOS/darkbloom")
@@ -548,27 +577,28 @@ public struct SelfUpdater: Sendable {
                             label: "Darkbloom.app mlx.metallib"
                         )
                     }
-                    try verifyCodeSignature(file: appDarkbloom, label: "darkbloom")
+                    try verifyCodeSignature(
+                        file: appDarkbloom,
+                        label: "darkbloom",
+                        policy: signaturePolicy
+                    )
                     try verifyCodeSignature(
                         file: extractedApp,
                         label: "Darkbloom.app",
-                        deep: true
+                        deep: true,
+                        policy: signaturePolicy
                     )
-                    let pagedResources = try stagedPagedResources(
-                        app: extractedApp,
-                        fileManager: fm)
-                    guard pagedResources.count <= 1 else {
-                        throw UpdateError.replaceFailed(
-                            "ambiguous package: multiple pagedattention.metal resources")
-                    }
-                    if pagedResources.count == 1 {
-                        try runProcess(
-                            appDarkbloom.path,
-                            arguments: ["runtime-smoke"],
-                            environment: ["DARKBLOOM_NO_UPDATE_CHECK": "1"])
+                    if verification.verifyRuntimeCapabilities {
+                        try verifyRuntimeCapabilities(
+                            app: extractedApp,
+                            executable: appDarkbloom,
+                            fileManager: fm)
                     }
                 } else {
-                    try verifyCodeSignature(file: flatDarkbloom, label: "darkbloom")
+                    try verifyCodeSignature(
+                        file: flatDarkbloom,
+                        label: "darkbloom",
+                        policy: signaturePolicy)
                 }
             }
 
@@ -913,7 +943,9 @@ public struct SelfUpdater: Sendable {
             from: downloadedFile,
             release: release,
             installDir: session.store.installRoot,
-            verifyCodeSignatures: session.store.verifyCodeSignatures
+            verification: session.store.verifyCodeSignatures
+                ? .production
+                : .unverifiedTestFixture
         ) {
         case .failure(let error):
             return .failure(error)
@@ -1048,33 +1080,72 @@ public struct SelfUpdater: Sendable {
         }
     }
 
-    private func stagedPagedResources(
+    private func verifyRuntimeCapabilities(
         app: URL,
+        executable: URL,
         fileManager: FileManager
-    ) throws -> [URL] {
+    ) throws {
+        let marker = app.appendingPathComponent(
+            PackagedRuntimeSmoke.pagedCapabilityRelativePath)
+        let markerPresent = fileManager.fileExists(atPath: marker.path)
+        let binary = try Data(contentsOf: executable, options: [.mappedIfSafe])
+        let pagedCodePresent = binary.range(
+            of: Data("engine_v2_kv_backend".utf8)) != nil
+
+        guard markerPresent == pagedCodePresent else {
+            throw UpdateError.replaceFailed(
+                pagedCodePresent
+                    ? "paged-capable artifact is missing its signed capability marker"
+                    : "artifact advertises paged capability without paged runtime code")
+        }
+        guard markerPresent else {
+            return // pre-paged v0.7.5/v0.7.7 compatibility
+        }
+        guard
+            let markerValue = try? String(contentsOf: marker, encoding: .utf8),
+            markerValue.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
+        else {
+            throw UpdateError.replaceFailed(
+                "paged runtime capability marker is invalid")
+        }
+
         let resourceRoot = app.appendingPathComponent(
             "Contents/Resources",
             isDirectory: true)
-        guard fileManager.fileExists(atPath: resourceRoot.path) else {
-            return []
-        }
-        return try fileManager.contentsOfDirectory(
+        let bundles = try fileManager.contentsOfDirectory(
             at: resourceRoot,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles])
-            .filter { $0.pathExtension == "bundle" }
+            .filter {
+                $0.lastPathComponent == PackagedRuntimeSmoke.mlxLMCommonBundleName
+            }
             .map { $0.appendingPathComponent("pagedattention.metal") }
             .filter { fileManager.isReadableFile(atPath: $0.path) }
+        guard bundles.count == 1 else {
+            throw UpdateError.replaceFailed(
+                "paged-capable artifact requires exactly one sealed "
+                    + "\(PackagedRuntimeSmoke.mlxLMCommonBundleName)/pagedattention.metal "
+                    + "(found \(bundles.count))")
+        }
+        try runProcess(
+            executable.path,
+            arguments: ["runtime-smoke"],
+            environment: ["DARKBLOOM_NO_UPDATE_CHECK": "1"])
     }
 
     private func verifyCodeSignature(
         file: URL,
         label: String,
-        deep: Bool = false
+        deep: Bool = false,
+        policy: DarkbloomCodeSignature.Policy = .darkbloomProduction
     ) throws {
         #if canImport(Darwin)
         do {
-            try DarkbloomCodeSignature.verify(file, deep: deep)
+            try DarkbloomCodeSignature.verify(
+                file,
+                deep: deep,
+                policy: policy
+            )
         } catch {
             throw UpdateError.replaceFailed("\(label) code signature verification failed: \(error.localizedDescription)")
         }
@@ -1105,6 +1176,7 @@ public struct SelfUpdater: Sendable {
             throw UpdateError.replaceFailed(message?.isEmpty == false ? message! : "\(executable) exited \(process.terminationStatus)")
         }
     }
+
 }
 
 // MARK: - Errors

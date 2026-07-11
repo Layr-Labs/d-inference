@@ -49,5 +49,9 @@ paged_resources=("$resource_root"/*.bundle/pagedattention.metal)
   exit 1
 }
 
+capability_dir="$resource_root/darkbloom-runtime-capabilities"
+mkdir -p "$capability_dir"
+printf '1\n' > "$capability_dir/paged-kernel-v1"
+
 LC_ALL=C sort -u "$manifest" -o "$manifest"
 echo "Staged ${#bundles[@]} SwiftPM resource bundle(s) in Contents/Resources"

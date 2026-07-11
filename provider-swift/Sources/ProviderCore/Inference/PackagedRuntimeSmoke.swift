@@ -6,19 +6,22 @@ import MLXLMCommon
 /// Runtime gate for the installed provider artifact. Release packaging runs
 /// this through the staged app executable before publication.
 public enum PackagedRuntimeSmoke {
-    public static func runPagedKernel() throws {
-        // Strictly inspect the installed app. Development search roots are
-        // intentionally excluded so CI cannot pass by finding the build
-        // directory after forgetting to package the bundle.
-        var roots = [Bundle.main.bundleURL]
-        roots.append(
-            Bundle.main.bundleURL.appendingPathComponent(
-                "Contents/Resources",
-                isDirectory: true))
-        if let resourceURL = Bundle.main.resourceURL {
-            roots.append(resourceURL)
-        }
-        try PagedAttentionKernel.runtimeSmoke(
-            searchRoots: roots)
+    public static let pagedCapabilityRelativePath =
+        "Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1"
+    public static let mlxLMCommonBundleName =
+        "mlx-swift-lm_MLXLMCommon.bundle"
+
+    public static func runPagedKernel(
+        shapes: [PagedAttentionKernelSmokeShape] =
+            PagedAttentionKernel.gptOSSRuntimeSmokeShapes
+    ) throws {
+        try PagedAttentionKernel.runtimeSmoke(shapes: shapes)
+    }
+
+    public static func runPagedKernel(arguments: [String]) throws {
+        let shapes = try arguments.isEmpty
+            ? PagedAttentionKernel.gptOSSRuntimeSmokeShapes
+            : arguments.map(PagedAttentionKernelSmokeShape.init(argumentValue:))
+        try runPagedKernel(shapes: shapes)
     }
 }

@@ -224,9 +224,9 @@ enum EngineV2SlotFactory {
         // parse the operator selection (per-model override wins; typo →
         // WARN + auto), then force contiguous for slots the paged cache
         // cannot serve — VLM (span masks unsupported: media would 4xx at
-        // submit) and kv_quant intent (fp16 pages only). Family
-        // resolution for `auto` + the fleet kill switch + eligibility
-        // fallback live in `makeProductionBuild`.
+        // submit) and kv_quant intent (fp16 pages only). `auto` resolves
+        // contiguous; the fleet kill switch, physical-capacity planning,
+        // and eligibility fallback live in `makeProductionBuild`.
         let parsedKVBackend = EngineV2KVBackendPolicy.parseSelection(
             global: kvBackendConfig, byModel: kvBackendConfigByModel, modelID: modelId)
         if let unrecognized = parsedKVBackend.unrecognized {

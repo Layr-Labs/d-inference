@@ -78,8 +78,8 @@ struct EngineV2KVBackendPolicyTests {
                 EngineV2KVBackendPolicy.killSwitchDisabled(environment: [key: negative]),
                 "\(negative) must kill")
         }
-        // Affirmatives and typos leave the default ON — a typo must not
-        // flip the fleet.
+        // Affirmatives and typos leave explicit paged eligibility enabled;
+        // auto still resolves contiguous independently.
         for benign in ["1", "true", "yes", "on", "junk", ""] {
             #expect(
                 !EngineV2KVBackendPolicy.killSwitchDisabled(environment: [key: benign]),
@@ -131,25 +131,30 @@ struct EngineV2KVBackendPolicyTests {
 
     // MARK: post-build serveable-KV guard (PR #531 Codex P1)
 
-    @Test("post-build guard: paged holds the floor against the pool, contiguous against headroom")
+    @Test("post-build guard: paged requires pool and whole-machine headroom")
     func postBuildServeableMatrix() {
         let gib: UInt64 = 1 << 30
-        // Paged: the committed pool answers the guard — the live headroom
-        // measurement must not even be consulted (the slab consumed it by
-        // design). measured=0 while the pool clears the floor.
+        // Paged requires BOTH a useful committed pool and safe residual
+        // whole-machine headroom.
         #expect(
             KVHeadroomProbe.postBuildServeable(
-                kvBackendKind: .paged, pagedPoolBytes: 8 * gib, measuredHeadroomBytes: 0))
-        // A paged pool under the floor is genuinely unserveable.
+                kvBackendKind: .paged,
+                pagedPoolBytes: 8 * gib,
+                measuredHeadroomBytes: 2 * gib))
+        #expect(
+            !KVHeadroomProbe.postBuildServeable(
+                kvBackendKind: .paged,
+                pagedPoolBytes: 8 * gib,
+                measuredHeadroomBytes: 0))
         #expect(
             !KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: .paged, pagedPoolBytes: gib / 2, measuredHeadroomBytes: 100 * gib))
-        // Exactly at the floor serves (>= comparator, mirrors loadIsServeable).
+        // Exactly at both floors serves (>= comparator).
         #expect(
             KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: .paged,
                 pagedPoolBytes: UnifiedMemoryCap.minimumLoadKVBytes,
-                measuredHeadroomBytes: 0))
+                measuredHeadroomBytes: UnifiedMemoryCap.minimumLoadKVBytes))
         // Contiguous: classic measured-headroom semantics, pool ignored.
         #expect(
             KVHeadroomProbe.postBuildServeable(

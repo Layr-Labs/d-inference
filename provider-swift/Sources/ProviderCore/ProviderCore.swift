@@ -138,10 +138,10 @@ public enum ProviderCore {
     // WebSocket message types, same BackendSlotCapacity wire shape;
     // max_concurrency now truthfully reports the engine cap (≤ 8, default
     // 4) instead of legacy's 24.
-    // 0.7.6 enables the production PagedAttention KV backend for GPT-OSS text
-    // slots. The backend eagerly commits its pool, reports physical pool truth
-    // through existing heartbeat fields, and maps terminal pool exhaustion to
-    // retryable capacity. Gemma-4 VLM and kv-quant slots stay contiguous; an
-    // operator can force contiguous with DARKBLOOM_CBV2_PAGED_KV=0.
+    // 0.7.6 introduced PagedAttention for GPT-OSS; the safety follow-up keeps
+    // "auto" contiguous and leaves paged explicit/experimental. Explicit pools
+    // eagerly commit only an independently capped physical plan, report pool
+    // truth through existing heartbeat fields, and map terminal exhaustion to
+    // retryable capacity. VLM and kv-quant slots stay contiguous.
     public static let version = "0.7.6"
 }

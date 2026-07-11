@@ -397,11 +397,12 @@ extension ProviderLoop {
             // whose full load-time footprint leaves no serveable KV unloads
             // and 503s instead of advertising a model whose every request
             // the shared KV gate rejects — the v0.7.2 black-hole shape.
-            // BACKEND-AWARE (PR #531 Codex P1): a PAGED slot commits its
-            // whole grant as the pool at construction, so measuring the
-            // residue would unload every paged slot by design — the floor
-            // is held against the committed pool instead
-            // (`KVHeadroomProbe.postBuildServeable`).
+            // BACKEND-AWARE: a PAGED slot commits its independently-capped
+            // physical pool at construction. The guard requires BOTH a
+            // serveable pool and residual whole-machine headroom; this
+            // catches unaccounted build/JIT residency while the conservative
+            // physical-capacity policy prevents the pool from consuming the
+            // full logical grant.
             MLX.Memory.clearCache()
             let postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: engineV2Bridge.kvBackendKind,

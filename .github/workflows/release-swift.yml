@@ -6,6 +6,7 @@ name: Release Provider Bundle (Swift)
 #   - bin/darkbloom          (provider CLI)
 #   - bin/darkbloom-enclave  (Secure Enclave attestation/sign helper)
 #   - bin/mlx.metallib       (compiled Metal kernels for the matching MLX)
+#   - Darkbloom.app/Contents/Resources/*.bundle (SwiftPM resources)
 #
 # install.sh creates a backward-compatibility symlink from the legacy
 # `eigeninference-enclave` name to `darkbloom-enclave` for existing
@@ -340,7 +341,7 @@ jobs:
       # blocking signed releases on CI hardware timing differences.
 
       # ----------------------------------------------------------------------
-      # Stage the bundle: bin/darkbloom, bin/darkbloom-enclave, bin/mlx.metallib
+      # Stage the app, every SwiftPM runtime bundle, and flat verifier files.
       # ----------------------------------------------------------------------
 
       - name: Embed provisioning profile
@@ -471,6 +472,23 @@ jobs:
             echo "Provisioning profile embedded in app bundle"
           fi
 
+          # Copy every product resource bundle into the canonical signed-app
+          # resource directory before signing/notarizing. PagedAttention uses
+          # a catchable locator instead of SwiftPM's fatal Bundle.module
+          # accessor and searches this sealed location. This includes
+          # mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal and future
+          # dependency resource bundles.
+          RESOURCE_MANIFEST=/tmp/darkbloom-swiftpm-resource-bundles.txt
+          scripts/stage-swiftpm-resource-bundles.sh \
+            "$BIN_DIR" "$APP" "$RESOURCE_MANIFEST"
+
+          # Package-real runtime gate. This invokes the staged executable,
+          # resolves the resource from the installed app layout, JIT-compiles
+          # the paged bulk-write kernel, and executes a tiny dispatch. The
+          # v0.7.6 artifact fails here because its bundle is absent.
+          DARKBLOOM_NO_UPDATE_CHECK=1 \
+            "$APP/Contents/MacOS/$CLI_NAME" runtime-smoke
+
           # Hardened-runtime sign each binary and resource, then the bundle.
           # mlx.metallib must be signed before the bundle or codesign rejects
           # it as an unsigned subcomponent.
@@ -494,7 +512,7 @@ jobs:
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP"
 
-          codesign --verify --verbose=2 "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
           codesign --verify --verbose=2 "$APP/Contents/MacOS/$CLI_NAME"
 
           # Persistent Secure Enclave key requires keychain-access-groups
@@ -629,6 +647,24 @@ jobs:
           grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/darkbloom-enclave' /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/mlx.metallib' /tmp/darkbloom-bundle-files.txt
+          while IFS= read -r bundle_name; do
+            grep -qx \
+              "./Darkbloom.app/Contents/Resources/${bundle_name}/" \
+              /tmp/darkbloom-bundle-files.txt
+          done < /tmp/darkbloom-swiftpm-resource-bundles.txt
+          grep -qx \
+            './Darkbloom.app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal' \
+            /tmp/darkbloom-bundle-files.txt
+
+          # Verify the FINAL archived layout, not merely the staging tree.
+          # This runs after signing, notarization, stapling, and tar rebuild,
+          # and before any upload or coordinator registration.
+          SMOKE_ROOT=/tmp/darkbloom-final-artifact-smoke
+          rm -rf "$SMOKE_ROOT"
+          mkdir -p "$SMOKE_ROOT"
+          tar xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$SMOKE_ROOT"
+          DARKBLOOM_NO_UPDATE_CHECK=1 \
+            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke
 
           BINARY_HASH=$(shasum -a 256 "${{ steps.bundle.outputs.stage }}/bin/$CLI_NAME" | cut -d' ' -f1)
           BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)

@@ -554,6 +554,19 @@ public struct SelfUpdater: Sendable {
                         label: "Darkbloom.app",
                         deep: true
                     )
+                    let pagedResources = try stagedPagedResources(
+                        app: extractedApp,
+                        fileManager: fm)
+                    guard pagedResources.count <= 1 else {
+                        throw UpdateError.replaceFailed(
+                            "ambiguous package: multiple pagedattention.metal resources")
+                    }
+                    if pagedResources.count == 1 {
+                        try runProcess(
+                            appDarkbloom.path,
+                            arguments: ["runtime-smoke"],
+                            environment: ["DARKBLOOM_NO_UPDATE_CHECK": "1"])
+                    }
                 } else {
                     try verifyCodeSignature(file: flatDarkbloom, label: "darkbloom")
                 }
@@ -1035,6 +1048,25 @@ public struct SelfUpdater: Sendable {
         }
     }
 
+    private func stagedPagedResources(
+        app: URL,
+        fileManager: FileManager
+    ) throws -> [URL] {
+        let resourceRoot = app.appendingPathComponent(
+            "Contents/Resources",
+            isDirectory: true)
+        guard fileManager.fileExists(atPath: resourceRoot.path) else {
+            return []
+        }
+        return try fileManager.contentsOfDirectory(
+            at: resourceRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles])
+            .filter { $0.pathExtension == "bundle" }
+            .map { $0.appendingPathComponent("pagedattention.metal") }
+            .filter { fileManager.isReadableFile(atPath: $0.path) }
+    }
+
     private func verifyCodeSignature(
         file: URL,
         label: String,
@@ -1049,10 +1081,19 @@ public struct SelfUpdater: Sendable {
         #endif
     }
 
-    private func runProcess(_ executable: String, arguments: [String]) throws {
+    private func runProcess(
+        _ executable: String,
+        arguments: [String],
+        environment: [String: String]? = nil
+    ) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        if let environment {
+            process.environment = ProcessInfo.processInfo.environment.merging(
+                environment,
+                uniquingKeysWith: { _, override in override })
+        }
         let stderr = Pipe()
         process.standardError = stderr
         try process.run()

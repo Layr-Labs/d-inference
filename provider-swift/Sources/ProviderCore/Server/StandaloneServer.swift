@@ -478,10 +478,11 @@ public actor StandaloneServer {
         var existing: [ExistingSlotGrant] = []
         for (modelId, slot) in slots
         where modelId != excludingModelId && !evictingModels.contains(modelId) {
-            // TOTAL claim (engine ceiling + prefix-cache budget, T-041):
-            // grants flowing back down through `updateKVBytesCapacity` are
-            // totals too — the bridge nets out its own cache budget.
-            let currentGrant = await slot.bridge.slotKVBytesClaim()
+            // Exact logical admission target + prefix carve for rollback.
+            // A paged slot's larger immutable physical claim is tracked by
+            // slotKVBytesClaim(), but must not replace a previously-shrunk
+            // logical restore point.
+            let currentGrant = await slot.bridge.resliceAdmissionBytesClaim()
             existing.append(
                 ExistingSlotGrant(
                     slot: EngineV2KVSizing.ResliceSlot(
@@ -1057,9 +1058,9 @@ public actor StandaloneServer {
             // memory beyond the weights. Re-measure so a box whose full
             // load-time footprint leaves no serveable KV tears down instead
             // of publishing a model whose every request the KV gate rejects.
-            // BACKEND-AWARE (PR #531 Codex P1): a PAGED slot commits its
-            // whole grant as the pool at construction — the floor is held
-            // against the committed pool, not the residue it consumed.
+            // BACKEND-AWARE: a PAGED slot commits only its conservative
+            // physical plan. Require both a useful pool and residual
+            // whole-machine headroom after the build.
             MLX.Memory.clearCache()
             let postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: bridge.kvBackendKind,

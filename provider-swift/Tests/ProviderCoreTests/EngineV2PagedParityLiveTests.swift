@@ -6,10 +6,10 @@
 // ProviderLoop/slot-factory string threading is covered by the gate and
 // policy suites). The repo's batching lesson (ragged-NaN, resource-count
 // leak): solo-vs-batched output invariance is THE oracle that catches
-// batch-composition corruption — so it gates the paged default before any
-// fleet exposure.
+// batch-composition corruption — so it gates explicit paged canaries before
+// any future default reconsideration.
 //
-//   1. `.auto` resolves PAGED for GPT-OSS through the real family gate
+//   1. explicit `.paged` resolves PAGED for GPT-OSS
 //      (build reports kvBackendKind == .paged; pool truth on the idle
 //      capacity snapshot);
 //   2. greedy SOLO baselines (3 mixed-length prompts) == the SAME requests
@@ -27,9 +27,9 @@
 // and the engine repo's BenchCBv2RealModel --engines v2-paged runs).
 //
 // Gated like every multi-GB suite: DARKBLOOM_LIVE_MLX_TESTS=1 + the
-// checkpoint in the local HF cache; skips cleanly otherwise. The pool is
-// sized explicitly (8 GiB) so the eager slab commit stays trivially inside
-// the test memory budget regardless of box state.
+// checkpoint in the local HF cache; skips cleanly otherwise. The logical
+// grant is 8 GiB; the physical pool is independently capped by production
+// policy.
 
 import Foundation
 import MLX
@@ -87,8 +87,7 @@ struct EngineV2PagedParityLiveTests {
     }
 
     /// Production engine + bridge over the loaded weights with an explicit
-    /// backend selection. 8 GiB pool: the eager slab commit stays trivially
-    /// inside the test budget, and admission comfortably fits the workload.
+    /// backend selection and an 8 GiB logical grant.
     private func makeBridge(
         _ live: LiveModel, kvBackend: EngineV2KVBackendSelection
     ) throws -> (bridge: EngineV2Bridge, kind: EngineV2KVBackendKind) {
@@ -145,17 +144,17 @@ struct EngineV2PagedParityLiveTests {
         ),
     ]
 
-    @Test("gpt-oss .auto serves PAGED; solo == concurrent, token-exact")
+    @Test("explicit paged GPT-OSS: solo == concurrent, token-exact")
     func pagedBatchCompositionInvariance() async throws {
         guard LiveInferenceFixtures.liveTestsEnabled else { return }
         let live = try await loadGptOss()
-        let (bridge, kind) = try makeBridge(live, kvBackend: .auto)
+        let (bridge, kind) = try makeBridge(live, kvBackend: .paged)
         defer { Task { await bridge.shutdown(); MLX.Memory.clearCache() } }
 
-        // 1. The real family gate served PAGED (the default-ON path), and
+        // 1. The explicit canary gate served PAGED, and
         // pool truth rides the IDLE capacity snapshot (heartbeats fire
         // before the first request).
-        #expect(kind == .paged, ".auto must resolve paged for gpt-oss")
+        #expect(kind == .paged, "explicit paged must resolve for eligible gpt-oss")
         #expect(await bridge.kvBackendKind == .paged)
         let snapshot = await bridge.engine.capacity()
         #expect(snapshot.kvBytesBackendCapacity > 0)
@@ -247,16 +246,15 @@ struct EngineV2PagedParityLiveTests {
     /// The LOOP-PATH drill this suite originally lost (PR #531 Codex P1):
     /// load gpt-oss through the REAL `ProviderLoop.ensureModelLoaded` —
     /// pre-load estimate gate, weights, re-slice, engine build with the
-    /// eager slab commit, and BOTH measured-headroom guards — and require
-    /// the slot to come up PAGED and serve. Before the backend-aware
-    /// post-bridge guard, this failed deterministically: the slab consumed
-    /// the entire KV budget and the 1 GiB floor unloaded every paged slot.
+    /// independently-capped eager slab commit, and BOTH measured-headroom
+    /// guards — and require the slot to come up PAGED and serve. Startup
+    /// preload and cold first-request loads share this exact construction
+    /// path.
     ///
-    /// The operator reserve (40 GiB) sizes the slab to ~43 GiB on a 128 GB
-    /// box so the drill is safe under concurrent dev load, while leaving
-    /// the pre-load free-memory gate (`availableBytes − reserve ≥ weights
-    /// estimate`) ~22 GiB of margin on a typically-loaded box — the test
-    /// skips (not fails) if the box is too busy, like every live suite.
+    /// The operator reserve keeps the live drill safe under concurrent
+    /// developer load. Physical capacity no longer scales with the remaining
+    /// logical grant; production policy caps it from useful context demand,
+    /// live headroom, machine size, and Metal buffer limits.
     @Test("loop path: paged gpt-oss survives the load guards and serves")
     func pagedSlotSurvivesLoadGuardsThroughProviderLoop() async throws {
         guard LiveInferenceFixtures.liveTestsEnabled else { return }
@@ -287,7 +285,10 @@ struct EngineV2PagedParityLiveTests {
             config: ProviderConfig(
                 provider: ProviderSettings(
                     name: "paged-loop-live", memoryReserveGB: reserveGiB),
-                backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1),
+                backend: BackendSettings(
+                    idleTimeoutMins: 0,
+                    maxModelSlots: 1,
+                    engineV2KVBackend: "paged"),
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
             )
         )

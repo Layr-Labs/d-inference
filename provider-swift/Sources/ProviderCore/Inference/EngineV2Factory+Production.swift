@@ -14,12 +14,11 @@
 //     `cbv2LayerKinds` / `newCacheV2` (Gemma 4 text, GPT-OSS — the two
 //     families the engine is correct-by-construction for; GPT-OSS's
 //     `newCacheV2` also primes its sinks-activation probe at build time),
-//   * a KV backend sized from the unified-memory KV budget — the PAGED
-//     `PagedKVBackend` for GPT-OSS slots by default (slabs physically
-//     committed at construction via `materializeSlabs`; see
-//     `EngineV2KVBackendPolicy` for the gate/kill-switch/fallback layers)
-//     or `CBv2ContiguousKVBackend` (admission ceiling only — nothing is
-//     preallocated),
+//   * a KV backend sized from the unified-memory KV budget —
+//     `CBv2ContiguousKVBackend` for production "auto" (admission ceiling
+//     only — nothing is preallocated), or the explicitly experimental
+//     `PagedKVBackend`, whose physical slabs are independently capped by
+//     `PagedKVPhysicalCapacityPolicy` before eager materialization,
 //   * `CBv2LayerCacheBank` over the model-built caches,
 //   * `CBv2DefaultSampler` + `CBv2TextDetokenizerFactory` (real incremental
 //     detokenization with stop-string holdback).
@@ -30,6 +29,7 @@
 // legacy engine to fall back to.
 
 import Foundation
+import MLX
 import MLXLLM
 import MLXLMCommon
 
@@ -152,7 +152,8 @@ extension EngineV2Factory {
         maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests,
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        pagedResourceSearchRoots: [URL]? = nil
     ) throws -> any CBv2Engine {
         try makeProductionBuild(
             model: model,
@@ -162,7 +163,8 @@ extension EngineV2Factory {
             maxConcurrentRequests: maxConcurrentRequests,
             kvBackend: kvBackend,
             maxContextLength: maxContextLength,
-            environment: environment
+            environment: environment,
+            pagedResourceSearchRoots: pagedResourceSearchRoots
         ).engine
     }
 
@@ -185,10 +187,8 @@ extension EngineV2Factory {
     ///
     /// KV-backend gate (see `EngineV2KVBackendPolicy` for the full layer
     /// order): the caller passes the operator selection with slot vetoes
-    /// (VLM, kv-quant) already applied; `.auto` resolves per family HERE —
-    /// next to the authoritative family switch so the two can never drift —
-    /// GPT-OSS → paged (default-ON, 2026-07-10 decision), Gemma-4 →
-    /// contiguous (KV arrives bf16; fp16 pages stay an explicit opt-in).
+    /// (VLM, kv-quant) already applied; `.auto` is always contiguous.
+    /// Paged remains an explicit experimental selection.
     /// The `DARKBLOOM_CBV2_PAGED_KV=0` fleet kill switch is enforced at
     /// THIS deepest layer so no call path (benchmarks included) bypasses
     /// it. Paged construction throwing `CBv2KVError` (kernel ineligibility,
@@ -202,7 +202,8 @@ extension EngineV2Factory {
         maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests,
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        pagedResourceSearchRoots: [URL]? = nil
     ) throws -> ProductionBuild {
         guard kvBytesCapacity > 0 else {
             throw EngineV2ProductionError.noKVHeadroom
@@ -225,18 +226,15 @@ extension EngineV2Factory {
         // sinks-activation probe inside it (one host readback per layer,
         // at build time — never on the step path).
         let layerKinds: [CBv2LayerKind]
-        let autoKind: EngineV2KVBackendKind
         let newCaches:
             ((Int, CBv2LayerKind) -> any CBv2AttendingLayerCache)
                 -> [any CBv2AttendingLayerCache]
         switch model {
         case let gemma as Gemma4TextModel:
             layerKinds = gemma.cbv2LayerKinds
-            autoKind = .contiguous
             newCaches = { make in gemma.newCacheV2(makeLayerCache: make) }
         case let gptoss as GPTOSSModel:
             layerKinds = gptoss.cbv2LayerKinds
-            autoKind = .paged
             newCaches = { make in gptoss.newCacheV2(makeLayerCache: make) }
         default:
             throw EngineV2ProductionError.unsupportedModel(
@@ -247,7 +245,7 @@ extension EngineV2Factory {
         switch kvBackend {
         case .contiguous: resolvedKind = .contiguous
         case .paged: resolvedKind = .paged
-        case .auto: resolvedKind = autoKind
+        case .auto: resolvedKind = .contiguous
         }
         var fallbackReason: String?
         if resolvedKind == .paged,
@@ -271,42 +269,61 @@ extension EngineV2Factory {
         }
 
         if resolvedKind == .paged {
-            do {
-                let paged = try PagedKVBackend(
-                    layerKinds: layerKinds,
-                    config: PagedKVPoolConfig(
-                        capacityBytes: cappedCapacity,
-                        // LOCKSTEP: a windowed-layer update larger than the
-                        // ring's provision traps the process
-                        // (PagedSequenceKV precondition) — size the pool to
-                        // the scheduler's REAL chunk, never a parallel
-                        // constant.
-                        maxPrefillChunk: schedulerConfig.prefillChunkSize,
-                        nominalMaxSequenceLength: max(1, maxContextLength ?? 8192)))
-                let pagedCaches = paged.makeLayerCaches()
-                let caches = newCaches { index, _ in pagedCaches[index] }
-                // Commit the slabs NOW (fail fast + measure honestly): the
-                // post-load headroom guards must see the pool's true
-                // residency — first traffic must never discover the
-                // allocation (that is the v0.7.2 "pinned black hole" shape).
-                paged.pool.materializeSlabs()
-                return ProductionBuild(
-                    engine: makeEngineV2(
-                        model: model, tokenizer: tokenizer, layerKinds: layerKinds,
-                        backend: paged, caches: caches,
-                        schedulerConfig: schedulerConfig, prefixCache: prefixCache),
-                    kvBackendKind: .paged,
-                    kvBackendFallbackReason: nil)
-            } catch let error as CBv2KVError {
-                // Paged ineligibility/capacity is a supported degradation:
-                // fall back to the contiguous backend (INFO telemetry at the
-                // bridge — never the engine_v2_refusal path).
-                switch error {
-                case .backendIneligible(let reason):
-                    fallbackReason = "ineligible: \(reason)"
-                case .capacityExhausted(let needed, let available):
-                    fallbackReason =
-                        "pool_construction_capacity: needed \(needed), available \(available)"
+            let maxBufferLength = MLX.GPU.deviceInfo().maxBufferSize
+            let rate = PagedKVPhysicalCapacityPolicy.fp16BytesPerToken(
+                layerKinds: layerKinds) ?? 0
+            let decision = PagedKVPhysicalCapacityPolicy.decide(
+                logicalGrantBytes: cappedCapacity,
+                fp16BytesPerToken: rate,
+                maxContextLength: maxContextLength,
+                maxConcurrentRequests: schedulerConfig.maxConcurrentRequests,
+                inputs: .init(
+                    physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory,
+                    liveKVHeadroomBytes: KVHeadroomProbe.measuredLiveKVHeadroomBytes,
+                    maxBufferLength: maxBufferLength))
+            switch decision {
+            case .contiguous(let reason):
+                fallbackReason = reason
+            case .paged(let plan):
+                do {
+                    let paged = try PagedKVBackend(
+                        layerKinds: layerKinds,
+                        config: PagedKVPoolConfig(
+                            capacityBytes: plan.capacityBytes,
+                            // LOCKSTEP: a windowed-layer update larger than the
+                            // ring's provision traps the process
+                            // (PagedSequenceKV precondition) — size the pool to
+                            // the scheduler's REAL chunk, never a parallel
+                            // constant.
+                            maxPrefillChunk: schedulerConfig.prefillChunkSize,
+                            nominalMaxSequenceLength: max(
+                                1, maxContextLength ?? 8192),
+                            maxBufferLength: maxBufferLength,
+                            resourceSearchRoots: pagedResourceSearchRoots))
+                    let pagedCaches = paged.makeLayerCaches()
+                    let caches = newCaches { index, _ in pagedCaches[index] }
+                    // Commit only the independently-capped PHYSICAL pool.
+                    // Resource and size eligibility has already thrown
+                    // catchably; first traffic cannot discover either.
+                    paged.pool.materializeSlabs()
+                    return ProductionBuild(
+                        engine: makeEngineV2(
+                            model: model, tokenizer: tokenizer, layerKinds: layerKinds,
+                            backend: paged, caches: caches,
+                            schedulerConfig: schedulerConfig, prefixCache: prefixCache),
+                        kvBackendKind: .paged,
+                        kvBackendFallbackReason: nil)
+                } catch let error as CBv2KVError {
+                    // Paged ineligibility/capacity is a supported degradation:
+                    // fall back to the contiguous backend (INFO telemetry at the
+                    // bridge — never the engine_v2_refusal path).
+                    switch error {
+                    case .backendIneligible(let reason):
+                        fallbackReason = "ineligible: \(reason)"
+                    case .capacityExhausted(let needed, let available):
+                        fallbackReason =
+                            "pool_construction_capacity: needed \(needed), available \(available)"
+                    }
                 }
             }
         }

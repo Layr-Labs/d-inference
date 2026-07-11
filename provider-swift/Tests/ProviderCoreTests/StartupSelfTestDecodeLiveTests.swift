@@ -46,7 +46,8 @@ struct StartupSelfTestDecodeLiveTests {
         try await LiveInferenceFixtures.loadBridge(
             modelID: Self.modelID,
             maxConcurrentRequests: 4,
-            memoryBudgetBytes: 24 * 1024 * 1024 * 1024
+            memoryBudgetBytes: 24 * 1024 * 1024 * 1024,
+            kvBackendConfig: "paged"
         )
     }
 
@@ -105,6 +106,7 @@ struct StartupSelfTestDecodeLiveTests {
             return
         }
         let bridge = loaded.bridge
+        #expect(await bridge.kvBackendKind == .paged)
         defer {
             Task {
                 await bridge.shutdown()

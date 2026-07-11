@@ -101,8 +101,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// `engineV2MaxConcurrent`.
     public var engineV2MaxConcurrentByModel: [String: UInt64]
     /// CBv2 KV-backend selection (`engine_v2_kv_backend` under
-    /// `[backend]`): "auto" (default — paged for GPT-OSS text slots,
-    /// contiguous otherwise), "paged", or "contiguous". VLM slots and
+    /// `[backend]`): "auto" (default — contiguous for every current and
+    /// future model), experimental "paged", or "contiguous". VLM slots and
     /// `kv_quant = true` always force contiguous; kernel-ineligible models
     /// fall back to contiguous with an INFO telemetry event. Fleet kill
     /// switch: `DARKBLOOM_CBV2_PAGED_KV=0`. See `EngineV2KVBackendPolicy`.

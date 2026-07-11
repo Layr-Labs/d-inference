@@ -92,9 +92,10 @@ public actor EngineV2Runtime {
     public func capacitySummary(fleetKV: FleetKVContext? = nil) async -> CapacitySummary {
         consultCount += 1
         guard !bridges.isEmpty else { return .empty }
-        // Snapshot every bridge's current grant + prefix-cache budget
-        // first: bridge i's clamp subtracts the OTHER bridges' figures, so
-        // all must be read before any slot is built.
+        // Snapshot every bridge's current admission grant, physical total
+        // claim, and prefix-cache budget first: bridge i's clamp subtracts
+        // the OTHER bridges' physical claims, so all must be read before
+        // any slot is built.
         //
         // Prefix-cache accounting (T-041): a RAM-tier bridge's engine grant is
         // reduced by its cache budget, but the cache's bytes
@@ -104,10 +105,12 @@ public actor EngineV2Runtime {
         // reduction as fleet reality changes, and the coordinator is never
         // told about bytes any prefix cache will consume.
         var grants: [String: Int] = [:]
+        var totalClaims: [String: Int] = [:]
         var prefixBudgets: [String: Int] = [:]
         if fleetKV != nil {
             for (modelId, bridge) in bridges {
                 grants[modelId] = await bridge.engineKVBytesCapacity()
+                totalClaims[modelId] = await bridge.slotKVBytesClaim()
                 prefixBudgets[modelId] = bridge.prefixCacheBudgetBytes
             }
         }
@@ -117,13 +120,9 @@ public actor EngineV2Runtime {
             guard let bridge = bridges[modelId] else { continue }
             var clamp: Int?
             if let fleetKV, let grant = grants[modelId] {
-                var otherClaims = grants.filter { $0.key != modelId }.map {
-                    // Overflow-safe like `slotKVBytesClaim()`: saturate
-                    // rather than trap on absurd inputs.
-                    let (sum, overflow) = $0.value
-                        .addingReportingOverflow(prefixBudgets[$0.key] ?? 0)
-                    return overflow ? Int.max : sum
-                }
+                var otherClaims = totalClaims
+                    .filter { $0.key != modelId }
+                    .map(\.value)
                 // Own cache budget: carved out of the fleet budget but not
                 // visible in the engine's own (already-reduced) grant, so it
                 // rides the subtraction list like a co-resident claim.

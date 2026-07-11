@@ -101,6 +101,12 @@ private final class ScriptedCBv2Engine: CBv2Engine, @unchecked Sendable {
         lock.withLock { capacitySnapshot }
     }
 
+    func updateKVBytesCapacity(_ bytes: Int) {
+        lock.withLock {
+            capacitySnapshot.kvBytesCapacity = max(0, bytes)
+        }
+    }
+
     func shutdown() async {
         lock.withLock { _shutdownCalls += 1 }
     }
@@ -1911,6 +1917,33 @@ struct EngineV2BridgePagedKVTests {
         #expect(
             await bridge.backendSlotCapacity(kvBytesBudgetClamp: 40_000)
                 .activeTokenBudgetMax == 40)
+    }
+
+    @Test("ledger-only reslice never claims physical reclaim or grows past the pool")
+    func pagedResliceKeepsPhysicalTruth() async {
+        let engine = ScriptedCBv2Engine(
+            script: .manual,
+            capacity: CBv2CapacitySnapshot(
+                activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
+                kvBytesCapacity: 60_000, kvBytesBackendCapacity: 60_000,
+                activeTokens: 0))
+        let bridge = makeBridge(
+            engine: engine,
+            kvBytesPerToken: 1_000,
+            kvBackendKind: .paged)
+
+        await bridge.updateKVBytesCapacity(20_000)
+        #expect(engine.capacity().kvBytesCapacity == 20_000)
+        #expect(engine.capacity().kvBytesBackendCapacity == 60_000)
+        #expect(await bridge.kvBackendPoolBytes() == 60_000)
+        #expect(await bridge.slotKVBytesClaim() == 60_000)
+        #expect(await bridge.resliceAdmissionBytesClaim() == 20_000)
+
+        // Growing the logical target cannot mint physical pages.
+        await bridge.updateKVBytesCapacity(100_000)
+        #expect(engine.capacity().kvBytesCapacity == 60_000)
+        #expect(engine.capacity().kvBytesBackendCapacity == 60_000)
+        #expect(await bridge.backendSlotCapacity().activeTokenBudgetMax == 60)
     }
 
     @Test("unknown backend capacity (0) does not bind")

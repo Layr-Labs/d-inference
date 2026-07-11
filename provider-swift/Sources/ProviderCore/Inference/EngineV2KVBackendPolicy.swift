@@ -22,11 +22,10 @@
 //      no call path can bypass it. Forwarded through the launchd plist
 //      (`LaunchAgent.passthroughEnvKeys`) so an operator kill survives
 //      install/restart — the same rationale as the SSD tier's switch.
-//   4. Family resolution for "auto", kept NEXT TO the authoritative family
-//      switch in `makeProductionEngine` so the two can never drift:
-//      GPT-OSS → paged (default-ON, 2026-07-10 decision); Gemma-4 →
-//      contiguous (its KV arrives bf16; fp16 pages are a numerics delta
-//      that stays opt-in via an explicit "paged").
+//   4. "auto" is production-safe and permanently resolves CONTIGUOUS.
+//      Paged is experimental and requires the explicit "paged" selection.
+//      This is intentionally not a family table: adding a future model
+//      family cannot silently turn a stale/default config into paged.
 //   5. Eligibility fallback: `PagedKVBackend` construction throwing
 //      `backendIneligible` falls back to contiguous — a paged-ineligible
 //      model must load and serve, never refuse.
@@ -41,7 +40,7 @@ public enum EngineV2KVBackendKind: String, Sendable, Equatable {
 
 /// Operator-facing backend selection (`engine_v2_kv_backend`).
 public enum EngineV2KVBackendSelection: String, Sendable, Equatable, CaseIterable {
-    /// Family default: paged for GPT-OSS text slots, contiguous otherwise.
+    /// Production default: contiguous for every current and future model.
     case auto
     /// Force paged where structurally possible (VLM/kv-quant slots and
     /// kernel-ineligible models still fall back to contiguous).
@@ -59,8 +58,7 @@ public enum EngineV2KVBackendPolicy {
     /// Parse the operator selection for `modelID` (per-model override
     /// wins over the global value). `unrecognized` carries a raw value
     /// that failed to parse so the caller can WARN once; the returned
-    /// selection is then `.auto` (the shipped default — still safe: every
-    /// auto path passes the VLM/kv-quant vetoes and eligibility fallback).
+    /// selection is then `.auto` (the shipped contiguous default).
     public static func parseSelection(
         global: String,
         byModel: [String: String],

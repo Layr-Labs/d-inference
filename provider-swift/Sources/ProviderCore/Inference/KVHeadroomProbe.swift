@@ -45,15 +45,15 @@ public enum KVHeadroomProbe {
     ///
     ///   * CONTIGUOUS: KV allocates lazily from free headroom, so measure
     ///     live headroom (the classic guard).
-    ///   * PAGED: the slot physically committed its serveable KV at
-    ///     construction (`materializeSlabs` — the pool consumed the very
-    ///     budget the measurement looks for), so measuring the residue
-    ///     would reject EVERY paged slot by design. Hold the SAME floor
-    ///     against the committed pool instead.
+    ///   * PAGED: require BOTH a serveable committed pool and the same
+    ///     minimum residual whole-machine headroom. Physical sizing uses
+    ///     only a conservative fraction of the pre-build live headroom, so
+    ///     the residual check catches unaccounted engine/JIT residency or
+    ///     concurrent OS pressure without rejecting every valid pool.
     ///
     /// Pure over its inputs (the live measurement is a defaulted
-    /// autoclosure, never evaluated on the paged arm) so the matrix is
-    /// unit-testable without touching MLX counters.
+    /// autoclosure) so the matrix is unit-testable without touching MLX
+    /// counters.
     public static func postBuildServeable(
         kvBackendKind: EngineV2KVBackendKind,
         pagedPoolBytes: UInt64,
@@ -63,6 +63,8 @@ public enum KVHeadroomProbe {
         switch kvBackendKind {
         case .paged:
             return pagedPoolBytes >= UnifiedMemoryCap.minimumLoadKVBytes
+                && UnifiedMemoryCap.loadIsServeable(
+                    measuredLiveKVHeadroomBytes: measuredHeadroomBytes())
         case .contiguous:
             return UnifiedMemoryCap.loadIsServeable(
                 measuredLiveKVHeadroomBytes: measuredHeadroomBytes())

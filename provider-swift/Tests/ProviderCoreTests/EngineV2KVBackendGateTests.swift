@@ -2,8 +2,8 @@
 //
 // KV-backend GATE tests over the REAL `EngineV2Factory.makeProductionBuild`
 // with tiny real-family models (JSON-decoded configs, random-init weights,
-// no downloads): family resolution for `auto` (GPT-OSS → paged, Gemma-4 →
-// contiguous), the fleet kill switch at the deepest layer, explicit
+// no downloads): production-safe `auto` (always contiguous), the fleet
+// kill switch at the deepest layer, explicit
 // selections, and the eligibility fallback (ineligible head dim → paged
 // selection degrades to contiguous, never a refusal).
 //
@@ -73,9 +73,11 @@ private let gateTestCapacity = 8 << 20  // 8 MiB pool — tiny but constructible
 private func makeBuild(
     model: any LanguageModel,
     kvBackend: EngineV2KVBackendSelection,
-    environment: [String: String] = [:]
+    environment: [String: String] = [:],
+    pagedResourceSearchRoots: [URL]? = nil
 ) throws -> EngineV2Factory.ProductionBuild {
-    try EngineV2Factory.makeProductionBuild(
+    _ = LiveInferenceFixtures.ensureMetallibColocated()
+    return try EngineV2Factory.makeProductionBuild(
         model: model,
         tokenizer: StubBridgeTokenizer(),
         kvBytesCapacity: gateTestCapacity,
@@ -83,23 +85,25 @@ private func makeBuild(
         maxConcurrentRequests: 2,
         kvBackend: kvBackend,
         maxContextLength: 2048,
-        environment: environment)
+        environment: environment,
+        pagedResourceSearchRoots: pagedResourceSearchRoots)
 }
 
 // MARK: - Tests
 
 @Suite("EngineV2 KV-backend gate (real tiny models)", .serialized)
 struct EngineV2KVBackendGateTests {
+    init() {
+        _ = LiveInferenceFixtures.ensureMetallibColocated()
+    }
 
-    @Test("auto resolves paged for GPT-OSS text slots")
-    func autoServesPagedForGPTOSS() async throws {
+    @Test("auto is contiguous for GPT-OSS and cannot drift with family defaults")
+    func autoServesContiguousForGPTOSS() async throws {
         let build = try makeBuild(model: try tinyGPTOSS(), kvBackend: .auto)
-        #expect(build.kvBackendKind == .paged)
+        #expect(build.kvBackendKind == .contiguous)
         #expect(build.kvBackendFallbackReason == nil)
-        // Pool truth surfaces through the engine's capacity snapshot.
         let snapshot = build.engine.capacity()
-        #expect(snapshot.kvBytesBackendCapacity > 0)
-        #expect(snapshot.kvBytesBackendCapacity <= gateTestCapacity)
+        #expect(snapshot.kvBytesBackendCapacity == gateTestCapacity)
         await build.engine.shutdown()
     }
 
@@ -119,6 +123,19 @@ struct EngineV2KVBackendGateTests {
         await build.engine.shutdown()
     }
 
+    @Test("explicit paged GPT-OSS preflights packaged resources and physical pool truth")
+    func explicitPagedGPTOSS() async throws {
+        try PagedAttentionKernel.validateRuntimeResources()
+        let build = try makeBuild(model: try tinyGPTOSS(), kvBackend: .paged)
+        #expect(build.kvBackendKind == .paged)
+        #expect(build.kvBackendFallbackReason == nil)
+        let snapshot = build.engine.capacity()
+        #expect(snapshot.kvBytesCapacity > 0)
+        #expect(snapshot.kvBytesCapacity == snapshot.kvBytesBackendCapacity)
+        #expect(snapshot.kvBytesCapacity < gateTestCapacity)
+        await build.engine.shutdown()
+    }
+
     @Test("explicit paged serves Gemma-4 TEXT (eligible shapes, opt-in)")
     func explicitPagedGemmaText() async throws {
         let build = try makeBuild(model: try tinyGemma4Text(), kvBackend: .paged)
@@ -127,11 +144,11 @@ struct EngineV2KVBackendGateTests {
         await build.engine.shutdown()
     }
 
-    @Test("fleet kill switch forces contiguous at the deepest layer")
+    @Test("fleet kill switch forces explicit paged to contiguous at the deepest layer")
     func killSwitchForcesContiguous() async throws {
         let build = try makeBuild(
             model: try tinyGPTOSS(),
-            kvBackend: .auto,
+            kvBackend: .paged,
             environment: [EngineV2KVBackendPolicy.killSwitchEnvKey: "0"])
         #expect(build.kvBackendKind == .contiguous)
         #expect(build.kvBackendFallbackReason == "kill_switch")
@@ -144,6 +161,22 @@ struct EngineV2KVBackendGateTests {
         let build = try makeBuild(model: try tinyGPTOSS(headDim: 80), kvBackend: .paged)
         #expect(build.kvBackendKind == .contiguous)
         #expect(build.kvBackendFallbackReason?.hasPrefix("ineligible:") == true)
+        await build.engine.shutdown()
+    }
+
+    @Test("missing packaged resource falls back to contiguous before any request")
+    func missingResourceFallsBack() async throws {
+        let empty = FileManager.default.temporaryDirectory
+            .appendingPathComponent("paged-gate-missing-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: empty) }
+
+        let build = try makeBuild(
+            model: try tinyGPTOSS(),
+            kvBackend: .paged,
+            pagedResourceSearchRoots: [empty])
+        #expect(build.kvBackendKind == .contiguous)
+        #expect(build.kvBackendFallbackReason?.contains("runtime resource unavailable") == true)
         await build.engine.shutdown()
     }
 }

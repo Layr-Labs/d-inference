@@ -64,13 +64,28 @@ extension EngineV2Bridge {
         subsystem: "com.darkbloom.provider", category: "prefix_cache")
     #endif
 
-    /// The slot's TOTAL KV byte claim: the engine's construction-fixed
-    /// admission ceiling PLUS the prefix-cache budget carved out of it.
+    /// The slot's TOTAL KV byte claim: for contiguous, the engine admission
+    /// ceiling; for paged, the immutable PHYSICAL backend capacity; then
+    /// PLUS the prefix-cache budget carved out of the slot grant.
     /// Fleet sizing (`makeEngineV2BridgeForSlot`) and the heartbeat clamp
     /// (`EngineV2Runtime.capacitySummary`) subtract THIS — not the bare
     /// engine capacity — for co-resident slots, so Σ(engine ceilings +
     /// cache budgets) never exceeds the unified-memory KV budget.
     public func slotKVBytesClaim() -> Int {
+        let snapshot = engine.capacity()
+        let engineClaim =
+            kvBackendKind == .paged && snapshot.kvBytesBackendCapacity > 0
+            ? snapshot.kvBytesBackendCapacity
+            : snapshot.kvBytesCapacity
+        let (sum, overflow) = engineClaim
+            .addingReportingOverflow(prefixCacheBudgetBytes)
+        return overflow ? Int.max : sum
+    }
+
+    /// Current logical admission target plus the fixed prefix carve. Re-slice
+    /// rollback uses this exact value; unlike `slotKVBytesClaim()`, it does
+    /// not replace a shrunk paged ledger with the larger immutable pool.
+    func resliceAdmissionBytesClaim() -> Int {
         let (sum, overflow) = engine.capacity().kvBytesCapacity
             .addingReportingOverflow(prefixCacheBudgetBytes)
         return overflow ? Int.max : sum

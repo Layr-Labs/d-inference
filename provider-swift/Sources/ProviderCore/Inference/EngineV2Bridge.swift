@@ -542,22 +542,22 @@ public actor EngineV2Bridge {
     /// (`resliceMeetsServiceabilityFloor(_:fixedCarveBytes:)`), so the
     /// `max(0, …)` clamp is defensive only.
     ///
-    /// PAGED slots (`kvBackendKind == .paged`): the resize moves the
-    /// ADMISSION ledger only — the physically preallocated page pool
-    /// neither shrinks nor grows (`updateBytesCapacity` is a no-op on a
-    /// construction-fixed pool). This is safe by design: a SHRINK tightens
-    /// admissions immediately while the slabs stay resident, and whether a
-    /// newcomer physically fits is arbitrated by the post-load headroom
-    /// guards against TRUE residency (slabs are materialized eagerly at
-    /// construction) — an over-tight box fails the newcomer's load and
-    /// restores, it never jetsams. A GROW past pool truth is bound back
-    /// down in the heartbeat (`backendSlotCapacity` min-binds the
-    /// advertised capacity to `kvBytesBackendCapacity`), so the
-    /// coordinator never routes tokens the pool cannot place. Reclaiming
-    /// or adding physical pool bytes requires an engine rebuild (unload →
-    /// load), or the future pool-resize follow-up.
+    /// PAGED slots (`kvBackendKind == .paged`): the physically preallocated
+    /// page pool neither shrinks nor grows (`updateBytesCapacity` is a no-op
+    /// on the backend). The admission ledger is clamped to that immutable
+    /// physical capacity on every resize, so logical admission, heartbeat
+    /// reporting, and page placement agree. A SHRINK tightens admission but
+    /// does NOT reclaim physical memory; callers must never count it as
+    /// freed. A later GROW can restore admission only up to the same pool.
+    /// Reclaiming or adding physical bytes requires an unload/rebuild.
     public func updateKVBytesCapacity(_ bytes: Int) {
-        engine.updateKVBytesCapacity(max(0, bytes - prefixCacheBudgetBytes))
+        let requested = max(0, bytes - prefixCacheBudgetBytes)
+        if kvBackendKind == .paged {
+            let physical = max(0, engine.capacity().kvBytesBackendCapacity)
+            engine.updateKVBytesCapacity(min(requested, physical))
+        } else {
+            engine.updateKVBytesCapacity(requested)
+        }
     }
 
     /// Record the slot's cold-start load time for heartbeat reporting

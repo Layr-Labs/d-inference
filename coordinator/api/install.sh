@@ -8,7 +8,7 @@ set -euo pipefail
 #
 # This script:
 #   1. Fetches the latest signed release from the coordinator
-#   2. Downloads the provider bundle (darkbloom + darkbloom-enclave + mlx.metallib)
+#   2. Downloads the provider app (binaries, metallib, SwiftPM resources)
 #   3. Verifies bundle SHA-256 + Apple Developer ID code signature
 #   4. Sets up the Secure Enclave identity
 #   5. Optionally enrolls in MDM (device attestation)
@@ -155,12 +155,35 @@ if [ -n "$METALLIB_HASH" ] && [ -f "$BIN_DIR/mlx.metallib" ]; then
     echo "  Metallib hash verified ✓"
 fi
 
-# Verify code signature (codesign is base macOS, no CLT prompt).
-if codesign --verify --verbose "$BIN_DIR/darkbloom" 2>/dev/null; then
+# Verify the whole app when present so its sealed SwiftPM resources are
+# covered, not only the main executable.
+SIGNATURE_TARGET="$BIN_DIR/darkbloom"
+if [ -d "$INSTALL_DIR/Darkbloom.app" ]; then
+    SIGNATURE_TARGET="$INSTALL_DIR/Darkbloom.app"
+fi
+if codesign --verify --deep --strict --verbose "$SIGNATURE_TARGET" 2>/dev/null; then
     TEAM=$(codesign -dvv "$BIN_DIR/darkbloom" 2>&1 | grep "TeamIdentifier=" | cut -d= -f2)
     echo "  Code signature verified ✓ (Team: $TEAM)"
 else
     echo "  ⚠ Code signature could not be verified — proceed with caution."
+fi
+
+# Execute the same installed-layout paged-kernel gate release CI ran. This
+# catches a missing/corrupt SwiftPM bundle before the provider service starts.
+shopt -s nullglob
+PAGED_RESOURCES=(
+    "$INSTALL_DIR/Darkbloom.app/Contents/Resources"/*.bundle/pagedattention.metal
+)
+if [ "${#PAGED_RESOURCES[@]}" -gt 1 ]; then
+    echo "  ✗ Multiple pagedattention.metal resources found — refusing ambiguous package."
+    exit 1
+fi
+if [ "${#PAGED_RESOURCES[@]}" -eq 1 ]; then
+    if ! DARKBLOOM_NO_UPDATE_CHECK=1 "$BIN_DIR/darkbloom" runtime-smoke >/dev/null; then
+        echo "  ✗ Packaged runtime smoke failed — refusing to start this provider build."
+        exit 1
+    fi
+    echo "  Runtime resource smoke verified ✓"
 fi
 
 # Make available in PATH. Try /usr/local/bin symlink, fall back to shell rc.

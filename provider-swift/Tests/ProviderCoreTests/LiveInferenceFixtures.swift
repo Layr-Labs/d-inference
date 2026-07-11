@@ -226,7 +226,8 @@ enum LiveInferenceFixtures {
         modelType: String? = nil,
         maxConcurrentRequests: Int = 4,
         memoryBudgetBytes: Int? = nil,
-        defaultMaxTokens: Int = 256
+        defaultMaxTokens: Int = 256,
+        kvBackendConfig: String = "auto"
     ) async throws -> LoadedBridge {
         guard ensureMetallibColocated() != nil else {
             throw LiveFixtureSkip.missingMetallib
@@ -275,6 +276,7 @@ enum LiveInferenceFixtures {
             maxConcurrentRequests: maxConcurrentRequests,
             kvBudget: nil,
             kvQuantConfigured: false,
+            kvBackendConfig: kvBackendConfig,
             // Hermetic tests: master-kill EVERY prefix-cache tier. An empty
             // environment is no longer dormant — the SSD tier (v0.7.5) is
             // default-on and would write real files under the user's

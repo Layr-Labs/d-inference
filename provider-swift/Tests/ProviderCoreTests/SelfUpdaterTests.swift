@@ -252,6 +252,14 @@ struct SelfUpdaterTests {
         try Data("app darkbloom".utf8).write(to: appMacOS.appendingPathComponent("darkbloom"))
         try Data("app enclave".utf8).write(to: appMacOS.appendingPathComponent("darkbloom-enclave"))
         try Data("app metallib".utf8).write(to: appMacOS.appendingPathComponent("mlx.metallib"))
+        let resourceBundle = stage.appendingPathComponent(
+            "Darkbloom.app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle",
+            isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: resourceBundle,
+            withIntermediateDirectories: true)
+        try Data("paged kernel source".utf8).write(
+            to: resourceBundle.appendingPathComponent("pagedattention.metal"))
 
         // Also create flat copies in bin/ (as the real tarball does).
         try Data("flat darkbloom".utf8).write(to: binFlat.appendingPathComponent("darkbloom"))
@@ -285,6 +293,12 @@ struct SelfUpdaterTests {
         // .app bundle should be installed at the root.
         let installedAppBin = install.appendingPathComponent("Darkbloom.app/Contents/MacOS")
         #expect((try String(contentsOf: installedAppBin.appendingPathComponent("darkbloom"), encoding: .utf8)) == "app darkbloom")
+        let installedPagedResource = install.appendingPathComponent(
+            "Darkbloom.app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/"
+                + "pagedattention.metal")
+        #expect(
+            (try String(contentsOf: installedPagedResource, encoding: .utf8))
+                == "paged kernel source")
 
         // bin/ should contain symlinks to the .app bundle, not flat copies.
         let installedBin = install.appendingPathComponent("bin")

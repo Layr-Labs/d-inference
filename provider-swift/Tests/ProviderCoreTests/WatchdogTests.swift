@@ -254,6 +254,46 @@ struct WatchdogAgentPlistTests {
         #expect(plist["StandardErrorPath"] as? String == "/tmp/watchdog.log")
     }
 
+    @Test("re-arm preserves the installed plist config when no override is given")
+    func rearmPreservesInstalledConfig() {
+        let installedArguments = [
+            "/opt/darkbloom",
+            "watchdog",
+            "--config",
+            "/tmp/custom-provider.toml",
+        ]
+        let installed = WatchdogAgent.configPathArgument(in: installedArguments)
+        #expect(installed?.path == "/tmp/custom-provider.toml")
+
+        // No explicit --config on `darkbloom restart`: the previously
+        // installed custom config MUST survive the plist rewrite.
+        let preserved = WatchdogAgent.rearmConfigPath(
+            explicit: nil,
+            installed: installed
+        )
+        #expect(preserved?.path == "/tmp/custom-provider.toml")
+
+        // An explicit override wins over the installed value.
+        let overridden = WatchdogAgent.rearmConfigPath(
+            explicit: "/tmp/other.toml",
+            installed: installed
+        )
+        #expect(overridden?.path == "/tmp/other.toml")
+
+        // Short flag parses too; missing value or absent flag yields nil.
+        #expect(
+            WatchdogAgent.configPathArgument(
+                in: ["/opt/darkbloom", "watchdog", "-c", "/tmp/short.toml"]
+            )?.path == "/tmp/short.toml"
+        )
+        #expect(WatchdogAgent.configPathArgument(
+            in: ["/opt/darkbloom", "watchdog", "--config"]
+        ) == nil)
+        #expect(WatchdogAgent.configPathArgument(
+            in: ["/opt/darkbloom", "watchdog"]
+        ) == nil)
+    }
+
     @Test("plist propagates custom config and update opt-out environment")
     func configAndEnvironment() {
         let arguments = [

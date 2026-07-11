@@ -5,6 +5,15 @@
 /// (re-enabling any persistent disable), `stop` bootouts it AND persistently
 /// disables it so KeepAlive/RunAtLoad can't resurrect it at the next
 /// login/reboot (plist stays on disk), `stop --uninstall` deletes it.
+///
+/// KNOWN LIMITATION (threat model T-043): the agent runs the SAME replaceable
+/// `darkbloom` binary it recovers. Rollback protection therefore depends on
+/// the pre-update watchdog process surviving a candidate's stabilization
+/// window; after a reboot, launchd relaunches the watchdog FROM the candidate
+/// binary, so a candidate broken at the binary level (dyld/codesign/eager
+/// crash before command dispatch) cannot be rolled back by this mechanism.
+/// A truly independent recovery authority requires a separately installed
+/// bootstrap executable outside the replaceable install tree.
 
 import Foundation
 
@@ -27,6 +36,47 @@ public enum WatchdogAgent: Sendable {
 
     public static func isInstalled() -> Bool {
         FileManager.default.fileExists(atPath: plistPath().path)
+    }
+
+    /// The `--config` path recorded in the installed watchdog plist, if any.
+    /// Re-arm paths (`darkbloom restart`) use this so rewriting the plist
+    /// cannot silently drop a custom config the operator installed with.
+    public static func installedConfigPath() -> URL? {
+        guard let data = try? Data(contentsOf: plistPath()),
+              let plist = try? PropertyListSerialization.propertyList(
+                from: data,
+                options: [],
+                format: nil
+              ) as? [String: Any],
+              let arguments = plist["ProgramArguments"] as? [String]
+        else {
+            return nil
+        }
+        return configPathArgument(in: arguments)
+    }
+
+    /// Pure parser for the watchdog `ProgramArguments` config flag.
+    static func configPathArgument(in arguments: [String]) -> URL? {
+        for (index, argument) in arguments.enumerated()
+        where argument == "--config" || argument == "-c" {
+            guard index + 1 < arguments.count else { return nil }
+            return URL(fileURLWithPath: arguments[index + 1])
+        }
+        return nil
+    }
+
+    /// The config path a re-arm should install with: an explicit override
+    /// wins; otherwise the already-installed plist's config is preserved.
+    public static func rearmConfigPath(
+        explicit: String?,
+        installed: URL?
+    ) -> URL? {
+        if let explicit {
+            return URL(
+                fileURLWithPath: (explicit as NSString).expandingTildeInPath
+            )
+        }
+        return installed
     }
 
     public static func isLoaded() -> Bool {

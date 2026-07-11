@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import ProviderCore
 import Testing
 
 @testable import darkbloom
@@ -88,6 +89,51 @@ struct WatchdogCommandTests {
         )
         #expect(settings.autoRestart)
         #expect(!settings.autoUpdate)
+    }
+
+    @Test("raised startup_preload_timeout_secs raises the candidate timeout")
+    func derivesCandidateTimeoutFromPreloadConfig() {
+        let url = writeTempConfig("""
+        [provider]
+        name = "x"
+
+        [backend]
+        startup_preload_timeout_secs = 420
+        """)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let settings = Watchdog.settings(configPath: url.path)
+        #expect(settings.candidateStartupTimeoutSeconds == 600)
+
+        let defaults = writeTempConfig("""
+        [provider]
+        name = "x"
+        """)
+        defer { try? FileManager.default.removeItem(at: defaults) }
+        #expect(Watchdog.settings(
+            configPath: defaults.path
+        ).candidateStartupTimeoutSeconds == 300)
+    }
+
+    @Test("tick budget exceeds the bounded network whole-transfer timeout")
+    func tickBudgetCoversBoundedDownload() {
+        #expect(
+            Watchdog.tickDeadlineSeconds
+                > SelfUpdater.watchdogResourceTimeoutSeconds
+        )
+    }
+
+    @Test("restart accepts --config for the watchdog re-arm")
+    func restartParsesConfig() throws {
+        let command = try Darkbloom.parseAsRoot([
+            "restart",
+            "--config",
+            "/tmp/custom.toml",
+        ])
+        guard let restart = command as? Restart else {
+            Issue.record("expected Restart command")
+            return
+        }
+        #expect(restart.configOptions.config == "/tmp/custom.toml")
     }
 
     @Test("manual quarantine override is explicit and parseable")

@@ -1,8 +1,17 @@
 import Foundation
 
-/// Recovery authority used by the one-shot watchdog command. Update,
-/// predecessor rollback, failure attribution, and launch attempt persistence
-/// all execute while the same cross-process update lease is held.
+/// Recovery authority driven by the persistent watchdog process's ticks.
+/// Update, predecessor rollback, failure attribution, and launch attempt
+/// persistence all execute while the same cross-process update lease is held.
+///
+/// KNOWN LIMITATIONS (see threat model T-043): the watchdog runs the SAME
+/// replaceable `darkbloom` binary it protects, so rollback protection depends
+/// on the pre-update watchdog process staying alive through a candidate's
+/// stabilization window. Rollback does NOT survive a reboot into a candidate
+/// whose binary cannot start at all (launchd relaunches the broken candidate
+/// as the watchdog too). Quarantine is intentionally single-slot and
+/// exact-version: quarantining v3 after v2 overwrites the v2 record, and only
+/// normal monotonic version ordering keeps v2 from reinstalling.
 public struct WatchdogRecoveryService: Sendable {
     public struct Dependencies: Sendable {
         public var kickstartIfLoaded: @Sendable () throws -> Bool
@@ -11,6 +20,11 @@ public struct WatchdogRecoveryService: Sendable {
         public var processAlive: @Sendable (Int32) -> Bool
         public var terminateStaleLockOwner:
             @Sendable (UpdateProcessLock.Owner) -> Bool
+        /// Safe-point tick budget check. Consulted ONLY between complete
+        /// operations (never mid-journal, mid-rename, or mid-commit), so an
+        /// exceeded budget can defer work but can never corrupt an in-flight
+        /// journaled transaction.
+        public var isPastTickDeadline: @Sendable () -> Bool
         public var log: @Sendable (String) -> Void
 
         public init(
@@ -22,6 +36,7 @@ public struct WatchdogRecoveryService: Sendable {
             processAlive: @escaping @Sendable (Int32) -> Bool = daemonProcessAlive,
             terminateStaleLockOwner:
                 @escaping @Sendable (UpdateProcessLock.Owner) -> Bool = { _ in false },
+            isPastTickDeadline: @escaping @Sendable () -> Bool = { false },
             log: @escaping @Sendable (String) -> Void
         ) {
             self.kickstartIfLoaded = kickstartIfLoaded
@@ -29,6 +44,7 @@ public struct WatchdogRecoveryService: Sendable {
             self.providerStillLoaded = providerStillLoaded
             self.processAlive = processAlive
             self.terminateStaleLockOwner = terminateStaleLockOwner
+            self.isPastTickDeadline = isPastTickDeadline
             self.log = log
         }
     }
@@ -55,11 +71,28 @@ public struct WatchdogRecoveryService: Sendable {
     private let stabilizationSeconds: Double
     private let candidateStartupTimeoutSeconds: Double
 
+    /// A candidate is judged hung only after the operator's configured
+    /// startup preload window plus a safety margin. A raised
+    /// `startup_preload_timeout_secs` must never make a healthy-but-slow
+    /// new version charge false start failures and roll back.
+    public static let candidateStartupSafetyMarginSeconds: Double = 180
+    public static let candidateStartupTimeoutFloorSeconds: Double = 300
+
+    public static func candidateStartupTimeout(
+        preloadTimeoutSecs: UInt64
+    ) -> Double {
+        max(
+            candidateStartupTimeoutFloorSeconds,
+            Double(preloadTimeoutSecs) + candidateStartupSafetyMarginSeconds
+        )
+    }
+
     public init(
         updater: SelfUpdater,
         dependencies: Dependencies,
         stabilizationSeconds: Double = UpdateRecoveryState.defaultStabilizationSeconds,
-        candidateStartupTimeoutSeconds: Double = 300
+        candidateStartupTimeoutSeconds: Double =
+            WatchdogRecoveryService.candidateStartupTimeout(preloadTimeoutSecs: 120)
     ) {
         self.updater = updater
         self.deps = dependencies
@@ -168,7 +201,14 @@ public struct WatchdogRecoveryService: Sendable {
         }
 
         var updatedTo: String?
-        if autoUpdateEnabled {
+        // Safe point: rollback (if any) is fully committed and the journal is
+        // clean. Skipping the network update here can never leave a partial
+        // install; the restart below still proceeds on the current binary and
+        // the next tick retries the update.
+        if autoUpdateEnabled, deps.isPastTickDeadline() {
+            deps.log(
+                "tick budget exhausted before the update check; restarting the current install now and deferring the update to the next tick")
+        } else if autoUpdateEnabled {
             let result = await updater.update(
                 session: session,
                 beforeInstall: deps.providerStillLoaded

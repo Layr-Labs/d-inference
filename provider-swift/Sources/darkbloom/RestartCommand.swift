@@ -15,6 +15,8 @@ struct Restart: AsyncParsableCommand {
         """
     )
 
+    @OptionGroup var configOptions: ConfigOptions
+
     mutating func run() async throws {
         let wasLoaded = LaunchAgent.isLoaded()
         do {
@@ -30,9 +32,15 @@ struct Restart: AsyncParsableCommand {
         }
 
         // Re-arm the watchdog (re-enables it after a prior `stop`, or installs it
-        // on a provider upgraded from a pre-watchdog build).
-        if Watchdog.autoRestartEnabled(configPath: nil) {
-            try? WatchdogAgent.installAndStart()
+        // on a provider upgraded from a pre-watchdog build). The rewrite must
+        // not drop a custom config: an explicit --config wins, otherwise the
+        // installed plist's recorded config path is preserved.
+        let watchdogConfig = WatchdogAgent.rearmConfigPath(
+            explicit: configOptions.config,
+            installed: WatchdogAgent.installedConfigPath()
+        )
+        if Watchdog.autoRestartEnabled(configPath: watchdogConfig?.path) {
+            try? WatchdogAgent.installAndStart(configPath: watchdogConfig)
         }
 
         print("  darkbloom status  Check status")

@@ -136,6 +136,83 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(try recoveryStore(context.fixture).loadState().predecessor == predecessorBefore)
     }
 
+    @Test("raised preload timeout raises the hung-candidate threshold — no false failure")
+    func raisedPreloadTimeoutAvoidsFalseFailure() async throws {
+        // Operator raised startup_preload_timeout_secs to 420s; the derived
+        // hung-candidate threshold must exceed it (420 + 180 = 600).
+        let derived = WatchdogRecoveryService.candidateStartupTimeout(
+            preloadTimeoutSecs: 420
+        )
+        #expect(derived == 600)
+        #expect(WatchdogRecoveryService.candidateStartupTimeout(
+            preloadTimeoutSecs: 60
+        ) == 300)
+
+        let context = try await installedCandidate(
+            candidateStartupTimeoutSeconds: derived
+        )
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+
+        // 400s into a legitimate 420s preload: process alive, heartbeat not
+        // yet written. The fixed 300s threshold would flag this healthy-but-
+        // slow candidate as hung and charge a false start failure.
+        let health = context.service.observeHealthyProvider(
+            providerRunning: true,
+            daemonState: nil,
+            now: 100 + 400
+        )
+        #expect(health == .stabilizing(since: nil))
+
+        let state = try recoveryStore(context.fixture).loadState()
+        #expect(state.candidate?.failureCount == 0)
+    }
+
+    @Test("exhausted tick budget skips the update at a safe point but still restarts")
+    func tickDeadlineSkipsUpdateSafely() async throws {
+        let fixture = try UpdateRecoveryFixture()
+        defer { fixture.cleanup() }
+        let mock = MockCoordinator(
+            release: fixture.mockReleaseFixture(),
+            releaseArtifact: fixture.artifact
+        )
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let restarts = RecoveryRestartCounter()
+        let service = makeService(
+            updater: fixture.updater(baseURL: baseURL),
+            restarts: restarts,
+            isPastTickDeadline: { true }
+        )
+        let outcome = await service.recoverDownProvider(
+            autoUpdateEnabled: true,
+            now: 100
+        )
+
+        // The newer release was available but the exhausted budget defers it;
+        // the restart action still fires and the live install is untouched.
+        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        #expect(restarts.value == 1)
+        #expect(try fixture.liveBinaryContents() == "1.0.0-darkbloom")
+        let state = try recoveryStore(fixture).loadState()
+        #expect(state.candidate == nil)
+    }
+
+    @Test("watchdog network session is bounded")
+    func watchdogSessionIsBounded() {
+        let session = SelfUpdater.watchdogURLSession()
+        #expect(
+            session.configuration.timeoutIntervalForRequest
+                == SelfUpdater.watchdogRequestTimeoutSeconds
+        )
+        #expect(
+            session.configuration.timeoutIntervalForResource
+                == SelfUpdater.watchdogResourceTimeoutSeconds
+        )
+        #expect(!session.configuration.waitsForConnectivity)
+    }
+
     @Test("new version without heartbeat is a failed start, even if process lives")
     func hungCandidateCountsAsFailedStart() async throws {
         let context = try await installedCandidate()
@@ -613,6 +690,7 @@ struct WatchdogRecoveryIntegrationTests {
 
     private func installedCandidate(
         stabilizationSeconds: Double = 180,
+        candidateStartupTimeoutSeconds: Double = 300,
         layout: VerifiedPredecessor.Layout = .app
     ) async throws -> InstalledContext {
         let fixture = try UpdateRecoveryFixture(layout: layout)
@@ -626,7 +704,8 @@ struct WatchdogRecoveryIntegrationTests {
         let service = makeService(
             updater: updater,
             restarts: restarts,
-            stabilizationSeconds: stabilizationSeconds
+            stabilizationSeconds: stabilizationSeconds,
+            candidateStartupTimeoutSeconds: candidateStartupTimeoutSeconds
         )
         let outcome = await service.recoverDownProvider(
             autoUpdateEnabled: true,
@@ -649,7 +728,9 @@ struct WatchdogRecoveryIntegrationTests {
     private func makeService(
         updater: SelfUpdater,
         restarts: RecoveryRestartCounter,
-        stabilizationSeconds: Double = 180
+        stabilizationSeconds: Double = 180,
+        candidateStartupTimeoutSeconds: Double = 300,
+        isPastTickDeadline: @escaping @Sendable () -> Bool = { false }
     ) -> WatchdogRecoveryService {
         WatchdogRecoveryService(
             updater: updater,
@@ -658,10 +739,15 @@ struct WatchdogRecoveryIntegrationTests {
                     restarts.increment()
                     return true
                 },
+                // Injected: tests must never shell out to the real
+                // `launchctl print` for the host's provider job.
+                launchSnapshot: { nil },
                 processAlive: { _ in true },
+                isPastTickDeadline: isPastTickDeadline,
                 log: { _ in }
             ),
-            stabilizationSeconds: stabilizationSeconds
+            stabilizationSeconds: stabilizationSeconds,
+            candidateStartupTimeoutSeconds: candidateStartupTimeoutSeconds
         )
     }
 

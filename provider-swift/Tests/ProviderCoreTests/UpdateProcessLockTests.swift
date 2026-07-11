@@ -154,6 +154,7 @@ struct UpdateProcessLockTests {
             updater: updater,
             dependencies: .init(
                 kickstartIfLoaded: { true },
+                launchSnapshot: { nil },
                 providerStillLoaded: { true },
                 terminateStaleLockOwner: { candidate in
                     guard candidate.processIdentity == identity,

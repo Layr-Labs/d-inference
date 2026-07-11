@@ -279,6 +279,14 @@ extension UpdateRecoveryStore {
         try UpdateAtomicFilesystem.removeDurably(staging)
     }
 
+    /// INTENTIONALLY FAIL-CLOSED for legacy flat/ad-hoc installs: an install
+    /// whose live binary does not satisfy the pinned Darkbloom designated
+    /// requirement (Team SLDQ2GJ6TL) is not eligible as rollback material and
+    /// its replay/rollback verification refuses. Accepting a structurally
+    /// valid but unpinned signature would let any locally re-signed binary
+    /// become "verified" recovery state. Fleet impact and the recorded
+    /// decision live in the threat model (T-043); the remedy for an affected
+    /// host is a signed reinstall via install.sh.
     func verifySignature(
         layout: VerifiedPredecessor.Layout,
         bundle: URL,
@@ -294,7 +302,11 @@ extension UpdateRecoveryStore {
             )
         } catch {
             throw StoreError.predecessorVerificationFailed(
-                "Darkbloom designated requirement failed: \(error.localizedDescription)")
+                "\(target.lastPathComponent) does not satisfy the pinned Darkbloom "
+                    + "designated requirement (Team \(DarkbloomCodeSignature.teamID)). "
+                    + "Legacy ad-hoc or re-signed installs are intentionally not "
+                    + "rollback-eligible (fail-closed); reinstall via install.sh to "
+                    + "restore signed rollback material. codesign: \(error.localizedDescription)")
         }
         #endif
     }

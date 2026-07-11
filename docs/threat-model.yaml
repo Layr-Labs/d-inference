@@ -2161,3 +2161,75 @@ threats:
       authorization, (b) carries code_challenge in an alert-rendering payload, or
       (c) logs the push payload. The closed-verification scope is current macOS
       (min target is 15); re-verify on a version bump.
+
+  # ── TB-003: watchdog-owned update / rollback recovery authority ──
+
+  - id: T-043
+    trust_boundary: TB-003
+    stride: Denial of Service
+    title: Watchdog rollback authority is the same replaceable provider binary
+    description: >
+      The crash-recovery watchdog (`io.darkbloom.watchdog`) and the automatic
+      predecessor rollback it performs run the SAME installed `darkbloom`
+      binary that updates replace. This is a deliberate, documented limitation
+      set, not an oversight. (1) Rollback protection depends on the pre-update
+      watchdog PROCESS surviving a candidate's stabilization window: launchd
+      KeepAlive keeps the old process alive across the install, but if that
+      process dies (reboot, logout, crash) launchd relaunches the watchdog
+      FROM the candidate binary. (2) Rollback therefore does NOT survive a
+      reboot into a candidate broken at the binary level (dyld failure,
+      code-signature rejection, eager crash before command dispatch) — such a
+      host stays down until a manual reinstall. (3) The failed-version
+      quarantine is intentionally single-slot and exact-version:
+      quarantining v3 OVERWRITES the v2 quarantine record, and only normal
+      monotonic version ordering (a quarantined version is never strictly
+      newer than the rolled-back-to predecessor's successor) prevents v2 from
+      reinstalling. No component may claim multi-version quarantine.
+      (4) Rollback/replay verification is fail-closed on the pinned Darkbloom
+      designated requirement (Team SLDQ2GJ6TL): legacy flat/ad-hoc or locally
+      re-signed installs are NOT rollback-eligible; the watchdog logs an
+      actionable refusal and preserves the live install, and the remedy is a
+      signed reinstall via install.sh. This is an accepted fleet-impact
+      decision — hosts on unsigned installs keep restart recovery but not
+      rollback.
+    adversaries: [ADV-001]
+    affected_assets: [A-010]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift
+      - provider-swift/Sources/ProviderCore/Service/WatchdogRecoveryService.swift
+      - provider-swift/Sources/ProviderCore/Update/UpdateRecoveryStore.swift
+      - provider-swift/Sources/ProviderCore/Update/UpdateInstallLayout.swift
+      - provider-swift/Sources/ProviderCore/Update/DarkbloomCodeSignature.swift
+    mitigations:
+      - description: >
+          Persistent KeepAlive watchdog process with an internal monotonic
+          scheduler (GUI StartInterval one-shots are stranded by launchd
+          on-demand-only mode), so the pre-update process normally survives
+          the whole stabilization window without respawning.
+        status: implemented
+      - description: >
+          Journaled, fsync-fail-closed install/rollback transactions with
+          crash replay, so every power-loss boundary converges to a fully
+          verified install; predecessor material is hash+signature verified
+          against the pinned designated requirement before any restore.
+        status: implemented
+      - description: >
+          Bounded watchdog network I/O (URLSession request/resource timeouts)
+          plus a safe-point per-tick budget so a stalled download or wedged
+          tick cannot hold the cross-process update lock forever; the budget
+          is only consulted between complete operations and can never
+          interrupt a journaled commit.
+        status: implemented
+      - description: >
+          A separately installed, independently signed minimal bootstrap
+          executable outside the replaceable install tree, giving recovery
+          authority that survives reboot into a binary-level-broken candidate.
+        status: open
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Reopens if any code or docs claim rollback survives a reboot into a
+      non-launchable candidate, claim multi-version quarantine, weaken the
+      designated-requirement pin to structural codesign validity, or move the
+      candidate-hung timeout below the operator's configured
+      startup_preload_timeout_secs plus margin.

@@ -329,9 +329,14 @@ public struct UpdateRecoveryState: Codable, Sendable, Equatable {
         return now < retryNotBefore
     }
 
-    /// Quarantine is narrow: it blocks only the exact failed version. Normal
-    /// monotonic version comparison still applies, so a strictly newer release
+    /// Quarantine is narrow AND single-slot: it blocks only the exact failed
+    /// version, and quarantining a newer failed version (v3) OVERWRITES the
+    /// previous record (v2) — there is deliberately no multi-version
+    /// quarantine list. After the overwrite, only normal monotonic version
+    /// comparison keeps v2 from reinstalling (it is never strictly newer than
+    /// the restored predecessor's successor). A strictly newer release
     /// escapes automatically without weakening anti-downgrade policy.
+    /// Documented in threat model T-043.
     public func quarantineBlocks(version: String, manualOverride: Bool) -> Bool {
         guard !manualOverride, let quarantine else { return false }
         return quarantine.version == version

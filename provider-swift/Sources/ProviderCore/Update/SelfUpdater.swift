@@ -63,15 +63,34 @@ public struct SelfUpdater: Sendable {
     private let urlSession: URLSession
     private let now: @Sendable () -> Double
 
-    public init(coordinatorBaseURL: String) {
+    public init(coordinatorBaseURL: String, urlSession: URLSession = .shared) {
         self.init(
             coordinatorBaseURL: coordinatorBaseURL,
             installRoot: nil,
             verifyCodeSignatures: true,
             currentVersion: ProviderCore.version,
-            urlSession: .shared,
+            urlSession: urlSession,
             now: { Date().timeIntervalSince1970 }
         )
+    }
+
+    /// Per-request handshake/idle bound for watchdog-owned network calls.
+    public static let watchdogRequestTimeoutSeconds: TimeInterval = 30
+    /// Whole-transfer bound: generously covers a ~170 MB bundle on a slow
+    /// link, but guarantees a stalled download can never wedge a watchdog
+    /// tick (and the update lock it holds) forever.
+    public static let watchdogResourceTimeoutSeconds: TimeInterval = 600
+
+    /// Bounded session for the persistent watchdog. The default `.shared`
+    /// session has a 7-day resource timeout — a stalled release download
+    /// would block the recovery loop indefinitely while holding the
+    /// cross-process update lock.
+    public static func watchdogURLSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = watchdogRequestTimeoutSeconds
+        configuration.timeoutIntervalForResource = watchdogResourceTimeoutSeconds
+        configuration.waitsForConnectivity = false
+        return URLSession(configuration: configuration)
     }
 
     internal init(

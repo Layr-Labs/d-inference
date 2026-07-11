@@ -1,6 +1,7 @@
 /// The watchdog's cross-tick timer, persisted at
 /// `~/.darkbloom/watchdog-state.json` (override `DARKBLOOM_WATCHDOG_STATE`).
-/// The watchdog is the only writer — launchd never overlaps ticks.
+/// The single persistent watchdog process is the only writer, and its
+/// scheduler runs ticks strictly sequentially — ticks never overlap.
 
 import Foundation
 

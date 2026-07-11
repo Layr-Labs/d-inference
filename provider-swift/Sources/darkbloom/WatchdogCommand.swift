@@ -29,8 +29,18 @@ struct Watchdog: AsyncParsableCommand {
         await scheduler.value
     }
 
+    /// Safe-point tick budget. Larger than the bounded URLSession's
+    /// whole-transfer timeout so a normal (slow) download completes; a tick
+    /// that exceeds it skips further network work at the next safe point and
+    /// proceeds straight to the restart action. Never interrupts a journaled
+    /// commit mid-flight.
+    static let tickDeadlineSeconds: Double =
+        SelfUpdater.watchdogResourceTimeoutSeconds + 120
+
     static func runTick(configPath: String?) async {
         let now = Date().timeIntervalSince1970
+        let tickDeadline = ContinuousClock.now
+            + .seconds(Int64(Self.tickDeadlineSeconds))
         let settings = Self.settings(configPath: configPath)
         let liveness = WatchdogProbe.probeProvider(now: now)
         let daemonState = DaemonStateFile.read()
@@ -54,7 +64,10 @@ struct Watchdog: AsyncParsableCommand {
             downSince: downSince,
             now: now
         )
-        let updater = SelfUpdater(coordinatorBaseURL: settings.coordinatorURL)
+        let updater = SelfUpdater(
+            coordinatorBaseURL: settings.coordinatorURL,
+            urlSession: SelfUpdater.watchdogURLSession()
+        )
         let recovery = WatchdogRecoveryService(
             updater: updater,
             dependencies: .init(
@@ -70,8 +83,10 @@ struct Watchdog: AsyncParsableCommand {
                     }
                     return ProcessLifecycle.terminate(identity)
                 },
+                isPastTickDeadline: { ContinuousClock.now > tickDeadline },
                 log: { Self.log($0) }
-            )
+            ),
+            candidateStartupTimeoutSeconds: settings.candidateStartupTimeoutSeconds
         )
 
         let grace = Int(WatchdogPolicy.defaultGraceSeconds)
@@ -129,29 +144,32 @@ struct Watchdog: AsyncParsableCommand {
         let autoRestart: Bool
         let autoUpdate: Bool
         let coordinatorURL: String
+        /// Derived from the operator's `startup_preload_timeout_secs` so a
+        /// raised preload window never reads as a hung candidate launch.
+        let candidateStartupTimeoutSeconds: Double
     }
 
     static func settings(
         configPath: String?,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Settings {
+        let config: ProviderConfig
         if let configPath {
             let path = URL(fileURLWithPath: (configPath as NSString).expandingTildeInPath)
-            let config = (try? ConfigManager.load(from: path))
+            config = (try? ConfigManager.load(from: path))
                 ?? ProviderConfig(provider: ProviderSettings(name: "darkbloom"))
-            return Settings(
-                autoRestart: config.provider.autoRestart,
-                autoUpdate: config.provider.autoUpdate
-                    && environment["DARKBLOOM_NO_UPDATE_CHECK"] == nil,
-                coordinatorURL: config.coordinator.url
-            )
+        } else {
+            config = ConfigManager.loadDefault()
         }
-        let config = ConfigManager.loadDefault()
         return Settings(
             autoRestart: config.provider.autoRestart,
             autoUpdate: config.provider.autoUpdate
                 && environment["DARKBLOOM_NO_UPDATE_CHECK"] == nil,
-            coordinatorURL: config.coordinator.url
+            coordinatorURL: config.coordinator.url,
+            candidateStartupTimeoutSeconds:
+                WatchdogRecoveryService.candidateStartupTimeout(
+                    preloadTimeoutSecs: config.backend.startupPreloadTimeoutSecs
+                )
         )
     }
 

@@ -4,7 +4,7 @@ CLI provider for Apple Silicon Macs. Builds two executables:
 
 | Binary | Purpose |
 |---|---|
-| `darkbloom` | Provider CLI: `serve`, `start`, `stop`, `status`, `doctor`, `models`, `login`, `logout`, `benchmark`, `update`, `verify` |
+| `darkbloom` | Provider CLI: `start`, `stop`, `status`, `doctor`, `models`, `login`, `logout`, `benchmark`, `update`, `verify`, `fan` |
 | `darkbloom-enclave` | Stateless Secure Enclave helper: `attest`, `sign`, `info`, `wallet-address`. Installed as both `darkbloom-enclave` (canonical) and `eigeninference-enclave` (legacy symlink). |
 
 This package is **CLI-only**: no SwiftUI app, no `.app` bundle, no DMG.
@@ -84,6 +84,7 @@ darkbloom logs [-n N] [-w]          tail provider.log
 darkbloom autoupdate enable|disable|status
 darkbloom benchmark                 tok/s vs golden numbers
 darkbloom update [--check-only]     pull a new signed release
+sudo darkbloom fan                  optional inference-aware cooling boost
 darkbloom start --foreground        invoked by launchd; not user-facing
 darkbloom start --local --port N    standalone OpenAI-compatible HTTP server
                                     (no coordinator connection)

@@ -72,5 +72,6 @@ private final class BundleAnchor {}
         let out = try run([], home: home)
         #expect(out.contains("SUBCOMMANDS"))
         #expect(out.contains("status"))
+        #expect(out.contains("fan"))
     }
 }

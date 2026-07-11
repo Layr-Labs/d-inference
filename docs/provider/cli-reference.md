@@ -206,6 +206,47 @@ darkbloom autoupdate <enable|disable|status>
 
 This toggles `provider.auto_update` in `provider.toml`.
 
+## `darkbloom fan`
+
+Run an optional foreground cooling controller during inference:
+
+```bash
+sudo darkbloom fan [--speed <percent>] [--temperature <celsius>] [--poll-interval <seconds>]
+```
+
+The default policy boosts each fan to 90% of its advertised maximum RPM only
+when both conditions are true:
+
+- The local provider's fresh `daemon-state.json` reports active inference.
+- The hottest usable SMC temperature sensor is at least 40°C.
+
+The controller returns the fans to macOS when inference becomes idle, the
+temperature falls to 37°C (3°C hysteresis), sensor data becomes unavailable, or
+macOS reports serious/critical thermal pressure. Ctrl-C and SIGTERM also trigger
+verified restoration.
+
+| Flag | Description |
+|------|-------------|
+| `--speed <percent>` | Percentage of each fan's maximum RPM (1–100, default 90) |
+| `--temperature <celsius>` | Activation threshold (20–110°C, default 40) |
+| `--poll-interval <seconds>` | Sampling interval (0.5–30s, default 2) |
+| `--state-file <path>` | Override the provider daemon-state path |
+| `--reset` | Force every fan back to macOS automatic control and exit |
+
+`sudo` normally changes the effective home directory, so the command resolves
+`SUDO_USER` to find the provider state under the invoking user's
+`~/.darkbloom/`. Use `--state-file` for unusual service layouts.
+
+Apple exposes thermal pressure but no public API for fan overrides. This command
+therefore uses the undocumented AppleSMC interface, refuses to coexist with
+another manual fan controller, and stays attached to the terminal so normal
+termination can restore automatic control. A forced process kill, kernel
+failure, or firmware behavior change can bypass user-space cleanup; recover with:
+
+```bash
+sudo darkbloom fan --reset
+```
+
 ## `darkbloom beta`
 
 Manage opt-in beta features. Beta features are off by default and config-backed

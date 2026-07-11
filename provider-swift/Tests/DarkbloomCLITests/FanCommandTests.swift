@@ -111,4 +111,32 @@ struct FanCommandTests {
             ) == package
         )
     }
+
+    @Test("helper installation verifies an immutable root-owned package copy")
+    func helperInstallCommand() {
+        let command = FanHelperInstaller.installShellCommand(
+            packagePath: "/tmp/helper.pkg; /usr/bin/touch /tmp/unsafe"
+        )
+
+        #expect(command.contains(
+            "/bin/cp '/tmp/helper.pkg; /usr/bin/touch /tmp/unsafe' \"$PKG\""
+        ))
+        #expect(command.contains("/usr/bin/mktemp -d"))
+        #expect(command.contains("/usr/sbin/chown root:wheel \"$PKG\""))
+        #expect(command.contains("/bin/chmod 0600 \"$PKG\""))
+        #expect(command.contains("/usr/sbin/pkgutil --check-signature"))
+        #expect(command.contains("SLDQ2GJ6TL"))
+        #expect(command.contains("/usr/sbin/spctl --assess"))
+        #expect(command.contains("/usr/sbin/installer -pkg \"$PKG\" -target /"))
+
+        let copied = command.range(of: "/bin/cp")
+        let verified = command.range(of: "/usr/sbin/pkgutil")
+        let installed = command.range(of: "/usr/sbin/installer")
+        guard let copied, let verified, let installed else {
+            Issue.record("expected copy, verification, and installation commands")
+            return
+        }
+        #expect(copied.lowerBound < verified.lowerBound)
+        #expect(verified.lowerBound < installed.lowerBound)
+    }
 }

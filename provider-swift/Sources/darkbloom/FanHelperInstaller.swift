@@ -4,65 +4,60 @@ import Foundation
 enum FanHelperInstaller {
     enum InstallError: Error, LocalizedError {
         case packageMissing
-        case signatureInvalid(String)
-        case openFailed(String)
+        case installFailed(String)
 
         var errorDescription: String? {
             switch self {
             case .packageMissing:
                 return "this build does not contain the signed fan-helper package"
-            case .signatureInvalid(let detail):
-                return "fan-helper package signature is invalid: \(detail)"
-            case .openFailed(let detail):
-                return "could not open the fan-helper installer: \(detail)"
+            case .installFailed(let detail):
+                return "fan-helper installation failed: \(detail)"
             }
         }
     }
 
-    static func openInstaller() throws {
+    static func install() throws {
         let package = try packageURL()
-        let signature = try run(
-            executable: "/usr/sbin/pkgutil",
-            arguments: ["--check-signature", package.path]
+        let command = installShellCommand(packagePath: package.path)
+        let script = "do shell script \(appleScriptLiteral(command)) "
+            + "with administrator privileges"
+        let installed = try run(
+            executable: "/usr/bin/osascript",
+            arguments: ["-e", script]
         )
-        guard signature.status == 0,
-              signature.output.contains("Developer ID Installer"),
-              signature.output.contains(FanControlIPC.teamIdentifier) else {
-            throw InstallError.signatureInvalid(
-                signature.output.trimmingCharacters(
+        guard installed.status == 0 else {
+            throw InstallError.installFailed(
+                installed.output.trimmingCharacters(
                     in: .whitespacesAndNewlines
                 )
             )
         }
+    }
 
-        let assessment = try run(
-            executable: "/usr/sbin/spctl",
-            arguments: [
-                "--assess",
-                "--type", "install",
-                "--verbose=2",
-                package.path,
-            ]
+    static func installShellCommand(packagePath: String) -> String {
+        let source = shellQuote(packagePath)
+        let requiredIdentity = shellQuote(
+            "Developer ID Installer"
         )
-        guard assessment.status == 0 else {
-            throw InstallError.signatureInvalid(
-                assessment.output.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                )
-            )
-        }
-
-        let opened = try run(
-            executable: "/usr/bin/open",
-            arguments: [package.path]
-        )
-        guard opened.status == 0 else {
-            throw InstallError.openFailed(
-                opened.output.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                )
-            )
-        }
+        let requiredTeam = shellQuote(FanControlIPC.teamIdentifier)
+        return [
+            "set -eu",
+            "umask 077",
+            "STAGE=\"$(/usr/bin/mktemp -d "
+                + "/private/var/tmp/darkbloom-fan.XXXXXXXX)\"",
+            "cleanup() { /bin/rm -rf \"$STAGE\"; }",
+            "trap cleanup 0 HUP INT TERM",
+            "PKG=\"$STAGE/DarkbloomFanHelper.pkg\"",
+            "/bin/cp \(source) \"$PKG\"",
+            "/usr/sbin/chown root:wheel \"$PKG\"",
+            "/bin/chmod 0600 \"$PKG\"",
+            "SIGNATURE=\"$(/usr/sbin/pkgutil --check-signature "
+                + "\"$PKG\" 2>&1)\"",
+            "case \"$SIGNATURE\" in *\(requiredIdentity)*\(requiredTeam)*) "
+                + ";; *) /bin/echo \"$SIGNATURE\" >&2; exit 65 ;; esac",
+            "/usr/sbin/spctl --assess --type install --verbose=2 \"$PKG\"",
+            "/usr/sbin/installer -pkg \"$PKG\" -target /",
+        ].joined(separator: "; ")
     }
 
     static func packageURL(
@@ -107,5 +102,17 @@ enum FanHelperInstaller {
             process.terminationStatus,
             String(decoding: data, as: UTF8.self)
         )
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private static func appleScriptLiteral(_ value: String) -> String {
+        "\""
+            + value
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            + "\""
     }
 }

@@ -43,7 +43,7 @@ struct Fan: AsyncParsableCommand {
 
     @Flag(
         name: .long,
-        help: "Open the signed one-time privileged-helper installer, then exit."
+        help: "Install the signed privileged helper with an admin prompt, then exit."
     )
     var installHelper = false
 
@@ -62,10 +62,10 @@ struct Fan: AsyncParsableCommand {
         }
 
         if installHelper {
-            try FanHelperInstaller.openInstaller()
+            try FanHelperInstaller.install()
             print(
-                "Opened the signed Darkbloom fan-helper installer. "
-                    + "Complete the admin prompt, then run `darkbloom fan`."
+                "Installed the signed Darkbloom fan helper. "
+                    + "Run `darkbloom fan` to start cooling."
             )
             return
         }

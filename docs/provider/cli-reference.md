@@ -211,7 +211,7 @@ This toggles `provider.auto_update` in `provider.toml`.
 Run an optional foreground cooling controller during inference:
 
 ```bash
-# One-time setup: opens a signed Installer package and admin prompt.
+# One-time setup: verifies and installs the signed package after an admin prompt.
 darkbloom fan --install-helper
 
 # Normal use stays unprivileged.
@@ -235,7 +235,7 @@ macOS reports serious/critical thermal pressure.
 | `--temperature <celsius>` | Activation threshold (20–110°C, default 40) |
 | `--poll-interval <seconds>` | Lease renewal interval (0.5–5s, default 2) |
 | `--activity-file <path>` | Override the provider inference-activity path |
-| `--install-helper` | Verify and open the signed one-time helper installer |
+| `--install-helper` | Verify and install the signed helper through an admin prompt |
 | `--reset` | Force every fan back to macOS automatic control and exit |
 
 The CLI never runs as root. Its signed, minimal launchd helper owns AppleSMC and

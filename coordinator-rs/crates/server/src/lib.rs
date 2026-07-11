@@ -21,5 +21,6 @@ pub mod runtime;
 pub mod schema;
 pub mod shutdown;
 pub mod supervisor;
+pub mod surface;
 pub mod telemetry;
 pub mod trust;

@@ -24,27 +24,10 @@ enum DarkbloomCodeSignature {
             arguments.append("-R=\(designatedRequirement)")
         }
         arguments.append(target.path)
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-        process.arguments = arguments
-        let stderr = Pipe()
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = stderr
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let detail = String(
-                data: stderr.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            )?.trimmingCharacters(in: .whitespacesAndNewlines)
-                ?? "codesign exited \(process.terminationStatus)"
-            throw NSError(
-                domain: "DarkbloomCodeSignature",
-                code: Int(process.terminationStatus),
-                userInfo: [NSLocalizedDescriptionKey: detail]
-            )
-        }
+        try BoundedProcess.run(
+            URL(fileURLWithPath: "/usr/bin/codesign"),
+            arguments: arguments,
+            timeout: 120)
         #endif
     }
 }

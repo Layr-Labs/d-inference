@@ -25,7 +25,7 @@ set -euo pipefail
 COORD_URL="${COORD_URL:-__DARKBLOOM_COORD_URL__}"
 INSTALL_DIR="$HOME/.darkbloom"
 BIN_DIR="$INSTALL_DIR/bin"
-EXPECTED_TEAM_ID="SLDQ2GJ6TL"
+DARKBLOOM_DESIGNATED_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 INSTALL_TEST_MODE=0
 
 fail_install() {
@@ -44,6 +44,28 @@ verify_file_hash() {
         || fail_install "$label hash mismatch (expected $expected, got $actual)."
 }
 
+verify_code_requirement() {
+    local target=$1
+    local deep=$2
+    local requirement=$3
+    if [ "$deep" = "1" ]; then
+        codesign --verify --deep --strict --verbose=2 \
+            "-R=$requirement" "$target" >/dev/null 2>&1
+    else
+        codesign --verify --strict --verbose=2 \
+            "-R=$requirement" "$target" >/dev/null 2>&1
+    fi
+}
+
+verify_staged_app_signature() {
+    local app=$1
+    local requirement=${2:-$DARKBLOOM_DESIGNATED_REQUIREMENT}
+    verify_code_requirement "$app" 1 "$requirement" || {
+        fail_install "Staged Darkbloom.app does not satisfy the pinned signature requirement."
+        return 1
+    }
+}
+
 # Stock-macOS binary capability probe. `strings` is an Xcode CLT shim on a
 # pristine Mac (it prompts/fails without developer tools), so scan the file
 # directly with BSD grep's binary-as-text mode — grep ships in base macOS.
@@ -57,20 +79,13 @@ verify_staged_app() {
     local executable="$app/Contents/MacOS/darkbloom"
     local marker="$app/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1"
 
-    codesign --verify --deep --strict --verbose=2 "$app" >/dev/null 2>&1 \
-        || {
+    if [ "$INSTALL_TEST_MODE" = "1" ]; then
+        codesign --verify --deep --strict --verbose=2 "$app" >/dev/null 2>&1 || {
             fail_install "Strict code-signature verification failed for staged Darkbloom.app."
             return 1
         }
-
-    if [ "$INSTALL_TEST_MODE" != "1" ]; then
-        local team
-        team=$(codesign -dvv "$executable" 2>&1 \
-            | awk -F= '/^TeamIdentifier=/{print $2; exit}')
-        [ "$team" = "$EXPECTED_TEAM_ID" ] || {
-            fail_install "Staged app signer mismatch (expected team $EXPECTED_TEAM_ID, got ${team:-none})."
-            return 1
-        }
+    else
+        verify_staged_app_signature "$app" || return 1
     fi
 
     local code_has_paged=0
@@ -109,6 +124,19 @@ verify_staged_app() {
             fail_install "Packaged paged-kernel runtime smoke failed."
             return 1
         }
+}
+
+verify_staged_app_payload() {
+    local app=$1
+    local binary_hash=$2
+    local metallib_hash=$3
+    local app_bin="$app/Contents/MacOS"
+    [ -n "$binary_hash" ] && [ -n "$metallib_hash" ] || {
+        fail_install "App releases require binary_hash and metallib_hash."
+        return 1
+    }
+    verify_file_hash "$app_bin/darkbloom" "$binary_hash" "App binary" \
+        && verify_file_hash "$app_bin/mlx.metallib" "$metallib_hash" "App metallib"
 }
 
 commit_staged_app() {
@@ -203,6 +231,11 @@ install_bundle_atomically() {
     }
 
     if [ -d "$stage/Darkbloom.app" ]; then
+        verify_staged_app_payload \
+            "$stage/Darkbloom.app" "$binary_hash" "$metallib_hash" || {
+            rm -rf "$stage"
+            return 1
+        }
         verify_staged_app "$stage/Darkbloom.app" || {
             rm -rf "$stage"
             return 1
@@ -213,19 +246,17 @@ install_bundle_atomically() {
             return 1
         }
     else
-        codesign --verify --strict --verbose=2 "$flat_bin/darkbloom" >/dev/null 2>&1 \
-            || {
+        if [ "$INSTALL_TEST_MODE" = "1" ]; then
+            codesign --verify --strict --verbose=2 "$flat_bin/darkbloom" >/dev/null 2>&1 || {
                 rm -rf "$stage"
                 fail_install "Strict signature verification failed for legacy flat artifact."
                 return 1
             }
-        if [ "$INSTALL_TEST_MODE" != "1" ]; then
-            local flat_team
-            flat_team=$(codesign -dvv "$flat_bin/darkbloom" 2>&1 \
-                | awk -F= '/^TeamIdentifier=/{print $2; exit}')
-            [ "$flat_team" = "$EXPECTED_TEAM_ID" ] || {
+        else
+            verify_code_requirement \
+                "$flat_bin/darkbloom" 0 "$DARKBLOOM_DESIGNATED_REQUIREMENT" || {
                 rm -rf "$stage"
-                fail_install "Legacy flat artifact signer mismatch."
+                fail_install "Legacy flat artifact does not satisfy the pinned signature requirement."
                 return 1
             }
         fi
@@ -237,6 +268,15 @@ install_bundle_atomically() {
     fi
     rm -rf "$stage"
 }
+
+if [ "${1:-}" = "--verify-staged-app-signature-test" ]; then
+    [ "$#" -eq 3 ] || {
+        echo "usage: $0 --verify-staged-app-signature-test <app> <requirement>" >&2
+        exit 64
+    }
+    verify_staged_app_signature "$2" "$3"
+    exit $?
+fi
 
 if [ "${1:-}" = "--install-bundle-test" ]; then
     [ "$#" -eq 5 ] || {

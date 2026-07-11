@@ -143,6 +143,11 @@ run_install() {
         "$archive" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH"
 }
 
+run_install_without_hashes() {
+    PATH="$CLT_SHIMS:$PATH" bash "$INSTALLER" --install-bundle-test \
+        "$1" "$2" "" ""
+}
+
 VALID="$ROOT/valid.tar.gz"
 MISSING="$ROOT/missing.tar.gz"
 LEGACY="$ROOT/legacy.tar.gz"
@@ -150,12 +155,59 @@ make_artifact "$VALID" paged yes
 make_artifact "$MISSING" paged no
 make_artifact "$LEGACY" legacy no
 
+# The designated requirement must be applied to the complete app target,
+# whose main-executable signature seals Contents/Resources.
+SIGNATURE_ROOT="$ROOT/signature"
+mkdir -p "$SIGNATURE_ROOT"
+tar xzf "$VALID" -C "$SIGNATURE_ROOT"
+APP_REQUIREMENT=$(codesign -d -r- \
+    "$SIGNATURE_ROOT/Darkbloom.app" 2>&1 \
+    | awk -F' => ' '/designated/{print $2; exit}')
+[ -n "$APP_REQUIREMENT" ]
+PRODUCTION_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
+for installer in \
+    "$REPO_ROOT/scripts/install.sh" \
+    "$REPO_ROOT/coordinator/api/install.sh"
+do
+    grep -Fqx \
+        "DARKBLOOM_DESIGNATED_REQUIREMENT='$PRODUCTION_REQUIREMENT'" \
+        "$installer"
+    bash "$installer" --verify-staged-app-signature-test \
+        "$SIGNATURE_ROOT/Darkbloom.app" "$APP_REQUIREMENT"
+    if bash "$installer" --verify-staged-app-signature-test \
+        "$SIGNATURE_ROOT/Darkbloom.app" 'identifier "not.darkbloom"'
+    then
+        echo "$installer accepted an app outside the required identity" >&2
+        exit 1
+    fi
+done
+
+# Make the registered flat metallib differ from the signed app payload.
+# Structural app verification alone must not admit it.
+DIVERGED_ROOT="$ROOT/diverged"
+mkdir -p "$DIVERGED_ROOT"
+tar xzf "$VALID" -C "$DIVERGED_ROOT"
+printf 'diverged\n' \
+    >> "$DIVERGED_ROOT/bin/mlx.metallib"
+DIVERGED="$ROOT/diverged.tar.gz"
+tar czf "$DIVERGED" -C "$DIVERGED_ROOT" .
+
 INSTALL="$ROOT/install"
 mkdir -p "$INSTALL/Darkbloom.app"
 printf 'old\n' > "$INSTALL/Darkbloom.app/sentinel"
 
+if run_install_without_hashes "$VALID" "$INSTALL"; then
+    echo "app release without payload hashes unexpectedly installed" >&2
+    exit 1
+fi
+test -f "$INSTALL/Darkbloom.app/sentinel"
 if run_install "$MISSING" "$INSTALL"; then
     echo "missing paged resource unexpectedly installed" >&2
+    exit 1
+fi
+test -f "$INSTALL/Darkbloom.app/sentinel"
+if run_install "$DIVERGED" "$INSTALL"; then
+    echo "divergent app payload unexpectedly installed" >&2
     exit 1
 fi
 test -f "$INSTALL/Darkbloom.app/sentinel"
@@ -185,8 +237,18 @@ INSTALLER="$REPO_ROOT/coordinator/api/install.sh"
 COORD_INSTALL="$ROOT/coordinator-install"
 mkdir -p "$COORD_INSTALL/Darkbloom.app"
 printf 'coordinator-old\n' > "$COORD_INSTALL/Darkbloom.app/sentinel"
+if run_install_without_hashes "$VALID" "$COORD_INSTALL"; then
+    echo "coordinator installer accepted an app without payload hashes" >&2
+    exit 1
+fi
+test -f "$COORD_INSTALL/Darkbloom.app/sentinel"
 if run_install "$MISSING" "$COORD_INSTALL"; then
     echo "coordinator installer accepted missing paged resource" >&2
+    exit 1
+fi
+test -f "$COORD_INSTALL/Darkbloom.app/sentinel"
+if run_install "$DIVERGED" "$COORD_INSTALL"; then
+    echo "coordinator installer accepted a divergent app payload" >&2
     exit 1
 fi
 test -f "$COORD_INSTALL/Darkbloom.app/sentinel"

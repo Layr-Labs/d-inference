@@ -357,6 +357,7 @@ public struct SelfUpdater: Sendable {
     /// the darkbloom root. Dot-prefixed so they stay out of the visible
     /// layout; cleaned up on the next staging pass if a crash orphans them.
     private static let stagingDirPrefix = ".update-staging-"
+    private static let artifactVerificationTimeout: TimeInterval = 120
 
     private struct ArtifactVerificationPolicy {
         let codeSignaturePolicy: DarkbloomCodeSignature.Policy?
@@ -491,7 +492,10 @@ public struct SelfUpdater: Sendable {
             removeStaleUpdateDirs(in: installDir)
 
             try fm.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
-            try runProcess("/usr/bin/tar", arguments: ["xzf", downloadedFile.path, "-C", stagingRoot.path])
+            try BoundedProcess.run(
+                URL(fileURLWithPath: "/usr/bin/tar"),
+                arguments: ["xzf", downloadedFile.path, "-C", stagingRoot.path],
+                timeout: Self.artifactVerificationTimeout)
 
             // Use the flat bin/ copies for hash verification (release hashes
             // are computed from the flat layout).
@@ -1127,10 +1131,11 @@ public struct SelfUpdater: Sendable {
                     + "\(PackagedRuntimeSmoke.mlxLMCommonBundleName)/pagedattention.metal "
                     + "(found \(bundles.count))")
         }
-        try runProcess(
-            executable.path,
+        try BoundedProcess.run(
+            executable,
             arguments: ["runtime-smoke"],
-            environment: ["DARKBLOOM_NO_UPDATE_CHECK": "1"])
+            environment: ["DARKBLOOM_NO_UPDATE_CHECK": "1"],
+            timeout: Self.artifactVerificationTimeout)
     }
 
     private func verifyCodeSignature(
@@ -1150,31 +1155,6 @@ public struct SelfUpdater: Sendable {
             throw UpdateError.replaceFailed("\(label) code signature verification failed: \(error.localizedDescription)")
         }
         #endif
-    }
-
-    private func runProcess(
-        _ executable: String,
-        arguments: [String],
-        environment: [String: String]? = nil
-    ) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        if let environment {
-            process.environment = ProcessInfo.processInfo.environment.merging(
-                environment,
-                uniquingKeysWith: { _, override in override })
-        }
-        let stderr = Pipe()
-        process.standardError = stderr
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let data = stderr.fileHandleForReading.readDataToEndOfFile()
-            let message = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            throw UpdateError.replaceFailed(message?.isEmpty == false ? message! : "\(executable) exited \(process.terminationStatus)")
-        }
     }
 
 }

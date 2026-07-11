@@ -11,6 +11,7 @@ import MLXLLM
 import MLXLMCommon
 import MLXLMServer
 import MLXVLM
+
 #if canImport(os)
 import os
 #endif
@@ -42,7 +43,9 @@ extension ProviderLoop {
         }
 
         logger.info("darkbloom \(ProviderCore.version) starting")
-        logger.info("Hardware: \(loopConfig.hardware.chipName), \(loopConfig.hardware.memoryGb) GB RAM, \(loopConfig.hardware.gpuCores) GPU cores")
+        logger.info(
+            "Hardware: \(loopConfig.hardware.chipName), \(loopConfig.hardware.memoryGb) GB RAM, \(loopConfig.hardware.gpuCores) GPU cores"
+        )
         logger.info("Models: \(loopConfig.models.count) advertised")
         logger.info("Coordinator: \(loopConfig.coordinatorURL)")
 
@@ -58,8 +61,10 @@ extension ProviderLoop {
         // .userInitiated suppresses App Nap; .idleSystemSleepDisabled keeps an
         // idle box awake while serving, on battery too (caffeinate -s is AC-only).
         let napAssertion = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiated, .idleSystemSleepDisabled,
-                      .suddenTerminationDisabled, .automaticTerminationDisabled],
+            options: [
+                .userInitiated, .idleSystemSleepDisabled,
+                .suddenTerminationDisabled, .automaticTerminationDisabled,
+            ],
             reason: "Darkbloom provider serving inference / keeping the coordinator link alive")
         defer { ProcessInfo.processInfo.endActivity(napAssertion) }
 
@@ -135,7 +140,8 @@ extension ProviderLoop {
         #if os(macOS)
         apnsDeviceToken = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 10)
         if apnsDeviceToken == nil {
-            logger.warning("no APNs device token (no GUI session / not push-provisioned) — registering un-attested")
+                logger.warning(
+                    "no APNs device token (no GUI session / not push-provisioned) — registering un-attested")
         }
         #endif
 
@@ -162,6 +168,24 @@ extension ProviderLoop {
             apnsEnvironment: apnsDeviceToken != nil ? "production" : nil
         )
 
+        // Protocol v2 is advertised only when the complete runtime handler can
+        // be installed. A terminal signer is mandatory for its durable paid
+        // lifecycle; signer-less debug/unsupported hosts remain byte-compatible
+        // v1 providers.
+        let protocolV2Attempts: V2PreparedAttemptCoordinator?
+        if let signer, signer is PersistentEnclaveKey {
+            protocolV2Attempts = V2PreparedAttemptCoordinator(
+                directory: loopConfig.protocolV2DurableDirectory,
+                signer: SecureEnclaveTerminalSigner(identity: signer)
+            )
+        } else {
+            protocolV2Attempts = nil
+            if signer != nil {
+                logger.warning(
+                    "Protocol-v2 disabled: durable terminals require the persistent Secure Enclave identity")
+            }
+        }
+
         // 4. Create coordinator client and start connection
         let coordinator = CoordinatorClient(
             config: coordinatorConfig,
@@ -174,11 +198,33 @@ extension ProviderLoop {
         // already have refreshed a hash, and registration must carry it.
         await coordinator.updateModelWeightHashes(liveModelHashes)
 
-        let (events, sendFn) = await coordinator.start()
+        let sendFn = await coordinator.outboundSender()
         // Wire the direct inference-chunk fast path (Optimizations 1-3) alongside
         // the control path. `chunkSender` is a nonisolated handle on the actor;
         // its connection sink is (re)bound per session inside the client.
         let send = SendHandle(sendFn, chunkSender: coordinator.chunkSender)
+        var protocolV2HandlerTask: Task<Void, Never>?
+        if let attempts = protocolV2Attempts {
+            let installedTask = Task { [weak self] in
+                guard let self else { return }
+                await self.runProtocolV2Handlers(
+                    coordinator: coordinator,
+                    send: send,
+                    attempts: attempts
+                )
+            }
+            if await coordinator.installProtocolV2RuntimeHandler() {
+                protocolV2HandlerTask = installedTask
+            } else {
+                installedTask.cancel()
+                await installedTask.value
+                logger.error(
+                    "Protocol-v2 handler installation raced connection startup; advertising v1")
+            }
+        }
+        // Registration cannot begin until the optional handler task above is
+        // installed and protocol-v2 capabilities have been enabled atomically.
+        let (events, _) = await coordinator.start()
 
         // APNs code-identity (v0.6.0): answer pushed code-identity challenges by
         // decrypting E_K(nonce) with K and signing the nonce with the SE key, then
@@ -200,7 +246,9 @@ extension ProviderLoop {
             let log = logger
             Task {
                 if let late = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 60) {
-                    log.info("APNs device token arrived after registration — reconnecting to re-register with token")
+                        log.info(
+                            "APNs device token arrived after registration — reconnecting to re-register with token"
+                        )
                     await coordinator.refreshAPNsToken(late)
                 }
             }
@@ -281,7 +329,9 @@ extension ProviderLoop {
                         // registration receives fresh desired state — but an
                         // aborted restart replays it via resumeServingAfterUpdate.
                         deferredDesiredModels = entries
-                        logger.info("Deferring desired_models during update drain (\(entries.count) entr(ies)); replayed if the restart is aborted")
+                        logger.info(
+                            "Deferring desired_models during update drain (\(entries.count) entr(ies)); replayed if the restart is aborted"
+                        )
                     } else {
                         await reconcileDesiredModels(entries, send: send)
                     }
@@ -334,10 +384,13 @@ extension ProviderLoop {
 
         let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
         if !drained {
-            logger.warning("Timed out waiting for active inference to drain; cancelling remaining requests")
+            logger.warning(
+                "Timed out waiting for active inference to drain; cancelling remaining requests")
             await cancelAllInflight()
         }
         await coordinator.shutdown()
+        protocolV2HandlerTask?.cancel()
+        await protocolV2HandlerTask?.value
         while !modelSlots.isEmpty {
             if let unloading = modelsUnloading.first {
                 await waitForModelUnload(unloading)
@@ -361,7 +414,9 @@ extension ProviderLoop {
         }
         self.securityPosture = posture
         self.binaryHash = binaryHash
-        logger.info("Security posture verified: SIP=\(posture.sipEnabled), RDMA_disabled=\(posture.rdmaDisabled), SE=\(SecureEnclave.isAvailable)")
+            logger.info(
+                "Security posture verified: SIP=\(posture.sipEnabled), RDMA_disabled=\(posture.rdmaDisabled), SE=\(SecureEnclave.isAvailable)"
+            )
         #else
         logger.info("Security hardening skipped in DEBUG mode")
         self.binaryHash = selfBinaryHash()

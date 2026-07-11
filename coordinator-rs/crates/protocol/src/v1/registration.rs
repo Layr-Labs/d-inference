@@ -188,6 +188,11 @@ pub struct Heartbeat {
     pub system_metrics: SystemMetrics,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend_capacity: Option<BackendCapacity>,
+    /// Monotonic process-local revision for the complete warm-model snapshot.
+    /// Protocol-v2 model lifecycle events for the same transition carry this
+    /// exact value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_state_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub apns_device_token: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]

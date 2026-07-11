@@ -3,6 +3,7 @@
 
 import Foundation
 import Network
+
 #if canImport(os)
 import os
 #endif
@@ -11,7 +12,6 @@ extension CoordinatorClient {
     // MARK: - Connection Loop
 
     internal func runLoop() async {
-        var backoff = ExponentialBackoff(base: 1.0, max: 30.0)
         var reconnectCount: UInt64 = 0
 
         while !shutdownRequested {
@@ -20,15 +20,17 @@ extension CoordinatorClient {
             do {
                 try await connectAndRun()
                 logger.info("Coordinator connection closed, reconnecting...")
-                backoff.reset()
+                markRegistrationSucceeded()
                 continue
             } catch {
                 if shutdownRequested { break }
 
                 eventContinuation?.yield(.disconnected)
-                let delay = backoff.nextDelay()
+                let delay = nextReconnectDelay()
                 let reachable = reachability.isReachable
-                logger.warning("Coordinator connection error: \(error.localizedDescription). network_reachable=\(reachable). Reconnecting in \(delay)s")
+                logger.warning(
+                    "Coordinator connection error: \(error.localizedDescription). network_reachable=\(reachable). Reconnecting in \(delay)s"
+                )
 
                 reconnectCount += 1
                 if shouldEmitReconnectTelemetry(count: reconnectCount) {
@@ -46,6 +48,7 @@ extension CoordinatorClient {
 
         logger.info("Coordinator client shut down")
         eventContinuation?.finish()
+        runLoopTask = nil
     }
 
     // MARK: - Single Connection Session
@@ -94,6 +97,7 @@ extension CoordinatorClient {
         // and the coordinator's WS route would reject it.
         let connection = NWConnection(to: .url(url), using: params)
         self.nwConnection = connection
+        var outboundActivation: OutboundRouter.Activation?
 
         // Mid-session connection drops are published here by the persistent state
         // handler and rethrown by a task-group child to drive the reconnect loop.
@@ -110,6 +114,10 @@ extension CoordinatorClient {
             // by identity so a concurrent reconnect's freshly-bound writer isn't
             // clobbered by this teardown.
             self.chunkBatcher.unbind(ifCurrent: connection)
+            self.resetV2NegotiationForReconnect()
+            if let outboundActivation {
+                self.outboundRouter.deactivate(outboundActivation)
+            }
             connection.cancel()
         }
 
@@ -158,7 +166,11 @@ extension CoordinatorClient {
 
         logger.info("NWConnection ready; sending registration to coordinator")
 
+        // Negotiation is scoped to one WebSocket session. The process generation
+        // remains stable, but a reconnect must receive a fresh explicit ACK.
+        resetV2NegotiationForReconnect()
         try await sendRegistration(connection: connection)
+        markRegistrationSucceeded()
         logger.info("Sent registration to coordinator")
 
         // Fresh outbound stream for THIS connection. AsyncStream is single-shot:
@@ -168,8 +180,10 @@ extension CoordinatorClient {
         // closure through outboundRouter) is what keeps attestation responses and
         // inference replies flowing after a reconnect. Activate before announcing
         // .connected so any immediate outbound is buffered, not dropped.
-        let (outboundStream, outboundCont) = AsyncStream<OutboundMessage>.makeStream()
-        outboundRouter.activate(outboundCont)
+        let (outboundStream, outboundCont) = AsyncStream<OutboundMessage>.makeStream(
+            bufferingPolicy: .bufferingOldest(Self.outboundBufferCapacity)
+        )
+        outboundActivation = outboundRouter.activate(outboundCont)
 
         // Bind the inference-chunk fast path to THIS connection. A per-session
         // ChunkFrameWriter (Opt 3: reused send contexts) becomes the batcher's
@@ -188,6 +202,21 @@ extension CoordinatorClient {
             outboundStream: outboundStream,
             failureStream: failureStream
         )
+    }
+
+    internal func nextReconnectDelay() -> TimeInterval {
+        reconnectBackoff.nextDelay()
+    }
+
+    internal func markRegistrationSucceeded() {
+        reconnectBackoff.reset()
+    }
+
+    internal func resetV2NegotiationForReconnect() {
+        if let session = v2Negotiation.session {
+            v2SessionEventContinuation.yield(.ended(session))
+        }
+        v2Negotiation.resetForReconnect()
     }
 
     private func sessionLoop(
@@ -236,6 +265,7 @@ extension CoordinatorClient {
                 guard let self else { return }
                 for await msg in outboundStream {
                     if self.shutdownRequested { break }
+                    guard await self.allowsOutbound(msg) else { continue }
                     let json = self.encodeOutbound(msg)
                     self.sendTextFrame(json, on: connection, identifier: "chunk")
                 }
@@ -379,7 +409,8 @@ extension CoordinatorClient {
                 }
 
             // Extract WS metadata for opcode inspection.
-            let wsMeta = context?.protocolMetadata(
+            let wsMeta =
+                context?.protocolMetadata(
                 definition: NWProtocolWebSocket.definition
             ) as? NWProtocolWebSocket.Metadata
 
@@ -397,7 +428,7 @@ extension CoordinatorClient {
             // close (peer dropped TCP without a WS close frame) — surface as
             // disconnection instead of spinning in a tight loop.
             guard let data, !data.isEmpty else {
-                if let wsMeta, (wsMeta.opcode == .ping || wsMeta.opcode == .pong) {
+                if let wsMeta, wsMeta.opcode == .ping || wsMeta.opcode == .pong {
                     continue
                 }
                 // No data and no control-frame metadata → connection closed
@@ -405,12 +436,13 @@ extension CoordinatorClient {
                 throw CoordinatorError.connectionClosed(NWError.posix(.ECONNRESET))
             }
 
-            if let text = String(data: data, encoding: .utf8) {
+            if wsMeta?.opcode == .binary {
+                await handleIncomingBinary(data)
+            } else if let text = String(data: data, encoding: .utf8) {
                 await handleIncomingText(text)
             }
         }
     }
-
 
     // MARK: - Telemetry
 
@@ -434,6 +466,8 @@ extension CoordinatorClient {
                 "network_reachable": .bool(reachable),
             ]
         )
-        logger.warning("Reconnect telemetry: count=\(count) network_reachable=\(reachable) error=\(error.localizedDescription)")
+        logger.warning(
+            "Reconnect telemetry: count=\(count) network_reachable=\(reachable) error=\(error.localizedDescription)"
+        )
     }
 }

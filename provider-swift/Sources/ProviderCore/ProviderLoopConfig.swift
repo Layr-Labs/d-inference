@@ -17,6 +17,9 @@ public struct ProviderLoopConfig: Sendable {
     /// `ensureModelLoaded` skip a full re-read of weights that were already
     /// hashed at startup; without them the first load re-hashes every byte.
     public let modelHashFingerprints: [String: String]
+    /// Crash-durable protocol-v2 journal root. Tests inject a temporary
+    /// directory; production defaults to Application Support/darkbloom.
+    public let protocolV2DurableDirectory: URL
     /// When set, the provider also serves a local OpenAI-compatible HTTP
     /// endpoint off the SAME loaded models it serves to the coordinator
     /// (unified mode). nil = coordinator-only (the default).
@@ -31,6 +34,7 @@ public struct ProviderLoopConfig: Sendable {
         runtimeHashes: RuntimeHashes? = nil,
         modelHashes: [String: String] = [:],
         modelHashFingerprints: [String: String] = [:],
+        protocolV2DurableDirectory: URL? = nil,
         localEndpoint: LocalInferenceHTTPConfig? = nil
     ) {
         self.coordinatorURL = coordinatorURL
@@ -41,6 +45,23 @@ public struct ProviderLoopConfig: Sendable {
         self.runtimeHashes = runtimeHashes
         self.modelHashes = modelHashes
         self.modelHashFingerprints = modelHashFingerprints
+        self.protocolV2DurableDirectory =
+            protocolV2DurableDirectory
+            ?? Self.defaultProtocolV2DurableDirectory()
         self.localEndpoint = localEndpoint
+    }
+
+    private static func defaultProtocolV2DurableDirectory() -> URL {
+        let base =
+            FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            ).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support", isDirectory: true)
+        return
+            base
+            .appendingPathComponent("darkbloom", isDirectory: true)
+            .appendingPathComponent("protocol-v2", isDirectory: true)
     }
 }

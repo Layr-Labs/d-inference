@@ -59,6 +59,10 @@ extension EngineV2Bridge {
         for state in active.values {
             maxTokensPotential += Int64(state.promptTokens + state.maxTokens)
         }
+        for state in preparedRequests.values {
+            maxTokensPotential += Int64(
+                state.inference.promptTokens.count + max(0, state.request.maxTokens))
+        }
 
         // Budget fields — SEMANTICS ALIGNED WITH THE LEGACY SCHEDULER
         // (round-2 PR#499 P2). The coordinator's token-budget admission gate
@@ -85,9 +89,11 @@ extension EngineV2Bridge {
         //                           reservation the admission gate must see —
         //                           conservative for sliding-window models,
         //                           whose engine ledger plateaus per layer)
-        //   activeTokenBudgetMax  ← min(kvBytesCapacity, live fleet clamp) /
-        //                           fp16 rate (the engine's admission ceiling
-        //                           in tokens, clamped to the sizing
+        //   activeTokenBudgetMax  ← AdmissionV2 admissible bytes (capacity
+        //                           minus watermark and compiled reserve) /
+        //                           fp16 rate, after the live fleet clamp
+        //                           (the engine's admission ceiling in
+        //                           tokens, clamped to the sizing
         //                           function's CURRENT answer when the caller
         //                           supplies fleet context — see the doc
         //                           comment above; 0 when the rate is
@@ -116,8 +122,12 @@ extension EngineV2Bridge {
         } else {
             reportedKVBytesCapacity = boundedKVBytesCapacity
         }
+        let admissibleKVBytes = preparedAdmission.admissibleBytesCapacity(
+            totalCapacity: reportedKVBytesCapacity)
         let budgetMax: Int64 =
-            kvBytesPerToken > 0 ? Int64(reportedKVBytesCapacity / kvBytesPerToken) : 0
+            kvBytesPerToken > 0
+            ? Int64(max(0, admissibleKVBytes) / kvBytesPerToken)
+            : 0
 
         let state: String
         if recoveryReloading {
@@ -126,7 +136,7 @@ extension EngineV2Bridge {
             // legacy `heartbeatSlotState` precedence — so the coordinator
             // deroutes the model without treating it as crashed-forever.
             state = "reloading"
-        } else if wedgeMonitor.wedgeSuspected(now: now) {
+        } else if preparedTerminalWedge || wedgeMonitor.wedgeSuspected(now: now) {
             // Same truthful-derouting contract as the legacy heartbeat: a
             // wedged slot must not keep advertising healthy.
             state = "crashed"
@@ -138,7 +148,9 @@ extension EngineV2Bridge {
             model: modelId,
             state: state,
             numRunning: UInt32(clamping: max(0, snapshot.activeRequests)),
-            numWaiting: UInt32(clamping: max(0, snapshot.waitingRequests)),
+            numWaiting: UInt32(
+                clamping: max(
+                    0, snapshot.waitingRequests + preparedRequests.count)),
             activeTokens: Int64(snapshot.activeTokens),
             maxTokensPotential: maxTokensPotential,
             maxConcurrency: UInt32(clamping: maxConcurrentRequests),
@@ -166,7 +178,7 @@ extension EngineV2Bridge {
     /// Number of requests currently active on this bridge (heartbeat
     /// aggregate `inferenceActive` input).
     public func activeRequestCount() -> Int {
-        active.count
+        active.count + preparedRequests.count
     }
 
     /// This engine's KV admission ceiling in bytes (construction-fixed;

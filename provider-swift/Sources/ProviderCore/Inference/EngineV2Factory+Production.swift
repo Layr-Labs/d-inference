@@ -356,20 +356,44 @@ extension EngineV2Factory {
         caches: [any CBv2AttendingLayerCache],
         schedulerConfig: CBv2SchedulerConfig,
         prefixCache: (any CBv2PrefixCache)?
-    ) -> EngineV2 {
-        EngineV2(
-            model: CBv2SteppableLanguageModelAdapter(model),
+    ) -> any CBv2Engine {
+        let steppableModel = CBv2SteppableLanguageModelAdapter(model)
+        let admissionConfig = AdmissionV2.Config()
+        let compiledDecodeConfig = CBv2CompiledDecodeConfig()
+
+        // Mirror the exact external reserve EngineV2 derives for compiled
+        // decode so a prepared lease and the eventual submit use the same
+        // admission ceiling on both contiguous and paged backends.
+        let compiledAdmissionReserve =
+            CBv2CompiledDecode.build(
+                model: steppableModel,
+                layerKinds: layerKinds,
+                config: compiledDecodeConfig,
+                maxConcurrentRequests: schedulerConfig.maxConcurrentRequests,
+                kvBytesCapacity: backend.bytesCapacity
+            )?.admissionPaddingReserve ?? 0
+        let preparedAdmission = EngineV2PreparedAdmission(
+            layerKinds: layerKinds,
+            config: admissionConfig,
+            externalReserveBytes: compiledAdmissionReserve)
+
+        let engine = EngineV2(
+            model: steppableModel,
             layerKinds: layerKinds,
             backend: backend,
             cacheProvider: CBv2LayerCacheBank(caches: caches),
             sampler: CBv2DefaultSampler(),
             detokenizerFactory: CBv2TextDetokenizerFactory(tokenizer: tokenizer),
             schedulerConfig: schedulerConfig,
+            admissionConfig: admissionConfig,
             // TB-007 / T-041 (v0.7.5): this CBv2 cache is either the
             // default-on encrypted SSD tier or the opt-in RAM PrefixCacheV2
             // tier. Both use per-request cacheSalt scoping; selection and
             // budgets live in PrefixCachePolicy.
-            prefixCache: prefixCache
-        )
+            prefixCache: prefixCache,
+            compiledDecodeConfig: compiledDecodeConfig)
+        return PreparedAdmissionCBv2Engine(
+            engine: engine,
+            preparedAdmission: preparedAdmission)
     }
 }

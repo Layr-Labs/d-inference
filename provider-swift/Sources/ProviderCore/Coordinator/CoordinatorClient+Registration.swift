@@ -3,6 +3,7 @@
 
 import Foundation
 import Network
+
 #if canImport(os)
 import os
 #endif
@@ -11,7 +12,9 @@ extension CoordinatorClient {
     // MARK: - Registration
 
     internal func sendRegistration(connection: NWConnection) async throws {
-        let privacyCapabilities = config.privacyCapabilities ?? PrivacyCapabilities(
+        let privacyCapabilities =
+            config.privacyCapabilities
+            ?? PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
             pythonRuntimeLocked: true,
@@ -29,7 +32,11 @@ extension CoordinatorClient {
             models: advertisedModelStore.models,
             privacyCapabilities: privacyCapabilities,
             apnsDeviceTokenOverride: apnsTokenOverride,
-            modelWeightHashOverrides: modelWeightHashOverrides
+            modelWeightHashOverrides: modelWeightHashOverrides,
+            protocolCapabilities: v2Negotiation.localCapabilities,
+            providerProcessGeneration: v2Negotiation.localCapabilities == nil
+                ? nil
+                : v2Negotiation.processGeneration
         )
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
             throw CoordinatorError.encodingFailed
@@ -59,10 +66,16 @@ extension CoordinatorClient {
 
     // MARK: - Heartbeat
 
-    func buildHeartbeatJSON() -> String {
+    func buildHeartbeatJSON(
+        modelStateOverride: (revision: UInt64, warmModels: [String])? = nil
+    ) -> String {
         let isActive = state.inferenceActive
         let activeModel = state.currentModel
-        let warmModels = state.warmModels
+        let modelState = modelStateOverride ?? state.modelStateSnapshot()
+        let modelStateRevision =
+            v2Negotiation.session?.capabilities.modelLifecycleEvents == true
+            ? modelState.revision
+            : nil
         let capacity = state.backendCapacity
         let metrics = SystemMetricsCollector.collect(cpuCores: config.hardware.cpuCores.total)
 
@@ -82,17 +95,19 @@ extension CoordinatorClient {
         // Env mirrors the registration path: a dynamically-sourced token (live
         // bridge or late override) defaults to "production" when config carried no
         // environment; a config-only token keeps config's environment as-is.
-        let effectiveEnv: String? = (liveToken != nil || apnsTokenOverride != nil)
+        let effectiveEnv: String? =
+            (liveToken != nil || apnsTokenOverride != nil)
             ? (config.apnsEnvironment ?? "production")
             : config.apnsEnvironment
 
         let message = CoordinatorClientCodec.heartbeatMessage(
             status: isActive ? .serving : .idle,
             activeModel: activeModel,
-            warmModels: warmModels,
+            warmModels: modelState.warmModels,
             stats: stats.snapshot(),
             systemMetrics: metrics,
             backendCapacity: capacity,
+            modelStateRevision: modelStateRevision,
             apnsDeviceToken: effectiveToken,
             apnsEnvironment: effectiveEnv
         )
@@ -107,8 +122,33 @@ extension CoordinatorClient {
             recordEncodeFailure("heartbeat", error)
             // Last resort: a valid idle heartbeat keeps the connection alive
             // rather than shipping malformed bytes the coordinator would drop.
-            return "{\"type\":\"heartbeat\",\"status\":\"idle\",\"stats\":{\"requests_served\":0,\"tokens_generated\":0},\"system_metrics\":{\"memory_pressure\":0,\"cpu_usage\":0,\"thermal_state\":\"nominal\"}}"
+            return
+                "{\"type\":\"heartbeat\",\"status\":\"idle\",\"stats\":{\"requests_served\":0,\"tokens_generated\":0},\"system_metrics\":{\"memory_pressure\":0,\"cpu_usage\":0,\"thermal_state\":\"nominal\"}}"
         }
+    }
+
+    /// Queue a heartbeat from the exact model-state snapshot that will fence
+    /// immediately-following protocol-v2 model lifecycle events. Returning
+    /// false leaves the emitter's revision uncommitted so a live session can
+    /// retry instead of reporting a model transition without its matching
+    /// heartbeat view.
+    func sendProtocolV2ModelStateHeartbeat(
+        session: ProviderSessionIdentity,
+        revision: UInt64,
+        warmModels: [String]
+    ) -> Bool {
+        guard v2Negotiation.session?.identity == session,
+            let connection = nwConnection
+        else {
+            return false
+        }
+        let json = buildHeartbeatJSON(
+            modelStateOverride: (
+                revision: revision,
+                warmModels: warmModels
+            ))
+        sendTextFrame(json, on: connection, identifier: "v2-model-state-heartbeat")
+        return true
     }
 
 }

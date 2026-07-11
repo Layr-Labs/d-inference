@@ -28,7 +28,7 @@ pub const NONCE_RANGE: std::ops::Range<usize> = 116..140;
 pub const ROLLING_DIGEST_RANGE: std::ops::Range<usize> = 140..172;
 pub const SEQUENCE_RANGE: std::ops::Range<usize> = 172..180;
 pub const CIPHERTEXT_LEN_RANGE: std::ops::Range<usize> = 180..184;
-pub const RESERVED_RANGE: std::ops::Range<usize> = 184..192;
+pub const CUMULATIVE_TOKENS_RANGE: std::ops::Range<usize> = 184..192;
 
 /// Known encrypted payload frame kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -99,6 +99,9 @@ impl std::ops::BitOr for BinaryFrameFlags {
 pub type FrameFlags = BinaryFrameFlags;
 
 /// The fixed 192-byte, network-byte-order protocol-v2 binary header.
+///
+/// `cumulative_tokens` is authenticated alongside `rolling_digest`, allowing
+/// receivers to reproduce the rolling chain without parsing SSE payloads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BinaryFrameHeader {
     pub kind: BinaryFrameKind,
@@ -115,6 +118,7 @@ pub struct BinaryFrameHeader {
     pub rolling_digest: [u8; 32],
     pub sequence: u64,
     pub ciphertext_len: u32,
+    pub cumulative_tokens: u64,
 }
 
 impl BinaryFrameHeader {
@@ -144,7 +148,7 @@ impl BinaryFrameHeader {
         output[ROLLING_DIGEST_RANGE].copy_from_slice(&self.rolling_digest);
         output[SEQUENCE_RANGE].copy_from_slice(&self.sequence.to_be_bytes());
         output[CIPHERTEXT_LEN_RANGE].copy_from_slice(&self.ciphertext_len.to_be_bytes());
-        // RESERVED_RANGE remains zero.
+        output[CUMULATIVE_TOKENS_RANGE].copy_from_slice(&self.cumulative_tokens.to_be_bytes());
         Ok(output)
     }
 
@@ -169,10 +173,6 @@ impl BinaryFrameHeader {
         if major != Self::MAJOR {
             return Err(ProtocolError::UnsupportedMajor(major));
         }
-        if input[RESERVED_RANGE].iter().any(|byte| *byte != 0) {
-            return Err(ProtocolError::NonZeroReserved);
-        }
-
         let kind = BinaryFrameKind::try_from(input[KIND_OFFSET])?;
         let flags = BinaryFrameFlags::new(input[FLAGS_OFFSET])?;
         let ciphertext_len = read_u32(input, CIPHERTEXT_LEN_RANGE);
@@ -196,6 +196,7 @@ impl BinaryFrameHeader {
             rolling_digest: read_array(input, ROLLING_DIGEST_RANGE),
             sequence: read_u64(input, SEQUENCE_RANGE),
             ciphertext_len,
+            cumulative_tokens: read_u64(input, CUMULATIVE_TOKENS_RANGE),
         })
     }
 }

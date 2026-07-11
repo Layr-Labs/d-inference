@@ -27,9 +27,17 @@ public enum ProviderProtocolCodec {
 
         if case .register(var register) = message,
            register.attestation != nil,
-           let rawAttestation = JSONRawValueExtractor.rawValue(forKey: "attestation", in: data) {
+            let rawAttestation = JSONRawValueExtractor.rawValue(forKey: "attestation", in: data)
+        {
             register.attestation = RawJSON(rawBytes: rawAttestation)
             message = .register(register)
+        }
+
+        if case .register(let register) = message,
+            (register.protocolCapabilities?.protocolMajor ?? 0) >= protocolV2Major,
+            register.providerProcessGeneration == nil
+        {
+            throw ProtocolCodecError.missingProviderProcessGeneration
         }
 
         return message
@@ -46,7 +54,8 @@ public enum ProviderProtocolCodec {
         try encoder.encode(message)
     }
 
-    public static func encodeCoordinatorMessageString(_ message: CoordinatorMessage) throws -> String {
+    public static func encodeCoordinatorMessageString(_ message: CoordinatorMessage) throws -> String
+    {
         let data = try encodeCoordinatorMessage(message)
         guard let string = String(data: data, encoding: .utf8) else {
             throw ProtocolCodecError.nonUTF8Output
@@ -54,15 +63,37 @@ public enum ProviderProtocolCodec {
         return string
     }
 
-    public static func decodeCoordinatorMessage(from data: Data) throws -> CoordinatorMessage {
-        try JSONDecoder().decode(CoordinatorMessage.self, from: data)
+    public static func decodeCoordinatorMessage(
+        from data: Data,
+        negotiatedV2Session: Bool = false
+    ) throws -> CoordinatorMessage {
+        if negotiatedV2Session {
+            let envelope = try JSONDecoder().decode(MessageTypeEnvelope.self, from: data)
+            if envelope.type == "cancel" {
+                let control = try JSONDecoder().decode(
+                    V2CoordinatorControlMessage.self,
+                    from: data
+                )
+                guard case .cancel(let cancel) = control else {
+                    throw ProtocolCodecError.invalidNegotiatedCancel
+                }
+                return .v2Cancel(cancel)
+            }
+        }
+        return try JSONDecoder().decode(CoordinatorMessage.self, from: data)
     }
 
-    public static func decodeCoordinatorMessage(from string: String) throws -> CoordinatorMessage {
+    public static func decodeCoordinatorMessage(
+        from string: String,
+        negotiatedV2Session: Bool = false
+    ) throws -> CoordinatorMessage {
         guard let data = string.data(using: .utf8) else {
             throw ProtocolCodecError.nonUTF8Input
         }
-        return try decodeCoordinatorMessage(from: data)
+        return try decodeCoordinatorMessage(
+            from: data,
+            negotiatedV2Session: negotiatedV2Session
+        )
     }
 
     /// Shared encoder for every outbound message, cached to avoid a fresh
@@ -112,6 +143,12 @@ public enum ProviderProtocolCodec {
             try fields.append(("template_hashes", encodeValue(register.templateHashes)))
         }
         try appendIfPresent(register.privacyCapabilities, key: "privacy_capabilities", to: &fields)
+        try appendIfPresent(register.protocolCapabilities, key: "protocol_capabilities", to: &fields)
+        try appendIfPresent(
+            register.providerProcessGeneration,
+            key: "provider_process_generation",
+            to: &fields
+        )
         // IMPORTANT: this raw-attestation path bypasses the Codable encoder in
         // Messages.swift, so EVERY Register field must be mirrored here too or it
         // silently drops for every ATTESTED registration (the production-common
@@ -162,6 +199,12 @@ public enum ProviderProtocolCodec {
 public enum ProtocolCodecError: Error, Equatable {
     case nonUTF8Input
     case nonUTF8Output
+    case missingProviderProcessGeneration
+    case invalidNegotiatedCancel
+}
+
+private struct MessageTypeEnvelope: Decodable {
+    let type: String
 }
 
 private enum JSONRawValueExtractor {
@@ -342,8 +385,8 @@ private enum JSONRawValueExtractor {
     }
 }
 
-private extension Data {
-    mutating func appendUTF8(_ string: String) {
+extension Data {
+    fileprivate mutating func appendUTF8(_ string: String) {
         append(contentsOf: string.utf8)
     }
 }

@@ -3,6 +3,7 @@
 
 import Foundation
 import Network
+
 #if canImport(os)
 import os
 #endif
@@ -38,7 +39,6 @@ public enum CoordinatorEvent: Sendable {
     /// Coordinator informs the provider of its current trust level and status.
     case trustStatus(trustLevel: String, status: String, reason: String)
 }
-
 
 // MARK: - Configuration
 
@@ -116,17 +116,18 @@ public struct RuntimeHashes: Sendable {
     }
 }
 
-
 // MARK: - Outbound message type (provider -> coordinator)
 
 public enum OutboundMessage: Sendable {
     case inferenceAccepted(requestId: String)
     case inferenceChunk(requestId: String, data: String, encryptedData: EncryptedPayload?)
-    case inferenceComplete(requestId: String, usage: UsageInfo, seSignature: String?, responseHash: String?)
+    case inferenceComplete(
+        requestId: String, usage: UsageInfo, seSignature: String?, responseHash: String?)
     case inferenceError(requestId: String, error: String, statusCode: UInt16, errorReason: String?)
     case attestationResponse(AttestationResponsePayload)
     case codeAttestationResponse(nonce: String, signature: String)
-    case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
+    case loadModelStatus(
+        modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
     case prefetchModelStatus(
         modelId: String,
         status: ProviderMessage.PrefetchModelStatus.Status,
@@ -138,6 +139,18 @@ public enum OutboundMessage: Sendable {
     /// (e.g. a verified prefetch), carrying full `ModelInfo` including the
     /// computed weight hash so the coordinator can cross-check before routing.
     case modelsUpdate(models: [ModelInfo])
+    case prepared(V2Prepared)
+    case startAck(V2StartAck)
+    case abortAck(V2AbortAck)
+    case cancelAck(V2CancelAck)
+    case providerTerminal(V2ProviderTerminal)
+    /// Explicit durable replay path. The wrapper proves the historical
+    /// terminal's canonical digest and provider/process-bound signature were
+    /// validated before transport fencing permits an old generation/epoch.
+    case historicalProviderTerminal(V2HistoricalTerminalReplay)
+    case structuredError(V2StructuredError)
+    case modelReady(V2ModelReady)
+    case modelGone(V2ModelGone)
 }
 
 public struct AttestationResponsePayload: Sendable {
@@ -186,7 +199,6 @@ public struct AttestationResponsePayload: Sendable {
     }
 }
 
-
 // MARK: - Errors
 
 public enum CoordinatorError: Error, CustomStringConvertible {
@@ -195,15 +207,17 @@ public enum CoordinatorError: Error, CustomStringConvertible {
     case pongTimeout
     case connectionClosed(Error)
     case suspensionDetected
+    case noActiveConnection
 
     public var description: String {
         switch self {
         case .invalidURL(let url): return "Invalid coordinator URL: \(url)"
         case .encodingFailed: return "Failed to encode message"
         case .pongTimeout: return "WebSocket pong timeout (no response in 30s)"
-        case .connectionClosed(let err): return "WebSocket connection closed: \(err.localizedDescription)"
+        case .connectionClosed(let err):
+            return "WebSocket connection closed: \(err.localizedDescription)"
         case .suspensionDetected: return "Process suspension detected (timer gap); forcing reconnect"
+        case .noActiveConnection: return "No active coordinator connection"
         }
     }
 }
-

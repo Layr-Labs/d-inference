@@ -3,6 +3,7 @@
 
 import Foundation
 import Network
+
 #if canImport(os)
 import os
 #endif
@@ -140,6 +141,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _warmModels: [String] = []
     private var _currentModelHash: String? = nil
     private var _backendCapacity: BackendCapacity? = nil
+    private var _modelStateRevision: UInt64 = 0
 
     public init() {}
 
@@ -155,7 +157,17 @@ public final class ProviderState: @unchecked Sendable {
 
     public var warmModels: [String] {
         get { lock.withLock { _warmModels } }
-        set { lock.withLock { _warmModels = newValue } }
+        set {
+            lock.withLock {
+                let normalized = Array(Set(newValue)).sorted()
+                if normalized != _warmModels {
+                    _warmModels = normalized
+                    if _modelStateRevision < UInt64.max {
+                        _modelStateRevision += 1
+                    }
+                }
+            }
+        }
     }
 
     public var currentModelHash: String? {
@@ -166,6 +178,14 @@ public final class ProviderState: @unchecked Sendable {
     public var backendCapacity: BackendCapacity? {
         get { lock.withLock { _backendCapacity } }
         set { lock.withLock { _backendCapacity = newValue } }
+    }
+
+    public var modelStateRevision: UInt64 {
+        lock.withLock { _modelStateRevision }
+    }
+
+    public func modelStateSnapshot() -> (revision: UInt64, warmModels: [String]) {
+        lock.withLock { (_modelStateRevision, _warmModels) }
     }
 }
 

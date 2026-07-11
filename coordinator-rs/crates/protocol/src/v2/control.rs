@@ -1,9 +1,24 @@
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-use crate::v2::{
-    identity::{AttemptIdentity, ProviderSessionIdentity},
-    terminal::{Digest, ProviderTerminal},
+use crate::{
+    v1::EncryptedPayload,
+    v2::{
+        identity::{
+            AttemptIdentity, ProviderId, ProviderProcessGenerationId, ProviderSessionIdentity,
+            ReplayFenceProofId, SessionEpoch,
+        },
+        terminal::{Digest, ProviderTerminal, TerminalSignature},
+    },
 };
+
+const PREPARE_PAYLOAD_DIGEST_DOMAIN: &[u8] = b"darkbloom.protocol.v2.prepare-payload\0";
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum PrepareValidationError {
+    #[error("encrypted prepare payload uses invalid or non-canonical base64")]
+    InvalidEncryptedPayload,
+}
 
 /// Coordinator request to validate input and reserve a non-generating lease.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -12,10 +27,36 @@ pub struct Prepare {
     pub identity: AttemptIdentity,
     pub model: String,
     pub request_digest: Digest,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub body: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub encrypted_body: Option<String>,
+    pub encrypted_body: EncryptedPayload,
+}
+
+impl Prepare {
+    pub fn encrypted_payload_digest(
+        payload: &EncryptedPayload,
+    ) -> Result<Digest, PrepareValidationError> {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+
+        let public_key = STANDARD
+            .decode(&payload.ephemeral_public_key)
+            .map_err(|_| PrepareValidationError::InvalidEncryptedPayload)?;
+        let ciphertext = STANDARD
+            .decode(&payload.ciphertext)
+            .map_err(|_| PrepareValidationError::InvalidEncryptedPayload)?;
+        if public_key.len() != 32
+            || STANDARD.encode(&public_key) != payload.ephemeral_public_key
+            || STANDARD.encode(&ciphertext) != payload.ciphertext
+        {
+            return Err(PrepareValidationError::InvalidEncryptedPayload);
+        }
+
+        let mut input = Vec::with_capacity(
+            PREPARE_PAYLOAD_DIGEST_DOMAIN.len() + public_key.len() + ciphertext.len(),
+        );
+        input.extend_from_slice(PREPARE_PAYLOAD_DIGEST_DOMAIN);
+        input.extend_from_slice(&public_key);
+        input.extend_from_slice(&ciphertext);
+        Ok(Digest::of(&input))
+    }
 }
 
 /// Provider response containing the exact prepared execution facts.
@@ -23,10 +64,14 @@ pub struct Prepare {
 pub struct Prepared {
     #[serde(flatten)]
     pub identity: AttemptIdentity,
+    pub model: String,
+    pub request_digest: Digest,
     pub lease_ttl_ms: u64,
     pub prompt_tokens: u64,
     pub max_output_tokens: u64,
     pub engine_queue_depth: u32,
+    pub reserved_kv_bytes: u64,
+    pub reserved_media_bytes: u64,
     pub prefill_can_begin: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_prefill_ms: Option<u64>,
@@ -121,6 +166,44 @@ pub struct StructuredError {
     pub message: Option<String>,
 }
 
+/// Signed coordinator authority proving that delayed starts through one
+/// provider-process session epoch can no longer arrive. Providers persist this
+/// proof before reclaiming any covered abort tombstones.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoordinatorReplayFenceProof {
+    pub proof_id: ReplayFenceProofId,
+    pub provider_id: ProviderId,
+    pub provider_process_generation: ProviderProcessGenerationId,
+    pub through_session_epoch: SessionEpoch,
+    pub coordinator_revision: u64,
+    pub proof_digest: Digest,
+    pub coordinator_signature: TerminalSignature,
+}
+
+impl CoordinatorReplayFenceProof {
+    #[must_use]
+    pub fn computed_digest(&self) -> Digest {
+        let canonical = format!(
+            concat!(
+                r#"{{"coordinator_revision":{},"proof_id":"{}","provider_id":"{}","#,
+                r#""provider_process_generation":"{}","schema":"darkbloom.coordinator-replay-fence-proof.v1","#,
+                r#""through_session_epoch":{}}}"#
+            ),
+            self.coordinator_revision,
+            self.proof_id,
+            self.provider_id,
+            self.provider_process_generation,
+            self.through_session_epoch.0,
+        );
+        Digest::of(canonical.as_bytes())
+    }
+
+    #[must_use]
+    pub fn digest_is_valid(&self) -> bool {
+        self.proof_digest == self.computed_digest()
+    }
+}
+
 /// Tagged coordinator-to-provider v2 control messages.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -135,6 +218,8 @@ pub enum CoordinatorControlMessage {
     Cancel(Cancel),
     #[serde(rename = "terminal_ack")]
     TerminalAck(TerminalAck),
+    #[serde(rename = "coordinator_replay_fence")]
+    CoordinatorReplayFence(CoordinatorReplayFenceProof),
 }
 
 /// Tagged provider-to-coordinator v2 control messages.
@@ -193,3 +278,4 @@ pub type TerminalAckMessage = TerminalAck;
 pub type StructuredErrorMessage = StructuredError;
 pub type ModelReadyMessage = ModelReady;
 pub type ModelGoneMessage = ModelGone;
+pub type CoordinatorReplayFenceProofMessage = CoordinatorReplayFenceProof;

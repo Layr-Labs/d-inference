@@ -19,8 +19,6 @@ pub enum ProtocolError {
     UnknownFrameKind(u8),
     #[error("unknown protocol-v2 frame flags 0x{0:02x}")]
     UnknownFrameFlags(u8),
-    #[error("protocol-v2 reserved bytes are non-zero")]
-    NonZeroReserved,
     #[error("ciphertext length {actual} exceeds hard limit {maximum}")]
     CiphertextTooLarge { actual: usize, maximum: usize },
     #[error("protocol-v2 frame length mismatch: got {actual}, expected {expected}")]

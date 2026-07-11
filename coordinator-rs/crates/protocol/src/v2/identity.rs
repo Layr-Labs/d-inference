@@ -181,6 +181,7 @@ protocol_id!(RequestId);
 protocol_id!(AttemptId);
 protocol_id!(ReservationId);
 protocol_id!(LeaseId);
+protocol_id!(ReplayFenceProofId);
 
 /// Compatibility alias for callers that use the shorter generation name.
 pub type ProcessGenerationId = ProviderProcessGenerationId;
@@ -238,6 +239,8 @@ pub struct ProtocolCapabilities {
     pub model_lifecycle_events: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub binary_payload_frames: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub coordinator_replay_fences: bool,
 }
 
 impl ProtocolCapabilities {
@@ -247,7 +250,14 @@ impl ProtocolCapabilities {
             && self.minimum_compatible_minor <= self.protocol_minor
             && self.prepared_leases
             && self.start_authorization
+            && self.structured_errors
+            && self.start_ack
+            && self.abort_ack
+            && self.cancel_ack
             && self.durable_terminals
+            && self.model_lifecycle_events
+            && self.binary_payload_frames
+            && self.coordinator_replay_fences
     }
 
     /// Computes the common feature set over the overlap of both supported
@@ -283,6 +293,8 @@ impl ProtocolCapabilities {
             durable_terminals: self.durable_terminals && peer.durable_terminals,
             model_lifecycle_events: self.model_lifecycle_events && peer.model_lifecycle_events,
             binary_payload_frames: self.binary_payload_frames && peer.binary_payload_frames,
+            coordinator_replay_fences: self.coordinator_replay_fences
+                && peer.coordinator_replay_fences,
         })
     }
 }
@@ -328,7 +340,14 @@ mod tests {
         assert!(!capabilities.supports_v2());
         capabilities.prepared_leases = true;
         capabilities.start_authorization = true;
+        capabilities.structured_errors = true;
+        capabilities.start_ack = true;
+        capabilities.abort_ack = true;
+        capabilities.cancel_ack = true;
         capabilities.durable_terminals = true;
+        capabilities.model_lifecycle_events = true;
+        capabilities.binary_payload_frames = true;
+        capabilities.coordinator_replay_fences = true;
         assert!(capabilities.supports_v2());
     }
 

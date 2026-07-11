@@ -10,12 +10,15 @@ public enum CoordinatorClientCodec {
         version: String = ProviderCore.version,
         privacyCapabilities: PrivacyCapabilities? = nil,
         apnsDeviceTokenOverride: String? = nil,
-        modelWeightHashOverrides: [String: String] = [:]
+        modelWeightHashOverrides: [String: String] = [:],
+        protocolCapabilities: ProtocolCapabilities? = nil,
+        providerProcessGeneration: ProviderProcessGenerationID? = nil
     ) -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
         // overrides the config value so a reconnect re-registers WITH it.
         let effectiveToken = apnsDeviceTokenOverride ?? config.apnsDeviceToken
-        let effectiveEnv = apnsDeviceTokenOverride != nil
+        let effectiveEnv =
+            apnsDeviceTokenOverride != nil
             ? (config.apnsEnvironment ?? "production")
             : config.apnsEnvironment
         // Weight hashes refreshed after a model (re)load override the
@@ -37,7 +40,8 @@ public enum CoordinatorClientCodec {
                 return patched
             }
         }
-        return .register(ProviderMessage.Register(
+        return .register(
+            ProviderMessage.Register(
             hardware: config.hardware,
             models: effectiveModels,
             backend: config.backendName,
@@ -51,6 +55,8 @@ public enum CoordinatorClientCodec {
             runtimeHash: config.runtimeHashes?.runtimeHash,
             templateHashes: config.runtimeHashes?.templateHashes ?? [:],
             privacyCapabilities: privacyCapabilities,
+                protocolCapabilities: protocolCapabilities,
+                providerProcessGeneration: providerProcessGeneration,
             privateOnly: config.privateOnly,
             apnsDeviceToken: effectiveToken,
             apnsEnvironment: effectiveEnv
@@ -63,7 +69,9 @@ public enum CoordinatorClientCodec {
         version: String = ProviderCore.version,
         privacyCapabilities: PrivacyCapabilities? = nil,
         apnsDeviceTokenOverride: String? = nil,
-        modelWeightHashOverrides: [String: String] = [:]
+        modelWeightHashOverrides: [String: String] = [:],
+        protocolCapabilities: ProtocolCapabilities? = nil,
+        providerProcessGeneration: ProviderProcessGenerationID? = nil
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
@@ -72,7 +80,9 @@ public enum CoordinatorClientCodec {
                 version: version,
                 privacyCapabilities: privacyCapabilities,
                 apnsDeviceTokenOverride: apnsDeviceTokenOverride,
-                modelWeightHashOverrides: modelWeightHashOverrides
+                modelWeightHashOverrides: modelWeightHashOverrides,
+                protocolCapabilities: protocolCapabilities,
+                providerProcessGeneration: providerProcessGeneration
             )
         )
     }
@@ -84,16 +94,19 @@ public enum CoordinatorClientCodec {
         stats: ProviderStats,
         systemMetrics: SystemMetrics,
         backendCapacity: BackendCapacity?,
+        modelStateRevision: UInt64? = nil,
         apnsDeviceToken: String? = nil,
         apnsEnvironment: String? = nil
     ) -> ProviderMessage {
-        .heartbeat(ProviderMessage.Heartbeat(
+        .heartbeat(
+            ProviderMessage.Heartbeat(
             status: status,
             activeModel: activeModel,
             warmModels: warmModels,
             stats: stats,
             systemMetrics: systemMetrics,
             backendCapacity: backendCapacity,
+                modelStateRevision: modelStateRevision,
             apnsDeviceToken: apnsDeviceToken,
             apnsEnvironment: apnsEnvironment
         ))
@@ -105,14 +118,16 @@ public enum CoordinatorClientCodec {
             return .inferenceAccepted(ProviderMessage.InferenceAccepted(requestId: requestId))
 
         case .inferenceChunk(let requestId, let data, let encryptedData):
-            return .inferenceResponseChunk(ProviderMessage.InferenceResponseChunk(
+            return .inferenceResponseChunk(
+                ProviderMessage.InferenceResponseChunk(
                 requestId: requestId,
                 data: data,
                 encryptedData: encryptedData
             ))
 
         case .inferenceComplete(let requestId, let usage, let seSignature, let responseHash):
-            return .inferenceComplete(ProviderMessage.InferenceComplete(
+            return .inferenceComplete(
+                ProviderMessage.InferenceComplete(
                 requestId: requestId,
                 usage: usage,
                 seSignature: seSignature,
@@ -120,7 +135,8 @@ public enum CoordinatorClientCodec {
             ))
 
         case .inferenceError(let requestId, let error, let statusCode, let errorReason):
-            return .inferenceError(ProviderMessage.InferenceError(
+            return .inferenceError(
+                ProviderMessage.InferenceError(
                 requestId: requestId,
                 error: error,
                 statusCode: statusCode,
@@ -128,7 +144,8 @@ public enum CoordinatorClientCodec {
             ))
 
         case .attestationResponse(let payload):
-            return .attestationResponse(ProviderMessage.AttestationResponse(
+            return .attestationResponse(
+                ProviderMessage.AttestationResponse(
                 nonce: payload.nonce,
                 signature: payload.signature,
                 statusSignature: payload.statusSignature,
@@ -145,20 +162,23 @@ public enum CoordinatorClientCodec {
             ))
 
         case .codeAttestationResponse(let nonce, let signature):
-            return .codeAttestationResponse(ProviderMessage.CodeAttestationResponse(
+            return .codeAttestationResponse(
+                ProviderMessage.CodeAttestationResponse(
                 nonce: nonce,
                 signature: signature
             ))
 
         case .loadModelStatus(let modelId, let status, let error):
-            return .loadModelStatus(ProviderMessage.LoadModelStatus(
+            return .loadModelStatus(
+                ProviderMessage.LoadModelStatus(
                 modelId: modelId,
                 status: status,
                 error: error
             ))
 
         case .prefetchModelStatus(let modelId, let status, let bytesDone, let bytesTotal, let error):
-            return .prefetchModelStatus(ProviderMessage.PrefetchModelStatus(
+            return .prefetchModelStatus(
+                ProviderMessage.PrefetchModelStatus(
                 modelId: modelId,
                 status: status,
                 bytesDone: bytesDone,
@@ -168,6 +188,33 @@ public enum CoordinatorClientCodec {
 
         case .modelsUpdate(let models):
             return .modelsUpdate(ProviderMessage.ModelsUpdate(models: models))
+
+        case .prepared(let message):
+            return .prepared(message)
+
+        case .startAck(let message):
+            return .startAck(message)
+
+        case .abortAck(let message):
+            return .abortAck(message)
+
+        case .cancelAck(let message):
+            return .cancelAck(message)
+
+        case .providerTerminal(let message):
+            return .providerTerminal(message)
+
+        case .historicalProviderTerminal(let replay):
+            return .providerTerminal(replay.terminal)
+
+        case .structuredError(let message):
+            return .structuredError(message)
+
+        case .modelReady(let message):
+            return .modelReady(message)
+
+        case .modelGone(let message):
+            return .modelGone(message)
         }
     }
 
@@ -179,11 +226,54 @@ public enum CoordinatorClientCodec {
         try ProviderProtocolCodec.encodeProviderMessageString(providerMessage(for: outbound))
     }
 
-    public static func decodeIncomingMessage(from data: Data) throws -> CoordinatorMessage {
-        try ProviderProtocolCodec.decodeCoordinatorMessage(from: data)
+    public static func decodeIncomingMessage(
+        from data: Data,
+        negotiatedV2Session: Bool = false
+    ) throws -> CoordinatorMessage {
+        try ProviderProtocolCodec.decodeCoordinatorMessage(
+            from: data,
+            negotiatedV2Session: negotiatedV2Session
+        )
+        }
+
+    public static func decodeIncomingMessage(
+        from string: String,
+        negotiatedV2Session: Bool = false
+    ) throws -> CoordinatorMessage {
+        try ProviderProtocolCodec.decodeCoordinatorMessage(
+            from: string,
+            negotiatedV2Session: negotiatedV2Session
+        )
     }
 
-    public static func decodeIncomingMessage(from string: String) throws -> CoordinatorMessage {
-        try ProviderProtocolCodec.decodeCoordinatorMessage(from: string)
+    public static func v2ControlMessage(
+        from message: CoordinatorMessage
+    ) -> V2CoordinatorControlMessage? {
+        switch message {
+        case .prepare(let value): .prepare(value)
+        case .start(let value): .start(value)
+        case .abort(let value): .abort(value)
+        case .v2Cancel(let value): .cancel(value)
+        case .terminalAck(let value): .terminalAck(value)
+        case .coordinatorReplayFence(let value): .coordinatorReplayFence(value)
+        default: nil
+    }
+    }
+
+    public static func v2ControlMessage(
+        from outbound: OutboundMessage
+    ) -> V2ProviderControlMessage? {
+        switch outbound {
+        case .prepared(let value): .prepared(value)
+        case .startAck(let value): .startAck(value)
+        case .abortAck(let value): .abortAck(value)
+        case .cancelAck(let value): .cancelAck(value)
+        case .providerTerminal(let value): .terminal(value)
+        case .historicalProviderTerminal(let replay): .terminal(replay.terminal)
+        case .structuredError(let value): .structuredError(value)
+        case .modelReady(let value): .modelReady(value)
+        case .modelGone(let value): .modelGone(value)
+        default: nil
+        }
     }
 }

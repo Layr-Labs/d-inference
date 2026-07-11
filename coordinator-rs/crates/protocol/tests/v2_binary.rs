@@ -1,3 +1,6 @@
+use std::{fs, path::PathBuf};
+
+use base64::{Engine, engine::general_purpose::STANDARD};
 use crypto_box::{SecretKey, aead::OsRng};
 use darkbloom_coordinator_protocol::{
     CryptoError, ProtocolError, V2_BINARY_HEADER_LEN,
@@ -10,6 +13,18 @@ use darkbloom_coordinator_protocol::{
     },
 };
 use proptest::prelude::*;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct BoundFrameVector {
+    schema_version: u32,
+    sender_private_key_base64: String,
+    sender_public_key_base64: String,
+    recipient_private_key_base64: String,
+    recipient_public_key_base64: String,
+    plaintext_base64: String,
+    wire_base64: String,
+}
 
 fn header(ciphertext_len: u32) -> BinaryFrameHeader {
     BinaryFrameHeader {
@@ -27,6 +42,7 @@ fn header(ciphertext_len: u32) -> BinaryFrameHeader {
         rolling_digest: [0x80; 32],
         sequence: 0x1112_1314_1516_1718,
         ciphertext_len,
+        cumulative_tokens: 0x2122_2324_2526_2728,
     }
 }
 
@@ -51,7 +67,7 @@ fn header_offsets_are_exact_network_order_golden() {
     assert_eq!(&encoded[140..172], &[0x80; 32]);
     assert_eq!(&encoded[172..180], &0x1112_1314_1516_1718_u64.to_be_bytes());
     assert_eq!(&encoded[180..184], &0x00ff_0102_u32.to_be_bytes());
-    assert_eq!(&encoded[184..192], &[0; 8]);
+    assert_eq!(&encoded[184..192], &0x2122_2324_2526_2728_u64.to_be_bytes());
 }
 
 #[test]
@@ -106,6 +122,7 @@ fn authenticated_frame_crypto_rejects_metadata_rebinding_after_raw_box_open() {
         ("lease_id", 100),
         ("rolling_digest", 140),
         ("sequence", 172),
+        ("cumulative_tokens", 184),
     ] {
         let mut tampered = wire.to_vec();
         tampered[offset] ^= 1;
@@ -131,6 +148,38 @@ fn authenticated_frame_crypto_rejects_metadata_rebinding_after_raw_box_open() {
 }
 
 #[test]
+fn rust_and_swift_share_the_exact_encrypted_bound_frame_vector() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .join("tests/contracts/crypto/v2_bound_frame.json");
+    let fixture: BoundFrameVector =
+        serde_json::from_slice(&fs::read(path).expect("read v2 bound-frame vector"))
+            .expect("decode v2 bound-frame vector");
+    assert_eq!(fixture.schema_version, 2);
+    let sender_private_key = decode_array::<32>(&fixture.sender_private_key_base64);
+    let sender_public_key = decode_array::<32>(&fixture.sender_public_key_base64);
+    let recipient_private_key = decode_array::<32>(&fixture.recipient_private_key_base64);
+    let recipient_public_key = decode_array::<32>(&fixture.recipient_public_key_base64);
+    let plaintext = STANDARD
+        .decode(&fixture.plaintext_base64)
+        .expect("plaintext base64");
+    let expected_wire = STANDARD.decode(&fixture.wire_base64).expect("wire base64");
+
+    let sealed = seal_v2_frame(
+        &sender_private_key,
+        &recipient_public_key,
+        header(0),
+        &plaintext,
+    )
+    .expect("seal exact Rust/Swift vector");
+    assert_eq!(sealed.as_ref(), expected_wire);
+    let opened = open_v2_frame(&recipient_private_key, &sender_public_key, &expected_wire)
+        .expect("open exact Rust/Swift vector");
+    assert_eq!(opened.header, header(opened.header.ciphertext_len));
+    assert_eq!(opened.plaintext, plaintext);
+}
+
+#[test]
 fn fixed_validation_rejects_each_invalid_header_contract() {
     let valid = header(0).encode().expect("valid header");
     for length in 0..V2_BINARY_HEADER_LEN {
@@ -140,7 +189,7 @@ fn fixed_validation_rejects_each_invalid_header_contract() {
         );
     }
 
-    for (offset, value) in [(0, b'X'), (7, 0), (9, 0), (184, 1)] {
+    for (offset, value) in [(0, b'X'), (7, 0), (9, 0)] {
         let mut malformed = valid;
         malformed[offset] = value;
         assert!(
@@ -190,12 +239,14 @@ proptest! {
         minor in any::<u16>(),
         epoch in any::<u64>(),
         sequence in any::<u64>(),
+        cumulative_tokens in any::<u64>(),
         ciphertext in prop::collection::vec(any::<u8>(), 0..2048),
     ) {
         let mut header = header(ciphertext.len() as u32);
         header.minor = minor;
         header.session_epoch = SessionEpoch(epoch);
         header.sequence = sequence;
+        header.cumulative_tokens = cumulative_tokens;
         let frame = encode_binary_frame(&header, &ciphertext).expect("bounded frame");
         let decoded = decode_binary_frame(&frame).expect("round trip");
         prop_assert_eq!(decoded.header, header);
@@ -224,4 +275,12 @@ proptest! {
         );
         prop_assert!(rejected);
     }
+}
+
+fn decode_array<const N: usize>(encoded: &str) -> [u8; N] {
+    STANDARD
+        .decode(encoded)
+        .expect("valid base64")
+        .try_into()
+        .unwrap_or_else(|value: Vec<u8>| panic!("expected {N} decoded bytes, got {}", value.len()))
 }

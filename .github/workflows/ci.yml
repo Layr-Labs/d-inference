@@ -84,6 +84,8 @@ jobs:
       - name: Fetch locked dependencies
         working-directory: coordinator-rs
         run: cargo fetch --locked
+      - name: Prepare PostgreSQL schema for SQLx
+        run: go run ./coordinator/cmd/migrate -database-url "$DATABASE_URL"
       - name: Check SQLx offline metadata
         working-directory: coordinator-rs
         run: |

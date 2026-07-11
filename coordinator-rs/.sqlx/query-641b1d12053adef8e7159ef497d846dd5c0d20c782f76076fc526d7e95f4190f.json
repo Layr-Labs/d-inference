@@ -1,0 +1,111 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    ),\n                    candidates AS MATERIALIZED (\n                        SELECT events.external_event_id\n                        FROM rust_coord.external_events AS events\n                        WHERE events.status IN ('pending', 'processing')\n                          AND (\n                              events.worker_owner IS NULL\n                              OR events.lease_until <= NOW()\n                          )\n                        ORDER BY events.received_at, events.external_event_id\n                        FOR UPDATE SKIP LOCKED\n                        LIMIT $4\n                    ),\n                    claimed AS (\n                        UPDATE rust_coord.external_events AS events\n                        SET\n                            status = 'processing',\n                            owner_epoch = $2,\n                            worker_owner = $3,\n                            lease_until =\n                                NOW() + ($5::BIGINT * INTERVAL '1 millisecond'),\n                            version = events.version + 1,\n                            updated_at = NOW()\n                        FROM candidates, authority\n                        WHERE events.external_event_id =\n                              candidates.external_event_id\n                        RETURNING\n                            events.external_event_id,\n                            events.source,\n                            events.event_id,\n                            events.event_kind,\n                            events.payload_digest,\n                            events.payload,\n                            events.version,\n                            (\n                                EXTRACT(EPOCH FROM events.lease_until) * 1000\n                            )::BIGINT AS lease_until_epoch_millis\n                    )\n                    SELECT *\n                    FROM claimed\n                    ORDER BY external_event_id\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "external_event_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.external_events",
+            "name": "external_event_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "source",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.external_events",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "event_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.external_events",
+            "name": "event_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "event_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.external_events",
+            "name": "event_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "payload_digest",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.external_events",
+            "name": "payload_digest"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "payload",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.external_events",
+            "name": "payload"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.external_events",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "lease_until_epoch_millis",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "641b1d12053adef8e7159ef497d846dd5c0d20c782f76076fc526d7e95f4190f"
+}

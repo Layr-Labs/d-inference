@@ -1,0 +1,84 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    ),\n                    job AS MATERIALIZED (\n                        SELECT jobs.*\n                        FROM rust_coord.inference_jobs AS jobs\n                        JOIN public.balances AS balances\n                          ON balances.account_id = jobs.account_id\n                        WHERE jobs.job_id = $3\n                          AND jobs.owner_epoch = $2\n                          AND jobs.version = $4\n                          AND jobs.state = $5\n                          AND jobs.reservation_pre_debited\n                          AND balances.balance_micro_usd >= 0\n                          AND balances.withdrawable_micro_usd >= 0\n                          AND balances.withdrawable_micro_usd\n                              <= balances.balance_micro_usd\n                          AND balances.balance_micro_usd\n                              <= 9223372036854775807::BIGINT\n                                 - jobs.reserved_total_micro_usd\n                          AND balances.withdrawable_micro_usd\n                              <= 9223372036854775807::BIGINT\n                                 - jobs.reserved_withdrawable_micro_usd\n                        FOR UPDATE OF jobs, balances\n                    ),\n                    operation_insert AS (\n                        INSERT INTO rust_coord.financial_operations (\n                            operation_id,\n                            operation_key,\n                            operation_digest,\n                            kind,\n                            status,\n                            job_id,\n                            account_id,\n                            amount_total_micro_usd,\n                            amount_withdrawable_micro_usd,\n                            result,\n                            owner_epoch,\n                            version,\n                            completed_at\n                        )\n                        SELECT\n                            $6,\n                            $7,\n                            $8,\n                            'release',\n                            'released',\n                            job.job_id,\n                            job.account_id,\n                            job.reserved_total_micro_usd,\n                            job.reserved_withdrawable_micro_usd,\n                            jsonb_build_object(\n                                'job_id', job.job_id,\n                                'version', $4::BIGINT + 1,\n                                'state', 'released',\n                                'total', job.reserved_total_micro_usd,\n                                'withdrawable',\n                                    job.reserved_withdrawable_micro_usd\n                            ),\n                            $2,\n                            2,\n                            NOW()\n                        FROM authority\n                        CROSS JOIN job\n                        RETURNING operation_id\n                    ),\n                    balance_update AS (\n                        UPDATE public.balances AS balances\n                        SET\n                            balance_micro_usd =\n                                balances.balance_micro_usd\n                                + job.reserved_total_micro_usd,\n                            withdrawable_micro_usd =\n                                balances.withdrawable_micro_usd\n                                + job.reserved_withdrawable_micro_usd,\n                            updated_at = NOW()\n                        FROM job, operation_insert\n                        WHERE balances.account_id = job.account_id\n                        RETURNING balances.balance_micro_usd\n                    ),\n                    ledger_insert AS (\n                        INSERT INTO public.ledger_entries (\n                            account_id,\n                            entry_type,\n                            amount_micro_usd,\n                            balance_after,\n                            reference\n                        )\n                        SELECT\n                            job.account_id,\n                            'refund',\n                            job.reserved_total_micro_usd,\n                            balance_update.balance_micro_usd,\n                            'rust-release:' || $7\n                        FROM job, balance_update\n                        RETURNING id\n                    ),\n                    attempts_update AS (\n                        UPDATE rust_coord.inference_attempts AS attempts\n                        SET\n                            state = 'aborted',\n                            version = attempts.version + 1,\n                            updated_at = NOW(),\n                            worker_owner = NULL,\n                            lease_until = NULL\n                        FROM job, ledger_insert\n                        WHERE attempts.job_id = job.job_id\n                          AND attempts.state IN (\n                              'queued_to_socket',\n                              'sent_unknown',\n                              'prepared'\n                          )\n                        RETURNING attempts.attempt_id\n                    ),\n                    job_update AS (\n                        UPDATE rust_coord.inference_jobs AS jobs\n                        SET\n                            state = 'released',\n                            error_class = $9,\n                            version = jobs.version + 1,\n                            updated_at = NOW(),\n                            terminal_at = NOW(),\n                            worker_owner = NULL,\n                            lease_until = NULL\n                        FROM job, ledger_insert\n                        WHERE jobs.job_id = job.job_id\n                          AND jobs.version = $4\n                          AND jobs.state = $5\n                        RETURNING\n                            jobs.job_id,\n                            jobs.version,\n                            jobs.state,\n                            jobs.reserved_total_micro_usd,\n                            jobs.reserved_withdrawable_micro_usd\n                    )\n                    SELECT\n                        job_update.job_id,\n                        job_update.version,\n                        job_update.state,\n                        job_update.reserved_total_micro_usd,\n                        job_update.reserved_withdrawable_micro_usd\n                    FROM job_update\n                    CROSS JOIN operation_insert\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.inference_jobs",
+            "name": "job_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.inference_jobs",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "state",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.inference_jobs",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "reserved_total_micro_usd",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.inference_jobs",
+            "name": "reserved_total_micro_usd"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "reserved_withdrawable_micro_usd",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.inference_jobs",
+            "name": "reserved_withdrawable_micro_usd"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Text",
+        "Bytea",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "eb8e6a4b85770c54c0f45e16961a62e1d2e72fdfd41cdc1f4f7e6c3b9adfa6d4"
+}

@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    ),\n                    billing AS MATERIALIZED (\n                        SELECT\n                            sessions.*,\n                            balances.balance_micro_usd,\n                            balances.withdrawable_micro_usd\n                        FROM public.billing_sessions AS sessions\n                        JOIN public.balances AS balances\n                          ON balances.account_id = sessions.account_id\n                        WHERE sessions.id = $3\n                          AND sessions.payment_method = 'stripe'\n                          AND lower(sessions.currency) = 'usd'\n                          AND sessions.amount_micro_usd = $4\n                          AND sessions.status = 'pending'\n                          AND (\n                              sessions.external_id = ''\n                              OR sessions.external_id = $5\n                          )\n                          AND balances.balance_micro_usd >= 0\n                          AND balances.withdrawable_micro_usd >= 0\n                          AND balances.withdrawable_micro_usd\n                              <= balances.balance_micro_usd\n                          AND balances.balance_micro_usd\n                              <= 9223372036854775807::BIGINT - $4\n                        FOR UPDATE OF sessions, balances\n                    ),\n                    gate AS MATERIALIZED (\n                        SELECT billing.*\n                        FROM authority\n                        CROSS JOIN billing\n                        WHERE jsonb_typeof($10::JSONB) = 'object'\n                          AND NOT EXISTS (\n                              SELECT 1\n                              FROM public.billing_sessions\n                              WHERE external_id = $5 AND id <> $3\n                          )\n                    ),\n                    operation_insert AS (\n                        INSERT INTO rust_coord.financial_operations (\n                            operation_id,\n                            operation_key,\n                            operation_digest,\n                            kind,\n                            status,\n                            account_id,\n                            amount_total_micro_usd,\n                            amount_withdrawable_micro_usd,\n                            result,\n                            owner_epoch,\n                            version,\n                            completed_at\n                        )\n                        SELECT\n                            $6,\n                            $7,\n                            $8,\n                            'deposit',\n                            'applied',\n                            gate.account_id,\n                            $4,\n                            0,\n                            jsonb_build_object(\n                                'account_id', gate.account_id,\n                                'amount', $4::BIGINT,\n                                'event_id', $9::TEXT\n                            ),\n                            $2,\n                            2,\n                            NOW()\n                        FROM gate\n                        RETURNING operation_id\n                    ),\n                    balance_update AS (\n                        INSERT INTO public.balances (\n                            account_id,\n                            balance_micro_usd,\n                            withdrawable_micro_usd,\n                            updated_at\n                        )\n                        SELECT gate.account_id, $4, 0, NOW()\n                        FROM gate\n                        CROSS JOIN operation_insert\n                        ON CONFLICT (account_id) DO UPDATE SET\n                            balance_micro_usd =\n                                balances.balance_micro_usd\n                                + EXCLUDED.balance_micro_usd,\n                            updated_at = NOW()\n                        WHERE balances.balance_micro_usd >= 0\n                          AND balances.withdrawable_micro_usd >= 0\n                          AND balances.withdrawable_micro_usd\n                              <= balances.balance_micro_usd\n                          AND balances.balance_micro_usd\n                              <= 9223372036854775807::BIGINT\n                                 - EXCLUDED.balance_micro_usd\n                        RETURNING account_id, balance_micro_usd\n                    ),\n                    ledger_insert AS (\n                        INSERT INTO public.ledger_entries (\n                            account_id,\n                            entry_type,\n                            amount_micro_usd,\n                            balance_after,\n                            reference\n                        )\n                        SELECT\n                            balance_update.account_id,\n                            'stripe_deposit',\n                            $4,\n                            balance_update.balance_micro_usd,\n                            'stripe:' || $5\n                        FROM balance_update\n                        RETURNING id\n                    ),\n                    billing_update AS (\n                        UPDATE public.billing_sessions AS sessions\n                        SET\n                            external_id = $5,\n                            processed_event_id = $9,\n                            status = 'completed',\n                            completed_at = NOW()\n                        FROM gate, ledger_insert\n                        WHERE sessions.id = gate.id\n                          AND sessions.status = 'pending'\n                        RETURNING sessions.account_id\n                    ),\n                    stripe_event_insert AS (\n                        INSERT INTO public.stripe_deposit_events (\n                            event_id,\n                            checkout_session_id,\n                            billing_session_id,\n                            account_id,\n                            amount_micro_usd,\n                            currency,\n                            status\n                        )\n                        SELECT\n                            $9::TEXT,\n                            $5,\n                            $3,\n                            billing_update.account_id,\n                            $4,\n                            'usd',\n                            'applied'\n                        FROM billing_update\n                        RETURNING account_id\n                    ),\n                    external_event_insert AS (\n                        INSERT INTO rust_coord.external_events (\n                            external_event_id,\n                            source,\n                            event_id,\n                            event_kind,\n                            payload_digest,\n                            payload,\n                            status,\n                            financial_operation_id,\n                            owner_epoch,\n                            processed_at\n                        )\n                        SELECT\n                            $11,\n                            'stripe',\n                            $9::TEXT,\n                            'checkout.session.completed',\n                            $12,\n                            $10,\n                            'applied',\n                            operation_insert.operation_id,\n                            $2,\n                            NOW()\n                        FROM operation_insert\n                        CROSS JOIN stripe_event_insert\n                        RETURNING external_event_id\n                    )\n                    SELECT\n                        stripe_event_insert.account_id,\n                        $4::BIGINT AS amount\n                    FROM stripe_event_insert\n                    CROSS JOIN operation_insert\n                    CROSS JOIN external_event_insert\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stripe_deposit_events",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "amount",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Text",
+        "Bytea",
+        "Text",
+        "Jsonb",
+        "Uuid",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "ae92cb9abe0aee8510003af53d2af5b9e938b3b6377b7732a9fc178cea2a89c2"
+}

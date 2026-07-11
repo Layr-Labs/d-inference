@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    )\n                    SELECT\n                        EXISTS (\n                            SELECT 1\n                            FROM public.balances\n                            WHERE account_id = $3\n                              AND balance_micro_usd >= $4\n                              AND withdrawable_micro_usd >= 0\n                              AND withdrawable_micro_usd <= balance_micro_usd\n                        ) AS funded,\n                        EXISTS (\n                            SELECT 1\n                            FROM rust_coord.inference_jobs\n                            WHERE job_id = $5\n                               OR request_id = $6\n                               OR reservation_id = $7\n                               OR reserve_operation_key = $8\n                        ) AS job_conflict\n                    WHERE EXISTS (SELECT 1 FROM authority)\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "funded",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "job_conflict",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text",
+        "Int8",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "1dbd9aa82bf17c011172925d0d7b5f403890f8fe256cf49349376bcbd83c0b5a"
+}

@@ -36,11 +36,22 @@ EIGENINFERENCE_RUST_SHUTDOWN_GRACE_SECONDS   default 30
 Application startup never applies DDL. Checked SQL metadata is committed under
 `.sqlx/`; the Go `coordinator-migrate` command must first bring the public
 catalog to version 4 and install `rust_coord.schema_versions` version 2.
-`Database::connect` only checks that compatible pair.
+`Database::connect` only checks that compatible pair. Regenerating SQLx
+metadata likewise requires a disposable database migrated to that exact
+catalog pair; CI migrates its isolated PostgreSQL service before checking the
+metadata.
 
-The durable schema is additive and remains unused by application database
-services in this objective. Its SQLx test mirror lives under `migrations/`;
-production migration ownership remains with the external Go command.
+The durable schema is additive. Concrete SQLx services under `server/src/db`,
+`ledger`, `recovery`, and `projection` own durable jobs, exact reservation
+provenance, atomic settlement, Stripe operations, bounded recovery leases,
+outbox work, fee checkpoints, and one-statement catalog snapshots. They are
+not connected to HTTP/request execution yet. Production migration ownership
+remains with the external Go command; integration tests apply the mirror under
+`migrations/` only to isolated temporary PostgreSQL databases.
+
+TODO(Objective 6.3): wire these services into request execution, terminal
+ingestion, Stripe webhooks, and supervised recovery workers only after the
+durability/parity gate is accepted.
 
 Every startup takes the same dedicated PostgreSQL primary advisory lock as the
 Go coordinator, including disabled legacy mode. It then takes the exclusive
@@ -51,9 +62,14 @@ epoch (or absent legacy marker), so an old process cannot write across a
 handoff. The primary connection is monitored continuously; loss also removes
 readiness and triggers runtime shutdown. Once either coordinator has persisted
 `coordinator_ownership_activated`, disabled startup is refused.
-Future SQL mutators must enter through `Database::begin_owned`; it rejects
-unconfigured or lost authority and returns the fencing context with the
-transaction.
+Durable financial mutations are single READ COMMITTED data-modifying CTE
+statements. Each statement verifies the active owner id/epoch in its own
+snapshot, uses immutable operation key/digest replay records, exact status and
+version CAS, checked `BIGINT` bounds, and deterministic account lock order.
+Only SQLSTATE `40001` and `40P01` are retried with bounded jitter; uncertain
+transport outcomes are reconciled by operation key and conflicting digests
+fail closed. Other SQL mutators continue to enter through
+`Database::begin_owned`.
 Real PostgreSQL integration tests use the dedicated
 `DARKBLOOM_TEST_DATABASE_URL`; they refuse to fall back to a runtime database
 URL.

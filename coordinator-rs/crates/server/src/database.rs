@@ -186,6 +186,14 @@ impl Database {
     pub(crate) fn operation_timeout(&self) -> Duration {
         self.operation_timeout
     }
+
+    pub(crate) fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    pub(crate) fn authority(&self) -> Option<(FencingContext, crate::ownership::OwnershipStatus)> {
+        self.mutation_fence.authority()
+    }
 }
 
 #[derive(Debug)]

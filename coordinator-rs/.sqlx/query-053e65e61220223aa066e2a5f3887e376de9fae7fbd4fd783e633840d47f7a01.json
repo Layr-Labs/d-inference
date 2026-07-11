@@ -1,0 +1,243 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    ),\n                    candidates AS MATERIALIZED (\n                        SELECT terminals.terminal_id\n                        FROM rust_coord.provider_terminals AS terminals\n                        WHERE terminals.status = 'pending'\n                          AND (\n                              terminals.worker_owner IS NULL\n                              OR terminals.lease_until <= NOW()\n                          )\n                        ORDER BY terminals.received_at, terminals.terminal_id\n                        FOR UPDATE SKIP LOCKED\n                        LIMIT $4\n                    ),\n                    claimed AS (\n                        UPDATE rust_coord.provider_terminals AS terminals\n                        SET\n                            owner_epoch = $2,\n                            worker_owner = $3,\n                            lease_until =\n                                NOW() + ($5::BIGINT * INTERVAL '1 millisecond'),\n                            version = terminals.version + 1,\n                            updated_at = NOW()\n                        FROM candidates, authority\n                        WHERE terminals.terminal_id = candidates.terminal_id\n                        RETURNING\n                            terminals.terminal_id,\n                            terminals.job_id,\n                            terminals.attempt_id,\n                            terminals.provider_id,\n                            terminals.provider_process_generation_id,\n                            terminals.origin_session_epoch,\n                            terminals.terminal_digest,\n                            terminals.raw_terminal,\n                            terminals.outcome,\n                            terminals.error_class,\n                            terminals.prompt_tokens,\n                            terminals.completion_tokens,\n                            terminals.reasoning_tokens,\n                            terminals.response_digest,\n                            terminals.rolling_digest,\n                            terminals.final_generated_tokens,\n                            terminals.provider_signature,\n                            terminals.version,\n                            (\n                                EXTRACT(EPOCH FROM terminals.lease_until) * 1000\n                            )::BIGINT AS lease_until_epoch_millis\n                    )\n                    SELECT *\n                    FROM claimed\n                    ORDER BY terminal_id\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "terminal_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "terminal_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "job_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "attempt_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "attempt_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "provider_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "provider_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "provider_process_generation_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "provider_process_generation_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "origin_session_epoch",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "origin_session_epoch"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "terminal_digest",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "terminal_digest"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "raw_terminal",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "raw_terminal"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "outcome",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "outcome"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "error_class",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "error_class"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "prompt_tokens",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "prompt_tokens"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "completion_tokens",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "completion_tokens"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "reasoning_tokens",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "reasoning_tokens"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "response_digest",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "response_digest"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "rolling_digest",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "rolling_digest"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "final_generated_tokens",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "final_generated_tokens"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "provider_signature",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "provider_signature"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.provider_terminals",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "lease_until_epoch_millis",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "053e65e61220223aa066e2a5f3887e376de9fae7fbd4fd783e633840d47f7a01"
+}

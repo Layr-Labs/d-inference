@@ -1,0 +1,63 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    ),\n                    candidates AS MATERIALIZED (\n                        SELECT jobs.job_id\n                        FROM rust_coord.inference_jobs AS jobs\n                        WHERE jobs.state IN (\n                            'reserved',\n                            'preparing',\n                            'prepared',\n                            'start_authorized',\n                            'running',\n                            'review_pending'\n                        )\n                          AND (\n                              jobs.worker_owner IS NULL\n                              OR jobs.lease_until <= NOW()\n                          )\n                        ORDER BY jobs.updated_at, jobs.job_id\n                        FOR UPDATE SKIP LOCKED\n                        LIMIT $4\n                    ),\n                    claimed AS (\n                        UPDATE rust_coord.inference_jobs AS jobs\n                        SET\n                            owner_epoch = $2,\n                            worker_owner = $3,\n                            lease_until =\n                                NOW() + ($5::BIGINT * INTERVAL '1 millisecond'),\n                            version = jobs.version + 1,\n                            updated_at = NOW()\n                        FROM candidates, authority\n                        WHERE jobs.job_id = candidates.job_id\n                        RETURNING\n                            jobs.job_id,\n                            jobs.version,\n                            jobs.state,\n                            (\n                                EXTRACT(EPOCH FROM jobs.lease_until) * 1000\n                            )::BIGINT AS lease_until_epoch_millis\n                    )\n                    SELECT *\n                    FROM claimed\n                    ORDER BY job_id\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.inference_jobs",
+            "name": "job_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.inference_jobs",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "state",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.inference_jobs",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "lease_until_epoch_millis",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "942ba93c8141d4348210eea4aa6d58b247e8ade7070009c0adab8fd385414758"
+}

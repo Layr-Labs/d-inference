@@ -1,0 +1,150 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    )\n                    SELECT\n                        operation_key,\n                        operation_digest,\n                        kind,\n                        status,\n                        result,\n                        job_id,\n                        terminal_id,\n                        account_id,\n                        amount_total_micro_usd,\n                        amount_withdrawable_micro_usd,\n                        version\n                    FROM rust_coord.financial_operations\n                    WHERE operation_key = $3\n                      AND EXISTS (SELECT 1 FROM authority)\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "operation_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.financial_operations",
+            "name": "operation_key"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "operation_digest",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.financial_operations",
+            "name": "operation_digest"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.financial_operations",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.financial_operations",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "result",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.financial_operations",
+            "name": "result"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.financial_operations",
+            "name": "job_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "terminal_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.financial_operations",
+            "name": "terminal_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "account_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.financial_operations",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "amount_total_micro_usd",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.financial_operations",
+            "name": "amount_total_micro_usd"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "amount_withdrawable_micro_usd",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.financial_operations",
+            "name": "amount_withdrawable_micro_usd"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.financial_operations",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b5f263f5333e7da76885c1cd43f5dd7a44a61ad96da383d3a5fd3c96617c0676"
+}

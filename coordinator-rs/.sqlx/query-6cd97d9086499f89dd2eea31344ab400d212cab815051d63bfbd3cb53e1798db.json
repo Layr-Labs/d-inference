@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    )\n                    UPDATE rust_coord.outbox\n                    SET\n                        status = CASE\n                            WHEN $6 = 'pending'\n                                 AND outbox.attempts >= outbox.max_attempts\n                            THEN 'failed'\n                            ELSE $6\n                        END,\n                        worker_owner = NULL,\n                        lease_until = NULL,\n                        next_attempt_at = CASE\n                            WHEN $6 = 'pending'\n                                 AND outbox.attempts < outbox.max_attempts\n                            THEN NOW() + ($7::BIGINT * INTERVAL '1 millisecond')\n                            ELSE outbox.next_attempt_at\n                        END,\n                        version = outbox.version + 1,\n                        updated_at = NOW(),\n                        delivered_at = CASE WHEN $8 THEN NOW() ELSE NULL END\n                    FROM authority\n                    WHERE outbox.outbox_id = $3\n                      AND outbox.owner_epoch = $2\n                      AND outbox.worker_owner = $4\n                      AND outbox.version = $5\n                      AND outbox.status = 'processing'\n                      AND outbox.lease_until > NOW()\n                    RETURNING outbox.version\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.outbox",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Text",
+        "Int8",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6cd97d9086499f89dd2eea31344ab400d212cab815051d63bfbd3cb53e1798db"
+}

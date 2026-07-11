@@ -317,28 +317,46 @@ public struct WatchdogRecoveryService: Sendable {
             // Launch stamps use the CURRENT time, not the tick-entry `now`:
             // everything the startup window measures begins here, after any
             // slow download/install above has already elapsed.
+            //
+            // Every write below is gated on an ACTUAL state mutation. With no
+            // candidate, all of the launch bookkeeping is a no-op, and an
+            // ordinary crashed provider must be restartable even when the
+            // recovery state has become unwritable (full disk, permissions) —
+            // a vacuous write must never gate the bare kickstart.
             let launchNow = freshNow()
+            func writeIfChanged(
+                _ state: UpdateRecoveryState,
+                before: UpdateRecoveryState
+            ) throws {
+                if state != before {
+                    try session.writeState(state)
+                }
+            }
             if state.candidate?.pendingAttemptID == nil,
                state.candidate?.launchIntent == nil {
+                let before = state
                 _ = state.prepareLaunchIntent(
                     now: launchNow,
                     baseline: deps.launchSnapshot()
                 )
-                try session.writeState(state)
+                try writeIfChanged(state, before: before)
             }
 
             do {
                 let started = try deps.kickstartIfLoaded()
                 guard started else {
+                    let before = state
                     state.cancelPendingAttempt()
-                    try session.writeState(state)
+                    try writeIfChanged(state, before: before)
                     return .noLongerLoaded
                 }
+                let before = state
                 _ = state.markLaunchIssued(now: launchNow)
-                try session.writeState(state)
+                try writeIfChanged(state, before: before)
             } catch {
+                let before = state
                 state.cancelPendingAttempt()
-                try session.writeState(state)
+                try writeIfChanged(state, before: before)
                 throw error
             }
             return .restartIssued(updatedTo: updatedTo, rolledBackTo: rolledBackTo)

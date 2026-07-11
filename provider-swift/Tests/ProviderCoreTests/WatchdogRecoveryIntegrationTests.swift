@@ -867,6 +867,55 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(try fixture.liveBinaryContents() == "1.0.0-darkbloom")
     }
 
+    @Test("no-candidate restart survives an unwritable recovery state")
+    func noCandidateRestartSurvivesUnwritableState() async throws {
+        let fixture = try UpdateRecoveryFixture()
+        defer { fixture.cleanup() }
+        let store = recoveryStore(fixture)
+
+        // Materialize the recovery dir + lock file while the dir is still
+        // writable (the session open only needs to reopen the existing lock).
+        try UpdateProcessLock.acquire(
+            at: store.lockPath,
+            operation: "seed-lock"
+        ).release()
+
+        // Then the recovery dir becomes unwritable (full-disk/permissions
+        // class). No candidate exists, so ALL launch bookkeeping is vacuous —
+        // the plain restart must still go through.
+        let fm = FileManager.default
+        try fm.setAttributes(
+            [.posixPermissions: 0o555],
+            ofItemAtPath: store.recoveryRoot.path
+        )
+        defer {
+            try? fm.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: store.recoveryRoot.path
+            )
+        }
+
+        let restarts = RecoveryRestartCounter()
+        let updater = SelfUpdater(
+            coordinatorBaseURL: "http://127.0.0.1:1",
+            installRoot: fixture.installRoot,
+            verifyCodeSignatures: false,
+            currentVersion: fixture.oldVersion
+        )
+        let service = makeService(updater: updater, restarts: restarts)
+        let outcome = await service.recoverDownProvider(
+            autoUpdateEnabled: false,
+            now: 100
+        )
+
+        // Pre-fix, the vacuous prepareLaunchIntent write threw on the
+        // read-only dir and the watchdog returned .failed without ever
+        // kickstarting — a host that needed nothing but `launchctl
+        // kickstart` stayed down for as long as the disk stayed full.
+        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        #expect(restarts.value == 1)
+    }
+
     @Test("live lock owner still defers the watchdog — degraded fallback never fires past contention")
     func liveLockOwnerStillDefers() async throws {
         let fixture = try UpdateRecoveryFixture()

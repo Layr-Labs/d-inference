@@ -143,16 +143,31 @@ public struct WatchdogRecoveryService: Sendable {
                     timeout: 3
                 )
             }
-            try session.recover(now: now)
         } catch UpdateError.lockBusy(let reason, _) {
+            // A LIVE process holds the update lease (flock auto-releases on
+            // owner death) — it owns the provider lifecycle; defer to it.
             deps.log("update/recovery lock busy: \(reason)")
             return .lockBusy(reason)
         } catch {
-            let reason = "could not open recovery state: \(error)"
+            // Session infrastructure is unavailable (recovery dir or lock
+            // file unopenable — full disk, permissions). Update and rollback
+            // are impossible without it, but a plain launchd kickstart needs
+            // none of that state: a degraded filesystem must not disable
+            // basic crash recovery for an auto_restart provider.
+            return restartWithoutRecovery(
+                reason: "update recovery unavailable: \(error)"
+            )
+        }
+        defer { session.release() }
+        do {
+            try session.recover(now: now)
+        } catch {
+            // An unreplayable journaled transaction: do NOT kickstart what
+            // may be an unfinalized install tree. The next tick retries.
+            let reason = "could not recover update state: \(error)"
             deps.log(reason)
             return .failed(reason)
         }
-        defer { session.release() }
         guard deps.providerStillLoaded() else {
             return .noLongerLoaded
         }
@@ -276,6 +291,20 @@ public struct WatchdogRecoveryService: Sendable {
                     "update artifact refused (bundle hash expected \(expected), got \(got)); restarting current install")
             case .replaceFailed(let reason):
                 deps.log("update install refused; restarting current install: \(reason)")
+                // The refusal may have stranded a journaled transaction that
+                // already exchanged the live layout (e.g. a state-write
+                // failure after the rename). Replay it NOW: kickstarting an
+                // unfinalized tree would launch a candidate with no pending
+                // attempt recorded, so its crash would never be charged
+                // toward the rollback threshold.
+                do {
+                    try session.recover(now: freshNow())
+                } catch {
+                    let recoveryReason =
+                        "post-refusal update recovery failed: \(error)"
+                    deps.log(recoveryReason)
+                    return .failed(recoveryReason)
+                }
             }
         }
 
@@ -313,6 +342,24 @@ public struct WatchdogRecoveryService: Sendable {
             let reason = "provider kickstart failed: \(error)"
             deps.log(reason)
             return .failed(reason)
+        }
+    }
+
+    /// Degraded-mode restart when the update/recovery session cannot even be
+    /// opened: no state is read or written (it is unreachable), no failure is
+    /// attributed, only the launchd kickstart runs. Provider availability
+    /// outranks update bookkeeping when the filesystem is failing.
+    private func restartWithoutRecovery(reason: String) -> DownOutcome {
+        deps.log(reason + "; issuing restart-only kickstart without update recovery")
+        guard deps.providerStillLoaded() else { return .noLongerLoaded }
+        do {
+            let started = try deps.kickstartIfLoaded()
+            guard started else { return .noLongerLoaded }
+            return .restartIssued(updatedTo: nil, rolledBackTo: nil)
+        } catch {
+            let kickstartReason = "provider kickstart failed: \(error)"
+            deps.log(kickstartReason)
+            return .failed(kickstartReason)
         }
     }
 

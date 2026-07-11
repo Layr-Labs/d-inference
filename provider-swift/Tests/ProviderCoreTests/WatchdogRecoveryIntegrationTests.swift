@@ -615,6 +615,121 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(try store.loadState().candidate?.failureCount == 4)
     }
 
+    @Test("install refusal after layout exchange is recovered before kickstart")
+    func replaceFailedRecoversTransactionBeforeKickstart() async throws {
+        enum InjectedFault: Error { case afterExchange }
+        let fixture = try UpdateRecoveryFixture()
+        defer { fixture.cleanup() }
+        let mock = MockCoordinator(
+            release: fixture.mockReleaseFixture(),
+            releaseArtifact: fixture.artifact
+        )
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        // The commit exchanges the live layout, then fails before finalizing
+        // (models a state-write/fsync failure after the rename). One-shot:
+        // the recovery replay through the same store must not re-fire.
+        let fault = OneShotFault()
+        let updater = SelfUpdater(
+            coordinatorBaseURL: baseURL.absoluteString,
+            installRoot: fixture.installRoot,
+            verifyCodeSignatures: false,
+            currentVersion: fixture.oldVersion,
+            now: { 100 },
+            recoveryFaultInjector: { point in
+                if point == .liveLayoutReplaced, fault.claim() {
+                    throw InjectedFault.afterExchange
+                }
+            }
+        )
+        let restarts = RecoveryRestartCounter()
+        let service = makeService(updater: updater, restarts: restarts)
+        let outcome = await service.recoverDownProvider(
+            autoUpdateEnabled: true,
+            now: 100
+        )
+
+        // The refused install stranded a journaled transaction with the live
+        // layout already exchanged. Pre-fix, the tick kickstarted that
+        // unfinalized tree with NO candidate attempt recorded — a crash of
+        // the new binary would never be charged toward rollback. The fix
+        // replays the journal before kickstart.
+        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        #expect(restarts.value == 1)
+        let store = recoveryStore(fixture)
+        #expect(!FileManager.default.fileExists(
+            atPath: store.recoveryRoot
+                .appendingPathComponent("transaction.json").path
+        ))
+        let state = try store.loadState()
+        #expect(state.candidate?.release.version == "2.0.0")
+        #expect(state.candidate?.pendingAttemptID != nil)
+        #expect(try fixture.liveBinaryContents() == "2.0.0-darkbloom")
+    }
+
+    @Test("unopenable recovery infrastructure still restarts the provider")
+    func degradedRecoveryInfraStillRestarts() async throws {
+        let fixture = try UpdateRecoveryFixture()
+        defer { fixture.cleanup() }
+        // Occupy the recovery root with a regular FILE so the lock directory
+        // can never be created — the full-disk / permissions failure class.
+        try Data("not a directory".utf8).write(
+            to: fixture.installRoot.appendingPathComponent("recovery")
+        )
+
+        let restarts = RecoveryRestartCounter()
+        let updater = SelfUpdater(
+            coordinatorBaseURL: "http://127.0.0.1:1",
+            installRoot: fixture.installRoot,
+            verifyCodeSignatures: false,
+            currentVersion: fixture.oldVersion
+        )
+        let service = makeService(updater: updater, restarts: restarts)
+        let outcome = await service.recoverDownProvider(
+            autoUpdateEnabled: true,
+            now: 100
+        )
+
+        // Pre-fix this surfaced as a nil-owner lock-busy wait and the
+        // provider stayed down forever, even though the plain launchd
+        // kickstart needs no update recovery state at all.
+        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        #expect(restarts.value == 1)
+        #expect(try fixture.liveBinaryContents() == "1.0.0-darkbloom")
+    }
+
+    @Test("live lock owner still defers the watchdog — degraded fallback never fires past contention")
+    func liveLockOwnerStillDefers() async throws {
+        let fixture = try UpdateRecoveryFixture()
+        defer { fixture.cleanup() }
+        let store = recoveryStore(fixture)
+        let held = try UpdateProcessLock.acquire(
+            at: store.lockPath,
+            operation: "live-manual-update"
+        )
+        defer { held.release() }
+
+        let restarts = RecoveryRestartCounter()
+        let updater = SelfUpdater(
+            coordinatorBaseURL: "http://127.0.0.1:1",
+            installRoot: fixture.installRoot,
+            verifyCodeSignatures: false,
+            currentVersion: fixture.oldVersion
+        )
+        let service = makeService(updater: updater, restarts: restarts)
+        let outcome = await service.recoverDownProvider(
+            autoUpdateEnabled: true,
+            now: 100
+        )
+        guard case .lockBusy(let reason) = outcome else {
+            Issue.record("expected deferral to the live lock owner, got \(outcome)")
+            return
+        }
+        #expect(reason.contains("live-manual-update"))
+        #expect(restarts.value == 0)
+    }
+
     @Test("candidate launch is stamped when kickstart happens, not at tick entry")
     func launchStampUsesFreshTimeAfterSlowDownload() async throws {
         let fixture = try UpdateRecoveryFixture()

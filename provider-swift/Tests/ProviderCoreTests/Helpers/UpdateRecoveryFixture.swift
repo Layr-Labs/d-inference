@@ -212,6 +212,21 @@ struct UpdateRecoveryFixture {
     }
 }
 
+/// One-shot latch for fault injectors: the first `claim()` wins, replays
+/// (e.g. transaction recovery through the same store) do not re-fire.
+final class OneShotFault: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+
+    func claim() -> Bool {
+        lock.withLock {
+            guard !fired else { return false }
+            fired = true
+            return true
+        }
+    }
+}
+
 final class RecoveryRestartCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var storage = 0

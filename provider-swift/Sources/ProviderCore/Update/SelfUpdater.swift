@@ -62,6 +62,10 @@ public struct SelfUpdater: Sendable {
     private let currentVersion: String
     private let urlSession: URLSession
     private let now: @Sendable () -> Double
+    /// Test seam threaded into every `UpdateRecoveryStore` this updater
+    /// constructs; production always uses the no-op default.
+    private let recoveryFaultInjector:
+        @Sendable (UpdateRecoveryStore.FaultPoint) throws -> Void
 
     /// Whether this updater verifies the pinned Darkbloom code signature on
     /// staged/committed/installed artifacts. Always `true` for the public
@@ -116,7 +120,9 @@ public struct SelfUpdater: Sendable {
         urlSession: URLSession = .shared,
         now: @escaping @Sendable () -> Double = {
             Date().timeIntervalSince1970
-        }
+        },
+        recoveryFaultInjector:
+            @escaping @Sendable (UpdateRecoveryStore.FaultPoint) throws -> Void = { _ in }
     ) {
         // Convert WebSocket URL to HTTP if needed
         var base = WebSocketURLScheme.toHTTP(coordinatorBaseURL)
@@ -131,6 +137,7 @@ public struct SelfUpdater: Sendable {
         self.currentVersion = currentVersion
         self.urlSession = urlSession
         self.now = now
+        self.recoveryFaultInjector = recoveryFaultInjector
     }
 
     // MARK: - Version Check
@@ -660,7 +667,8 @@ public struct SelfUpdater: Sendable {
         guard let root = resolvedInstallRoot() else { return nil }
         return UpdateRecoveryStore(
             installRoot: root,
-            verifyCodeSignatures: verifyCodeSignatures
+            verifyCodeSignatures: verifyCodeSignatures,
+            faultInjector: recoveryFaultInjector
         )
     }
 
@@ -687,7 +695,8 @@ public struct SelfUpdater: Sendable {
     ) throws -> UpdateSession {
         let store = UpdateRecoveryStore(
             installRoot: installRoot,
-            verifyCodeSignatures: verifyCodeSignatures
+            verifyCodeSignatures: verifyCodeSignatures,
+            faultInjector: recoveryFaultInjector
         )
         do {
             let processLock = try UpdateProcessLock.acquire(
@@ -697,16 +706,18 @@ public struct SelfUpdater: Sendable {
             )
             return UpdateSession(processLock: processLock, store: store)
         } catch let error as UpdateProcessLock.LockError {
-            let owner: UpdateProcessLock.Owner?
+            // Only real contention is `lockBusy` — flock is kernel-owned and
+            // auto-releases on owner death, so `.busy` always means a LIVE
+            // process holds the lease. An unopenable recovery dir or lock
+            // file (full disk, permissions) is an infrastructure failure, not
+            // contention: callers must not wait for a nonexistent owner.
             if case .busy(let recorded) = error {
-                owner = recorded
-            } else {
-                owner = nil
+                throw UpdateError.lockBusy(
+                    reason: error.description,
+                    owner: recorded
+                )
             }
-            throw UpdateError.lockBusy(
-                reason: error.description,
-                owner: owner
-            )
+            throw UpdateError.replaceFailed(error.description)
         }
     }
 

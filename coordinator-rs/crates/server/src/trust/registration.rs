@@ -57,6 +57,12 @@ impl P256PublicIdentity {
     pub fn as_base64(&self) -> &str {
         &self.encoded
     }
+
+    /// Constant-time comparison of canonical encoded public identities.
+    #[must_use]
+    pub fn ct_eq(&self, other: &Self) -> bool {
+        bool::from(self.encoded.as_bytes().ct_eq(other.encoded.as_bytes()))
+    }
 }
 
 impl fmt::Debug for P256PublicIdentity {

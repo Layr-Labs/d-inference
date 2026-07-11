@@ -395,6 +395,46 @@ public enum V2CoordinatorControlMessage: Sendable, Equatable, Codable {
     }
 }
 
+/// Confirms that one signed coordinator replay fence was durably applied.
+///
+/// The generation identifies the proof's historical partition and can differ
+/// from the current WebSocket process generation.
+public struct V2ReplayFenceAck: Sendable, Equatable, Codable {
+    public var proofID: ProtocolV2UUID
+    public var providerID: ProviderID
+    public var providerProcessGeneration: ProviderProcessGenerationID
+
+    public init(
+        proofID: ProtocolV2UUID,
+        providerID: ProviderID,
+        providerProcessGeneration: ProviderProcessGenerationID
+    ) {
+        self.proofID = proofID
+        self.providerID = providerID
+        self.providerProcessGeneration = providerProcessGeneration
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: V2WireCodingKeys.self)
+        proofID = try container.decode(ProtocolV2UUID.self, forKey: .proofID)
+        providerID = try container.decode(ProviderID.self, forKey: .providerID)
+        providerProcessGeneration = try container.decode(
+            ProviderProcessGenerationID.self,
+            forKey: .providerProcessGeneration
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: V2WireCodingKeys.self)
+        try container.encode(proofID, forKey: .proofID)
+        try container.encode(providerID, forKey: .providerID)
+        try container.encode(
+            providerProcessGeneration,
+            forKey: .providerProcessGeneration
+        )
+    }
+}
+
 public enum V2ProviderControlMessage: Sendable, Equatable, Codable {
     case prepared(V2Prepared)
     case startAck(V2StartAck)
@@ -404,6 +444,7 @@ public enum V2ProviderControlMessage: Sendable, Equatable, Codable {
     case structuredError(V2StructuredError)
     case modelReady(V2ModelReady)
     case modelGone(V2ModelGone)
+    case replayFenceAck(V2ReplayFenceAck)
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: V2WireCodingKeys.self)
@@ -416,6 +457,8 @@ public enum V2ProviderControlMessage: Sendable, Equatable, Codable {
         case "structured_error": self = .structuredError(try V2StructuredError(from: decoder))
         case "model_ready": self = .modelReady(try V2ModelReady(from: decoder))
         case "model_gone": self = .modelGone(try V2ModelGone(from: decoder))
+        case "replay_fence_ack":
+            self = .replayFenceAck(try V2ReplayFenceAck(from: decoder))
         case let type:
             throw DecodingError.dataCorruptedError(
                 forKey: .type,
@@ -452,12 +495,16 @@ public enum V2ProviderControlMessage: Sendable, Equatable, Codable {
         case .modelGone(let message):
             try container.encode("model_gone", forKey: .type)
             try message.encode(to: encoder)
+        case .replayFenceAck(let message):
+            try container.encode("replay_fence_ack", forKey: .type)
+            try message.encode(to: encoder)
         }
     }
 }
 
 enum V2WireCodingKeys: String, CodingKey {
     case type
+    case proofID = "proof_id"
     case providerID = "provider_id"
     case providerProcessGeneration = "provider_process_generation"
     case processGeneration = "process_generation"

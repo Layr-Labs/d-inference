@@ -610,6 +610,13 @@ impl ProviderWriterHandle {
     pub fn fence(&self, reason: impl Into<Arc<str>>) {
         self.queue.fence(reason.into());
     }
+
+    #[cfg(test)]
+    pub(crate) fn exhaust_control_capacity_for_test(&self) {
+        let mut state = self.queue.lock_state();
+        state.control_items = self.queue.config.control.maximum_items;
+        state.bump_revision();
+    }
 }
 
 /// Creates the sole writer task's queue and producer handle.

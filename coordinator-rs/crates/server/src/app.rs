@@ -6,12 +6,13 @@ use std::sync::{
 use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
 use serde::Serialize;
 
-use crate::{database::Database, ownership::OwnershipStatus};
+use crate::{database::Database, ownership::OwnershipStatus, pilot::PilotHandle};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AppState {
     database: Database,
     ownership: Option<OwnershipStatus>,
+    pilot: Option<PilotHandle>,
     providers: Arc<AtomicUsize>,
     draining: Arc<AtomicBool>,
     inflight: Arc<AtomicU64>,
@@ -22,6 +23,7 @@ impl AppState {
         Self {
             database,
             ownership: None,
+            pilot: None,
             providers: Arc::new(AtomicUsize::new(0)),
             draining: Arc::new(AtomicBool::new(false)),
             inflight: Arc::new(AtomicU64::new(0)),
@@ -31,6 +33,16 @@ impl AppState {
     pub fn with_ownership(mut self, ownership: OwnershipStatus) -> Self {
         self.ownership = Some(ownership);
         self
+    }
+
+    pub fn with_pilot(mut self, pilot: PilotHandle) -> Self {
+        self.pilot = Some(pilot);
+        self
+    }
+
+    #[must_use]
+    pub fn pilot(&self) -> Option<&PilotHandle> {
+        self.pilot.as_ref()
     }
 
     pub fn set_draining(&self, draining: bool) {
@@ -65,17 +77,23 @@ struct ReadinessResponse {
 }
 
 pub fn router(state: AppState) -> Router {
+    let pilot_routes = crate::http::routes(state.pilot.clone());
     Router::new()
         .route("/health", get(health))
         .route("/readyz", get(readiness))
         .with_state(state)
+        .merge(pilot_routes)
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
+    let providers = state.pilot.as_ref().map_or_else(
+        || state.providers.load(Ordering::Acquire),
+        PilotHandle::visible_provider_count,
+    );
     Json(HealthResponse {
         status: "ok",
         draining: state.draining.load(Ordering::Acquire),
-        providers: state.providers.load(Ordering::Acquire),
+        providers,
         version: option_env!("DARKBLOOM_BUILD_VERSION").unwrap_or("dev"),
         build_commit: option_env!("DARKBLOOM_BUILD_COMMIT").unwrap_or("unknown"),
         build_date: option_env!("DARKBLOOM_BUILD_DATE").unwrap_or("unknown"),
@@ -84,7 +102,10 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 
 async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
     let draining = state.draining.load(Ordering::Acquire);
-    let inflight = state.inflight.load(Ordering::Acquire);
+    let inflight = state.pilot.as_ref().map_or_else(
+        || state.inflight.load(Ordering::Acquire),
+        |pilot| u64::try_from(pilot.active_request_count()).unwrap_or(u64::MAX),
+    );
     if draining {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -101,6 +122,17 @@ async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
         .is_some_and(|ownership| !ownership.is_healthy())
     {
         tracing::warn!("readiness coordinator ownership check failed");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ReadinessResponse {
+                draining,
+                inflight,
+                ready: false,
+            }),
+        );
+    }
+    if state.pilot.as_ref().is_some_and(|pilot| !pilot.is_ready()) {
+        tracing::warn!("readiness pilot supervisor is not ready");
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ReadinessResponse {

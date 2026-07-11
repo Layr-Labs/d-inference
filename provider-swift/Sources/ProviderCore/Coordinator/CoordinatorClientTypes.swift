@@ -151,6 +151,7 @@ public enum OutboundMessage: Sendable {
     case structuredError(V2StructuredError)
     case modelReady(V2ModelReady)
     case modelGone(V2ModelGone)
+    case replayFenceAck(V2ReplayFenceAck)
 }
 
 public struct AttestationResponsePayload: Sendable {

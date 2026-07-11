@@ -6,8 +6,8 @@ use darkbloom_coordinator_protocol::{
         CoordinatorReplayFenceProof, Digest, LeaseId, ModelGone, ModelReady, Prepare, Prepared,
         ProtocolCapabilities, ProviderControlMessage, ProviderId, ProviderProcessGenerationId,
         ProviderSessionIdentity, ProviderSessionTracker, ProviderTerminal, RegisterAcknowledgement,
-        RegistrationResponse, ReplayFenceProofId, RequestId, ReservationId, SessionEpoch, Start,
-        StartAck, TerminalOutcome, TerminalSignature,
+        RegistrationResponse, ReplayFenceAck, ReplayFenceProofId, RequestId, ReservationId,
+        SessionEpoch, Start, StartAck, TerminalOutcome, TerminalSignature,
     },
 };
 
@@ -159,6 +159,18 @@ fn v2_control_discriminators_and_unknown_fields_are_stable() {
     assert_eq!(
         serde_json::to_value(start_ack).expect("start ACK")["type"],
         "start_ack"
+    );
+
+    let replay_ack = ProviderControlMessage::ReplayFenceAck(ReplayFenceAck {
+        proof_id: ReplayFenceProofId::new([0x99; 16]),
+        provider_id: identity().provider_id,
+        provider_process_generation: ProviderProcessGenerationId::new([0x77; 16]),
+    });
+    let replay_ack = serde_json::to_value(replay_ack).expect("replay fence ACK");
+    assert_eq!(replay_ack["type"], "replay_fence_ack");
+    assert_eq!(
+        replay_ack["provider_process_generation"],
+        ProviderProcessGenerationId::new([0x77; 16]).to_string()
     );
 }
 

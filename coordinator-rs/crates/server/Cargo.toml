@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 axum = { version = "0.8.9", features = ["ws", "http2"] }
 base64 = "0.22.1"
+crypto_box = "0.9.1"
 darkbloom-coordinator-core = { version = "0.1.0", path = "../core" }
 darkbloom-coordinator-protocol = { version = "0.1.0", path = "../protocol" }
 futures-util = { version = "0.3.32", features = ["sink"] }

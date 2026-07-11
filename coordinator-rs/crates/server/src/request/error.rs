@@ -37,6 +37,8 @@ pub enum PipeCloseReason {
     Cancelled,
     /// Provider output failed validation.
     ProtocolViolation,
+    /// Provider returned a valid cancelled or error terminal.
+    ProviderFailed,
     /// The immutable request deadline elapsed.
     DeadlineExpired,
     /// The request task disappeared without a graceful finish.
@@ -51,6 +53,7 @@ impl PipeCloseReason {
             Self::ItemOverflow | Self::ByteOverflow => CancellationReason::SlowConsumer,
             Self::Cancelled => CancellationReason::ClientCancelled,
             Self::ProtocolViolation => CancellationReason::ProtocolViolation,
+            Self::ProviderFailed => CancellationReason::RequestEnded,
             Self::DeadlineExpired => CancellationReason::DeadlineExpired,
             Self::ProducerDropped => CancellationReason::RequestEnded,
         }

@@ -336,6 +336,12 @@ enum ReliableMessage {
         lease_id: LeaseId,
         response: oneshot::Sender<Result<(), FleetCommandError>>,
     },
+    WriterHeadroom {
+        provider_id: ProviderId,
+        expected_session_revision: SessionRevision,
+        report: WriterHeadroom,
+        response: oneshot::Sender<Result<(), FleetCommandError>>,
+    },
     RenewPermit {
         lease_id: LeaseId,
         ttl: Duration,
@@ -437,6 +443,33 @@ impl FleetHandle {
         let (response, receive) = oneshot::channel();
         self.reliable_tx
             .send(ReliableMessage::WriterEnqueued { lease_id, response })
+            .await
+            .map_err(|_| FleetHandleError::ActorUnavailable)?;
+        receive
+            .await
+            .map_err(|_| FleetHandleError::ActorUnavailable)?
+            .map_err(Into::into)
+    }
+
+    /// Reliably applies a newer absolute writer measurement for one exact
+    /// provider session.
+    ///
+    /// Request paths call this after every terminal writer receipt so actor
+    /// debits cannot outlive the queue entry they conservatively reserved.
+    pub async fn report_writer_headroom(
+        &self,
+        provider_id: ProviderId,
+        expected_session_revision: SessionRevision,
+        report: WriterHeadroom,
+    ) -> Result<(), FleetHandleError> {
+        let (response, receive) = oneshot::channel();
+        self.reliable_tx
+            .send(ReliableMessage::WriterHeadroom {
+                provider_id,
+                expected_session_revision,
+                report,
+                response,
+            })
             .await
             .map_err(|_| FleetHandleError::ActorUnavailable)?;
         receive
@@ -630,6 +663,22 @@ impl FleetActor {
             }
             ReliableMessage::WriterEnqueued { lease_id, response } => {
                 let result = self.state.mark_writer_enqueued(lease_id);
+                if result.is_ok() {
+                    self.publish_snapshot();
+                }
+                let _ = response.send(result);
+            }
+            ReliableMessage::WriterHeadroom {
+                provider_id,
+                expected_session_revision,
+                report,
+                response,
+            } => {
+                let result = self.state.report_writer_headroom(
+                    provider_id,
+                    expected_session_revision,
+                    report,
+                );
                 if result.is_ok() {
                     self.publish_snapshot();
                 }
@@ -1065,6 +1114,23 @@ impl ActorState {
             .get_mut(&lease_id)
             .ok_or(FleetCommandError::LeaseNotFound(lease_id))?;
         debit.enqueued = true;
+        Ok(())
+    }
+
+    fn report_writer_headroom(
+        &mut self,
+        provider_id: ProviderId,
+        expected_session_revision: SessionRevision,
+        report: WriterHeadroom,
+    ) -> Result<(), FleetCommandError> {
+        let runtime = self
+            .providers
+            .get_mut(&provider_id)
+            .ok_or(FleetCommandError::ProviderNotFound(provider_id))?;
+        if runtime.provider.fence().session_revision != expected_session_revision {
+            return Err(FleetCommandError::StaleProviderFence(provider_id));
+        }
+        runtime.apply_writer_report(report);
         Ok(())
     }
 

@@ -11,7 +11,7 @@ use darkbloom_coordinator_protocol::{
 use futures_util::{Stream, StreamExt};
 use serde::Deserialize;
 use thiserror::Error;
-use tokio::time::timeout;
+use tokio::{sync::oneshot, time::timeout};
 use tokio_util::sync::CancellationToken;
 
 use super::types::{
@@ -185,6 +185,15 @@ pub enum ProviderReadError {
     /// Peer closed before registering.
     #[error("provider WebSocket closed before registration")]
     ClosedBeforeRegistration,
+    /// Pilot integration did not release the post-ACK activation barrier.
+    #[error("provider registration activation timed out after {0:?}")]
+    ActivationTimeout(Duration),
+    /// Pilot integration explicitly rejected this exact activated epoch.
+    #[error("provider registration activation failed: {0}")]
+    ActivationRejected(Arc<str>),
+    /// The activation owner disappeared without resolving the barrier.
+    #[error("provider registration activation owner became unavailable")]
+    ActivationUnavailable,
 }
 
 #[derive(Deserialize)]
@@ -270,6 +279,8 @@ pub struct ProviderReader {
     protocol: NegotiatedProtocol,
     events: SessionEventSender,
     cancellation: CancellationToken,
+    activation: oneshot::Receiver<Result<(), Arc<str>>>,
+    activation_timeout: Duration,
 }
 
 impl ProviderReader {
@@ -280,6 +291,8 @@ impl ProviderReader {
         protocol: NegotiatedProtocol,
         events: SessionEventSender,
         cancellation: CancellationToken,
+        activation: oneshot::Receiver<Result<(), Arc<str>>>,
+        activation_timeout: Duration,
     ) -> Result<Self, ProviderReaderConfigError> {
         Ok(Self {
             config: config.validate()?,
@@ -287,15 +300,35 @@ impl ProviderReader {
             protocol,
             events,
             cancellation,
+            activation,
+            activation_timeout,
         })
     }
 
     /// Runs one and only one stream owner until peer close or cancellation.
-    pub async fn run<S, E>(self, mut stream: S) -> Result<ProviderReaderExit, ProviderReadError>
+    pub async fn run<S, E>(mut self, mut stream: S) -> Result<ProviderReaderExit, ProviderReadError>
     where
         S: Stream<Item = Result<Message, E>> + Unpin,
         E: fmt::Display,
     {
+        let activation = tokio::select! {
+            biased;
+            () = self.cancellation.cancelled() => {
+                return Ok(ProviderReaderExit::Cancelled);
+            }
+            result = timeout(self.activation_timeout, &mut self.activation) => result,
+        };
+        match activation {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(reason))) => return Err(ProviderReadError::ActivationRejected(reason)),
+            Ok(Err(_)) => return Err(ProviderReadError::ActivationUnavailable),
+            Err(_) => {
+                return Err(ProviderReadError::ActivationTimeout(
+                    self.activation_timeout,
+                ));
+            }
+        }
+
         loop {
             let next = tokio::select! {
                 biased;
@@ -400,6 +433,17 @@ impl ProviderReader {
             }
             ProviderControlMessage::ModelGone(message) => {
                 if self.identity.matches_provider(&message.identity) {
+                    Ok(())
+                } else {
+                    Err(ProviderReadError::StaleControlIdentity)
+                }
+            }
+            ProviderControlMessage::ReplayFenceAck(message) => {
+                // A current v2 connection may acknowledge a proof covering
+                // tombstones from an older process generation. The stable
+                // provider must match; the durable replay store binds the
+                // proof ID to its exact historical generation.
+                if message.provider_id == self.identity.provider_id {
                     Ok(())
                 } else {
                     Err(ProviderReadError::StaleControlIdentity)
@@ -540,6 +584,7 @@ fn is_v2_control(message_type: &str) -> bool {
             | "structured_error"
             | "model_ready"
             | "model_gone"
+            | "replay_fence_ack"
     )
 }
 
@@ -548,8 +593,8 @@ mod tests {
     use darkbloom_coordinator_protocol::v2::{
         AttemptId, AttemptIdentity, BinaryFrameFlags, BinaryFrameHeader, BinaryFrameKind, Digest,
         LeaseId, ProtocolCapabilities, ProviderId, ProviderProcessGenerationId, ProviderTerminal,
-        RequestId, ReservationId, SessionEpoch, TerminalOutcome, TerminalSignature,
-        encode_binary_frame,
+        ReplayFenceAck, ReplayFenceProofId, RequestId, ReservationId, SessionEpoch,
+        TerminalOutcome, TerminalSignature, encode_binary_frame,
     };
 
     use super::*;
@@ -583,12 +628,15 @@ mod tests {
 
     fn reader(protocol: NegotiatedProtocol) -> ProviderReader {
         let (events, _receiver) = session_event_channel(4).expect("channel");
+        let (_activation, activation_wait) = oneshot::channel();
         ProviderReader::new(
             ProviderReaderConfig::default(),
             identity(7),
             protocol,
             events,
             CancellationToken::new(),
+            activation_wait,
+            Duration::from_secs(1),
         )
         .expect("reader")
     }
@@ -660,12 +708,15 @@ mod tests {
             ..ProviderReaderConfig::default()
         };
         let (events, _receiver) = session_event_channel(1).expect("channel");
+        let (_activation, activation_wait) = oneshot::channel();
         let reader = ProviderReader::new(
             config,
             identity(7),
             NegotiatedProtocol::V1,
             events,
             CancellationToken::new(),
+            activation_wait,
+            Duration::from_secs(1),
         )
         .expect("reader");
         assert!(matches!(
@@ -751,6 +802,20 @@ mod tests {
                 .expect_err("stale"),
             ProviderReadError::StaleControlIdentity
         );
+    }
+
+    #[test]
+    fn replay_ack_accepts_historical_generation_for_current_stable_provider() {
+        let message = ProviderControlMessage::ReplayFenceAck(ReplayFenceAck {
+            proof_id: ReplayFenceProofId::new([9; 16]),
+            provider_id: identity(7).provider_id,
+            provider_process_generation: ProviderProcessGenerationId::new([8; 16]),
+        });
+        let wire = serde_json::to_vec(&message).expect("JSON");
+        assert!(matches!(
+            reader(NegotiatedProtocol::V2(capabilities())).parse_text(&wire),
+            Ok(SessionEvent::V2Control { .. })
+        ));
     }
 
     #[test]

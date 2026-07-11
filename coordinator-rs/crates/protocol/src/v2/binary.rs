@@ -6,8 +6,8 @@ use crate::{
     error::ProtocolError,
     limits::{MAX_V2_CIPHERTEXT_LEN, V2_BINARY_HEADER_LEN},
     v2::identity::{
-        AttemptId, LeaseId, ProviderId, ProviderProcessGenerationId, RequestId, ReservationId,
-        SessionEpoch,
+        AttemptId, AttemptIdentity, LeaseId, ProviderId, ProviderProcessGenerationId, RequestId,
+        ReservationId, SessionEpoch,
     },
 };
 
@@ -124,6 +124,20 @@ pub struct BinaryFrameHeader {
 impl BinaryFrameHeader {
     pub const MAGIC: [u8; 4] = *b"DBV2";
     pub const MAJOR: u16 = crate::PROTOCOL_V2_MAJOR;
+
+    /// Returns the request-attempt identity authenticated by this frame.
+    #[must_use]
+    pub const fn attempt_identity(&self) -> AttemptIdentity {
+        AttemptIdentity {
+            provider_id: self.provider_id,
+            provider_process_generation: self.provider_process_generation,
+            session_epoch: self.session_epoch,
+            request_id: self.request_id,
+            attempt_id: self.attempt_id,
+            reservation_id: self.reservation_id,
+            lease_id: self.lease_id,
+        }
+    }
 
     /// Encodes exactly 192 bytes in network byte order.
     pub fn encode(&self) -> Result<[u8; V2_BINARY_HEADER_LEN], ProtocolError> {

@@ -203,6 +203,30 @@ struct V2ProtocolTests {
                 ) == message)
         }
 
+        let replayAck = V2ProviderControlMessage.replayFenceAck(
+            V2ReplayFenceAck(
+                proofID: repeatedID(0x99),
+                providerID: id.providerID,
+                providerProcessGeneration: repeatedID(0x77)
+            ))
+        let replayAckData = try sortedEncoder().encode(replayAck)
+        let replayAckObject = try jsonObject(replayAckData)
+        #expect(replayAckObject["type"] as? String == "replay_fence_ack")
+        #expect(
+            replayAckObject["proof_id"] as? String
+                == repeatedID(0x99).description)
+        #expect(
+            replayAckObject["provider_id"] as? String
+                == id.providerID.description)
+        #expect(
+            replayAckObject["provider_process_generation"] as? String
+                == repeatedID(0x77).description)
+        #expect(
+            try JSONDecoder().decode(
+                V2ProviderControlMessage.self,
+                from: replayAckData
+            ) == replayAck)
+
         let sessionIdentity = id.providerSessionIdentity
         for message in [
             V2ProviderControlMessage.modelReady(

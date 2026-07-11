@@ -13,6 +13,7 @@ pub use blocking::{
 pub use challenge::{
     ChallengeExpectation, ChallengeTrust, ChallengeVerificationError, verify_challenge,
 };
+pub(crate) use credentials::PendingCredentialLease;
 pub use credentials::{
     ConfiguredProviderCredential, CredentialConfigError, CredentialError, CredentialRegistry,
     PendingCredential,

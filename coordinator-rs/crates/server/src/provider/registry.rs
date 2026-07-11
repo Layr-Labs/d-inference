@@ -17,6 +17,8 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::crypto::SessionEpochStore;
+
 use super::types::{NegotiatedProtocol, SessionIdentity};
 
 /// Finite identity and negotiation policy for the in-process provider registry.
@@ -77,6 +79,12 @@ pub enum SessionReservationError {
     /// A negotiated v2 ACK requires a canonical replay-fence verification key.
     #[error("negotiated v2 registration requires a canonical coordinator replay-fence key")]
     InvalidCoordinatorReplayFencePublicKey,
+    /// The durable epoch allocator failed before any active-session mutation.
+    #[error("durable provider session epoch allocation failed: {0}")]
+    DurableEpoch(Arc<str>),
+    /// An externally fsynced epoch must advance the registry's local history.
+    #[error("durable provider session epoch did not advance local history")]
+    StaleDurableEpoch,
 }
 
 /// Activation failure with transactional stale handling.
@@ -93,6 +101,7 @@ struct ReservationToken(u64);
 #[derive(Debug)]
 struct ActiveSession {
     identity: SessionIdentity,
+    protocol: NegotiatedProtocol,
     cancellation: CancellationToken,
 }
 
@@ -145,6 +154,8 @@ pub struct SessionActivation {
     pub lease: SessionLease,
     /// Replaced identity, when this activation fenced an older connection.
     pub replaced: Option<SessionIdentity>,
+    /// Protocol selected for the exact replaced identity.
+    pub replaced_protocol: Option<NegotiatedProtocol>,
 }
 
 /// Exact-current registry lease.
@@ -183,6 +194,7 @@ impl Drop for SessionLease {
 #[derive(Debug)]
 pub struct ProviderRegistry {
     config: ProviderRegistryConfig,
+    epoch_store: Option<Arc<SessionEpochStore>>,
     state: Mutex<RegistryState>,
 }
 
@@ -191,6 +203,20 @@ impl ProviderRegistry {
     pub fn new(config: ProviderRegistryConfig) -> Result<Self, ProviderRegistryConfigError> {
         Ok(Self {
             config: config.validate()?,
+            epoch_store: None,
+            state: Mutex::new(RegistryState::default()),
+        })
+    }
+
+    /// Creates a registry whose epochs are fsynced before a reservation can be
+    /// acknowledged or made current.
+    pub fn new_with_epoch_store(
+        config: ProviderRegistryConfig,
+        epoch_store: Arc<SessionEpochStore>,
+    ) -> Result<Self, ProviderRegistryConfigError> {
+        Ok(Self {
+            config: config.validate()?,
+            epoch_store: Some(epoch_store),
             state: Mutex::new(RegistryState::default()),
         })
     }
@@ -208,6 +234,23 @@ impl ProviderRegistry {
         )
     }
 
+    /// Reserves using an epoch already fsynced by the bounded durable-I/O
+    /// pool. Production registration uses this path so no filesystem work can
+    /// execute under a Tokio worker or the registry mutex.
+    pub fn reserve_with_epoch(
+        &self,
+        provider_id: ProviderId,
+        registration: &Registration,
+        allocated_epoch: SessionEpoch,
+    ) -> Result<SessionReservation, SessionReservationError> {
+        self.reserve_offer_inner(
+            provider_id,
+            registration.provider_process_generation,
+            registration.protocol_capabilities.as_ref(),
+            Some(allocated_epoch),
+        )
+    }
+
     /// Reserves from the registration fields that determine session identity.
     ///
     /// This method is useful for an authentication boundary that validates the
@@ -217,6 +260,21 @@ impl ProviderRegistry {
         provider_id: ProviderId,
         provider_process_generation: Option<ProviderProcessGenerationId>,
         provider_capabilities: Option<&ProtocolCapabilities>,
+    ) -> Result<SessionReservation, SessionReservationError> {
+        self.reserve_offer_inner(
+            provider_id,
+            provider_process_generation,
+            provider_capabilities,
+            None,
+        )
+    }
+
+    fn reserve_offer_inner(
+        &self,
+        provider_id: ProviderId,
+        provider_process_generation: Option<ProviderProcessGenerationId>,
+        provider_capabilities: Option<&ProtocolCapabilities>,
+        allocated_epoch: Option<SessionEpoch>,
     ) -> Result<SessionReservation, SessionReservationError> {
         let capabilities = explicit_capabilities(provider_capabilities)?;
         let generation = match provider_process_generation {
@@ -244,7 +302,7 @@ impl ProviderRegistry {
             || ProviderSessionTracker::new(provider_id),
             |epoch| ProviderSessionTracker::resume(provider_id, epoch),
         );
-        let acknowledgement = tracker
+        let mut acknowledgement = tracker
             .acknowledge(
                 generation,
                 &capabilities,
@@ -252,6 +310,20 @@ impl ProviderRegistry {
                 self.config.coordinator_replay_fence_public_key.as_deref(),
             )
             .map_err(map_allocation_error)?;
+        if let Some(allocated_epoch) = allocated_epoch {
+            if last_epoch.is_some_and(|last| allocated_epoch <= last) || allocated_epoch.0 == 0 {
+                return Err(SessionReservationError::StaleDurableEpoch);
+            }
+            acknowledgement.session_epoch = allocated_epoch;
+        } else if let Some(epoch_store) = &self.epoch_store {
+            // Allocation is an atomic-file write plus file and parent-directory
+            // fsync. It intentionally precedes every in-process reservation or
+            // active-session mutation; a crash may leave a harmless gap, never
+            // a reused epoch.
+            acknowledgement.session_epoch = epoch_store.allocate(provider_id).map_err(|error| {
+                SessionReservationError::DurableEpoch(Arc::from(error.to_string()))
+            })?;
+        }
         let next_reservation = state
             .next_reservation
             .checked_add(1)
@@ -296,7 +368,7 @@ impl ProviderRegistry {
         reservation: &SessionReservation,
     ) -> Result<SessionActivation, SessionActivationError> {
         let cancellation = CancellationToken::new();
-        let (replaced, replaced_cancellation) = {
+        let (replaced, replaced_protocol, replaced_cancellation) = {
             let mut state = self.lock_state();
             let Some(entry) = state.entries.get_mut(&reservation.identity.provider_id) else {
                 return Err(SessionActivationError::StaleReservation);
@@ -310,10 +382,12 @@ impl ProviderRegistry {
             entry.latest_reservation = None;
             let replaced = entry.active.replace(ActiveSession {
                 identity: reservation.identity,
+                protocol: reservation.protocol.clone(),
                 cancellation: cancellation.clone(),
             });
             (
                 replaced.as_ref().map(|active| active.identity),
+                replaced.as_ref().map(|active| active.protocol.clone()),
                 replaced.map(|active| active.cancellation),
             )
         };
@@ -327,6 +401,7 @@ impl ProviderRegistry {
                 cancellation,
             },
             replaced,
+            replaced_protocol,
         })
     }
 
@@ -518,6 +593,10 @@ mod tests {
             .expect("second");
         let second = registry.activate(&second).expect("activate replacement");
         assert_eq!(second.replaced, Some(first.lease.identity()));
+        assert!(matches!(
+            second.replaced_protocol.as_ref(),
+            Some(NegotiatedProtocol::V2(_))
+        ));
         assert!(old_cancellation.is_cancelled());
         drop(first);
         assert_eq!(registry.current(provider(1)), Some(second.lease.identity()));

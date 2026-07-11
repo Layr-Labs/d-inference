@@ -10,14 +10,14 @@ use darkbloom_coordinator_protocol::{
     },
 };
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 /// Hard upper bound for one session's downstream event lane.
 pub const MAX_SESSION_EVENT_CAPACITY: usize = 65_536;
 
 /// Exact identity of one accepted provider WebSocket session.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SessionIdentity {
     /// Stable provider identity, unchanged across reconnects.
     pub provider_id: ProviderId,
@@ -146,6 +146,9 @@ pub enum SessionEvent {
         protocol: NegotiatedProtocol,
         /// Typed registration and exact signed bytes.
         registration: RegistrationFrame,
+        /// One-shot barrier released only after pilot integration for this
+        /// exact epoch is fully installed.
+        activation: oneshot::Sender<Result<(), Arc<str>>>,
     },
     /// Accepted protocol-v1 provider message.
     V1 {

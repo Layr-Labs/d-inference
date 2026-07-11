@@ -13,7 +13,10 @@ use super::{
         ProviderReadError, ProviderReader, ProviderReaderConfig, ProviderReaderConfigError,
         ProviderReaderExit, receive_registration,
     },
-    registry::{ProviderRegistry, SessionActivationError, SessionLease, SessionReservationError},
+    registry::{
+        ProviderRegistry, SessionActivationError, SessionLease, SessionReservation,
+        SessionReservationError,
+    },
     types::{
         RegistrationFrame, SessionEvent, SessionEventSendError, SessionEventSender, SessionIdentity,
     },
@@ -30,6 +33,8 @@ pub struct ProviderSessionConfig {
     pub registration_timeout: Duration,
     /// Maximum time to put the generation-bound ACK on the wire.
     pub registration_ack_timeout: Duration,
+    /// Maximum time to install the acknowledged epoch into pilot state.
+    pub activation_timeout: Duration,
     /// Common deadline to join both owned tasks after cancellation.
     pub task_join_timeout: Duration,
     /// Reader allocation bounds.
@@ -43,6 +48,7 @@ impl Default for ProviderSessionConfig {
         Self {
             registration_timeout: Duration::from_secs(10),
             registration_ack_timeout: Duration::from_secs(10),
+            activation_timeout: Duration::from_secs(10),
             task_join_timeout: Duration::from_secs(5),
             reader: ProviderReaderConfig::default(),
             writer: ProviderWriterConfig::default(),
@@ -57,6 +63,9 @@ impl ProviderSessionConfig {
         }
         if self.registration_ack_timeout.is_zero() {
             return Err(ProviderSessionConfigError::ZeroAckTimeout);
+        }
+        if self.activation_timeout.is_zero() {
+            return Err(ProviderSessionConfigError::ZeroActivationTimeout);
         }
         if self.task_join_timeout.is_zero() {
             return Err(ProviderSessionConfigError::ZeroJoinTimeout);
@@ -80,6 +89,9 @@ pub enum ProviderSessionConfigError {
     /// ACK send cannot wait forever.
     #[error("provider registration ACK timeout must be greater than zero")]
     ZeroAckTimeout,
+    /// Post-ACK activation cannot wait forever.
+    #[error("provider registration activation timeout must be greater than zero")]
+    ZeroActivationTimeout,
     /// Reader/writer joins require a finite grace period.
     #[error("provider session task join timeout must be greater than zero")]
     ZeroJoinTimeout,
@@ -152,9 +164,12 @@ enum SessionTaskResult {
 /// Activated session that owns every spawned task until joined or aborted.
 pub struct ProviderSession {
     identity: SessionIdentity,
+    protocol: super::types::NegotiatedProtocol,
     registration: RegistrationFrame,
     writer: ProviderWriterHandle,
     cancellation: tokio_util::sync::CancellationToken,
+    replaced: Option<SessionIdentity>,
+    replaced_protocol: Option<super::types::NegotiatedProtocol>,
     task_join_timeout: Duration,
     tasks: JoinSet<SessionTaskResult>,
     _lease: SessionLease,
@@ -165,6 +180,7 @@ impl fmt::Debug for ProviderSession {
         formatter
             .debug_struct("ProviderSession")
             .field("identity", &self.identity)
+            .field("protocol", &self.protocol)
             .field("task_join_timeout", &self.task_join_timeout)
             .field("owned_tasks", &self.tasks.len())
             .finish_non_exhaustive()
@@ -189,7 +205,28 @@ impl ProviderSession {
         let registration =
             receive_registration(&mut socket, config.reader, config.registration_timeout).await?;
         let reservation = registry.reserve(stable_provider_id, registration.registration())?;
+        Self::activate_verified(socket, registration, reservation, registry, events, config).await
+    }
 
+    /// Activates a registration that an outer authentication/trust boundary
+    /// already read and verified on this same socket.
+    ///
+    /// The supplied reservation must have been allocated only after trust
+    /// verification. Its durable epoch is acknowledged before activation; a
+    /// failed ACK abandons the reservation and has no current-session effect.
+    pub async fn activate_verified<S, E>(
+        mut socket: S,
+        registration: RegistrationFrame,
+        reservation: SessionReservation,
+        registry: Arc<ProviderRegistry>,
+        events: SessionEventSender,
+        config: ProviderSessionConfig,
+    ) -> Result<Self, ProviderSessionError>
+    where
+        S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin + Send + 'static,
+        E: fmt::Display + Send + 'static,
+    {
+        let config = config.validate()?;
         let response = RegistrationResponse::RegisterAck(reservation.acknowledgement().clone());
         let ack = match serde_json::to_string(&response) {
             Ok(ack) => ack,
@@ -223,14 +260,18 @@ impl ProviderSession {
 
         let activation = registry.activate(&reservation)?;
         let identity = activation.lease.identity();
+        let protocol = reservation.protocol().clone();
         let cancellation = activation.lease.cancellation_token();
         let (writer, writer_handle) = provider_writer(config.writer, cancellation.clone())?;
+        let (activation_ack, activation_wait) = tokio::sync::oneshot::channel();
         let reader = ProviderReader::new(
             config.reader,
             identity,
             reservation.protocol().clone(),
             events.clone(),
             cancellation.clone(),
+            activation_wait,
+            config.activation_timeout,
         )
         .map_err(ProviderSessionConfigError::Reader)?;
 
@@ -238,6 +279,7 @@ impl ProviderSession {
             identity,
             protocol: reservation.protocol().clone(),
             registration: registration.clone(),
+            activation: activation_ack,
         }) {
             writer_handle.fence(Arc::from(
                 "registration event could not enter bounded session lane",
@@ -254,9 +296,12 @@ impl ProviderSession {
 
         Ok(Self {
             identity,
+            protocol,
             registration,
             writer: writer_handle,
             cancellation,
+            replaced: activation.replaced,
+            replaced_protocol: activation.replaced_protocol,
             task_join_timeout: config.task_join_timeout,
             tasks,
             _lease: activation.lease,
@@ -269,6 +314,12 @@ impl ProviderSession {
         self.identity
     }
 
+    /// Exact protocol capabilities selected in the registration ACK.
+    #[must_use]
+    pub const fn protocol(&self) -> &super::types::NegotiatedProtocol {
+        &self.protocol
+    }
+
     /// Typed registration and exact signed source bytes.
     #[must_use]
     pub const fn registration(&self) -> &RegistrationFrame {
@@ -279,6 +330,24 @@ impl ProviderSession {
     #[must_use]
     pub fn writer(&self) -> ProviderWriterHandle {
         self.writer.clone()
+    }
+
+    /// Session atomically replaced by this activation, if any.
+    #[must_use]
+    pub const fn replaced_identity(&self) -> Option<SessionIdentity> {
+        self.replaced
+    }
+
+    /// Negotiated protocol bound to the exact replaced identity.
+    #[must_use]
+    pub const fn replaced_protocol(&self) -> Option<&super::types::NegotiatedProtocol> {
+        self.replaced_protocol.as_ref()
+    }
+
+    /// Exact-current cancellation token used by replacement and supervision.
+    #[must_use]
+    pub fn cancellation_token(&self) -> tokio_util::sync::CancellationToken {
+        self.cancellation.clone()
     }
 
     /// Number of tasks this session currently owns (always two after establish).
@@ -478,10 +547,10 @@ mod tests {
             ProviderProcessGenerationId::new([2; 16])
         );
         assert!(ack.protocol_capabilities.is_some());
-        assert!(matches!(
-            receiver.recv().await,
-            Some(SessionEvent::Registered { .. })
-        ));
+        let Some(SessionEvent::Registered { activation, .. }) = receiver.recv().await else {
+            panic!("expected registered event");
+        };
+        activation.send(Ok(())).expect("release activation barrier");
         session.shutdown().await.expect("bounded shutdown");
     }
 

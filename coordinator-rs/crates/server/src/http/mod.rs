@@ -1,0 +1,215 @@
+mod auth;
+mod body;
+mod error;
+mod response;
+
+use std::sync::Arc;
+
+use axum::{
+    Json, Router,
+    extract::{Request, State, WebSocketUpgrade},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use serde::Serialize;
+use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
+
+use crate::pilot::{
+    PilotHandle, PilotRequestError, PilotRequestJob, PilotTelemetryEvent, parse_request_facts,
+};
+
+use self::{
+    auth::authenticate_consumer, body::read_consumer_input, error::ApiError,
+    response::consumer_response,
+};
+
+#[derive(Clone)]
+struct PilotHttpState {
+    pilot: Option<PilotHandle>,
+}
+
+pub fn routes(pilot: Option<PilotHandle>) -> Router {
+    Router::new()
+        .route("/v1/encryption-key", get(encryption_key))
+        .route("/v1/models", get(models))
+        .route("/v1/chat/completions", post(chat_completions))
+        .route("/ws/provider", get(provider_websocket))
+        .with_state(PilotHttpState { pilot })
+}
+
+async fn encryption_key(
+    State(state): State<PilotHttpState>,
+) -> Result<Json<EncryptionKey>, ApiError> {
+    let pilot = state.pilot.as_ref().ok_or_else(pilot_unavailable)?;
+    let active = pilot.keyring().active();
+    Ok(Json(EncryptionKey {
+        kid: Arc::from(active.kid()),
+        public_key: active.public_key().to_base64(),
+        algorithm: "x25519-nacl-box",
+    }))
+}
+
+async fn models(
+    State(state): State<PilotHttpState>,
+    request: Request,
+) -> Result<Json<ModelList>, ApiError> {
+    let pilot = state.pilot.as_ref().ok_or_else(pilot_unavailable)?;
+    authenticate_consumer(request.headers(), pilot)?;
+    let data = pilot
+        .catalog()
+        .models()
+        .map(|model| Model {
+            id: Arc::from(model.id.as_str()),
+            object: "model",
+            created: 0,
+            owned_by: "darkbloom",
+        })
+        .collect();
+    Ok(Json(ModelList {
+        object: "list",
+        data,
+    }))
+}
+
+async fn chat_completions(
+    State(state): State<PilotHttpState>,
+    request: Request,
+) -> Result<Response, ApiError> {
+    let pilot = state.pilot.ok_or_else(pilot_unavailable)?;
+    if let Err(error) = authenticate_consumer(request.headers(), &pilot) {
+        pilot.telemetry().emit(PilotTelemetryEvent::RequestRejected);
+        return Err(error);
+    }
+    if !pilot.is_ready() {
+        return Err(pilot_unavailable());
+    }
+    let (parts, body) = request.into_parts();
+    let input = read_consumer_input(&parts.headers, body, &pilot).await?;
+    let model = pilot
+        .catalog()
+        .models()
+        .next()
+        .expect("pilot catalog contains exactly one model");
+    let alias = model
+        .aliases
+        .iter()
+        .next()
+        .map_or(model.id.as_str(), AsRef::as_ref);
+    let (model, output_mode, maximum_output_tokens, traits, demand) =
+        parse_request_facts(&input.plaintext, &model.id, alias)?;
+    let response_permit = pilot.try_reserve_response().map_err(|error| {
+        pilot.telemetry().emit(PilotTelemetryEvent::RequestRejected);
+        ApiError::capacity(error.to_string())
+    })?;
+    let (response_tx, response_rx) = oneshot::channel();
+    let client_cancellation = CancellationToken::new();
+    let mut client_guard = ClientCancellationGuard::new(client_cancellation.clone());
+    let job = PilotRequestJob {
+        plaintext: input.plaintext,
+        model,
+        output_mode,
+        maximum_output_tokens,
+        traits,
+        demand,
+        input_permit: input.input_permit,
+        response_permit,
+        response: Some(response_tx),
+        client_cancellation,
+    };
+    if let Err(error) = pilot.request_dispatcher().try_dispatch(job) {
+        pilot.telemetry().emit(PilotTelemetryEvent::RequestRejected);
+        return Err(ApiError::from(error));
+    }
+    let response = response_rx.await.map_err(|_| {
+        ApiError::from(PilotRequestError::Unavailable(Arc::from(
+            "pilot request worker ended before commitment",
+        )))
+    })??;
+    client_guard.disarm();
+    Ok(consumer_response(response, pilot, input.sender))
+}
+
+async fn provider_websocket(
+    State(state): State<PilotHttpState>,
+    websocket: WebSocketUpgrade,
+) -> Result<Response, ApiError> {
+    let pilot = state.pilot.ok_or_else(pilot_unavailable)?;
+    if !pilot.is_ready() {
+        return Err(pilot_unavailable());
+    }
+    let acceptor = pilot.provider_acceptor();
+    if acceptor.remaining_capacity() == 0 {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider_capacity_exhausted",
+            "server_error",
+            "pilot provider session owner is full",
+        ));
+    }
+    Ok(websocket
+        .on_upgrade(move |socket| async move {
+            if let Err(error) = acceptor.try_accept(socket) {
+                tracing::warn!(error = %error, "pilot provider connection rejected after upgrade");
+            }
+        })
+        .into_response())
+}
+
+fn pilot_unavailable() -> ApiError {
+    ApiError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "pilot_unavailable",
+        "server_error",
+        "Rust private-inference pilot is unavailable",
+    )
+}
+
+struct ClientCancellationGuard {
+    cancellation: Option<CancellationToken>,
+}
+
+impl ClientCancellationGuard {
+    fn new(cancellation: CancellationToken) -> Self {
+        Self {
+            cancellation: Some(cancellation),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.cancellation = None;
+    }
+}
+
+impl Drop for ClientCancellationGuard {
+    fn drop(&mut self) {
+        if let Some(cancellation) = self.cancellation.take() {
+            cancellation.cancel();
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct EncryptionKey {
+    kid: Arc<str>,
+    public_key: String,
+    algorithm: &'static str,
+}
+
+#[derive(Serialize)]
+struct ModelList {
+    object: &'static str,
+    data: Vec<Model>,
+}
+
+#[derive(Serialize)]
+struct Model {
+    id: Arc<str>,
+    object: &'static str,
+    created: u64,
+    owned_by: &'static str,
+}
+
+#[cfg(test)]
+mod tests;

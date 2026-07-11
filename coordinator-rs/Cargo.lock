@@ -494,6 +494,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64",
+ "crypto_box",
  "darkbloom-coordinator-core",
  "darkbloom-coordinator-protocol",
  "futures-util",

@@ -590,6 +590,20 @@ extension ProviderLoop {
                     using: proof,
                     verifiedBy: verifier
                 )
+                guard let proofID = ProtocolV2UUID(proof.proofID),
+                    let providerID = ProviderID(proof.providerID),
+                    let generation = ProviderProcessGenerationID(
+                        proof.providerProcessGeneration)
+                else {
+                    throw AttemptTombstoneError.invalidReplayFenceProof
+                }
+                try await coordinator.sendProtocolV2ControlMessage(
+                    .replayFenceAck(
+                        V2ReplayFenceAck(
+                            proofID: proofID,
+                            providerID: providerID,
+                            providerProcessGeneration: generation
+                        )))
                 let paidAdmissionAllowed =
                     try await attempts.paidAdmissionStatus().paidAdmissionAllowed
                 await readiness.markReady(

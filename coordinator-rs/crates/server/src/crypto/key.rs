@@ -5,7 +5,9 @@ use std::{fmt, sync::Arc};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use darkbloom_coordinator_protocol::{
     CryptoError,
-    crypto::{SenderSealEnvelope, X25519_KEY_LEN, open_box, open_sender_request, seal_box},
+    crypto::{
+        SenderSealEnvelope, X25519_KEY_LEN, open_box, open_sender_request, seal_box, seal_box_with,
+    },
     v1::EncryptedPayload,
 };
 use subtle::ConstantTimeEq;
@@ -168,6 +170,23 @@ impl ProcessX25519Key {
     /// Opens a sender-sealed envelope without exposing the process private key.
     pub fn open_sender(&self, envelope: &SenderSealEnvelope) -> Result<Vec<u8>, CryptoError> {
         open_sender_request(&self.private_key, envelope)
+    }
+
+    /// Seals response bytes back to a sender while retaining this process key
+    /// as the authenticated static sender identity.
+    pub fn seal_to_sender(
+        &self,
+        sender_public_key: X25519PublicKey,
+        plaintext: &[u8],
+    ) -> Result<String, CryptoError> {
+        let nonce = rand::random::<[u8; 24]>();
+        seal_box_with(
+            &self.private_key,
+            sender_public_key.as_bytes(),
+            &nonce,
+            plaintext,
+        )
+        .map(|payload| payload.ciphertext)
     }
 }
 

@@ -17,7 +17,7 @@ use darkbloom_coordinator_core::{
 };
 use darkbloom_coordinator_protocol::v2::{
     Abort, AttemptIdentity, BinaryFrameHeader, CoordinatorControlMessage, Digest, Prepare,
-    Prepared, ProviderTerminal, Start, StartAck, TerminalOutcome,
+    Prepared, ProviderTerminal, Start, StartAck, StructuredError, TerminalOutcome,
 };
 use sha2::{Digest as ShaDigest, Sha256};
 use tokio_util::sync::CancellationToken;
@@ -169,6 +169,7 @@ pub enum AttemptPhase {
 struct RuntimeAttempt {
     identity: AttemptIdentity,
     provider: ProviderFence,
+    request_digest: Digest,
     prepared: Option<Prepared>,
     phase: AttemptPhase,
     prepare_dispatch: DispatchTracker,
@@ -192,6 +193,8 @@ pub enum InboundAttemptEvent {
     },
     /// Durable provider terminal.
     Terminal(ProviderTerminal),
+    /// Structured failure associated with this exact attempt.
+    StructuredError(StructuredError),
 }
 
 impl PipeItem for InboundAttemptEvent {
@@ -203,6 +206,9 @@ impl PipeItem for InboundAttemptEvent {
             Self::Terminal(message) => 512_usize
                 .saturating_add(message.model.len())
                 .saturating_add(message.signature.as_bytes().len()),
+            Self::StructuredError(message) => {
+                256_usize.saturating_add(message.message.as_ref().map_or(0, String::len))
+            }
         }
     }
 }
@@ -295,6 +301,13 @@ impl RequestTask {
         &self.cancellation
     }
 
+    /// Returns whether authenticated consumer-visible output selected the
+    /// authorized attempt.
+    #[must_use]
+    pub const fn is_committed(&self) -> bool {
+        self.commitment.is_committed()
+    }
+
     /// Returns one runtime attempt phase.
     #[must_use]
     pub fn attempt_phase(&self, attempt_id: CoreAttemptId) -> Option<AttemptPhase> {
@@ -324,7 +337,7 @@ impl RequestTask {
                 CancellationReason::ClientCancelled,
             ));
         }
-        validate_prepare(&self.config, &prepare, &provider)?;
+        validate_prepare(&self.config, kind, &prepare, &provider)?;
         let attempt_id = core_attempt_id(prepare.identity.attempt_id)?;
         let lease_id = core_lease_id(prepare.identity.lease_id)?;
         let event = RequestEvent::AttemptPrepared {
@@ -336,6 +349,7 @@ impl RequestTask {
         };
         let (reduction, next_sequence) = self.preview(event, context)?;
         let identity = prepare.identity.clone();
+        let request_digest = prepare.request_digest;
         let receipt = writer
             .try_send_data_json(&CoordinatorControlMessage::Prepare(prepare))
             .map_err(map_enqueue_error)?;
@@ -349,6 +363,7 @@ impl RequestTask {
             RuntimeAttempt {
                 identity,
                 provider,
+                request_digest,
                 prepared: None,
                 phase: AttemptPhase::PrepareQueued,
                 prepare_dispatch,
@@ -447,7 +462,12 @@ impl RequestTask {
         if prepared.identity != attempt.identity {
             return Err(RequestExecutionError::IdentityMismatch);
         }
-        validate_prepared(&self.config, &prepared, &attempt.provider)?;
+        validate_prepared(
+            &self.config,
+            &prepared,
+            &attempt.provider,
+            attempt.request_digest,
+        )?;
         attempt.prepared = Some(prepared);
         attempt.phase = AttemptPhase::Prepared;
         Ok(attempt_id)
@@ -488,6 +508,42 @@ impl RequestTask {
             .ok_or(RequestExecutionError::UnknownAttempt)?
             .phase = AttemptPhase::Released;
         Ok(receipt)
+    }
+
+    /// Records a definite provider failure before start authorization.
+    ///
+    /// This path performs no outbound write: a provider structured error or a
+    /// definitely failed Prepare delivery already proves that generation
+    /// cannot start from this attempt. The logical request may then consume
+    /// its sole alternate.
+    pub fn fail_pre_authorization(
+        &mut self,
+        attempt_id: CoreAttemptId,
+        context: &RequestContext,
+    ) -> Result<(), RequestExecutionError> {
+        let attempt = self
+            .attempts
+            .get(&attempt_id)
+            .ok_or(RequestExecutionError::UnknownAttempt)?;
+        if !matches!(
+            attempt.phase,
+            AttemptPhase::PrepareQueued | AttemptPhase::PrepareOnWire | AttemptPhase::Prepared
+        ) || self.authorized.is_some()
+        {
+            return Err(RequestExecutionError::InvalidAttemptPhase);
+        }
+        self.apply(
+            RequestEvent::AttemptReleased {
+                attempt_id,
+                reason: AttemptReleaseReason::PreAuthorizationFailure,
+            },
+            context,
+        )?;
+        self.attempts
+            .get_mut(&attempt_id)
+            .ok_or(RequestExecutionError::UnknownAttempt)?
+            .phase = AttemptPhase::Released;
+        Ok(())
     }
 
     /// Atomically selects one attempt and synchronously enqueues Start.
@@ -772,7 +828,11 @@ impl RequestTask {
         for item in ready {
             self.response.try_send(item)?;
         }
-        self.response.finish();
+        if terminal.outcome == TerminalOutcome::Completed {
+            self.response.finish();
+        } else {
+            self.response.close(PipeCloseReason::ProviderFailed);
+        }
         Ok(summary)
     }
 
@@ -916,6 +976,7 @@ fn validate_config(config: &RequestTaskConfig) -> Result<(), RequestExecutionErr
 
 fn validate_prepare(
     config: &RequestTaskConfig,
+    kind: AttemptKind,
     prepare: &Prepare,
     provider: &ProviderFence,
 ) -> Result<(), RequestExecutionError> {
@@ -924,12 +985,14 @@ fn validate_prepare(
     {
         return Err(RequestExecutionError::IdentityMismatch);
     }
-    if prepare.model != config.model.as_str()
-        || provider.model_id != config.model
-        || prepare.request_digest != config.request_digest
-    {
+    if prepare.model != config.model.as_str() || provider.model_id != config.model {
         return Err(RequestExecutionError::InvalidPrepared(
             "prepare model or request digest mismatch".into(),
+        ));
+    }
+    if kind == AttemptKind::Primary && prepare.request_digest != config.request_digest {
+        return Err(RequestExecutionError::InvalidPrepared(
+            "primary prepare request digest mismatch".into(),
         ));
     }
     let payload_digest = Prepare::encrypted_payload_digest(&prepare.encrypted_body)
@@ -946,6 +1009,7 @@ fn validate_prepared(
     config: &RequestTaskConfig,
     prepared: &Prepared,
     provider: &ProviderFence,
+    request_digest: Digest,
 ) -> Result<(), RequestExecutionError> {
     if prepared.identity.request_id != config.wire_request_id {
         return Err(RequestExecutionError::IdentityMismatch);
@@ -955,7 +1019,7 @@ fn validate_prepared(
     }
     if prepared.model != config.model.as_str()
         || provider.model_id != config.model
-        || prepared.request_digest != config.request_digest
+        || prepared.request_digest != request_digest
     {
         return Err(RequestExecutionError::InvalidPrepared(
             "model or request digest mismatch".into(),

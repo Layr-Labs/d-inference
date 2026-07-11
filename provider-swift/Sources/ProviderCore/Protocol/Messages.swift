@@ -22,6 +22,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case structuredError(V2StructuredError)
     case modelReady(V2ModelReady)
     case modelGone(V2ModelGone)
+    case replayFenceAck(V2ReplayFenceAck)
 
     public struct Register: Sendable, Equatable {
         public var hardware: HardwareInfo
@@ -352,6 +353,7 @@ extension ProviderMessage: Codable {
         case structuredError = "structured_error"
         case modelReady = "model_ready"
         case modelGone = "model_gone"
+        case replayFenceAck = "replay_fence_ack"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -554,6 +556,8 @@ extension ProviderMessage: Codable {
             try V2ProviderControlMessage.modelReady(message).encode(to: encoder)
         case .modelGone(let message):
             try V2ProviderControlMessage.modelGone(message).encode(to: encoder)
+        case .replayFenceAck(let message):
+            try V2ProviderControlMessage.replayFenceAck(message).encode(to: encoder)
         }
     }
 
@@ -723,6 +727,8 @@ extension ProviderMessage: Codable {
             self = .modelReady(try V2ModelReady(from: decoder))
         case .modelGone:
             self = .modelGone(try V2ModelGone(from: decoder))
+        case .replayFenceAck:
+            self = .replayFenceAck(try V2ReplayFenceAck(from: decoder))
         }
     }
 }

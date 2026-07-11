@@ -4,10 +4,12 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use darkbloom_coordinator_protocol::{
     CryptoError,
-    crypto::{SenderSealEnvelope, seal_box},
+    crypto::{SenderSealEnvelope, open_v2_frame, seal_box, seal_box_with},
     v1::EncryptedPayload,
+    v2::{BinaryFrameHeader, encode_binary_frame},
 };
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 use super::key::{ProcessX25519Key, X25519PublicKey};
 
@@ -69,6 +71,17 @@ impl SenderSealKeyring {
         key.open_sender(envelope).map_err(SenderSealError::Crypto)
     }
 
+    /// Seals one response payload to the sender with the active process key.
+    pub fn seal_to_sender(
+        &self,
+        sender_public_key: X25519PublicKey,
+        plaintext: &[u8],
+    ) -> Result<String, SenderSealError> {
+        self.active()
+            .seal_to_sender(sender_public_key, plaintext)
+            .map_err(SenderSealError::Crypto)
+    }
+
     /// Number of retained process keys.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -88,6 +101,53 @@ pub fn seal_for_provider(
     plaintext: &[u8],
 ) -> Result<EncryptedPayload, CryptoError> {
     seal_box(provider_key.as_bytes(), plaintext)
+}
+
+/// One provider request envelope plus the ephemeral private half needed to
+/// authenticate that provider's direct protocol-v2 response frames.
+#[derive(Debug)]
+pub struct ProviderRequestSeal {
+    payload: EncryptedPayload,
+    private_key: Zeroizing<[u8; 32]>,
+}
+
+impl ProviderRequestSeal {
+    /// Encrypted request body sent in `Prepare`.
+    #[must_use]
+    pub const fn payload(&self) -> &EncryptedPayload {
+        &self.payload
+    }
+
+    /// Opens a provider response only after the encrypted inner header is
+    /// proven byte-for-byte equal to the validated outer header.
+    pub fn open_response(
+        &self,
+        provider_key: X25519PublicKey,
+        header: &BinaryFrameHeader,
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>, CryptoError> {
+        let wire = encode_binary_frame(header, ciphertext)?;
+        open_v2_frame(&self.private_key, provider_key.as_bytes(), &wire)
+            .map(|opened| opened.plaintext)
+    }
+}
+
+/// Seals exact consumer bytes while retaining only the request-scoped
+/// ephemeral private key required for authenticated response decryption.
+pub fn seal_request_for_provider(
+    provider_key: X25519PublicKey,
+    plaintext: &[u8],
+) -> Result<ProviderRequestSeal, CryptoError> {
+    use crypto_box::{SecretKey, aead::OsRng};
+
+    let ephemeral = SecretKey::generate(&mut OsRng);
+    let private_key = Zeroizing::new(ephemeral.to_bytes());
+    let nonce = rand::random::<[u8; 24]>();
+    let payload = seal_box_with(&private_key, provider_key.as_bytes(), &nonce, plaintext)?;
+    Ok(ProviderRequestSeal {
+        payload,
+        private_key,
+    })
 }
 
 /// Invalid finite keyring configuration.

@@ -215,6 +215,9 @@ public enum CoordinatorClientCodec {
 
         case .modelGone(let message):
             return .modelGone(message)
+
+        case .replayFenceAck(let message):
+            return .replayFenceAck(message)
         }
     }
 
@@ -273,6 +276,7 @@ public enum CoordinatorClientCodec {
         case .structuredError(let value): .structuredError(value)
         case .modelReady(let value): .modelReady(value)
         case .modelGone(let value): .modelGone(value)
+        case .replayFenceAck(let value): .replayFenceAck(value)
         default: nil
         }
     }

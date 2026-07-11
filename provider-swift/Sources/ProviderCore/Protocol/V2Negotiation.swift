@@ -333,6 +333,13 @@ public struct V2NegotiationState: Sendable, Equatable {
             guard session.capabilities.modelLifecycleEvents else {
                 throw V2NegotiationError.capabilityNotNegotiated
             }
+        case .replayFenceAck(let value):
+            guard value.providerID == session.identity.providerID else {
+                throw V2NegotiationError.providerIDMismatch
+            }
+            guard session.capabilities.coordinatorReplayFences else {
+                throw V2NegotiationError.capabilityNotNegotiated
+            }
         }
     }
 

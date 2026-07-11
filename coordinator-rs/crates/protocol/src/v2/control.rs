@@ -180,6 +180,17 @@ pub struct CoordinatorReplayFenceProof {
     pub coordinator_signature: TerminalSignature,
 }
 
+/// Provider acknowledgement that one signed replay fence was durably applied.
+///
+/// Identity is provider/process scoped because replay proofs deliberately
+/// survive WebSocket replacement; the proof ID selects the exact journal row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplayFenceAck {
+    pub proof_id: ReplayFenceProofId,
+    pub provider_id: ProviderId,
+    pub provider_process_generation: ProviderProcessGenerationId,
+}
+
 impl CoordinatorReplayFenceProof {
     #[must_use]
     pub fn computed_digest(&self) -> Digest {
@@ -242,6 +253,8 @@ pub enum ProviderControlMessage {
     ModelReady(ModelReady),
     #[serde(rename = "model_gone")]
     ModelGone(ModelGone),
+    #[serde(rename = "replay_fence_ack")]
+    ReplayFenceAck(ReplayFenceAck),
 }
 
 /// Provider model became locally verified and available.
@@ -279,3 +292,4 @@ pub type StructuredErrorMessage = StructuredError;
 pub type ModelReadyMessage = ModelReady;
 pub type ModelGoneMessage = ModelGone;
 pub type CoordinatorReplayFenceProofMessage = CoordinatorReplayFenceProof;
+pub type ReplayFenceAckMessage = ReplayFenceAck;

@@ -2,6 +2,8 @@ use std::{net::SocketAddr, time::Duration};
 
 use thiserror::Error;
 
+use crate::pilot::{PilotConfig, PilotConfigError};
+
 const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:8081";
 const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 32;
 const DEFAULT_DATABASE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -16,6 +18,7 @@ pub struct Config {
     pub database_acquire_timeout: Duration,
     pub ownership_enabled: bool,
     pub shutdown_grace: Duration,
+    pub pilot: PilotConfig,
 }
 
 #[derive(Debug, Error)]
@@ -31,17 +34,21 @@ pub enum ConfigError {
     InvalidDatabaseMaxConnections(String),
     #[error("invalid EIGENINFERENCE_RUST_SHUTDOWN_GRACE_SECONDS {0:?}")]
     InvalidShutdownGrace(String),
+    #[error(transparent)]
+    Pilot(#[from] PilotConfigError),
 }
 
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
-        Self::from_values(
+        let mut config = Self::from_values(
             std::env::var("EIGENINFERENCE_RUST_BIND_ADDRESS").ok(),
             std::env::var("EIGENINFERENCE_DATABASE_URL").ok(),
             std::env::var("EIGENINFERENCE_RUST_DATABASE_MAX_CONNECTIONS").ok(),
             std::env::var("EIGENINFERENCE_COORDINATOR_OWNERSHIP_ENABLED").ok(),
             std::env::var("EIGENINFERENCE_RUST_SHUTDOWN_GRACE_SECONDS").ok(),
-        )
+        )?;
+        config.pilot = PilotConfig::from_env()?;
+        Ok(config)
     }
 
     fn from_values(
@@ -94,6 +101,7 @@ impl Config {
             database_acquire_timeout: DEFAULT_DATABASE_ACQUIRE_TIMEOUT,
             ownership_enabled: ownership_enabled.as_deref() == Some("true"),
             shutdown_grace,
+            pilot: PilotConfig::disabled(),
         })
     }
 }

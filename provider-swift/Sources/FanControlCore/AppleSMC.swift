@@ -46,20 +46,20 @@ struct SMCValue: Sendable, Equatable {
 
     var uint32: UInt32? {
         guard bytes.count == 4 else { return nil }
-        return UInt32(bytes[0]) << 24
-            | UInt32(bytes[1]) << 16
-            | UInt32(bytes[2]) << 8
-            | UInt32(bytes[3])
+        return (UInt32(bytes[0]) << 24) |
+            (UInt32(bytes[1]) << 16) |
+            (UInt32(bytes[2]) << 8) |
+            UInt32(bytes[3])
     }
 
     var numeric: Double? {
         switch dataTypeName {
         case "flt ":
             guard bytes.count == 4 else { return nil }
-            let bits = UInt32(bytes[0])
-                | UInt32(bytes[1]) << 8
-                | UInt32(bytes[2]) << 16
-                | UInt32(bytes[3]) << 24
+            let bits = UInt32(bytes[0]) |
+                (UInt32(bytes[1]) << 8) |
+                (UInt32(bytes[2]) << 16) |
+                (UInt32(bytes[3]) << 24)
             return Double(Float(bitPattern: bits))
         case "fpe2":
             return uint16.map { Double($0) / 4 }
@@ -244,10 +244,10 @@ final class AppleSMC {
         }
 
         let bigEndian = value.uint32 ?? 0
-        let littleEndian = UInt32(value.bytes[0])
-            | UInt32(value.bytes[1]) << 8
-            | UInt32(value.bytes[2]) << 16
-            | UInt32(value.bytes[3]) << 24
+        let littleEndian = UInt32(value.bytes[0]) |
+            (UInt32(value.bytes[1]) << 8) |
+            (UInt32(value.bytes[2]) << 16) |
+            (UInt32(value.bytes[3]) << 24)
         if (1...10_000).contains(bigEndian) {
             return bigEndian
         }

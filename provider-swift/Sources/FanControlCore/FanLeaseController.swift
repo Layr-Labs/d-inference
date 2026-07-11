@@ -235,9 +235,9 @@ public final class FanLeaseController: @unchecked Sendable {
             }()
         }
         let ticks = mach_continuous_time()
-        let nanos = Double(ticks)
-            * Double(Timebase.value.numer)
-            / Double(Timebase.value.denom)
+        let nanos = Double(ticks) *
+            Double(Timebase.value.numer) /
+            Double(Timebase.value.denom)
         return nanos / 1_000_000_000
     }
 }

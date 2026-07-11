@@ -152,84 +152,162 @@ public struct SelfUpdater: Sendable {
         } catch {
             return .checkFailed(reason: "could not read update recovery state: \(error)")
         }
-        if let candidate = recoveryState.candidate,
-           candidate.release.version != currentVersion
-        {
-            return .restartRequired(
+
+        // Compare against the version installed ON DISK, not this process's
+        // version. The persistent watchdog outlives the binary it replaces:
+        // after it installs and promotes v2, its own `ProviderCore.version`
+        // is still v1, and a process-version compare would re-download the
+        // already-installed release and re-arm it as an unproven candidate
+        // (a later unrelated crash could then quarantine a good release).
+        // SemVer-max also keeps manual reinstalls, which bypass recovery
+        // state, from re-candidatizing.
+        let installedVersion = Self.effectiveInstalledVersion(
+            processVersion: currentVersion,
+            recorded: recoveryState.current?.version
+        )
+        let pendingCandidate = recoveryState.candidate.flatMap {
+            $0.release.version != currentVersion ? $0 : nil
+        }
+        func restartPendingCandidate(
+            _ candidate: PendingReleaseCandidate
+        ) -> UpdateCheckResult {
+            .restartRequired(
                 current: currentVersion,
                 installed: candidate.release.version
             )
         }
 
+        let release: ReleaseInfo
+        switch await fetchLatestRelease() {
+        case .release(let fetched):
+            release = fetched
+        case .failed(let reason):
+            // A pending candidate must still restart when the coordinator is
+            // unreachable — only DISCOVERY of a superseding release needs the
+            // network, never the restart/rollback path itself.
+            if let pendingCandidate {
+                return restartPendingCandidate(pendingCandidate)
+            }
+            return .checkFailed(reason: reason)
+        }
+
+        guard SemanticVersion(release.version) != nil,
+              SemanticVersion(installedVersion) != nil
+        else {
+            if let pendingCandidate {
+                return restartPendingCandidate(pendingCandidate)
+            }
+            return .checkFailed(
+                reason: "release or current version is not valid SemVer")
+        }
+
+        if let pendingCandidate {
+            // A strictly newer, non-quarantined release supersedes a pending
+            // (possibly stuck) candidate: `installCandidate` quarantines a
+            // superseded candidate that already failed starts. Without this,
+            // a host wedged on a broken candidate whose rollback is blocked
+            // could never be rescued by publishing a fixed release.
+            if !recoveryState.quarantineBlocks(
+                version: release.version,
+                manualOverride: manualOverride
+            ),
+               isNewer(
+                latest: release.version,
+                current: pendingCandidate.release.version
+               )
+            {
+                return .updateAvailable(current: installedVersion, latest: release)
+            }
+            return restartPendingCandidate(pendingCandidate)
+        }
+
+        if recoveryState.quarantineBlocks(
+            version: release.version,
+            manualOverride: manualOverride
+        ) {
+            return .quarantined(
+                version: release.version,
+                reason: recoveryState.quarantine?.reason ?? "release failed local startup validation"
+            )
+        }
+
+        if isNewer(latest: release.version, current: installedVersion) {
+            return .updateAvailable(current: installedVersion, latest: release)
+        } else {
+            return .upToDate(currentVersion: installedVersion)
+        }
+    }
+
+    /// The version installed on disk: the SemVer-newer of this process's
+    /// compiled version and the recovery state's durable installed record.
+    /// Falls back to the process version when the record is absent or not
+    /// valid SemVer.
+    internal static func effectiveInstalledVersion(
+        processVersion: String,
+        recorded: String?
+    ) -> String {
+        guard let recorded, SemanticVersion(recorded) != nil else {
+            return processVersion
+        }
+        guard SemanticVersion(processVersion) != nil else { return recorded }
+        return isNewer(latest: recorded, current: processVersion)
+            ? recorded
+            : processVersion
+    }
+
+    private enum LatestReleaseFetch {
+        case release(ReleaseInfo)
+        case failed(String)
+    }
+
+    private func fetchLatestRelease() async -> LatestReleaseFetch {
         let endpoint = "\(coordinatorBaseURL)/v1/releases/latest?platform=macos-arm64"
 
         guard let url = URL(string: endpoint) else {
-            return .checkFailed(reason: "invalid coordinator URL: \(endpoint)")
+            return .failed("invalid coordinator URL: \(endpoint)")
         }
 
         do {
             let (data, response) = try await urlSession.data(from: url)
 
             guard let httpResponse = response as? HTTPURLResponse else {
-                return .checkFailed(reason: "unexpected response type")
+                return .failed("unexpected response type")
             }
 
             guard httpResponse.statusCode == 200 else {
-                return .checkFailed(
-                    reason: "coordinator returned HTTP \(httpResponse.statusCode)"
-                )
+                return .failed("coordinator returned HTTP \(httpResponse.statusCode)")
             }
 
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return .checkFailed(reason: "invalid JSON response")
+                return .failed("invalid JSON response")
             }
 
             guard let version = json["version"] as? String,
                   let platform = json["platform"] as? String,
                   let downloadURL = json["url"] as? String
             else {
-                return .checkFailed(reason: "missing required fields in release response")
+                return .failed("missing required fields in release response")
             }
             guard platform == "macos-arm64" else {
-                return .checkFailed(
-                    reason: "coordinator returned unsupported release platform \(platform)")
+                return .failed("coordinator returned unsupported release platform \(platform)")
             }
             guard let bundleHash = (json["bundle_hash"] as? String)
                     ?? (json["sha256"] as? String)
                     ?? (json["binary_hash"] as? String)
             else {
-                return .checkFailed(reason: "missing release hash field")
+                return .failed("missing release hash field")
             }
 
-            let release = ReleaseInfo(
+            return .release(ReleaseInfo(
                 version: version,
                 platform: platform,
                 url: downloadURL,
                 bundleHash: bundleHash,
                 binaryHash: json["binary_hash"] as? String,
                 metallibHash: json["metallib_hash"] as? String
-            )
-            guard SemanticVersion(version) != nil,
-                  SemanticVersion(currentVersion) != nil
-            else {
-                return .checkFailed(
-                    reason: "release or current version is not valid SemVer")
-            }
-
-            if recoveryState.quarantineBlocks(version: version, manualOverride: manualOverride) {
-                return .quarantined(
-                    version: version,
-                    reason: recoveryState.quarantine?.reason ?? "release failed local startup validation"
-                )
-            }
-
-            if isNewer(latest: version, current: currentVersion) {
-                return .updateAvailable(current: currentVersion, latest: release)
-            } else {
-                return .upToDate(currentVersion: currentVersion)
-            }
+            ))
         } catch {
-            return .checkFailed(reason: error.localizedDescription)
+            return .failed(error.localizedDescription)
         }
     }
 

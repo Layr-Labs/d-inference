@@ -18,6 +18,35 @@ struct SelfUpdaterTests {
         )
     }
 
+    @Test("effective installed version prefers the newer of process and durable record")
+    func effectiveInstalledVersionSelection() {
+        // Surviving watchdog: process is older than the promoted disk install.
+        #expect(SelfUpdater.effectiveInstalledVersion(
+            processVersion: "1.0.0",
+            recorded: "2.0.0"
+        ) == "2.0.0")
+        // Manual reinstall bypassed recovery state: process is newer.
+        #expect(SelfUpdater.effectiveInstalledVersion(
+            processVersion: "3.0.0",
+            recorded: "1.0.0"
+        ) == "3.0.0")
+        // No durable record (fresh install) → process version.
+        #expect(SelfUpdater.effectiveInstalledVersion(
+            processVersion: "1.0.0",
+            recorded: nil
+        ) == "1.0.0")
+        // Invalid durable record → process version.
+        #expect(SelfUpdater.effectiveInstalledVersion(
+            processVersion: "1.0.0",
+            recorded: "not-a-version"
+        ) == "1.0.0")
+        // Invalid process version → durable record.
+        #expect(SelfUpdater.effectiveInstalledVersion(
+            processVersion: "dev",
+            recorded: "2.0.0"
+        ) == "2.0.0")
+    }
+
     @Test("SemVer prerelease ordering is exact")
     func semverPrereleaseOrdering() {
         #expect(SelfUpdater.isNewer(

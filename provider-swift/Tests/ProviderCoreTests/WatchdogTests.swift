@@ -209,6 +209,46 @@ struct WatchdogProbeParseTests {
             processAlive: { _ in false }
         ))
     }
+
+    @Test("stale record whose PID the kernel reused cannot demote launchd liveness")
+    func pidReuseCannotDemoteLiveness() {
+        let recorded = ProcessIdentity(pid: 42, startTimeMicros: 7)
+        let state = DaemonState(
+            pid: 42,
+            processIdentity: recorded,
+            version: "1.0.0",
+            writtenAt: 100,
+            startedAt: 10
+        )
+        // PID 42 is alive but belongs to a DIFFERENT process (start time
+        // differs): the record came from a dead provider, so the stale
+        // heartbeat must not override launchd's "running" — pre-fix this
+        // returned false and the watchdog could restart or charge a candidate
+        // failure against a healthy provider.
+        #expect(WatchdogProbe.providerActive(
+            processRunning: true,
+            daemonState: state,
+            now: 500,
+            processAlive: { $0 == 42 },
+            readIdentity: { _ in ProcessIdentity(pid: 42, startTimeMicros: 99) }
+        ))
+        // Same kernel identity → the stale record demotes, as before.
+        #expect(!WatchdogProbe.providerActive(
+            processRunning: true,
+            daemonState: state,
+            now: 500,
+            processAlive: { $0 == 42 },
+            readIdentity: { _ in recorded }
+        ))
+        // Fresh record from the matching identity stays active.
+        #expect(WatchdogProbe.providerActive(
+            processRunning: true,
+            daemonState: state,
+            now: 150,
+            processAlive: { $0 == 42 },
+            readIdentity: { _ in recorded }
+        ))
+    }
 }
 
 @Suite("Provider launch receipt")

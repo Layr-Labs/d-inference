@@ -195,7 +195,10 @@ struct WatchdogRecoveryIntegrationTests {
             Issue.record("expected startup-window backoff, got \(outcome)")
             return
         }
-        #expect(until == 700)  // attemptStartedAt(100) + window(600)
+        // attemptStartedAt(100 + real ms elapsed inside the install call)
+        // + window(600). The stamp intentionally includes real elapsed time
+        // (slow-download fix), so allow the sub-second test-run epsilon.
+        #expect(until >= 700 && until < 701)
         #expect(reason.contains("startup window"))
         #expect(context.restarts.value == restartsBefore)  // no restart issued
 
@@ -320,7 +323,13 @@ struct WatchdogRecoveryIntegrationTests {
             daemonState: nil,
             now: 401
         )
-        #expect(health == .inactiveCandidate(attemptStartedAt: 100))
+        // The launch stamp includes the real ms elapsed inside the install
+        // call (slow-download fix), so range-check rather than exact-match.
+        guard case .inactiveCandidate(let attemptStartedAt) = health else {
+            Issue.record("expected inactive candidate, got \(health)")
+            return
+        }
+        #expect(attemptStartedAt >= 100 && attemptStartedAt < 101)
 
         let recovery = await context.service.recoverDownProvider(
             autoUpdateEnabled: false,
@@ -604,6 +613,188 @@ struct WatchdogRecoveryIntegrationTests {
         }
         #expect(nextUntil == 1_100)
         #expect(try store.loadState().candidate?.failureCount == 4)
+    }
+
+    @Test("candidate launch is stamped when kickstart happens, not at tick entry")
+    func launchStampUsesFreshTimeAfterSlowDownload() async throws {
+        let fixture = try UpdateRecoveryFixture()
+        defer { fixture.cleanup() }
+        let mock = MockCoordinator(
+            release: fixture.mockReleaseFixture(),
+            releaseArtifact: fixture.artifact
+        )
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let restarts = RecoveryRestartCounter()
+        let service = WatchdogRecoveryService(
+            updater: fixture.updater(baseURL: baseURL),
+            dependencies: .init(
+                kickstartIfLoaded: {
+                    restarts.increment()
+                    return true
+                },
+                launchSnapshot: { nil },
+                // Models a slow-but-successful release download (the watchdog
+                // URLSession allows up to 600s): each call injects real
+                // elapsed time between tick entry and the kickstart, exactly
+                // where a long download sits in production.
+                providerStillLoaded: {
+                    Thread.sleep(forTimeInterval: 0.8)
+                    return true
+                },
+                processAlive: { _ in true },
+                log: { _ in }
+            )
+        )
+        let outcome = await service.recoverDownProvider(
+            autoUpdateEnabled: true,
+            now: 100
+        )
+        #expect(outcome == .restartIssued(updatedTo: "2.0.0", rolledBackTo: nil))
+
+        // ≥1.6s of real time elapsed inside the call before the kickstart.
+        // Pre-fix, the launch was stamped with the tick-entry `now` (exactly
+        // 100), so a download longer than the startup window would have eaten
+        // the whole window before the candidate even launched, and the next
+        // tick would charge a false failed start.
+        let state = try recoveryStore(fixture).loadState()
+        guard let stamp = state.candidate?.attemptStartedAt else {
+            Issue.record("expected an armed candidate launch attempt")
+            return
+        }
+        #expect(stamp >= 101.5)
+        #expect(stamp < 160)  // derived from `now` + elapsed, not the wall clock
+    }
+
+    @Test("surviving watchdog does not re-candidatize the promoted release")
+    func promotedReleaseNotReinstalledByStaleWatchdogVersion() async throws {
+        // stabilization 0 → the first fresh matching heartbeat promotes.
+        let context = try await installedCandidate(stabilizationSeconds: 0)
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+
+        let heartbeat = DaemonState(
+            pid: 4242,
+            version: "2.0.0",
+            writtenAt: 200,
+            startedAt: 150
+        )
+        let health = context.service.observeHealthyProvider(
+            providerRunning: true,
+            daemonState: heartbeat,
+            now: 200
+        )
+        #expect(health == .promoted(version: "2.0.0"))
+
+        // The persistent watchdog process still runs the OLD binary, so its
+        // compiled version is 1.0.0 while 2.0.0 is installed and promoted on
+        // disk. Pre-fix, checkForUpdate compared latest against the process
+        // version, re-downloaded 2.0.0, and re-armed it as an UNPROVEN
+        // candidate — a later unrelated crash could then quarantine it.
+        guard case .upToDate(let version) = await context.updater.checkForUpdate() else {
+            Issue.record("expected upToDate for the already-promoted release")
+            return
+        }
+        #expect(version == "2.0.0")
+
+        let outcome = await context.service.recoverDownProvider(
+            autoUpdateEnabled: true,
+            now: 300
+        )
+        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        let state = try recoveryStore(context.fixture).loadState()
+        #expect(state.candidate == nil)
+        #expect(state.current?.version == "2.0.0")
+    }
+
+    @Test("newer release supersedes a stuck failing candidate")
+    func newerReleaseSupersedesStuckCandidate() async throws {
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+
+        // v2 fails a start; the coordinator then publishes v3 as the fix.
+        _ = await context.service.recoverDownProvider(
+            autoUpdateEnabled: false,
+            now: 200
+        )
+        #expect(try recoveryStore(context.fixture)
+            .loadState().candidate?.failureCount == 1)
+
+        let newer = try UpdateRecoveryFixture(oldVersion: "1.0.0", newVersion: "3.0.0")
+        defer { newer.cleanup() }
+        let newerMock = MockCoordinator(
+            release: newer.mockReleaseFixture(),
+            releaseArtifact: newer.artifact
+        )
+        let newerBase = try await newerMock.start()
+        defer { Task { await newerMock.shutdown() } }
+        let updater = SelfUpdater(
+            coordinatorBaseURL: newerBase.absoluteString,
+            installRoot: context.fixture.installRoot,
+            verifyCodeSignatures: false,
+            currentVersion: "1.0.0"
+        )
+
+        // Pre-fix, a pending candidate short-circuited to .restartRequired
+        // before ever contacting /v1/releases/latest, so a host wedged on a
+        // failing candidate could never discover the fixed release.
+        guard case .updateAvailable(_, let latest) = await updater.checkForUpdate() else {
+            Issue.record("expected v3 to supersede the pending v2 candidate")
+            return
+        }
+        #expect(latest.version == "3.0.0")
+
+        let service = makeService(updater: updater, restarts: context.restarts)
+        let outcome = await service.recoverDownProvider(
+            autoUpdateEnabled: true,
+            now: 300
+        )
+        #expect(outcome == .restartIssued(updatedTo: "3.0.0", rolledBackTo: nil))
+        #expect(try context.fixture.liveBinaryContents() == "3.0.0-darkbloom")
+
+        let state = try recoveryStore(context.fixture).loadState()
+        #expect(state.candidate?.release.version == "3.0.0")
+        // The superseded, already-failing v2 is quarantined by installCandidate.
+        #expect(state.quarantine?.version == "2.0.0")
+        #expect(state.predecessor?.release.version == "1.0.0")
+    }
+
+    @Test("pending candidate still restarts when the coordinator is unreachable")
+    func pendingCandidateRestartsOffline() async throws {
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+
+        // The supersede check adds a network fetch to the pending-candidate
+        // path; an unreachable coordinator must never block the restart.
+        let offline = SelfUpdater(
+            coordinatorBaseURL: "http://127.0.0.1:1",
+            installRoot: context.fixture.installRoot,
+            verifyCodeSignatures: false,
+            currentVersion: "1.0.0"
+        )
+        guard case .restartRequired(let current, let installed)
+                = await offline.checkForUpdate()
+        else {
+            Issue.record("offline pending candidate must still require restart")
+            return
+        }
+        #expect(current == "1.0.0")
+        #expect(installed == "2.0.0")
+
+        let service = makeService(updater: offline, restarts: context.restarts)
+        let outcome = await service.recoverDownProvider(
+            autoUpdateEnabled: true,
+            now: 300
+        )
+        guard case .restartIssued(let updatedTo, _) = outcome else {
+            Issue.record("expected offline restart, got \(outcome)")
+            return
+        }
+        #expect(updatedTo == "2.0.0")
+        #expect(try context.fixture.liveBinaryContents() == "2.0.0-darkbloom")
     }
 
     @Test("quarantine blocks bad version and strictly newer release escapes")

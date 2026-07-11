@@ -109,6 +109,18 @@ public struct WatchdogRecoveryService: Sendable {
         providerProcessAlive: Bool = false,
         now: Double
     ) async -> DownOutcome {
+        // Monotonic anchor for re-deriving the epoch time later in this call.
+        // The awaited update/download below may legally take minutes (bounded
+        // by the watchdog URLSession's 600s resource timeout); stamping the
+        // candidate launch with the entry `now` would let a slow-but-successful
+        // download consume the candidate's startup window before it even
+        // launched, and the next tick would charge a false failed start.
+        let entered = ContinuousClock.now
+        func freshNow() -> Double {
+            let elapsed = entered.duration(to: ContinuousClock.now)
+            return now + Double(elapsed.components.seconds)
+                + Double(elapsed.components.attoseconds) * 1e-18
+        }
         let session: SelfUpdater.UpdateSession
         do {
             do {
@@ -269,10 +281,14 @@ public struct WatchdogRecoveryService: Sendable {
 
         do {
             var state = try session.readState()
+            // Launch stamps use the CURRENT time, not the tick-entry `now`:
+            // everything the startup window measures begins here, after any
+            // slow download/install above has already elapsed.
+            let launchNow = freshNow()
             if state.candidate?.pendingAttemptID == nil,
                state.candidate?.launchIntent == nil {
                 _ = state.prepareLaunchIntent(
-                    now: now,
+                    now: launchNow,
                     baseline: deps.launchSnapshot()
                 )
                 try session.writeState(state)
@@ -285,7 +301,7 @@ public struct WatchdogRecoveryService: Sendable {
                     try session.writeState(state)
                     return .noLongerLoaded
                 }
-                _ = state.markLaunchIssued(now: now)
+                _ = state.markLaunchIssued(now: launchNow)
                 try session.writeState(state)
             } catch {
                 state.cancelPendingAttempt()

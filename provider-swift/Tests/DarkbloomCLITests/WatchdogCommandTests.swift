@@ -57,5 +57,32 @@ struct WatchdogCommandTests {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("watchdog-missing-\(UUID().uuidString).toml")
         #expect(Watchdog.autoRestartEnabled(configPath: missing.path) == true)
+        #expect(Watchdog.settings(configPath: missing.path).autoUpdate == true)
+    }
+
+    @Test("auto_update = false disables watchdog-owned update checks")
+    func honoursAutoUpdateDisable() {
+        let url = writeTempConfig("""
+        [provider]
+        name = "x"
+        auto_update = false
+        """)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let settings = Watchdog.settings(configPath: url.path)
+        #expect(settings.autoRestart)
+        #expect(!settings.autoUpdate)
+    }
+
+    @Test("manual quarantine override is explicit and parseable")
+    func manualOverrideParses() throws {
+        let command = try Darkbloom.parseAsRoot([
+            "update",
+            "--override-quarantine",
+        ])
+        guard let update = command as? Update else {
+            Issue.record("expected Update command")
+            return
+        }
+        #expect(update.overrideQuarantine)
     }
 }

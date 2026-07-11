@@ -160,6 +160,7 @@ public final class MockCoordinator: @unchecked Sendable {
 
     public let catalog: [CatalogModel]
     public let release: MockReleaseFixture
+    public let releaseArtifact: Data?
     public let version: MockVersionFixture
     public let mobileConfig: Data
     public let deviceCode: MockDeviceCodeFixture
@@ -188,12 +189,14 @@ public final class MockCoordinator: @unchecked Sendable {
     public init(
         catalog: [CatalogModel] = MockCoordinator.defaultCatalog,
         release: MockReleaseFixture = MockReleaseFixture(),
+        releaseArtifact: Data? = nil,
         version: MockVersionFixture = MockVersionFixture(version: "0.5.0"),
         mobileConfig: Data = MockCoordinator.defaultMobileConfig,
         deviceCode: MockDeviceCodeFixture = MockDeviceCodeFixture()
     ) {
         self.catalog = catalog
         self.release = release
+        self.releaseArtifact = releaseArtifact
         self.version = version
         self.mobileConfig = mobileConfig
         self.deviceCode = deviceCode
@@ -443,15 +446,39 @@ public final class MockCoordinator: @unchecked Sendable {
                     body: ["error": "mock dead"], status: .internalServerError
                 )
             }
+            let releaseURL: String
+            if self.release.url == "mock://release-artifact" {
+                releaseURL = self.lock.withLock {
+                    self.bound?.baseURL
+                        .appendingPathComponent("mock-release-artifact")
+                        .absoluteString
+                } ?? self.release.url
+            } else {
+                releaseURL = self.release.url
+            }
             let body = ReleaseLatestPayload(
                 version: self.release.version,
                 platform: self.release.platform,
-                url: self.release.url,
+                url: releaseURL,
                 bundle_hash: self.release.bundleHash,
                 binary_hash: self.release.binaryHash,
                 metallib_hash: self.release.metallibHash
             )
             return MockCoordinator.makeJSONResponse(body: body)
+        }
+
+        router.get("/mock-release-artifact") { [weak self] _, _ -> Response in
+            guard let artifact = self?.releaseArtifact else {
+                return MockCoordinator.makeJSONResponse(
+                    body: ["error": "release artifact missing"],
+                    status: .notFound
+                )
+            }
+            return Response(
+                status: .ok,
+                headers: [.contentType: "application/gzip"],
+                body: .init(byteBuffer: ByteBuffer(bytes: artifact))
+            )
         }
 
         // ----- HTTP: /api/version (UpdateBanner) -----

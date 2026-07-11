@@ -279,7 +279,28 @@ extension Start {
             return
         case .updated(let from, let to):
             print("Updated provider: v\(from) -> v\(to). Restarting into new binary...")
-            try ProcessLifecycle.execCurrentProcess()
+            do {
+                try ProcessLifecycle.execCurrentProcess()
+            } catch {
+                try? updater.cancelPendingCandidateAttempt(
+                    operation: "startup-exec-failure")
+                throw error
+            }
+        case .restartRequired(let from, let to):
+            print("Provider v\(to) is already installed (running v\(from)); restarting into it...")
+            do {
+                try ProcessLifecycle.execCurrentProcess()
+            } catch {
+                try? updater.cancelPendingCandidateAttempt(
+                    operation: "startup-exec-failure")
+                throw error
+            }
+        case .quarantined(let version, let reason):
+            printError("auto-update skipped: v\(version) is quarantined after failed starts (\(reason))")
+        case .busy(let reason):
+            printError("auto-update skipped: another update/recovery operation is active (\(reason))")
+        case .cancelled(let reason):
+            printError("auto-update cancelled: \(reason)")
         case .downloadFailed(let reason):
             printError("auto-update skipped: \(reason)")
         case .hashMismatch(let expected, let got):

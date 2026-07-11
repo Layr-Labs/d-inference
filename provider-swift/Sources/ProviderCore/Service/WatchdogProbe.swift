@@ -38,6 +38,23 @@ public enum WatchdogProbe {
         return ProviderLiveness(loaded: loaded, running: running)
     }
 
+    /// A live launchd process becomes inactive only when a daemon-state record
+    /// attributable to that still-live PID has gone stale. No state (normal
+    /// during initial model preload) or a state record from a dead prior PID
+    /// does not override launchd liveness.
+    public static func providerActive(
+        processRunning: Bool,
+        daemonState: DaemonState?,
+        now: Double,
+        processAlive: (Int32) -> Bool = daemonProcessAlive
+    ) -> Bool {
+        guard processRunning else { return false }
+        guard let daemonState, processAlive(daemonState.pid) else {
+            return true
+        }
+        return !daemonState.isStale(now: now)
+    }
+
     /// Parse `launchctl print` for a live process: `state = running` or a
     /// non-zero `pid` (and not `state = not running`). Pure, for testing.
     static func parseRunning(_ output: String) -> Bool {

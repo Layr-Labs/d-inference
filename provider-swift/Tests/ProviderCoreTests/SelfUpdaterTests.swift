@@ -28,6 +28,25 @@ struct SelfUpdaterTests {
         #expect(latest.metallibHash == String(repeating: "c", count: 64))
     }
 
+    @Test("release endpoint refuses a mismatched platform")
+    func releaseEndpointRefusesWrongPlatform() async throws {
+        let mock = MockCoordinator(release: MockReleaseFixture(
+            version: "99.0.0",
+            platform: "linux-amd64"
+        ))
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let result = await SelfUpdater(
+            coordinatorBaseURL: baseURL.absoluteString
+        ).checkForUpdate()
+        guard case .checkFailed(let reason) = result else {
+            Issue.record("wrong-platform release was accepted")
+            return
+        }
+        #expect(reason.contains("unsupported release platform"))
+    }
+
     @Test("ReleaseInfo sha256 compatibility returns bundle hash")
     func releaseInfoShaCompatibility() {
         let hash = String(repeating: "d", count: 64)
@@ -52,6 +71,11 @@ struct SelfUpdaterTests {
 
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: install, withIntermediateDirectories: true)
+        let oldBin = install.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: oldBin, withIntermediateDirectories: true)
+        try Data("old darkbloom".utf8).write(to: oldBin.appendingPathComponent("darkbloom"))
+        try Data("old enclave".utf8).write(to: oldBin.appendingPathComponent("darkbloom-enclave"))
+        try Data("old metallib".utf8).write(to: oldBin.appendingPathComponent("mlx.metallib"))
         let darkbloom = bin.appendingPathComponent("darkbloom")
         let enclave = bin.appendingPathComponent("darkbloom-enclave")
         let metallib = bin.appendingPathComponent("mlx.metallib")
@@ -103,6 +127,11 @@ struct SelfUpdaterTests {
         try FileManager.default.createDirectory(at: appMacOS, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: binFlat, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: install, withIntermediateDirectories: true)
+        let oldAppBin = install.appendingPathComponent("Darkbloom.app/Contents/MacOS")
+        try FileManager.default.createDirectory(at: oldAppBin, withIntermediateDirectories: true)
+        try Data("old app darkbloom".utf8).write(to: oldAppBin.appendingPathComponent("darkbloom"))
+        try Data("old app enclave".utf8).write(to: oldAppBin.appendingPathComponent("darkbloom-enclave"))
+        try Data("old app metallib".utf8).write(to: oldAppBin.appendingPathComponent("mlx.metallib"))
 
         // Write Info.plist for the .app bundle.
         let infoDir = stage.appendingPathComponent("Darkbloom.app/Contents")
@@ -192,6 +221,7 @@ struct SelfUpdaterTests {
         try fm.createDirectory(at: liveMacOS, withIntermediateDirectories: true)
         try fm.createDirectory(at: liveBin, withIntermediateDirectories: true)
         try Data("old darkbloom".utf8).write(to: liveMacOS.appendingPathComponent("darkbloom"))
+        try Data("old enclave".utf8).write(to: liveMacOS.appendingPathComponent("darkbloom-enclave"))
         try Data("old metallib".utf8).write(to: liveMacOS.appendingPathComponent("mlx.metallib"))
         try fm.createSymbolicLink(
             atPath: liveBin.appendingPathComponent("mlx.metallib").path,
@@ -256,7 +286,7 @@ struct SelfUpdaterTests {
             return
         }
 
-        let result = updater.commitStagedBundle(staged)
+        let result = updater.commitStagedBundleForTesting(staged)
         guard case .success = result else {
             Issue.record("commitStagedBundle failed: \(result)")
             return
@@ -271,6 +301,41 @@ struct SelfUpdaterTests {
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: install.path)
             .filter { $0.hasPrefix(".update-staging-") || $0.hasPrefix(".update-backup-") }
         #expect(leftovers.isEmpty)
+    }
+
+    @Test("commit refuses a staged tree changed after verification")
+    func commitRefusesPostStageMutation() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "self-updater-stage-mutation-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (tarball, release, install) = try makeAppBundleFixture(root: root)
+        let updater = SelfUpdater(coordinatorBaseURL: "https://api.example.test")
+        guard case .success(let staged) = updater.stageBundleForTesting(
+            from: tarball,
+            release: release,
+            installDir: install
+        ) else {
+            Issue.record("stageBundleForTesting failed")
+            return
+        }
+        try Data("post-verification tamper".utf8).write(
+            to: staged.stagingRoot
+                .appendingPathComponent("Darkbloom.app/Contents/Info.plist")
+        )
+
+        guard case .failure(let error) = updater.commitStagedBundleForTesting(staged) else {
+            Issue.record("mutated staging tree was installed")
+            return
+        }
+        #expect("\(error)".contains("changed after verification"))
+        #expect(try String(
+            contentsOf: install.appendingPathComponent(
+                "Darkbloom.app/Contents/MacOS/darkbloom"),
+            encoding: .utf8
+        ) == "old darkbloom")
     }
 
     @Test("a later staging pass removes OLD orphaned staging dirs but spares young (possibly live) ones")

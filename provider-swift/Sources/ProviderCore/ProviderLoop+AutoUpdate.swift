@@ -84,9 +84,14 @@ extension ProviderLoop {
         let jitterMaxSeconds = loopConfig.config.provider.updateJitterSeconds
 
         let deps = AutoUpdateController.Dependencies(
-            claimStart: { await me.claimUpdateStart() },
+            claimStart: { await me.claimUpdateStart(updater: updater) },
             resumeServing: { await me.resumeServingAfterUpdate() },
-            check: { await updater.checkForUpdate() },
+            check: {
+                guard let session = await me.activeUpdateSession() else {
+                    return .checkFailed(reason: "cross-process update lease was lost")
+                }
+                return await updater.checkForUpdate(session: session)
+            },
             downloadVerifyStage: { release in
                 await me.stageUpdateBundle(release: release, updater: updater)
             },
@@ -112,7 +117,14 @@ extension ProviderLoop {
             // the engine, which we no longer wait on past the timeout).
             forceCancelInflight: { await me.cancelAllInflight() },
             commitInstall: { await me.commitStagedUpdateBundle(updater: updater) },
+            prepareInstalledRestart: {
+                await me.prepareInstalledCandidateRestart(updater: updater)
+            },
             restart: { try ProcessLifecycle.restartAfterUpdate() },
+            restartDidFail: {
+                try? updater.cancelPendingCandidateAttempt(
+                    operation: "background-restart-failure")
+            },
             log: { logger.info("\($0)") }
         )
 
@@ -125,6 +137,8 @@ extension ProviderLoop {
             logger.info("Auto-update: cycle cancelled during the pre-install wait; nothing installed")
         case .upToDate:
             logger.info("Auto-update: already running latest version")
+        case .quarantined(let version):
+            logger.warning("Auto-update: v\(version) is quarantined after failed starts")
         case .checkFailed(let reason):
             logger.warning("Auto-update: check failed: \(reason)")
         case .stageFailed(let reason):
@@ -144,10 +158,25 @@ extension ProviderLoop {
     /// underway (re-entrancy guard for overlapping monitor ticks). On `true`,
     /// enter the `.installing` phase — still serving while the new bundle
     /// downloads and stages.
-    private func claimUpdateStart() -> Bool {
+    private func claimUpdateStart(updater: SelfUpdater) -> Bool {
         guard updatePhase == .idle, !isShuttingDown else { return false }
+        do {
+            let session = try updater.beginUpdateSession(
+                operation: "background-auto-update",
+                timeout: 0
+            )
+            try session.recover()
+            updateSession = session
+        } catch {
+            logger.info("Auto-update: cross-process lease unavailable: \(error)")
+            return false
+        }
         updatePhase = .installing
         return true
+    }
+
+    private func activeUpdateSession() -> SelfUpdater.UpdateSession? {
+        updateSession
     }
 
     /// Return to normal serving after an update cycle that did not restart
@@ -162,6 +191,8 @@ extension ProviderLoop {
             stagedUpdateBundle = nil
             staged.discard()
         }
+        updateSession?.release()
+        updateSession = nil
 
         if let entries = deferredDesiredModels {
             deferredDesiredModels = nil
@@ -191,7 +222,14 @@ extension ProviderLoop {
             return .failed("\(error)")
         case .success(let tempFile):
             defer { try? FileManager.default.removeItem(at: tempFile) }
-            switch updater.stageBundle(from: tempFile, release: release) {
+            guard let session = updateSession else {
+                return .failed("cross-process update lease was lost before staging")
+            }
+            switch updater.stageBundle(
+                from: tempFile,
+                release: release,
+                session: session
+            ) {
             case .success(let staged):
                 stagedUpdateBundle = staged
                 return .completed
@@ -208,11 +246,33 @@ extension ProviderLoop {
         guard let staged = stagedUpdateBundle else {
             return .failed("no staged update bundle to install")
         }
+        guard let session = updateSession else {
+            return .failed("cross-process update lease was lost before commit")
+        }
         stagedUpdateBundle = nil
-        switch updater.commitStagedBundle(staged) {
+        let result = updater.commitStagedBundle(staged, session: session)
+        session.release()
+        updateSession = nil
+        switch result {
         case .success:
             return .completed
         case .failure(let error):
+            return .failed("\(error)")
+        }
+    }
+
+    private func prepareInstalledCandidateRestart(
+        updater: SelfUpdater
+    ) -> AutoUpdateController.StepOutcome {
+        guard let session = updateSession else {
+            return .failed("cross-process update lease was lost before candidate restart")
+        }
+        do {
+            try updater.armPendingCandidateAttempt(session: session)
+            session.release()
+            updateSession = nil
+            return .completed
+        } catch {
             return .failed("\(error)")
         }
     }

@@ -30,6 +30,7 @@ struct AutoUpdateControllerTests {
         var checkResult: UpdateCheckResult
         var stageResult: AutoUpdateController.StepOutcome = .completed
         var commitResult: AutoUpdateController.StepOutcome = .completed
+        var prepareRestartResult: AutoUpdateController.StepOutcome = .completed
         var drainReturns = true
         var restartThrows = false
     }
@@ -55,6 +56,10 @@ struct AutoUpdateControllerTests {
             waitForDrain: { _ in recorder.record("waitForDrain"); return fakes.drainReturns },
             forceCancelInflight: { recorder.record("forceCancel") },
             commitInstall: { recorder.record("commit"); return fakes.commitResult },
+            prepareInstalledRestart: {
+                recorder.record("prepareRestart")
+                return fakes.prepareRestartResult
+            },
             restart: {
                 recorder.record("restart")
                 if fakes.restartThrows { throw FakeError.restart }
@@ -148,6 +153,34 @@ struct AutoUpdateControllerTests {
         #expect(recorder.events == ["claim", "check", "stage", "beginDraining", "waitForDrain", "commit", "restart"])
         #expect(!recorder.events.contains("forceCancel"))
         #expect(!recorder.events.contains("resume")) // restart succeeded → no resume
+    }
+
+    @Test("already-installed candidate drains and restarts without staging or commit")
+    func installedCandidateRestartsWithoutReinstall() async {
+        let recorder = Recorder()
+        let controller = makeController(
+            Fakes(checkResult: .restartRequired(
+                current: "1.0.0",
+                installed: "2.0.0"
+            )),
+            recorder: recorder
+        )
+
+        let outcome = await controller.run()
+
+        #expect(outcome == .restarted(
+            from: "1.0.0",
+            to: "2.0.0",
+            drained: true
+        ))
+        #expect(recorder.events == [
+            "claim",
+            "check",
+            "beginDraining",
+            "waitForDrain",
+            "prepareRestart",
+            "restart",
+        ])
     }
 
     @Test("drain timeout: force-cancels stragglers, then commits and restarts anyway")

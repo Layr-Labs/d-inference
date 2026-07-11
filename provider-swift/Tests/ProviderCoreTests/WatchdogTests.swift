@@ -171,6 +171,44 @@ struct WatchdogProbeParseTests {
         #expect(!WatchdogProbe.parseRunning("\tpid = 0"))
         #expect(!WatchdogProbe.parseRunning(""))
     }
+
+    @Test("stale heartbeat from the live daemon marks it inactive")
+    func staleLiveDaemonIsInactive() {
+        let state = DaemonState(
+            pid: 42,
+            version: "1.0.0",
+            writtenAt: 100,
+            startedAt: 10
+        )
+        #expect(!WatchdogProbe.providerActive(
+            processRunning: true,
+            daemonState: state,
+            now: 500,
+            processAlive: { $0 == 42 }
+        ))
+    }
+
+    @Test("fresh heartbeat or unrelated old state preserves activity")
+    func freshOrUnrelatedState() {
+        let state = DaemonState(
+            pid: 42,
+            version: "1.0.0",
+            writtenAt: 480,
+            startedAt: 10
+        )
+        #expect(WatchdogProbe.providerActive(
+            processRunning: true,
+            daemonState: state,
+            now: 500,
+            processAlive: { $0 == 42 }
+        ))
+        #expect(WatchdogProbe.providerActive(
+            processRunning: true,
+            daemonState: state,
+            now: 1_000,
+            processAlive: { _ in false }
+        ))
+    }
 }
 
 /// The watchdog launchd plist shape.

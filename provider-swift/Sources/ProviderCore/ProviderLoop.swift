@@ -245,6 +245,11 @@ public actor ProviderLoop {
     /// request can never observe a half-replaced bundle. Consumed by
     /// `commitStagedUpdateBundle`; discarded by `resumeServingAfterUpdate`.
     internal var stagedUpdateBundle: SelfUpdater.StagedBundle?
+    /// Kernel-owned cross-process lease held from update check through commit.
+    /// It serializes this actor with watchdog, startup, and manual updater
+    /// processes; released on every non-restart exit and immediately after a
+    /// durable commit.
+    internal var updateSession: SelfUpdater.UpdateSession?
 
     /// Latest `desired_models` push received while update-draining. Normally
     /// the restart makes it moot (registration gets fresh desired state), but

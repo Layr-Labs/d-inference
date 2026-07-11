@@ -13,7 +13,7 @@ import Foundation
 public enum WatchdogDecision: Equatable, Sendable {
     case disabled                    // auto_restart = false
     case notManaged                  // unloaded: stopped/uninstalled, not a crash
-    case healthy                     // running
+    case healthy                     // running with no attributable stale heartbeat
     case startGrace                  // first tick down: arm the window
     case waiting(remaining: Double)  // down, inside the grace window
     case restart                     // down >= grace

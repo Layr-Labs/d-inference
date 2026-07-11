@@ -1,0 +1,263 @@
+import Foundation
+
+/// Recovery authority used by the one-shot watchdog command. Update,
+/// predecessor rollback, failure attribution, and launch attempt persistence
+/// all execute while the same cross-process update lease is held.
+public struct WatchdogRecoveryService: Sendable {
+    public struct Dependencies: Sendable {
+        public var kickstartIfLoaded: @Sendable () throws -> Bool
+        public var providerStillLoaded: @Sendable () -> Bool
+        public var processAlive: @Sendable (Int32) -> Bool
+        public var log: @Sendable (String) -> Void
+
+        public init(
+            kickstartIfLoaded: @escaping @Sendable () throws -> Bool,
+            providerStillLoaded: @escaping @Sendable () -> Bool = { true },
+            processAlive: @escaping @Sendable (Int32) -> Bool = daemonProcessAlive,
+            log: @escaping @Sendable (String) -> Void
+        ) {
+            self.kickstartIfLoaded = kickstartIfLoaded
+            self.providerStillLoaded = providerStillLoaded
+            self.processAlive = processAlive
+            self.log = log
+        }
+    }
+
+    public enum DownOutcome: Sendable, Equatable {
+        case restartIssued(updatedTo: String?, rolledBackTo: String?)
+        case noLongerLoaded
+        case retryBackoff(until: Double, reason: String)
+        case lockBusy(String)
+        case failed(String)
+    }
+
+    public enum HealthOutcome: Sendable, Equatable {
+        case noCandidate
+        case stabilizing(since: Double?)
+        case inactiveCandidate(attemptStartedAt: Double)
+        case promoted(version: String)
+        case lockBusy
+        case failed(String)
+    }
+
+    private let updater: SelfUpdater
+    private let deps: Dependencies
+    private let stabilizationSeconds: Double
+    private let candidateStartupTimeoutSeconds: Double
+
+    public init(
+        updater: SelfUpdater,
+        dependencies: Dependencies,
+        stabilizationSeconds: Double = UpdateRecoveryState.defaultStabilizationSeconds,
+        candidateStartupTimeoutSeconds: Double = 300
+    ) {
+        self.updater = updater
+        self.deps = dependencies
+        self.stabilizationSeconds = stabilizationSeconds
+        self.candidateStartupTimeoutSeconds = candidateStartupTimeoutSeconds
+    }
+
+    /// Called only after the watchdog's outage grace expires. A pending
+    /// candidate attempt is charged once, rollback is attempted at the third
+    /// failure, then an allowed newer release is installed before kickstart.
+    public func recoverDownProvider(
+        autoUpdateEnabled: Bool,
+        now: Double
+    ) async -> DownOutcome {
+        let session: SelfUpdater.UpdateSession
+        do {
+            session = try updater.beginUpdateSession(
+                operation: "watchdog-recovery",
+                timeout: 0
+            )
+            try session.recover(now: now)
+        } catch UpdateError.busy(let reason) {
+            deps.log("update/recovery lock busy: \(reason)")
+            return .lockBusy(reason)
+        } catch {
+            let reason = "could not open recovery state: \(error)"
+            deps.log(reason)
+            return .failed(reason)
+        }
+        defer { session.release() }
+        guard deps.providerStillLoaded() else {
+            return .noLongerLoaded
+        }
+
+        var rolledBackTo: String?
+        do {
+            var state = try session.readState()
+            if let count = state.recordPendingAttemptFailure(now: now) {
+                try session.writeState(state)
+                deps.log(
+                    "v\(state.candidate?.release.version ?? "unknown") failed start \(count)/\(UpdateRecoveryState.rollbackThreshold)")
+            }
+
+            if state.isCandidateRetryBackedOff(now: now) {
+                return .retryBackoff(
+                    until: state.candidate?.retryNotBefore ?? now,
+                    reason: state.candidate?.rollbackBlockedReason
+                        ?? "rollback retry backoff"
+                )
+            }
+
+            // Once rollback has been refused, the expiry of its backoff permits
+            // one more launch of the still-intact current install. A subsequent
+            // failure increments the attempt counter and retries rollback with
+            // a longer delay; the provider is not trapped permanently down.
+            let retryCurrentAfterRollbackRefusal =
+                state.candidate?.rollbackBlockedReason != nil
+            if let candidate = state.candidate,
+               candidate.failureCount >= UpdateRecoveryState.rollbackThreshold,
+               !retryCurrentAfterRollbackRefusal
+            {
+                do {
+                    let restored = try session.rollback(
+                        now: now,
+                        reason: "automatic rollback after \(candidate.failureCount) failed starts"
+                    )
+                    rolledBackTo = restored
+                    deps.log(
+                        "quarantined v\(candidate.release.version) and restored verified predecessor v\(restored)")
+                    state = try session.readState()
+                } catch {
+                    let reason = "\(error)"
+                    state.deferRetryAfterRollbackFailure(now: now, reason: reason)
+                    try session.writeState(state)
+                    let until = state.candidate?.retryNotBefore ?? (now + 300)
+                    deps.log(
+                        "rollback refused; current install preserved; retry after \(Int(max(0, until - now)))s: \(reason)")
+                    return .retryBackoff(until: until, reason: reason)
+                }
+            }
+        } catch {
+            let reason = "could not attribute candidate failure: \(error)"
+            deps.log(reason)
+            return .failed(reason)
+        }
+
+        var updatedTo: String?
+        if autoUpdateEnabled {
+            let result = await updater.update(
+                session: session,
+                beforeInstall: deps.providerStillLoaded
+            )
+            switch result {
+            case .updated(_, let to):
+                updatedTo = to
+                deps.log("installed signed v\(to) before restart")
+            case .restartRequired(_, let to):
+                updatedTo = to
+                deps.log("v\(to) is already installed; retrying its pending restart")
+            case .alreadyUpToDate:
+                break
+            case .quarantined(let version, let reason):
+                deps.log("v\(version) remains quarantined; not reinstalling it: \(reason)")
+            case .busy(let reason):
+                // Impossible while this session owns the lock, but fail safe if
+                // a future updater implementation changes session semantics.
+                deps.log("update skipped because lock became busy: \(reason)")
+            case .cancelled(let reason):
+                deps.log("watchdog update cancelled: \(reason)")
+                return .noLongerLoaded
+            case .downloadFailed(let reason):
+                deps.log("update check/download failed; restarting current install: \(reason)")
+            case .hashMismatch(let expected, let got):
+                deps.log(
+                    "update artifact refused (bundle hash expected \(expected), got \(got)); restarting current install")
+            case .replaceFailed(let reason):
+                deps.log("update install refused; restarting current install: \(reason)")
+            }
+        }
+
+        do {
+            var state = try session.readState()
+            if state.candidate?.pendingAttemptID == nil {
+                _ = state.armCandidateAttempt(now: now)
+                try session.writeState(state)
+            }
+
+            do {
+                let started = try deps.kickstartIfLoaded()
+                guard started else {
+                    state.cancelPendingAttempt()
+                    try session.writeState(state)
+                    return .noLongerLoaded
+                }
+            } catch {
+                state.cancelPendingAttempt()
+                try session.writeState(state)
+                throw error
+            }
+            return .restartIssued(updatedTo: updatedTo, rolledBackTo: rolledBackTo)
+        } catch {
+            let reason = "provider kickstart failed: \(error)"
+            deps.log(reason)
+            return .failed(reason)
+        }
+    }
+
+    /// Promote a candidate only after launchd says it is running and a daemon
+    /// state heartbeat from that exact version remains fresh for the full
+    /// stabilization window.
+    public func observeHealthyProvider(
+        providerRunning: Bool,
+        daemonState: DaemonState?,
+        now: Double
+    ) -> HealthOutcome {
+        let session: SelfUpdater.UpdateSession
+        do {
+            session = try updater.beginUpdateSession(
+                operation: "watchdog-health",
+                timeout: 0
+            )
+            try session.recover(now: now)
+        } catch UpdateError.busy {
+            return .lockBusy
+        } catch {
+            return .failed("\(error)")
+        }
+        defer { session.release() }
+
+        do {
+            var state = try session.readState()
+            guard let candidate = state.candidate else { return .noCandidate }
+            let freshMatchingHeartbeat: Bool
+            if let daemonState {
+                freshMatchingHeartbeat = providerRunning
+                    && daemonState.version == candidate.release.version
+                    && !daemonState.isStale(now: now)
+                    && deps.processAlive(daemonState.pid)
+            } else {
+                freshMatchingHeartbeat = false
+            }
+
+            let before = state
+            let promoted = state.observeCandidateHealth(
+                healthySignal: freshMatchingHeartbeat,
+                processStartedAt: daemonState?.startedAt,
+                now: now,
+                stabilizationSeconds: stabilizationSeconds
+            )
+            if state != before {
+                try session.writeState(state)
+            }
+            if promoted {
+                deps.log(
+                    "v\(candidate.release.version) passed \(Int(stabilizationSeconds))s stabilization; promoted")
+                return .promoted(version: candidate.release.version)
+            }
+            if !freshMatchingHeartbeat,
+               providerRunning,
+               candidate.pendingAttemptID != nil,
+               let attemptStartedAt = candidate.attemptStartedAt,
+               now - attemptStartedAt >= candidateStartupTimeoutSeconds
+            {
+                return .inactiveCandidate(attemptStartedAt: attemptStartedAt)
+            }
+            return .stabilizing(since: state.candidate?.healthySince)
+        } catch {
+            return .failed("\(error)")
+        }
+    }
+}

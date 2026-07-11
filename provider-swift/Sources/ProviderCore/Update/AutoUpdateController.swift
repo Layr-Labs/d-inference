@@ -74,9 +74,14 @@ public struct AutoUpdateController: Sendable {
         /// Swap the staged bundle into the live layout. Runs only after the
         /// drain (admission closed, in-flight work finished or cancelled).
         public var commitInstall: @Sendable () async -> StepOutcome
+        /// Arm the already-installed candidate before retrying a restart after
+        /// a prior restart command or process died.
+        public var prepareInstalledRestart: @Sendable () async -> StepOutcome
         /// Restart the process into the new binary. In production this does not
         /// return (the process is replaced/relaunched by launchd).
         public var restart: @Sendable () throws -> Void
+        /// Undo the pending-attempt marker if `restart` throws before launch.
+        public var restartDidFail: @Sendable () async -> Void
         /// Emit a human-readable progress line.
         public var log: @Sendable (String) -> Void
 
@@ -90,7 +95,9 @@ public struct AutoUpdateController: Sendable {
             waitForDrain: @escaping @Sendable (Duration) async -> Bool,
             forceCancelInflight: @escaping @Sendable () async -> Void,
             commitInstall: @escaping @Sendable () async -> StepOutcome,
+            prepareInstalledRestart: @escaping @Sendable () async -> StepOutcome = { .completed },
             restart: @escaping @Sendable () throws -> Void,
+            restartDidFail: @escaping @Sendable () async -> Void = {},
             log: @escaping @Sendable (String) -> Void
         ) {
             self.claimStart = claimStart
@@ -102,7 +109,9 @@ public struct AutoUpdateController: Sendable {
             self.waitForDrain = waitForDrain
             self.forceCancelInflight = forceCancelInflight
             self.commitInstall = commitInstall
+            self.prepareInstalledRestart = prepareInstalledRestart
             self.restart = restart
+            self.restartDidFail = restartDidFail
             self.log = log
         }
     }
@@ -118,6 +127,8 @@ public struct AutoUpdateController: Sendable {
         case cancelled
         /// Already on the latest version.
         case upToDate
+        /// Latest release is the exact locally quarantined failed version.
+        case quarantined(String)
         /// The version check failed.
         case checkFailed(String)
         /// Download/verify/stage failed; the provider kept serving the old
@@ -155,6 +166,34 @@ public struct AutoUpdateController: Sendable {
         case .upToDate:
             await deps.resumeServing()
             return .upToDate
+
+        case .quarantined(let version, let reason):
+            deps.log("auto-update: v\(version) is quarantined locally: \(reason)")
+            await deps.resumeServing()
+            return .quarantined(version)
+
+        case .restartRequired(let current, let installed):
+            deps.log(
+                "auto-update: v\(installed) is already installed but not running; draining before restart")
+            await deps.beginDraining()
+            let drained = await deps.waitForDrain(drainTimeout)
+            if !drained {
+                await deps.forceCancelInflight()
+            }
+            switch await deps.prepareInstalledRestart() {
+            case .failed(let reason):
+                await deps.resumeServing()
+                return .restartFailed(reason)
+            case .completed:
+                do {
+                    try deps.restart()
+                    return .restarted(from: current, to: installed, drained: drained)
+                } catch {
+                    await deps.restartDidFail()
+                    await deps.resumeServing()
+                    return .restartFailed("\(error)")
+                }
+            }
 
         case .checkFailed(let reason):
             deps.log("auto-update: check failed: \(reason)")
@@ -213,6 +252,7 @@ public struct AutoUpdateController: Sendable {
                         // Restart failed but the binary is already installed; resume
                         // serving (on the old in-memory binary) so we aren't wedged.
                         deps.log("auto-update: restart failed: \(error.localizedDescription)")
+                        await deps.restartDidFail()
                         await deps.resumeServing()
                         return .restartFailed("\(error)")
                     }

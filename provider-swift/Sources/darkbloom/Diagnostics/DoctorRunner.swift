@@ -164,8 +164,20 @@ enum DoctorRunner {
         switch await updater.checkForUpdate() {
         case .updateAvailable(let current, let latest):
             out.append(VersionDiagnostic.diagnose(current: current, minimum: nil, latest: latest.version))
+        case .restartRequired(let current, let installed):
+            out.append(VersionDiagnostic.diagnose(
+                current: current,
+                minimum: nil,
+                latest: installed
+            ))
         case .upToDate(let current):
             out.append(VersionDiagnostic.diagnose(current: current, minimum: nil, latest: current))
+        case .quarantined(let version, _):
+            out.append(VersionDiagnostic.diagnose(
+                current: ProviderCore.version,
+                minimum: nil,
+                latest: version
+            ))
         case .checkFailed:
             break // network section already covers coordinator reachability
         }

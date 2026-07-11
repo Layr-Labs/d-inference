@@ -41,6 +41,16 @@ extension UpdateRecoveryStore {
                     to: copiedBundle.appendingPathComponent(name)
                 )
             }
+            // The snapshot must hash the EXACT tree a restore produces.
+            // Every flat restore runs `ensureCanonicalLinks(.flat)`, which
+            // (re)creates the legacy `eigeninference-enclave` symlink, and
+            // `treeHash` includes symlink entries — a record without it would
+            // fail the post-restore `liveMatches` verification forever and
+            // wedge interrupted-transaction recovery on flat hosts.
+            try UpdateAtomicFilesystem.replaceSymlink(
+                at: copiedBundle.appendingPathComponent("eigeninference-enclave"),
+                target: "darkbloom-enclave"
+            )
             copiedBinary = copiedBundle.appendingPathComponent("darkbloom")
             copiedEnclave = copiedBundle.appendingPathComponent("darkbloom-enclave")
             copiedMetallib = copiedBundle.appendingPathComponent("mlx.metallib")

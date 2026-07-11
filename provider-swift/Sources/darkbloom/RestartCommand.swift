@@ -34,13 +34,23 @@ struct Restart: AsyncParsableCommand {
         // Re-arm the watchdog (re-enables it after a prior `stop`, or installs it
         // on a provider upgraded from a pre-watchdog build). The rewrite must
         // not drop a custom config: an explicit --config wins, otherwise the
-        // installed plist's recorded config path is preserved.
+        // installed plist's recorded config path is preserved. An opted-out
+        // config (`auto_restart = false`) DISARMS a still-loaded watchdog
+        // instead of leaving the stale job running.
         let watchdogConfig = WatchdogAgent.rearmConfigPath(
             explicit: configOptions.config,
             installed: WatchdogAgent.installedConfigPath()
         )
-        if Watchdog.autoRestartEnabled(configPath: watchdogConfig?.path) {
+        switch WatchdogAgent.rearmAction(
+            autoRestartEnabled: Watchdog.autoRestartEnabled(configPath: watchdogConfig?.path),
+            isLoaded: WatchdogAgent.isLoaded()
+        ) {
+        case .arm:
             try? WatchdogAgent.installAndStart(configPath: watchdogConfig)
+        case .disarm:
+            try? WatchdogAgent.stop()
+        case nil:
+            break
         }
 
         print("  darkbloom status  Check status")

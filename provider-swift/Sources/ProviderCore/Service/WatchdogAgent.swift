@@ -79,6 +79,24 @@ public enum WatchdogAgent: Sendable {
         return installed
     }
 
+    public enum RearmAction: Sendable, Equatable {
+        case arm
+        case disarm
+    }
+
+    /// What an arming site (`start`, `restart`) should do with the watchdog
+    /// job. `auto_restart = false` DISARMS a previously loaded watchdog rather
+    /// than leaving it running on its old plist config — otherwise a host
+    /// whose operator switched to an opted-out config would still get
+    /// watchdog-driven relaunches from the stale job.
+    public static func rearmAction(
+        autoRestartEnabled: Bool,
+        isLoaded: Bool
+    ) -> RearmAction? {
+        if autoRestartEnabled { return .arm }
+        return isLoaded ? .disarm : nil
+    }
+
     public static func isLoaded() -> Bool {
         LaunchctlControl.printSucceeds(label: label)
     }

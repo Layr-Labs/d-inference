@@ -119,7 +119,8 @@ struct Watchdog: AsyncParsableCommand {
                 daemonState: daemonState,
                 now: now
             )
-            if case .inactiveCandidate(let attemptStartedAt) = health {
+            switch health {
+            case .inactiveCandidate(let attemptStartedAt):
                 Self.log(
                     "new version has no fresh heartbeat \(Int(now - attemptStartedAt))s after launch — treating it as a failed start")
                 // The candidate is already past its startup window here (that is
@@ -136,8 +137,24 @@ struct Watchdog: AsyncParsableCommand {
                     grace: grace,
                     now: now
                 )
-            } else if case .failed(let reason) = health {
+            case .blockedCandidateRetry(let reason):
+                Self.log(
+                    "blocked-rollback candidate's retry backoff expired with no heartbeat — retrying restart/rollback (\(reason))")
+                let outcome = await recovery.recoverDownProvider(
+                    autoUpdateEnabled: settings.autoUpdate,
+                    inactiveProviderIdentity: providerIdentity,
+                    providerProcessAlive: liveness.running,
+                    now: now
+                )
+                _ = Self.recordRecoveryOutcome(
+                    outcome,
+                    grace: grace,
+                    now: now
+                )
+            case .failed(let reason):
                 Self.log("candidate health persistence failed: \(reason)")
+            case .noCandidate, .stabilizing, .promoted, .lockBusy:
+                break
             }
             if downSince != nil { Self.log("provider recovered — cancelling pending restart") }
         case .disabled, .notManaged:

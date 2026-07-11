@@ -503,6 +503,174 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(state.quarantine == nil)
     }
 
+    @Test("blocked-rollback candidate retries from the healthy path once its backoff expires")
+    func blockedCandidateRetriesFromHealthyPath() async throws {
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+
+        // Corrupt the rollback material so the third failure REFUSES rollback
+        // and parks the candidate in retry backoff (clearing pendingAttemptID).
+        let predecessorBinary = context.fixture.installRoot
+            .appendingPathComponent(
+                "recovery/predecessor/Darkbloom.app/Contents/MacOS/darkbloom")
+        try Data("tampered predecessor".utf8).write(to: predecessorBinary)
+        _ = await context.service.recoverDownProvider(autoUpdateEnabled: false, now: 200)
+        _ = await context.service.recoverDownProvider(autoUpdateEnabled: false, now: 300)
+        guard case .retryBackoff = await context.service.recoverDownProvider(
+            autoUpdateEnabled: false,
+            now: 400
+        ) else {
+            Issue.record("expected refused rollback to enter retry backoff")
+            return
+        }
+        let parked = try recoveryStore(context.fixture).loadState()
+        #expect(parked.candidate?.pendingAttemptID == nil)
+        #expect(parked.candidate?.retryNotBefore == 700)
+        #expect(parked.candidate?.rollbackBlockedReason != nil)
+
+        // Hung-but-alive candidate: launchd says running, no heartbeat. While
+        // the backoff is active the healthy path must keep waiting…
+        let waiting = context.service.observeHealthyProvider(
+            providerRunning: true,
+            daemonState: nil,
+            now: 650
+        )
+        #expect(waiting == .stabilizing(since: nil))
+
+        // …but once it expires, the healthy path must bridge back into
+        // recovery. Pre-fix this returned .stabilizing forever: with
+        // pendingAttemptID cleared, .inactiveCandidate could never fire again
+        // and the launchd-running hung candidate kept the down path away —
+        // the host stayed wedged indefinitely.
+        let health = context.service.observeHealthyProvider(
+            providerRunning: true,
+            daemonState: nil,
+            now: 701
+        )
+        guard case .blockedCandidateRetry(let reason) = health else {
+            Issue.record("expected blocked-candidate retry bridge, got \(health)")
+            return
+        }
+        #expect(reason.contains("hash mismatch"))
+
+        // The bridged recovery call retries the candidate launch (rollback
+        // stays refused, so the still-intact current install is relaunched
+        // and the attempt is re-armed for future failure attribution).
+        let outcome = await context.service.recoverDownProvider(
+            autoUpdateEnabled: false,
+            providerProcessAlive: true,
+            now: 701
+        )
+        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        let state = try recoveryStore(context.fixture).loadState()
+        #expect(state.candidate?.pendingAttemptID != nil)
+        #expect(state.candidate?.rollbackBlockedReason == nil)
+        #expect(try context.fixture.liveBinaryContents() == "2.0.0-darkbloom")
+    }
+
+    @Test("pending fresh candidate without a blocked rollback is not bridged from the healthy path")
+    func freshPendingCandidateIsNotBridged() async throws {
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+
+        // A candidate awaiting its (provider-owned) restart: pendingAttemptID
+        // cleared, but NO refused rollback. The watchdog must not kill a
+        // serving provider to force an update.
+        let store = recoveryStore(context.fixture)
+        var state = try store.loadState()
+        state.cancelPendingAttempt()
+        try store.writeState(state)
+
+        let oldProviderHeartbeat = DaemonState(
+            pid: 4242,
+            version: "1.0.0",  // serving OLD version — not the candidate
+            writtenAt: 200,
+            startedAt: 150
+        )
+        let health = context.service.observeHealthyProvider(
+            providerRunning: true,
+            daemonState: oldProviderHeartbeat,
+            now: 200
+        )
+        #expect(health == .stabilizing(since: nil))
+    }
+
+    @Test("interrupted flat rollback recovers — predecessor hash covers the legacy symlink")
+    func interruptedFlatRollbackRecovers() async throws {
+        enum InjectedFault: Error { case midRollback }
+        let fixture = try UpdateRecoveryFixture(layout: .flat)
+        defer { fixture.cleanup() }
+        let mock = MockCoordinator(
+            release: fixture.mockReleaseFixture(),
+            releaseArtifact: fixture.artifact
+        )
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        // Forward-install v2 with a clean updater.
+        let restarts = RecoveryRestartCounter()
+        let installService = makeService(
+            updater: fixture.updater(baseURL: baseURL),
+            restarts: restarts
+        )
+        let install = await installService.recoverDownProvider(
+            autoUpdateEnabled: true,
+            now: 100
+        )
+        #expect(install == .restartIssued(updatedTo: "2.0.0", rolledBackTo: nil))
+
+        // Fail v2 three times with an updater that dies mid-ROLLBACK, right
+        // after the live layout was replaced (transaction journaled, staging
+        // already consumed by the rename).
+        let fault = OneShotFault()
+        let faultingUpdater = SelfUpdater(
+            coordinatorBaseURL: "http://127.0.0.1:1",
+            installRoot: fixture.installRoot,
+            verifyCodeSignatures: false,
+            currentVersion: fixture.oldVersion,
+            recoveryFaultInjector: { point in
+                if point == .liveLayoutReplaced, fault.claim() {
+                    throw InjectedFault.midRollback
+                }
+            }
+        )
+        let service = makeService(updater: faultingUpdater, restarts: restarts)
+        _ = await service.recoverDownProvider(autoUpdateEnabled: false, now: 200)
+        _ = await service.recoverDownProvider(autoUpdateEnabled: false, now: 300)
+        guard case .retryBackoff = await service.recoverDownProvider(
+            autoUpdateEnabled: false,
+            now: 400
+        ) else {
+            Issue.record("expected the injected mid-rollback fault to defer")
+            return
+        }
+
+        // The next tick must REPLAY the stranded rollback and restart.
+        // Pre-fix, the flat predecessor record hashed only the three regular
+        // files, but every flat restore re-adds the legacy
+        // `eigeninference-enclave` symlink (which treeHash includes), so the
+        // recovery pass failed `liveMatches` on every tick — a permanently
+        // wedged host.
+        let outcome = await service.recoverDownProvider(
+            autoUpdateEnabled: false,
+            now: 500
+        )
+        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        #expect(try fixture.liveBinaryContents() == "1.0.0-darkbloom")
+        let state = try recoveryStore(fixture).loadState()
+        #expect(state.candidate == nil)
+        #expect(state.current?.version == "1.0.0")
+        #expect(state.quarantine?.version == "2.0.0")
+        // The restored live tree keeps the legacy symlink.
+        let legacy = fixture.installRoot.appendingPathComponent("bin/eigeninference-enclave")
+        #expect(
+            (try? FileManager.default.destinationOfSymbolicLink(atPath: legacy.path))
+                == "darkbloom-enclave"
+        )
+    }
+
     @Test("flat predecessor enclave and full tree are verified")
     func flatPredecessorEnclaveVerification() async throws {
         let context = try await installedCandidate(layout: .flat)

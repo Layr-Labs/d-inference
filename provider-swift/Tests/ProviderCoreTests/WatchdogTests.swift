@@ -251,6 +251,28 @@ struct WatchdogProbeParseTests {
     }
 }
 
+@Suite("Watchdog re-arm action")
+struct WatchdogRearmActionTests {
+    @Test("auto_restart=true always arms")
+    func armWhenEnabled() {
+        #expect(WatchdogAgent.rearmAction(autoRestartEnabled: true, isLoaded: false) == .arm)
+        #expect(WatchdogAgent.rearmAction(autoRestartEnabled: true, isLoaded: true) == .arm)
+    }
+
+    @Test("auto_restart=false disarms a loaded watchdog instead of leaving the stale job")
+    func disarmWhenOptedOutAndLoaded() {
+        // Pre-fix, an opted-out config left a previously armed watchdog
+        // running on its OLD plist config, which could keep relaunching the
+        // provider after crashes despite the opt-out.
+        #expect(WatchdogAgent.rearmAction(autoRestartEnabled: false, isLoaded: true) == .disarm)
+    }
+
+    @Test("auto_restart=false with nothing loaded does nothing")
+    func noopWhenOptedOutAndUnloaded() {
+        #expect(WatchdogAgent.rearmAction(autoRestartEnabled: false, isLoaded: false) == nil)
+    }
+}
+
 @Suite("Provider launch receipt")
 struct ProviderLaunchSnapshotTests {
     @Test("launchctl runs and PID produce crash-safe launch proof")

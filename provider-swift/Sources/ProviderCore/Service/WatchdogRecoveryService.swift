@@ -61,6 +61,10 @@ public struct WatchdogRecoveryService: Sendable {
         case noCandidate
         case stabilizing(since: Double?)
         case inactiveCandidate(attemptStartedAt: Double)
+        /// A candidate whose rollback was refused (blocked) has passed its
+        /// retry backoff without producing a heartbeat; the caller must
+        /// re-enter the recovery path to honor the retry.
+        case blockedCandidateRetry(reason: String)
         case promoted(version: String)
         case lockBusy
         case failed(String)
@@ -420,6 +424,23 @@ public struct WatchdogRecoveryService: Sendable {
                now - attemptStartedAt >= candidateStartupTimeoutSeconds
             {
                 return .inactiveCandidate(attemptStartedAt: attemptStartedAt)
+            }
+            // A refused rollback clears `pendingAttemptID`, so the branch
+            // above can never fire again for that candidate — and a hung-but-
+            // alive process keeps launchd reporting "running", so the down
+            // path never fires either. Without this bridge, the expiry of
+            // `retryNotBefore` is never honored and the host stays wedged on
+            // a hung candidate forever. (A pending fresh install without a
+            // blocked reason is deliberately NOT bridged: the provider's own
+            // update loop restarts into it; the watchdog must never kill a
+            // serving provider to force an update.)
+            if !freshMatchingHeartbeat,
+               providerRunning,
+               candidate.pendingAttemptID == nil,
+               let blockedReason = candidate.rollbackBlockedReason,
+               !state.isCandidateRetryBackedOff(now: now)
+            {
+                return .blockedCandidateRetry(reason: blockedReason)
             }
             return .stabilizing(since: state.candidate?.healthySince)
         } catch {

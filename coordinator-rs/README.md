@@ -49,9 +49,8 @@ not connected to HTTP/request execution yet. Production migration ownership
 remains with the external Go command; integration tests apply the mirror under
 `migrations/` only to isolated temporary PostgreSQL databases.
 
-TODO(Objective 6.3): wire these services into request execution, terminal
-ingestion, Stripe webhooks, and supervised recovery workers only after the
-durability/parity gate is accepted.
+Request execution, terminal ingestion, Stripe webhooks, and supervised
+recovery workers consume these services in the durable lifecycle layer.
 
 Every startup takes the same dedicated PostgreSQL primary advisory lock as the
 Go coordinator, including disabled legacy mode. It then takes the exclusive

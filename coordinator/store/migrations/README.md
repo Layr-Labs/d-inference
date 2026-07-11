@@ -39,6 +39,19 @@ Version 3 creates only the additive `rust_coord.schema_versions` compatibility
 catalog. Its version 1 row declares compatibility with public schema version 3.
 It intentionally does not create Rust-owned inference jobs or workers.
 
+Version 4 creates the additive durable Rust schema and records
+`rust_coord.schema_versions` version 2, compatible only with public version 4.
+It adds jobs, attempts, signed terminal receipts, idempotent financial
+operations, external inbox/outbox work, authoritative platform/referral fee
+allocations, projection checkpoints, and hard-untrust epochs. It does not alter
+legacy Go tables.
+
+`000004_rust_durable_schema.sql` is the one canonical durable-schema artifact.
+`coordinator-rs/migrations/000002_rust_durable_schema.sql` must remain
+byte-for-byte identical so Go's external migrator and Rust's SQLx integration
+fixtures exercise exactly the same DDL. `TestRustDurableMigrationMirrorIsByteIdenticalAndTamperEvident`
+enforces that invariant. Neither serving binary applies migrations at startup.
+
 Run migrations before serving:
 
 ```bash

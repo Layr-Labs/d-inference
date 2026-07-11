@@ -2,6 +2,25 @@ use sqlx::{Connection, PgConnection};
 
 use super::database::TEMP_DATABASE_PREFIX;
 
+const DURABLE_SCHEMA_MIGRATION: &str =
+    include_str!("../../../../../migrations/000002_rust_durable_schema.sql");
+
+pub async fn seed_durable_schema(url: &str) {
+    reset_schema(url, 3, 1, 3, 3).await;
+    let mut connection = PgConnection::connect(url)
+        .await
+        .expect("connect durable schema seed");
+    sqlx::raw_sql(DURABLE_SCHEMA_MIGRATION)
+        .execute(&mut connection)
+        .await
+        .expect("apply mirrored durable schema migration");
+    sqlx::query("INSERT INTO public.schema_migration_versions (version) VALUES (4)")
+        .execute(&mut connection)
+        .await
+        .expect("record public durable schema migration");
+    connection.close().await.expect("close durable schema seed");
+}
+
 pub async fn reset_schema(
     url: &str,
     public_version: i64,

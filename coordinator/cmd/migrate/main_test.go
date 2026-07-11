@@ -108,17 +108,17 @@ func TestRunCommandPostgresSmoke(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = admin.Close(context.Background()) })
 
-	schema := fmt.Sprintf("migrate_cli_test_%d", time.Now().UnixNano())
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+	database := fmt.Sprintf("darkbloom_migrate_cli_test_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{database}.Sanitize()); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_, _ = admin.Exec(
 			context.Background(),
-			"DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE",
+			"DROP DATABASE IF EXISTS "+pgx.Identifier{database}.Sanitize()+" WITH (FORCE)",
 		)
 	})
-	isolatedURL, err := withSearchPath(databaseURL, schema)
+	isolatedURL, err := withDatabase(databaseURL, database)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestRunCommandPostgresSmoke(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(first.String(), "database is now version 3") {
+	if !strings.Contains(first.String(), "database is now version 4") {
 		t.Fatalf("first run output = %q", first.String())
 	}
 
@@ -149,21 +149,19 @@ func TestRunCommandPostgresSmoke(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(second.String(), "already current at version 3") {
+	if !strings.Contains(second.String(), "already current at version 4") {
 		t.Fatalf("second run output = %q", second.String())
 	}
 }
 
-func withSearchPath(databaseURL, schema string) (string, error) {
+func withDatabase(databaseURL, database string) (string, error) {
 	parsed, err := url.Parse(databaseURL)
 	if err == nil && (parsed.Scheme == "postgres" || parsed.Scheme == "postgresql") {
-		query := parsed.Query()
-		query.Set("search_path", schema)
-		parsed.RawQuery = query.Encode()
+		parsed.Path = "/" + database
 		return parsed.String(), nil
 	}
 	if strings.TrimSpace(databaseURL) == "" {
 		return "", fmt.Errorf("empty database URL")
 	}
-	return databaseURL + " search_path=" + schema, nil
+	return "", fmt.Errorf("database URL must use postgres or postgresql scheme")
 }

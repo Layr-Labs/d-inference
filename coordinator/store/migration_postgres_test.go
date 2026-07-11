@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -23,8 +22,8 @@ func TestPostgresMigrationsFreshDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(result.Applied) != "[1 2 3]" {
-		t.Fatalf("applied = %v, want [1 2 3]", result.Applied)
+	if fmt.Sprint(result.Applied) != "[1 2 3 4]" {
+		t.Fatalf("applied = %v, want [1 2 3 4]", result.Applied)
 	}
 	if result.DatabaseVersion != MaximumSupportedSchemaVersion {
 		t.Fatalf("database version = %d", result.DatabaseVersion)
@@ -73,9 +72,9 @@ func TestPostgresMigrationsFreshDatabase(t *testing.T) {
 		LIMIT 1`).Scan(&rustSchemaVersion, &minimumPublic, &maximumPublic); err != nil {
 		t.Fatal(err)
 	}
-	if rustSchemaVersion != 1 || minimumPublic != 3 || maximumPublic != 3 {
+	if rustSchemaVersion != 2 || minimumPublic != 4 || maximumPublic != 4 {
 		t.Fatalf(
-			"Rust schema compatibility = version %d public [%d,%d], want version 1 public [3,3]",
+			"Rust schema compatibility = version %d public [%d,%d], want version 2 public [4,4]",
 			rustSchemaVersion,
 			minimumPublic,
 			maximumPublic,
@@ -86,8 +85,8 @@ func TestPostgresMigrationsFreshDatabase(t *testing.T) {
 	).Scan(&jobsTableExists); err != nil {
 		t.Fatal(err)
 	}
-	if jobsTableExists {
-		t.Fatal("Rust compatibility migration created inference jobs prematurely")
+	if !jobsTableExists {
+		t.Fatal("Rust durable schema migration did not create inference jobs")
 	}
 
 	result, err = ApplyPostgresMigrations(ctx, databaseURL, MigrationOptions{})
@@ -96,6 +95,141 @@ func TestPostgresMigrationsFreshDatabase(t *testing.T) {
 	}
 	if len(result.Applied) != 0 {
 		t.Fatalf("re-entrant apply ran versions %v", result.Applied)
+	}
+}
+
+func TestPostgresMigrationsUpgradePublicV3AndRustV1(t *testing.T) {
+	databaseURL := migrationTestDatabase(t)
+	ctx := context.Background()
+	conn := migrationTestConn(t, databaseURL)
+	defer conn.Close(ctx)
+	catalog, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, item := range catalog[:3] {
+		if err := applyMigration(ctx, conn, item, index > 0); err != nil {
+			t.Fatalf("apply pre-upgrade migration %d: %v", item.Version, err)
+		}
+	}
+	var (
+		publicVersion int64
+		rustVersion   int64
+	)
+	if err := conn.QueryRow(ctx,
+		`SELECT max(version) FROM schema_migration_versions`,
+	).Scan(&publicVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(ctx,
+		`SELECT max(version) FROM rust_coord.schema_versions`,
+	).Scan(&rustVersion); err != nil {
+		t.Fatal(err)
+	}
+	if publicVersion != 3 || rustVersion != 1 {
+		t.Fatalf("pre-upgrade versions = public %d / Rust %d, want 3/1", publicVersion, rustVersion)
+	}
+
+	result, err := ApplyPostgresMigrations(ctx, databaseURL, MigrationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(result.Applied) != "[4]" {
+		t.Fatalf("upgrade applied = %v, want [4]", result.Applied)
+	}
+	if err := validateRustSchemaV2Shape(ctx, conn); err != nil {
+		t.Fatalf("upgraded Rust schema shape: %v", err)
+	}
+}
+
+func TestPostgresRustDurableSchemaRejectsInvalidStateIdentityAndForeignKey(t *testing.T) {
+	databaseURL := migrationTestDatabase(t)
+	ctx := context.Background()
+	if _, err := ApplyPostgresMigrations(ctx, databaseURL, MigrationOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	conn := migrationTestConn(t, databaseURL)
+	defer conn.Close(ctx)
+
+	_, err := conn.Exec(ctx, `
+		INSERT INTO rust_coord.inference_jobs (
+			job_id, request_id, reservation_id, reserve_operation_key,
+			account_id, owner_epoch, state, reserved_total_micro_usd,
+			reserved_withdrawable_micro_usd, reservation_pre_debited
+		) VALUES (
+			'00000000-0000-0000-0000-000000000001',
+			'00000000-0000-0000-0000-000000000002',
+			'00000000-0000-0000-0000-000000000003',
+			'reserve:test', 'account:test', 1, 'unknown_state', 10, 5, true
+		)`)
+	if err == nil || !strings.Contains(err.Error(), "inference_jobs_state_check") {
+		t.Fatalf("invalid job state error = %v", err)
+	}
+
+	_, err = conn.Exec(ctx, `
+		INSERT INTO rust_coord.inference_attempts (
+			attempt_id, job_id, provider_id, provider_process_generation_id,
+			session_epoch, owner_epoch, permit_id, dispatch_nonce,
+			request_digest, kind
+		) VALUES (
+			'00000000-0000-0000-0000-000000000004',
+			'00000000-0000-0000-0000-000000000005',
+			'00000000-0000-0000-0000-000000000006',
+			'00000000-0000-0000-0000-000000000007',
+			1, 1,
+			'00000000-0000-0000-0000-000000000008',
+			decode(repeat('01', 32), 'hex'),
+			decode(repeat('02', 32), 'hex'),
+			'primary'
+		)`)
+	if err == nil || !strings.Contains(err.Error(), "inference_attempts_job_fk") {
+		t.Fatalf("unknown job foreign-key error = %v", err)
+	}
+
+	_, err = conn.Exec(ctx, `
+		INSERT INTO rust_coord.financial_operations (
+			operation_id, operation_key, operation_digest, kind,
+			account_id, amount_total_micro_usd,
+			amount_withdrawable_micro_usd, owner_epoch
+		) VALUES (
+			'00000000-0000-0000-0000-000000000009',
+			'operation:test',
+			decode(repeat('03', 31), 'hex'),
+			'deposit',
+			'account:test', -10, -5, 1
+		)`)
+	if err == nil || !strings.Contains(err.Error(), "operation_digest") {
+		t.Fatalf("short operation digest error = %v", err)
+	}
+}
+
+func TestPostgresServingRejectsBroadenedRustStatusConstraint(t *testing.T) {
+	databaseURL := migrationTestDatabase(t)
+	ctx := context.Background()
+	if _, err := ApplyPostgresMigrations(ctx, databaseURL, MigrationOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	conn := migrationTestConn(t, databaseURL)
+	if _, err := conn.Exec(ctx, `
+		ALTER TABLE rust_coord.external_events
+			DROP CONSTRAINT external_events_status_check;
+		ALTER TABLE rust_coord.external_events
+			ADD CONSTRAINT external_events_status_check
+			CHECK (status IN (
+				'pending', 'processing', 'applied', 'rejected',
+				'ignored', 'failed', 'future_status'
+			))`); err != nil {
+		conn.Close(ctx)
+		t.Fatal(err)
+	}
+	conn.Close(ctx)
+
+	if backend, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL}); err == nil {
+		backend.Close()
+		t.Fatal("NewPostgres accepted a broadened Rust status constraint")
+	} else if !strings.Contains(err.Error(), "is not canonical") &&
+		!strings.Contains(err.Error(), "allows") {
+		t.Fatalf("broadened status constraint error = %v", err)
 	}
 }
 
@@ -142,8 +276,8 @@ func TestPostgresMigrationsSuccessfullyAdoptLegacyDatabaseExplicitly(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(result.Applied) != "[1 2 3]" {
-		t.Fatalf("legacy adoption applied = %v, want [1 2 3]", result.Applied)
+	if fmt.Sprint(result.Applied) != "[1 2 3 4]" {
+		t.Fatalf("legacy adoption applied = %v, want [1 2 3 4]", result.Applied)
 	}
 	var balance, withdrawable int64
 	if err := conn.QueryRow(ctx, `
@@ -262,6 +396,7 @@ func TestPostgresMigrationRecoversInvalidConcurrentIndex(t *testing.T) {
 		    ('a', 'p2', 'k2', 'duplicate-job', 'm', 1)`); err != nil {
 		t.Fatal(err)
 	}
+	resetRustSchemaToV1(t, conn)
 	if _, err := conn.Exec(ctx, `
 		CREATE UNIQUE INDEX CONCURRENTLY idx_provider_earnings_job
 		ON provider_earnings(job_id) WHERE job_id <> ''`); err == nil {
@@ -298,8 +433,8 @@ func TestPostgresMigrationRecoversInvalidConcurrentIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(result.Applied) != "[2 3]" {
-		t.Fatalf("recovery applied = %v, want [2 3]", result.Applied)
+	if fmt.Sprint(result.Applied) != "[2 3 4]" {
+		t.Fatalf("recovery applied = %v, want [2 3 4]", result.Applied)
 	}
 	if valid, err := concurrentIndexDefinitionMatches(ctx, conn, "idx_provider_earnings_job"); err != nil {
 		t.Fatal(err)
@@ -364,6 +499,7 @@ func TestPostgresMigrationRepairsValidWrongConcurrentIndex(t *testing.T) {
 				DROP INDEX idx_provider_earnings_job`); err != nil {
 				t.Fatal(err)
 			}
+			resetRustSchemaToV1(t, conn)
 			if _, err := conn.Exec(ctx, test.sql); err != nil {
 				t.Fatal(err)
 			}
@@ -381,8 +517,8 @@ func TestPostgresMigrationRepairsValidWrongConcurrentIndex(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if fmt.Sprint(result.Applied) != "[2 3]" {
-				t.Fatalf("repair applied = %v, want [2 3]", result.Applied)
+			if fmt.Sprint(result.Applied) != "[2 3 4]" {
+				t.Fatalf("repair applied = %v, want [2 3 4]", result.Applied)
 			}
 			if matches, err := concurrentIndexDefinitionMatches(
 				ctx,
@@ -505,6 +641,23 @@ func assertMigrationVersionCount(t *testing.T, conn *pgx.Conn, version int64, wa
 	}
 }
 
+func resetRustSchemaToV1(t *testing.T, conn *pgx.Conn) {
+	t.Helper()
+	if _, err := conn.Exec(context.Background(), `
+		DROP TABLE IF EXISTS rust_coord.fee_projection_checkpoints CASCADE;
+		DROP TABLE IF EXISTS rust_coord.fee_allocations CASCADE;
+		DROP TABLE IF EXISTS rust_coord.outbox CASCADE;
+		DROP TABLE IF EXISTS rust_coord.external_events CASCADE;
+		DROP TABLE IF EXISTS rust_coord.financial_operations CASCADE;
+		DROP TABLE IF EXISTS rust_coord.provider_terminals CASCADE;
+		DROP TABLE IF EXISTS rust_coord.inference_attempts CASCADE;
+		DROP TABLE IF EXISTS rust_coord.inference_jobs CASCADE;
+		DROP TABLE IF EXISTS rust_coord.provider_hard_untrust_epochs CASCADE;
+		DELETE FROM rust_coord.schema_versions WHERE version = 2`); err != nil {
+		t.Fatalf("reset Rust schema to compatibility version 1: %v", err)
+	}
+}
+
 func TestPostgresCriticalShapeValidatedBeforeRecordingMigration(t *testing.T) {
 	databaseURL := migrationTestDatabase(t)
 	ctx := context.Background()
@@ -562,7 +715,7 @@ func TestPostgresSchemaChecksumAndVersionCompatibility(t *testing.T) {
 	if _, err := conn.Exec(ctx, `
 		UPDATE schema_migration_versions
 		SET checksum = repeat('0', 64)
-		WHERE version = 1`); err != nil {
+		WHERE version = 4`); err != nil {
 		t.Fatal(err)
 	}
 	if backend, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL}); err == nil {
@@ -577,8 +730,8 @@ func TestPostgresSchemaChecksumAndVersionCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := conn.Exec(ctx,
-		`UPDATE schema_migration_versions SET checksum = $1 WHERE version = 1`,
-		catalog[0].Checksum,
+		`UPDATE schema_migration_versions SET checksum = $1 WHERE version = 4`,
+		catalog[3].Checksum,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -676,8 +829,7 @@ func prepareUnversionedLegacySchema(t *testing.T, databaseURL string) *pgx.Conn 
 func TestMigrationRejectsPreexistingRustNamespace(t *testing.T) {
 	databaseURL := migrationTestDatabase(t)
 	ctx := context.Background()
-	adminURL := os.Getenv("DATABASE_URL")
-	admin := migrationTestConn(t, adminURL)
+	admin := migrationTestConn(t, databaseURL)
 	if _, err := admin.Exec(ctx, `
 		DROP SCHEMA IF EXISTS rust_coord CASCADE;
 		CREATE SCHEMA rust_coord;
@@ -686,16 +838,6 @@ func TestMigrationRejectsPreexistingRustNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 	admin.Close(ctx)
-	t.Cleanup(func() {
-		cleanup := migrationTestConn(t, adminURL)
-		_, _ = cleanup.Exec(context.Background(), `DROP SCHEMA IF EXISTS rust_coord CASCADE`)
-		cleanup.Close(context.Background())
-		if _, err := ApplyPostgresMigrations(
-			context.Background(), databaseURL, MigrationOptions{},
-		); err != nil {
-			t.Errorf("restore Rust compatibility schema: %v", err)
-		}
-	})
 
 	_, err := ApplyPostgresMigrations(ctx, databaseURL, MigrationOptions{})
 	if err == nil || !strings.Contains(err.Error(), "refusing to adopt pre-existing rust_coord namespace") {
@@ -705,42 +847,41 @@ func TestMigrationRejectsPreexistingRustNamespace(t *testing.T) {
 
 func migrationTestDatabase(t *testing.T) string {
 	t.Helper()
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
+	baseURL := os.Getenv("DATABASE_URL")
+	if baseURL == "" {
 		t.Skip("DATABASE_URL not set — skipping PostgreSQL migration test")
 	}
-	schema := fmt.Sprintf(
-		"migration_test_%d_%d",
+	database := fmt.Sprintf(
+		"darkbloom_go_migration_test_%d_%d",
 		time.Now().UnixNano(),
 		migrationSchemaSequence.Add(1),
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	admin := migrationTestConn(t, databaseURL)
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+	admin := migrationTestConn(t, baseURL)
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{database}.Sanitize()); err != nil {
 		admin.Close(ctx)
-		t.Fatalf("create migration test schema: %v", err)
+		t.Fatalf("create migration test database: %v", err)
 	}
 	admin.Close(ctx)
-
-	isolatedURL, err := databaseURLWithSearchPath(databaseURL, schema)
+	isolatedURL, err := postgresDatabaseURL(baseURL, database)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
-		conn, err := pgx.Connect(cleanupCtx, databaseURL)
+		conn, err := pgx.Connect(cleanupCtx, baseURL)
 		if err != nil {
-			t.Errorf("connect to drop migration test schema: %v", err)
+			t.Errorf("connect to drop migration test database: %v", err)
 			return
 		}
 		defer conn.Close(cleanupCtx)
 		if _, err := conn.Exec(
 			cleanupCtx,
-			"DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE",
+			"DROP DATABASE IF EXISTS "+pgx.Identifier{database}.Sanitize()+" WITH (FORCE)",
 		); err != nil {
-			t.Errorf("drop migration test schema: %v", err)
+			t.Errorf("drop migration test database: %v", err)
 		}
 	})
 	return isolatedURL
@@ -755,18 +896,4 @@ func migrationTestConn(t *testing.T, databaseURL string) *pgx.Conn {
 		t.Fatalf("connect migration test database: %v", err)
 	}
 	return conn
-}
-
-func databaseURLWithSearchPath(databaseURL, schema string) (string, error) {
-	parsed, err := url.Parse(databaseURL)
-	if err == nil && (parsed.Scheme == "postgres" || parsed.Scheme == "postgresql") {
-		query := parsed.Query()
-		query.Set("search_path", schema)
-		parsed.RawQuery = query.Encode()
-		return parsed.String(), nil
-	}
-	if strings.TrimSpace(databaseURL) == "" {
-		return "", fmt.Errorf("empty database URL")
-	}
-	return databaseURL + " search_path=" + schema, nil
 }

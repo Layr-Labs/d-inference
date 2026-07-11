@@ -35,8 +35,12 @@ EIGENINFERENCE_RUST_SHUTDOWN_GRACE_SECONDS   default 30
 
 Application startup never applies DDL. Checked SQL metadata is committed under
 `.sqlx/`; the Go `coordinator-migrate` command must first bring the public
-catalog to version 3 and install `rust_coord.schema_versions` version 1.
+catalog to version 4 and install `rust_coord.schema_versions` version 2.
 `Database::connect` only checks that compatible pair.
+
+The durable schema is additive and remains unused by application database
+services in this objective. Its SQLx test mirror lives under `migrations/`;
+production migration ownership remains with the external Go command.
 
 Every startup takes the same dedicated PostgreSQL primary advisory lock as the
 Go coordinator, including disabled legacy mode. It then takes the exclusive

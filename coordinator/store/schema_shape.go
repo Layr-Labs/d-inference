@@ -244,6 +244,11 @@ func validateCriticalSchemaShape(
 			return errors.New("critical schema shape mismatch: idx_provider_earnings_job is not canonical")
 		}
 	}
+	if version >= 4 {
+		if err := validateRustSchemaV2Shape(ctx, queryer); err != nil {
+			return fmt.Errorf("critical Rust schema shape mismatch: %w", err)
+		}
+	}
 	return nil
 }
 

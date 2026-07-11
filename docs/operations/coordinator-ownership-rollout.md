@@ -9,8 +9,8 @@ container misidentify active old-process reservations as orphaned.
 
 - The patched Go image is deployed with
   `EIGENINFERENCE_COORDINATOR_OWNERSHIP_ENABLED` unset/false.
-- `coordinator-migrate` has applied public schema version 3, including
-  `rust_coord.schema_versions` version 1 compatibility metadata.
+- `coordinator-migrate` has applied public schema version 4, including
+  `rust_coord.schema_versions` version 2 and the additive durable Rust tables.
 - The detailed coordinator drain is at zero.
 - No Rust coordinator or recovery process is connected to the database.
 

@@ -595,15 +595,16 @@ func TestPostgresWalletPriceCleanupRunsOnce(t *testing.T) {
 func reapplyLegacyBaselineForTest(t *testing.T, s *PostgresStore) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := s.pool.Exec(ctx, "DELETE FROM schema_migration_versions"); err != nil {
-		t.Fatalf("clear versioned migration metadata: %v", err)
-	}
-	result, err := ApplyPostgresMigrations(ctx, os.Getenv("DATABASE_URL"), MigrationOptions{})
+	catalog, err := loadMigrations()
 	if err != nil {
-		t.Fatalf("reapply legacy baseline: %v", err)
+		t.Fatalf("load legacy baseline migration: %v", err)
 	}
-	if len(result.Applied) != int(MaximumSupportedSchemaVersion) {
-		t.Fatalf("reapplied versions = %v, want full catalog", result.Applied)
+	statements, err := splitSQLStatements(catalog[0].SQL)
+	if err != nil {
+		t.Fatalf("split legacy baseline migration: %v", err)
+	}
+	if err := executeMigrationStatements(ctx, s.pool, catalog[0], statements); err != nil {
+		t.Fatalf("reapply legacy baseline statements: %v", err)
 	}
 }
 

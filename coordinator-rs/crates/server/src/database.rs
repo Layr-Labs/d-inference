@@ -265,8 +265,8 @@ mod tests {
             mutation_fence: Arc::new(PoolMutationFence::default()),
             operation_timeout: Duration::from_millis(25),
             compatibility: SchemaCompatibility {
-                public_version: 3,
-                rust_version: 1,
+                public_version: 4,
+                rust_version: 2,
             },
         };
 

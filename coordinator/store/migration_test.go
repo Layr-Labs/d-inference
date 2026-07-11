@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -61,6 +62,46 @@ func TestMigrationCatalogIsOrderedAndVersionBounded(t *testing.T) {
 	}
 	if strings.Contains(rustCompatibilityMigration.SQL, "inference_jobs") {
 		t.Fatal("Rust compatibility migration must not create durable jobs yet")
+	}
+	durableMigration := migrations[3]
+	if !durableMigration.Transactional {
+		t.Fatal("Rust durable schema migration must be transactional")
+	}
+	for _, required := range []string{
+		"CREATE TABLE IF NOT EXISTS rust_coord.inference_jobs",
+		"CREATE TABLE IF NOT EXISTS rust_coord.inference_attempts",
+		"CREATE TABLE IF NOT EXISTS rust_coord.provider_terminals",
+		"CREATE TABLE IF NOT EXISTS rust_coord.financial_operations",
+		"CREATE TABLE IF NOT EXISTS rust_coord.external_events",
+		"CREATE TABLE IF NOT EXISTS rust_coord.outbox",
+		"CREATE TABLE IF NOT EXISTS rust_coord.fee_allocations",
+		"CREATE TABLE IF NOT EXISTS rust_coord.fee_projection_checkpoints",
+		"CREATE TABLE IF NOT EXISTS rust_coord.provider_hard_untrust_epochs",
+		"VALUES (2, 4, 4)",
+	} {
+		if !strings.Contains(durableMigration.SQL, required) {
+			t.Fatalf("Rust durable schema migration is missing %q", required)
+		}
+	}
+}
+
+func TestRustDurableMigrationMirrorIsByteIdenticalAndTamperEvident(t *testing.T) {
+	canonical, err := os.ReadFile("migrations/000004_rust_durable_schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mirror, err := os.ReadFile("../../coordinator-rs/migrations/000002_rust_durable_schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(canonical, mirror) {
+		t.Fatal("Rust durable schema mirror differs from canonical Go migration")
+	}
+
+	tampered := bytes.Clone(mirror)
+	tampered[len(tampered)/2] ^= 1
+	if bytes.Equal(canonical, tampered) {
+		t.Fatal("single-byte mirror tamper was not detected")
 	}
 }
 

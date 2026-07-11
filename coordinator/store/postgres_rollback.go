@@ -14,19 +14,35 @@ func (s *PostgresStore) CheckRollbackSafe(ctx context.Context) error {
 	}{
 		{
 			table:     "rust_coord.inference_jobs",
-			predicate: `COALESCE(status::text, '') NOT IN ('completed','failed','cancelled','released')`,
+			predicate: `state NOT IN ('settled','released','settled_reviewed','released_reviewed') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
+		},
+		{
+			table:     "rust_coord.inference_attempts",
+			predicate: `state NOT IN ('aborted','acknowledged') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
+		},
+		{
+			table:     "rust_coord.provider_terminals",
+			predicate: `status NOT IN ('settled','released','settled_reviewed','released_reviewed','duplicate','late','rejected') OR conflict OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
 		},
 		{
 			table:     "rust_coord.financial_operations",
-			predicate: `COALESCE(status::text, '') NOT IN ('applied','released','failed')`,
+			predicate: `status NOT IN ('applied','released','failed') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
 		},
 		{
 			table:     "rust_coord.external_events",
-			predicate: `COALESCE(status::text, '') NOT IN ('applied','rejected','ignored','failed')`,
+			predicate: `status NOT IN ('applied','rejected','ignored','failed') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
 		},
 		{
 			table:     "rust_coord.outbox",
-			predicate: `COALESCE(status::text, '') NOT IN ('delivered','failed','cancelled')`,
+			predicate: `status NOT IN ('delivered','failed','cancelled') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
+		},
+		{
+			table:     "rust_coord.fee_allocations",
+			predicate: `status NOT IN ('projected','cancelled') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
+		},
+		{
+			table:     "rust_coord.fee_projection_checkpoints",
+			predicate: `status <> 'idle' OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
 		},
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
@@ -60,64 +76,76 @@ func (s *PostgresStore) CheckRollbackSafe(ctx context.Context) error {
 			"store: unsafe Go rollback: rust_coord namespace has no schema_versions catalog",
 		)
 	}
-	var rustMinimum, rustMaximum, rustCount int64
+	var (
+		rustMinimum int64
+		rustMaximum int64
+		rustCount   int64
+	)
 	if err := tx.QueryRow(ctx,
 		`SELECT COALESCE(MIN(version), 0), COALESCE(MAX(version), 0), COUNT(*)
 		 FROM rust_coord.schema_versions`,
 	).Scan(&rustMinimum, &rustMaximum, &rustCount); err != nil {
 		return fmt.Errorf("store: inspect Rust schema history: %w", err)
 	}
-	if rustMinimum != 1 || rustMaximum != 1 || rustCount != 1 {
+	if rustMinimum != 1 || rustCount != rustMaximum ||
+		(rustMaximum != 1 && rustMaximum != 2) {
 		return fmt.Errorf(
 			"store: unsafe Go rollback: unsupported Rust schema history min=%d max=%d count=%d",
 			rustMinimum, rustMaximum, rustCount,
 		)
 	}
-	rows, err := tx.Query(ctx, `
-		SELECT relation.relname
-		FROM pg_class relation
-		JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
-		WHERE namespace.nspname = 'rust_coord'
-		  AND relation.relkind IN ('r', 'p')
-		ORDER BY relation.relname`)
-	if err != nil {
-		return fmt.Errorf("store: inspect Rust rollback relations: %w", err)
-	}
-	defer rows.Close()
-	knownRelations := map[string]bool{
-		"schema_versions":      true,
-		"inference_jobs":       true,
-		"financial_operations": true,
-		"external_events":      true,
-		"outbox":               true,
-	}
-	for rows.Next() {
-		var relation string
-		if err := rows.Scan(&relation); err != nil {
-			return fmt.Errorf("store: inspect Rust rollback relation: %w", err)
+	if rustMaximum == 1 {
+		var minimumPublic, maximumPublic int64
+		if err := tx.QueryRow(ctx, `
+			SELECT minimum_public_schema_version, maximum_public_schema_version
+			FROM rust_coord.schema_versions
+			WHERE version = 1`,
+		).Scan(&minimumPublic, &maximumPublic); err != nil {
+			return fmt.Errorf("store: inspect Rust schema v1 compatibility: %w", err)
 		}
-		if !knownRelations[relation] {
+		if minimumPublic != 3 || maximumPublic != 3 {
 			return fmt.Errorf(
-				"store: unsafe Go rollback: unknown Rust relation rust_coord.%s",
-				relation,
+				"store: unsafe Go rollback: unsupported Rust schema v1 compatibility [%d,%d]",
+				minimumPublic,
+				maximumPublic,
 			)
 		}
+		rows, err := tx.Query(ctx, `
+			SELECT relation.relname
+			FROM pg_class relation
+			JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+			WHERE namespace.nspname = 'rust_coord'
+			  AND relation.relkind IN ('r', 'p')
+			ORDER BY relation.relname`)
+		if err != nil {
+			return fmt.Errorf("store: inspect Rust rollback relations: %w", err)
+		}
+		var relations []string
+		for rows.Next() {
+			var relation string
+			if err := rows.Scan(&relation); err != nil {
+				rows.Close()
+				return fmt.Errorf("store: inspect Rust rollback relation: %w", err)
+			}
+			relations = append(relations, relation)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("store: inspect Rust rollback relations: %w", err)
+		}
+		rows.Close()
+		if len(relations) != 1 || relations[0] != "schema_versions" {
+			return fmt.Errorf(
+				"store: unsafe Go rollback: Rust schema v1 has unknown relations %v",
+				relations,
+			)
+		}
+		return tx.Commit(ctx)
 	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("store: inspect Rust rollback relations: %w", err)
+	if err := validateRustSchemaV2Shape(ctx, tx); err != nil {
+		return fmt.Errorf("store: unsafe Go rollback: unknown Rust schema v2 shape: %w", err)
 	}
-	rows.Close()
 	for _, check := range checks {
-		var exists bool
-		if err := tx.QueryRow(ctx,
-			`SELECT to_regclass($1) IS NOT NULL`,
-			check.table,
-		).Scan(&exists); err != nil {
-			return fmt.Errorf("store: inspect rollback table %s: %w", check.table, err)
-		}
-		if !exists {
-			continue
-		}
 		var unresolved int64
 		query := "SELECT count(*) FROM " + check.table + " WHERE " + check.predicate
 		if err := tx.QueryRow(ctx, query).Scan(&unresolved); err != nil {

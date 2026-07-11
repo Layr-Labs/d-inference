@@ -36,6 +36,11 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 
 	// Clean tables for test isolation.
 	for _, table := range []string{
+		"rust_coord.inference_jobs",
+		"rust_coord.external_events",
+		"rust_coord.outbox",
+		"rust_coord.fee_projection_checkpoints",
+		"rust_coord.provider_hard_untrust_epochs",
 		"usage",
 		"payments",
 		"api_keys",

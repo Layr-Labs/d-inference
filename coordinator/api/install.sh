@@ -44,11 +44,12 @@ verify_file_hash() {
         || fail_install "$label hash mismatch (expected $expected, got $actual)."
 }
 
+# Stock-macOS binary capability probe. `strings` is an Xcode CLT shim on a
+# pristine Mac (it prompts/fails without developer tools), so scan the file
+# directly with BSD grep's binary-as-text mode — grep ships in base macOS.
 binary_contains_paged_code() {
     local binary=$1
-    local count
-    count=$(strings "$binary" | grep -c 'engine_v2_kv_backend' || true)
-    [ "$count" -gt 0 ]
+    LC_ALL=C grep -a -q -F 'engine_v2_kv_backend' "$binary"
 }
 
 verify_staged_app() {

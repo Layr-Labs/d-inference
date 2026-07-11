@@ -34,7 +34,10 @@ enum PagedKernelPreflight {
         let shapes = PagedAttentionKernel.smokeShapes(layerKinds: layerKinds)
         if let childRunner {
             try childRunner(shapes)
-        } else if let executableURL,
+        } else if
+            // Resolve bin/ (or operator-added) symlinks before deriving the
+            // packaged context — same rule as PagedAttentionResources.
+            let executableURL = executableURL?.resolvingSymlinksInPath(),
             executableURL.lastPathComponent == "darkbloom",
             FileManager.default.isExecutableFile(atPath: executableURL.path)
         {

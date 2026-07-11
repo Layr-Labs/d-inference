@@ -209,9 +209,10 @@ jobs:
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/org.swift.swiftpm
             provider-swift/.build
-          key: spm-v1-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+            libs/mlx-swift-lm/.build
+          key: spm-v2-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
           restore-keys: |
-            spm-v1-${{ runner.os }}-
+            spm-v2-${{ runner.os }}-
 
       # ----------------------------------------------------------------------
       # Build mlx.metallib (compiled Metal GPU kernels) FROM SOURCE.
@@ -334,7 +335,8 @@ jobs:
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/org.swift.swiftpm
             provider-swift/.build
-          key: spm-v1-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+            libs/mlx-swift-lm/.build
+          key: spm-v2-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
 
       # Unit tests are run by CI (ci.yml + integration.yml) on push to
       # master. Skipped here to avoid flaky live MLX inference tests

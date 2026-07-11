@@ -44,6 +44,37 @@ C
 clang -Os "$ROOT/paged.c" -o "$ROOT/paged"
 clang -Os "$ROOT/legacy.c" -o "$ROOT/legacy"
 
+# A pristine Mac has no Xcode Command Line Tools: /usr/bin/strings, otool,
+# nm, etc. are shims that prompt/fail. Prove the installers never need them
+# two ways: (1) statically — no CLT tool is referenced outside comments in
+# either installer; (2) behaviorally — every install below runs with failing
+# CLT shims first on PATH, so any hidden invocation aborts the install.
+CLT_SHIMS="$ROOT/clt-shims"
+mkdir -p "$CLT_SHIMS"
+for tool in strings otool nm xcrun swift swiftc clang gcc ld libtool lipo; do
+    cat > "$CLT_SHIMS/$tool" <<SHIM
+#!/bin/bash
+echo "xcode-select: note: no developer tools were found ($tool shim)" >&2
+exit 72
+SHIM
+    chmod +x "$CLT_SHIMS/$tool"
+done
+
+assert_no_clt_tools() {
+    local script=$1
+    local offending
+    offending=$(sed 's/#.*$//' "$script" \
+        | grep -nEw 'strings|otool|nm|xcrun|swiftc|libtool|lipo' \
+        || true)
+    if [ -n "$offending" ]; then
+        echo "CLT-dependent tool referenced in $script:" >&2
+        echo "$offending" >&2
+        exit 1
+    fi
+}
+assert_no_clt_tools "$REPO_ROOT/scripts/install.sh"
+assert_no_clt_tools "$REPO_ROOT/coordinator/api/install.sh"
+
 make_artifact() {
     local output=$1
     local capability=$2
@@ -108,7 +139,7 @@ run_install() {
     local archive=$1
     local install_dir=$2
     artifact_hashes "$archive"
-    bash "$INSTALLER" --install-bundle-test \
+    PATH="$CLT_SHIMS:$PATH" bash "$INSTALLER" --install-bundle-test \
         "$archive" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH"
 }
 

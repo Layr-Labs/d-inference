@@ -48,10 +48,14 @@ private final class WiringScriptedEngine: CBv2Engine, @unchecked Sendable {
     private var _manualContinuation: AsyncStream<CBv2Event>.Continuation?
     private var _kvBytesCapacity: Int
     private var _capacityUpdates: [Int] = []
+    /// Construction-fixed physical backend capacity (paged contract: the
+    /// preallocated pool never resizes; 0 = unknown/contiguous stub).
+    private let kvBytesBackendCapacity: Int
 
-    init(script: Script, kvBytesCapacity: Int = 0) {
+    init(script: Script, kvBytesCapacity: Int = 0, kvBytesBackendCapacity: Int = 0) {
         self.script = script
         self._kvBytesCapacity = kvBytesCapacity
+        self.kvBytesBackendCapacity = kvBytesBackendCapacity
     }
 
     var submitted: [CBv2Request] { lock.withLock { _submitted } }
@@ -92,7 +96,8 @@ private final class WiringScriptedEngine: CBv2Engine, @unchecked Sendable {
             CBv2CapacitySnapshot(
                 activeRequests: max(0, _submitted.count - _cancelled.count),
                 waitingRequests: 0,
-                kvBytesInUse: 0, kvBytesCapacity: _kvBytesCapacity, activeTokens: 0)
+                kvBytesInUse: 0, kvBytesCapacity: _kvBytesCapacity,
+                kvBytesBackendCapacity: kvBytesBackendCapacity, activeTokens: 0)
         }
     }
 
@@ -666,6 +671,121 @@ struct EngineV2ReslicingWiringTests {
         #expect(grownA == Int(fullBudget))
         #expect(grownA > shrunkA)
         #expect(engineA.capacityUpdates.last == grownA)
+    }
+
+    @Test("mixed paged+contiguous: re-slice moves ledgers only; the paged pool never resizes and bounds every regrow")
+    func mixedPagedContiguousResliceIsLedgerOnly() async throws {
+        // Slot A is PAGED with a demand-capped physical pool SMALLER than
+        // its logical grant (the production shape after the v0.7.6 fix:
+        // physical capacity is designed from demand, never the full
+        // logical grant). Slot B is contiguous. The ProviderLoop-driven
+        // load/unload re-slice must:
+        //   * shrink/grow ONLY admission ledgers,
+        //   * keep A's physical pool byte-for-byte constant, and
+        //   * clamp A's regrow to pool truth — a ledger-only re-slice can
+        //     never "restore" physical bytes the pool does not hold.
+        let loop = try makeWiringLoop()
+        let runtime = EngineV2Runtime()
+        let recorder = GrantRecorder()
+        let enginesBox = EngineBox()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        await loop.setEngineV2SlotHooksForTesting(
+            ProviderLoop.EngineV2SlotHooks(
+                eosTokenIds: [2],
+                physicalMemoryBytes: wiringPhysicalBytes,
+                kvBackendKindByModel: ["gemma-4-26b-qat-4bit": .paged],
+                makeEngine: { modelId, grant in
+                    recorder.record(grant)
+                    let engine = WiringScriptedEngine(
+                        script: .manual,
+                        kvBytesCapacity: grant,
+                        // Paged slot: pool capped below the logical grant.
+                        kvBytesBackendCapacity: modelId == "gemma-4-26b-qat-4bit"
+                            ? grant * 3 / 5 : 0)
+                    enginesBox.append(engine)
+                    return engine
+                }))
+
+        let sizingA = makeSizing(weightsGiB: 15, kvRate: 20_480, maxContext: 262_144)
+        let bridgeA = try await loop.resliceAndBuildEngineV2SlotForTesting(
+            modelId: "gemma-4-26b-qat-4bit",
+            modelType: "gemma4",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            sizing: sizingA)
+        await loop.installModelSlotForTesting(
+            modelId: "gemma-4-26b-qat-4bit",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            engineV2: bridgeA,
+            sizing: sizingA,
+            modelType: "gemma4")
+        let engineA = enginesBox.all[0]
+        let grantA0 = recorder.granted[0]
+        let poolA = UInt64(grantA0 * 3 / 5)
+        #expect(await bridgeA.kvBackendKind == .paged)
+        #expect(await bridgeA.kvBackendPoolBytes() == poolA)
+        // Fleet accounting reads pool truth for the paged slot, not the
+        // (larger) logical ledger.
+        #expect(await bridgeA.slotKVBytesClaim() == Int(poolA))
+
+        // Load contiguous B: A's admission ledger shrinks to its fair
+        // share; the physical pool is untouched.
+        let sizingB = makeSizing(weightsGiB: 12, kvRate: 24_576, maxContext: 131_072)
+        let bridgeB = try await loop.resliceAndBuildEngineV2SlotForTesting(
+            modelId: "gpt-oss-20b",
+            modelType: "gpt_oss",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            sizing: sizingB)
+        await loop.installModelSlotForTesting(
+            modelId: "gpt-oss-20b",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            engineV2: bridgeB,
+            sizing: sizingB,
+            modelType: "gpt_oss")
+        #expect(await bridgeB.kvBackendKind == .contiguous)
+
+        let fleetBudget2 = UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: wiringPhysicalBytes,
+            residentWeightBytes: UInt64(sizingA.weightsBytes + sizingB.weightsBytes),
+            configReserveBytes: wiringReserveBytes)
+        let targets = EngineV2KVSizing.resliceGrants(
+            existing: [
+                .init(
+                    modelId: "gemma-4-26b-qat-4bit",
+                    fp16KVBytesPerToken: sizingA.fp16KVBytesPerToken,
+                    maxContextLength: sizingA.maxContextLength)
+            ],
+            newcomer: .init(
+                modelId: "gpt-oss-20b",
+                fp16KVBytesPerToken: sizingB.fp16KVBytesPerToken,
+                maxContextLength: sizingB.maxContextLength),
+            fleetKVBudgetBytes: fleetBudget2)
+        let targetA = try #require(targets["gemma-4-26b-qat-4bit"])
+        // The two-model fair share sits below the pool here, so the shrink
+        // reaches the engine unclamped — and the pool still never moved.
+        #expect(UInt64(targetA) < poolA)
+        #expect(engineA.capacityUpdates.last == targetA)
+        #expect(await bridgeA.engineKVBytesCapacity() == targetA)
+        #expect(await bridgeA.kvBackendPoolBytes() == poolA)
+        #expect(await bridgeB.engineKVBytesCapacity() == targets["gpt-oss-20b"])
+
+        // Unload B: the regrow's single-survivor target is the FULL fleet
+        // budget (> pool), but the paged bridge clamps the restore to pool
+        // truth — admission can never advertise physical bytes the slabs
+        // do not hold, and the pool itself is byte-for-byte unchanged.
+        await loop.unloadModel("gpt-oss-20b")
+        let regrowTarget = UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: wiringPhysicalBytes,
+            residentWeightBytes: UInt64(sizingA.weightsBytes),
+            configReserveBytes: wiringReserveBytes)
+        #expect(regrowTarget > poolA)
+        #expect(engineA.capacityUpdates.last == Int(poolA))
+        #expect(await bridgeA.engineKVBytesCapacity() == Int(poolA))
+        #expect(await bridgeA.kvBackendPoolBytes() == poolA)
+        #expect(await bridgeA.slotKVBytesClaim() == Int(poolA))
     }
 
     @Test("restore-on-throw: B's construction failure restores A's grant EXACTLY")

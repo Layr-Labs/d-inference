@@ -5,6 +5,7 @@
 //! come from immutable Pilot/Fleet snapshots.
 
 mod admin;
+mod admission;
 mod auth;
 mod error;
 mod install;
@@ -13,6 +14,7 @@ mod public;
 mod releases;
 mod state_export;
 mod telemetry;
+mod telemetry_durable;
 mod trust;
 
 #[cfg(test)]
@@ -21,10 +23,7 @@ mod tests;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex, atomic::AtomicU64},
     time::Duration,
 };
 
@@ -36,10 +35,18 @@ use sqlx::PgPool;
 use thiserror::Error;
 use url::Url;
 
-use crate::{database::Database, pilot::PilotHandle};
+use crate::{database::Database, pilot::PilotHandle, provider_control::ProviderControlPlane};
 
-pub use auth::{AuthConfigError, ExactBearer, MdmAuth, OperationsAuth, PublicAuth, PublishingAuth};
+pub use admission::{AdmissionGate, AdmissionGuard, AdmissionKind, AdmissionRejected};
+pub use auth::{
+    AuthConfigError, ExactBearer, MdmAuth, OperationsAuth, OperationsPrincipal, PublicAuth,
+    PublishingAuth,
+};
 pub use state_export::StateExportConfig;
+pub use telemetry_durable::{
+    DatadogTelemetrySettings, TelemetryDeliverySnapshot, TelemetryService, TelemetryServiceError,
+    TelemetrySettings,
+};
 pub use trust::EnrollmentConfig;
 
 use self::{
@@ -149,8 +156,11 @@ pub struct OperationsStateBuilder {
     auth: OperationsAuth,
     settings: OperationsSettings,
     pilot: Option<PilotHandle>,
+    provider_control: Option<ProviderControlPlane>,
+    admission: AdmissionGate,
     operation_timeout: Duration,
     telemetry_capacity: usize,
+    telemetry_settings: TelemetrySettings,
 }
 
 impl OperationsStateBuilder {
@@ -161,14 +171,29 @@ impl OperationsStateBuilder {
             auth,
             settings,
             pilot: None,
+            provider_control: None,
+            admission: AdmissionGate::default(),
             operation_timeout: DEFAULT_OPERATION_TIMEOUT,
             telemetry_capacity: DEFAULT_TELEMETRY_CAPACITY,
+            telemetry_settings: TelemetrySettings::default(),
         }
     }
 
     #[must_use]
     pub fn with_pilot(mut self, pilot: PilotHandle) -> Self {
         self.pilot = Some(pilot);
+        self
+    }
+
+    #[must_use]
+    pub fn with_provider_control(mut self, provider_control: ProviderControlPlane) -> Self {
+        self.provider_control = Some(provider_control);
+        self
+    }
+
+    #[must_use]
+    pub fn with_admission_gate(mut self, admission: AdmissionGate) -> Self {
+        self.admission = admission;
         self
     }
 
@@ -181,6 +206,12 @@ impl OperationsStateBuilder {
     #[must_use]
     pub fn with_telemetry_capacity(mut self, capacity: usize) -> Self {
         self.telemetry_capacity = capacity;
+        self
+    }
+
+    #[must_use]
+    pub fn with_telemetry_settings(mut self, settings: TelemetrySettings) -> Self {
+        self.telemetry_settings = settings;
         self
     }
 
@@ -220,20 +251,25 @@ impl OperationsStateBuilder {
         validate_origin(&self.settings.public_base_url)?;
         validate_origin(&self.settings.model_cdn_url)?;
         validate_origin(&self.settings.release_cdn_url)?;
+        self.telemetry_settings.validate()?;
 
         let http_client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(OperationsBuildError::HttpClient)?;
+        let telemetry_service =
+            TelemetryService::new(self.database.clone(), self.telemetry_settings)?;
         Ok(OperationsState {
             database: self.database,
             auth: self.auth,
             settings: self.settings,
             pilot: self.pilot,
+            provider_control: self.provider_control,
             operation_timeout: self.operation_timeout,
-            draining: AtomicBool::new(false),
+            admission: self.admission,
             mutations: AtomicU64::new(0),
             telemetry: TelemetryBuffer::new(self.telemetry_capacity),
+            telemetry_service,
             admin_sessions: AdminSessions::default(),
             mdm_commands: MdmCommandRegistry::default(),
             metrics: OperationsMetrics::default(),
@@ -247,10 +283,12 @@ pub struct OperationsState {
     auth: OperationsAuth,
     settings: OperationsSettings,
     pilot: Option<PilotHandle>,
+    provider_control: Option<ProviderControlPlane>,
     operation_timeout: Duration,
-    draining: AtomicBool,
+    admission: AdmissionGate,
     mutations: AtomicU64,
     telemetry: TelemetryBuffer,
+    telemetry_service: TelemetryService,
     admin_sessions: AdminSessions,
     mdm_commands: MdmCommandRegistry,
     metrics: OperationsMetrics,
@@ -260,16 +298,41 @@ pub struct OperationsState {
 impl OperationsState {
     #[must_use]
     pub fn is_draining(&self) -> bool {
-        self.draining.load(Ordering::Acquire)
+        self.admission.is_draining()
     }
 
     pub fn set_draining(&self, draining: bool) {
-        self.draining.store(draining, Ordering::Release);
+        self.admission.set_draining(draining);
     }
 
     #[must_use]
     pub fn mutation_count(&self) -> u64 {
-        self.mutations.load(Ordering::Acquire)
+        self.mutations.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    #[must_use]
+    pub fn admission_gate(&self) -> AdmissionGate {
+        self.admission.clone()
+    }
+
+    #[must_use]
+    pub fn active_http_inference(&self) -> u64 {
+        self.admission.active_inference()
+    }
+
+    #[must_use]
+    pub fn active_http_mutations(&self) -> u64 {
+        self.admission.active_mutations()
+    }
+
+    #[must_use]
+    pub fn active_external_operations(&self) -> u64 {
+        self.admission.active_external()
+    }
+
+    #[must_use]
+    pub fn telemetry_service(&self) -> TelemetryService {
+        self.telemetry_service.clone()
     }
 
     pub fn expect_mdm_command(
@@ -294,7 +357,8 @@ impl OperationsState {
     }
 
     fn mark_mutation(&self) {
-        self.mutations.fetch_add(1, Ordering::Relaxed);
+        self.mutations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -438,6 +502,8 @@ pub enum OperationsBuildError {
     Enrollment(#[from] trust::EnrollmentConfigError),
     #[error(transparent)]
     StateExport(#[from] state_export::StateExportConfigError),
+    #[error(transparent)]
+    Telemetry(#[from] TelemetryServiceError),
     #[error("invalid MDM command expectation: {0}")]
     MdmCommand(Arc<str>),
 }

@@ -165,9 +165,6 @@ pub enum OutputError {
     /// The FINAL flag was not attached exactly to `[DONE]`.
     #[error("FINAL flag and data: [DONE] framing disagree")]
     InvalidFinalFraming,
-    /// `[DONE]` arrived before consumer-visible content.
-    #[error("data: [DONE] arrived before content commitment")]
-    DoneBeforeContent,
     /// No frame is legal after terminal framing.
     #[error("output frame arrived after data: [DONE]")]
     FrameAfterDone,

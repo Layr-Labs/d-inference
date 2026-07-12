@@ -43,6 +43,16 @@ impl ApiError {
             retry_after_seconds: Some(1),
         }
     }
+
+    pub fn draining() -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            code: "rate_limit_exceeded",
+            kind: "rate_limit_exceeded",
+            message: Arc::from("draining rate limit exceeded — retry after 3s"),
+            retry_after_seconds: Some(3),
+        }
+    }
 }
 
 impl From<PilotRequestError> for ApiError {
@@ -67,6 +77,12 @@ impl From<PilotRequestError> for ApiError {
                 "billing_error",
                 "consumer account has insufficient credit",
             ),
+            PilotRequestError::Forbidden => Self::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "permission_error",
+                "consumer API key no longer authorizes this request",
+            ),
             PilotRequestError::Timeout => Self::new(
                 StatusCode::GATEWAY_TIMEOUT,
                 "request_timeout",
@@ -79,12 +95,14 @@ impl From<PilotRequestError> for ApiError {
                 "server_error",
                 "pilot request was cancelled",
             ),
-            PilotRequestError::Provider(message) => Self::new(
-                StatusCode::BAD_GATEWAY,
-                "provider_error",
-                "server_error",
-                message,
-            ),
+            PilotRequestError::Provider(message) | PilotRequestError::ProviderPricing(message) => {
+                Self::new(
+                    StatusCode::BAD_GATEWAY,
+                    "provider_error",
+                    "server_error",
+                    message,
+                )
+            }
             PilotRequestError::Protocol(message) => Self::new(
                 StatusCode::BAD_GATEWAY,
                 "provider_protocol_error",

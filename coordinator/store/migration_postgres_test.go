@@ -22,8 +22,8 @@ func TestPostgresMigrationsFreshDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(result.Applied) != "[1 2 3 4 5]" {
-		t.Fatalf("applied = %v, want [1 2 3 4 5]", result.Applied)
+	if fmt.Sprint(result.Applied) != "[1 2 3 4 5 6]" {
+		t.Fatalf("applied = %v, want [1 2 3 4 5 6]", result.Applied)
 	}
 	if result.DatabaseVersion != MaximumSupportedSchemaVersion {
 		t.Fatalf("database version = %d", result.DatabaseVersion)
@@ -72,9 +72,9 @@ func TestPostgresMigrationsFreshDatabase(t *testing.T) {
 		LIMIT 1`).Scan(&rustSchemaVersion, &minimumPublic, &maximumPublic); err != nil {
 		t.Fatal(err)
 	}
-	if rustSchemaVersion != 3 || minimumPublic != 5 || maximumPublic != 5 {
+	if rustSchemaVersion != 4 || minimumPublic != 6 || maximumPublic != 6 {
 		t.Fatalf(
-			"Rust schema compatibility = version %d public [%d,%d], want version 3 public [5,5]",
+			"Rust schema compatibility = version %d public [%d,%d], want version 4 public [6,6]",
 			rustSchemaVersion,
 			minimumPublic,
 			maximumPublic,
@@ -137,8 +137,8 @@ func TestPostgresMigrationsUpgradePublicV3AndRustV1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(result.Applied) != "[4 5]" {
-		t.Fatalf("upgrade applied = %v, want [4 5]", result.Applied)
+	if fmt.Sprint(result.Applied) != "[4 5 6]" {
+		t.Fatalf("upgrade applied = %v, want [4 5 6]", result.Applied)
 	}
 	if err := validateRustSchemaV2Shape(ctx, conn); err != nil {
 		t.Fatalf("upgraded Rust schema shape: %v", err)
@@ -281,8 +281,8 @@ func TestPostgresMigrationsSuccessfullyAdoptLegacyDatabaseExplicitly(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(result.Applied) != "[1 2 3 4 5]" {
-		t.Fatalf("legacy adoption applied = %v, want [1 2 3 4 5]", result.Applied)
+	if fmt.Sprint(result.Applied) != "[1 2 3 4 5 6]" {
+		t.Fatalf("legacy adoption applied = %v, want [1 2 3 4 5 6]", result.Applied)
 	}
 	var balance, withdrawable int64
 	if err := conn.QueryRow(ctx, `
@@ -385,11 +385,9 @@ func TestPostgresMigrationsRejectIncompatibleLegacyColumnType(t *testing.T) {
 func TestPostgresMigrationRecoversInvalidConcurrentIndex(t *testing.T) {
 	databaseURL := migrationTestDatabase(t)
 	ctx := context.Background()
-	if _, err := ApplyPostgresMigrations(ctx, databaseURL, MigrationOptions{}); err != nil {
-		t.Fatal(err)
-	}
 	conn := migrationTestConn(t, databaseURL)
 	defer conn.Close(ctx)
+	applyMigrationsThrough(t, conn, 5)
 
 	if _, err := conn.Exec(ctx, `
 		DELETE FROM schema_migration_versions WHERE version >= 2;
@@ -438,8 +436,8 @@ func TestPostgresMigrationRecoversInvalidConcurrentIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(result.Applied) != "[2 3 4 5]" {
-		t.Fatalf("recovery applied = %v, want [2 3 4 5]", result.Applied)
+	if fmt.Sprint(result.Applied) != "[2 3 4 5 6]" {
+		t.Fatalf("recovery applied = %v, want [2 3 4 5 6]", result.Applied)
 	}
 	if valid, err := concurrentIndexDefinitionMatches(ctx, conn, "idx_provider_earnings_job"); err != nil {
 		t.Fatal(err)
@@ -494,11 +492,9 @@ func TestPostgresMigrationRepairsValidWrongConcurrentIndex(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			databaseURL := migrationTestDatabase(t)
 			ctx := context.Background()
-			if _, err := ApplyPostgresMigrations(ctx, databaseURL, MigrationOptions{}); err != nil {
-				t.Fatal(err)
-			}
 			conn := migrationTestConn(t, databaseURL)
 			defer conn.Close(ctx)
+			applyMigrationsThrough(t, conn, 5)
 			if _, err := conn.Exec(ctx, `
 				DELETE FROM schema_migration_versions WHERE version >= 2;
 				DROP INDEX idx_provider_earnings_job`); err != nil {
@@ -522,8 +518,8 @@ func TestPostgresMigrationRepairsValidWrongConcurrentIndex(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if fmt.Sprint(result.Applied) != "[2 3 4 5]" {
-				t.Fatalf("repair applied = %v, want [2 3 4 5]", result.Applied)
+			if fmt.Sprint(result.Applied) != "[2 3 4 5 6]" {
+				t.Fatalf("repair applied = %v, want [2 3 4 5 6]", result.Applied)
 			}
 			if matches, err := concurrentIndexDefinitionMatches(
 				ctx,
@@ -643,6 +639,26 @@ func assertMigrationVersionCount(t *testing.T, conn *pgx.Conn, version int64, wa
 	}
 	if count != want {
 		t.Fatalf("metadata rows for version %d = %d, want %d", version, count, want)
+	}
+}
+
+func applyMigrationsThrough(t *testing.T, conn *pgx.Conn, version int) {
+	t.Helper()
+	catalog, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version < 1 || version > len(catalog) {
+		t.Fatalf("migration prefix %d is outside catalog of %d migrations", version, len(catalog))
+	}
+	ctx := context.Background()
+	if err := configureMigrationTimeouts(ctx, conn, MigrationOptions{}.withDefaults()); err != nil {
+		t.Fatal(err)
+	}
+	for index, item := range catalog[:version] {
+		if err := applyMigration(ctx, conn, item, index > 0); err != nil {
+			t.Fatalf("apply migration %d: %v", item.Version, err)
+		}
 	}
 }
 

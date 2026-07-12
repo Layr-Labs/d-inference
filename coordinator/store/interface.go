@@ -794,11 +794,14 @@ type DeviceCode struct {
 // ProviderToken is a long-lived auth token linking a provider machine to an account.
 // Created when a device code is approved; used by the provider on every WebSocket connect.
 type ProviderToken struct {
-	TokenHash string    `json:"token_hash"` // SHA-256 of the raw token
-	AccountID string    `json:"account_id"` // the account this provider is linked to
-	Label     string    `json:"label"`      // human-readable label (e.g. hostname)
-	Active    bool      `json:"active"`
-	CreatedAt time.Time `json:"created_at"`
+	TokenHash  string     `json:"token_hash"`  // SHA-256 of the raw token
+	AccountID  string     `json:"account_id"`  // the account this provider is linked to
+	ProviderID string     `json:"provider_id"` // stable provider identity when assigned
+	Label      string     `json:"label"`       // human-readable label (e.g. hostname)
+	Active     bool       `json:"active"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 // InviteCode represents a coordinator-generated invite code that grants credits.
@@ -930,6 +933,7 @@ type ProviderRecord struct {
 	LastChallengeVerified      *time.Time      `json:"last_challenge_verified,omitempty"`
 	FailedChallenges           int             `json:"failed_challenges"`
 	AccountID                  string          `json:"account_id,omitempty"`
+	TokenHash                  string          `json:"-"` // device credential linkage; never exposed
 	LifetimeRequestsServed     int64           `json:"lifetime_requests_served"`
 	LifetimeTokensGenerated    int64           `json:"lifetime_tokens_generated"`
 	LastSessionRequestsServed  int64           `json:"last_session_requests_served"`
@@ -1029,12 +1033,16 @@ type CodeAttestation struct {
 // freshness window, so a persisted row can only ever let the coordinator skip a
 // redundant live MDM round-trip — never extend or fabricate trust.
 type ProviderTrustReuse struct {
-	SEPubKey       string    `json:"se_pubkey"`        // base64 Secure Enclave P-256 public key (bound at registration)
-	Serial         string    `json:"serial"`           // device serial number proven by the SE attestation at last verification
-	TrustLevel     string    `json:"trust_level"`      // trust level earned at last verification (only "hardware" is reusable)
-	BinaryHash     string    `json:"binary_hash"`      // provider binary SHA-256 at last verification; reuse requires the fresh signed challenge to match
-	SIPEnabled     bool      `json:"sip_enabled"`      // SIP posture confirmed by MDM at last verification
-	SecureBootFull bool      `json:"secure_boot_full"` // Secure Boot (full) confirmed by MDM at last verification
-	MDAUDID        string    `json:"mda_udid"`         // MDM/MDA device UDID at last verification (diagnostics)
-	VerifiedAt     time.Time `json:"verified_at"`      // instant of the successful live MDM verification
+	SEPubKey         string     `json:"se_pubkey"`          // base64 Secure Enclave P-256 public key (bound at registration)
+	ProviderID       string     `json:"provider_id"`        // durable provider identity that earned this proof
+	Serial           string     `json:"serial"`             // device serial number proven by the SE attestation at last verification
+	TrustLevel       string     `json:"trust_level"`        // trust level earned at last verification (only "hardware" is reusable)
+	BinaryHash       string     `json:"binary_hash"`        // provider binary SHA-256 at last verification; reuse requires the fresh signed challenge to match
+	SIPEnabled       bool       `json:"sip_enabled"`        // SIP posture confirmed by MDM at last verification
+	SecureBootFull   bool       `json:"secure_boot_full"`   // Secure Boot (full) confirmed by MDM at last verification
+	MDAUDID          string     `json:"mda_udid"`           // MDM/MDA device UDID at last verification (diagnostics)
+	HardUntrustEpoch int64      `json:"hard_untrust_epoch"` // hard-untrust epoch observed when the proof was recorded
+	Enrolled         bool       `json:"enrolled"`           // MDM enrollment was live when SecurityInfo was accepted
+	SecurityInfoAt   *time.Time `json:"security_info_at"`   // instant of the live MDM SecurityInfo proof
+	VerifiedAt       time.Time  `json:"verified_at"`        // instant of the successful live MDM verification
 }

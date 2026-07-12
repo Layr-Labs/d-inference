@@ -72,7 +72,36 @@ impl LedgerService {
             .referral_account_id
             .as_ref()
             .map(|account| account.as_str());
-        self.db
+        let mut transaction = self.db.bounded(self.db.pool().begin()).await?;
+        let controlled_key_hash = self
+            .db
+            .bounded(
+                sqlx::query_scalar::<_, String>(
+                    r#"
+                    SELECT consumer_key_hash
+                    FROM rust_coord.inference_jobs
+                    WHERE job_id = $1 AND api_key_reserved_micro_usd > 0
+                    "#,
+                )
+                .bind(prepared.job_id.as_uuid())
+                .fetch_optional(&mut *transaction),
+            )
+            .await?;
+        if let Some(key_hash) = controlled_key_hash {
+            // A controlled request first reserves a small base amount and then
+            // resizes to its maximum charge. Serialize both phases on the same
+            // key so concurrent resizes cannot evaluate cumulative spend from
+            // snapshots taken before another resize commits.
+            self.db
+                .bounded(
+                    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::TEXT, 0))")
+                        .bind(key_hash)
+                        .execute(&mut *transaction),
+                )
+                .await?;
+        }
+        let row = self
+            .db
             .bounded(
                 sqlx::query_as_unchecked!(
                     ResizeRow,
@@ -151,6 +180,89 @@ impl LedgerService {
                                       jobs.reserved_total_micro_usd
                                       - $22::BIGINT
                                   )
+                              )
+                          )
+                          AND (
+                              jobs.api_key_reserved_micro_usd = 0
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM public.api_keys AS keys
+                                  WHERE keys.id = jobs.api_key_id
+                                    AND keys.key_hash = jobs.consumer_key_hash
+                                    AND keys.owner_account_id = jobs.account_id
+                                    AND keys.active
+                                    AND (
+                                        keys.expires_at IS NULL
+                                        OR keys.expires_at > NOW()
+                                    )
+                                    AND (
+                                        keys.allowed_models IN ('', '[]')
+                                        OR EXISTS (
+                                            SELECT 1
+                                            FROM jsonb_array_elements_text(
+                                                keys.allowed_models::JSONB
+                                            ) AS allowed(model)
+                                            WHERE allowed.model IN ($17, $18)
+                                        )
+                                    )
+                                    AND (
+                                        NOT keys.self_route_only
+                                        OR EXISTS (
+                                            SELECT 1
+                                            FROM public.providers AS providers
+                                            WHERE providers.id = $10::TEXT
+                                              AND providers.account_id =
+                                                  jobs.account_id
+                                              AND providers.connected
+                                              AND providers.trust_level =
+                                                  'hardware'
+                                              AND providers.session_epoch = $12
+                                        )
+                                    )
+                                    AND (
+                                        keys.limit_micro_usd IS NULL
+                                        OR (
+                                            COALESCE((
+                                                SELECT SUM(
+                                                    usage.cost_micro_usd
+                                                )
+                                                FROM public.usage
+                                                WHERE usage.key_id = keys.id
+                                                  AND usage.created_at >=
+                                                    CASE keys.limit_reset
+                                                      WHEN 'daily'
+                                                        THEN date_trunc('day', NOW())
+                                                      WHEN 'weekly'
+                                                        THEN date_trunc('week', NOW())
+                                                      WHEN 'monthly'
+                                                        THEN date_trunc('month', NOW())
+                                                      ELSE '-infinity'::TIMESTAMPTZ
+                                                    END
+                                            ), 0)::NUMERIC
+                                            + COALESCE((
+                                                SELECT SUM(
+                                                    controlled_jobs
+                                                        .api_key_reserved_micro_usd
+                                                )
+                                                FROM rust_coord.inference_jobs
+                                                    AS controlled_jobs
+                                                WHERE controlled_jobs.api_key_id =
+                                                      keys.id
+                                                  AND controlled_jobs.account_id =
+                                                      jobs.account_id
+                                                  AND controlled_jobs.job_id <>
+                                                      jobs.job_id
+                                                  AND controlled_jobs.state NOT IN (
+                                                    'settled',
+                                                    'released',
+                                                    'settled_reviewed',
+                                                    'released_reviewed'
+                                                  )
+                                            ), 0)::NUMERIC
+                                            + $22::NUMERIC
+                                            <= keys.limit_micro_usd::NUMERIC
+                                        )
+                                    )
                               )
                           )
                         FOR UPDATE OF jobs, balances
@@ -338,6 +450,10 @@ impl LedgerService {
                             output_micro_usd_per_million = $32,
                             provider_share_ppm = $34,
                             referral_share_ppm = $30,
+                            api_key_reserved_micro_usd = CASE
+                                WHEN job.api_key_reserved_micro_usd > 0 THEN $22
+                                ELSE 0
+                            END,
                             request_digest = $16,
                             start_authorized_at = NOW(),
                             start_deadline =
@@ -403,9 +519,11 @@ impl LedgerService {
                     i64::try_from(prepared.start_deadline_millis)
                         .expect("validated start deadline fits i64"),
                 )
-                .fetch_optional(self.db.pool()),
+                .fetch_optional(&mut *transaction),
             )
-            .await
+            .await?;
+        self.db.bounded(transaction.commit()).await?;
+        Ok(row)
     }
 
     async fn resolve_resize(
@@ -463,7 +581,97 @@ impl LedgerService {
                                 AS untrusted
                             WHERE untrusted.provider_id = $7
                               AND untrusted.hard_untrust_epoch >= $8
-                        ) AS provider_trusted
+                        ) AS provider_trusted,
+                        (
+                            jobs.api_key_reserved_micro_usd = 0
+                            OR EXISTS (
+                                SELECT 1
+                                FROM public.api_keys AS keys
+                                WHERE keys.id = jobs.api_key_id
+                                  AND keys.key_hash = jobs.consumer_key_hash
+                                  AND keys.owner_account_id = jobs.account_id
+                                  AND keys.active
+                                  AND (
+                                      keys.expires_at IS NULL
+                                      OR keys.expires_at > NOW()
+                                  )
+                                  AND (
+                                      keys.allowed_models IN ('', '[]')
+                                      OR EXISTS (
+                                          SELECT 1
+                                          FROM jsonb_array_elements_text(
+                                              keys.allowed_models::JSONB
+                                          ) AS allowed(model)
+                                          WHERE allowed.model IN ($9, $10)
+                                      )
+                                  )
+                                  AND (
+                                      NOT keys.self_route_only
+                                      OR EXISTS (
+                                          SELECT 1
+                                          FROM public.providers AS providers
+                                          WHERE providers.id = $7::TEXT
+                                            AND providers.account_id =
+                                                jobs.account_id
+                                            AND providers.connected
+                                            AND providers.trust_level = 'hardware'
+                                            AND providers.session_epoch = $8
+                                      )
+                                  )
+                            )
+                        ) AS api_key_controls_allowed,
+                        (
+                            jobs.api_key_reserved_micro_usd = 0
+                            OR EXISTS (
+                                SELECT 1
+                                FROM public.api_keys AS keys
+                                WHERE keys.id = jobs.api_key_id
+                                  AND keys.key_hash = jobs.consumer_key_hash
+                                  AND keys.owner_account_id = jobs.account_id
+                                  AND (
+                                      keys.limit_micro_usd IS NULL
+                                      OR (
+                                          COALESCE((
+                                              SELECT SUM(usage.cost_micro_usd)
+                                              FROM public.usage
+                                              WHERE usage.key_id = keys.id
+                                                AND usage.created_at >=
+                                                  CASE keys.limit_reset
+                                                    WHEN 'daily'
+                                                      THEN date_trunc('day', NOW())
+                                                    WHEN 'weekly'
+                                                      THEN date_trunc('week', NOW())
+                                                    WHEN 'monthly'
+                                                      THEN date_trunc('month', NOW())
+                                                    ELSE '-infinity'::TIMESTAMPTZ
+                                                  END
+                                          ), 0)::NUMERIC
+                                          + COALESCE((
+                                              SELECT SUM(
+                                                  controlled_jobs
+                                                      .api_key_reserved_micro_usd
+                                              )
+                                              FROM rust_coord.inference_jobs
+                                                  AS controlled_jobs
+                                              WHERE controlled_jobs.api_key_id =
+                                                    keys.id
+                                                AND controlled_jobs.account_id =
+                                                    jobs.account_id
+                                                AND controlled_jobs.job_id <>
+                                                    jobs.job_id
+                                                AND controlled_jobs.state NOT IN (
+                                                  'settled',
+                                                  'released',
+                                                  'settled_reviewed',
+                                                  'released_reviewed'
+                                                )
+                                          ), 0)::NUMERIC
+                                          + $6::NUMERIC
+                                          <= keys.limit_micro_usd::NUMERIC
+                                      )
+                                  )
+                            )
+                        ) AS api_key_spend_allowed
                     FROM rust_coord.inference_jobs AS jobs
                     JOIN public.balances AS balances
                       ON balances.account_id = jobs.account_id
@@ -478,6 +686,8 @@ impl LedgerService {
                     maximum_charge.as_i64(),
                     prepared.provider_id,
                     prepared.session_epoch.as_i64(),
+                    prepared.concrete_model.as_ref(),
+                    prepared.public_model.as_ref(),
                 )
                 .fetch_optional(self.db.pool()),
             )
@@ -486,6 +696,8 @@ impl LedgerService {
             None => Err(LedgerError::NotFound),
             Some(row) if !row.current => Err(LedgerError::StaleVersion),
             Some(row) if !row.provider_trusted => Err(LedgerError::ProviderHardUntrusted),
+            Some(row) if !row.api_key_controls_allowed => Err(LedgerError::ApiKeyControlRejected),
+            Some(row) if !row.api_key_spend_allowed => Err(LedgerError::ApiKeySpendLimitExceeded),
             Some(row) if !row.funded => Err(LedgerError::InsufficientBalance),
             Some(_) => Err(LedgerError::OperationConflict),
         }
@@ -522,6 +734,8 @@ struct ResizeDiagnostic {
     current: bool,
     funded: bool,
     provider_trusted: bool,
+    api_key_controls_allowed: bool,
+    api_key_spend_allowed: bool,
 }
 
 fn resize_from_row(

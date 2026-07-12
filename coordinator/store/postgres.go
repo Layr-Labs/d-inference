@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -2778,6 +2779,10 @@ func (s *PostgresStore) GetUserByEmail(email string) (*User, error) {
 
 // --- Stripe Withdrawals ---
 
+func goWithdrawalIdempotencyKey(id string) string {
+	return "go-withdrawal:" + id
+}
+
 func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
 	if err := s.ensureOwnership(); err != nil {
 		return err
@@ -2800,11 +2805,12 @@ func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
 		`INSERT INTO stripe_withdrawals
 		 (id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
 		  amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
-		  failure_reason, refunded, fee_refunded, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		  failure_reason, refunded, fee_refunded, created_at, updated_at, idempotency_key)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		w.ID, w.AccountID, w.StripeAccountID, w.TransferID, w.PayoutID, w.SweepPayoutID,
 		w.AmountMicroUSD, w.FeeMicroUSD, w.NetMicroUSD, w.Method, w.Status,
 		w.FailureReason, w.Refunded, w.FeeRefunded, w.CreatedAt, w.UpdatedAt,
+		goWithdrawalIdempotencyKey(w.ID),
 	)
 	if err != nil {
 		return fmt.Errorf("store: create stripe withdrawal: %w", err)
@@ -2880,11 +2886,12 @@ func (s *PostgresStore) CreateStripeWithdrawalWithDebit(w *StripeWithdrawal, ent
 		`INSERT INTO stripe_withdrawals
 		 (id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
 		  amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
-		  failure_reason, refunded, fee_refunded, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		  failure_reason, refunded, fee_refunded, created_at, updated_at, idempotency_key)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		w.ID, w.AccountID, w.StripeAccountID, w.TransferID, w.PayoutID, w.SweepPayoutID,
 		w.AmountMicroUSD, w.FeeMicroUSD, w.NetMicroUSD, w.Method, w.Status,
 		w.FailureReason, w.Refunded, w.FeeRefunded, w.CreatedAt, w.UpdatedAt,
+		goWithdrawalIdempotencyKey(w.ID),
 	); err != nil {
 		return fmt.Errorf("store: create stripe withdrawal: %w", err)
 	}
@@ -3599,9 +3606,17 @@ func (s *PostgresStore) CreateProviderToken(pt *ProviderToken) error {
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_tokens (token_hash, account_id, label, active)
-		 VALUES ($1, $2, $3, $4)`,
-		pt.TokenHash, pt.AccountID, pt.Label, pt.Active,
+		`INSERT INTO provider_tokens (
+		    token_hash, account_id, provider_id, label, active,
+		    revoked_at, created_at, updated_at
+		 )
+		 VALUES (
+		    $1, $2, $3, $4, $5,
+		    CASE WHEN $5 THEN NULL ELSE COALESCE($6, NOW()) END,
+		    COALESCE($7, NOW()), COALESCE($8, NOW())
+		 )`,
+		pt.TokenHash, pt.AccountID, pt.ProviderID, pt.Label, pt.Active,
+		pt.RevokedAt, nullableCreatedAt(pt.CreatedAt), nullableCreatedAt(pt.UpdatedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("store: create provider token: %w", err)
@@ -3616,9 +3631,13 @@ func (s *PostgresStore) GetProviderToken(token string) (*ProviderToken, error) {
 	h := hashKey(token)
 	var pt ProviderToken
 	err := s.pool.QueryRow(ctx,
-		`SELECT token_hash, account_id, label, active, created_at
+		`SELECT token_hash, account_id, provider_id, label, active,
+		        revoked_at, created_at, updated_at
 		 FROM provider_tokens WHERE token_hash = $1 AND active = TRUE`, h,
-	).Scan(&pt.TokenHash, &pt.AccountID, &pt.Label, &pt.Active, &pt.CreatedAt)
+	).Scan(
+		&pt.TokenHash, &pt.AccountID, &pt.ProviderID, &pt.Label, &pt.Active,
+		&pt.RevokedAt, &pt.CreatedAt, &pt.UpdatedAt,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("store: provider token not found: %w", err)
 	}
@@ -3631,7 +3650,10 @@ func (s *PostgresStore) RevokeProviderToken(token string) error {
 
 	h := hashKey(token)
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE provider_tokens SET active = FALSE WHERE token_hash = $1`, h,
+		`UPDATE provider_tokens
+		 SET active = FALSE, revoked_at = NOW(), updated_at = NOW()
+		 WHERE token_hash = $1`,
+		h,
 	)
 	if err != nil {
 		return fmt.Errorf("store: revoke provider token: %w", err)
@@ -4169,8 +4191,8 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
-		) VALUES (
+			registered_at, last_seen, public_key, token_hash
+		) SELECT
 			$1, $2, $3, $4, $5, $6, $7,
 			$8, $9, $10,
 			$11, $12,
@@ -4178,7 +4200,10 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			$17, $18, $19,
 			$20, $21, $22, $23,
 			$24, $25,
-			$26, $27, $28
+			$26, $27, $28, $29
+		WHERE $29 = '' OR EXISTS (
+			SELECT 1 FROM provider_tokens
+			WHERE token_hash = $29 AND account_id = $19 AND active
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			hardware = $2, models = $3, backend = $4, location = $5,
@@ -4190,7 +4215,11 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			lifetime_requests_served = $20, lifetime_tokens_generated = $21,
 			last_session_requests_served = $22, last_session_tokens_generated = $23,
 			lifetime_stats = $24, last_session_stats = $25,
-			last_seen = $27, public_key = $28`,
+			last_seen = $27, public_key = $28, token_hash = $29
+		WHERE $29 = '' OR EXISTS (
+			SELECT 1 FROM provider_tokens
+			WHERE token_hash = $29 AND account_id = $19 AND active
+		)`,
 		p.ID, p.Hardware, p.Models, p.Backend,
 		marshalProviderLocation(p.Location),
 		p.TrustLevel, p.Attested,
@@ -4201,7 +4230,7 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 		p.LifetimeRequestsServed, p.LifetimeTokensGenerated,
 		p.LastSessionRequestsServed, p.LastSessionTokensGenerated,
 		providerStatsJSON(p.LifetimeStats), providerStatsJSON(p.LastSessionStats),
-		p.RegisteredAt, p.LastSeen, p.PublicKey,
+		p.RegisteredAt, p.LastSeen, p.PublicKey, p.TokenHash,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert provider: %w", err)
@@ -4224,7 +4253,7 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
+			registered_at, last_seen, public_key, token_hash
 		 FROM providers WHERE id = $1`, id,
 	).Scan(
 		&p.ID, &p.Hardware, &p.Models, &p.Backend,
@@ -4237,7 +4266,7 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
 		&p.LifetimeStats, &p.LastSessionStats,
-		&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
+		&p.RegisteredAt, &p.LastSeen, &p.PublicKey, &p.TokenHash,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: provider not found: %w", err)
@@ -4261,7 +4290,7 @@ func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) 
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
+			registered_at, last_seen, public_key, token_hash
 		 FROM providers WHERE serial_number = $1 AND serial_number != ''
 		 ORDER BY last_seen DESC LIMIT 1`, serial,
 	).Scan(
@@ -4275,7 +4304,7 @@ func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) 
 		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
 		&p.LifetimeStats, &p.LastSessionStats,
-		&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
+		&p.RegisteredAt, &p.LastSeen, &p.PublicKey, &p.TokenHash,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: provider with serial not found: %w", err)
@@ -4321,7 +4350,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
+			registered_at, last_seen, public_key, token_hash
 		 FROM providers ORDER BY last_seen DESC`,
 	)
 	if err != nil {
@@ -4344,7 +4373,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
 			&p.LifetimeStats, &p.LastSessionStats,
-			&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
+			&p.RegisteredAt, &p.LastSeen, &p.PublicKey, &p.TokenHash,
 		); err != nil {
 			continue
 		}
@@ -4383,7 +4412,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
+			registered_at, last_seen, public_key, token_hash
 		 FROM providers
 		 WHERE account_id = $1
 		 ORDER BY COALESCE(NULLIF(serial_number, ''),
@@ -4412,7 +4441,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
 			&p.LifetimeStats, &p.LastSessionStats,
-			&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
+			&p.RegisteredAt, &p.LastSeen, &p.PublicKey, &p.TokenHash,
 		); err != nil {
 			continue
 		}
@@ -4435,27 +4464,60 @@ func (s *PostgresStore) DeleteProvidersBySerial(ctx context.Context, ownerAccoun
 		return 0, fmt.Errorf("store: delete providers begin: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return 0, err
+	}
 
 	// Resolve all provider rows for this owner matching the stable identity
 	// (serial OR session id). Postgres keeps one row per session UUID, so a
 	// serial can map to many ids — delete them all.
 	rows, err := tx.Query(ctx,
-		`SELECT id FROM providers
+		`SELECT id, token_hash, se_public_key, session_id,
+		        session_epoch, hard_untrust_epoch
+		 FROM providers
 		 WHERE account_id = $1
-		   AND ((serial_number = $2 AND serial_number <> '') OR id = $2)`,
+		   AND ((serial_number = $2 AND serial_number <> '') OR id = $2)
+		 FOR UPDATE`,
 		ownerAccountID, serialOrID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("store: delete providers select: %w", err)
 	}
-	var ids []string
+	var (
+		ids          []string
+		tokenHashes  []string
+		seKeys       []string
+		sessionIDs   []string
+		sessionEpoch = make(map[string]int64)
+	)
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var (
+			id, tokenHash, seKey, sessionID string
+			epoch, hardUntrustEpoch         int64
+		)
+		if err := rows.Scan(
+			&id, &tokenHash, &seKey, &sessionID, &epoch, &hardUntrustEpoch,
+		); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("store: delete providers scan: %w", err)
 		}
 		ids = append(ids, id)
+		if tokenHash != "" {
+			tokenHashes = append(tokenHashes, tokenHash)
+		}
+		if seKey != "" {
+			seKeys = append(seKeys, seKey)
+		}
+		if sessionID != "" {
+			sessionIDs = append(sessionIDs, sessionID)
+		}
+		if epoch < hardUntrustEpoch {
+			epoch = hardUntrustEpoch
+		}
+		if epoch < 1 {
+			epoch = 1
+		}
+		sessionEpoch[id] = epoch
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -4466,6 +4528,75 @@ func (s *PostgresStore) DeleteProvidersBySerial(ctx context.Context, ownerAccoun
 			return 0, fmt.Errorf("store: delete providers commit: %w", err)
 		}
 		return 0, nil
+	}
+
+	// The machine credential, reusable hardware proof, durable hard-trust state,
+	// live session, reputation, and provider rows are one revocation boundary.
+	// Revoking first also makes a late asynchronous heartbeat upsert fail closed.
+	if _, err := tx.Exec(ctx,
+		`UPDATE provider_tokens
+		 SET active = FALSE, revoked_at = NOW(), updated_at = NOW()
+		 WHERE account_id = $1
+		   AND active
+		   AND (
+		       (token_hash = ANY($2) AND token_hash <> '')
+		       OR (provider_id = ANY($3) AND provider_id <> '')
+		       OR provider_id = ''
+		   )`,
+		ownerAccountID, tokenHashes, ids,
+	); err != nil {
+		return 0, fmt.Errorf("store: revoke deleted provider tokens: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM provider_trust_reuse
+		 WHERE (provider_id = ANY($1) AND provider_id <> '')
+		    OR (se_pubkey = ANY($2) AND se_pubkey <> '')`,
+		ids, seKeys,
+	); err != nil {
+		return 0, fmt.Errorf("store: invalidate deleted provider trust: %w", err)
+	}
+	if s.ownershipEpoch > 0 {
+		for _, id := range ids {
+			providerUUID, parseErr := uuid.Parse(id)
+			if parseErr != nil {
+				continue // pre-Objective-7 Go session ids were not constrained UUIDs
+			}
+			digest := sha256.Sum256([]byte("owner-delete:" + ownerAccountID + ":" + id))
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO rust_coord.provider_hard_untrust_epochs (
+				    provider_id, hard_untrust_epoch, reason, evidence_digest,
+				    owner_epoch
+				 )
+				 VALUES ($1, $2, 'owner deleted machine', $3, $4)
+				 ON CONFLICT (provider_id) DO UPDATE SET
+				    hard_untrust_epoch = GREATEST(
+				        rust_coord.provider_hard_untrust_epochs.hard_untrust_epoch,
+				        EXCLUDED.hard_untrust_epoch
+				    ),
+				    reason = EXCLUDED.reason,
+				    evidence_digest = EXCLUDED.evidence_digest,
+				    owner_epoch = EXCLUDED.owner_epoch,
+				    version = rust_coord.provider_hard_untrust_epochs.version + 1,
+				    updated_at = NOW()`,
+				providerUUID, sessionEpoch[id], digest[:], s.ownershipEpoch,
+			); err != nil {
+				return 0, fmt.Errorf("store: hard-fence deleted provider: %w", err)
+			}
+		}
+	}
+	sessionIDs = append(sessionIDs, ids...)
+	if _, err := tx.Exec(ctx,
+		`UPDATE provider_sessions
+		 SET last_seen = NOW(),
+		     disconnected_at = COALESCE(disconnected_at, NOW()),
+		     disconnect_reason = CASE
+		         WHEN disconnected_at IS NULL THEN 'credential revoked'
+		         ELSE disconnect_reason
+		     END
+		 WHERE session_id = ANY($1)`,
+		sessionIDs,
+	); err != nil {
+		return 0, fmt.Errorf("store: close deleted provider sessions: %w", err)
 	}
 
 	// provider_reputation.provider_id has a FK to providers(id) with NO
@@ -4665,7 +4796,10 @@ func (s *PostgresStore) ListProviderTrustReuse(ctx context.Context) ([]ProviderT
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT se_pubkey, serial, trust_level, binary_hash, sip_enabled, secure_boot_full, mda_udid, verified_at FROM provider_trust_reuse`)
+		`SELECT se_pubkey, provider_id, serial, trust_level, binary_hash,
+		        sip_enabled, secure_boot_full, mda_udid, hard_untrust_epoch,
+		        enrolled, security_info_at, verified_at
+		 FROM provider_trust_reuse`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list provider trust reuse: %w", err)
 	}
@@ -4674,7 +4808,20 @@ func (s *PostgresStore) ListProviderTrustReuse(ctx context.Context) ([]ProviderT
 	var out []ProviderTrustReuse
 	for rows.Next() {
 		var rec ProviderTrustReuse
-		if err := rows.Scan(&rec.SEPubKey, &rec.Serial, &rec.TrustLevel, &rec.BinaryHash, &rec.SIPEnabled, &rec.SecureBootFull, &rec.MDAUDID, &rec.VerifiedAt); err != nil {
+		if err := rows.Scan(
+			&rec.SEPubKey,
+			&rec.ProviderID,
+			&rec.Serial,
+			&rec.TrustLevel,
+			&rec.BinaryHash,
+			&rec.SIPEnabled,
+			&rec.SecureBootFull,
+			&rec.MDAUDID,
+			&rec.HardUntrustEpoch,
+			&rec.Enrolled,
+			&rec.SecurityInfoAt,
+			&rec.VerifiedAt,
+		); err != nil {
 			return nil, fmt.Errorf("store: scan provider trust reuse: %w", err)
 		}
 		out = append(out, rec)
@@ -4693,11 +4840,36 @@ func (s *PostgresStore) UpsertProviderTrustReuse(ctx context.Context, rec Provid
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_trust_reuse (se_pubkey, serial, trust_level, binary_hash, sip_enabled, secure_boot_full, mda_udid, verified_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`INSERT INTO provider_trust_reuse (
+		    se_pubkey, provider_id, serial, trust_level, binary_hash,
+		    sip_enabled, secure_boot_full, mda_udid, hard_untrust_epoch,
+		    enrolled, security_info_at, verified_at
+		 )
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		 ON CONFLICT (se_pubkey) DO UPDATE SET
-			serial = $2, trust_level = $3, binary_hash = $4, sip_enabled = $5, secure_boot_full = $6, mda_udid = $7, verified_at = $8`,
-		rec.SEPubKey, rec.Serial, rec.TrustLevel, rec.BinaryHash, rec.SIPEnabled, rec.SecureBootFull, rec.MDAUDID, rec.VerifiedAt,
+			provider_id = EXCLUDED.provider_id,
+			serial = EXCLUDED.serial,
+			trust_level = EXCLUDED.trust_level,
+			binary_hash = EXCLUDED.binary_hash,
+			sip_enabled = EXCLUDED.sip_enabled,
+			secure_boot_full = EXCLUDED.secure_boot_full,
+			mda_udid = EXCLUDED.mda_udid,
+			hard_untrust_epoch = EXCLUDED.hard_untrust_epoch,
+			enrolled = EXCLUDED.enrolled,
+			security_info_at = EXCLUDED.security_info_at,
+			verified_at = EXCLUDED.verified_at`,
+		rec.SEPubKey,
+		rec.ProviderID,
+		rec.Serial,
+		rec.TrustLevel,
+		rec.BinaryHash,
+		rec.SIPEnabled,
+		rec.SecureBootFull,
+		rec.MDAUDID,
+		rec.HardUntrustEpoch,
+		rec.Enrolled,
+		rec.SecurityInfoAt,
+		rec.VerifiedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert provider trust reuse: %w", err)

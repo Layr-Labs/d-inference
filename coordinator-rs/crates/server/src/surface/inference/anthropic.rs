@@ -496,6 +496,16 @@ impl AnthropicStreamAdapter {
 
     fn adapt_events(&mut self, events: Vec<ChatSseEvent>) -> Result<Vec<Vec<u8>>, AdapterError> {
         let mut output = Vec::new();
+        // Empty successful streams are released as one terminal batch. Capture
+        // their held usage before constructing `message_start` so prompt usage
+        // is not lost merely because no content committed earlier.
+        for event in &events {
+            if let ChatSseEvent::Chunk(chunk) = event
+                && let Some(usage) = chunk.usage.as_ref()
+            {
+                self.usage = ChatUsage::from_value(Some(usage));
+            }
+        }
         if !events.is_empty() {
             self.start(&mut output)?;
         }
@@ -557,7 +567,7 @@ impl AnthropicStreamAdapter {
                     "model": self.context.model,
                     "stop_reason": Value::Null,
                     "stop_sequence": Value::Null,
-                    "usage": anthropic_usage(ChatUsage::default()),
+                    "usage": anthropic_usage(self.usage),
                 }
             }),
         )?);
@@ -841,6 +851,38 @@ mod tests {
         assert_eq!(output["content"][0]["input"]["city"], "SF");
         assert_eq!(output["stop_reason"], "tool_use");
         assert_eq!(output["usage"]["input_tokens"], 2);
+    }
+
+    #[test]
+    fn empty_success_has_message_shapes_and_prompt_usage() {
+        let empty = br#"data: {"id":"chatcmpl-empty","object":"chat.completion.chunk","created":2,"model":"model-a","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-empty","object":"chat.completion.chunk","created":2,"model":"model-a","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":0,"total_tokens":3}}
+
+data: [DONE]
+
+"#;
+        let output = adapt_anthropic_nonstream(empty, &context()).expect("empty nonstream");
+        let output: Value = serde_json::from_slice(&output).expect("empty message JSON");
+        assert_eq!(output["content"][0]["type"], "text");
+        assert_eq!(output["content"][0]["text"], "");
+        assert_eq!(output["stop_reason"], "end_turn");
+        assert_eq!(output["usage"]["input_tokens"], 3);
+        assert_eq!(output["usage"]["output_tokens"], 0);
+
+        let mut stream = AnthropicStreamAdapter::new(context());
+        assert!(stream.push(empty).expect("held empty stream").is_empty());
+        let output = stream.finish_input().expect("finish empty stream");
+        let text = output
+            .iter()
+            .map(|event| String::from_utf8_lossy(event))
+            .collect::<String>();
+        assert!(text.contains("event: message_start"));
+        assert!(text.contains("\"input_tokens\":3"));
+        assert!(text.contains("event: content_block_start"));
+        assert!(text.contains("\"text\":\"\""));
+        assert!(text.contains("\"output_tokens\":0"));
+        assert!(text.contains("event: message_stop"));
     }
 
     #[test]

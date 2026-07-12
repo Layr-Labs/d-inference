@@ -629,9 +629,9 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 //
 // Removes an offline/retired machine's persisted record(s) so it stops
 // reappearing in GET /v1/me/providers. Ownership-checked: the caller's account
-// must own the record. A currently-connected machine is refused with 409 (it
-// would just re-register). Billing/uptime history (earnings, usage, sessions)
-// is preserved by the store.
+// must own the record. A currently-connected machine is fenced before the
+// atomic credential/trust/provider deletion. Billing/uptime history is
+// preserved by the store.
 func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) {
 	user := s.requirePrivyUser(w, r)
 	if user == nil {
@@ -661,12 +661,10 @@ func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Refuse if the machine is currently connected — it would re-register and
-	// the card would return.
-	if s.registry.RemoveProviderBySerial(serial, false) {
-		writeJSON(w, http.StatusConflict, errorResponse("conflict", "machine is currently online — stop it before removing"))
-		return
-	}
+	// Fence any live transport before revoking its credential. The store then
+	// commits token revocation, trust invalidation, and record deletion as one
+	// transaction, so this transport cannot recreate the row after eviction.
+	s.registry.RemoveProviderBySerial(serial, true)
 
 	n, err := s.store.DeleteProvidersBySerial(ctx, user.AccountID, serial)
 	if err != nil {
@@ -679,8 +677,7 @@ func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Best-effort: drop any lingering in-memory entry so an evict-race can't
-	// re-persist the record we just removed.
+	// Drop a connection that raced the first fence while the transaction ran.
 	s.registry.RemoveProviderBySerial(serial, true)
 
 	writeJSON(w, http.StatusOK, map[string]any{

@@ -138,37 +138,157 @@ impl BillingStore {
             .collect()
     }
 
-    pub(super) async fn provider_earnings(
+    /// Returns the legacy public wallet view without resolving or disclosing a
+    /// Privy account. Unlinked providers use their wallet as the ledger account
+    /// id, matching the Go coordinator's public endpoint.
+    pub(super) async fn public_provider_earnings(
         &self,
-        account_id: &str,
-        provider_key: &str,
-        limit: i64,
-    ) -> Result<EarningsResponse, BillingError> {
-        let owned: bool = sqlx::query_scalar(
+        wallet: &str,
+    ) -> Result<PublicProviderEarningsResponse, BillingError> {
+        let balance = sqlx::query_scalar::<_, i64>(
             r#"
-            SELECT EXISTS (
-                SELECT 1
-                FROM public.provider_earnings
-                WHERE provider_key = $1 AND account_id = $2
-                UNION ALL
-                SELECT 1
-                FROM public.providers
-                WHERE account_id = $2
-                  AND ($1 = public_key OR $1 = se_public_key OR $1 = id)
-            )
+            SELECT COALESCE((
+                SELECT balance_micro_usd
+                FROM public.balances
+                WHERE account_id = $1
+            ), 0)
             "#,
         )
-        .bind(provider_key)
-        .bind(account_id)
+        .bind(wallet)
         .fetch_one(self.pool())
         .await
-        .map_err(|error| BillingError::internal("authorize provider earnings", error))?;
-        if !owned {
-            return Err(BillingError::forbidden(
-                "provider earnings are available only to the owning account",
+        .map_err(|error| BillingError::internal("read provider wallet balance", error))?;
+        if balance < 0 {
+            return Err(BillingError::internal(
+                "read provider wallet balance",
+                "negative persisted provider wallet balance",
             ));
         }
-        self.earnings(Some(provider_key), account_id, limit).await
+
+        let payout_rows = sqlx::query(
+            r#"
+            SELECT
+                id, provider_address, amount_micro_usd, model, job_id, settled,
+                regexp_replace(
+                    regexp_replace(
+                        to_char(
+                            created_at AT TIME ZONE 'UTC',
+                            'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                        ),
+                        '0+Z$',
+                        'Z'
+                    ),
+                    '\.Z$',
+                    'Z'
+                ) AS timestamp
+            FROM public.provider_payouts
+            WHERE provider_address = $1
+            ORDER BY created_at ASC
+            "#,
+        )
+        .bind(wallet)
+        .fetch_all(self.pool())
+        .await
+        .map_err(|error| BillingError::internal("read provider wallet payouts", error))?;
+
+        let ledger_rows = sqlx::query(
+            r#"
+            SELECT
+                id, account_id, entry_type, amount_micro_usd, balance_after,
+                reference,
+                regexp_replace(
+                    regexp_replace(
+                        to_char(
+                            created_at AT TIME ZONE 'UTC',
+                            'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                        ),
+                        '0+Z$',
+                        'Z'
+                    ),
+                    '\.Z$',
+                    'Z'
+                ) AS created_at
+            FROM public.ledger_entries
+            WHERE account_id = $1
+            ORDER BY created_at DESC
+            LIMIT 500
+            "#,
+        )
+        .bind(wallet)
+        .fetch_all(self.pool())
+        .await
+        .map_err(|error| BillingError::internal("read provider wallet ledger", error))?;
+
+        let mut payouts = Vec::with_capacity(payout_rows.len());
+        for row in payout_rows {
+            let amount = row.get::<i64, _>("amount_micro_usd");
+            if amount < 0 {
+                return Err(BillingError::internal(
+                    "read provider wallet payouts",
+                    "negative persisted provider payout",
+                ));
+            }
+            payouts.push(ProviderPayout {
+                id: row.get("id"),
+                provider_address: row.get("provider_address"),
+                amount_micro_usd: amount,
+                model: row.get("model"),
+                job_id: row.get("job_id"),
+                timestamp: row.get("timestamp"),
+                settled: row.get("settled"),
+            });
+        }
+
+        let mut ledger = Vec::with_capacity(ledger_rows.len());
+        for row in ledger_rows {
+            ledger.push(PublicLedgerEntry {
+                id: row.get("id"),
+                account_id: row.get("account_id"),
+                entry_type: row.get("entry_type"),
+                amount_micro_usd: row.get("amount_micro_usd"),
+                balance_after: row.get("balance_after"),
+                reference: row.get("reference"),
+                created_at: row.get("created_at"),
+            });
+        }
+
+        // Legacy deployments predate provider_payouts. Preserve the Go
+        // compatibility fallback without exposing any account other than the
+        // caller-supplied public wallet.
+        if payouts.is_empty() {
+            payouts.extend(
+                ledger
+                    .iter()
+                    .filter(|entry| entry.entry_type == "payout" && !entry.reference.is_empty())
+                    .map(|entry| ProviderPayout {
+                        id: 0,
+                        provider_address: wallet.to_owned(),
+                        amount_micro_usd: entry.amount_micro_usd,
+                        model: String::new(),
+                        job_id: entry.reference.clone(),
+                        timestamp: entry.created_at.clone(),
+                        settled: true,
+                    }),
+            );
+        }
+
+        let total_earned = payouts.iter().try_fold(0_i64, |total, payout| {
+            total.checked_add(payout.amount_micro_usd).ok_or_else(|| {
+                BillingError::internal(
+                    "summarize provider wallet payouts",
+                    "provider payout total overflow",
+                )
+            })
+        })?;
+        Ok(PublicProviderEarningsResponse {
+            balance_micro_usd: balance,
+            balance_usd: format_usd(balance),
+            total_earned_micro_usd: total_earned,
+            total_earned_usd: format_usd(total_earned),
+            total_jobs: payouts.len(),
+            payouts,
+            ledger,
+        })
     }
 
     pub(super) async fn account_earnings(
@@ -640,6 +760,40 @@ pub struct EarningsResponse {
     pub completion_tokens: i64,
     #[serde(flatten)]
     pub balance: Balance,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PublicProviderEarningsResponse {
+    pub balance_micro_usd: i64,
+    pub balance_usd: String,
+    pub total_earned_micro_usd: i64,
+    pub total_earned_usd: String,
+    pub total_jobs: usize,
+    pub payouts: Vec<ProviderPayout>,
+    pub ledger: Vec<PublicLedgerEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProviderPayout {
+    pub id: i64,
+    pub provider_address: String,
+    pub amount_micro_usd: i64,
+    pub model: String,
+    pub job_id: String,
+    pub timestamp: String,
+    pub settled: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PublicLedgerEntry {
+    pub id: i64,
+    pub account_id: String,
+    #[serde(rename = "type")]
+    pub entry_type: String,
+    pub amount_micro_usd: i64,
+    pub balance_after: i64,
+    pub reference: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Serialize)]

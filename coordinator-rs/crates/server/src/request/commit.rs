@@ -18,7 +18,7 @@ pub enum OutputMode {
 pub enum ChunkClass {
     /// Role-only or Responses lifecycle framing that cannot select a provider.
     Preamble,
-    /// Consumer-visible content, finish, usage, or complete response bytes.
+    /// Nonempty text, reasoning, refusal, or tool output.
     Content,
     /// Exact `data: [DONE]` terminal framing.
     Done,
@@ -123,15 +123,18 @@ impl OutputCommitment {
     ///
     /// Streaming has already emitted exact frames. Nonstreaming concatenates
     /// the same exact byte sequence once, without parsing or re-encoding it.
+    /// A signed completed terminal may select an empty response at this point;
+    /// held role, usage, and `[DONE]` frames are then released without being
+    /// classified as first content.
     pub fn finish_success(&mut self) -> Result<Vec<Vec<u8>>, CommitmentError> {
         if self.finished {
             return Err(CommitmentError::AlreadyFinished);
         }
-        if !self.committed {
-            return Err(CommitmentError::NoContent);
-        }
+        let terminal_empty_commit = !self.committed;
+        self.committed = true;
         self.finished = true;
         match self.mode {
+            OutputMode::Streaming if terminal_empty_commit => Ok(self.take_held()),
             OutputMode::Streaming => Ok(Vec::new()),
             OutputMode::NonStreaming => {
                 let held_bytes = self.held_bytes;
@@ -188,92 +191,125 @@ impl OutputCommitment {
 
 /// Classifies exact SSE or JSON bytes without changing them.
 ///
-/// Malformed or unknown output is content: it must select the provider rather
-/// than being silently discarded and retried. Only narrowly recognized role
-/// and lifecycle preambles remain uncommitted.
+/// Only nonempty generated output selects a provider. Role, usage, finish, and
+/// lifecycle metadata remain held until content or terminal handling decides
+/// the request outcome.
 #[must_use]
 pub fn classify_chunk(bytes: &[u8]) -> ChunkClass {
-    let Some(payload) = sse_or_raw_payload(bytes) else {
-        return ChunkClass::Content;
+    let Some(payloads) = sse_or_raw_payloads(bytes) else {
+        return ChunkClass::Preamble;
     };
-    if std::str::from_utf8(&payload).is_ok_and(|value| value.trim() == "[DONE]") {
-        return ChunkClass::Done;
-    }
-    let Ok(value) = serde_json::from_slice::<Value>(&payload) else {
-        return ChunkClass::Content;
-    };
-    if is_lifecycle_preamble(&value) || is_role_only_preamble(&value) {
-        ChunkClass::Preamble
-    } else {
-        ChunkClass::Content
-    }
-}
-
-fn sse_or_raw_payload(bytes: &[u8]) -> Option<Vec<u8>> {
-    let text = std::str::from_utf8(bytes).ok()?;
-    let mut data = Vec::new();
-    let mut saw_data = false;
-    for line in text.lines() {
-        if let Some(mut value) = line.strip_prefix("data:") {
-            if let Some(stripped) = value.strip_prefix(' ') {
-                value = stripped;
-            }
-            if saw_data {
-                data.push(b'\n');
-            }
-            data.extend_from_slice(value.as_bytes());
-            saw_data = true;
+    let mut done = false;
+    for payload in payloads {
+        if std::str::from_utf8(&payload).is_ok_and(|value| value.trim() == "[DONE]") {
+            done = true;
+            continue;
         }
-    }
-    if saw_data {
-        Some(data)
-    } else {
-        Some(bytes.to_vec())
-    }
-}
-
-fn is_lifecycle_preamble(value: &Value) -> bool {
-    matches!(
-        value.get("type").and_then(Value::as_str),
-        Some("response.created" | "response.in_progress")
-    )
-}
-
-fn is_role_only_preamble(value: &Value) -> bool {
-    if value.get("object").and_then(Value::as_str) != Some("chat.completion.chunk") {
-        return false;
-    }
-    if value.get("usage").is_some_and(|usage| !usage.is_null()) {
-        return false;
-    }
-    let Some(choices) = value.get("choices").and_then(Value::as_array) else {
-        return false;
-    };
-    if choices.is_empty() {
-        return false;
-    }
-    choices.iter().all(|choice| {
-        if choice
-            .get("finish_reason")
-            .is_some_and(|value| !value.is_null())
+        if serde_json::from_slice::<Value>(&payload).is_ok_and(|value| has_generated_output(&value))
         {
-            return false;
+            return ChunkClass::Content;
         }
-        let Some(delta) = choice.get("delta").and_then(Value::as_object) else {
-            return false;
-        };
-        if !delta.contains_key("role") {
-            return false;
-        }
-        delta.iter().all(|(field, value)| match field.as_str() {
-            "role" => true,
-            "content" | "reasoning_content" | "reasoning" | "refusal" => {
-                value.is_null() || value.as_str() == Some("")
+    }
+    if done {
+        ChunkClass::Done
+    } else {
+        ChunkClass::Preamble
+    }
+}
+
+fn sse_or_raw_payloads(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let text = std::str::from_utf8(bytes).ok()?.replace("\r\n", "\n");
+    if !text.lines().any(|line| line.starts_with("data:")) {
+        return Some(vec![bytes.to_vec()]);
+    }
+    let mut payloads = Vec::new();
+    for event in text.split("\n\n") {
+        let mut data = Vec::new();
+        let mut saw_data = false;
+        for line in event.lines() {
+            if let Some(mut value) = line.strip_prefix("data:") {
+                if let Some(stripped) = value.strip_prefix(' ') {
+                    value = stripped;
+                }
+                if saw_data {
+                    data.push(b'\n');
+                }
+                data.extend_from_slice(value.as_bytes());
+                saw_data = true;
             }
-            "tool_calls" => value.is_null() || value.as_array().is_some_and(Vec::is_empty),
-            _ => false,
+        }
+        if saw_data {
+            payloads.push(data);
+        }
+    }
+    Some(payloads)
+}
+
+fn has_generated_output(value: &Value) -> bool {
+    if generated_fields(value) {
+        return true;
+    }
+    if value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| {
+            matches!(
+                kind,
+                "response.output_text.delta"
+                    | "response.reasoning_summary_text.delta"
+                    | "response.function_call_arguments.delta"
+            )
         })
-    })
+        && value
+            .get("delta")
+            .and_then(Value::as_str)
+            .is_some_and(|delta| !delta.is_empty())
+    {
+        return true;
+    }
+    value
+        .get("choices")
+        .and_then(Value::as_array)
+        .is_some_and(|choices| {
+            choices.iter().any(|choice| {
+                choice
+                    .get("delta")
+                    .or_else(|| choice.get("message"))
+                    .is_some_and(generated_fields)
+            })
+        })
+}
+
+fn generated_fields(value: &Value) -> bool {
+    ["content", "reasoning_content", "reasoning", "refusal"]
+        .iter()
+        .any(|field| {
+            value
+                .get(*field)
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty())
+        })
+        || value
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|calls| calls.iter().any(tool_call_has_output))
+}
+
+fn tool_call_has_output(call: &Value) -> bool {
+    ["id", "type"]
+        .iter()
+        .any(|field| nonempty_string(call.get(*field)))
+        || call.get("function").is_some_and(|function| {
+            ["name", "arguments"]
+                .iter()
+                .any(|field| nonempty_string(function.get(*field)))
+        })
+}
+
+fn nonempty_string(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.is_empty())
 }
 
 #[cfg(test)]
@@ -285,6 +321,12 @@ mod tests {
 "#;
     const CREATED: &[u8] =
         br#"data: {"type":"response.created","response":{"status":"in_progress"}}"#;
+    const USAGE: &[u8] = br#"data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":0,"total_tokens":2}}
+
+"#;
+    const FINISH: &[u8] = br#"data: {"object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"stop"}]}
+
+"#;
     const CONTENT: &[u8] = br#"data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"hello"},"finish_reason":null}]}
 
 "#;
@@ -294,17 +336,31 @@ mod tests {
     fn only_exact_role_and_lifecycle_preambles_are_held() {
         assert_eq!(classify_chunk(ROLE), ChunkClass::Preamble);
         assert_eq!(classify_chunk(CREATED), ChunkClass::Preamble);
+        assert_eq!(classify_chunk(USAGE), ChunkClass::Preamble);
+        assert_eq!(classify_chunk(FINISH), ChunkClass::Preamble);
         assert_eq!(classify_chunk(CONTENT), ChunkClass::Content);
         assert_eq!(classify_chunk(DONE), ChunkClass::Done);
         assert_eq!(
             classify_chunk(
                 br#"data: {"object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant","audio":{"id":"a"}},"finish_reason":null}]}"#
             ),
-            ChunkClass::Content
+            ChunkClass::Preamble
         );
         assert_eq!(
             classify_chunk(
                 br#"data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"response.created"},"finish_reason":null}]}"#
+            ),
+            ChunkClass::Content
+        );
+        assert_eq!(
+            classify_chunk(
+                br#"data: {"object":"chat.completion.chunk","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":""}}]},"finish_reason":null}]}"#
+            ),
+            ChunkClass::Preamble
+        );
+        assert_eq!(
+            classify_chunk(
+                br#"data: {"object":"chat.completion.chunk","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{"}}]},"finish_reason":null}]}"#
             ),
             ChunkClass::Content
         );
@@ -322,6 +378,8 @@ mod tests {
         for (class, frame) in [
             (ChunkClass::Preamble, ROLE),
             (ChunkClass::Preamble, CREATED),
+            (ChunkClass::Preamble, USAGE),
+            (ChunkClass::Preamble, FINISH),
         ] {
             assert!(
                 streaming
@@ -344,7 +402,13 @@ mod tests {
         assert!(streamed.first_content);
         assert_eq!(
             streamed.ready,
-            [ROLE.to_vec(), CREATED.to_vec(), CONTENT.to_vec()]
+            [
+                ROLE.to_vec(),
+                CREATED.to_vec(),
+                USAGE.to_vec(),
+                FINISH.to_vec(),
+                CONTENT.to_vec()
+            ]
         );
         assert!(
             nonstreaming
@@ -365,7 +429,7 @@ mod tests {
         assert!(streaming.finish_success().expect("finish").is_empty());
         assert_eq!(
             nonstreaming.finish_success().expect("finish"),
-            vec![[ROLE, CREATED, CONTENT, DONE].concat()]
+            vec![[ROLE, CREATED, USAGE, FINISH, CONTENT, DONE].concat()]
         );
     }
 }

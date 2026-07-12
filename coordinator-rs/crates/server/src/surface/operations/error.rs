@@ -53,6 +53,10 @@ impl OperationsError {
         Self::new(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large", message)
     }
 
+    pub(super) fn rate_limited(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", message)
+    }
+
     pub(super) fn unavailable(message: impl Into<Cow<'static, str>>) -> Self {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, "not_configured", message)
     }

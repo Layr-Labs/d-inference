@@ -59,6 +59,11 @@ pub enum RequestEvent {
         /// Fresh provider revision fence.
         provider: ProviderFence,
     },
+    /// Releases the authorized attempt after a failure before first content.
+    PreContentFailed {
+        /// Authorized attempt whose resources are returned.
+        attempt_id: AttemptId,
+    },
     /// Commits the first content-bearing provider output.
     FirstContent {
         /// Sole authorized attempt.
@@ -240,6 +245,9 @@ fn apply_new(
         } => {
             authorize_start(state, context, *attempt_id, provider)?;
         }
+        RequestEvent::PreContentFailed { attempt_id } => {
+            fail_before_content(state, *attempt_id)?;
+        }
         RequestEvent::FirstContent {
             attempt_id,
             provider,
@@ -359,6 +367,33 @@ fn authorize_start(
     }
     state.authorize_attempt(attempt_id)?;
     state.authorized_attempt = Some(attempt_id);
+    Ok(())
+}
+
+fn fail_before_content(
+    state: &mut RequestState,
+    attempt_id: AttemptId,
+) -> Result<(), RequestError> {
+    if state.first_content {
+        return Err(RequestError::FailoverAfterContent);
+    }
+    if state.authorized_attempt != Some(attempt_id) {
+        return Err(RequestError::AttemptNotAuthorized(attempt_id));
+    }
+    let attempt = state
+        .attempts
+        .get(&attempt_id)
+        .ok_or(RequestError::UnknownAttempt(attempt_id))?;
+    if attempt.status() != AttemptStatus::Authorized {
+        return Err(RequestError::AttemptNotAuthorized(attempt_id));
+    }
+    state.release_attempt(
+        attempt_id,
+        AttemptStatus::Released {
+            reason: AttemptReleaseReason::PreContentFailure,
+        },
+    )?;
+    state.authorized_attempt = None;
     Ok(())
 }
 
@@ -546,6 +581,10 @@ pub enum RequestError {
     /// First content is a one-time transition.
     #[error("first content was already recorded")]
     FirstContentAlreadyRecorded,
+    #[error("attempt {0} is not the authorized attempt")]
+    AttemptNotAuthorized(AttemptId),
+    #[error("provider failover is forbidden after first content")]
+    FailoverAfterContent,
     /// Settlement requires one authorized attempt.
     #[error("settlement requires start authorization")]
     SettlementBeforeAuthorization,

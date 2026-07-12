@@ -2,7 +2,10 @@ use std::{net::SocketAddr, time::Duration};
 
 use thiserror::Error;
 
-use crate::pilot::{PilotConfig, PilotConfigError};
+use crate::{
+    pilot::{PilotConfig, PilotConfigError},
+    surface::{FullSurfaceConfig, FullSurfaceConfigError},
+};
 
 const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:8081";
 const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 32;
@@ -19,6 +22,7 @@ pub struct Config {
     pub ownership_enabled: bool,
     pub shutdown_grace: Duration,
     pub pilot: PilotConfig,
+    pub full_surface: FullSurfaceConfig,
 }
 
 #[derive(Debug, Error)]
@@ -34,8 +38,12 @@ pub enum ConfigError {
     InvalidDatabaseMaxConnections(String),
     #[error("invalid EIGENINFERENCE_RUST_SHUTDOWN_GRACE_SECONDS {0:?}")]
     InvalidShutdownGrace(String),
+    #[error("the production full surface requires coordinator ownership fencing")]
+    FullSurfaceRequiresOwnership,
     #[error(transparent)]
     Pilot(#[from] PilotConfigError),
+    #[error(transparent)]
+    FullSurface(#[from] FullSurfaceConfigError),
 }
 
 impl Config {
@@ -47,8 +55,17 @@ impl Config {
             std::env::var("EIGENINFERENCE_COORDINATOR_OWNERSHIP_ENABLED").ok(),
             std::env::var("EIGENINFERENCE_RUST_SHUTDOWN_GRACE_SECONDS").ok(),
         )?;
-        config.pilot = PilotConfig::from_env()?;
+        config.full_surface = FullSurfaceConfig::from_env()?;
+        config.pilot = PilotConfig::from_env_mode(config.full_surface.enabled)?;
+        config.validate()?;
         Ok(config)
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.full_surface.enabled && !self.ownership_enabled {
+            return Err(ConfigError::FullSurfaceRequiresOwnership);
+        }
+        Ok(())
     }
 
     fn from_values(
@@ -102,6 +119,7 @@ impl Config {
             ownership_enabled: ownership_enabled.as_deref() == Some("true"),
             shutdown_grace,
             pilot: PilotConfig::disabled(),
+            full_surface: FullSurfaceConfig::disabled(),
         })
     }
 }
@@ -161,6 +179,26 @@ mod tests {
                 Some("0".to_owned()),
             ),
             Err(ConfigError::InvalidShutdownGrace(_))
+        ));
+    }
+
+    #[test]
+    fn full_surface_requires_ownership_without_changing_disabled_defaults() {
+        let mut config = Config::from_values(
+            None,
+            Some("postgres://localhost/test".to_owned()),
+            None,
+            None,
+            None,
+        )
+        .expect("base config");
+        assert!(!config.full_surface.enabled);
+        assert!(config.validate().is_ok());
+
+        config.full_surface.enabled = true;
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::FullSurfaceRequiresOwnership)
         ));
     }
 }

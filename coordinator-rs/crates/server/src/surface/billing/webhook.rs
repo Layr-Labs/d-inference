@@ -8,6 +8,7 @@ use axum::{
 use serde_json::{Value, json};
 use sqlx::{Row, types::Json as SqlJson};
 
+use crate::database::OwnedTransaction;
 use crate::ledger::{
     ExternalId, LedgerError, Operation, OperationId, OperationKey, WithdrawalId, WithdrawalStatus,
     WithdrawalTransition, canonical_json_digest,
@@ -45,9 +46,9 @@ pub(super) async fn connect_webhook(
     let event_id = required_event_string(&event, "id")?.to_owned();
     let event_type = required_event_string(&event, "type")?.to_owned();
     let claim = claim_event(&state.store, &event_id, &event_type, &event).await?;
-    if claim == EventClaim::Terminal {
+    let EventClaim::Processing(claim) = claim else {
         return Ok(Json(json!({"received": true, "replayed": true})).into_response());
-    }
+    };
     let outcome = match event_type.as_str() {
         "account.updated" => handle_account_updated(&state.store, &event).await,
         "payout.paid" => handle_payout(&state, &event_id, &event, PayoutDisposition::Paid).await,
@@ -56,13 +57,13 @@ pub(super) async fn connect_webhook(
         }
         "transfer.reversed" => handle_transfer_reversal(&state.store, &event_id, &event).await,
         _ => {
-            finish_event(&state.store, &event_id, "ignored").await?;
+            finish_event(claim, &event_id, "ignored").await?;
             return Ok(Json(json!({"received": true, "ignored": true})).into_response());
         }
     };
     match outcome {
         Ok(()) => {
-            finish_event(&state.store, &event_id, "applied").await?;
+            finish_event(claim, &event_id, "applied").await?;
             Ok(Json(json!({"received": true})).into_response())
         }
         Err(error) if error.is_external_unknown() => Err(BillingError::retryable(
@@ -73,19 +74,18 @@ pub(super) async fn connect_webhook(
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum EventClaim {
-    New,
-    Retry,
+#[derive(Debug)]
+enum EventClaim<'a> {
+    Processing(OwnedTransaction<'a>),
     Terminal,
 }
 
-async fn claim_event(
-    store: &BillingStore,
+async fn claim_event<'a>(
+    store: &'a BillingStore,
     event_id: &str,
     event_kind: &str,
     payload: &Value,
-) -> Result<EventClaim, BillingError> {
+) -> Result<EventClaim<'a>, BillingError> {
     let digest = canonical_json_digest(payload)
         .map_err(|error| BillingError::from_ledger("digest Stripe Connect event", error))?;
     let mut transaction = store.begin("claim Stripe Connect event").await?;
@@ -110,60 +110,62 @@ async fn claim_event(
     .fetch_optional(transaction.connection())
     .await
     .map_err(|error| BillingError::internal("claim Stripe Connect event", error))?;
-    let disposition = if inserted.is_some() {
-        EventClaim::New
-    } else {
-        let row = sqlx::query(
-            r#"
-            SELECT event_kind, payload_digest, payload, status
-            FROM rust_coord.external_events
-            WHERE source = 'stripe_connect' AND event_id = $1
-            FOR UPDATE
-            "#,
-        )
-        .bind(event_id)
-        .fetch_one(transaction.connection())
-        .await
-        .map_err(|error| BillingError::internal("reconcile Stripe Connect event", error))?;
-        let persisted_digest: Vec<u8> = row.get("payload_digest");
-        let persisted_payload = row.get::<SqlJson<Value>, _>("payload").0;
-        if row.get::<String, _>("event_kind") != event_kind
-            || persisted_digest.as_slice() != digest.as_bytes()
-            || persisted_payload != *payload
-        {
-            return Err(BillingError::conflict(
-                "external_event_conflict",
-                "Stripe event id was replayed with different immutable payload",
-            ));
+    if inserted.is_some() {
+        return Ok(EventClaim::Processing(transaction));
+    }
+    let row = sqlx::query(
+        r#"
+        SELECT event_kind, payload_digest, payload, status
+        FROM rust_coord.external_events
+        WHERE source = 'stripe_connect' AND event_id = $1
+        FOR UPDATE
+        "#,
+    )
+    .bind(event_id)
+    .fetch_one(transaction.connection())
+    .await
+    .map_err(|error| BillingError::internal("reconcile Stripe Connect event", error))?;
+    let persisted_digest: Vec<u8> = row.get("payload_digest");
+    let persisted_payload = row.get::<SqlJson<Value>, _>("payload").0;
+    if row.get::<String, _>("event_kind") != event_kind
+        || persisted_digest.as_slice() != digest.as_bytes()
+        || persisted_payload != *payload
+    {
+        return Err(BillingError::conflict(
+            "external_event_conflict",
+            "Stripe event id was replayed with different immutable payload",
+        ));
+    }
+    match row.get::<String, _>("status").as_str() {
+        "applied" | "ignored" | "rejected" => {
+            transaction
+                .commit()
+                .await
+                .map_err(|error| BillingError::external_unknown(error.to_string()))?;
+            Ok(EventClaim::Terminal)
         }
-        match row.get::<String, _>("status").as_str() {
-            "applied" | "ignored" | "rejected" => EventClaim::Terminal,
-            "processing" | "failed" | "pending" => EventClaim::Retry,
-            _ => {
-                return Err(BillingError::internal(
-                    "reconcile Stripe Connect event",
-                    "invalid persisted event status",
-                ));
-            }
-        }
-    };
-    transaction
-        .commit()
-        .await
-        .map_err(|error| BillingError::external_unknown(error.to_string()))?;
-    Ok(disposition)
+        "processing" | "failed" | "pending" => Ok(EventClaim::Processing(transaction)),
+        _ => Err(BillingError::internal(
+            "reconcile Stripe Connect event",
+            "invalid persisted event status",
+        )),
+    }
 }
 
 async fn finish_event(
-    store: &BillingStore,
+    mut transaction: OwnedTransaction<'_>,
     event_id: &str,
     status: &str,
 ) -> Result<(), BillingError> {
-    let mut transaction = store.begin("finish Stripe Connect event").await?;
     let updated = sqlx::query(
         r#"
         UPDATE rust_coord.external_events
-        SET status = $2, processed_at = NOW(), updated_at = NOW(), version = version + 1
+        SET status = $2,
+            worker_owner = NULL,
+            lease_until = NULL,
+            processed_at = NOW(),
+            updated_at = NOW(),
+            version = version + 1
         WHERE source = 'stripe_connect'
           AND event_id = $1
           AND status IN ('pending', 'processing', 'failed', $2)

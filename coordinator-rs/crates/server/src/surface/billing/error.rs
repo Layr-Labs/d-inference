@@ -35,7 +35,7 @@ impl BillingError {
         Self::new(StatusCode::BAD_REQUEST, "invalid_request_error", message)
     }
 
-    pub(super) fn unauthorized(message: impl Into<Cow<'static, str>>) -> Self {
+    pub(crate) fn unauthorized(message: impl Into<Cow<'static, str>>) -> Self {
         Self::new(StatusCode::UNAUTHORIZED, "unauthorized", message)
     }
 

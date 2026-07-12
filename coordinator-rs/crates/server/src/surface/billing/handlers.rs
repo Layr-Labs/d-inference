@@ -45,29 +45,21 @@ pub(super) async fn provider_earnings(
     State(state): State<BillingState>,
     request: Request,
 ) -> Result<Response, BillingError> {
-    let account_id = principal(&request)?.account_id().to_owned();
-    let provider_key = query_parameter(request.uri().query(), "provider_key")
-        .or_else(|| query_parameter(request.uri().query(), "wallet"))
+    let wallet = query_parameter(request.uri().query(), "wallet")
         .or_else(|| {
             request
                 .headers()
-                .get("x-provider-key")
+                .get("x-provider-wallet")
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned)
         })
-        .ok_or_else(|| BillingError::bad_request("provider_key query parameter is required"))?;
-    let limit = bounded_limit(
-        query_parameter(request.uri().query(), "limit").as_deref(),
-        50,
-        1_000,
-    );
-    Ok(Json(
-        state
-            .store
-            .provider_earnings(&account_id, &provider_key, limit)
-            .await?,
-    )
-    .into_response())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            BillingError::bad_request(
+                "wallet address required (query param ?wallet=0x... or X-Provider-Wallet header)",
+            )
+        })?;
+    Ok(Json(state.store.public_provider_earnings(&wallet).await?).into_response())
 }
 
 pub(super) async fn account_earnings(
@@ -102,11 +94,12 @@ pub(super) async fn methods(State(state): State<BillingState>) -> Result<Respons
     } else {
         Vec::new()
     };
+    let referral_share_percent = state.referral.share_percent().await?;
     Ok(Json(json!({
         "methods": methods,
         "referral": {
             "enabled": true,
-            "share_percent": state.referral.share_percent()
+            "share_percent": referral_share_percent
         }
     }))
     .into_response())
@@ -159,19 +152,6 @@ pub(super) async fn admin_pricing_put(
         .set("platform", model, input, output)
         .await?;
     Ok(Json(json!({"status": "platform_default_updated", "price": price})).into_response())
-}
-
-pub(super) async fn admin_pricing_delete(
-    State(state): State<BillingState>,
-    request: Request,
-) -> Result<Response, BillingError> {
-    require_admin(&request, state.admin_key_digest.as_ref())?;
-    let payload: Value = body::json(request).await?;
-    let model = body::required_string(&payload, "model")?;
-    let deleted = PricingService::new(state.store)
-        .delete("platform", model)
-        .await?;
-    Ok(Json(json!({"status": "deleted", "model": deleted})).into_response())
 }
 
 pub(super) async fn referral_register(

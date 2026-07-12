@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -20,9 +20,13 @@ use sqlx::PgPool;
 use tokio::{net::TcpListener, task::JoinHandle};
 use tower::ServiceExt as _;
 
-use crate::{database::Database, ownership::CoordinatorOwnership};
+use crate::{database::Database, ownership::CoordinatorOwnership, recovery::RecoveryService};
+use uuid::Uuid;
 
-use super::{AuthenticationKind, BillingPrincipal, BillingState, StripeSettings, router};
+use super::{
+    AuthenticationKind, BillingPrincipal, BillingState, StripeSettings, WithdrawalRecoveryAction,
+    router,
+};
 
 #[allow(clippy::duplicate_mod)]
 #[path = "../../../tests/postgres/support/database.rs"]
@@ -162,6 +166,342 @@ async fn accepted_external_unknown_keeps_checkout_pending_for_same_key_retry() {
 }
 
 #[tokio::test]
+async fn withdrawal_outbox_recovers_crash_window_with_the_same_stripe_idempotency_key() {
+    with_isolated_database(|url| async move {
+        let test = TestDatabase::start(&url).await;
+        let stripe = TestStripe::start(StripeMode::UnknownTransferThenWorking).await;
+        let state = BillingState::builder(test.database.clone())
+            .with_stripe(stripe.settings())
+            .with_admin_key("test-admin")
+            .build()
+            .expect("billing state");
+        let withdrawal_recovery = state.withdrawal_recovery().expect("withdrawal recovery");
+        let app = router(state);
+        seed_user(&test.pool, "provider", "provider@example.test").await;
+        sqlx::raw_sql(
+            r#"
+            UPDATE public.users
+            SET stripe_account_id='acct_provider',
+                stripe_account_status='ready',
+                stripe_account_country='US'
+            WHERE account_id='provider';
+            INSERT INTO public.balances (
+                account_id, balance_micro_usd, withdrawable_micro_usd
+            ) VALUES ('provider', 5000000, 5000000);
+            "#,
+        )
+        .execute(&test.pool)
+        .await
+        .expect("seed recoverable withdrawal");
+
+        let response = app
+            .oneshot(authenticated_json_request(
+                "POST",
+                "/v1/billing/withdraw/stripe",
+                json!({"amount_usd": "2.00", "method": "standard"}),
+                principal("provider"),
+                Some("recover-after-debit"),
+            ))
+            .await
+            .expect("withdraw response");
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let withdrawal_id = response_json(response).await["withdrawal_id"]
+            .as_str()
+            .expect("withdrawal id")
+            .to_owned();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT balance_micro_usd FROM public.balances WHERE account_id='provider'",
+            )
+            .fetch_one(&test.pool)
+            .await
+            .expect("debited balance"),
+            3_000_000
+        );
+
+        let recovery = RecoveryService::new(test.database.clone());
+        let worker = Uuid::new_v4();
+        let leases = recovery
+            .claim_outbox(worker, 1, Duration::from_secs(5))
+            .await
+            .expect("claim withdrawal outbox");
+        assert_eq!(leases.len(), 1);
+        assert_eq!(
+            withdrawal_recovery
+                .process(worker, &leases[0])
+                .await
+                .expect("recover withdrawal"),
+            WithdrawalRecoveryAction::Handled
+        );
+        let persisted: (String, String, String) = sqlx::query_as(
+            r#"
+            SELECT withdrawals.status, withdrawals.external_state, outbox.status
+            FROM public.stripe_withdrawals AS withdrawals
+            JOIN rust_coord.outbox AS outbox
+              ON outbox.operation_key='withdrawal-call:' || withdrawals.id
+            WHERE withdrawals.id=$1
+            "#,
+        )
+        .bind(&withdrawal_id)
+        .fetch_one(&test.pool)
+        .await
+        .expect("recovered withdrawal");
+        assert_eq!(
+            persisted,
+            (
+                "transferred".to_owned(),
+                "confirmed".to_owned(),
+                "delivered".to_owned(),
+            )
+        );
+        assert_eq!(
+            stripe.transfer_idempotency_keys(),
+            vec![
+                format!(
+                    "wd-tr-{}",
+                    super::auth::operation_suffix("provider", "recover-after-debit")
+                ),
+                format!(
+                    "wd-tr-{}",
+                    super::auth::operation_suffix("provider", "recover-after-debit")
+                ),
+            ]
+        );
+
+        stripe.stop();
+        test.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn max_unknown_withdrawal_recovery_stays_debited_for_operator_review() {
+    with_isolated_database(|url| async move {
+        let test = TestDatabase::start(&url).await;
+        let stripe = TestStripe::start(StripeMode::UnknownTransferAlways).await;
+        let state = BillingState::builder(test.database.clone())
+            .with_stripe(stripe.settings())
+            .with_admin_key("test-admin")
+            .build()
+            .expect("billing state");
+        let withdrawal_recovery = state
+            .withdrawal_recovery()
+            .expect("withdrawal recovery");
+        let app = router(state);
+        seed_user(&test.pool, "provider", "provider@example.test").await;
+        sqlx::raw_sql(
+            r#"
+            UPDATE public.users
+            SET stripe_account_id='acct_provider',
+                stripe_account_status='ready',
+                stripe_account_country='US'
+            WHERE account_id='provider';
+            INSERT INTO public.balances (
+                account_id, balance_micro_usd, withdrawable_micro_usd
+            ) VALUES ('provider', 5000000, 5000000);
+            "#,
+        )
+        .execute(&test.pool)
+        .await
+        .expect("seed max-attempt withdrawal");
+
+        let response = app
+            .oneshot(authenticated_json_request(
+                "POST",
+                "/v1/billing/withdraw/stripe",
+                json!({"amount_usd": "2.00", "method": "standard"}),
+                principal("provider"),
+                Some("recover-max-failure"),
+            ))
+            .await
+            .expect("withdraw response");
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let withdrawal_id = response_json(response).await["withdrawal_id"]
+            .as_str()
+            .expect("withdrawal id")
+            .to_owned();
+        sqlx::query(
+            "UPDATE rust_coord.outbox SET max_attempts=1 WHERE operation_key='withdrawal-call:' || $1",
+        )
+        .bind(&withdrawal_id)
+        .execute(&test.pool)
+        .await
+        .expect("bound recovery attempts");
+
+        let recovery = RecoveryService::new(test.database.clone());
+        let worker = Uuid::new_v4();
+        let leases = recovery
+            .claim_outbox(worker, 1, Duration::from_secs(5))
+            .await
+            .expect("claim max-attempt outbox");
+        assert_eq!(
+            withdrawal_recovery
+                .process(worker, &leases[0])
+                .await
+                .expect("finish max-attempt withdrawal"),
+            WithdrawalRecoveryAction::Handled
+        );
+        let state: (i64, i64, String, bool, String, String, i64) = sqlx::query_as(
+            r#"
+            SELECT
+                balances.balance_micro_usd,
+                balances.withdrawable_micro_usd,
+                withdrawals.status,
+                withdrawals.refunded,
+                withdrawals.external_state,
+                outbox.status,
+                (SELECT COUNT(*) FROM public.stripe_withdrawal_failures
+                 WHERE withdrawal_id=withdrawals.id)::BIGINT
+            FROM public.balances AS balances
+            JOIN public.stripe_withdrawals AS withdrawals
+              ON withdrawals.account_id=balances.account_id
+            JOIN rust_coord.outbox AS outbox
+              ON outbox.operation_key='withdrawal-call:' || withdrawals.id
+            WHERE withdrawals.id=$1
+            "#,
+        )
+        .bind(&withdrawal_id)
+        .fetch_one(&test.pool)
+        .await
+        .expect("failed withdrawal state");
+        assert_eq!(
+            state,
+            (
+                3_000_000,
+                3_000_000,
+                "review_pending".to_owned(),
+                false,
+                "external_unknown".to_owned(),
+                "failed".to_owned(),
+                0,
+            )
+        );
+        let refunds: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM public.ledger_entries WHERE reference='stripe_withdraw:' || $1 AND entry_type='refund'",
+        )
+        .bind(&withdrawal_id)
+        .fetch_one(&test.pool)
+        .await
+        .expect("refund count");
+        assert_eq!(refunds, 0);
+
+        stripe.stop();
+        test.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn definitive_transfer_failure_refunds_once_and_records_failure_tombstone() {
+    with_isolated_database(|url| async move {
+        let test = TestDatabase::start(&url).await;
+        let stripe = TestStripe::start(StripeMode::UnknownTransferThenPermanentFailure).await;
+        let state = BillingState::builder(test.database.clone())
+            .with_stripe(stripe.settings())
+            .with_admin_key("test-admin")
+            .build()
+            .expect("billing state");
+        let withdrawal_recovery = state
+            .withdrawal_recovery()
+            .expect("withdrawal recovery");
+        let app = router(state);
+        seed_user(&test.pool, "provider", "provider@example.test").await;
+        sqlx::raw_sql(
+            r#"
+            UPDATE public.users
+            SET stripe_account_id='acct_provider',
+                stripe_account_status='ready',
+                stripe_account_country='US'
+            WHERE account_id='provider';
+            INSERT INTO public.balances (
+                account_id, balance_micro_usd, withdrawable_micro_usd
+            ) VALUES ('provider', 5000000, 5000000);
+            "#,
+        )
+        .execute(&test.pool)
+        .await
+        .expect("seed definitively failed withdrawal");
+
+        let response = app
+            .oneshot(authenticated_json_request(
+                "POST",
+                "/v1/billing/withdraw/stripe",
+                json!({"amount_usd": "2.00", "method": "standard"}),
+                principal("provider"),
+                Some("recover-definitive-failure"),
+            ))
+            .await
+            .expect("withdraw response");
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let withdrawal_id = response_json(response).await["withdrawal_id"]
+            .as_str()
+            .expect("withdrawal id")
+            .to_owned();
+
+        let recovery = RecoveryService::new(test.database.clone());
+        let worker = Uuid::new_v4();
+        let leases = recovery
+            .claim_outbox(worker, 1, Duration::from_secs(5))
+            .await
+            .expect("claim failed withdrawal outbox");
+        assert_eq!(
+            withdrawal_recovery
+                .process(worker, &leases[0])
+                .await
+                .expect("finish definitive failure"),
+            WithdrawalRecoveryAction::Handled
+        );
+        let state: (i64, i64, String, bool, String, String, i64) = sqlx::query_as(
+            r#"
+            SELECT
+                balances.balance_micro_usd,
+                balances.withdrawable_micro_usd,
+                withdrawals.status,
+                withdrawals.refunded,
+                withdrawals.external_state,
+                outbox.status,
+                (SELECT COUNT(*) FROM public.stripe_withdrawal_failures
+                 WHERE withdrawal_id=withdrawals.id)::BIGINT
+            FROM public.balances AS balances
+            JOIN public.stripe_withdrawals AS withdrawals
+              ON withdrawals.account_id=balances.account_id
+            JOIN rust_coord.outbox AS outbox
+              ON outbox.operation_key='withdrawal-call:' || withdrawals.id
+            WHERE withdrawals.id=$1
+            "#,
+        )
+        .bind(&withdrawal_id)
+        .fetch_one(&test.pool)
+        .await
+        .expect("definitive withdrawal failure");
+        assert_eq!(
+            state,
+            (
+                5_000_000,
+                5_000_000,
+                "failed".to_owned(),
+                true,
+                "permanent_failure".to_owned(),
+                "failed".to_owned(),
+                1,
+            )
+        );
+        let refunds: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM public.ledger_entries WHERE reference='stripe_withdraw:' || $1 AND entry_type='refund'",
+        )
+        .bind(&withdrawal_id)
+        .fetch_one(&test.pool)
+        .await
+        .expect("definitive refund count");
+        assert_eq!(refunds, 1);
+
+        stripe.stop();
+        test.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn withdrawal_and_concurrent_reversal_refund_principal_once() {
     with_isolated_database(|url| async move {
         let test = TestDatabase::start(&url).await;
@@ -178,6 +518,18 @@ async fn withdrawal_and_concurrent_reversal_refund_principal_once() {
             INSERT INTO public.balances (
                 account_id, balance_micro_usd, withdrawable_micro_usd
             ) VALUES ('provider', 5000000, 5000000);
+            CREATE FUNCTION delay_first_test_reversal() RETURNS trigger
+            LANGUAGE plpgsql AS $$
+            BEGIN
+                IF NEW.refunded AND NOT OLD.refunded THEN
+                    PERFORM pg_sleep(0.25);
+                END IF;
+                RETURN NEW;
+            END;
+            $$;
+            CREATE TRIGGER delay_first_test_reversal
+            BEFORE UPDATE OF refunded ON public.stripe_withdrawals
+            FOR EACH ROW EXECUTE FUNCTION delay_first_test_reversal();
             "#,
         )
         .execute(&test.pool)
@@ -228,8 +580,22 @@ async fn withdrawal_and_concurrent_reversal_refund_principal_once() {
         );
         let second = webhook_request("/v1/billing/stripe/connect/webhook", raw, &signature);
         let (first, second) = tokio::join!(app.clone().oneshot(first), app.clone().oneshot(second));
-        assert_eq!(first.expect("first reversal").status(), StatusCode::OK);
-        assert_eq!(second.expect("second reversal").status(), StatusCode::OK);
+        let first = first.expect("first reversal");
+        let first_status = first.status();
+        let first_body = response_json(first).await;
+        let second = second.expect("second reversal");
+        let second_status = second.status();
+        let second_body = response_json(second).await;
+        assert_eq!(
+            first_status,
+            StatusCode::OK,
+            "first reversal response: {first_body}"
+        );
+        assert_eq!(
+            second_status,
+            StatusCode::OK,
+            "second reversal response: {second_body}"
+        );
         let balance: (i64, i64) = sqlx::query_as(
             r#"
             SELECT balance_micro_usd, withdrawable_micro_usd
@@ -247,6 +613,21 @@ async fn withdrawal_and_concurrent_reversal_refund_principal_once() {
                 .await
                 .expect("withdrawal");
         assert_eq!(row, ("failed".to_owned(), true));
+        let event_state: (String, i64, bool, bool) = sqlx::query_as(
+            r#"
+            SELECT status, version, worker_owner IS NULL, lease_until IS NULL
+            FROM rust_coord.external_events
+            WHERE source = 'stripe_connect' AND event_id = 'evt_transfer_reversed'
+            "#,
+        )
+        .fetch_one(&test.pool)
+        .await
+        .expect("terminal reversal event");
+        assert_eq!(
+            event_state,
+            ("applied".to_owned(), 2, true, true),
+            "a concurrent duplicate must replay the first terminal result"
+        );
         stripe.stop();
         test.stop().await;
     })
@@ -350,10 +731,10 @@ async fn failed_sweep_tombstone_wins_over_late_paid_delivery() {
             r#"
             INSERT INTO public.stripe_withdrawals (
                 id, account_id, stripe_account_id, amount_micro_usd,
-                fee_micro_usd, net_micro_usd, method, status
+                fee_micro_usd, net_micro_usd, method, status, idempotency_key
             ) VALUES (
                 'wd_sweep_race', 'provider', 'acct_provider', 2000000,
-                0, 2000000, 'standard', 'transferred'
+                0, 2000000, 'standard', 'transferred', 'wd-sweep-race'
             )
             "#,
         )
@@ -450,7 +831,6 @@ async fn referral_allocation_is_exact_and_uses_persisted_relationship() {
         .await
         .expect("seed referral");
         let state = BillingState::builder(test.database.clone())
-            .with_referral_share_percent(20)
             .build()
             .expect("state");
         let allocation = state
@@ -464,6 +844,28 @@ async fn referral_allocation_is_exact_and_uses_persisted_relationship() {
         );
         assert_eq!(allocation.reward_micro_usd, 20);
         assert_eq!(allocation.platform_fee_micro_usd, 81);
+        sqlx::query(
+            "UPDATE public.billing_runtime_settings SET referral_share_ppm=100000 WHERE singleton",
+        )
+        .execute(&test.pool)
+        .await
+        .expect("update database referral policy");
+        let subsequent = state
+            .referral_service()
+            .allocation("consumer", 101)
+            .await
+            .expect("dynamic allocation");
+        assert_eq!(subsequent.reward_micro_usd, 10);
+        assert_eq!(subsequent.platform_fee_micro_usd, 91);
+        assert_eq!(
+            state
+                .referral_service()
+                .share_percent()
+                .await
+                .expect("dynamic referral policy"),
+            10
+        );
+        assert_eq!(allocation.reward_micro_usd, 20);
         test.stop().await;
     })
     .await;
@@ -534,7 +936,115 @@ async fn invite_max_use_race_credits_exactly_one_account_atomically() {
 }
 
 #[tokio::test]
-async fn pricing_delete_is_scoped_to_authenticated_owner() {
+async fn public_provider_earnings_matches_the_go_wallet_contract_without_account_auth() {
+    with_isolated_database(|url| async move {
+        let test = TestDatabase::start(&url).await;
+        let app = test.app_without_stripe().await;
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO public.balances (
+                account_id, balance_micro_usd, withdrawable_micro_usd
+            ) VALUES ('wallet-public', 1234567, 1234567);
+            INSERT INTO public.provider_payouts (
+                provider_address, amount_micro_usd, model, job_id, settled,
+                created_at
+            ) VALUES (
+                'wallet-public', 400000, 'model/build', 'job-public', TRUE,
+                TIMESTAMPTZ '2026-07-11 20:00:00.120000+00'
+            );
+            INSERT INTO public.ledger_entries (
+                account_id, entry_type, amount_micro_usd, balance_after,
+                reference, created_at
+            ) VALUES (
+                'wallet-public', 'payout', 400000, 1234567, 'job-public',
+                TIMESTAMPTZ '2026-07-11 20:00:00+00'
+            );
+            "#,
+        )
+        .execute(&test.pool)
+        .await
+        .expect("seed public provider earnings");
+
+        let missing = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/provider/earnings")
+                    .body(Body::empty())
+                    .expect("missing-wallet request"),
+            )
+            .await
+            .expect("missing-wallet response");
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/provider/earnings?wallet=wallet-public")
+                    .body(Body::empty())
+                    .expect("public earnings request"),
+            )
+            .await
+            .expect("public earnings response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        let keys = payload
+            .as_object()
+            .expect("earnings object")
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            keys,
+            [
+                "balance_micro_usd",
+                "balance_usd",
+                "ledger",
+                "payouts",
+                "total_earned_micro_usd",
+                "total_earned_usd",
+                "total_jobs",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+        );
+        assert_eq!(payload["balance_micro_usd"], 1_234_567);
+        assert_eq!(payload["balance_usd"], "1.234567");
+        assert_eq!(payload["total_earned_micro_usd"], 400_000);
+        assert_eq!(payload["total_earned_usd"], "0.400000");
+        assert_eq!(payload["total_jobs"], 1);
+        assert_eq!(payload["payouts"][0]["provider_address"], "wallet-public");
+        assert_eq!(payload["payouts"][0]["job_id"], "job-public");
+        assert_eq!(
+            payload["payouts"][0]["timestamp"],
+            "2026-07-11T20:00:00.12Z"
+        );
+        assert_eq!(payload["ledger"][0]["type"], "payout");
+        assert_eq!(payload["ledger"][0]["created_at"], "2026-07-11T20:00:00Z");
+        assert!(payload.get("account_id").is_none());
+        assert!(payload.get("email").is_none());
+
+        let header_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/provider/earnings")
+                    .header("x-provider-wallet", "wallet-public")
+                    .body(Body::empty())
+                    .expect("header wallet request"),
+            )
+            .await
+            .expect("header wallet response");
+        assert_eq!(header_response.status(), StatusCode::OK);
+
+        test.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn pricing_writes_and_deletes_are_scoped_to_authenticated_owner() {
     with_isolated_database(|url| async move {
         let test = TestDatabase::start(&url).await;
         let app = test.app_without_stripe().await;
@@ -554,25 +1064,54 @@ async fn pricing_delete_is_scoped_to_authenticated_owner() {
             .await
             .expect("create response");
         assert_eq!(created.status(), StatusCode::OK);
+        let underpriced = app
+            .clone()
+            .oneshot(authenticated_json_request(
+                "PUT",
+                "/v1/pricing",
+                json!({
+                    "model": "owned-model",
+                    "input_price": 1,
+                    "output_price": 1
+                }),
+                principal("owner-b"),
+                None,
+            ))
+            .await
+            .expect("underpriced owner response");
+        assert_eq!(underpriced.status(), StatusCode::OK);
+        let prices: Vec<(String, i64, i64)> = sqlx::query_as(
+            "SELECT account_id, input_price, output_price FROM public.model_prices WHERE model = 'owned-model' ORDER BY account_id",
+        )
+        .fetch_all(&test.pool)
+        .await
+        .expect("owner-scoped prices");
+        assert_eq!(
+            prices,
+            vec![
+                ("owner-a".to_owned(), 100, 200),
+                ("owner-b".to_owned(), 1, 1),
+            ]
+        );
         let denied = app
             .clone()
             .oneshot(authenticated_json_request(
                 "DELETE",
                 "/v1/pricing",
                 json!({"model": "owned-model"}),
-                principal("owner-b"),
+                principal("owner-c"),
                 None,
             ))
             .await
             .expect("delete response");
         assert_eq!(denied.status(), StatusCode::NOT_FOUND);
-        let owner: String = sqlx::query_scalar(
-            "SELECT account_id FROM public.model_prices WHERE model = 'owned-model'",
+        let unchanged: Vec<(String, i64, i64)> = sqlx::query_as(
+            "SELECT account_id, input_price, output_price FROM public.model_prices WHERE model = 'owned-model' ORDER BY account_id",
         )
-        .fetch_one(&test.pool)
+        .fetch_all(&test.pool)
         .await
-        .expect("price owner");
-        assert_eq!(owner, "owner-a");
+        .expect("unchanged owner-scoped prices");
+        assert_eq!(unchanged, prices);
         test.stop().await;
     })
     .await;
@@ -588,64 +1127,6 @@ impl TestDatabase {
     async fn start(url: &str) -> Self {
         seed_service_schema(url).await;
         let pool = PgPool::connect(url).await.expect("inspection pool");
-        sqlx::raw_sql(
-            r#"
-            CREATE TABLE public.users (
-                account_id TEXT PRIMARY KEY,
-                privy_user_id TEXT UNIQUE NOT NULL,
-                email TEXT NOT NULL DEFAULT '',
-                role TEXT NOT NULL DEFAULT '',
-                platform_fee_percent BIGINT,
-                stripe_account_id TEXT NOT NULL DEFAULT '',
-                stripe_account_status TEXT NOT NULL DEFAULT '',
-                stripe_account_country TEXT NOT NULL DEFAULT '',
-                stripe_destination_type TEXT NOT NULL DEFAULT '',
-                stripe_destination_last4 TEXT NOT NULL DEFAULT '',
-                stripe_instant_eligible BOOLEAN NOT NULL DEFAULT FALSE
-            );
-            CREATE UNIQUE INDEX test_users_stripe
-                ON public.users(stripe_account_id) WHERE stripe_account_id <> '';
-            CREATE TABLE public.api_keys (
-                key_hash TEXT PRIMARY KEY,
-                id TEXT NOT NULL DEFAULT '',
-                owner_account_id TEXT NOT NULL DEFAULT ''
-            );
-            CREATE TABLE public.providers (
-                id TEXT PRIMARY KEY,
-                account_id TEXT NOT NULL DEFAULT '',
-                public_key TEXT NOT NULL DEFAULT '',
-                se_public_key TEXT NOT NULL DEFAULT ''
-            );
-            CREATE TABLE public.referrers (
-                account_id TEXT PRIMARY KEY,
-                code TEXT UNIQUE NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            CREATE TABLE public.referrals (
-                referred_account TEXT PRIMARY KEY,
-                referrer_code TEXT NOT NULL REFERENCES public.referrers(code),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            CREATE TABLE public.invite_codes (
-                code TEXT PRIMARY KEY,
-                amount_micro_usd BIGINT NOT NULL,
-                max_uses INTEGER NOT NULL DEFAULT 1,
-                used_count INTEGER NOT NULL DEFAULT 0,
-                active BOOLEAN NOT NULL DEFAULT TRUE,
-                expires_at TIMESTAMPTZ,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            CREATE TABLE public.invite_redemptions (
-                code TEXT NOT NULL REFERENCES public.invite_codes(code),
-                account_id TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (code, account_id)
-            );
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .expect("augment billing test schema");
         let database = Database::connect(url, 16, Duration::from_secs(5))
             .await
             .expect("database");
@@ -692,10 +1173,14 @@ impl TestDatabase {
 enum StripeMode {
     Working,
     UnknownCheckout,
+    UnknownTransferThenWorking,
+    UnknownTransferThenPermanentFailure,
+    UnknownTransferAlways,
 }
 
 struct TestStripe {
     base: String,
+    transfer_keys: Arc<Mutex<Vec<String>>>,
     task: JoinHandle<()>,
 }
 
@@ -710,13 +1195,69 @@ impl TestStripe {
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(json!({"error": {"message": "indeterminate"}})),
                     ),
-                    StripeMode::Working | StripeMode::UnknownCheckout => (
+                    StripeMode::Working
+                    | StripeMode::UnknownCheckout
+                    | StripeMode::UnknownTransferThenWorking
+                    | StripeMode::UnknownTransferThenPermanentFailure
+                    | StripeMode::UnknownTransferAlways => (
                         StatusCode::OK,
                         Json(json!({
                             "id": "cs_test_checkout",
                             "url": "https://checkout.stripe.test/session"
                         })),
                     ),
+                }
+            }
+        };
+        let transfer_attempts = Arc::new(AtomicUsize::new(0));
+        let transfer_keys = Arc::new(Mutex::new(Vec::new()));
+        let create_transfer = {
+            let transfer_attempts = Arc::clone(&transfer_attempts);
+            let transfer_keys = Arc::clone(&transfer_keys);
+            move |headers: axum::http::HeaderMap| {
+                let attempt = transfer_attempts.fetch_add(1, Ordering::SeqCst);
+                let transfer_keys = Arc::clone(&transfer_keys);
+                async move {
+                    transfer_keys
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(
+                            headers
+                                .get("idempotency-key")
+                                .and_then(|value| value.to_str().ok())
+                                .unwrap_or_default()
+                                .to_owned(),
+                        );
+                    match mode {
+                        StripeMode::UnknownTransferThenWorking
+                        | StripeMode::UnknownTransferThenPermanentFailure
+                            if attempt == 0 =>
+                        {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(json!({"error": {"message": "indeterminate transfer"}})),
+                            )
+                        }
+                        StripeMode::UnknownTransferThenPermanentFailure => (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({"error": {"message": "transfer was rejected"}})),
+                        ),
+                        StripeMode::UnknownTransferAlways => (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({"error": {"message": "indeterminate transfer"}})),
+                        ),
+                        StripeMode::Working
+                        | StripeMode::UnknownCheckout
+                        | StripeMode::UnknownTransferThenWorking => (
+                            StatusCode::OK,
+                            Json(json!({
+                                "id": "tr_test_withdrawal",
+                                "amount": 200,
+                                "destination": "acct_provider",
+                                "created": 1000
+                            })),
+                        ),
+                    }
                 }
             }
         };
@@ -745,14 +1286,7 @@ impl TestStripe {
             )
             .route(
                 "/v1/transfers",
-                post(|| async {
-                    Json(json!({
-                        "id": "tr_test_withdrawal",
-                        "amount": 200,
-                        "destination": "acct_provider",
-                        "created": 1000
-                    }))
-                }),
+                get(|| async { Json(json!({"data": []})) }).post(create_transfer),
             )
             .route(
                 "/v1/payouts/{payout}",
@@ -773,6 +1307,7 @@ impl TestStripe {
         });
         Self {
             base: format!("http://{address}"),
+            transfer_keys,
             task,
         }
     }
@@ -790,6 +1325,13 @@ impl TestStripe {
             platform_country: Arc::from("US"),
             request_timeout: Duration::from_secs(2),
         }
+    }
+
+    fn transfer_idempotency_keys(&self) -> Vec<String> {
+        self.transfer_keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn stop(self) {

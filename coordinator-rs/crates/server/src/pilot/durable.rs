@@ -24,8 +24,9 @@ use crate::{
 };
 
 use super::{
-    billing::{BillingContext, DurableRequestIdentity},
-    request::{AttemptPlan, ExecutionLeaseRenewal, PilotRequestError},
+    billing::{BillingContext, DurableRequestIdentity, PilotBilling},
+    config::PaidBillingPolicy,
+    request::{AttemptPlan, ExecutionLeaseRenewal, PilotRequestControls, PilotRequestError},
     runtime::DurablePilotServices,
 };
 
@@ -37,6 +38,7 @@ struct AuthorizedDurableAttempt {
     attempt_id: crate::ledger::AttemptId,
     attempt_version: Version,
     attempt_state: DurableAttemptState,
+    billing_policy: PaidBillingPolicy,
 }
 
 /// Database-backed money and execution state for one pilot request.
@@ -47,6 +49,11 @@ struct AuthorizedDurableAttempt {
 pub(super) struct DurableExecution {
     identity: DurableRequestIdentity,
     consumer: BillingContext,
+    billing: Option<PilotBilling>,
+    api_key_limit_micro_usd: Option<i64>,
+    api_key_controlled: bool,
+    api_key_public_model: Arc<str>,
+    api_key_concrete_model: Arc<str>,
     services: Option<DurablePilotServices>,
     reservation: Option<ReservationResult>,
     authorized: Option<AuthorizedDurableAttempt>,
@@ -59,12 +66,14 @@ impl DurableExecution {
     pub(super) fn new(
         identity: DurableRequestIdentity,
         consumer: BillingContext,
+        controls: PilotRequestControls,
         services: Option<DurablePilotServices>,
     ) -> Result<Self, PilotRequestError> {
         match (&consumer, &services) {
             (BillingContext::FreeSelfRoute, _) => {}
             (BillingContext::Paid(_), Some(services))
-                if services.billing.is_some() && services.ownership.is_healthy() => {}
+                if (controls.billing.is_some() || services.billing.is_some())
+                    && services.ownership.is_healthy() => {}
             (BillingContext::Paid(_), _) => {
                 return Err(PilotRequestError::Unavailable(Arc::from(
                     "paid pilot durability is unavailable",
@@ -75,6 +84,11 @@ impl DurableExecution {
         Ok(Self {
             identity,
             consumer,
+            billing: controls.billing,
+            api_key_limit_micro_usd: controls.api_key_limit_micro_usd,
+            api_key_controlled: controls.api_key_controlled,
+            api_key_public_model: controls.api_key_public_model,
+            api_key_concrete_model: controls.api_key_concrete_model,
             services,
             reservation: None,
             authorized: None,
@@ -153,9 +167,10 @@ impl DurableExecution {
             .services
             .as_ref()
             .ok_or_else(|| PilotRequestError::Unavailable(Arc::from("durability unavailable")))?;
-        let billing = services
+        let billing = self
             .billing
             .as_ref()
+            .or(services.billing.as_ref())
             .ok_or_else(|| PilotRequestError::Unavailable(Arc::from("billing unavailable")))?;
         let body_digest: [u8; 32] = sha2::Sha256::digest(plaintext).into();
         let immutable = serde_json::to_vec(&serde_json::json!({
@@ -166,6 +181,8 @@ impl DurableExecution {
             "consumer_key_hash": consumer.consumer_key_hash.as_ref(),
             "job_id": self.identity.job_id.as_uuid(),
             "model": model.as_str(),
+            "public_model": self.api_key_public_model.as_ref(),
+            "concrete_model": self.api_key_concrete_model.as_ref(),
             "provisional_provider_id": plan.session.identity.provider_id,
             "provisional_session_epoch": plan.session.identity.session_epoch.0,
             "request_id": self.identity.request_id,
@@ -198,6 +215,10 @@ impl DurableExecution {
             provisional_session_epoch: Some(
                 Version::new(plan.session.identity.session_epoch.0).map_err(map_ledger_input)?,
             ),
+            public_model: self.api_key_public_model.clone(),
+            concrete_model: self.api_key_concrete_model.clone(),
+            api_key_limit_micro_usd: self.api_key_limit_micro_usd,
+            api_key_controlled: self.api_key_controlled,
         };
         let reservation = services
             .ledger
@@ -232,9 +253,10 @@ impl DurableExecution {
             .services
             .as_ref()
             .ok_or_else(|| PilotRequestError::Unavailable(Arc::from("durability unavailable")))?;
-        let billing = services
+        let billing = self
             .billing
             .as_ref()
+            .or(services.billing.as_ref())
             .ok_or_else(|| PilotRequestError::Unavailable(Arc::from("billing unavailable")))?;
         let reservation = self.reservation.as_ref().ok_or_else(|| {
             PilotRequestError::Internal(Arc::from("authorization preceded durable reserve"))
@@ -249,17 +271,16 @@ impl DurableExecution {
             .ensure_provider_trusted(provider_id, session_epoch)
             .await
             .map_err(map_ledger_error)?;
-        let provider_account = billing
-            .provider_account(prepared.identity.provider_id)
+        let (provider_account, policy) = billing
+            .provider_terms(prepared.identity.provider_id)
             .ok_or_else(|| {
-                PilotRequestError::Unavailable(Arc::from(
+                PilotRequestError::ProviderPricing(Arc::from(
                     "provider beneficiary account is not configured",
                 ))
-            })?
-            .clone();
-        let amounts = billing
+            })?;
+        let amounts = policy
             .amounts(prepared.prompt_tokens, prepared.max_output_tokens)
-            .map_err(map_ledger_input)?;
+            .map_err(|error| PilotRequestError::ProviderPricing(Arc::from(error.to_string())))?;
         let attempt_id = self
             .identity
             .attempt_id(attempt_ordinal, prepared.identity.provider_id)
@@ -284,28 +305,27 @@ impl DurableExecution {
                 prepared.identity.provider_id
             ).as_bytes(),
             "input_micro_usd_per_million":
-                billing.policy().input_micro_usd_per_million.as_i64(),
+                policy.input_micro_usd_per_million.as_i64(),
             "job_id": self.identity.job_id.as_uuid(),
             "lease_id": uuid_from_wire(prepared.identity.lease_id.as_bytes()),
             "maximum_platform_fee": amounts.platform_fee.as_i64(),
             "maximum_provider_payout": amounts.provider_payout.as_i64(),
             "maximum_referral_reward": amounts.referral_reward.as_i64(),
             "output_micro_usd_per_million":
-                billing.policy().output_micro_usd_per_million.as_i64(),
+                policy.output_micro_usd_per_million.as_i64(),
             "permit_id": plan.lease.permit_id().as_uuid(),
-            "platform_account_id": billing.policy().platform_account_id.as_str(),
+            "platform_account_id": policy.platform_account_id.as_str(),
             "prepared": prepared,
-            "pricing_version": billing.policy().pricing_version.as_i64(),
+            "pricing_version": policy.pricing_version.as_i64(),
             "provider_account_id": provider_account.as_str(),
-            "provider_share_ppm": billing.policy().provider_share_ppm,
+            "provider_share_ppm": policy.provider_share_ppm,
             "public_model": plan.prepare.model.as_str(),
-            "referral_account_id": billing
-                .policy()
+            "referral_account_id": policy
                 .referral_account_id
                 .as_ref()
                 .map(crate::ledger::AccountId::as_str),
-            "referral_share_ppm": billing.policy().referral_share_ppm,
-            "rounding_version": billing.policy().rounding_version.as_i64(),
+            "referral_share_ppm": policy.referral_share_ppm,
+            "rounding_version": policy.rounding_version.as_i64(),
         }))
         .map_err(|error| PilotRequestError::Internal(Arc::from(error.to_string())))?;
         let request = PreparedReservation {
@@ -333,20 +353,20 @@ impl DurableExecution {
             request_digest: CoreDigest::new(*prepared.request_digest.as_bytes()),
             concrete_model: Arc::from(prepared.model.as_str()),
             public_model: Arc::from(plan.prepare.model.as_str()),
-            pricing_version: billing.policy().pricing_version,
-            rounding_version: billing.policy().rounding_version,
+            pricing_version: policy.pricing_version,
+            rounding_version: policy.rounding_version,
             billable_input_tokens: prepared.prompt_tokens,
             bounded_output_tokens: prepared.max_output_tokens,
-            input_micro_usd_per_million: billing.policy().input_micro_usd_per_million,
-            output_micro_usd_per_million: billing.policy().output_micro_usd_per_million,
+            input_micro_usd_per_million: policy.input_micro_usd_per_million,
+            output_micro_usd_per_million: policy.output_micro_usd_per_million,
             provider_account_id: provider_account,
-            platform_account_id: billing.policy().platform_account_id.clone(),
-            referral_account_id: billing.policy().referral_account_id.clone(),
+            platform_account_id: policy.platform_account_id.clone(),
+            referral_account_id: policy.referral_account_id.clone(),
             maximum_provider_payout: amounts.provider_payout,
             maximum_platform_fee: amounts.platform_fee,
             maximum_referral_reward: amounts.referral_reward,
-            provider_share_ppm: billing.policy().provider_share_ppm,
-            referral_share_ppm: billing.policy().referral_share_ppm,
+            provider_share_ppm: policy.provider_share_ppm,
+            referral_share_ppm: policy.referral_share_ppm,
             execution_worker_id: self.execution_worker_id,
             start_deadline_millis: u64::try_from(start_deadline.as_millis())
                 .map_err(|_| map_ledger_input(crate::ledger::InputError::ArithmeticOverflow))?,
@@ -361,6 +381,7 @@ impl DurableExecution {
             attempt_id,
             attempt_version: Version::new(1).expect("one is a valid version"),
             attempt_state: DurableAttemptState::NotSent,
+            billing_policy: policy,
         });
         // Immutable consumer context is deliberately used above and retained
         // for settlement; no transport credential can replace it.
@@ -657,14 +678,11 @@ impl DurableExecution {
                 .map_err(map_ledger_error)?;
             return Ok(TerminalDisposition::Released);
         }
-        let billing = services
-            .billing
-            .as_ref()
-            .ok_or_else(|| PilotRequestError::Unavailable(Arc::from("billing unavailable")))?;
         let BillingContext::Paid(consumer) = &self.consumer else {
             unreachable!("paid mode checked");
         };
-        let amounts = billing
+        let amounts = authorized
+            .billing_policy
             .amounts(terminal.prompt_tokens, summary.completion_tokens)
             .map_err(map_ledger_input)?;
         let request = SettleRequest {
@@ -712,6 +730,100 @@ impl DurableExecution {
             .await
             .map_err(map_ledger_error)?;
         Ok(TerminalDisposition::Settled)
+    }
+
+    pub(super) async fn retry_precontent(
+        &mut self,
+        terminal: &ProviderTerminal,
+        summary: VerifiedTerminal,
+    ) -> Result<TerminalDisposition, PilotRequestError> {
+        if !self.is_paid() {
+            return Ok(TerminalDisposition::Released);
+        }
+        if terminal.outcome == TerminalOutcome::Completed {
+            return Err(PilotRequestError::Protocol(Arc::from(
+                "completed terminal cannot release a precontent attempt",
+            )));
+        }
+        if self.authorized.as_ref().is_some_and(|attempt| {
+            matches!(
+                attempt.attempt_state,
+                DurableAttemptState::Queued
+                    | DurableAttemptState::OnWire
+                    | DurableAttemptState::SentUnknown
+            )
+        }) {
+            self.record_start_dispatch(StartDispatchDisposition::Running)
+                .await?;
+        }
+        let services = self
+            .services
+            .as_ref()
+            .ok_or_else(|| PilotRequestError::Unavailable(Arc::from("durability unavailable")))?;
+        let authorized = self.authorized.as_ref().ok_or_else(|| {
+            PilotRequestError::Internal(Arc::from("terminal preceded authorization"))
+        })?;
+        let provider_id = uuid_from_wire(terminal.identity.provider_id.as_bytes());
+        let process_generation =
+            uuid_from_wire(terminal.identity.provider_process_generation.as_bytes());
+        let session_epoch =
+            Version::new(terminal.identity.session_epoch.0).map_err(map_ledger_input)?;
+        services
+            .ledger
+            .ensure_provider_trusted(provider_id, session_epoch)
+            .await
+            .map_err(map_ledger_error)?;
+        let raw_terminal = serde_json::to_value(terminal)
+            .map_err(|error| PilotRequestError::Internal(Arc::from(error.to_string())))?;
+        let immutable = serde_json::to_vec(&raw_terminal)
+            .map_err(|error| PilotRequestError::Internal(Arc::from(error.to_string())))?;
+        let result = services
+            .ledger
+            .retry_precontent(&crate::ledger::TerminalReleaseRequest {
+                operation: self
+                    .identity
+                    .operation("terminal-retry-precontent", &immutable)
+                    .map_err(map_ledger_input)?,
+                job_id: self.identity.job_id,
+                expected_job_version: authorized.job_version,
+                expected_job_state: authorized.job_state,
+                expected_attempt_version: authorized.attempt_version,
+                terminal: TerminalFacts {
+                    terminal_id: self
+                        .identity
+                        .terminal_id(terminal.terminal_digest.as_bytes())
+                        .map_err(map_ledger_input)?,
+                    attempt_id: authorized.attempt_id,
+                    provider_id,
+                    provider_process_generation_id: process_generation,
+                    origin_session_epoch: session_epoch,
+                    terminal_digest: CoreDigest::new(*terminal.terminal_digest.as_bytes()),
+                    raw_terminal,
+                    outcome: match terminal.outcome {
+                        TerminalOutcome::Cancelled => DurableTerminalOutcome::Cancelled,
+                        TerminalOutcome::Error => DurableTerminalOutcome::Error,
+                        TerminalOutcome::Completed => unreachable!("rejected above"),
+                    },
+                    error_class: terminal
+                        .error_class
+                        .map(|class| Arc::from(structured_error_class_name(class))),
+                    prompt_tokens: terminal.prompt_tokens,
+                    completion_tokens: summary.completion_tokens,
+                    reasoning_tokens: terminal.reasoning_tokens,
+                    response_digest: CoreDigest::new(*terminal.response_hash.as_bytes()),
+                    rolling_digest: CoreDigest::new(*terminal.rolling_digest.as_bytes()),
+                    final_generated_tokens: terminal.final_generated_tokens,
+                    provider_signature: terminal.signature.as_bytes().to_vec(),
+                    recovery_lease: None,
+                },
+                accepted_cumulative_tokens: summary.completion_tokens,
+                reason: Arc::from("provider failed before content commitment"),
+            })
+            .await
+            .map_err(map_ledger_error)?;
+        self.reservation = Some(result);
+        self.authorized = None;
+        Ok(TerminalDisposition::Released)
     }
 
     pub(super) fn core_disposition(
@@ -791,7 +903,11 @@ fn map_ledger_input(error: crate::ledger::InputError) -> PilotRequestError {
 
 fn map_ledger_error(error: crate::ledger::LedgerError) -> PilotRequestError {
     match error {
-        crate::ledger::LedgerError::InsufficientBalance => PilotRequestError::PaymentRequired,
+        crate::ledger::LedgerError::InsufficientBalance
+        | crate::ledger::LedgerError::ApiKeySpendLimitExceeded => {
+            PilotRequestError::PaymentRequired
+        }
+        crate::ledger::LedgerError::ApiKeyControlRejected => PilotRequestError::Forbidden,
         crate::ledger::LedgerError::ProviderHardUntrusted => {
             PilotRequestError::Provider(Arc::from(error.to_string()))
         }
@@ -810,11 +926,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn spend_limit_maps_to_affordability_while_other_key_controls_remain_forbidden() {
+        assert!(matches!(
+            map_ledger_error(crate::ledger::LedgerError::ApiKeySpendLimitExceeded),
+            PilotRequestError::PaymentRequired
+        ));
+        assert!(matches!(
+            map_ledger_error(crate::ledger::LedgerError::ApiKeyControlRejected),
+            PilotRequestError::Forbidden
+        ));
+    }
+
+    #[test]
     fn unknown_authorization_outcome_blocks_pre_authorization_cleanup() {
         let identity =
             DurableRequestIdentity::from_request_id(Uuid::new_v4()).expect("request identity");
-        let mut durable = DurableExecution::new(identity, BillingContext::FreeSelfRoute, None)
-            .expect("free durable execution");
+        let mut durable = DurableExecution::new(
+            identity,
+            BillingContext::FreeSelfRoute,
+            PilotRequestControls::default(),
+            None,
+        )
+        .expect("free durable execution");
         let error = durable.authorization_error(crate::ledger::LedgerError::CommitOutcomeUnknown {
             operation: crate::ledger::OperationKey::new("pilot:test:authorize")
                 .expect("operation key"),

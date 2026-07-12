@@ -343,6 +343,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				} else {
 					provider.Mu().Lock()
 					provider.AccountID = pt.AccountID
+					provider.TokenHash = pt.TokenHash
 					if provider.PublicKey != "" {
 						if _, err := s.store.MigrateAccountBalance(
 							provider.PublicKey, pt.AccountID,

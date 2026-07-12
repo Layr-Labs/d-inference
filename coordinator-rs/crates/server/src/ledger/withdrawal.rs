@@ -4,8 +4,8 @@ use super::{
     LedgerService,
     reserve::json_string,
     types::{
-        LedgerError, MutationDisposition, WithdrawalDisposition, WithdrawalId, WithdrawalRequest,
-        WithdrawalResult, WithdrawalStatus, WithdrawalTransition, canonical_json_digest,
+        LedgerError, WithdrawalDisposition, WithdrawalId, WithdrawalRequest, WithdrawalResult,
+        WithdrawalStatus, WithdrawalTransition, canonical_json_digest,
     },
 };
 use crate::db::ownership::{Authority, DurableDatabase, OperationRecord};
@@ -19,6 +19,30 @@ impl LedgerService {
         let net = request.net()?;
         if request.amount.as_i64() == 0 || request.method.is_empty() {
             return Err(crate::ledger::types::InputError::Empty("withdrawal field").into());
+        }
+        if request.idempotency_key.is_empty() {
+            return Err(
+                crate::ledger::types::InputError::Empty("withdrawal idempotency key").into(),
+            );
+        }
+        if request.idempotency_key.len() > 255 {
+            return Err(crate::ledger::types::InputError::TooLong {
+                field: "withdrawal idempotency key",
+                maximum: 255,
+            }
+            .into());
+        }
+        if request.idempotency_key.trim() != request.idempotency_key.as_ref() {
+            return Err(crate::ledger::types::InputError::SurroundingWhitespace(
+                "withdrawal idempotency key",
+            )
+            .into());
+        }
+        if request.idempotency_key.chars().any(char::is_control) {
+            return Err(crate::ledger::types::InputError::ControlCharacter(
+                "withdrawal idempotency key",
+            )
+            .into());
         }
         if !request.external_payload.is_object() {
             return Err(crate::ledger::types::InputError::TerminalPayloadNotObject.into());
@@ -106,7 +130,9 @@ impl LedgerService {
                             fee_micro_usd,
                             net_micro_usd,
                             method,
-                            status
+                            status,
+                            idempotency_key,
+                            provenance
                         )
                         SELECT
                             $5,
@@ -116,7 +142,9 @@ impl LedgerService {
                             $7,
                             $8,
                             $9,
-                            'pending'
+                            'pending',
+                            $16,
+                            $13
                         FROM gate
                         ON CONFLICT DO NOTHING
                         RETURNING id, account_id
@@ -231,6 +259,7 @@ impl LedgerService {
                     Json(&request.external_payload),
                     request.outbox_id.as_uuid(),
                     payload_digest.as_bytes().as_slice(),
+                    request.idempotency_key.as_ref(),
                 )
                 .fetch_optional(self.db.pool()),
             )
@@ -708,7 +737,9 @@ impl LedgerService {
                             status = 'failed',
                             refunded = TRUE,
                             fee_refunded = TRUE,
-                            failure_reason = 'transfer_reversed',
+                            failure_reason = $8,
+                            external_state = 'permanent_failure',
+                            completed_at = NOW(),
                             updated_at = NOW()
                         FROM gate
                         WHERE withdrawals.id = gate.id
@@ -717,7 +748,31 @@ impl LedgerService {
                         RETURNING
                             withdrawals.id,
                             withdrawals.account_id,
-                            withdrawals.amount_micro_usd
+                            withdrawals.amount_micro_usd,
+                            withdrawals.fee_micro_usd,
+                            withdrawals.idempotency_key
+                    ),
+                    failure_tombstone AS (
+                        INSERT INTO public.stripe_withdrawal_failures (
+                            withdrawal_id,
+                            idempotency_key,
+                            account_id,
+                            amount_micro_usd,
+                            fee_micro_usd,
+                            reason,
+                            attempts
+                        )
+                        SELECT
+                            withdrawal_update.id,
+                            withdrawal_update.idempotency_key,
+                            withdrawal_update.account_id,
+                            withdrawal_update.amount_micro_usd,
+                            withdrawal_update.fee_micro_usd,
+                            $8,
+                            0
+                        FROM withdrawal_update
+                        ON CONFLICT (withdrawal_id) DO NOTHING
+                        RETURNING withdrawal_id
                     ),
                     operation_insert AS (
                         INSERT INTO rust_coord.financial_operations (
@@ -793,6 +848,7 @@ impl LedgerService {
                         FALSE AS manual_review
                     FROM operation_insert
                     CROSS JOIN ledger_insert
+                    CROSS JOIN failure_tombstone
                     "#,
                     authority.owner_id(),
                     authority.epoch(),
@@ -801,6 +857,10 @@ impl LedgerService {
                     transition.operation.id.as_uuid(),
                     transition.operation.key.as_str(),
                     transition.operation.digest.as_bytes().as_slice(),
+                    transition
+                        .failure_reason
+                        .as_deref()
+                        .unwrap_or("transfer_reversed"),
                 )
                 .fetch_optional(self.db.pool()),
             )
@@ -1019,6 +1079,3 @@ fn withdrawal_from_operation(
         true,
     )
 }
-
-#[allow(dead_code)]
-fn _mutation_disposition_pin(_: MutationDisposition) {}

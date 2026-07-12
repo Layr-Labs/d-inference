@@ -8,8 +8,11 @@ use thiserror::Error;
 use crate::{
     database::Database,
     db::ownership::DurableDatabase,
-    ledger::types::{AccountId, LedgerAmount, Version},
+    ledger::types::{LedgerAmount, Version},
 };
+
+const FALLBACK_INPUT_MICRO_USD_PER_MILLION: i64 = 50_000;
+const FALLBACK_OUTPUT_MICRO_USD_PER_MILLION: i64 = 200_000;
 
 /// One immutable model build and pricing observation loaded by one statement.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -42,13 +45,10 @@ impl CatalogService {
         }
     }
 
-    /// Loads alias resolution, active model version, and account/platform price
-    /// in one READ COMMITTED PostgreSQL snapshot.
-    pub async fn load(
-        &self,
-        requested_model: &str,
-        account_id: &AccountId,
-    ) -> Result<CatalogSnapshot, CatalogError> {
+    /// Loads alias resolution, active model version, and platform/fallback
+    /// price in one READ COMMITTED PostgreSQL snapshot. Provider-owned custom
+    /// prices are selected only after routing chooses a provider.
+    pub async fn load(&self, requested_model: &str) -> Result<CatalogSnapshot, CatalogError> {
         validate_requested_model(requested_model)?;
         let authority = self.db.authority().map_err(CatalogError::Ledger)?;
         authority.ensure_healthy().map_err(CatalogError::Ledger)?;
@@ -83,15 +83,25 @@ impl CatalogService {
                     ),
                     price AS MATERIALIZED (
                         SELECT
-                            prices.input_price,
-                            prices.output_price,
-                            (prices.xmin::TEXT)::BIGINT AS pricing_version
-                        FROM public.model_prices AS prices
-                        JOIN resolved ON resolved.concrete_model = prices.model
-                        WHERE prices.account_id IN ($4, 'platform')
-                          AND prices.input_price >= 0
-                          AND prices.output_price >= 0
-                        ORDER BY (prices.account_id = $4) DESC
+                            candidates.input_price,
+                            candidates.output_price,
+                            candidates.pricing_version
+                        FROM (
+                            SELECT
+                                prices.input_price,
+                                prices.output_price,
+                                prices.revision AS pricing_version,
+                                0 AS priority
+                            FROM public.model_prices AS prices
+                            JOIN resolved
+                              ON resolved.concrete_model = prices.model
+                            WHERE prices.account_id = 'platform'
+                              AND prices.input_price > 0
+                              AND prices.output_price > 0
+                            UNION ALL
+                            SELECT $4::BIGINT, $5::BIGINT, 1::BIGINT, 1
+                        ) AS candidates
+                        ORDER BY candidates.priority
                         LIMIT 1
                     )
                     SELECT
@@ -125,7 +135,8 @@ impl CatalogService {
                     authority.owner_id(),
                     authority.epoch(),
                     requested_model,
-                    account_id.as_str(),
+                    FALLBACK_INPUT_MICRO_USD_PER_MILLION,
+                    FALLBACK_OUTPUT_MICRO_USD_PER_MILLION,
                 )
                 .fetch_optional(self.db.pool()),
             )

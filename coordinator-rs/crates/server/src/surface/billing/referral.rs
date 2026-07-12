@@ -10,20 +10,17 @@ use super::{
 #[derive(Clone, Debug)]
 pub struct ReferralService {
     store: BillingStore,
-    share_percent: u32,
 }
 
 impl ReferralService {
-    pub(super) fn new(store: BillingStore, share_percent: u32) -> Self {
-        Self {
-            store,
-            share_percent,
-        }
+    pub(super) fn new(store: BillingStore) -> Self {
+        Self { store }
     }
 
-    #[must_use]
-    pub const fn share_percent(&self) -> u32 {
-        self.share_percent
+    pub async fn share_percent(&self) -> Result<u32, BillingError> {
+        let share_ppm = self.share_ppm().await?;
+        u32::try_from(share_ppm / 10_000)
+            .map_err(|_| BillingError::internal("read referral policy", "invalid referral share"))
     }
 
     /// Resolves and freezes a referral split without moving funds. The caller
@@ -39,31 +36,44 @@ impl ReferralService {
                 "gross platform fee must not be negative",
             ));
         }
-        let beneficiary: Option<String> = sqlx::query_scalar(
+        let row = sqlx::query(
             r#"
-            SELECT referrers.account_id
-            FROM public.referrals
-            JOIN public.referrers
+            SELECT
+                referrers.account_id,
+                settings.referral_share_ppm
+            FROM public.billing_runtime_settings AS settings
+            LEFT JOIN public.referrals
+              ON referrals.referred_account = $1
+            LEFT JOIN public.referrers
               ON referrers.code = referrals.referrer_code
-            WHERE referrals.referred_account = $1
+            WHERE settings.singleton
             "#,
         )
         .bind(referred_account)
-        .fetch_optional(self.store.pool())
+        .fetch_one(self.store.pool())
         .await
         .map_err(|error| BillingError::internal("resolve referral allocation", error))?;
+        let beneficiary = row.get::<Option<String>, _>("account_id");
+        let share_ppm = row.get::<i32, _>("referral_share_ppm");
+        let share_ppm = u32::try_from(share_ppm)
+            .ok()
+            .filter(|share| *share <= 1_000_000)
+            .ok_or_else(|| {
+                BillingError::internal("resolve referral allocation", "invalid referral share")
+            })?;
+        let share_percent = share_ppm / 10_000;
         let Some(beneficiary_account_id) = beneficiary else {
             return Ok(ReferralAllocation {
                 beneficiary_account_id: None,
                 reward_micro_usd: 0,
                 platform_fee_micro_usd: gross_platform_fee_micro_usd,
-                share_percent: self.share_percent,
+                share_percent,
             });
         };
         let reward = i128::from(gross_platform_fee_micro_usd)
-            .checked_mul(i128::from(self.share_percent))
+            .checked_mul(i128::from(share_ppm))
             .ok_or_else(|| BillingError::bad_request("referral allocation overflow"))?
-            / 100;
+            / 1_000_000;
         let reward = i64::try_from(reward)
             .map_err(|_| BillingError::bad_request("referral allocation overflow"))?;
         let platform_fee = gross_platform_fee_micro_usd
@@ -73,7 +83,7 @@ impl ReferralService {
             beneficiary_account_id: (reward > 0).then_some(beneficiary_account_id),
             reward_micro_usd: reward,
             platform_fee_micro_usd: platform_fee,
-            share_percent: self.share_percent,
+            share_percent,
         })
     }
 
@@ -83,6 +93,7 @@ impl ReferralService {
         desired_code: &str,
     ) -> Result<ReferrerView, BillingError> {
         let code = normalize_code(desired_code)?;
+        let share_percent = self.share_percent().await?;
         let mut transaction = self.store.begin("register referral code").await?;
         sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
             .bind(format!("referral:{account_id}:{code}"))
@@ -103,7 +114,7 @@ impl ReferralService {
                 .map_err(|error| BillingError::internal("finish referral replay", error))?;
             return Ok(ReferrerView {
                 code: existing_code,
-                share_percent: self.share_percent,
+                share_percent,
             });
         }
         let owner: Option<String> =
@@ -136,7 +147,7 @@ impl ReferralService {
             .map_err(|error| BillingError::external_unknown(error.to_string()))?;
         Ok(ReferrerView {
             code,
-            share_percent: self.share_percent,
+            share_percent,
         })
     }
 
@@ -206,6 +217,7 @@ impl ReferralService {
     }
 
     pub(super) async fn stats(&self, account_id: &str) -> Result<ReferralStats, BillingError> {
+        let share_percent = self.share_percent().await?;
         let row = sqlx::query(
             r#"
             SELECT
@@ -238,7 +250,7 @@ impl ReferralService {
         }
         Ok(ReferralStats {
             code: row.get("code"),
-            share_percent: self.share_percent,
+            share_percent,
             total_referred: row.get("total_referred"),
             total_rewards_micro_usd: total_rewards,
             total_rewards_usd: format_usd(total_rewards),
@@ -247,6 +259,7 @@ impl ReferralService {
     }
 
     pub(super) async fn info(&self, account_id: &str) -> Result<ReferralInfo, BillingError> {
+        let share_percent = self.share_percent().await?;
         let code: Option<String> =
             sqlx::query_scalar("SELECT code FROM public.referrers WHERE account_id = $1")
                 .bind(account_id)
@@ -264,9 +277,25 @@ impl ReferralService {
         .map_err(|error| BillingError::internal("read referring code", error))?;
         Ok(ReferralInfo {
             code,
-            share_percent: self.share_percent,
+            share_percent,
             referred_by,
         })
+    }
+
+    async fn share_ppm(&self) -> Result<i32, BillingError> {
+        let share: i32 = sqlx::query_scalar(
+            "SELECT referral_share_ppm FROM public.billing_runtime_settings WHERE singleton",
+        )
+        .fetch_one(self.store.pool())
+        .await
+        .map_err(|error| BillingError::internal("read referral policy", error))?;
+        if !(0..=1_000_000).contains(&share) {
+            return Err(BillingError::internal(
+                "read referral policy",
+                "invalid referral share",
+            ));
+        }
+        Ok(share)
     }
 }
 

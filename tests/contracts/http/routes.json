@@ -22,8 +22,8 @@
       "auth": "public",
       "area": "operations",
       "side_effects": "read",
-      "rust_owner": "pilot adapter",
-      "pilot": true,
+      "rust_owner": "full-surface adapter",
+      "pilot": false,
       "disposition": "implement"
     },
     {
@@ -34,8 +34,8 @@
       "auth": "public",
       "area": "operations",
       "side_effects": "read",
-      "rust_owner": "pilot adapter",
-      "pilot": true,
+      "rust_owner": "full-surface adapter",
+      "pilot": false,
       "disposition": "implement"
     },
     {
@@ -214,8 +214,8 @@
       "auth": "api_key_or_privy",
       "area": "models",
       "side_effects": "read",
-      "rust_owner": "pilot adapter",
-      "pilot": true,
+      "rust_owner": "full-surface adapter",
+      "pilot": false,
       "disposition": "implement"
     },
     {
@@ -238,8 +238,8 @@
       "auth": "api_key_or_privy",
       "area": "models",
       "side_effects": "read",
-      "rust_owner": "pilot adapter",
-      "pilot": true,
+      "rust_owner": "full-surface adapter",
+      "pilot": false,
       "disposition": "implement"
     },
     {
@@ -826,8 +826,8 @@
       "auth": "public",
       "area": "models",
       "side_effects": "read",
-      "rust_owner": "pilot adapter",
-      "pilot": true,
+      "rust_owner": "full-surface adapter",
+      "pilot": false,
       "disposition": "implement"
     },
     {
@@ -838,8 +838,8 @@
       "auth": "public",
       "area": "models",
       "side_effects": "read",
-      "rust_owner": "pilot adapter",
-      "pilot": true,
+      "rust_owner": "full-surface adapter",
+      "pilot": false,
       "disposition": "implement"
     },
     {
@@ -850,8 +850,8 @@
       "auth": "public",
       "area": "models",
       "side_effects": "read",
-      "rust_owner": "pilot adapter",
-      "pilot": true,
+      "rust_owner": "full-surface adapter",
+      "pilot": false,
       "disposition": "implement"
     },
     {

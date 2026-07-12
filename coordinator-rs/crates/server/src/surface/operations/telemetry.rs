@@ -1,28 +1,34 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
+    net::{IpAddr, SocketAddr},
     sync::{
         Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    time::Instant,
 };
 
 use axum::{
     Json,
     body::{Body, to_bytes},
-    extract::{Path, Query, Request, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    extract::{ConnectInfo, Path, Query, Request, State},
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use sha2::{Digest as _, Sha256};
 use sqlx::Row;
 use uuid::Uuid;
+
+use crate::surface::identity::{AuthContext, AuthPrincipal};
 
 use super::{
     OperationsState,
     auth::{require_admin, require_public},
     error::OperationsError,
     lock,
+    telemetry_durable::DurableTelemetryEvent,
 };
 
 const MAX_TELEMETRY_BODY: usize = 64 * 1024;
@@ -32,6 +38,11 @@ const MAX_TELEMETRY_STACK: usize = 32 * 1024;
 const MAX_TELEMETRY_FIELDS: usize = 8 * 1024;
 const MAX_LOG_REPORT: usize = 10 * 1024 * 1024;
 const MAX_REPORT_LIST: i64 = 100;
+const MAX_RATE_IDENTITIES: usize = 50_000;
+const AUTH_RATE_CAPACITY: f64 = 200.0;
+const AUTH_RATE_PER_SECOND: f64 = 100.0 / 60.0;
+const ANON_RATE_CAPACITY: f64 = 30.0;
+const ANON_RATE_PER_SECOND: f64 = 10.0 / 60.0;
 
 const ALLOWED_FIELDS: &[&str] = &[
     "component",
@@ -108,6 +119,7 @@ const ALLOWED_FIELDS: &[&str] = &[
 pub(super) struct TelemetryBuffer {
     capacity: usize,
     records: Mutex<VecDeque<TelemetryRecord>>,
+    rates: Mutex<HashMap<String, RateBucket>>,
     dropped: AtomicU64,
 }
 
@@ -116,6 +128,7 @@ impl TelemetryBuffer {
         Self {
             capacity,
             records: Mutex::new(VecDeque::with_capacity(capacity)),
+            rates: Mutex::new(HashMap::new()),
             dropped: AtomicU64::new(0),
         }
     }
@@ -146,6 +159,43 @@ impl TelemetryBuffer {
         })
     }
 
+    fn admit(&self, identity: &TelemetryIdentity, cost: usize) -> bool {
+        let now = Instant::now();
+        let (capacity, rate) = if identity.authenticated {
+            (AUTH_RATE_CAPACITY, AUTH_RATE_PER_SECOND)
+        } else {
+            (ANON_RATE_CAPACITY, ANON_RATE_PER_SECOND)
+        };
+        let mut buckets = lock(&self.rates);
+        if !buckets.contains_key(&identity.rate_key) && buckets.len() >= MAX_RATE_IDENTITIES {
+            buckets.retain(|_, bucket| {
+                now.saturating_duration_since(bucket.last_refill).as_secs() < 3600
+            });
+            if buckets.len() >= MAX_RATE_IDENTITIES {
+                return false;
+            }
+        }
+        let bucket = buckets
+            .entry(identity.rate_key.clone())
+            .or_insert(RateBucket {
+                tokens: capacity,
+                capacity,
+                refill_per_second: rate,
+                last_refill: now,
+            });
+        let elapsed = now
+            .saturating_duration_since(bucket.last_refill)
+            .as_secs_f64();
+        bucket.tokens = (bucket.tokens + elapsed * bucket.refill_per_second).min(bucket.capacity);
+        bucket.last_refill = now;
+        let cost = cost as f64;
+        if bucket.tokens < cost {
+            return false;
+        }
+        bucket.tokens -= cost;
+        true
+    }
+
     #[cfg(test)]
     pub(super) fn records(&self) -> Vec<Value> {
         lock(&self.records)
@@ -153,6 +203,14 @@ impl TelemetryBuffer {
             .map(|record| serde_json::to_value(record).expect("telemetry record serializes"))
             .collect()
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RateBucket {
+    tokens: f64,
+    capacity: f64,
+    refill_per_second: f64,
+    last_refill: Instant,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -194,10 +252,6 @@ struct Event {
     #[serde(default)]
     version: String,
     #[serde(default)]
-    machine_id: String,
-    #[serde(default)]
-    account_id: String,
-    #[serde(default)]
     request_id: String,
     #[serde(default)]
     session_id: String,
@@ -213,6 +267,7 @@ pub(super) async fn ingest(
     State(state): State<std::sync::Arc<OperationsState>>,
     request: Request,
 ) -> Result<(StatusCode, Json<Value>), OperationsError> {
+    let identity = TelemetryIdentity::from_request(&request);
     let body = to_bytes(request.into_body(), MAX_TELEMETRY_BODY)
         .await
         .map_err(|_| OperationsError::payload_too_large("telemetry body exceeds 64KB"))?;
@@ -226,16 +281,46 @@ pub(super) async fn ingest(
     if batch.events.is_empty() {
         return Ok((StatusCode::OK, Json(json!({"accepted": 0, "rejected": 0}))));
     }
+    if !state.telemetry.admit(&identity, batch.events.len()) {
+        return Err(OperationsError::rate_limited(
+            "telemetry rate limit exceeded",
+        ));
+    }
     let received_at = database_now(state.pool()).await?;
-    let mut accepted = 0_usize;
     let mut rejected = 0_usize;
+    let mut records = Vec::with_capacity(batch.events.len());
+    let mut durable = Vec::with_capacity(batch.events.len());
     for event in batch.events {
-        let Some(record) = sanitize(event, &received_at) else {
+        let Some(record) = sanitize(event, &received_at, &identity) else {
             rejected += 1;
             continue;
         };
+        let payload = serde_json::to_value(&record)
+            .map_err(|error| OperationsError::internal("encode telemetry event", error))?;
+        let payload_bytes = serde_json::to_vec(&payload)
+            .ok()
+            .and_then(|payload| i32::try_from(payload.len()).ok())
+            .ok_or_else(|| OperationsError::payload_too_large("telemetry event is too large"))?;
+        durable.push(DurableTelemetryEvent {
+            id: Uuid::parse_str(&record.id).expect("sanitizer emits UUID ids"),
+            event_name: record.kind.clone(),
+            identity_hash: identity.identity_hash.clone(),
+            authenticated: identity.authenticated,
+            payload,
+            payload_bytes,
+        });
+        records.push(record);
+    }
+    let accepted = usize::try_from(
+        state
+            .telemetry_service
+            .persist(&durable)
+            .await
+            .map_err(|error| OperationsError::internal("persist telemetry batch", error))?,
+    )
+    .unwrap_or(usize::MAX);
+    for record in records {
         state.telemetry.push(record);
-        accepted += 1;
     }
     state.metrics.increment("telemetry_batches");
     Ok((
@@ -261,20 +346,19 @@ pub(super) async fn upload_log_report(
             "serial query parameter is required and must be 8-64 uppercase letters/digits",
         ));
     }
-    let account_id = request
-        .headers()
-        .get("x-darkbloom-account-id")
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| valid_identifier(value))
-        .unwrap_or_default()
-        .to_owned();
-    let provider_id = request
-        .headers()
-        .get("x-darkbloom-provider-id")
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| valid_identifier(value))
-        .unwrap_or_default()
-        .to_owned();
+    let authenticated = request.extensions().get::<AuthContext>();
+    let account_id = authenticated
+        .map(|auth| truncate(&auth.account_id, 128))
+        .unwrap_or_default();
+    let provider_id = authenticated
+        .filter(|auth| matches!(auth.principal, AuthPrincipal::ProviderToken { .. }))
+        .map(|auth| {
+            format!(
+                "tok:{}",
+                &opaque_hash(auth.credential_hash.as_bytes())[..16]
+            )
+        })
+        .unwrap_or_default();
     let body = to_bytes(request.into_body(), MAX_LOG_REPORT)
         .await
         .map_err(|_| OperationsError::payload_too_large("log data exceeds 10MB limit"))?;
@@ -323,10 +407,10 @@ pub(super) struct LogListQuery {
 
 pub(super) async fn list_log_reports(
     State(state): State<std::sync::Arc<OperationsState>>,
-    headers: HeaderMap,
     Query(query): Query<LogListQuery>,
+    request: Request,
 ) -> Result<Json<Value>, OperationsError> {
-    require_admin(&state.auth, &state.admin_sessions, &headers)?;
+    require_admin(&state.auth, &state.admin_sessions, &request)?;
     let serial = query.serial.unwrap_or_default();
     if !valid_serial(&serial) {
         return Err(OperationsError::bad_request(
@@ -371,10 +455,10 @@ pub(super) async fn list_log_reports(
 
 pub(super) async fn get_log_report(
     State(state): State<std::sync::Arc<OperationsState>>,
-    headers: HeaderMap,
     Path(id): Path<i64>,
+    request: Request,
 ) -> Result<Response, OperationsError> {
-    require_admin(&state.auth, &state.admin_sessions, &headers)?;
+    require_admin(&state.auth, &state.admin_sessions, &request)?;
     if id <= 0 {
         return Err(OperationsError::bad_request("invalid report id"));
     }
@@ -399,13 +483,66 @@ pub(super) async fn get_log_report(
     Ok(response)
 }
 
-fn sanitize(event: Event, received_at: &str) -> Option<TelemetryRecord> {
+#[derive(Clone, Debug)]
+struct TelemetryIdentity {
+    rate_key: String,
+    identity_hash: String,
+    authenticated: bool,
+    account_id: String,
+    machine_id: String,
+    provider: bool,
+}
+
+impl TelemetryIdentity {
+    fn from_request(request: &Request) -> Self {
+        if let Some(auth) = request.extensions().get::<AuthContext>() {
+            let provider = matches!(auth.principal, AuthPrincipal::ProviderToken { .. });
+            let identity_hash = opaque_hash(auth.credential_hash.as_bytes());
+            return Self {
+                rate_key: format!("auth:{identity_hash}"),
+                identity_hash: identity_hash.clone(),
+                authenticated: true,
+                account_id: truncate(&auth.account_id, 128),
+                machine_id: if provider {
+                    format!("tok:{}", &identity_hash[..16])
+                } else {
+                    String::new()
+                },
+                provider,
+            };
+        }
+        let address = request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ConnectInfo(address)| address.ip())
+            .unwrap_or(IpAddr::from([0, 0, 0, 0]));
+        let identity_hash = opaque_hash(address.to_string().as_bytes());
+        Self {
+            rate_key: format!("anon:{identity_hash}"),
+            identity_hash,
+            authenticated: false,
+            account_id: String::new(),
+            machine_id: String::new(),
+            provider: false,
+        }
+    }
+}
+
+fn sanitize(
+    event: Event,
+    received_at: &str,
+    identity: &TelemetryIdentity,
+) -> Option<TelemetryRecord> {
     if event.message.is_empty() {
         return None;
     }
-    let source = match event.source.as_str() {
-        "provider" | "console" | "app" | "coordinator" | "custom" => event.source,
-        _ => "custom".to_owned(),
+    let source = if identity.provider {
+        "provider".to_owned()
+    } else {
+        match event.source.as_str() {
+            "provider" | "console" | "app" | "coordinator" | "custom" => event.source,
+            _ => "custom".to_owned(),
+        }
     };
     let severity = match event.severity.as_str() {
         "debug" | "info" | "warning" | "error" | "fatal" => event.severity,
@@ -441,14 +578,24 @@ fn sanitize(event: Event, received_at: &str) -> Option<TelemetryRecord> {
         severity,
         kind,
         version: truncate(&event.version, 64),
-        machine_id: truncate(&event.machine_id, 128),
-        account_id: truncate(&event.account_id, 128),
+        machine_id: identity.machine_id.clone(),
+        account_id: identity.account_id.clone(),
         request_id: truncate(&event.request_id, 128),
         session_id: truncate(&event.session_id, 64),
         message: truncate(&event.message, MAX_TELEMETRY_MESSAGE),
         fields: Value::Object(fields),
         stack: truncate(&event.stack, MAX_TELEMETRY_STACK),
     })
+}
+
+fn opaque_hash(value: &[u8]) -> String {
+    let digest = Sha256::digest(value);
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
 }
 
 fn truncate(value: &str, maximum: usize) -> String {
@@ -469,13 +616,6 @@ fn valid_serial(serial: &str) -> bool {
             .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
-fn valid_identifier(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 256
-        && !value.chars().any(char::is_control)
-        && value.trim() == value
-}
-
 async fn database_now(pool: &sqlx::PgPool) -> Result<String, OperationsError> {
     sqlx::query_scalar(
         r#"SELECT to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')"#,
@@ -483,4 +623,50 @@ async fn database_now(pool: &sqlx::PgPool) -> Result<String, OperationsError> {
     .fetch_one(pool)
     .await
     .map_err(|error| OperationsError::internal("read telemetry time", error))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::{
+        body::Body,
+        http::{Request, header},
+    };
+
+    use crate::surface::identity::{AuthContext, AuthPrincipal};
+
+    use super::{TelemetryIdentity, opaque_hash};
+
+    #[test]
+    fn telemetry_identity_uses_authenticated_context_and_ignores_client_identity_headers() {
+        let credential_hash = Arc::<str>::from("provider-credential-hash");
+        let request = Request::builder()
+            .header(header::AUTHORIZATION, "Bearer client-controlled")
+            .header("x-machine-id", "spoofed-machine")
+            .header("x-account-id", "spoofed-account")
+            .extension(AuthContext {
+                principal: AuthPrincipal::ProviderToken {
+                    label: Arc::from("provider"),
+                },
+                account_id: Arc::from("provider-account"),
+                credential_hash: credential_hash.clone(),
+                email: Arc::from(""),
+                role: Arc::from(""),
+                stripe_account_status: Arc::from(""),
+                api_key: None,
+            })
+            .body(Body::empty())
+            .expect("authenticated telemetry request");
+
+        let identity = TelemetryIdentity::from_request(&request);
+        let expected_hash = opaque_hash(credential_hash.as_bytes());
+        assert!(identity.authenticated);
+        assert!(identity.provider);
+        assert_eq!(identity.account_id, "provider-account");
+        assert_eq!(identity.identity_hash, expected_hash);
+        assert_eq!(identity.machine_id, format!("tok:{}", &expected_hash[..16]));
+        assert_ne!(identity.machine_id, "spoofed-machine");
+        assert_ne!(identity.account_id, "spoofed-account");
+    }
 }

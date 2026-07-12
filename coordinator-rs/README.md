@@ -23,15 +23,68 @@ make coordinator-rs-build
 make coordinator-rs-sqlx
 ```
 
-Runtime configuration currently required by the composition root:
+## Environment matrix
 
-```text
-EIGENINFERENCE_DATABASE_URL
-EIGENINFERENCE_COORDINATOR_OWNERSHIP_ENABLED  default false; irreversible once activated
-EIGENINFERENCE_RUST_BIND_ADDRESS              default 0.0.0.0:8081
-EIGENINFERENCE_RUST_DATABASE_MAX_CONNECTIONS default 32
-EIGENINFERENCE_RUST_SHUTDOWN_GRACE_SECONDS   default 30
-```
+The composition root validates configuration before serving HTTP. Full-surface
+mode is independent of isolated pilot mode, but it starts the same supervised
+inference runtime and therefore requires the process key and MicroMDM settings.
+Production provider credentials, API keys, catalog facts, prices, and billing
+allocations are database-backed.
+
+| Variable | Required when | Default / meaning |
+|---|---|---|
+| `EIGENINFERENCE_DATABASE_URL` | Always | PostgreSQL DSN; no memory-store fallback |
+| `EIGENINFERENCE_COORDINATOR_OWNERSHIP_ENABLED` | Full surface | `false`; full surface refuses startup unless `true` |
+| `EIGENINFERENCE_RUST_BIND_ADDRESS` | Optional | `0.0.0.0:8081` |
+| `EIGENINFERENCE_RUST_DATABASE_MAX_CONNECTIONS` | Optional | `32` |
+| `EIGENINFERENCE_RUST_SHUTDOWN_GRACE_SECONDS` | Optional | `30` |
+| `EIGENINFERENCE_RUST_PILOT_ENABLED` | Isolated pilot | `false`; does not enable the production surface |
+| `EIGENINFERENCE_RUST_FULL_SURFACE_ENABLED` | Production Rust surface | `false`; enables identity, billing, inference, and operations |
+| `EIGENINFERENCE_RUST_PROVIDER_CREDENTIALS_JSON` | Isolated pilot; optional full-surface bootstrap | Static provider credentials; full mode also accepts active DB provider tokens |
+| `EIGENINFERENCE_RUST_CONSUMER_API_KEYS_JSON` | Isolated pilot only | Static pilot credentials; forbidden in full mode |
+| `EIGENINFERENCE_RUST_PROCESS_X25519_KEY_ID` | Either inference mode | Process encryption-key identifier |
+| `EIGENINFERENCE_RUST_PROCESS_X25519_PRIVATE_KEY` | Either inference mode | Base64 X25519 private key |
+| `EIGENINFERENCE_RUST_PROCESS_X25519_PUBLIC_KEY` | Either inference mode | Matching base64 X25519 public key |
+| `EIGENINFERENCE_RUST_PILOT_STATE_DIRECTORY` | Optional | `/var/lib/darkbloom/rust-pilot` |
+| `EIGENINFERENCE_RUST_PILOT_MODEL_ID` | Optional | `darkbloom/pilot-text` |
+| `EIGENINFERENCE_RUST_PILOT_MODEL_ALIAS` | Optional | `darkbloom-pilot` |
+| `EIGENINFERENCE_RUST_PILOT_TRUST_FLOOR` | Optional | `self_signed` in isolated mode; `hardware` and immutable in full mode |
+| `EIGENINFERENCE_RUST_BILLING_JSON` | Isolated hardware pilot only | Immutable durable pricing, reservation, and allocation policy; forbidden in full mode |
+| `EIGENINFERENCE_MDM_URL` | Hardware/full mode | MicroMDM API origin |
+| `EIGENINFERENCE_MDM_API_KEY` | Hardware/full mode | MicroMDM Basic-auth secret |
+
+Full-surface base configuration:
+
+| Variable | Required when | Default / meaning |
+|---|---|---|
+| `EIGENINFERENCE_PRIVY_APP_ID` | Full surface | Privy JWT audience |
+| `EIGENINFERENCE_PRIVY_JWKS_URL` | Optional | Privy app JWKS endpoint |
+| `EIGENINFERENCE_ADMIN_KEY` | Full surface | Exact admin bearer secret |
+| `EIGENINFERENCE_RELEASE_KEY` | Full surface | Exact release-registration bearer secret |
+| `EIGENINFERENCE_MDM_WEBHOOK_SECRET` | Full surface | Exact MDM webhook secret |
+| `EIGENINFERENCE_BASE_URL` | Optional | `https://api.darkbloom.dev`; canonical public origin |
+| `EIGENINFERENCE_CONSOLE_URL` | Optional | `https://console.darkbloom.dev` |
+| `MODEL_REGISTRY_CDN_BASE_URL` | Optional | `https://models.darkbloom.ai` |
+| `EIGENINFERENCE_R2_CDN_URL` | Optional | Release artifact origin |
+| `EIGENINFERENCE_PROVIDER_VERSION` | Optional | `dev` |
+| `EIGENINFERENCE_MIN_PROVIDER_VERSION` | Optional | Empty |
+| `MODEL_REGISTRY_PUBLISHING_ENABLED` | Optional | `true`; publishing keys remain DB-backed |
+| `EIGENINFERENCE_RUNTIME_MANIFEST_JSON` | Optional | Bounded JSON object returned by the trust surface |
+| `EIGENINFERENCE_RUST_RATE_LIMIT_IDENTITIES` | Optional | Bounded identity cardinality |
+| `EIGENINFERENCE_RUST_EXTERNAL_HTTP_TIMEOUT_SECONDS` | Stripe enabled | `10`, bounded to `1..=30` |
+
+Optional features fail closed on partial configuration:
+
+| Gate | Required configuration |
+|---|---|
+| `EIGENINFERENCE_RUST_STRIPE_ENABLED=true` | `EIGENINFERENCE_STRIPE_SECRET_KEY`, both webhook secrets, success/cancel URLs, and Connect return/refresh URLs; `EIGENINFERENCE_STRIPE_CONNECT_COUNTRY` defaults to `US` |
+| `EIGENINFERENCE_RUST_ENROLLMENT_ENABLED=true` | `EIGENINFERENCE_MDM_TOPIC`, `EIGENINFERENCE_SCEP_CHALLENGE`, and both CMS certificate/private-key PEM values or their `_FILE` alternatives |
+| `EIGENINFERENCE_RUST_REQUIRE_ENROLLMENT=true` | Enrollment must also be enabled with a signer that validates at startup |
+| `EIGENINFERENCE_STATE_EXPORT_ENABLED=true` | `EIGENINFERENCE_RUST_STATE_EXPORT_RECIPIENT_KEY_ID` and `EIGENINFERENCE_RUST_STATE_EXPORT_RECIPIENT_X25519`; root falls back through `EIGENINFERENCE_STATE_EXPORT_ROOT`, `USER_PERSISTENT_DATA_PATH`, then `/mnt/disks/userdata` |
+| `EIGENINFERENCE_RUST_ADMIN_OTP_ENABLED=true` | `EIGENINFERENCE_PRIVY_APP_SECRET` and non-empty `EIGENINFERENCE_ADMIN_EMAILS` |
+
+Secret-bearing configuration has redacted `Debug` implementations and is never
+included in startup logs.
 
 The same binary exposes bounded owner-fenced maintenance modes:
 
@@ -42,18 +95,18 @@ coordinator invariant-scan
 coordinator review-resolve --job UUID --disposition settle|release --reason TEXT
 ```
 
-When the pilot trust floor is `hardware`, startup also requires durable paid
-configuration. `EIGENINFERENCE_RUST_CONSUMER_API_KEYS_JSON` maps each raw API
-key to an immutable `account_id` and `api_key_id`;
-`EIGENINFERENCE_RUST_PROVIDER_CREDENTIALS_JSON` maps each provider credential
-to its `beneficiary_account_id`; and `EIGENINFERENCE_RUST_BILLING_JSON` fixes
-the platform/referral accounts, pricing and rounding versions, token rates,
-reservation amount, and allocation shares. The `self_signed` self-route mode
-remains explicitly free.
+The isolated hardware pilot requires static consumer/provider mappings and
+`EIGENINFERENCE_RUST_BILLING_JSON`. The production full surface deliberately
+rejects static consumer and billing policy: each request resolves its API-key
+controls, model/alias, prices, provider beneficiary, platform fee, and referral
+allocation from PostgreSQL and freezes those facts in the durable job. Static
+provider credentials remain an optional bootstrap path; device-issued provider
+tokens are authoritative in PostgreSQL. The `self_signed` self-route mode
+remains explicitly free and is not available to the full surface.
 
 Application startup never applies DDL. Checked SQL metadata is committed under
 `.sqlx/`; the Go `coordinator-migrate` command must first bring the public
-catalog to version 5 and install `rust_coord.schema_versions` version 3.
+catalog to version 6 and install `rust_coord.schema_versions` version 4.
 `Database::connect` only checks that compatible pair. Regenerating SQLx
 metadata likewise requires a disposable database migrated to that exact
 catalog pair; CI migrates its isolated PostgreSQL service before checking the

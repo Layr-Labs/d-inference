@@ -1,0 +1,111 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    ),\n                    job AS MATERIALIZED (\n                        SELECT\n                            jobs.*,\n                            balances.balance_micro_usd,\n                            balances.withdrawable_micro_usd,\n                            CASE\n                                WHEN $22::BIGINT >= jobs.reserved_total_micro_usd\n                                THEN jobs.reserved_withdrawable_micro_usd\n                                    + GREATEST(\n                                        0::BIGINT,\n                                        (\n                                            $22::BIGINT\n                                            - jobs.reserved_total_micro_usd\n                                        ) - (\n                                            balances.balance_micro_usd\n                                            - balances.withdrawable_micro_usd\n                                        )\n                                    )\n                                ELSE jobs.reserved_withdrawable_micro_usd\n                                    - LEAST(\n                                        jobs.reserved_total_micro_usd - $22::BIGINT,\n                                        jobs.reserved_withdrawable_micro_usd\n                                    )\n                            END AS new_reserved_withdrawable\n                        FROM rust_coord.inference_jobs AS jobs\n                        JOIN public.balances AS balances\n                          ON balances.account_id = jobs.account_id\n                        WHERE jobs.job_id = $3\n                          AND jobs.owner_epoch = $2\n                          AND jobs.version = $4\n                          AND jobs.state = $5\n                          AND jobs.reservation_pre_debited\n                          AND jobs.request_deadline > NOW()\n                          AND NOT EXISTS (\n                              SELECT 1\n                              FROM rust_coord.provider_hard_untrust_epochs\n                                  AS untrusted\n                              WHERE untrusted.provider_id = $10\n                                AND untrusted.hard_untrust_epoch >= $12\n                          )\n                          AND (\n                              (\n                                  $35::UUID IS NULL\n                                  AND jobs.worker_owner IS NULL\n                              )\n                              OR (\n                                  jobs.worker_owner = $35\n                                  AND jobs.lease_until > NOW()\n                              )\n                          )\n                          AND balances.balance_micro_usd >= 0\n                          AND balances.withdrawable_micro_usd >= 0\n                          AND balances.withdrawable_micro_usd\n                              <= balances.balance_micro_usd\n                          AND (\n                              $22::BIGINT <= jobs.reserved_total_micro_usd\n                              OR balances.balance_micro_usd >= (\n                                  $22::BIGINT\n                                  - jobs.reserved_total_micro_usd\n                              )\n                          )\n                          AND (\n                              $22::BIGINT >= jobs.reserved_total_micro_usd\n                              OR balances.balance_micro_usd <= (\n                                  9223372036854775807::BIGINT\n                                  - (\n                                      jobs.reserved_total_micro_usd\n                                      - $22::BIGINT\n                                  )\n                              )\n                          )\n                          AND (\n                              jobs.api_key_reserved_micro_usd = 0\n                              OR EXISTS (\n                                  SELECT 1\n                                  FROM public.api_keys AS keys\n                                  WHERE keys.id = jobs.api_key_id\n                                    AND keys.key_hash = jobs.consumer_key_hash\n                                    AND keys.owner_account_id = jobs.account_id\n                                    AND keys.active\n                                    AND (\n                                        keys.expires_at IS NULL\n                                        OR keys.expires_at > NOW()\n                                    )\n                                    AND (\n                                        keys.allowed_models IN ('', '[]')\n                                        OR EXISTS (\n                                            SELECT 1\n                                            FROM jsonb_array_elements_text(\n                                                keys.allowed_models::JSONB\n                                            ) AS allowed(model)\n                                            WHERE allowed.model IN ($17, $18)\n                                        )\n                                    )\n                                    AND (\n                                        NOT keys.self_route_only\n                                        OR EXISTS (\n                                            SELECT 1\n                                            FROM public.providers AS providers\n                                            WHERE providers.id = $10::TEXT\n                                              AND providers.account_id =\n                                                  jobs.account_id\n                                              AND providers.connected\n                                              AND providers.trust_level =\n                                                  'hardware'\n                                              AND providers.session_epoch = $12\n                                        )\n                                    )\n                                    AND (\n                                        keys.limit_micro_usd IS NULL\n                                        OR (\n                                            COALESCE((\n                                                SELECT SUM(\n                                                    usage.cost_micro_usd\n                                                )\n                                                FROM public.usage\n                                                WHERE usage.key_id = keys.id\n                                                  AND usage.created_at >=\n                                                    CASE keys.limit_reset\n                                                      WHEN 'daily'\n                                                        THEN date_trunc('day', NOW())\n                                                      WHEN 'weekly'\n                                                        THEN date_trunc('week', NOW())\n                                                      WHEN 'monthly'\n                                                        THEN date_trunc('month', NOW())\n                                                      ELSE '-infinity'::TIMESTAMPTZ\n                                                    END\n                                            ), 0)::NUMERIC\n                                            + COALESCE((\n                                                SELECT SUM(\n                                                    controlled_jobs\n                                                        .api_key_reserved_micro_usd\n                                                )\n                                                FROM rust_coord.inference_jobs\n                                                    AS controlled_jobs\n                                                WHERE controlled_jobs.api_key_id =\n                                                      keys.id\n                                                  AND controlled_jobs.account_id =\n                                                      jobs.account_id\n                                                  AND controlled_jobs.job_id <>\n                                                      jobs.job_id\n                                                  AND controlled_jobs.state NOT IN (\n                                                    'settled',\n                                                    'released',\n                                                    'settled_reviewed',\n                                                    'released_reviewed'\n                                                  )\n                                            ), 0)::NUMERIC\n                                            + $22::NUMERIC\n                                            <= keys.limit_micro_usd::NUMERIC\n                                        )\n                                    )\n                              )\n                          )\n                        FOR UPDATE OF jobs, balances\n                    ),\n                    beneficiary_seed AS (\n                        INSERT INTO public.balances (\n                            account_id,\n                            balance_micro_usd,\n                            withdrawable_micro_usd,\n                            updated_at\n                        )\n                        SELECT account_id, 0, 0, NOW()\n                        FROM (\n                            SELECT DISTINCT account_id\n                            FROM (\n                                VALUES ($24::TEXT), ($25::TEXT), ($26::TEXT)\n                            ) AS beneficiaries(account_id)\n                            WHERE account_id IS NOT NULL\n                        ) AS distinct_beneficiaries\n                        ORDER BY account_id\n                        ON CONFLICT (account_id) DO NOTHING\n                        RETURNING account_id\n                    ),\n                    operation_insert AS (\n                        INSERT INTO rust_coord.financial_operations (\n                            operation_id,\n                            operation_key,\n                            operation_digest,\n                            kind,\n                            status,\n                            job_id,\n                            account_id,\n                            amount_total_micro_usd,\n                            amount_withdrawable_micro_usd,\n                            result,\n                            owner_epoch,\n                            version,\n                            completed_at\n                        )\n                        SELECT\n                            $6,\n                            $7,\n                            $8,\n                            'resize',\n                            'applied',\n                            job.job_id,\n                            job.account_id,\n                            $22::BIGINT - job.reserved_total_micro_usd,\n                            job.new_reserved_withdrawable\n                                - job.reserved_withdrawable_micro_usd,\n                            jsonb_build_object(\n                                'job_id', job.job_id,\n                                'version', $4::BIGINT + 1,\n                                'state', 'start_authorized',\n                                'total', $22::BIGINT,\n                                'withdrawable',\n                                    job.new_reserved_withdrawable,\n                                'input_rate', $31::BIGINT,\n                                'output_rate', $32::BIGINT,\n                                'provider_share_ppm', $34::BIGINT,\n                                'pricing_version', $19::BIGINT,\n                                'rounding_version', $20::BIGINT\n                            ),\n                            $2,\n                            2,\n                            NOW()\n                        FROM authority\n                        CROSS JOIN job\n                        LEFT JOIN (\n                            SELECT COUNT(*) AS seeded FROM beneficiary_seed\n                        ) AS seeded ON TRUE\n                        RETURNING operation_id\n                    ),\n                    attempt_insert AS (\n                        INSERT INTO rust_coord.inference_attempts (\n                            attempt_id,\n                            job_id,\n                            provider_id,\n                            provider_process_generation_id,\n                            session_epoch,\n                            owner_epoch,\n                            lease_id,\n                            permit_id,\n                            dispatch_nonce,\n                            request_digest,\n                            kind,\n                            state,\n                            worker_owner,\n                            lease_until\n                        )\n                        SELECT\n                            $9,\n                            job.job_id,\n                            $10,\n                            $11,\n                            $12,\n                            $2,\n                            $13,\n                            $14,\n                            $15,\n                            $16,\n                            $33::TEXT,\n                            'not_sent',\n                            $35,\n                            job.lease_until\n                        FROM job\n                        CROSS JOIN operation_insert\n                        RETURNING attempt_id\n                    ),\n                    balance_update AS (\n                        UPDATE public.balances AS balances\n                        SET\n                            balance_micro_usd = CASE\n                                WHEN $22::BIGINT\n                                    >= job.reserved_total_micro_usd\n                                THEN balances.balance_micro_usd - (\n                                    $22::BIGINT\n                                    - job.reserved_total_micro_usd\n                                )\n                                ELSE balances.balance_micro_usd + (\n                                    job.reserved_total_micro_usd\n                                    - $22::BIGINT\n                                )\n                            END,\n                            withdrawable_micro_usd = CASE\n                                WHEN job.new_reserved_withdrawable\n                                    >= job.reserved_withdrawable_micro_usd\n                                THEN balances.withdrawable_micro_usd - (\n                                    job.new_reserved_withdrawable\n                                    - job.reserved_withdrawable_micro_usd\n                                )\n                                ELSE balances.withdrawable_micro_usd + (\n                                    job.reserved_withdrawable_micro_usd\n                                    - job.new_reserved_withdrawable\n                                )\n                            END,\n                            updated_at = NOW()\n                        FROM job, operation_insert, attempt_insert\n                        WHERE balances.account_id = job.account_id\n                        RETURNING balances.balance_micro_usd\n                    ),\n                    ledger_insert AS (\n                        INSERT INTO public.ledger_entries (\n                            account_id,\n                            entry_type,\n                            amount_micro_usd,\n                            balance_after,\n                            reference\n                        )\n                        SELECT\n                            job.account_id,\n                            CASE\n                                WHEN $22::BIGINT > job.reserved_total_micro_usd\n                                THEN 'charge'\n                                ELSE 'refund'\n                            END,\n                            job.reserved_total_micro_usd - $22::BIGINT,\n                            balance_update.balance_micro_usd,\n                            'rust-resize:' || $7\n                        FROM job\n                        CROSS JOIN balance_update\n                        RETURNING id\n                    ),\n                    job_update AS (\n                        UPDATE rust_coord.inference_jobs AS jobs\n                        SET\n                            state = 'start_authorized',\n                            reserved_total_micro_usd = $22,\n                            reserved_withdrawable_micro_usd =\n                                job.new_reserved_withdrawable,\n                            concrete_model = $17,\n                            public_model = $18,\n                            pricing_version = $19,\n                            rounding_version = $20,\n                            billable_input_tokens = $21,\n                            bounded_output_tokens = $23,\n                            provider_id = $10,\n                            provider_account_id = $24,\n                            platform_account_id = $25,\n                            referral_account_id = $26,\n                            provider_payout_micro_usd = $27,\n                            platform_fee_micro_usd = $28,\n                            referral_reward_micro_usd = $29,\n                            input_micro_usd_per_million = $31,\n                            output_micro_usd_per_million = $32,\n                            provider_share_ppm = $34,\n                            referral_share_ppm = $30,\n                            api_key_reserved_micro_usd = CASE\n                                WHEN job.api_key_reserved_micro_usd > 0 THEN $22\n                                ELSE 0\n                            END,\n                            request_digest = $16,\n                            start_authorized_at = NOW(),\n                            start_deadline =\n                                NOW() + ($36::BIGINT * INTERVAL '1 millisecond'),\n                            version = jobs.version + 1,\n                            updated_at = NOW()\n                        FROM job, ledger_insert\n                        WHERE jobs.job_id = job.job_id\n                          AND jobs.version = $4\n                          AND jobs.state = $5\n                        RETURNING\n                            jobs.job_id,\n                            jobs.version,\n                            jobs.state,\n                            jobs.reserved_total_micro_usd,\n                            jobs.reserved_withdrawable_micro_usd\n                    )\n                    SELECT\n                        job_update.job_id,\n                        job_update.version,\n                        job_update.state,\n                        job_update.reserved_total_micro_usd,\n                        job_update.reserved_withdrawable_micro_usd\n                    FROM job_update\n                    CROSS JOIN operation_insert\n                    CROSS JOIN attempt_insert\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.inference_jobs",
+            "name": "job_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.inference_jobs",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "state",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.inference_jobs",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "reserved_total_micro_usd",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.inference_jobs",
+            "name": "reserved_total_micro_usd"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "reserved_withdrawable_micro_usd",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rust_coord.inference_jobs",
+            "name": "reserved_withdrawable_micro_usd"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Text",
+        "Bytea",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Uuid",
+        "Uuid",
+        "Bytea",
+        "Bytea",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Text",
+        "Int8",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e8313556174fd7dd710cd87e15559cd8c6e356121be75ed62510c60169035f58"
+}

@@ -15,7 +15,7 @@ use super::error::BillingError;
 const MAX_STRIPE_RESPONSE_BYTES: usize = 1024 * 1024;
 pub(super) const WEBHOOK_TOLERANCE: Duration = Duration::from_secs(5 * 60);
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct StripeSettings {
     pub secret_key: Arc<str>,
     pub webhook_secret: Arc<str>,
@@ -27,6 +27,24 @@ pub struct StripeSettings {
     pub connect_refresh_url: Arc<str>,
     pub platform_country: Arc<str>,
     pub request_timeout: Duration,
+}
+
+impl fmt::Debug for StripeSettings {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StripeSettings")
+            .field("secret_key", &"<redacted>")
+            .field("webhook_secret", &"<redacted>")
+            .field("connect_webhook_secret", &"<redacted>")
+            .field("api_base", &self.api_base)
+            .field("checkout_success_url", &self.checkout_success_url)
+            .field("checkout_cancel_url", &self.checkout_cancel_url)
+            .field("connect_return_url", &self.connect_return_url)
+            .field("connect_refresh_url", &self.connect_refresh_url)
+            .field("platform_country", &self.platform_country)
+            .field("request_timeout", &self.request_timeout)
+            .finish()
+    }
 }
 
 impl StripeSettings {
@@ -73,20 +91,40 @@ impl StripeClient {
         if settings.secret_key.is_empty()
             || settings.webhook_secret.is_empty()
             || settings.connect_webhook_secret.is_empty()
+            || settings.request_timeout.is_zero()
+            || settings.request_timeout > Duration::from_secs(30)
         {
             return Err(BillingError::bad_request(
-                "Stripe API and both webhook secrets are required",
+                "Stripe API, webhook secrets, and a bounded timeout are required",
             ));
         }
         let base = Url::parse(&settings.api_base)
             .map_err(|_| BillingError::bad_request("Stripe API base URL is invalid"))?;
-        if !matches!(base.scheme(), "http" | "https") || base.cannot_be_a_base() {
+        if !valid_external_url(&base)
+            || !base.path().is_empty() && base.path() != "/"
+            || base.query().is_some()
+        {
             return Err(BillingError::bad_request(
-                "Stripe API base URL must use HTTP or HTTPS",
+                "Stripe API base URL must be a trusted origin",
             ));
+        }
+        for (name, value) in [
+            ("checkout success URL", &settings.checkout_success_url),
+            ("checkout cancellation URL", &settings.checkout_cancel_url),
+            ("Connect return URL", &settings.connect_return_url),
+            ("Connect refresh URL", &settings.connect_refresh_url),
+        ] {
+            let url = Url::parse(value)
+                .map_err(|_| BillingError::bad_request(format!("{name} is invalid")))?;
+            if !valid_external_url(&url) {
+                return Err(BillingError::bad_request(format!(
+                    "{name} must use HTTPS or loopback HTTP"
+                )));
+            }
         }
         let client = Client::builder()
             .timeout(settings.request_timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| BillingError::internal("build Stripe HTTP client", error))?;
         Ok(Self {
@@ -283,6 +321,7 @@ impl StripeClient {
         account_id: &str,
         amount_cents: i64,
         idempotency_key: &str,
+        withdrawal_id: &str,
     ) -> Result<Transfer, StripeError> {
         validate_stripe_id(account_id, "acct_")?;
         let value = self
@@ -294,6 +333,8 @@ impl StripeClient {
                     pair("currency", "usd"),
                     pair("destination", account_id),
                     pair("description", "Darkbloom credit withdrawal"),
+                    pair("transfer_group", withdrawal_id),
+                    pair("metadata[withdrawal_id]", withdrawal_id),
                 ]),
                 Some(idempotency_key),
                 None,
@@ -304,11 +345,57 @@ impl StripeClient {
         })
     }
 
+    pub(super) async fn transfer(&self, transfer_id: &str) -> Result<Transfer, StripeError> {
+        validate_stripe_id(transfer_id, "tr_")?;
+        let value = self
+            .request(
+                Method::GET,
+                &format!("/v1/transfers/{transfer_id}"),
+                None,
+                None,
+                None,
+            )
+            .await?;
+        Ok(Transfer {
+            id: string_field(&value, "id")?,
+        })
+    }
+
+    pub(super) async fn find_transfer(
+        &self,
+        account_id: &str,
+        withdrawal_id: &str,
+    ) -> Result<Option<Transfer>, StripeError> {
+        validate_stripe_id(account_id, "acct_")?;
+        let value = self
+            .request(
+                Method::GET,
+                "/v1/transfers",
+                Some(vec![
+                    pair("destination", account_id),
+                    pair("transfer_group", withdrawal_id),
+                    pair("limit", "2"),
+                ]),
+                None,
+                None,
+            )
+            .await?;
+        let value = unique_list_object(&value, "transfer")?;
+        value
+            .map(|value| {
+                Ok(Transfer {
+                    id: string_field(value, "id")?,
+                })
+            })
+            .transpose()
+    }
+
     pub(super) async fn create_payout(
         &self,
         account_id: &str,
         amount_cents: i64,
         idempotency_key: &str,
+        withdrawal_id: &str,
     ) -> Result<Payout, StripeError> {
         validate_stripe_id(account_id, "acct_")?;
         let value = self
@@ -320,6 +407,7 @@ impl StripeClient {
                     pair("currency", "usd"),
                     pair("method", "instant"),
                     pair("description", "Darkbloom credit withdrawal"),
+                    pair("metadata[withdrawal_id]", withdrawal_id),
                 ]),
                 Some(idempotency_key),
                 Some(account_id),
@@ -330,6 +418,48 @@ impl StripeClient {
             status: optional_string(&value, "status"),
             arrival_date: value.get("arrival_date").and_then(Value::as_i64),
         })
+    }
+
+    pub(super) async fn find_payout(
+        &self,
+        account_id: &str,
+        withdrawal_id: &str,
+    ) -> Result<Option<Payout>, StripeError> {
+        validate_stripe_id(account_id, "acct_")?;
+        let value = self
+            .request(
+                Method::GET,
+                "/v1/payouts",
+                Some(vec![pair("limit", "100")]),
+                None,
+                Some(account_id),
+            )
+            .await?;
+        let data = value
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or_else(|| StripeError::unknown("Stripe payout list omitted data"))?;
+        let mut matching = data.iter().filter(|payout| {
+            payout
+                .pointer("/metadata/withdrawal_id")
+                .and_then(Value::as_str)
+                == Some(withdrawal_id)
+        });
+        let payout = matching.next();
+        if matching.next().is_some() {
+            return Err(StripeError::unknown(
+                "Stripe returned duplicate payouts for one withdrawal",
+            ));
+        }
+        payout
+            .map(|value| {
+                Ok(Payout {
+                    id: string_field(value, "id")?,
+                    status: optional_string(value, "status"),
+                    arrival_date: value.get("arrival_date").and_then(Value::as_i64),
+                })
+            })
+            .transpose()
     }
 
     pub(super) async fn payout(
@@ -363,15 +493,24 @@ impl StripeClient {
         idempotency_key: Option<&str>,
         stripe_account: Option<&str>,
     ) -> Result<Value, StripeError> {
-        let url = self
+        let mut url = self
             .base
             .join(path.trim_start_matches('/'))
             .map_err(|error| StripeError::definitive(format!("invalid Stripe URL: {error}")))?;
+        let query_parameters = method == Method::GET;
+        if query_parameters && let Some(form) = &form {
+            url.query_pairs_mut().extend_pairs(
+                form.iter()
+                    .map(|(key, value)| (key.as_str(), value.as_str())),
+            );
+        }
         let mut request = self
             .client
             .request(method, url)
             .bearer_auth(self.settings.secret_key.as_ref());
-        if let Some(form) = form {
+        if let Some(form) = form
+            && !query_parameters
+        {
             let encoded: String = url::form_urlencoded::Serializer::new(String::new())
                 .extend_pairs(form)
                 .finish();
@@ -414,6 +553,19 @@ impl StripeClient {
         serde_json::from_slice(&body)
             .map_err(|error| StripeError::unknown(format!("Stripe returned invalid JSON: {error}")))
     }
+}
+
+fn valid_external_url(url: &Url) -> bool {
+    let local_http = url.scheme() == "http"
+        && url
+            .host_str()
+            .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1"));
+    !url.cannot_be_a_base()
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.fragment().is_none()
+        && (url.scheme() == "https" || local_http)
 }
 
 #[derive(Clone, Debug)]
@@ -609,6 +761,22 @@ fn string_field(value: &Value, field: &'static str) -> Result<String, StripeErro
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| StripeError::unknown(format!("Stripe response omitted {field}")))
+}
+
+fn unique_list_object<'a>(
+    value: &'a Value,
+    object: &'static str,
+) -> Result<Option<&'a Value>, StripeError> {
+    let data = value
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| StripeError::unknown(format!("Stripe {object} list omitted data")))?;
+    if data.len() > 1 {
+        return Err(StripeError::unknown(format!(
+            "Stripe returned duplicate {object} objects for one withdrawal"
+        )));
+    }
+    Ok(data.first())
 }
 
 fn optional_string(value: &Value, field: &str) -> String {

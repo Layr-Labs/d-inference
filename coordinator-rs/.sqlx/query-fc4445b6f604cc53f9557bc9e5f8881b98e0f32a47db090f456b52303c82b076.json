@@ -9,7 +9,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "inference_jobs",
+            "table": "rust_coord.inference_jobs",
             "name": "job_id"
           }
         }
@@ -20,7 +20,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "inference_jobs",
+            "table": "rust_coord.inference_jobs",
             "name": "request_id"
           }
         }
@@ -31,7 +31,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "inference_jobs",
+            "table": "rust_coord.inference_jobs",
             "name": "reservation_id"
           }
         }
@@ -42,7 +42,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "inference_jobs",
+            "table": "rust_coord.inference_jobs",
             "name": "version"
           }
         }
@@ -53,7 +53,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "inference_jobs",
+            "table": "rust_coord.inference_jobs",
             "name": "state"
           }
         }
@@ -82,7 +82,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "inference_attempts",
+            "table": "rust_coord.inference_attempts",
             "name": "attempt_id"
           }
         }
@@ -93,7 +93,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "inference_attempts",
+            "table": "rust_coord.inference_attempts",
             "name": "provider_id"
           }
         }
@@ -104,7 +104,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "inference_attempts",
+            "table": "rust_coord.inference_attempts",
             "name": "provider_process_generation_id"
           }
         }
@@ -115,7 +115,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "inference_attempts",
+            "table": "rust_coord.inference_attempts",
             "name": "session_epoch"
           }
         }
@@ -126,7 +126,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "inference_attempts",
+            "table": "rust_coord.inference_attempts",
             "name": "lease_id"
           }
         }
@@ -137,7 +137,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "inference_attempts",
+            "table": "rust_coord.inference_attempts",
             "name": "state"
           }
         }
@@ -148,7 +148,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "inference_attempts",
+            "table": "rust_coord.inference_attempts",
             "name": "version"
           }
         }

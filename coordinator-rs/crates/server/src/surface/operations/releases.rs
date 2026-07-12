@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use super::{
     OperationsState,
-    auth::{require_admin, require_public, require_release},
+    auth::{require_admin_key, require_public, require_release},
     error::OperationsError,
     public::release_json,
 };
@@ -161,7 +161,7 @@ pub(super) async fn admin_list(
     State(state): State<Arc<OperationsState>>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, OperationsError> {
-    require_admin(&state.auth, &state.admin_sessions, &headers)?;
+    require_admin_key(&state.auth, &headers)?;
     let rows = sqlx::query(
         r#"
         SELECT version, platform, backend, binary_hash, bundle_hash, metallib_hash,
@@ -200,7 +200,7 @@ pub(super) async fn admin_delete(
     State(state): State<Arc<OperationsState>>,
     request: Request,
 ) -> Result<Json<Value>, OperationsError> {
-    require_admin(&state.auth, &state.admin_sessions, request.headers())?;
+    require_admin_key(&state.auth, request.headers())?;
     let bytes = to_bytes(request.into_body(), MAX_RELEASE_BODY)
         .await
         .map_err(|_| OperationsError::payload_too_large("release body exceeds 64KB"))?;

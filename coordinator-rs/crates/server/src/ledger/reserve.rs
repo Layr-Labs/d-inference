@@ -1,4 +1,3 @@
-use darkbloom_coordinator_core::ids::Digest;
 use serde_json::Value;
 use sqlx::FromRow;
 
@@ -38,6 +37,23 @@ impl LedgerService {
         }
         if request.consumer_key_hash.is_empty() {
             return Err(crate::ledger::types::InputError::Empty("consumer key hash").into());
+        }
+        if request
+            .api_key_limit_micro_usd
+            .is_some_and(|limit| limit < 0)
+        {
+            return Err(crate::ledger::types::InputError::ArithmeticOverflow.into());
+        }
+        if request.api_key_controlled
+            && (request.public_model.is_empty()
+                || request.concrete_model.is_empty()
+                || request.provisional_provider_id.is_none()
+                || request.provisional_session_epoch.is_none())
+        {
+            return Err(crate::ledger::types::InputError::Empty(
+                "API-key reservation control fence",
+            )
+            .into());
         }
         if request.request_deadline_epoch_millis == 0
             || request.request_deadline_epoch_millis > i64::MAX as u64
@@ -102,7 +118,24 @@ impl LedgerService {
         authority: &Authority,
         request: &ReserveRequest,
     ) -> Result<Option<ReservationRow>, LedgerError> {
-        self.db
+        let mut transaction = self.db.bounded(self.db.pool().begin()).await?;
+        if request.api_key_controlled {
+            // The limit check reads both settled usage and still-reserved jobs.
+            // Acquire the per-key transaction lock in a separate statement so
+            // a waiter takes its reservation snapshot only after the prior
+            // transaction commits. A row lock inside the reservation statement
+            // is insufficient: PostgreSQL keeps the command's pre-wait
+            // READ COMMITTED snapshot for independent subqueries.
+            self.db
+                .bounded(
+                    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::TEXT, 0))")
+                        .bind(request.consumer_key_hash.as_ref())
+                        .execute(&mut *transaction),
+                )
+                .await?;
+        }
+        let row = self
+            .db
             .bounded(
                 sqlx::query_as_unchecked!(
                     ReservationRow,
@@ -141,6 +174,81 @@ impl LedgerService {
                                     AND untrusted.hard_untrust_epoch >= $16
                               )
                           )
+                          AND (
+                              NOT $18::BOOLEAN
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM public.api_keys AS keys
+                                  WHERE keys.id = $9
+                                    AND keys.key_hash = $12
+                                    AND keys.owner_account_id = $8
+                                    AND keys.active
+                                    AND (
+                                        keys.expires_at IS NULL
+                                        OR keys.expires_at > NOW()
+                                    )
+                                    AND keys.limit_micro_usd
+                                        IS NOT DISTINCT FROM $19::BIGINT
+                                    AND (
+                                        keys.allowed_models IN ('', '[]')
+                                        OR EXISTS (
+                                            SELECT 1
+                                            FROM jsonb_array_elements_text(
+                                                keys.allowed_models::JSONB
+                                            ) AS allowed(model)
+                                            WHERE allowed.model IN ($20, $21)
+                                        )
+                                    )
+                                    AND (
+                                        NOT keys.self_route_only
+                                        OR EXISTS (
+                                            SELECT 1
+                                            FROM public.providers AS providers
+                                            WHERE providers.id = $15::TEXT
+                                              AND providers.account_id = $8
+                                              AND providers.connected
+                                              AND providers.trust_level = 'hardware'
+                                              AND providers.session_epoch = $16
+                                        )
+                                    )
+                                    AND (
+                                        keys.limit_micro_usd IS NULL
+                                        OR (
+                                            COALESCE((
+                                                SELECT SUM(usage.cost_micro_usd)
+                                                FROM public.usage
+                                                WHERE usage.key_id = keys.id
+                                                  AND usage.created_at >=
+                                                    CASE keys.limit_reset
+                                                      WHEN 'daily'
+                                                        THEN date_trunc('day', NOW())
+                                                      WHEN 'weekly'
+                                                        THEN date_trunc('week', NOW())
+                                                      WHEN 'monthly'
+                                                        THEN date_trunc('month', NOW())
+                                                      ELSE '-infinity'::TIMESTAMPTZ
+                                                    END
+                                            ), 0)::NUMERIC
+                                            + COALESCE((
+                                                SELECT SUM(
+                                                    jobs.api_key_reserved_micro_usd
+                                                )
+                                                FROM rust_coord.inference_jobs AS jobs
+                                                WHERE jobs.api_key_id = keys.id
+                                                  AND jobs.account_id = $8
+                                                  AND jobs.state NOT IN (
+                                                    'settled',
+                                                    'released',
+                                                    'settled_reviewed',
+                                                    'released_reviewed'
+                                                  )
+                                            ), 0)::NUMERIC
+                                            + $10::NUMERIC
+                                            <= keys.limit_micro_usd::NUMERIC
+                                        )
+                                    )
+                              )
+                          )
                         FOR UPDATE
                     ),
                     job_insert AS (
@@ -160,7 +268,8 @@ impl LedgerService {
                             reservation_pre_debited,
                             request_deadline,
                             worker_owner,
-                            lease_until
+                            lease_until,
+                            api_key_reserved_micro_usd
                         )
                         SELECT
                             $3,
@@ -183,7 +292,8 @@ impl LedgerService {
                                 WHEN $13::UUID IS NULL THEN NULL
                                 ELSE NOW()
                                     + ($14::BIGINT * INTERVAL '1 millisecond')
-                            END
+                            END,
+                            CASE WHEN $18::BOOLEAN THEN $10 ELSE 0 END
                         FROM authority
                         CROSS JOIN account
                         ON CONFLICT DO NOTHING
@@ -300,10 +410,16 @@ impl LedgerService {
                     request.provisional_session_epoch.map(Version::as_i64),
                     i64::try_from(request.request_deadline_epoch_millis)
                         .expect("validated request deadline fits i64"),
+                    request.api_key_controlled,
+                    request.api_key_limit_micro_usd,
+                    request.public_model.as_ref(),
+                    request.concrete_model.as_ref(),
                 )
-                .fetch_optional(self.db.pool()),
+                .fetch_optional(&mut *transaction),
             )
-            .await
+            .await?;
+        self.db.bounded(transaction.commit()).await?;
+        Ok(row)
     }
 
     async fn resolve_reserve(
@@ -359,6 +475,82 @@ impl LedgerService {
                                   AND untrusted.hard_untrust_epoch >= $10
                             )
                         ) AS provider_trusted
+                        ,
+                        (
+                            NOT $11::BOOLEAN
+                            OR EXISTS (
+                                SELECT 1
+                                FROM public.api_keys AS keys
+                                WHERE keys.id = $12
+                                  AND keys.key_hash = $13
+                                  AND keys.owner_account_id = $3
+                                  AND keys.active
+                                  AND (
+                                      keys.expires_at IS NULL
+                                      OR keys.expires_at > NOW()
+                                  )
+                                  AND keys.limit_micro_usd
+                                      IS NOT DISTINCT FROM $14::BIGINT
+                                  AND (
+                                      keys.allowed_models IN ('', '[]')
+                                      OR EXISTS (
+                                          SELECT 1
+                                          FROM jsonb_array_elements_text(
+                                              keys.allowed_models::JSONB
+                                          ) AS allowed(model)
+                                          WHERE allowed.model IN ($15, $16)
+                                      )
+                                  )
+                                  AND (
+                                      NOT keys.self_route_only
+                                      OR EXISTS (
+                                          SELECT 1
+                                          FROM public.providers AS providers
+                                          WHERE providers.id = $9::TEXT
+                                            AND providers.account_id = $3
+                                            AND providers.connected
+                                            AND providers.trust_level = 'hardware'
+                                            AND providers.session_epoch = $10
+                                      )
+                                  )
+                                  AND (
+                                      keys.limit_micro_usd IS NULL
+                                      OR (
+                                          COALESCE((
+                                              SELECT SUM(usage.cost_micro_usd)
+                                              FROM public.usage
+                                              WHERE usage.key_id = keys.id
+                                                AND usage.created_at >=
+                                                  CASE keys.limit_reset
+                                                    WHEN 'daily'
+                                                      THEN date_trunc('day', NOW())
+                                                    WHEN 'weekly'
+                                                      THEN date_trunc('week', NOW())
+                                                    WHEN 'monthly'
+                                                      THEN date_trunc('month', NOW())
+                                                    ELSE '-infinity'::TIMESTAMPTZ
+                                                  END
+                                          ), 0)::NUMERIC
+                                          + COALESCE((
+                                              SELECT SUM(
+                                                  jobs.api_key_reserved_micro_usd
+                                              )
+                                              FROM rust_coord.inference_jobs AS jobs
+                                              WHERE jobs.api_key_id = keys.id
+                                                AND jobs.account_id = $3
+                                                AND jobs.state NOT IN (
+                                                  'settled',
+                                                  'released',
+                                                  'settled_reviewed',
+                                                  'released_reviewed'
+                                                )
+                                          ), 0)::NUMERIC
+                                          + $4::NUMERIC
+                                          <= keys.limit_micro_usd::NUMERIC
+                                      )
+                                  )
+                            )
+                        ) AS api_key_allowed
                     WHERE EXISTS (SELECT 1 FROM authority)
                     "#,
                     authority.owner_id(),
@@ -371,12 +563,19 @@ impl LedgerService {
                     request.operation.key.as_str(),
                     request.provisional_provider_id,
                     request.provisional_session_epoch.map(Version::as_i64),
+                    request.api_key_controlled,
+                    request.api_key_id.as_ref(),
+                    request.consumer_key_hash.as_ref(),
+                    request.api_key_limit_micro_usd,
+                    request.public_model.as_ref(),
+                    request.concrete_model.as_ref(),
                 )
                 .fetch_optional(self.db.pool()),
             )
             .await?;
         match diagnostic {
             Some(row) if !row.provider_trusted => Err(LedgerError::ProviderHardUntrusted),
+            Some(row) if !row.api_key_allowed => Err(LedgerError::ApiKeyControlRejected),
             Some(row) if !row.funded => Err(LedgerError::InsufficientBalance),
             Some(row) if row.job_conflict => Err(LedgerError::OperationConflict),
             Some(_) => Err(LedgerError::OperationConflict),
@@ -410,6 +609,7 @@ struct ReserveDiagnostic {
     funded: bool,
     job_conflict: bool,
     provider_trusted: bool,
+    api_key_allowed: bool,
 }
 
 fn reservation_from_row(
@@ -483,6 +683,3 @@ pub(crate) fn json_uuid(value: &Value, field: &'static str) -> Result<uuid::Uuid
         .parse()
         .map_err(|_| LedgerError::CorruptData(field))
 }
-
-#[allow(dead_code)]
-fn _digest_type_pin(_: Digest) {}

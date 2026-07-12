@@ -60,9 +60,10 @@ impl AuthService {
         let user = self.get_or_create_user(&claims.subject).await?;
         Ok(AuthContext {
             principal: AuthPrincipal::Privy {
-                subject: Arc::from(claims.subject),
+                subject: Arc::from(claims.subject.clone()),
             },
             account_id: Arc::from(user.account_id),
+            credential_hash: Arc::from(hash_secret(&claims.subject)),
             email: Arc::from(user.email),
             role: Arc::from(user.role),
             stripe_account_status: Arc::from(user.stripe_account_status),
@@ -87,6 +88,7 @@ impl AuthService {
                 key_id: Arc::from(key.id.clone()),
             },
             account_id,
+            credential_hash: Arc::from(hash_secret(token)),
             email: Arc::from(
                 user.as_ref()
                     .map_or_else(String::new, |user| user.email.clone()),
@@ -134,6 +136,7 @@ impl AuthService {
                 label: Arc::from(row.label),
             },
             account_id: Arc::from(row.account_id),
+            credential_hash: Arc::from(hash),
             email: Arc::from(
                 user.as_ref()
                     .map_or_else(String::new, |user| user.email.clone()),
@@ -151,9 +154,6 @@ impl AuthService {
     }
 
     async fn get_or_create_user(&self, subject: &str) -> Result<UserRow, IdentityError> {
-        if let Some(user) = self.user_by_subject(subject).await? {
-            return Ok(user);
-        }
         let candidate_account = Uuid::new_v4().to_string();
         let row = self
             .store
@@ -175,13 +175,19 @@ impl AuthService {
                         ON CONFLICT (privy_user_id) DO UPDATE
                         SET privy_user_id = EXCLUDED.privy_user_id
                         RETURNING
-                            account_id, privy_user_id, email, role,
+                            account_id, email, role,
                             stripe_account_status
+                    ), balance AS (
+                        INSERT INTO public.balances (
+                            account_id, balance_micro_usd, withdrawable_micro_usd
+                        )
+                        SELECT account_id, 0, 0
+                        FROM resolved
+                        ON CONFLICT (account_id) DO NOTHING
                     )
                     SELECT
                         authority.ok AS authority_ok,
                         resolved.account_id,
-                        resolved.privy_user_id,
                         resolved.email,
                         resolved.role,
                         resolved.stripe_account_status
@@ -202,31 +208,13 @@ impl AuthService {
         row.into_user()
     }
 
-    async fn user_by_subject(&self, subject: &str) -> Result<Option<UserRow>, IdentityError> {
-        self.store
-            .bounded(
-                sqlx::query_as::<_, UserRow>(
-                    r#"
-                    SELECT
-                        account_id, privy_user_id, email, role,
-                        stripe_account_status
-                    FROM public.users
-                    WHERE privy_user_id = $1
-                    "#,
-                )
-                .bind(subject)
-                .fetch_optional(self.store.pool()),
-            )
-            .await
-    }
-
     async fn user_by_account(&self, account_id: &str) -> Result<Option<UserRow>, IdentityError> {
         self.store
             .bounded(
                 sqlx::query_as::<_, UserRow>(
                     r#"
                     SELECT
-                        account_id, privy_user_id, email, role,
+                        account_id, email, role,
                         stripe_account_status
                     FROM public.users
                     WHERE account_id = $1
@@ -286,10 +274,10 @@ fn map_privy_error(error: PrivyVerifierError) -> IdentityError {
 }
 
 fn constant_time_hash_match(expected: &str, stored: Option<&str>) -> bool {
-    let dummy = "0000000000000000000000000000000000000000000000000000000000000000";
+    let missing_hash = "0000000000000000000000000000000000000000000000000000000000000000";
     let equal = expected
         .as_bytes()
-        .ct_eq(stored.unwrap_or(dummy).as_bytes())
+        .ct_eq(stored.unwrap_or(missing_hash).as_bytes())
         .unwrap_u8()
         == 1;
     equal && stored.is_some()
@@ -298,8 +286,6 @@ fn constant_time_hash_match(expected: &str, stored: Option<&str>) -> bool {
 #[derive(FromRow)]
 struct UserRow {
     account_id: String,
-    #[allow(dead_code)]
-    privy_user_id: String,
     email: String,
     role: String,
     stripe_account_status: String,
@@ -309,7 +295,6 @@ struct UserRow {
 struct UserMutationRow {
     authority_ok: bool,
     account_id: Option<String>,
-    privy_user_id: Option<String>,
     email: Option<String>,
     role: Option<String>,
     stripe_account_status: Option<String>,
@@ -319,7 +304,6 @@ impl UserMutationRow {
     fn into_user(self) -> Result<UserRow, IdentityError> {
         Ok(UserRow {
             account_id: self.account_id.ok_or(IdentityError::Unavailable)?,
-            privy_user_id: self.privy_user_id.ok_or(IdentityError::Unavailable)?,
             email: self.email.unwrap_or_default(),
             role: self.role.unwrap_or_default(),
             stripe_account_status: self.stripe_account_status.unwrap_or_default(),

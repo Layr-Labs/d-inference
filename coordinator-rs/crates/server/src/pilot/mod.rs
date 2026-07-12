@@ -18,14 +18,14 @@ pub use billing::{
 pub use config::{
     ConsumerCredentialEntry, INPUT_RESERVATION_BYTES, MAX_CONSUMER_BODY_BYTES,
     MAX_CONSUMER_RESPONSE_BYTES, PaidBillingPolicy, PilotConfig, PilotConfigError,
-    ProviderBeneficiaryEntry, RESPONSE_RESERVATION_BYTES,
+    ProviderBeneficiaryEntry, ProviderPriceOverride, RESPONSE_RESERVATION_BYTES,
 };
 pub(crate) use json_limits::JsonStructureBudget;
 pub use json_limits::{JsonStructureError, validate_json_structure};
 pub use provider::{ProviderAcceptError, ProviderAcceptor};
 pub use request::{
-    PilotRequestError, PilotRequestJob, PilotResponse, RequestDispatchError, RequestDispatcher,
-    parse_request_facts,
+    PilotRequestControls, PilotRequestError, PilotRequestJob, PilotResponse, RequestDispatchError,
+    RequestDispatcher, parse_request_facts,
 };
 pub use runtime::{PilotHandle, PilotResourceError, PilotRuntime, PilotRuntimeBuildError};
 pub use state::{RequestTable, SessionDirectory};

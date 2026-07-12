@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use axum::{
     Json,
@@ -11,6 +11,7 @@ use futures_util::StreamExt as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::{Row, types::Json as SqlJson};
+use tokio::time::{Instant, sleep};
 
 use super::{
     OperationsState,
@@ -34,7 +35,7 @@ pub(super) async fn set_user_role(
     State(state): State<Arc<OperationsState>>,
     request: Request,
 ) -> Result<Json<Value>, OperationsError> {
-    require_admin(&state.auth, &state.admin_sessions, request.headers())?;
+    require_admin(&state.auth, &state.admin_sessions, &request)?;
     let input: SetRole = json_body(request, MAX_ADMIN_BODY).await?;
     if !valid_account(&input.account_id) {
         return Err(OperationsError::bad_request("account_id is required"));
@@ -82,7 +83,7 @@ pub(super) async fn set_user_platform_fee(
     State(state): State<Arc<OperationsState>>,
     request: Request,
 ) -> Result<Json<Value>, OperationsError> {
-    require_admin(&state.auth, &state.admin_sessions, request.headers())?;
+    require_admin(&state.auth, &state.admin_sessions, &request)?;
     let input: SetPlatformFee = json_body(request, MAX_ADMIN_BODY).await?;
     if !valid_account(&input.account_id) {
         return Err(OperationsError::bad_request("account_id is required"));
@@ -129,12 +130,13 @@ pub(super) struct MetricsQuery {
 
 pub(super) async fn metrics(
     State(state): State<Arc<OperationsState>>,
-    headers: HeaderMap,
     Query(query): Query<MetricsQuery>,
+    request: Request,
 ) -> Result<Response, OperationsError> {
-    require_admin(&state.auth, &state.admin_sessions, &headers)?;
+    require_admin_key(&state.auth, request.headers())?;
     let counters = state.metrics.snapshot();
     let telemetry = state.telemetry.summary();
+    let telemetry_delivery = state.telemetry_service.metrics();
     let fleet = state.pilot().map(|pilot| pilot.fleet_snapshot());
     let pilot_telemetry = state.pilot().map(|pilot| {
         let latency = pilot.telemetry().latency_summary().map(|summary| {
@@ -159,6 +161,9 @@ pub(super) async fn metrics(
         "providers": fleet.as_ref().map_or(0, |snapshot| snapshot.provider_count()),
         "active_leases": fleet.as_ref().map_or(0, |snapshot| snapshot.active_lease_count()),
         "fleet_revision": fleet.as_ref().map_or(0, |snapshot| snapshot.revision().get()),
+        "active_http_inference": state.active_http_inference(),
+        "active_http_mutations": state.active_http_mutations(),
+        "active_external_operations": state.active_external_operations(),
     });
     if query.format.as_deref() == Some("prom") {
         let mut body = String::new();
@@ -175,6 +180,46 @@ pub(super) async fn metrics(
             "operations_mutations {}\n",
             state.mutation_count()
         ));
+        for (name, value) in [
+            (
+                "operations_active_http_inference",
+                state.active_http_inference(),
+            ),
+            (
+                "operations_active_http_mutations",
+                state.active_http_mutations(),
+            ),
+            (
+                "operations_active_external_operations",
+                state.active_external_operations(),
+            ),
+        ] {
+            body.push_str(&format!("# TYPE {name} gauge\n{name} {value}\n"));
+        }
+        for (name, value) in [
+            (
+                "telemetry_durable_accepted_total",
+                telemetry_delivery.accepted,
+            ),
+            (
+                "telemetry_durable_delivered_total",
+                telemetry_delivery.delivered,
+            ),
+            (
+                "telemetry_durable_retried_total",
+                telemetry_delivery.retried,
+            ),
+            (
+                "telemetry_durable_dropped_total",
+                telemetry_delivery.dropped,
+            ),
+            (
+                "telemetry_durable_sink_failures_total",
+                telemetry_delivery.sink_failures,
+            ),
+        ] {
+            body.push_str(&format!("# TYPE {name} counter\n{name} {value}\n"));
+        }
         let mut response = Body::from(body).into_response();
         response.headers_mut().insert(
             header::CONTENT_TYPE,
@@ -186,6 +231,7 @@ pub(super) async fn metrics(
         "counters": counters,
         "gauges": gauges,
         "telemetry": telemetry,
+        "durable_telemetry": telemetry_delivery,
         "pilot_telemetry": pilot_telemetry,
     }))
     .into_response())
@@ -193,9 +239,9 @@ pub(super) async fn metrics(
 
 pub(super) async fn base_rewards(
     State(state): State<Arc<OperationsState>>,
-    headers: HeaderMap,
+    request: Request,
 ) -> Result<Json<Value>, OperationsError> {
-    require_admin(&state.auth, &state.admin_sessions, &headers)?;
+    require_admin_key(&state.auth, request.headers())?;
     let epoch: Option<String> = sqlx::query_scalar(
         "SELECT epoch_id FROM public.provider_floor_draws ORDER BY created_at DESC LIMIT 1",
     )
@@ -322,7 +368,7 @@ pub(super) async fn drain(
     State(state): State<Arc<OperationsState>>,
     request: Request,
 ) -> Result<Json<Value>, OperationsError> {
-    require_admin(&state.auth, &state.admin_sessions, request.headers())?;
+    require_admin(&state.auth, &state.admin_sessions, &request)?;
     let body = to_bytes(request.into_body(), MAX_ADMIN_BODY)
         .await
         .map_err(|_| OperationsError::payload_too_large("drain body exceeds 64KB"))?;
@@ -336,17 +382,92 @@ pub(super) async fn drain(
     };
     state.set_draining(draining);
     state.metrics.increment("drain_changes");
+    let mut quiescent = !draining;
+    if draining {
+        let deadline = Instant::now() + state.operation_timeout;
+        loop {
+            if ready_to_fence_external(&state).await? {
+                state.admission.fence_external();
+            }
+            if state.admission.external_fenced()
+                && state.active_external_operations() == 0
+                && ready_to_fence_external(&state).await?
+            {
+                quiescent = true;
+                break;
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    }
     Ok(Json(json!({
         "draining": draining,
+        "quiescent": quiescent,
+        "external_fenced": state.admission.external_fenced(),
         "inflight": state.pilot().map_or(0, |pilot| pilot.active_request_count()),
+        "http_inference": state.active_http_inference(),
+        "http_mutations": state.active_http_mutations(),
+        "external_operations": state.active_external_operations(),
     })))
+}
+
+async fn ready_to_fence_external(state: &OperationsState) -> Result<bool, OperationsError> {
+    let durable_pending: i64 = sqlx::query_scalar(
+        r#"
+        SELECT
+            (SELECT COUNT(*) FROM rust_coord.inference_jobs
+             WHERE state IN (
+               'reserved','preparing','prepared','start_authorized',
+               'running','review_pending'
+             ))
+          + (SELECT COUNT(*) FROM rust_coord.provider_terminals
+             WHERE status='pending')
+          + (SELECT COUNT(*) FROM rust_coord.external_events
+             WHERE status IN ('pending','processing'))
+          + (SELECT COUNT(*) FROM rust_coord.outbox
+             WHERE status IN ('pending','processing'))
+          + (SELECT COUNT(*) FROM rust_coord.fee_allocations
+             WHERE status IN ('pending','processing','failed'))
+          + (SELECT COUNT(*) FROM rust_coord.telemetry_events
+             WHERE status IN ('pending','processing'))
+        "#,
+    )
+    .fetch_one(state.pool())
+    .await
+    .map_err(|error| OperationsError::internal("inspect drain progress", error))?;
+    let fleet = state.pilot().map(|pilot| pilot.fleet_snapshot());
+    let active_leases = fleet
+        .as_ref()
+        .map_or(0, |snapshot| snapshot.active_lease_count());
+    let writer_reservations = fleet.as_ref().map_or(0, |snapshot| {
+        snapshot
+            .providers()
+            .map(|provider| {
+                provider
+                    .writer_headroom()
+                    .available_items()
+                    .saturating_sub(provider.effective_writer_items())
+            })
+            .sum::<usize>()
+    });
+    Ok(durable_pending == 0
+        && state.active_http_inference() == 0
+        && state.active_http_mutations() == 0
+        && state
+            .pilot()
+            .map_or(0, |pilot| pilot.active_request_count())
+            == 0
+        && active_leases == 0
+        && writer_reservations == 0)
 }
 
 pub(super) async fn quiescence(
     State(state): State<Arc<OperationsState>>,
-    headers: HeaderMap,
+    request: Request,
 ) -> Result<Json<Value>, OperationsError> {
-    require_admin_key(&state.auth, &headers)?;
+    require_admin(&state.auth, &state.admin_sessions, &request)?;
     let fleet = state.pilot().map(|pilot| pilot.fleet_snapshot());
     let providers = fleet
         .as_ref()
@@ -357,24 +478,142 @@ pub(super) async fn quiescence(
     let requests = state
         .pilot()
         .map_or(0, |pilot| pilot.active_request_count());
-    let pilot_ready = state
-        .pilot()
-        .is_none_or(crate::pilot::PilotHandle::is_ready);
+    let supervisor = state.pilot().map(crate::pilot::PilotHandle::readiness);
+    let pilot_ready = supervisor
+        .as_ref()
+        .is_none_or(crate::supervisor::SupervisorReadiness::is_ready);
+    let writer_count = fleet
+        .as_ref()
+        .map_or(0, |snapshot| snapshot.providers().count());
+    let (writer_available_items, writer_available_bytes, writer_reserved_items) = fleet
+        .as_ref()
+        .map(|snapshot| {
+            snapshot.providers().fold(
+                (0_usize, 0_usize, 0_usize),
+                |(items, bytes, reserved), provider| {
+                    (
+                        items.saturating_add(provider.effective_writer_items()),
+                        bytes.saturating_add(provider.effective_writer_bytes()),
+                        reserved.saturating_add(
+                            provider
+                                .writer_headroom()
+                                .available_items()
+                                .saturating_sub(provider.effective_writer_items()),
+                        ),
+                    )
+                },
+            )
+        })
+        .unwrap_or_default();
+    let durable = sqlx::query(
+        r#"
+        SELECT
+          (SELECT COUNT(*) FROM rust_coord.inference_jobs
+             WHERE state IN (
+               'reserved','preparing','prepared','start_authorized',
+               'running','review_pending'
+             ))::BIGINT AS active_jobs,
+          (SELECT COUNT(*) FROM rust_coord.provider_terminals
+             WHERE status='pending')::BIGINT AS pending_terminals,
+          (SELECT COUNT(*) FROM rust_coord.external_events
+             WHERE status IN ('pending','processing'))::BIGINT AS pending_external_events,
+          (SELECT COUNT(*) FROM rust_coord.outbox
+             WHERE status IN ('pending','processing'))::BIGINT AS pending_outbox,
+          (SELECT COUNT(*) FROM rust_coord.fee_allocations
+             WHERE status IN ('pending','processing','failed'))::BIGINT AS pending_fees,
+          (SELECT COUNT(*) FROM rust_coord.telemetry_events
+             WHERE status IN ('pending','processing'))::BIGINT AS pending_telemetry,
+          (
+            (SELECT COUNT(*) FROM rust_coord.inference_jobs
+               WHERE worker_owner IS NOT NULL)
+            + (SELECT COUNT(*) FROM rust_coord.provider_terminals
+               WHERE worker_owner IS NOT NULL)
+            + (SELECT COUNT(*) FROM rust_coord.external_events
+               WHERE worker_owner IS NOT NULL)
+            + (SELECT COUNT(*) FROM rust_coord.outbox
+               WHERE worker_owner IS NOT NULL)
+            + (SELECT COUNT(*) FROM rust_coord.fee_allocations
+               WHERE worker_owner IS NOT NULL)
+            + (SELECT COUNT(*) FROM rust_coord.telemetry_events
+               WHERE worker_owner IS NOT NULL)
+          )::BIGINT AS active_recovery_leases
+        "#,
+    )
+    .fetch_one(state.pool())
+    .await
+    .map_err(|error| OperationsError::internal("snapshot durable quiescence", error))?;
+    let active_jobs = durable.get::<i64, _>("active_jobs");
+    let pending_terminals = durable.get::<i64, _>("pending_terminals");
+    let pending_external_events = durable.get::<i64, _>("pending_external_events");
+    let pending_outbox = durable.get::<i64, _>("pending_outbox");
+    let pending_fees = durable.get::<i64, _>("pending_fees");
+    let pending_telemetry = durable.get::<i64, _>("pending_telemetry");
+    let active_recovery_leases = durable.get::<i64, _>("active_recovery_leases");
     let ownership_healthy = state
         .database
         .authority()
         .is_some_and(|(_, status)| status.is_healthy());
-    let quiescent =
-        providers == 0 && leases == 0 && requests == 0 && ownership_healthy && pilot_ready;
+    let http_inference = state.active_http_inference();
+    let http_mutations = state.active_http_mutations();
+    let external_operations = state.active_external_operations();
+    let quiescent = leases == 0
+        && requests == 0
+        && writer_reserved_items == 0
+        && http_inference == 0
+        && http_mutations == 0
+        && external_operations == 0
+        && active_jobs == 0
+        && pending_terminals == 0
+        && pending_external_events == 0
+        && pending_outbox == 0
+        && pending_fees == 0
+        && pending_telemetry == 0
+        && active_recovery_leases == 0
+        && ownership_healthy
+        && pilot_ready;
     Ok(Json(json!({
         "draining": state.is_draining(),
-        "providers_connected": providers,
-        "active_leases": leases,
-        "active_requests": requests,
-        "fleet_revision": fleet.as_ref().map_or(0, |snapshot| snapshot.revision().get()),
-        "pilot_ready": pilot_ready,
+        "external_fenced": state.admission.external_fenced(),
+        "supervisor": {
+            "status": supervisor
+                .as_ref()
+                .map_or_else(|| "absent".to_owned(), |snapshot| format!("{:?}", snapshot.status).to_ascii_lowercase()),
+            "ready": pilot_ready,
+            "failed": supervisor.as_ref().is_some_and(|snapshot| snapshot.failure.is_some()),
+        },
+        "fleet": {
+            "providers_connected": providers,
+            "active_leases": leases,
+            "revision": fleet.as_ref().map_or(0, |snapshot| snapshot.revision().get()),
+        },
+        "requests": {
+            "active": requests,
+            "durable_active": active_jobs,
+            "http_inference": http_inference,
+            "http_mutations": http_mutations,
+        },
+        "writers": {
+            "active": writer_count,
+            "available_items": writer_available_items,
+            "available_bytes": writer_available_bytes,
+            "reserved_items": writer_reserved_items,
+        },
+        "recovery": {
+            "pending_terminals": pending_terminals,
+            "pending_external_events": pending_external_events,
+            "active_leases": active_recovery_leases,
+            "active_external_operations": external_operations,
+        },
+        "outbox": {
+            "pending": pending_outbox,
+            "pending_fee_allocations": pending_fees,
+        },
         "ownership_healthy": ownership_healthy,
         "telemetry": state.telemetry.summary(),
+        "durable_telemetry": {
+            "pending": pending_telemetry,
+            "delivery": state.telemetry_service.metrics(),
+        },
         "quiescent": quiescent,
     })))
 }
@@ -393,14 +632,14 @@ pub(super) struct RouteQuery {
 pub(super) async fn routes(
     State(state): State<Arc<OperationsState>>,
     headers: HeaderMap,
-    Query(query): Query<RouteQuery>,
 ) -> Result<Json<Value>, OperationsError> {
     require_admin_key(&state.auth, &headers)?;
-    let records = route_records(state.pool(), &query, browse_limit(query.limit)).await?;
+    let routes = crate::surface::registered_routes();
     Ok(Json(json!({
+        "schema_version": 1,
         "object": "list",
-        "count": records.len(),
-        "data": records,
+        "count": routes.len(),
+        "data": routes,
     })))
 }
 

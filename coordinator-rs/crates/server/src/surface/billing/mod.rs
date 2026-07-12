@@ -19,6 +19,7 @@ mod store;
 mod stripe;
 mod webhook;
 mod withdraw;
+mod withdrawal_recovery;
 
 use axum::{
     Router,
@@ -31,6 +32,9 @@ pub use referral::{ReferralAllocation, ReferralService};
 pub use state::{BillingState, BillingStateBuilder};
 pub use store::{Balance, BillingSession, Earning, EarningsResponse, UsageEntry, WithdrawalView};
 pub use stripe::StripeSettings;
+pub use withdrawal_recovery::{
+    WithdrawalRecovery, WithdrawalRecoveryAction, WithdrawalRecoveryError,
+};
 
 /// Builds the complete Objective 7 surface. The returned router owns
 /// [`BillingState`] and can be merged into the coordinator's root router.
@@ -66,10 +70,7 @@ pub fn router(state: BillingState) -> Router {
                 .put(handlers::pricing_put)
                 .delete(handlers::pricing_delete),
         )
-        .route(
-            "/v1/admin/pricing",
-            put(handlers::admin_pricing_put).delete(handlers::admin_pricing_delete),
-        )
+        .route("/v1/admin/pricing", put(handlers::admin_pricing_put))
         .route("/v1/referral/register", post(handlers::referral_register))
         .route("/v1/referral/apply", post(handlers::referral_apply))
         .route("/v1/referral/stats", get(handlers::referral_stats))

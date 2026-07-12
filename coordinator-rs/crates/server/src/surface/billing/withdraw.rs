@@ -129,6 +129,7 @@ pub(super) async fn withdraw(
         fee: LedgerAmount::from_i64(fee)
             .map_err(|error| BillingError::bad_request(error.to_string()))?,
         method: Arc::from(method.as_str()),
+        idempotency_key: Arc::from(transfer_key.as_str()),
         payload_digest,
         external_payload,
     };
@@ -144,7 +145,12 @@ pub(super) async fn withdraw(
         };
     }
     let transfer = match stripe
-        .create_transfer(&user.stripe_account_id, cents, &transfer_key)
+        .create_transfer(
+            &user.stripe_account_id,
+            cents,
+            &transfer_key,
+            &withdrawal_id,
+        )
         .await
     {
         Ok(transfer) => transfer,
@@ -223,7 +229,7 @@ pub(super) async fn withdraw(
         .into_response());
     }
     let payout = match stripe
-        .create_payout(&user.stripe_account_id, cents, &payout_key)
+        .create_payout(&user.stripe_account_id, cents, &payout_key, &withdrawal_id)
         .await
     {
         Ok(payout) => payout,

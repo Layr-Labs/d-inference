@@ -39,6 +39,23 @@ var rustSchemaV3Tables = []string{
 	"schema_versions",
 }
 
+var rustSchemaV4Tables = []string{
+	"api_key_rate_windows",
+	"external_events",
+	"fee_allocations",
+	"fee_projection_checkpoints",
+	"financial_operations",
+	"inference_attempts",
+	"inference_jobs",
+	"mdm_command_expectations",
+	"outbox",
+	"provider_hard_untrust_epochs",
+	"provider_terminals",
+	"review_resolution_journal",
+	"schema_versions",
+	"telemetry_events",
+}
+
 var rustSchemaV2ColumnNames = map[string][]string{
 	"schema_versions": {
 		"version", "minimum_public_schema_version",
@@ -119,6 +136,25 @@ var rustSchemaV3ColumnNames = map[string][]string{
 	"review_resolution_journal": {
 		"resolution_id", "job_id", "disposition", "operator_reason",
 		"owner_epoch", "created_at",
+	},
+}
+
+var rustSchemaV4ColumnNames = map[string][]string{
+	"api_key_rate_windows": {
+		"credential_hash", "window_started_at", "request_count", "input_tokens",
+		"reserved_output_tokens", "updated_at",
+	},
+	"mdm_command_expectations": {
+		"command_uuid", "command", "provider_id", "session_epoch", "serial",
+		"udid", "se_public_key", "binary_hash", "expected_sip",
+		"expected_secure_boot", "status", "evidence", "failure_reason",
+		"owner_epoch", "issued_at", "expires_at", "completed_at",
+	},
+	"telemetry_events": {
+		"telemetry_event_id", "event_name", "identity_hash", "authenticated",
+		"fields", "payload_bytes", "status", "attempts", "next_attempt_at",
+		"worker_owner", "lease_until", "last_error", "owner_epoch", "version",
+		"created_at", "updated_at", "delivered_at",
 	},
 }
 
@@ -203,6 +239,30 @@ var rustSchemaV3Columns = []columnShapeRequirement{
 	{Table: "review_resolution_journal", Column: "owner_epoch", Type: "bigint", NotNull: true},
 }
 
+var rustSchemaV4Columns = []columnShapeRequirement{
+	{Table: "inference_jobs", Column: "api_key_reserved_micro_usd", Type: "bigint", NotNull: true},
+	{Table: "api_key_rate_windows", Column: "credential_hash", Type: "text", NotNull: true},
+	{Table: "api_key_rate_windows", Column: "window_started_at", Type: "timestamp with time zone", NotNull: true},
+	{Table: "api_key_rate_windows", Column: "request_count", Type: "bigint", NotNull: true},
+	{Table: "api_key_rate_windows", Column: "input_tokens", Type: "bigint", NotNull: true},
+	{Table: "api_key_rate_windows", Column: "reserved_output_tokens", Type: "bigint", NotNull: true},
+	{Table: "mdm_command_expectations", Column: "command_uuid", Type: "text", NotNull: true},
+	{Table: "mdm_command_expectations", Column: "provider_id", Type: "uuid", NotNull: true},
+	{Table: "mdm_command_expectations", Column: "session_epoch", Type: "bigint", NotNull: true},
+	{Table: "mdm_command_expectations", Column: "status", Type: "text", NotNull: true},
+	{Table: "mdm_command_expectations", Column: "owner_epoch", Type: "bigint", NotNull: true},
+	{Table: "telemetry_events", Column: "telemetry_event_id", Type: "uuid", NotNull: true},
+	{Table: "telemetry_events", Column: "event_name", Type: "text", NotNull: true},
+	{Table: "telemetry_events", Column: "identity_hash", Type: "text", NotNull: true},
+	{Table: "telemetry_events", Column: "authenticated", Type: "boolean", NotNull: true},
+	{Table: "telemetry_events", Column: "fields", Type: "jsonb", NotNull: true},
+	{Table: "telemetry_events", Column: "payload_bytes", Type: "integer", NotNull: true},
+	{Table: "telemetry_events", Column: "status", Type: "text", NotNull: true},
+	{Table: "telemetry_events", Column: "attempts", Type: "integer", NotNull: true},
+	{Table: "telemetry_events", Column: "owner_epoch", Type: "bigint", NotNull: true},
+	{Table: "telemetry_events", Column: "version", Type: "bigint", NotNull: true},
+}
+
 var rustSchemaV2Keys = []keyShapeRequirement{
 	{Table: "inference_jobs", Kind: "p", Columns: []string{"job_id"}},
 	{Table: "inference_jobs", Kind: "u", Columns: []string{"request_id"}},
@@ -228,6 +288,12 @@ var rustSchemaV2Keys = []keyShapeRequirement{
 var rustSchemaV3Keys = []keyShapeRequirement{
 	{Table: "review_resolution_journal", Kind: "p", Columns: []string{"resolution_id"}},
 	{Table: "review_resolution_journal", Kind: "u", Columns: []string{"job_id"}},
+}
+
+var rustSchemaV4Keys = []keyShapeRequirement{
+	{Table: "api_key_rate_windows", Kind: "p", Columns: []string{"credential_hash", "window_started_at"}},
+	{Table: "mdm_command_expectations", Kind: "p", Columns: []string{"command_uuid"}},
+	{Table: "telemetry_events", Kind: "p", Columns: []string{"telemetry_event_id"}},
 }
 
 type rustStatusShapeRequirement struct {
@@ -416,6 +482,21 @@ var rustSchemaV3StatusShapes = []rustStatusShapeRequirement{
 	},
 }
 
+var rustSchemaV4StatusShapes = []rustStatusShapeRequirement{
+	{
+		Table:      "mdm_command_expectations",
+		Constraint: "mdm_command_expectations_status_check",
+		Column:     "status",
+		Allowed:    []string{"applied", "expired", "pending", "rejected"},
+	},
+	{
+		Table:      "telemetry_events",
+		Constraint: "telemetry_events_status_check",
+		Column:     "status",
+		Allowed:    []string{"delivered", "dropped", "pending", "processing"},
+	},
+}
+
 var quotedCheckValuePattern = regexp.MustCompile(`'([^']*)'::text`)
 
 func validateRustSchemaV2Shape(ctx context.Context, queryer schemaQueryer) error {
@@ -445,7 +526,10 @@ func validateRustSchemaV2Shape(ctx context.Context, queryer schemaQueryer) error
 }
 
 func validateExactRustColumns(ctx context.Context, queryer schemaQueryer, version int64) error {
-	expected := make(map[string][]string, len(rustSchemaV2ColumnNames)+len(rustSchemaV3ColumnNames))
+	expected := make(
+		map[string][]string,
+		len(rustSchemaV2ColumnNames)+len(rustSchemaV3ColumnNames)+len(rustSchemaV4ColumnNames),
+	)
 	for table, columns := range rustSchemaV2ColumnNames {
 		expected[table] = columns
 	}
@@ -460,6 +544,15 @@ func validateExactRustColumns(ctx context.Context, queryer schemaQueryer, versio
 			"start_deadline",
 		)
 		for table, columns := range rustSchemaV3ColumnNames {
+			expected[table] = columns
+		}
+	}
+	if version >= 4 {
+		expected["inference_jobs"] = append(
+			append([]string{}, expected["inference_jobs"]...),
+			"api_key_reserved_micro_usd",
+		)
+		for table, columns := range rustSchemaV4ColumnNames {
 			expected[table] = columns
 		}
 	}
@@ -531,10 +624,16 @@ func validateRustSchemaHistory(ctx context.Context, queryer schemaQueryer) (int6
 	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("iterate rust_coord schema history: %w", err)
 	}
-	want := []compatibility{{1, 3, 3}, {2, 4, 4}}
-	if len(got) == 3 {
-		want = append(want, compatibility{3, 5, 5})
+	all := []compatibility{
+		{1, 3, 3},
+		{2, 4, 4},
+		{3, 5, 5},
+		{4, 6, 6},
 	}
+	if len(got) < 2 || len(got) > len(all) {
+		return 0, fmt.Errorf("rust_coord schema history = %v, want a supported prefix of %v", got, all)
+	}
+	want := all[:len(got)]
 	if !slices.Equal(got, want) {
 		return 0, fmt.Errorf("rust_coord schema history = %v, want %v", got, want)
 	}
@@ -568,6 +667,9 @@ func validateExactRustTables(ctx context.Context, queryer schemaQueryer, version
 	if version >= 3 {
 		want = rustSchemaV3Tables
 	}
+	if version >= 4 {
+		want = rustSchemaV4Tables
+	}
 	if !slices.Equal(got, want) {
 		return fmt.Errorf("rust_coord tables = %v, want exactly %v", got, want)
 	}
@@ -578,6 +680,9 @@ func validateRustColumns(ctx context.Context, queryer schemaQueryer, version int
 	requirements := append([]columnShapeRequirement{}, rustSchemaV2Columns...)
 	if version >= 3 {
 		requirements = append(requirements, rustSchemaV3Columns...)
+	}
+	if version >= 4 {
+		requirements = append(requirements, rustSchemaV4Columns...)
 	}
 	for _, required := range requirements {
 		var (
@@ -625,6 +730,9 @@ func validateRustKeys(ctx context.Context, queryer schemaQueryer, version int64)
 	requirements := append([]keyShapeRequirement{}, rustSchemaV2Keys...)
 	if version >= 3 {
 		requirements = append(requirements, rustSchemaV3Keys...)
+	}
+	if version >= 4 {
+		requirements = append(requirements, rustSchemaV4Keys...)
 	}
 	for _, required := range requirements {
 		var matches bool

@@ -33,6 +33,11 @@
 
     # All API + WebSocket traffic -> coordinator
     reverse_proxy localhost:{$APP_PORT:8080} {
+        # The coordinator trusts forwarded client identity only from this local
+        # proxy. Overwrite caller input so the rightmost value is transport-
+        # derived and cannot be spoofed by a direct HTTP header.
+        header_up X-Forwarded-For {remote_host}
+        header_up -Forwarded
         health_uri /health
         health_interval 30s
         health_timeout 5s

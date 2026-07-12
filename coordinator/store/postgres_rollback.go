@@ -9,40 +9,59 @@ import (
 
 func (s *PostgresStore) CheckRollbackSafe(ctx context.Context) error {
 	checks := []struct {
-		table     string
-		predicate string
+		minVersion int64
+		table      string
+		predicate  string
 	}{
 		{
-			table:     "rust_coord.inference_jobs",
-			predicate: `state NOT IN ('settled','released','settled_reviewed','released_reviewed') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
+			minVersion: 2,
+			table:      "rust_coord.inference_jobs",
+			predicate:  `state NOT IN ('settled','released','settled_reviewed','released_reviewed') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
 		},
 		{
-			table:     "rust_coord.inference_attempts",
-			predicate: `state NOT IN ('aborted','acknowledged') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
+			minVersion: 2,
+			table:      "rust_coord.inference_attempts",
+			predicate:  `state NOT IN ('aborted','acknowledged') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
 		},
 		{
-			table:     "rust_coord.provider_terminals",
-			predicate: `status NOT IN ('settled','released','settled_reviewed','released_reviewed','duplicate','late','rejected') OR (conflict AND status NOT IN ('settled_reviewed','released_reviewed')) OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
+			minVersion: 2,
+			table:      "rust_coord.provider_terminals",
+			predicate:  `status NOT IN ('settled','released','settled_reviewed','released_reviewed','duplicate','late','rejected') OR (conflict AND status NOT IN ('settled_reviewed','released_reviewed')) OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
 		},
 		{
-			table:     "rust_coord.financial_operations",
-			predicate: `status NOT IN ('applied','released','failed') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
+			minVersion: 2,
+			table:      "rust_coord.financial_operations",
+			predicate:  `status NOT IN ('applied','released','failed') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
 		},
 		{
-			table:     "rust_coord.external_events",
-			predicate: `status NOT IN ('applied','rejected','ignored','failed') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
+			minVersion: 2,
+			table:      "rust_coord.external_events",
+			predicate:  `status NOT IN ('applied','rejected','ignored','failed') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
 		},
 		{
-			table:     "rust_coord.outbox",
-			predicate: `status NOT IN ('delivered','failed','cancelled') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
+			minVersion: 2,
+			table:      "rust_coord.outbox",
+			predicate:  `status NOT IN ('delivered','failed','cancelled') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
 		},
 		{
-			table:     "rust_coord.fee_allocations",
-			predicate: `status NOT IN ('projected','cancelled') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
+			minVersion: 2,
+			table:      "rust_coord.fee_allocations",
+			predicate:  `status NOT IN ('projected','cancelled') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
 		},
 		{
-			table:     "rust_coord.fee_projection_checkpoints",
-			predicate: `status <> 'idle' OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
+			minVersion: 2,
+			table:      "rust_coord.fee_projection_checkpoints",
+			predicate:  `status <> 'idle' OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
+		},
+		{
+			minVersion: 4,
+			table:      "rust_coord.mdm_command_expectations",
+			predicate:  `status = 'pending'`,
+		},
+		{
+			minVersion: 4,
+			table:      "rust_coord.telemetry_events",
+			predicate:  `status NOT IN ('delivered','dropped') OR worker_owner IS NOT NULL OR lease_until IS NOT NULL`,
 		},
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
@@ -88,7 +107,7 @@ func (s *PostgresStore) CheckRollbackSafe(ctx context.Context) error {
 		return fmt.Errorf("store: inspect Rust schema history: %w", err)
 	}
 	if rustMinimum != 1 || rustCount != rustMaximum ||
-		(rustMaximum != 1 && rustMaximum != 2 && rustMaximum != 3) {
+		(rustMaximum != 1 && rustMaximum != 2 && rustMaximum != 3 && rustMaximum != 4) {
 		return fmt.Errorf(
 			"store: unsafe Go rollback: unsupported Rust schema history min=%d max=%d count=%d",
 			rustMinimum, rustMaximum, rustCount,
@@ -146,6 +165,9 @@ func (s *PostgresStore) CheckRollbackSafe(ctx context.Context) error {
 		return fmt.Errorf("store: unsafe Go rollback: unknown Rust schema v%d shape: %w", rustMaximum, err)
 	}
 	for _, check := range checks {
+		if rustMaximum < check.minVersion {
+			continue
+		}
 		var unresolved int64
 		query := "SELECT count(*) FROM " + check.table + " WHERE " + check.predicate
 		if err := tx.QueryRow(ctx, query).Scan(&unresolved); err != nil {

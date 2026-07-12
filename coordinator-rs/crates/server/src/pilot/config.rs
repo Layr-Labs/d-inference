@@ -3,6 +3,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use darkbloom_coordinator_protocol::v2::ProviderId;
 use serde::Deserialize;
 use thiserror::Error;
+use url::Url;
 use uuid::Uuid;
 
 use crate::{
@@ -10,6 +11,7 @@ use crate::{
         AccountId, LedgerAmount,
         types::{InputError, Version},
     },
+    provider_control::{ConfiguredProviderIdentity, MdmControlConfig},
     trust::{ConfiguredProviderCredential, TrustFloor, TrustLevel},
 };
 
@@ -71,6 +73,14 @@ pub struct ConsumerCredentialEntry {
 pub struct ProviderBeneficiaryEntry {
     pub provider_id: ProviderId,
     pub account_id: AccountId,
+    pub price_override: Option<ProviderPriceOverride>,
+}
+
+#[derive(Clone)]
+pub struct ProviderPriceOverride {
+    pub pricing_version: Version,
+    pub input_micro_usd_per_million: LedgerAmount,
+    pub output_micro_usd_per_million: LedgerAmount,
 }
 
 /// Immutable prices and beneficiary allocation frozen into every paid job.
@@ -91,6 +101,9 @@ pub struct PaidBillingPolicy {
 #[derive(Clone)]
 pub struct PilotConfig {
     pub enabled: bool,
+    /// Full-surface requests freeze billing/catalog controls from PostgreSQL
+    /// per job instead of using the isolated pilot's environment policy.
+    pub dynamic_controls: bool,
     pub state_directory: PathBuf,
     pub provider_credentials: Arc<[ProviderCredentialEntry]>,
     pub consumer_credentials: Arc<[ConsumerCredentialEntry]>,
@@ -102,6 +115,7 @@ pub struct PilotConfig {
     pub model_id: Arc<str>,
     pub model_alias: Arc<str>,
     pub trust_floor: TrustFloor,
+    pub mdm_control: Option<MdmControlConfig>,
     #[cfg(test)]
     pub test_established_trust: Option<TrustLevel>,
     pub maximum_sessions: usize,
@@ -121,6 +135,7 @@ impl PilotConfig {
     pub fn disabled() -> Self {
         Self {
             enabled: false,
+            dynamic_controls: false,
             state_directory: PathBuf::from(DEFAULT_STATE_DIRECTORY),
             provider_credentials: Arc::from([]),
             consumer_credentials: Arc::from([]),
@@ -132,6 +147,7 @@ impl PilotConfig {
             model_id: Arc::from(DEFAULT_MODEL_ID),
             model_alias: Arc::from(DEFAULT_MODEL_ALIAS),
             trust_floor: TrustFloor::SELF_ROUTE,
+            mdm_control: None,
             #[cfg(test)]
             test_established_trust: None,
             maximum_sessions: 1_024,
@@ -149,19 +165,52 @@ impl PilotConfig {
     }
 
     pub fn from_env() -> Result<Self, PilotConfigError> {
-        if std::env::var("EIGENINFERENCE_RUST_PILOT_ENABLED").as_deref() != Ok("true") {
+        Self::from_env_mode(false)
+    }
+
+    /// Loads the supervised inference runtime for either the isolated pilot or
+    /// the production full surface. Full mode deliberately does not require
+    /// static consumer credentials because HTTP identity comes from the shared
+    /// DB-backed authentication layer.
+    pub fn from_env_mode(full_surface_enabled: bool) -> Result<Self, PilotConfigError> {
+        let isolated_pilot_enabled =
+            std::env::var("EIGENINFERENCE_RUST_PILOT_ENABLED").as_deref() == Ok("true");
+        if !isolated_pilot_enabled && !full_surface_enabled {
             return Ok(Self::disabled());
         }
         let mut config = Self::disabled();
         config.enabled = true;
+        config.dynamic_controls = full_surface_enabled;
         config.state_directory = std::env::var("EIGENINFERENCE_RUST_PILOT_STATE_DIRECTORY")
             .map_or_else(|_| PathBuf::from(DEFAULT_STATE_DIRECTORY), PathBuf::from);
-        let (provider_credentials, provider_beneficiaries) =
-            parse_provider_credentials(required("EIGENINFERENCE_RUST_PROVIDER_CREDENTIALS_JSON")?)?;
+        let configured_providers =
+            std::env::var("EIGENINFERENCE_RUST_PROVIDER_CREDENTIALS_JSON").ok();
+        if full_surface_enabled
+            && configured_providers
+                .as_ref()
+                .is_some_and(|value| !value.is_empty())
+        {
+            return Err(PilotConfigError::EnvironmentProviderCredentialsForbidden);
+        }
+        let (provider_credentials, provider_beneficiaries) = if full_surface_enabled {
+            (Arc::from([]), Arc::from([]))
+        } else {
+            parse_provider_credentials(
+                configured_providers
+                    .filter(|value| !value.is_empty())
+                    .ok_or(PilotConfigError::Missing(
+                        "EIGENINFERENCE_RUST_PROVIDER_CREDENTIALS_JSON",
+                    ))?,
+            )?
+        };
         config.provider_credentials = provider_credentials;
         config.provider_beneficiaries = provider_beneficiaries;
         config.consumer_credentials =
-            parse_consumer_keys(required("EIGENINFERENCE_RUST_CONSUMER_API_KEYS_JSON")?)?;
+            match std::env::var("EIGENINFERENCE_RUST_CONSUMER_API_KEYS_JSON") {
+                Ok(value) if !value.is_empty() => parse_consumer_keys(value)?,
+                _ if full_surface_enabled => Arc::from([]),
+                _ => parse_consumer_keys(required("EIGENINFERENCE_RUST_CONSUMER_API_KEYS_JSON")?)?,
+            };
         config.process_key_id = Arc::from(required("EIGENINFERENCE_RUST_PROCESS_X25519_KEY_ID")?);
         config.process_private_key =
             Arc::from(required("EIGENINFERENCE_RUST_PROCESS_X25519_PRIVATE_KEY")?);
@@ -177,16 +226,53 @@ impl PilotConfig {
         );
         config.trust_floor = match std::env::var("EIGENINFERENCE_RUST_PILOT_TRUST_FLOOR")
             .as_deref()
-            .unwrap_or("self_signed")
-        {
+            .unwrap_or(if full_surface_enabled {
+                "hardware"
+            } else {
+                "self_signed"
+            }) {
             "self_signed" => TrustFloor::SELF_ROUTE,
             "hardware" => TrustFloor::PUBLIC,
             other => return Err(PilotConfigError::InvalidTrustFloor(other.to_owned())),
         };
+        if full_surface_enabled && config.trust_floor != TrustFloor::PUBLIC {
+            return Err(PilotConfigError::FullSurfaceRequiresHardwareTrust);
+        }
         if config.trust_floor == TrustFloor::PUBLIC {
-            config.paid_billing = Some(parse_paid_billing(required(
-                "EIGENINFERENCE_RUST_BILLING_JSON",
-            )?)?);
+            if full_surface_enabled
+                && std::env::var("EIGENINFERENCE_RUST_BILLING_JSON")
+                    .is_ok_and(|value| !value.is_empty())
+            {
+                return Err(PilotConfigError::EnvironmentBillingForbidden);
+            }
+            if !full_surface_enabled {
+                config.paid_billing = Some(parse_paid_billing(required(
+                    "EIGENINFERENCE_RUST_BILLING_JSON",
+                )?)?);
+            }
+            config.mdm_control = Some(MdmControlConfig {
+                base_url: Url::parse(&required("EIGENINFERENCE_MDM_URL")?)
+                    .map_err(|_| PilotConfigError::InvalidMdmConfiguration)?,
+                api_key: Arc::from(required("EIGENINFERENCE_MDM_API_KEY")?),
+                request_timeout: Duration::from_secs(parse_bounded_seconds(
+                    "EIGENINFERENCE_RUST_EXTERNAL_HTTP_TIMEOUT_SECONDS",
+                    10,
+                    1,
+                    30,
+                )?),
+                security_info_timeout: Duration::from_secs(parse_bounded_seconds(
+                    "EIGENINFERENCE_RUST_MDM_SECURITY_INFO_TIMEOUT_SECONDS",
+                    90,
+                    1,
+                    30 * 60,
+                )?),
+                trust_reuse_window: parse_duration(
+                    std::env::var("EIGENINFERENCE_TRUST_REUSE_WINDOW")
+                        .as_deref()
+                        .unwrap_or("10m"),
+                )
+                .ok_or(PilotConfigError::InvalidMdmConfiguration)?,
+            });
         }
         validate(&config)?;
         Ok(config)
@@ -200,6 +286,28 @@ impl PilotConfig {
             .map(|(provider_id, token)| {
                 ConfiguredProviderCredential::new(*provider_id, token.as_ref())
             })
+    }
+
+    pub fn configured_provider_identities(
+        &self,
+    ) -> Result<Vec<ConfiguredProviderIdentity>, PilotConfigError> {
+        self.provider_credentials
+            .iter()
+            .map(|(provider_id, token)| {
+                let account_id = self
+                    .provider_beneficiaries
+                    .iter()
+                    .find(|entry| entry.provider_id == *provider_id)
+                    .ok_or(PilotConfigError::PaidBillingRequired)?
+                    .account_id
+                    .as_str();
+                Ok(ConfiguredProviderIdentity {
+                    provider_id: *provider_id,
+                    token: token.clone(),
+                    account_id: Arc::from(account_id),
+                })
+            })
+            .collect()
     }
 
     pub fn established_trust_level(&self) -> TrustLevel {
@@ -219,6 +327,37 @@ fn required(name: &'static str) -> Result<String, PilotConfigError> {
         .ok()
         .filter(|value| !value.is_empty())
         .ok_or(PilotConfigError::Missing(name))
+}
+
+fn parse_bounded_seconds(
+    name: &'static str,
+    default: u64,
+    minimum: u64,
+    maximum: u64,
+) -> Result<u64, PilotConfigError> {
+    match std::env::var(name) {
+        Ok(value) => value
+            .parse()
+            .ok()
+            .filter(|seconds| (minimum..=maximum).contains(seconds))
+            .ok_or(PilotConfigError::InvalidMdmConfiguration),
+        Err(_) => Ok(default),
+    }
+}
+
+fn parse_duration(value: &str) -> Option<Duration> {
+    let (number, multiplier) = if let Some(value) = value.strip_suffix("ms") {
+        (value, 1_u64)
+    } else if let Some(value) = value.strip_suffix('s') {
+        (value, 1_000)
+    } else if let Some(value) = value.strip_suffix('m') {
+        (value, 60_000)
+    } else {
+        let value = value.strip_suffix('h')?;
+        (value, 3_600_000)
+    };
+    let milliseconds = number.parse::<u64>().ok()?.checked_mul(multiplier)?;
+    (milliseconds > 0).then(|| Duration::from_millis(milliseconds))
 }
 
 fn parse_provider_credentials(
@@ -246,6 +385,7 @@ fn parse_provider_credentials(
             beneficiaries.push(ProviderBeneficiaryEntry {
                 provider_id,
                 account_id: AccountId::new(account_id).map_err(PilotConfigError::BillingInput)?,
+                price_override: None,
             });
         }
     }
@@ -377,15 +517,27 @@ fn validate(config: &PilotConfig) -> Result<(), PilotConfigError> {
     {
         return Err(PilotConfigError::InvalidBounds);
     }
-    if config.trust_floor == TrustFloor::PUBLIC
-        && (config.paid_billing.is_none()
+    if config.trust_floor == TrustFloor::PUBLIC {
+        if config.mdm_control.is_none()
             || config
                 .consumer_credentials
                 .iter()
                 .any(|credential| credential.account_id.is_none())
-            || config.provider_beneficiaries.len() != config.provider_credentials.len())
-    {
-        return Err(PilotConfigError::PaidBillingRequired);
+            || config.provider_beneficiaries.len() != config.provider_credentials.len()
+        {
+            return Err(PilotConfigError::PaidBillingRequired);
+        }
+        if config.dynamic_controls {
+            if config.paid_billing.is_some()
+                || !config.consumer_credentials.is_empty()
+                || !config.provider_credentials.is_empty()
+                || !config.provider_beneficiaries.is_empty()
+            {
+                return Err(PilotConfigError::EnvironmentBillingForbidden);
+            }
+        } else if config.paid_billing.is_none() {
+            return Err(PilotConfigError::PaidBillingRequired);
+        }
     }
     Ok(())
 }
@@ -405,12 +557,20 @@ pub enum PilotConfigError {
     InvalidConsumerKeys,
     #[error("public pilot mode requires complete consumer/provider billing mappings")]
     PaidBillingRequired,
+    #[error("the production full surface must derive consumer billing controls from PostgreSQL")]
+    EnvironmentBillingForbidden,
+    #[error("the production full surface must authenticate provider tokens from PostgreSQL")]
+    EnvironmentProviderCredentialsForbidden,
     #[error("invalid paid billing policy")]
     InvalidBillingPolicy,
     #[error("invalid billing identity or amount: {0}")]
     BillingInput(InputError),
     #[error("invalid pilot trust floor {0:?}")]
     InvalidTrustFloor(String),
+    #[error("the production full surface requires the hardware trust floor")]
+    FullSurfaceRequiresHardwareTrust,
+    #[error("public provider trust requires valid bounded MicroMDM configuration")]
+    InvalidMdmConfiguration,
     #[error("invalid pilot resource bounds")]
     InvalidBounds,
 }
@@ -461,6 +621,13 @@ mod tests {
         config.provider_beneficiaries = beneficiaries;
         config.consumer_credentials = consumers;
         config.paid_billing = Some(policy);
+        config.mdm_control = Some(MdmControlConfig {
+            base_url: Url::parse("http://127.0.0.1:8080").expect("local MDM URL"),
+            api_key: Arc::from("test-mdm-key"),
+            request_timeout: Duration::from_secs(1),
+            security_info_timeout: Duration::from_secs(1),
+            trust_reuse_window: Duration::from_secs(60),
+        });
 
         validate(&config).expect("complete public billing config");
         assert_eq!(
@@ -520,6 +687,35 @@ mod tests {
         assert!(matches!(
             validate(&config),
             Err(PilotConfigError::PaidBillingRequired)
+        ));
+    }
+
+    #[test]
+    fn full_surface_accepts_db_controls_without_static_billing_or_provider_credentials() {
+        let mut config = PilotConfig::disabled();
+        config.enabled = true;
+        config.dynamic_controls = true;
+        config.trust_floor = TrustFloor::PUBLIC;
+        config.mdm_control = Some(MdmControlConfig {
+            base_url: Url::parse("http://127.0.0.1:8080").expect("local MDM URL"),
+            api_key: Arc::from("test-mdm-key"),
+            request_timeout: Duration::from_secs(1),
+            security_info_timeout: Duration::from_secs(1),
+            trust_reuse_window: Duration::from_secs(60),
+        });
+
+        validate(&config).expect("full surface uses PostgreSQL controls");
+        assert!(config.paid_billing.is_none());
+        assert!(config.provider_credentials.is_empty());
+        assert!(config.consumer_credentials.is_empty());
+
+        config.consumer_credentials = parse_consumer_keys(
+            r#"[{"api_key":"stale","account_id":"consumer","api_key_id":"key"}]"#.to_owned(),
+        )
+        .expect("static paid credential");
+        assert!(matches!(
+            validate(&config),
+            Err(PilotConfigError::EnvironmentBillingForbidden)
         ));
     }
 }

@@ -65,6 +65,7 @@ const MAXIMUM_TOOL_CALLS_PER_MESSAGE: usize = 128;
 pub struct PilotRequestJob {
     pub identity: super::billing::DurableRequestIdentity,
     pub billing: super::billing::BillingContext,
+    pub controls: PilotRequestControls,
     pub plaintext: Vec<u8>,
     pub model: ModelId,
     pub output_mode: OutputMode,
@@ -75,6 +76,20 @@ pub struct PilotRequestJob {
     pub response_permit: OwnedSemaphorePermit,
     pub response: Option<oneshot::Sender<Result<PilotResponse, PilotRequestError>>>,
     pub client_cancellation: CancellationToken,
+}
+
+/// Full-surface controls frozen before work enters the bounded request lane.
+///
+/// Isolated pilot mode uses the default and retains its configured billing
+/// policy. Full mode supplies a database-derived policy and API-key fences.
+#[derive(Clone, Default)]
+pub struct PilotRequestControls {
+    pub billing: Option<super::billing::PilotBilling>,
+    pub api_key_limit_micro_usd: Option<i64>,
+    pub api_key_controlled: bool,
+    pub api_key_public_model: Arc<str>,
+    pub api_key_concrete_model: Arc<str>,
+    pub required_provider_id: Option<darkbloom_coordinator_core::ids::ProviderId>,
 }
 
 /// Response body made visible only after authenticated content commitment.
@@ -398,6 +413,7 @@ async fn execute_request(
         demand: job.demand,
         writer_bytes: job.plaintext.len().saturating_mul(2).saturating_add(4_096),
         lease_ttl: services.permit_lease_ttl,
+        required_provider_id: job.controls.required_provider_id,
     };
 
     let primary = admit_primary(&profile, services).await?;
@@ -434,7 +450,7 @@ async fn execute_request(
             services
                 .durable
                 .as_ref()
-                .and_then(|durable| durable.billing.as_ref())
+                .and_then(|durable| job.controls.billing.as_ref().or(durable.billing.as_ref()))
                 .map_or(1, |billing| {
                     u64::try_from(billing.policy().base_reservation.as_i64())
                         .expect("ledger amount is nonnegative")
@@ -479,6 +495,7 @@ async fn execute_request(
     let mut durable = DurableExecution::new(
         job.identity.clone(),
         job.billing.clone(),
+        job.controls.clone(),
         services.durable.clone(),
     )?;
     if let Err(error) = durable
@@ -824,7 +841,7 @@ async fn run_attempt_inner(
             let remaining = runtime_deadline.saturating_duration_since(tokio::time::Instant::now());
             let provider_lease = Duration::from_millis(prepared_facts.lease_ttl_ms);
             let start_deadline = remaining.min(provider_lease);
-            durable
+            if let Err(error) = durable
                 .authorize(
                     &plan,
                     &prepared_facts,
@@ -833,7 +850,23 @@ async fn run_attempt_inner(
                     start_deadline,
                 )
                 .await
-                .map_err(AttemptFailure::fatal)?;
+            {
+                if error.is_definite_provider_authorization_rejection() && !durable.is_authorized()
+                {
+                    let _ = plan.session.writer.try_send_control_json(
+                        &CoordinatorControlMessage::Abort(Abort {
+                            identity: plan.identity.clone(),
+                            reason: Some(
+                                "provider-specific billing authorization rejected".to_owned(),
+                            ),
+                        }),
+                    );
+                    task.fail_pre_authorization(attempt_id, &context)
+                        .map_err(AttemptFailure::fatal)?;
+                    return Err(AttemptFailure::precontent(error));
+                }
+                return Err(AttemptFailure::fatal(error));
+            }
         }
         InboundAttemptEvent::StructuredError(error) => {
             task.fail_pre_authorization(attempt_id, &context)
@@ -1015,9 +1048,10 @@ async fn run_attempt_inner(
             }
             InboundAttemptEvent::Terminal(terminal) => {
                 let outcome = terminal.outcome;
-                accept_terminal(task, &terminal, &plan.session, providers, services, durable)
-                    .await
-                    .map_err(AttemptFailure::fatal)?;
+                let acceptance =
+                    accept_terminal(task, &terminal, &plan.session, providers, services, durable)
+                        .await
+                        .map_err(AttemptFailure::fatal)?;
                 release_permit(
                     &services.fleet,
                     plan.lease.lease_id(),
@@ -1025,11 +1059,36 @@ async fn run_attempt_inner(
                 )
                 .await
                 .map_err(AttemptFailure::fatal)?;
+                if acceptance == TerminalAcceptance::RetryablePrecontent {
+                    return Err(AttemptFailure::precontent(match outcome {
+                        TerminalOutcome::Cancelled => PilotRequestError::Provider(Arc::from(
+                            "provider cancelled before producing content",
+                        )),
+                        TerminalOutcome::Error => PilotRequestError::Provider(Arc::from(
+                            "provider failed before producing content",
+                        )),
+                        TerminalOutcome::Completed => unreachable!(
+                            "completed terminal cannot be a retryable precontent failure"
+                        ),
+                    }));
+                }
+                if outcome == TerminalOutcome::Completed && response_sender.is_some() {
+                    let sender = response_sender
+                        .take()
+                        .expect("checked response sender presence");
+                    let body = response_body
+                        .take()
+                        .expect("response body is sent exactly once");
+                    let _ = sender.send(Ok(PilotResponse {
+                        body,
+                        output_mode: plan.output_mode,
+                    }));
+                }
                 if response_sender.is_some() {
                     return Err(AttemptFailure::fatal(match outcome {
-                        TerminalOutcome::Completed => PilotRequestError::Protocol(Arc::from(
-                            "completed terminal arrived before content commitment",
-                        )),
+                        TerminalOutcome::Completed => unreachable!(
+                            "completed terminal commits an empty success before this check"
+                        ),
                         TerminalOutcome::Cancelled => PilotRequestError::Provider(Arc::from(
                             "provider cancelled before producing content",
                         )),
@@ -1064,6 +1123,12 @@ async fn run_attempt_inner(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalAcceptance {
+    Finalized,
+    RetryablePrecontent,
+}
+
 async fn accept_terminal(
     task: &mut RequestTask,
     terminal: &ProviderTerminal,
@@ -1071,7 +1136,7 @@ async fn accept_terminal(
     providers: &[ProviderFence],
     services: &RequestServices,
     durable: &mut DurableExecution,
-) -> Result<(), PilotRequestError> {
+) -> Result<TerminalAcceptance, PilotRequestError> {
     let key = TerminalKey::from(&terminal.identity);
     if !durable.is_paid() {
         let terminal_store = services.terminal_store.clone();
@@ -1135,8 +1200,13 @@ async fn accept_terminal(
                         "provider terminal is awaiting durable review",
                     )));
                 };
-                send_terminal_ack(session, terminal, disposition, services).await?;
-                return Ok(());
+                if terminal.outcome == TerminalOutcome::Completed
+                    || task.is_committed()
+                    || disposition != TerminalDisposition::Released
+                {
+                    send_terminal_ack(session, terminal, disposition, services).await?;
+                    return Ok(TerminalAcceptance::Finalized);
+                }
             }
             crate::ledger::TerminalLookup::Conflict { job_id } => {
                 if job_id != durable.job_id() {
@@ -1176,6 +1246,77 @@ async fn accept_terminal(
                 )));
             }
         }
+    }
+    if terminal.outcome != TerminalOutcome::Completed && !task.is_committed() {
+        let summary = match task.accept_precontent_terminal(
+            terminal,
+            &request_context(providers)?,
+            |provider, generation, digest, signature| {
+                session.verifies_terminal(provider, generation, digest, signature)
+            },
+        ) {
+            Ok(summary) => summary,
+            Err(error) => {
+                let accepted_cumulative_tokens = task.accepted_completion_tokens();
+                if !terminal_facts_are_persistable(terminal) {
+                    durable
+                        .review_provider(
+                            &terminal.identity,
+                            "precontent_terminal_signature_digest_or_bounds_mismatch",
+                            &serde_json::to_vec(terminal).unwrap_or_default(),
+                            accepted_cumulative_tokens,
+                        )
+                        .await?;
+                } else {
+                    durable
+                        .persist_terminal_conflict(
+                            terminal,
+                            "precontent_terminal_signature_digest_or_bounds_mismatch",
+                            accepted_cumulative_tokens,
+                        )
+                        .await?;
+                }
+                fence_provider(
+                    session.identity,
+                    "precontent provider terminal failed signed bounds validation",
+                    &services.directory,
+                    &services.requests,
+                    &services.fleet,
+                )
+                .await;
+                return Err(error.into());
+            }
+        };
+        let wire_disposition = if durable.is_paid() {
+            durable.retry_precontent(terminal, summary).await?
+        } else {
+            let record = TerminalRecord {
+                key,
+                terminal_digest: terminal.terminal_digest,
+                disposition: TerminalDisposition::Released,
+            };
+            let terminal_store = services.terminal_store.clone();
+            let resolution = services
+                .durable_io
+                .run("release precontent provider terminal", move || {
+                    terminal_store.finalize(record)
+                })
+                .await
+                .map_err(|error| PilotRequestError::Internal(Arc::from(error.to_string())))??;
+            if matches!(resolution, TerminalResolution::Conflict { .. }) {
+                return Err(PilotRequestError::Protocol(Arc::from(
+                    "provider terminal conflicts with durable disposition",
+                )));
+            }
+            resolution.disposition()
+        };
+        if let Err(error) = send_terminal_ack(session, terminal, wire_disposition, services).await {
+            tracing::warn!(
+                error = %error,
+                "precontent terminal was durably released before its ACK writer failed"
+            );
+        }
+        return Ok(TerminalAcceptance::RetryablePrecontent);
     }
     let core_disposition = durable.core_disposition(terminal)?;
     let summary = match task.accept_terminal(
@@ -1246,7 +1387,8 @@ async fn accept_terminal(
         }
         resolution.disposition()
     };
-    send_terminal_ack(session, terminal, wire_disposition, services).await
+    send_terminal_ack(session, terminal, wire_disposition, services).await?;
+    Ok(TerminalAcceptance::Finalized)
 }
 
 fn terminal_facts_are_persistable(terminal: &ProviderTerminal) -> bool {
@@ -1351,6 +1493,7 @@ struct AdmissionProfile {
     demand: AdmissionDemand,
     writer_bytes: usize,
     lease_ttl: Duration,
+    required_provider_id: Option<darkbloom_coordinator_core::ids::ProviderId>,
 }
 
 async fn admit_primary(
@@ -1379,6 +1522,13 @@ async fn admit_alternate(
     excluded: darkbloom_coordinator_protocol::v2::ProviderId,
     services: &RequestServices,
 ) -> Result<Option<AdmittedSession>, PilotRequestError> {
+    // A self-route-only request is pinned to one exact provider. Once that
+    // provider is excluded there is no legal alternate: speculative dispatch
+    // and pre-content failover must not broaden the request to the public
+    // fleet.
+    if !allows_alternate(profile.required_provider_id) {
+        return Ok(None);
+    }
     let snapshot = services.fleet.snapshot();
     let candidates: Vec<_> = snapshot
         .eligible_providers(&profile.model)
@@ -1419,14 +1569,24 @@ async fn admit_alternate(
 }
 
 fn admission_request(profile: &AdmissionProfile) -> AdmissionRequest {
-    AdmissionRequest::any(
+    let request = AdmissionRequest::any(
         profile.model.clone(),
         profile.traits.clone(),
         profile.demand,
         AdmissionKind::Regular,
         profile.writer_bytes,
         profile.lease_ttl,
-    )
+    );
+    match profile.required_provider_id {
+        Some(provider_id) => request.for_provider(provider_id),
+        None => request,
+    }
+}
+
+fn allows_alternate(
+    required_provider_id: Option<darkbloom_coordinator_core::ids::ProviderId>,
+) -> bool {
+    required_provider_id.is_none()
 }
 
 struct AdmittedSession {
@@ -1775,7 +1935,11 @@ fn structured_error(class: StructuredErrorClass) -> PilotRequestError {
 
 fn map_ledger_error(error: crate::ledger::LedgerError) -> PilotRequestError {
     match error {
-        crate::ledger::LedgerError::InsufficientBalance => PilotRequestError::PaymentRequired,
+        crate::ledger::LedgerError::InsufficientBalance
+        | crate::ledger::LedgerError::ApiKeySpendLimitExceeded => {
+            PilotRequestError::PaymentRequired
+        }
+        crate::ledger::LedgerError::ApiKeyControlRejected => PilotRequestError::Forbidden,
         crate::ledger::LedgerError::ProviderHardUntrusted => {
             PilotRequestError::Provider(Arc::from(error.to_string()))
         }
@@ -1832,12 +1996,16 @@ pub enum PilotRequestError {
     Capacity,
     #[error("consumer account has insufficient credit")]
     PaymentRequired,
+    #[error("consumer API key no longer authorizes this request")]
+    Forbidden,
     #[error("pilot request timed out")]
     Timeout,
     #[error("pilot request was cancelled")]
     Cancelled,
     #[error("provider failed: {0}")]
     Provider(Arc<str>),
+    #[error("provider pricing is invalid: {0}")]
+    ProviderPricing(Arc<str>),
     #[error("provider protocol violation: {0}")]
     Protocol(Arc<str>),
     #[error("pilot runtime unavailable: {0}")]
@@ -1852,6 +2020,12 @@ pub enum PilotRequestError {
     TerminalStore(#[from] crate::crypto::TerminalStoreError),
     #[error(transparent)]
     Writer(#[from] crate::provider::WriterEnqueueError),
+}
+
+impl PilotRequestError {
+    fn is_definite_provider_authorization_rejection(&self) -> bool {
+        matches!(self, Self::PaymentRequired | Self::ProviderPricing(_))
+    }
 }
 
 impl From<RequestExecutionError> for AttemptFailure {
@@ -1874,7 +2048,16 @@ impl From<crate::provider::WriterEnqueueError> for AttemptFailure {
 
 #[cfg(test)]
 mod tests {
-    use super::terminal_facts_fit_storage;
+    use super::{allows_alternate, terminal_facts_fit_storage};
+
+    #[test]
+    fn self_route_only_never_admits_speculative_or_failover_alternates() {
+        assert!(!allows_alternate(Some(
+            darkbloom_coordinator_core::ids::ProviderId::new(uuid::Uuid::new_v4())
+                .expect("provider id"),
+        )));
+        assert!(allows_alternate(None));
+    }
 
     #[test]
     fn malformed_terminal_conflict_evidence_is_not_persistable() {

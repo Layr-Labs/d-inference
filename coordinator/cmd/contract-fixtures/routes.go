@@ -140,9 +140,7 @@ func classifyRoute(pattern, method, path, handler string) routeContract {
 		Disposition: "implement",
 	}
 	switch path {
-	case "/health", "/readyz", "/ws/provider", "/v1/encryption-key",
-		"/v1/models", "/v1/models/{id...}", "/v1/chat/completions",
-		"/v1/models/catalog", "/v1/models/catalog/manifest/", "/v1/models/catalog/":
+	case "/ws/provider", "/v1/encryption-key", "/v1/chat/completions":
 		route.Pilot = true
 		route.RustOwner = "pilot adapter"
 	}

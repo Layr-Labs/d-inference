@@ -87,6 +87,8 @@ pub enum AttemptKind {
 pub enum AttemptReleaseReason {
     /// The provider failed before start authorization.
     PreAuthorizationFailure,
+    /// The authorized provider failed before any output was committed.
+    PreContentFailure,
     /// Another prepared attempt won authorization.
     NotSelected,
     /// The request was cancelled before authorization.

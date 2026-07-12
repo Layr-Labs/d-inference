@@ -4,10 +4,10 @@ use sqlx::PgPool;
 use thiserror::Error;
 use tokio::time::timeout;
 
-pub const MINIMUM_PUBLIC_SCHEMA_VERSION: i64 = 5;
-pub const MAXIMUM_PUBLIC_SCHEMA_VERSION: i64 = 5;
-pub const MINIMUM_RUST_SCHEMA_VERSION: i64 = 3;
-pub const MAXIMUM_RUST_SCHEMA_VERSION: i64 = 3;
+pub const MINIMUM_PUBLIC_SCHEMA_VERSION: i64 = 6;
+pub const MAXIMUM_PUBLIC_SCHEMA_VERSION: i64 = 6;
+pub const MINIMUM_RUST_SCHEMA_VERSION: i64 = 4;
+pub const MAXIMUM_RUST_SCHEMA_VERSION: i64 = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SchemaCompatibility {

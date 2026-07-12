@@ -785,6 +785,66 @@ impl RequestTask {
         Ok(())
     }
 
+    /// Validates and releases an authorized provider that failed before first
+    /// content, retaining the logical request for its sole alternate.
+    pub fn accept_precontent_terminal<F>(
+        &mut self,
+        terminal: &ProviderTerminal,
+        context: &RequestContext,
+        verify_signature: F,
+    ) -> Result<VerifiedTerminal, RequestExecutionError>
+    where
+        F: FnOnce(
+            darkbloom_coordinator_protocol::v2::ProviderId,
+            darkbloom_coordinator_protocol::v2::ProviderProcessGenerationId,
+            &Digest,
+            &[u8],
+        ) -> bool,
+    {
+        if self.commitment.is_committed()
+            || self.state.has_first_content()
+            || terminal.outcome == TerminalOutcome::Completed
+        {
+            return Err(RequestExecutionError::InvalidAttemptPhase);
+        }
+        let attempt_id = self
+            .authorized
+            .ok_or(RequestExecutionError::InvalidAttemptPhase)?;
+        let attempt = self
+            .attempts
+            .get(&attempt_id)
+            .ok_or(RequestExecutionError::UnknownAttempt)?;
+        if terminal.identity != attempt.identity
+            || !matches!(
+                attempt.phase,
+                AttemptPhase::StartAcknowledged | AttemptPhase::SentUnknown
+            )
+        {
+            return Err(RequestExecutionError::InvalidAttemptPhase);
+        }
+        let (reduction, next_sequence) =
+            self.preview(RequestEvent::PreContentFailed { attempt_id }, context)?;
+        let summary = self
+            .output
+            .as_mut()
+            .ok_or(RequestExecutionError::InvalidAttemptPhase)?
+            .validate_terminal(terminal, verify_signature)
+            .inspect_err(|_| {
+                self.cancellation
+                    .cancel(CancellationReason::ProtocolViolation);
+            })?;
+        self.commitment.reset_uncommitted()?;
+        self.state = reduction.state;
+        self.event_sequence = next_sequence;
+        self.attempts
+            .get_mut(&attempt_id)
+            .ok_or(RequestExecutionError::UnknownAttempt)?
+            .phase = AttemptPhase::Released;
+        self.authorized = None;
+        self.output = None;
+        Ok(summary)
+    }
+
     /// Validates one provider terminal, applies the sole accounting
     /// disposition, and gracefully completes successful response output.
     pub fn accept_terminal<F>(
@@ -1366,6 +1426,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn usage_only_failure_releases_authorized_attempt_and_preserves_alternate() {
+        let primary_prepare = prepare(wire_identity(1, 5, 7));
+        let alternate_prepare = prepare(wire_identity(2, 6, 8));
+        let (mut task, body) = RequestTask::new(
+            task_config(primary_prepare.request_digest),
+            EpochMillis::new(1),
+            RequestCancellation::token_only(CancellationToken::new()),
+            None,
+        )
+        .expect("task");
+        let primary_fence = fence(1);
+        let alternate_fence = fence(2);
+        let context = RequestContext::new(EpochMillis::new(2))
+            .with_provider(primary_fence.clone())
+            .with_provider(alternate_fence.clone());
+        let (_writer, handle) =
+            provider_writer(ProviderWriterConfig::default(), CancellationToken::new())
+                .expect("writer");
+        let (primary_id, _receipt) = task
+            .enqueue_prepare(
+                AttemptKind::Primary,
+                primary_prepare.clone(),
+                primary_fence,
+                core_id(11, PermitId::new),
+                &context,
+                &handle,
+            )
+            .expect("primary prepare");
+        task.accept_prepared(prepared(&primary_prepare))
+            .expect("primary prepared");
+        let _start = task
+            .enqueue_start(primary_id, &context)
+            .expect("primary start");
+        task.accept_start_ack(&StartAck {
+            identity: primary_prepare.identity.clone(),
+        })
+        .expect("primary start ack");
+
+        let usage = b"data: {\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":0,\"total_tokens\":2}}\n\n";
+        let usage_digest = crate::request::next_rolling_digest([0; 32], 0, 0, usage);
+        let usage_frame = output_header(
+            &primary_prepare.identity,
+            0,
+            0,
+            usage_digest,
+            usage.len(),
+            false,
+        );
+        task.accept_chunk(&usage_frame, usage.to_vec(), &context)
+            .expect("usage metadata");
+        assert!(!task.is_committed());
+        assert_eq!(body.stats().queued_items, 0);
+
+        let mut terminal = ProviderTerminal {
+            identity: primary_prepare.identity.clone(),
+            outcome: TerminalOutcome::Error,
+            error_class: Some(darkbloom_coordinator_protocol::v2::StructuredErrorClass::Fault),
+            prompt_tokens: 2,
+            completion_tokens: 0,
+            reasoning_tokens: 0,
+            response_hash: Digest::of(usage),
+            final_generated_tokens: 0,
+            rolling_digest: Digest::new(usage_digest),
+            model: "model".into(),
+            terminal_digest: Digest::default(),
+            signature: TerminalSignature::new(vec![1]),
+        };
+        terminal.terminal_digest = terminal.computed_digest().expect("terminal digest");
+        task.accept_precontent_terminal(&terminal, &context, |_, _, _, _| true)
+            .expect("retryable precontent terminal");
+        assert!(!task.is_committed());
+        assert_eq!(task.state().authorized_attempt(), None);
+        assert_eq!(task.attempt_phase(primary_id), Some(AttemptPhase::Released));
+        assert_eq!(body.stats().queued_items, 0);
+
+        task.enqueue_prepare(
+            AttemptKind::Alternate,
+            alternate_prepare,
+            alternate_fence,
+            core_id(12, PermitId::new),
+            &context,
+            &handle,
+        )
+        .expect("alternate remains admissible");
+    }
+
+    #[tokio::test]
     async fn one_job_bounds_hedge_and_preserves_fast_start_output_order() {
         let primary_prepare = prepare(wire_identity(1, 5, 7));
         let hedge_prepare = prepare(wire_identity(2, 6, 8));
@@ -1453,12 +1600,28 @@ mod tests {
             Some(AttemptPhase::StartAcknowledged)
         );
 
-        let content = b"data: {\"content\":\"hello\"}\n\n";
+        let usage = b"data: {\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":0,\"total_tokens\":2}}\n\n";
+        let content = b"data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n";
         let done = b"data: [DONE]\n\n";
-        let first_digest = crate::request::next_rolling_digest([0; 32], 0, 1, content);
-        let first = output_header(
+        let usage_digest = crate::request::next_rolling_digest([0; 32], 0, 0, usage);
+        let usage_frame = output_header(
             &primary_prepare.identity,
             0,
+            0,
+            usage_digest,
+            usage.len(),
+            false,
+        );
+        task.accept_chunk(&usage_frame, usage.to_vec(), &context)
+            .expect("usage metadata");
+        assert!(!task.is_committed());
+        assert!(!task.state().has_first_content());
+        assert_eq!(body.stats().queued_items, 0);
+
+        let first_digest = crate::request::next_rolling_digest(usage_digest, 1, 1, content);
+        let first = output_header(
+            &primary_prepare.identity,
+            1,
             1,
             first_digest,
             content.len(),
@@ -1466,10 +1629,11 @@ mod tests {
         );
         task.accept_chunk(&first, content.to_vec(), &context)
             .expect("content");
-        let done_digest = crate::request::next_rolling_digest(first_digest, 1, 1, done);
+        assert!(task.is_committed());
+        let done_digest = crate::request::next_rolling_digest(first_digest, 2, 1, done);
         let final_frame = output_header(
             &primary_prepare.identity,
-            1,
+            2,
             1,
             done_digest,
             done.len(),
@@ -1478,7 +1642,7 @@ mod tests {
         task.accept_chunk(&final_frame, done.to_vec(), &context)
             .expect("done");
 
-        let exact = [content.as_slice(), done.as_slice()].concat();
+        let exact = [usage.as_slice(), content.as_slice(), done.as_slice()].concat();
         let mut terminal = ProviderTerminal {
             identity: primary_prepare.identity.clone(),
             outcome: TerminalOutcome::Completed,
@@ -1501,6 +1665,7 @@ mod tests {
             |_, _, _, _| true,
         )
         .expect("terminal");
+        assert_eq!(body.recv().await.expect("usage body"), Some(usage.to_vec()));
         assert_eq!(
             body.recv().await.expect("content body"),
             Some(content.to_vec())

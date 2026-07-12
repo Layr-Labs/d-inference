@@ -289,6 +289,11 @@ api.dev.darkbloom.xyz {
 
   # All other traffic -> coordinator (HTTP + WebSocket)
   reverse_proxy 127.0.0.1:8080 {
+    # Overwrite caller-supplied forwarding metadata with Caddy's transport
+    # peer. The coordinator accepts this only from its configured loopback
+    # trusted-proxy CIDR.
+    header_up X-Forwarded-For {remote_host}
+    header_up -Forwarded
     health_uri /health
     health_interval 30s
     health_timeout 5s

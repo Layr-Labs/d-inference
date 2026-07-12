@@ -250,9 +250,7 @@ struct ChoiceAssembly {
 fn assemble_chat_completion_sse(bytes: &[u8]) -> Result<ChatCompletion, AdapterError> {
     let mut stream = CanonicalChatStream::default();
     let mut events = stream.push(bytes)?;
-    if !stream.is_done() {
-        events.extend(stream.finish_input()?);
-    }
+    events.extend(stream.finish_input()?);
     let mut id = String::new();
     let mut created = 0_i64;
     let mut model = String::new();
@@ -436,22 +434,17 @@ impl ChatChunk {
 
     #[must_use]
     pub fn is_content_bearing(&self) -> bool {
-        if self.usage.is_some() {
-            return true;
-        }
         self.choices.iter().any(choice_has_content)
     }
 }
 
 fn choice_has_content(choice: &Value) -> bool {
-    if choice
-        .get("finish_reason")
-        .is_some_and(|reason| !reason.is_null())
-    {
-        return true;
-    }
-    let Some(delta) = choice.get("delta").and_then(Value::as_object) else {
-        return true;
+    let Some(delta) = choice
+        .get("delta")
+        .or_else(|| choice.get("message"))
+        .and_then(Value::as_object)
+    else {
+        return false;
     };
     for field in ["content", "reasoning", "reasoning_content", "refusal"] {
         if delta
@@ -464,7 +457,24 @@ fn choice_has_content(choice: &Value) -> bool {
     delta
         .get("tool_calls")
         .and_then(Value::as_array)
-        .is_some_and(|calls| !calls.is_empty())
+        .is_some_and(|calls| calls.iter().any(tool_call_has_output))
+}
+
+fn tool_call_has_output(call: &Value) -> bool {
+    ["id", "type"]
+        .iter()
+        .any(|field| nonempty_string(call.get(*field)))
+        || call.get("function").is_some_and(|function| {
+            ["name", "arguments"]
+                .iter()
+                .any(|field| nonempty_string(function.get(*field)))
+        })
+}
+
+fn nonempty_string(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.is_empty())
 }
 
 /// Incremental finite SSE parser plus the source commitment boundary.
@@ -478,7 +488,8 @@ pub struct CanonicalChatStream {
 
 impl CanonicalChatStream {
     /// Accepts arbitrarily fragmented exact provider bytes. Nothing is returned
-    /// before a content/finish/usage chunk commits the source attempt.
+    /// before nonempty content, reasoning, refusal, or tool output commits the
+    /// source attempt. Usage and lifecycle metadata remain held.
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<ChatSseEvent>, AdapterError> {
         if self.done {
             return Err(AdapterError::invalid(
@@ -506,6 +517,10 @@ impl CanonicalChatStream {
                 None,
             ));
         }
+        if !self.committed {
+            self.committed = true;
+            ready.append(&mut self.held);
+        }
         Ok(ready)
     }
 
@@ -522,12 +537,6 @@ impl CanonicalChatStream {
         }
         let event = match payload {
             SsePayload::Done => {
-                if !self.committed {
-                    return Err(AdapterError::invalid(
-                        "provider ended before producing content",
-                        None,
-                    ));
-                }
                 self.done = true;
                 ChatSseEvent::Done
             }
@@ -849,16 +858,55 @@ mod tests {
         assert!(stream.push(&role[17..]).expect("role").is_empty());
         assert!(!stream.is_committed());
 
+        let usage = br#"data: {"id":"c","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":0,"total_tokens":2}}
+
+"#;
+        assert!(stream.push(usage).expect("usage").is_empty());
+        let finish = br#"data: {"id":"c","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"stop"}]}
+
+"#;
+        assert!(stream.push(finish).expect("finish metadata").is_empty());
+        let empty_tool = br#"data: {"id":"c","object":"chat.completion.chunk","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":""}}]},"finish_reason":null}]}
+
+"#;
+        assert!(
+            stream
+                .push(empty_tool)
+                .expect("empty tool metadata")
+                .is_empty()
+        );
+        assert!(!stream.is_committed());
+
         let content = br#"data: {"id":"c","object":"chat.completion.chunk","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}
 
 "#;
         let ready = stream.push(content).expect("content");
-        assert_eq!(ready.len(), 2);
+        assert_eq!(ready.len(), 5);
         assert!(stream.is_committed());
         assert!(matches!(
             stream.push(b"data: [DONE]\n\n").expect("done").as_slice(),
             [ChatSseEvent::Done]
         ));
+    }
+
+    #[test]
+    fn usage_only_done_commits_only_when_the_verified_source_finishes() {
+        let mut stream = CanonicalChatStream::default();
+        let usage = br#"data: {"id":"c","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":0,"total_tokens":2}}
+
+"#;
+        assert!(stream.push(usage).expect("usage").is_empty());
+        assert!(
+            stream
+                .push(b"data: [DONE]\n\n")
+                .expect("held done")
+                .is_empty()
+        );
+        assert!(!stream.is_committed());
+        let ready = stream.finish_input().expect("empty successful terminal");
+        assert_eq!(ready.len(), 2);
+        assert!(matches!(ready.last(), Some(ChatSseEvent::Done)));
+        assert!(stream.is_committed());
     }
 
     #[test]

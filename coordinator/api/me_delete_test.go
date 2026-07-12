@@ -105,9 +105,47 @@ func TestDeleteMyProvider_NotFound404(t *testing.T) {
 	}
 }
 
-func TestDeleteMyProvider_OnlineConflict409(t *testing.T) {
+func TestDeleteMyProvider_OnlineIsFencedAndCredentialCannotReauthenticate(t *testing.T) {
 	srv, st := newKeyTestServer(t)
-	seedProviderRecord(t, st, "live-p", "SER-ON", "acct-1")
+	const rawToken = "provider-delete-revocation-token"
+	legacyTokens := []string{
+		"provider-delete-legacy-token-one",
+		"provider-delete-legacy-token-two",
+	}
+	tokenHash := sha256Hash(rawToken)
+	if err := st.CreateProviderToken(&store.ProviderToken{
+		TokenHash: tokenHash,
+		AccountID: "acct-1",
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("seed provider token: %v", err)
+	}
+	for _, legacyToken := range legacyTokens {
+		if err := st.CreateProviderToken(&store.ProviderToken{
+			TokenHash: sha256Hash(legacyToken),
+			AccountID: "acct-1",
+			Active:    true,
+		}); err != nil {
+			t.Fatalf("seed legacy provider token: %v", err)
+		}
+	}
+	if err := st.UpsertProvider(context.Background(), store.ProviderRecord{
+		ID:           "live-p",
+		SerialNumber: "SER-ON",
+		SEPublicKey:  "se-live",
+		AccountID:    "acct-1",
+		TokenHash:    tokenHash,
+		LastSeen:     time.Now(),
+	}); err != nil {
+		t.Fatalf("seed linked provider: %v", err)
+	}
+	if err := st.UpsertProviderTrustReuse(context.Background(), store.ProviderTrustReuse{
+		SEPubKey:   "se-live",
+		ProviderID: "live-p",
+		TrustLevel: "hardware",
+	}); err != nil {
+		t.Fatalf("seed provider trust reuse: %v", err)
+	}
 
 	// Register a live provider connection with a matching serial.
 	live := srv.registry.Register("live-p", nil, &protocol.RegisterMessage{})
@@ -118,11 +156,29 @@ func TestDeleteMyProvider_OnlineConflict409(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleDeleteMyProvider(w, r)
 
-	if w.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}
-	if rec, _ := st.GetProviderBySerial(context.Background(), "SER-ON"); rec == nil {
-		t.Fatal("online machine record was deleted despite 409")
+	if srv.registry.GetProvider("live-p") != nil {
+		t.Fatal("live provider remained registered after owner deletion")
+	}
+	if rec, _ := st.GetProviderBySerial(context.Background(), "SER-ON"); rec != nil {
+		t.Fatal("deleted online machine record remains")
+	}
+	if _, err := st.GetProviderToken(rawToken); err == nil {
+		t.Fatal("deleted machine credential reauthenticated")
+	}
+	for _, legacyToken := range legacyTokens {
+		if _, err := st.GetProviderToken(legacyToken); err == nil {
+			t.Fatalf("legacy-unlinked credential %q reauthenticated", legacyToken)
+		}
+	}
+	reuse, err := st.ListProviderTrustReuse(context.Background())
+	if err != nil {
+		t.Fatalf("list provider trust reuse: %v", err)
+	}
+	if len(reuse) != 0 {
+		t.Fatalf("deleted machine retained %d trust-reuse rows", len(reuse))
 	}
 }
 

@@ -15,6 +15,7 @@ pub mod ownership;
 pub mod pilot;
 pub mod projection;
 pub mod provider;
+pub mod provider_control;
 pub mod recovery;
 pub mod request;
 pub mod runtime;

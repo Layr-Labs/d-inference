@@ -91,6 +91,7 @@ impl ConsumerCredential {
 pub struct PilotBilling {
     policy: PaidBillingPolicy,
     provider_beneficiaries: Arc<[ProviderBeneficiaryEntry]>,
+    provider_price_overrides_enabled: bool,
 }
 
 impl PilotBilling {
@@ -109,7 +110,19 @@ impl PilotBilling {
         Ok(Self {
             policy,
             provider_beneficiaries,
+            provider_price_overrides_enabled: true,
         })
+    }
+
+    /// Forces every selected provider to use the published platform rates.
+    ///
+    /// Service and wholesale consumers are sold at the public feed price. A
+    /// provider-specific override must therefore never resize their reservation
+    /// or settlement charge.
+    #[must_use]
+    pub fn without_provider_price_overrides(mut self) -> Self {
+        self.provider_price_overrides_enabled = false;
+        self
     }
 
     #[must_use]
@@ -125,18 +138,48 @@ impl PilotBilling {
             .map(|entry| &entry.account_id)
     }
 
+    #[must_use]
+    pub fn provider_terms(
+        &self,
+        provider_id: ProviderId,
+    ) -> Option<(AccountId, PaidBillingPolicy)> {
+        let beneficiary = self
+            .provider_beneficiaries
+            .iter()
+            .find(|entry| entry.provider_id == provider_id)?;
+        let mut policy = self.policy.clone();
+        if self.provider_price_overrides_enabled
+            && let Some(price) = &beneficiary.price_override
+        {
+            policy.pricing_version = price.pricing_version;
+            policy.input_micro_usd_per_million = price.input_micro_usd_per_million;
+            policy.output_micro_usd_per_million = price.output_micro_usd_per_million;
+        }
+        Some((beneficiary.account_id.clone(), policy))
+    }
+
+    pub fn amounts(
+        &self,
+        prompt_tokens: u64,
+        completion_tokens: u64,
+    ) -> Result<BillingAmounts, InputError> {
+        self.policy.amounts(prompt_tokens, completion_tokens)
+    }
+}
+
+impl PaidBillingPolicy {
     pub fn amounts(
         &self,
         prompt_tokens: u64,
         completion_tokens: u64,
     ) -> Result<BillingAmounts, InputError> {
         let consumer_charge =
-            priced_tokens(prompt_tokens, self.policy.input_micro_usd_per_million)?.checked_add(
-                priced_tokens(completion_tokens, self.policy.output_micro_usd_per_million)?,
+            priced_tokens(prompt_tokens, self.input_micro_usd_per_million)?.checked_add(
+                priced_tokens(completion_tokens, self.output_micro_usd_per_million)?,
             )?;
-        let provider_payout = proportional(consumer_charge, self.policy.provider_share_ppm)?;
+        let provider_payout = proportional(consumer_charge, self.provider_share_ppm)?;
         let gross_fee = consumer_charge.checked_sub(provider_payout)?;
-        let referral_reward = proportional(gross_fee, self.policy.referral_share_ppm)?;
+        let referral_reward = proportional(gross_fee, self.referral_share_ppm)?;
         let platform_fee = gross_fee.checked_sub(referral_reward)?;
         Ok(BillingAmounts {
             consumer_charge,

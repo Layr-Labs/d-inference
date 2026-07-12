@@ -9,7 +9,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "external_events",
+            "table": "rust_coord.external_events",
             "name": "version"
           }
         }

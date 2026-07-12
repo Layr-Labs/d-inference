@@ -99,6 +99,11 @@ pub fn adapt_completions_nonstream(
 pub struct CompletionsStreamAdapter {
     context: AdapterContext,
     source: CanonicalChatStream,
+    emitted_choice: bool,
+    pending_usage: Vec<Vec<u8>>,
+    source_id: String,
+    source_created: i64,
+    source_model: String,
 }
 
 impl CompletionsStreamAdapter {
@@ -107,6 +112,11 @@ impl CompletionsStreamAdapter {
         Self {
             context,
             source: CanonicalChatStream::default(),
+            emitted_choice: false,
+            pending_usage: Vec::new(),
+            source_id: String::new(),
+            source_created: 0,
+            source_model: String::new(),
         }
     }
 
@@ -115,22 +125,54 @@ impl CompletionsStreamAdapter {
         self.adapt_events(events)
     }
 
-    fn adapt_events(&self, events: Vec<ChatSseEvent>) -> Result<Vec<Vec<u8>>, AdapterError> {
+    fn adapt_events(&mut self, events: Vec<ChatSseEvent>) -> Result<Vec<Vec<u8>>, AdapterError> {
         let mut output = Vec::new();
         for event in events {
             match event {
-                ChatSseEvent::Done => output.push(b"data: [DONE]\n\n".to_vec()),
+                ChatSseEvent::Done => {
+                    if !self.emitted_choice {
+                        output.push(sse_data(json!({
+                            "id": completion_id(source_id(&self.source_id, &self.context)),
+                            "object": "text_completion",
+                            "created": source_created(self.source_created, &self.context),
+                            "model": source_model(&self.source_model, &self.context),
+                            "choices": [{
+                                "text": "",
+                                "index": 0,
+                                "logprobs": Value::Null,
+                                "finish_reason": "stop",
+                            }],
+                        }))?);
+                        self.emitted_choice = true;
+                    }
+                    output.append(&mut self.pending_usage);
+                    output.push(b"data: [DONE]\n\n".to_vec());
+                }
                 ChatSseEvent::Chunk(chunk) => {
+                    if self.source_id.is_empty() && !chunk.id.is_empty() {
+                        self.source_id.clone_from(&chunk.id);
+                    }
+                    if self.source_created == 0 && chunk.created != 0 {
+                        self.source_created = chunk.created;
+                    }
+                    if self.source_model.is_empty() && !chunk.model.is_empty() {
+                        self.source_model.clone_from(&chunk.model);
+                    }
                     if chunk.choices.is_empty() {
                         if let Some(usage) = chunk.usage {
-                            output.push(sse_data(json!({
+                            let event = sse_data(json!({
                                 "id": completion_id(source_id(&chunk.id, &self.context)),
                                 "object": "text_completion",
                                 "created": source_created(chunk.created, &self.context),
                                 "model": source_model(&chunk.model, &self.context),
                                 "choices": [],
                                 "usage": usage,
-                            }))?);
+                            }))?;
+                            if self.emitted_choice {
+                                output.push(event);
+                            } else {
+                                self.pending_usage.push(event);
+                            }
                         }
                         continue;
                     }
@@ -152,6 +194,8 @@ impl CompletionsStreamAdapter {
                     if choices.is_empty() {
                         continue;
                     }
+                    output.append(&mut self.pending_usage);
+                    self.emitted_choice = true;
                     let mut event = json!({
                         "id": completion_id(source_id(&chunk.id, &self.context)),
                         "object": "text_completion",
@@ -312,6 +356,34 @@ data: [DONE]
         assert_eq!(output.len(), 2);
         assert!(String::from_utf8_lossy(&output[0]).contains("\"text\":\"hello\""));
         assert_eq!(output[1], b"data: [DONE]\n\n");
+    }
+
+    #[test]
+    fn empty_success_preserves_usage_in_stream_and_nonstream_shapes() {
+        let empty = br#"data: {"id":"chatcmpl-empty","object":"chat.completion.chunk","created":2,"model":"model-a","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-empty","object":"chat.completion.chunk","created":2,"model":"model-a","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":0,"total_tokens":3}}
+
+data: [DONE]
+
+"#;
+        let output = adapt_completions_nonstream(empty, &context()).expect("empty nonstream");
+        let output: Value = serde_json::from_slice(&output).expect("empty nonstream JSON");
+        assert_eq!(output["choices"][0]["text"], "");
+        assert_eq!(output["usage"]["prompt_tokens"], 3);
+        assert_eq!(output["usage"]["completion_tokens"], 0);
+
+        let mut stream = CompletionsStreamAdapter::new(context());
+        assert!(stream.push(empty).expect("held empty stream").is_empty());
+        let output = stream.finish_input().expect("finish empty stream");
+        let text = output
+            .iter()
+            .map(|event| String::from_utf8_lossy(event))
+            .collect::<String>();
+        assert!(text.contains("\"text\":\"\""));
+        assert!(text.contains("\"prompt_tokens\":3"));
+        assert!(text.contains("\"completion_tokens\":0"));
+        assert!(text.ends_with("data: [DONE]\n\n"));
     }
 
     #[test]

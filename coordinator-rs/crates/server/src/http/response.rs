@@ -355,7 +355,7 @@ struct ChoiceAccumulator {
     logprobs: Option<Value>,
 }
 
-fn parse_chat_completion_sse(exact: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn parse_chat_completion_sse(exact: &[u8]) -> Result<Vec<u8>, String> {
     let payloads = sse_payloads(exact)?;
     if payloads.len() == 1
         && payloads[0]

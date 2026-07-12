@@ -916,7 +916,7 @@ async fn external_outbox_and_fee_projection_leases_are_version_fenced() {
 }
 
 #[tokio::test]
-async fn catalog_loads_alias_build_version_and_account_price_in_one_snapshot() {
+async fn catalog_loads_alias_build_version_and_platform_price_in_one_snapshot() {
     with_isolated_database(|url| async move {
         let (database, ownership, pool) = service_database(&url).await;
         sqlx::query(
@@ -972,26 +972,40 @@ async fn catalog_loads_alias_build_version_and_account_price_in_one_snapshot() {
         .expect("catalog rows");
 
         let snapshot = CatalogService::new(database.clone())
-            .load("model", &account("consumer"))
+            .load("model")
             .await
             .expect("catalog snapshot");
         assert_eq!(snapshot.public_model.as_ref(), "model");
         assert_eq!(snapshot.concrete_model.as_str(), "model/build");
         assert!(snapshot.pricing_version.as_i64() > 0);
-        assert_eq!(snapshot.input_micro_usd_per_million, amount(30));
-        assert_eq!(snapshot.output_micro_usd_per_million, amount(40));
+        assert_eq!(snapshot.input_micro_usd_per_million, amount(10));
+        assert_eq!(snapshot.output_micro_usd_per_million, amount(20));
         sqlx::query(
             "UPDATE public.model_prices SET input_price = 31, updated_at = NOW() WHERE account_id = 'consumer' AND model = 'model/build'",
         )
         .execute(&pool)
         .await
-        .expect("update account price");
-        let updated = CatalogService::new(database.clone())
-            .load("model", &account("consumer"))
+        .expect("update consumer price");
+        let consumer_updated = CatalogService::new(database.clone())
+            .load("model")
             .await
-            .expect("updated catalog snapshot");
+            .expect("consumer-updated catalog snapshot");
+        assert_eq!(consumer_updated.pricing_version, snapshot.pricing_version);
+        assert_eq!(consumer_updated.input_micro_usd_per_million, amount(10));
+        assert_eq!(consumer_updated.output_micro_usd_per_million, amount(20));
+
+        sqlx::query(
+            "UPDATE public.model_prices SET input_price = 11, updated_at = NOW() WHERE account_id = 'platform' AND model = 'model/build'",
+        )
+        .execute(&pool)
+        .await
+        .expect("update platform price");
+        let updated = CatalogService::new(database.clone())
+            .load("model")
+            .await
+            .expect("platform-updated catalog snapshot");
         assert_ne!(updated.pricing_version, snapshot.pricing_version);
-        assert_eq!(updated.input_micro_usd_per_million, amount(31));
+        assert_eq!(updated.input_micro_usd_per_million, amount(11));
         assert_eq!(updated.model_version.as_ref(), "v1");
 
         shutdown(database, ownership, pool).await;
@@ -1038,6 +1052,10 @@ fn reserve_request(index: u8) -> ReserveRequest {
         execution_lease_millis: None,
         provisional_provider_id: None,
         provisional_session_epoch: None,
+        public_model: "".into(),
+        concrete_model: "".into(),
+        api_key_limit_micro_usd: None,
+        api_key_controlled: false,
     }
 }
 

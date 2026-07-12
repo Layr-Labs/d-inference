@@ -12,7 +12,7 @@ use super::support::{reset_schema, seed_durable_schema, with_isolated_database};
 #[tokio::test]
 async fn database_enforces_public_and_rust_schema_ranges() {
     with_isolated_database(|url| async move {
-        reset_schema(&url, 5, 3, 5, 5).await;
+        reset_schema(&url, 6, 4, 6, 6).await;
         let supported = Database::connect(&url, 2, Duration::from_secs(3))
             .await
             .expect("supported schema range");
@@ -46,8 +46,8 @@ async fn database_enforces_public_and_rust_schema_ranges() {
             .await
             .expect("close supported schema pool");
 
-        for public_version in [4, 6] {
-            reset_schema(&url, public_version, 3, 5, 5).await;
+        for public_version in [5, 7] {
+            reset_schema(&url, public_version, 4, 6, 6).await;
             let error = Database::connect(&url, 2, Duration::from_secs(3))
                 .await
                 .expect_err("unsupported public schema was accepted");
@@ -55,36 +55,36 @@ async fn database_enforces_public_and_rust_schema_ranges() {
                 error,
                 DatabaseError::Schema(SchemaError::UnsupportedPublicVersion {
                     found,
-                    minimum: 5,
-                    maximum: 5,
+                    minimum: 6,
+                    maximum: 6,
                 }) if found == public_version
             ));
         }
 
-        reset_schema(&url, 5, 4, 5, 5).await;
+        reset_schema(&url, 6, 5, 6, 6).await;
         let error = Database::connect(&url, 2, Duration::from_secs(3))
             .await
             .expect_err("unsupported Rust schema was accepted");
         assert!(matches!(
             error,
             DatabaseError::Schema(SchemaError::UnsupportedRustVersion {
-                found: 4,
-                minimum: 3,
-                maximum: 3,
+                found: 5,
+                minimum: 4,
+                maximum: 4,
             })
         ));
 
-        reset_schema(&url, 5, 3, 6, 6).await;
+        reset_schema(&url, 6, 4, 7, 7).await;
         let error = Database::connect(&url, 2, Duration::from_secs(3))
             .await
             .expect_err("incompatible public/Rust schema pair was accepted");
         assert!(matches!(
             error,
             DatabaseError::Schema(SchemaError::IncompatiblePublicVersion {
-                rust_version: 3,
-                public_version: 5,
-                minimum: 6,
-                maximum: 6,
+                rust_version: 4,
+                public_version: 6,
+                minimum: 7,
+                maximum: 7,
             })
         ));
     })
@@ -98,8 +98,8 @@ async fn mirrored_migration_builds_the_sqlx_schema_contract() {
         let database = Database::connect(&url, 2, Duration::from_secs(3))
             .await
             .expect("connect against durable schema");
-        assert_eq!(database.compatibility().public_version, 5);
-        assert_eq!(database.compatibility().rust_version, 3);
+        assert_eq!(database.compatibility().public_version, 6);
+        assert_eq!(database.compatibility().rust_version, 4);
 
         let inspector = PgPool::connect(&url)
             .await
@@ -120,17 +120,20 @@ async fn mirrored_migration_builds_the_sqlx_schema_contract() {
         assert_eq!(
             tables,
             [
+                "api_key_rate_windows",
                 "external_events",
                 "fee_allocations",
                 "fee_projection_checkpoints",
                 "financial_operations",
                 "inference_attempts",
                 "inference_jobs",
+                "mdm_command_expectations",
                 "outbox",
                 "provider_hard_untrust_epochs",
                 "provider_terminals",
                 "review_resolution_journal",
                 "schema_versions",
+                "telemetry_events",
             ]
         );
 

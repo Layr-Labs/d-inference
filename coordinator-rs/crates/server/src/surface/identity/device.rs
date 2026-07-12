@@ -15,6 +15,8 @@ use super::{
 
 pub const DEVICE_CODE_EXPIRY: Duration = Duration::from_secs(15 * 60);
 pub const DEVICE_CODE_POLL_INTERVAL: Duration = Duration::from_secs(5);
+pub(super) const MAX_ACTIVE_DEVICE_CODES: i64 = 10_000;
+const DEVICE_CODE_CAP_LOCK: i64 = 1_823_760_041;
 
 #[derive(Clone, Debug)]
 pub struct DeviceService {
@@ -31,7 +33,7 @@ impl DeviceService {
         for _ in 0..4 {
             let device_code = generate_hex_secret(32)?;
             let user_code = generate_user_code()?;
-            let (authority_ok, inserted): (bool, bool) = self
+            let (authority_ok, capacity_available, inserted): (bool, bool, bool) = self
                 .store
                 .bounded(
                     sqlx::query_as(
@@ -42,6 +44,20 @@ impl DeviceService {
                                 WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2
                                 FOR SHARE
                             ) AS ok
+                        ), serialized AS MATERIALIZED (
+                            SELECT pg_advisory_xact_lock($6::BIGINT)
+                            FROM authority
+                            WHERE ok
+                        ), pruned AS (
+                            DELETE FROM public.device_codes
+                            WHERE expires_at <= NOW()
+                              AND EXISTS (SELECT 1 FROM serialized)
+                        ), capacity AS MATERIALIZED (
+                            SELECT COUNT(*) < $7::BIGINT AS available
+                            FROM public.device_codes
+                            CROSS JOIN serialized
+                            WHERE expires_at > NOW()
+                              AND status IN ('pending', 'approved')
                         ), inserted AS (
                             INSERT INTO public.device_codes (
                                 device_code, user_code, account_id, status, expires_at
@@ -50,11 +66,16 @@ impl DeviceService {
                                 $3, $4, '', 'pending',
                                 NOW() + ($5::BIGINT * INTERVAL '1 second')
                             FROM authority
-                            WHERE ok
+                            CROSS JOIN capacity
+                            WHERE ok AND capacity.available
                             RETURNING 1
                         )
-                        SELECT authority.ok, EXISTS (SELECT 1 FROM inserted)
+                        SELECT
+                            authority.ok,
+                            COALESCE(capacity.available, FALSE),
+                            EXISTS (SELECT 1 FROM inserted)
                         FROM authority
+                        LEFT JOIN capacity ON TRUE
                         "#,
                     )
                     .bind(self.store.owner_id())
@@ -62,18 +83,23 @@ impl DeviceService {
                     .bind(&device_code)
                     .bind(&user_code)
                     .bind(duration_seconds_i64(DEVICE_CODE_EXPIRY))
+                    .bind(DEVICE_CODE_CAP_LOCK)
+                    .bind(MAX_ACTIVE_DEVICE_CODES)
                     .fetch_one(self.store.pool()),
                 )
                 .await
                 .or_else(|error| {
                     if is_unique_violation(&error) {
-                        Ok((true, false))
+                        Ok((true, true, false))
                     } else {
                         Err(error)
                     }
                 })?;
             if !authority_ok {
                 return Err(IdentityError::OwnershipUnavailable);
+            }
+            if !capacity_available {
+                return Err(IdentityError::RateLimited(DEVICE_CODE_POLL_INTERVAL));
             }
             if !inserted {
                 continue;
@@ -299,10 +325,10 @@ fn validate_device_secret(value: &str) -> Result<(), IdentityError> {
 }
 
 fn constant_time_device_match(expected: &str, stored: Option<&str>) -> bool {
-    let dummy = "0000000000000000000000000000000000000000000000000000000000000000";
+    let missing_hash = "0000000000000000000000000000000000000000000000000000000000000000";
     let equal = expected
         .as_bytes()
-        .ct_eq(stored.unwrap_or(dummy).as_bytes())
+        .ct_eq(stored.unwrap_or(missing_hash).as_bytes())
         .unwrap_u8()
         == 1;
     equal && stored.is_some()

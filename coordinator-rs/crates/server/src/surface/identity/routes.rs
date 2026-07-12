@@ -1,15 +1,20 @@
-use std::sync::Arc;
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Path, Request, State},
     http::HeaderMap,
     routing::{delete, get, post},
 };
 use serde::Deserialize;
 use serde_json::Value;
 use sqlx::PgPool;
+
+use crate::pilot::PilotHandle;
 
 use super::{
     accounts::AccountService,
@@ -51,6 +56,7 @@ impl IdentityState {
             privy,
             config: IdentitySurfaceConfig::default(),
             rate_limiter: None,
+            pilot: None,
         }
     }
 
@@ -81,6 +87,7 @@ pub struct IdentityStateBuilder {
     privy: PrivyVerifier,
     config: IdentitySurfaceConfig,
     rate_limiter: Option<Arc<dyn RateLimitHook>>,
+    pilot: Option<PilotHandle>,
 }
 
 impl IdentityStateBuilder {
@@ -96,13 +103,22 @@ impl IdentityStateBuilder {
         self
     }
 
+    #[must_use]
+    pub fn pilot(mut self, pilot: PilotHandle) -> Self {
+        self.pilot = Some(pilot);
+        self
+    }
+
     pub fn build(self) -> Result<IdentityState, IdentityError> {
         validate_surface_config(&self.config)?;
         let store = IdentityStore::new(self.pool, self.authority, self.config.operation_timeout)?;
         let config = Arc::new(self.config);
         let keys = ApiKeyService::new(store.clone());
         let auth = AuthService::new(store.clone(), keys.clone(), self.privy);
-        let accounts = AccountService::new(store.clone(), Arc::clone(&config));
+        let mut accounts = AccountService::new(store.clone(), Arc::clone(&config));
+        if let Some(pilot) = self.pilot {
+            accounts = accounts.with_pilot(pilot);
+        }
         let devices = DeviceService::new(store, Arc::clone(&config));
         let rate_limiter = match self.rate_limiter {
             Some(rate_limiter) => rate_limiter,
@@ -320,13 +336,18 @@ async fn rotate_key(
 
 async fn calling_key(
     State(state): State<IdentityState>,
-    headers: HeaderMap,
+    request: Request,
 ) -> Result<Json<ApiKeyResponse>, IdentityError> {
-    let context = state
-        .inner
-        .auth
-        .authenticate(&headers, AuthRequirement::PrivyOrApiKey)
-        .await?;
+    let context = match request.extensions().get::<super::types::AuthContext>() {
+        Some(context) => context.clone(),
+        None => {
+            state
+                .inner
+                .auth
+                .authenticate(request.headers(), AuthRequirement::PrivyOrApiKey)
+                .await?
+        }
+    };
     let key = context
         .api_key
         .ok_or_else(|| IdentityError::not_found("this endpoint requires API key authentication"))?;
@@ -406,9 +427,17 @@ async fn delete_my_provider(
 
 async fn create_device_code(
     State(state): State<IdentityState>,
-    headers: HeaderMap,
+    request: Request,
 ) -> Result<Json<super::types::DeviceCodeResponse>, IdentityError> {
-    let client = public_client_identity(&headers);
+    let connect_info = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .copied();
+    let client = public_client_identity(
+        connect_info,
+        request.headers(),
+        &state.inner.config.trusted_proxy_cidrs,
+    );
     rate_limit(&state, RateClass::DeviceCode, &client)?;
     Ok(Json(state.inner.devices.create_code().await?))
 }
@@ -462,13 +491,116 @@ fn rate_limit(
     state.inner.rate_limiter.check(class, identity)
 }
 
-fn public_client_identity(headers: &HeaderMap) -> String {
-    let address = headers
-        .get("x-darkbloom-client-ip")
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty() && value.len() <= 128)
-        .unwrap_or("anonymous");
-    opaque_rate_identity(address)
+const MAX_FORWARDED_HEADER_BYTES: usize = 1024;
+const MAX_FORWARDED_HOPS: usize = 16;
+
+fn public_client_identity(
+    connect_info: Option<ConnectInfo<SocketAddr>>,
+    headers: &HeaderMap,
+    trusted_proxy_cidrs: &[ipnet::IpNet],
+) -> String {
+    let address = match connect_info {
+        None => "transport-identity-unavailable".to_owned(),
+        Some(ConnectInfo(peer)) => {
+            let peer_ip = peer.ip();
+            if trusted_proxy_cidrs
+                .iter()
+                .any(|network| network.contains(&peer_ip))
+            {
+                proxy_appended_client_ip(headers)
+                    .unwrap_or(peer_ip)
+                    .to_string()
+            } else {
+                peer_ip.to_string()
+            }
+        }
+    };
+    opaque_rate_identity(&address)
+}
+
+fn proxy_appended_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
+    match bounded_single_header(headers, "x-forwarded-for") {
+        HeaderState::Valid(value) => return rightmost_x_forwarded_for(value),
+        HeaderState::Invalid => return None,
+        HeaderState::Absent => {}
+    }
+    match bounded_single_header(headers, "forwarded") {
+        HeaderState::Valid(value) => rightmost_forwarded(value),
+        HeaderState::Invalid | HeaderState::Absent => None,
+    }
+}
+
+enum HeaderState<'a> {
+    Absent,
+    Invalid,
+    Valid(&'a str),
+}
+
+fn bounded_single_header<'a>(headers: &'a HeaderMap, name: &str) -> HeaderState<'a> {
+    let mut values = headers.get_all(name).iter();
+    let Some(value) = values.next() else {
+        return HeaderState::Absent;
+    };
+    if values.next().is_some()
+        || value.as_bytes().len() > MAX_FORWARDED_HEADER_BYTES
+        || value.as_bytes().contains(&b'\0')
+    {
+        return HeaderState::Invalid;
+    }
+    match value.to_str() {
+        Ok(value) => HeaderState::Valid(value),
+        Err(_) => HeaderState::Invalid,
+    }
+}
+
+fn rightmost_x_forwarded_for(value: &str) -> Option<IpAddr> {
+    let hops = value.split(',').map(str::trim).collect::<Vec<_>>();
+    if hops.is_empty() || hops.len() > MAX_FORWARDED_HOPS || hops.iter().any(|hop| hop.is_empty()) {
+        return None;
+    }
+    hops.last()?.parse().ok()
+}
+
+fn rightmost_forwarded(value: &str) -> Option<IpAddr> {
+    let hops = value.split(',').map(str::trim).collect::<Vec<_>>();
+    if hops.is_empty() || hops.len() > MAX_FORWARDED_HOPS || hops.iter().any(|hop| hop.is_empty()) {
+        return None;
+    }
+    let mut forwarded_for = None;
+    for parameter in hops.last()?.split(';') {
+        let (name, value) = parameter.trim().split_once('=')?;
+        if name.trim().eq_ignore_ascii_case("for") {
+            if forwarded_for.is_some() {
+                return None;
+            }
+            forwarded_for = Some(value.trim().trim_matches('"'));
+        }
+    }
+    parse_forwarded_for(forwarded_for?)
+}
+
+fn parse_forwarded_for(value: &str) -> Option<IpAddr> {
+    if value.is_empty() || value.eq_ignore_ascii_case("unknown") || value.starts_with('_') {
+        return None;
+    }
+    if let Ok(ip) = value.parse() {
+        return Some(ip);
+    }
+    if let Ok(socket) = value.parse::<SocketAddr>() {
+        return Some(socket.ip());
+    }
+    if let Some(rest) = value.strip_prefix('[') {
+        let (ip, suffix) = rest.split_once(']')?;
+        if !suffix.is_empty()
+            && (!suffix.starts_with(':')
+                || suffix[1..].is_empty()
+                || !suffix[1..].bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            return None;
+        }
+        return ip.parse().ok();
+    }
+    None
 }
 
 fn parse_required_json<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, IdentityError> {

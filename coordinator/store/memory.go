@@ -2818,6 +2818,16 @@ func (s *MemoryStore) CreateProviderToken(pt *ProviderToken) error {
 		return errors.New("provider token already exists")
 	}
 	copy := *pt
+	now := time.Now()
+	if copy.CreatedAt.IsZero() {
+		copy.CreatedAt = now
+	}
+	if copy.UpdatedAt.IsZero() {
+		copy.UpdatedAt = now
+	}
+	if !copy.Active && copy.RevokedAt == nil {
+		copy.RevokedAt = &now
+	}
 	s.providerTokens[pt.TokenHash] = &copy
 	return nil
 }
@@ -2847,7 +2857,10 @@ func (s *MemoryStore) RevokeProviderToken(token string) error {
 	if !ok {
 		return errors.New("provider token not found")
 	}
+	now := time.Now()
 	pt.Active = false
+	pt.RevokedAt = &now
+	pt.UpdatedAt = now
 	return nil
 }
 
@@ -3374,15 +3387,64 @@ func (s *MemoryStore) DeleteProvidersBySerial(_ context.Context, ownerAccountID,
 	// only delete rows owned by the caller — rows owned by another account are
 	// skipped and not counted, leaving the caller to decide 403 vs 404.
 	var matched []string
+	tokenHashes := make(map[string]struct{})
+	seKeys := make(map[string]struct{})
 	for id, rec := range s.providerRecords {
 		if rec.AccountID != ownerAccountID {
 			continue
 		}
 		if (rec.SerialNumber == serialOrID && rec.SerialNumber != "") || rec.ID == serialOrID {
 			matched = append(matched, id)
+			if rec.TokenHash != "" {
+				tokenHashes[rec.TokenHash] = struct{}{}
+			}
+			if rec.SEPublicKey != "" {
+				seKeys[rec.SEPublicKey] = struct{}{}
+			}
 		}
 	}
 
+	now := time.Now()
+	for _, token := range s.providerTokens {
+		_, linkedHash := tokenHashes[token.TokenHash]
+		linkedProvider := false
+		for _, id := range matched {
+			if token.ProviderID == id && token.ProviderID != "" {
+				linkedProvider = true
+				break
+			}
+		}
+		legacyUnlinked := token.ProviderID == ""
+		if token.AccountID == ownerAccountID && token.Active && (linkedHash || linkedProvider || legacyUnlinked) {
+			token.Active = false
+			token.RevokedAt = &now
+			token.UpdatedAt = now
+		}
+	}
+	for seKey, reuse := range s.providerTrustReuse {
+		_, linkedKey := seKeys[seKey]
+		linkedProvider := false
+		for _, id := range matched {
+			if reuse.ProviderID == id {
+				linkedProvider = true
+				break
+			}
+		}
+		if linkedKey || linkedProvider {
+			delete(s.providerTrustReuse, seKey)
+		}
+	}
+	for i := range s.providerSessions {
+		session := &s.providerSessions[i]
+		for _, id := range matched {
+			if session.SessionID == id && session.DisconnectedAt == nil {
+				session.LastSeen = now
+				session.DisconnectedAt = &now
+				session.DisconnectReason = "credential revoked"
+				break
+			}
+		}
+	}
 	for _, id := range matched {
 		rec := s.providerRecords[id]
 		if rec.SerialNumber != "" && s.serialToProviderID[rec.SerialNumber] == id {

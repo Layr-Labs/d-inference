@@ -26,6 +26,7 @@ use crate::{
         ProviderRegistry, ProviderRegistryConfig, ProviderRegistryConfigError,
         ProviderSessionConfig, SessionEventChannelConfigError, session_event_channel,
     },
+    provider_control::ProviderControlPlane,
     supervisor::{
         EssentialTaskError, SpawnEssentialError, Supervisor, SupervisorConfig,
         SupervisorConfigError, SupervisorError, SupervisorHandle,
@@ -37,7 +38,7 @@ use super::{
     billing::{BillingConfigurationError, BillingContext, ConsumerCredential, PilotBilling},
     config::{PilotConfig, RESPONSE_RESERVATION_BYTES},
     provider::{
-        ProviderAcceptor, ProviderActivationGate, ProviderOwner, ProviderServices,
+        ProviderAcceptor, ProviderActivationGate, ProviderOwner, ProviderServices, fence_provider,
         run_provider_events,
     },
     request::{RequestDispatcher, RequestOwner, RequestServices},
@@ -71,6 +72,7 @@ pub struct PilotHandle {
     input_budget: Arc<ByteBudget>,
     response_budget: Arc<ByteBudget>,
     attempt_queries: Arc<super::reconciliation::AttemptQueryRegistry>,
+    provider_control: Option<ProviderControlPlane>,
 }
 
 impl PilotHandle {
@@ -98,6 +100,51 @@ impl PilotHandle {
     #[must_use]
     pub fn provider_acceptor(&self) -> ProviderAcceptor {
         self.providers.clone()
+    }
+
+    #[must_use]
+    pub fn provider_control(&self) -> Option<ProviderControlPlane> {
+        self.provider_control.clone()
+    }
+
+    pub async fn fence_provider_epoch(
+        &self,
+        provider_id: darkbloom_coordinator_protocol::v2::ProviderId,
+        session_epoch: darkbloom_coordinator_protocol::v2::SessionEpoch,
+        reason: &'static str,
+    ) {
+        let Some(session) = self.directory.current(provider_id) else {
+            return;
+        };
+        if session.identity.session_epoch != session_epoch {
+            return;
+        }
+        fence_provider(
+            session.identity,
+            reason,
+            &self.directory,
+            &self.request_table,
+            &self.fleet,
+        )
+        .await;
+    }
+
+    pub async fn fence_provider(
+        &self,
+        provider_id: darkbloom_coordinator_protocol::v2::ProviderId,
+        reason: &'static str,
+    ) {
+        let Some(session) = self.directory.current(provider_id) else {
+            return;
+        };
+        fence_provider(
+            session.identity,
+            reason,
+            &self.directory,
+            &self.request_table,
+            &self.fleet,
+        )
+        .await;
     }
 
     #[must_use]
@@ -372,6 +419,24 @@ impl PilotRuntime {
         database: crate::database::Database,
         ownership: OwnershipStatus,
     ) -> Result<(Self, PilotHandle), PilotRuntimeBuildError> {
+        Self::build_durable_inner(config, database, ownership, None).await
+    }
+
+    pub async fn build_durable_with_admission(
+        config: &PilotConfig,
+        database: crate::database::Database,
+        ownership: OwnershipStatus,
+        admission: crate::surface::operations::AdmissionGate,
+    ) -> Result<(Self, PilotHandle), PilotRuntimeBuildError> {
+        Self::build_durable_inner(config, database, ownership, Some(admission)).await
+    }
+
+    async fn build_durable_inner(
+        config: &PilotConfig,
+        database: crate::database::Database,
+        ownership: OwnershipStatus,
+        admission: Option<crate::surface::operations::AdmissionGate>,
+    ) -> Result<(Self, PilotHandle), PilotRuntimeBuildError> {
         if !ownership.is_healthy() {
             return Err(PilotRuntimeBuildError::OwnershipUnavailable);
         }
@@ -380,6 +445,22 @@ impl PilotRuntime {
             .clone()
             .map(|policy| PilotBilling::new(policy, config.provider_beneficiaries.clone()))
             .transpose()?;
+        let provider_control = config
+            .mdm_control
+            .clone()
+            .map(|mdm| {
+                let control = ProviderControlPlane::new(
+                    database.clone(),
+                    config.configured_provider_identities()?,
+                    mdm,
+                )?;
+                Ok::<_, PilotRuntimeBuildError>(
+                    admission
+                        .clone()
+                        .map_or(control.clone(), |gate| control.with_admission_gate(gate)),
+                )
+            })
+            .transpose()?;
         let ledger = LedgerService::new(database);
         Self::build_inner(
             config,
@@ -387,6 +468,7 @@ impl PilotRuntime {
                 ledger,
                 billing,
                 ownership,
+                provider_control,
             }),
         )
         .await
@@ -399,13 +481,15 @@ impl PilotRuntime {
         if !config.enabled {
             return Err(PilotRuntimeBuildError::Disabled);
         }
-        if config.trust_floor == crate::trust::TrustFloor::PUBLIC
-            && durable
-                .as_ref()
-                .and_then(|services| services.billing.as_ref())
-                .is_none()
-        {
-            return Err(PilotRuntimeBuildError::PaidDurabilityRequired);
+        let public_durability = durable.as_ref().is_some_and(|services| {
+            if config.dynamic_controls {
+                services.provider_control.is_some()
+            } else {
+                services.billing.is_some()
+            }
+        });
+        if config.trust_floor == crate::trust::TrustFloor::PUBLIC && !public_durability {
+            return Err(PilotRuntimeBuildError::PublicDurabilityRequired);
         }
         let durable_io = DurableIoPool::new(DURABLE_IO_CONCURRENCY, DURABLE_IO_TIMEOUT)?;
         let state_directory = config.state_directory.clone();
@@ -562,11 +646,11 @@ impl PilotRuntime {
             ),
             telemetry: telemetry.clone(),
             ledger: durable.as_ref().map(|services| services.ledger.clone()),
-            durable_terminals: durable
-                .as_ref()
-                .and_then(|services| services.billing.as_ref())
-                .is_some(),
+            durable_terminals: durable.is_some(),
             attempt_queries: attempt_queries.clone(),
+            provider_control: durable
+                .as_ref()
+                .and_then(|services| services.provider_control.clone()),
         });
         let (provider_owner, provider_acceptor) =
             ProviderOwner::new(config.maximum_sessions, provider_services.clone());
@@ -666,6 +750,7 @@ impl PilotRuntime {
                 RESPONSE_RESERVATION_BYTES,
             )),
             attempt_queries,
+            provider_control: durable.and_then(|services| services.provider_control),
         };
         Ok((
             Self {
@@ -692,6 +777,7 @@ pub(crate) struct DurablePilotServices {
     pub ledger: LedgerService,
     pub billing: Option<PilotBilling>,
     pub ownership: OwnershipStatus,
+    pub provider_control: Option<ProviderControlPlane>,
 }
 
 fn configured_catalog(config: &PilotConfig) -> Result<MemoryCatalog, PilotRuntimeBuildError> {
@@ -796,8 +882,10 @@ pub enum PilotRuntimeBuildError {
     Disabled,
     #[error("pilot resource bound arithmetic overflow")]
     ResourceBoundOverflow,
-    #[error("public pilot mode requires durable ownership and paid billing")]
-    PaidDurabilityRequired,
+    #[error(
+        "public pilot mode requires durable ownership plus database controls and hardware provider control"
+    )]
+    PublicDurabilityRequired,
     #[error("pilot durable ownership is unavailable")]
     OwnershipUnavailable,
     #[error("invalid pilot model: {0}")]
@@ -840,6 +928,10 @@ pub enum PilotRuntimeBuildError {
     Spawn(#[from] SpawnEssentialError),
     #[error(transparent)]
     Billing(#[from] BillingConfigurationError),
+    #[error(transparent)]
+    ProviderControl(#[from] crate::provider_control::ProviderControlError),
+    #[error(transparent)]
+    Config(#[from] super::config::PilotConfigError),
 }
 
 #[cfg(test)]

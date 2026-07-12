@@ -4,6 +4,8 @@ use sqlx::Row;
 use super::{error::BillingError, money::format_usd, store::BillingStore};
 
 const MAX_MODEL_BYTES: usize = 256;
+const FALLBACK_INPUT_PRICE: i64 = 50_000;
+const FALLBACK_OUTPUT_PRICE: i64 = 200_000;
 
 #[derive(Clone, Debug)]
 pub(super) struct PricingService {
@@ -42,10 +44,10 @@ impl PricingService {
         }
         Ok(PricingResponse {
             prices,
-            fallback_input_price: 500_000,
-            fallback_output_price: 1_000_000,
-            fallback_input_usd: format_usd(500_000),
-            fallback_output_usd: format_usd(1_000_000),
+            fallback_input_price: FALLBACK_INPUT_PRICE,
+            fallback_output_price: FALLBACK_OUTPUT_PRICE,
+            fallback_input_usd: format_usd(FALLBACK_INPUT_PRICE),
+            fallback_output_usd: format_usd(FALLBACK_OUTPUT_PRICE),
         })
     }
 
@@ -62,12 +64,13 @@ impl PricingService {
         sqlx::query(
             r#"
             INSERT INTO public.model_prices (
-                account_id, model, input_price, output_price, updated_at
+                account_id, model, input_price, output_price, revision, updated_at
             )
-            VALUES ($1, $2, $3, $4, NOW())
+            VALUES ($1, $2, $3, $4, 1, NOW())
             ON CONFLICT (account_id, model) DO UPDATE SET
                 input_price = EXCLUDED.input_price,
                 output_price = EXCLUDED.output_price,
+                revision = model_prices.revision + 1,
                 updated_at = NOW()
             "#,
         )

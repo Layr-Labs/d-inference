@@ -4,8 +4,8 @@ use super::{
     LedgerService,
     reserve::{json_i64, json_string, json_uuid},
     types::{
-        JobId, JobState, LedgerAmount, LedgerError, MutationDisposition, OperationKey,
-        ReservationResult, TerminalReleaseRequest, Version,
+        JobId, JobState, LedgerAmount, LedgerError, MutationDisposition, ReservationResult,
+        TerminalReleaseRequest, Version,
     },
 };
 use crate::db::ownership::{Authority, DurableDatabase, OperationRecord};
@@ -487,6 +487,3 @@ fn terminal_release_from_operation(
         MutationDisposition::Replayed,
     )
 }
-
-#[allow(dead_code)]
-fn _operation_key_type_pin(_: OperationKey) {}

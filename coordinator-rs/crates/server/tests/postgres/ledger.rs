@@ -89,6 +89,292 @@ async fn reservation_replay_conflict_and_mixed_provenance_release() {
 }
 
 #[tokio::test]
+async fn api_key_spend_limit_is_an_atomic_reservation_cas_and_rejects_stale_controls() {
+    with_isolated_database(|url| async move {
+        let (database, ownership, pool) = service_database(&url).await;
+        seed_balance(&pool, "consumer", 1_000, 1_000).await;
+        sqlx::query(
+            r#"
+            INSERT INTO public.api_keys (
+                key_hash, raw_prefix, owner_account_id, id, name,
+                limit_micro_usd, active
+            ) VALUES (
+                'consumer-key-hash', 'consumer-', 'consumer', 'api-key',
+                'controlled key', 100, TRUE
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed controlled API key");
+        let service = LedgerService::new(database.clone());
+        let provider_fence = Uuid::new_v4();
+        let mut first = reserve_request("reserve:key-limit:first", 111, "consumer", 60);
+        first.api_key_limit_micro_usd = Some(100);
+        first.api_key_controlled = true;
+        first.provisional_provider_id = Some(provider_fence);
+        first.provisional_session_epoch = Some(version(1));
+        first.public_model = Arc::from("model");
+        first.concrete_model = Arc::from("model/build");
+        let mut second = reserve_request("reserve:key-limit:second", 112, "consumer", 60);
+        second.api_key_limit_micro_usd = Some(100);
+        second.api_key_controlled = true;
+        second.provisional_provider_id = Some(provider_fence);
+        second.provisional_session_epoch = Some(version(1));
+        second.public_model = Arc::from("model");
+        second.concrete_model = Arc::from("model/build");
+
+        let (first_result, second_result) =
+            tokio::join!(service.reserve(&first), service.reserve(&second));
+        let results = [first_result, second_result];
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(LedgerError::ApiKeyControlRejected)))
+                .count(),
+            1
+        );
+        assert_eq!(balance(&pool, "consumer").await, (940, 940));
+        let jobs: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM rust_coord.inference_jobs WHERE api_key_id='api-key'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("controlled job count");
+        assert_eq!(jobs, 1);
+
+        let (controlled_job_id, controlled_version): (Uuid, i64) = sqlx::query_as(
+            r#"
+            SELECT job_id, version
+            FROM rust_coord.inference_jobs
+            WHERE api_key_id = 'api-key'
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("controlled durable job");
+        let controlled_job_id = JobId::new(controlled_job_id).expect("controlled job id");
+        let controlled_provider_id = Uuid::new_v4();
+        let controlled_prepared = standard_prepared(
+            "resize:key-limit:first",
+            115,
+            controlled_job_id,
+            version(u64::try_from(controlled_version).expect("positive controlled version")),
+            AttemptId::random(),
+            controlled_provider_id,
+            Uuid::new_v4(),
+        );
+        assert!(matches!(
+            service.resize_and_authorize(&controlled_prepared).await,
+            Err(LedgerError::ApiKeySpendLimitExceeded)
+        ));
+
+        sqlx::query("UPDATE public.api_keys SET limit_micro_usd=400 WHERE id='api-key'")
+            .execute(&pool)
+            .await
+            .expect("raise controlled key limit");
+        let authorized = service
+            .resize_and_authorize(&controlled_prepared)
+            .await
+            .expect("authorize within raised key limit");
+        assert_eq!(authorized.total, amount(300));
+        let tracked_reservation: i64 = sqlx::query_scalar(
+            "SELECT api_key_reserved_micro_usd FROM rust_coord.inference_jobs WHERE job_id=$1",
+        )
+        .bind(controlled_job_id.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .expect("tracked controlled reservation");
+        assert_eq!(tracked_reservation, 300);
+
+        let mut concurrent_resize =
+            reserve_request("reserve:key-limit:resize-race", 116, "consumer", 60);
+        concurrent_resize.api_key_limit_micro_usd = Some(400);
+        concurrent_resize.api_key_controlled = true;
+        concurrent_resize.provisional_provider_id = Some(provider_fence);
+        concurrent_resize.provisional_session_epoch = Some(version(1));
+        concurrent_resize.public_model = Arc::from("model");
+        concurrent_resize.concrete_model = Arc::from("model/build");
+        let concurrent_reserved = service
+            .reserve(&concurrent_resize)
+            .await
+            .expect("reserve remaining controlled capacity");
+        let concurrent_prepared = standard_prepared(
+            "resize:key-limit:resize-race",
+            117,
+            concurrent_resize.job_id,
+            concurrent_reserved.version,
+            AttemptId::random(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        );
+        assert!(matches!(
+            service.resize_and_authorize(&concurrent_prepared).await,
+            Err(LedgerError::ApiKeySpendLimitExceeded)
+        ));
+        sqlx::query(
+            "UPDATE public.api_keys SET limit_micro_usd=1000, allowed_models='[\"another/model\"]' WHERE id='api-key'",
+        )
+        .execute(&pool)
+        .await
+        .expect("make resize model control stale");
+        assert!(matches!(
+            service.resize_and_authorize(&concurrent_prepared).await,
+            Err(LedgerError::ApiKeyControlRejected)
+        ));
+        sqlx::query(
+            "UPDATE public.api_keys SET allowed_models='[]', self_route_only=TRUE WHERE id='api-key'",
+        )
+        .execute(&pool)
+        .await
+        .expect("make resize route control stale");
+        assert!(matches!(
+            service.resize_and_authorize(&concurrent_prepared).await,
+            Err(LedgerError::ApiKeyControlRejected)
+        ));
+        sqlx::query(
+            "UPDATE public.api_keys SET self_route_only=FALSE, active=FALSE WHERE id='api-key'",
+        )
+        .execute(&pool)
+        .await
+        .expect("revoke key before resize");
+        assert!(matches!(
+            service.resize_and_authorize(&concurrent_prepared).await,
+            Err(LedgerError::ApiKeyControlRejected)
+        ));
+        sqlx::query(
+            "UPDATE public.api_keys SET active=TRUE, expires_at=NOW() - INTERVAL '1 second' WHERE id='api-key'",
+        )
+        .execute(&pool)
+        .await
+        .expect("expire key before resize");
+        assert!(matches!(
+            service.resize_and_authorize(&concurrent_prepared).await,
+            Err(LedgerError::ApiKeyControlRejected)
+        ));
+        sqlx::query(
+            "UPDATE public.api_keys SET limit_micro_usd=400, expires_at=NULL, allowed_models='[]', self_route_only=FALSE WHERE id='api-key'",
+        )
+        .execute(&pool)
+        .await
+        .expect("restore key controls");
+
+        let mut stale_limit = reserve_request("reserve:key-limit:stale", 113, "consumer", 1);
+        stale_limit.api_key_limit_micro_usd = Some(101);
+        stale_limit.api_key_controlled = true;
+        stale_limit.provisional_provider_id = Some(provider_fence);
+        stale_limit.provisional_session_epoch = Some(version(1));
+        stale_limit.public_model = Arc::from("model");
+        stale_limit.concrete_model = Arc::from("model/build");
+        assert!(matches!(
+            service.reserve(&stale_limit).await,
+            Err(LedgerError::ApiKeyControlRejected)
+        ));
+
+        sqlx::query(
+            r#"
+            UPDATE public.api_keys
+            SET allowed_models='["another/model"]', self_route_only=FALSE
+            WHERE id='api-key'
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("change allowed model before reserve");
+        let mut stale_model = reserve_request("reserve:key-limit:stale-model", 118, "consumer", 1);
+        stale_model.api_key_limit_micro_usd = Some(400);
+        stale_model.api_key_controlled = true;
+        stale_model.provisional_provider_id = Some(provider_fence);
+        stale_model.provisional_session_epoch = Some(version(1));
+        stale_model.public_model = Arc::from("model");
+        stale_model.concrete_model = Arc::from("model/build");
+        assert!(matches!(
+            service.reserve(&stale_model).await,
+            Err(LedgerError::ApiKeyControlRejected)
+        ));
+        assert_eq!(balance(&pool, "consumer").await, (640, 640));
+
+        sqlx::query(
+            r#"
+            UPDATE public.api_keys
+            SET allowed_models='["model/build"]', self_route_only=TRUE
+            WHERE id='api-key'
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("enable self-route key");
+        sqlx::query(
+            r#"
+            INSERT INTO public.providers (
+                id, hardware, models, backend, account_id, connected,
+                session_id, session_epoch, trust_level
+            ) VALUES (
+                $1, '{}'::JSONB, '[]'::JSONB, 'mlx',
+                'another-account', TRUE, 'self-route-session', 1, 'hardware'
+            )
+            "#,
+        )
+        .bind(provider_fence.to_string())
+        .execute(&pool)
+        .await
+        .expect("seed wrong-owner provider");
+        let mut wrong_owner = reserve_request("reserve:key-limit:wrong-owner", 119, "consumer", 1);
+        wrong_owner.api_key_limit_micro_usd = Some(400);
+        wrong_owner.api_key_controlled = true;
+        wrong_owner.provisional_provider_id = Some(provider_fence);
+        wrong_owner.provisional_session_epoch = Some(version(1));
+        wrong_owner.public_model = Arc::from("model");
+        wrong_owner.concrete_model = Arc::from("model/build");
+        assert!(matches!(
+            service.reserve(&wrong_owner).await,
+            Err(LedgerError::ApiKeyControlRejected)
+        ));
+        sqlx::query("UPDATE public.providers SET account_id='consumer' WHERE id=$1")
+            .bind(provider_fence.to_string())
+            .execute(&pool)
+            .await
+            .expect("bind selected provider to key owner");
+        let owned = service
+            .reserve(&wrong_owner)
+            .await
+            .expect("exact owner provider admits before debit");
+        service
+            .release(&ReleaseRequest {
+                operation: operation("release:key-limit:owner", 120),
+                job_id: wrong_owner.job_id,
+                expected_version: owned.version,
+                expected_state: owned.state,
+                reason: Arc::from("test release"),
+            })
+            .await
+            .expect("release owner-pinned reservation");
+        assert_eq!(balance(&pool, "consumer").await, (640, 640));
+
+        sqlx::query("UPDATE public.api_keys SET active=FALSE WHERE id='api-key'")
+            .execute(&pool)
+            .await
+            .expect("revoke controlled key");
+        let mut revoked = reserve_request("reserve:key-limit:revoked", 114, "consumer", 1);
+        revoked.api_key_limit_micro_usd = Some(100);
+        revoked.api_key_controlled = true;
+        revoked.provisional_provider_id = Some(provider_fence);
+        revoked.provisional_session_epoch = Some(version(1));
+        revoked.public_model = Arc::from("model");
+        revoked.concrete_model = Arc::from("model/build");
+        assert!(matches!(
+            service.reserve(&revoked).await,
+            Err(LedgerError::ApiKeyControlRejected)
+        ));
+        assert_eq!(balance(&pool, "consumer").await, (640, 640));
+
+        shutdown(database, ownership, pool).await;
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn authorization_timeout_and_blocked_reconciliation_report_unknown_outcome() {
     with_isolated_database(|url| async move {
         let (database, ownership, pool) =
@@ -667,6 +953,7 @@ async fn canonical_payload_provenance_rejects_false_or_changed_external_commands
             amount: amount(500),
             fee: amount(0),
             method: "standard".into(),
+            idempotency_key: "withdraw:digest:idempotency".into(),
             payload_digest: digest(187),
             external_payload: withdrawal_payload.clone(),
         };
@@ -1370,6 +1657,125 @@ async fn signed_cancellation_terminal_releases_once_and_refunds_exact_provenance
 }
 
 #[tokio::test]
+async fn signed_precontent_failure_keeps_reservation_and_authorizes_one_alternate() {
+    with_isolated_database(|url| async move {
+        let (database, ownership, pool) = service_database(&url).await;
+        seed_balance(&pool, "consumer", 1_000, 600).await;
+        let service = LedgerService::new(database.clone());
+        let reserve = reserve_request("reserve:precontent-retry", 153, "consumer", 500);
+        let reserved = service.reserve(&reserve).await.expect("reserve");
+        let primary_attempt_id = AttemptId::random();
+        let primary_provider_id = Uuid::new_v4();
+        let primary_generation_id = Uuid::new_v4();
+        let primary = standard_prepared(
+            "resize:precontent-primary",
+            154,
+            reserve.job_id,
+            reserved.version,
+            primary_attempt_id,
+            primary_provider_id,
+            primary_generation_id,
+        );
+        let authorized = service
+            .resize_and_authorize(&primary)
+            .await
+            .expect("authorize primary");
+        let started = mark_started(
+            &service,
+            reserve.job_id,
+            authorized.version,
+            authorized.state,
+            primary_attempt_id,
+        )
+        .await;
+        let release = TerminalReleaseRequest {
+            operation: operation("release:precontent-primary", 155),
+            job_id: reserve.job_id,
+            expected_job_version: started.job_version,
+            expected_job_state: started.job_state,
+            expected_attempt_version: started.attempt_version,
+            terminal: TerminalFacts {
+                terminal_id: TerminalId::random(),
+                attempt_id: primary_attempt_id,
+                provider_id: primary_provider_id,
+                provider_process_generation_id: primary_generation_id,
+                origin_session_epoch: version(1),
+                terminal_digest: digest(156),
+                raw_terminal: json!({"type": "terminal", "outcome": "error"}),
+                outcome: TerminalOutcome::Error,
+                error_class: Some("fault".into()),
+                prompt_tokens: 100,
+                completion_tokens: 5,
+                reasoning_tokens: 0,
+                response_digest: digest(157),
+                rolling_digest: digest(158),
+                final_generated_tokens: 5,
+                provider_signature: vec![1],
+                recovery_lease: None,
+            },
+            accepted_cumulative_tokens: 5,
+            reason: "provider failed after metadata only".into(),
+        };
+
+        let retried = service
+            .retry_precontent(&release)
+            .await
+            .expect("release precontent primary");
+        assert_eq!(retried.disposition, MutationDisposition::Applied);
+        assert_eq!(retried.state, JobState::Prepared);
+        assert_eq!(retried.total, amount(300));
+        assert_eq!(balance(&pool, "consumer").await, (700, 600));
+        let primary_state: String = sqlx::query_scalar(
+            "SELECT state FROM rust_coord.inference_attempts WHERE attempt_id = $1",
+        )
+        .bind(primary_attempt_id.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .expect("primary attempt state");
+        assert_eq!(primary_state, "aborted");
+        let refunds: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM public.ledger_entries WHERE reference = $1")
+                .bind(format!(
+                    "rust-terminal-release:{}",
+                    release.operation.key.as_str()
+                ))
+                .fetch_one(&pool)
+                .await
+                .expect("precontent refund count");
+        assert_eq!(refunds, 0);
+
+        let replay = service
+            .retry_precontent(&release)
+            .await
+            .expect("precontent retry replay");
+        assert_eq!(replay.disposition, MutationDisposition::Replayed);
+        assert_eq!(balance(&pool, "consumer").await, (700, 600));
+
+        let alternate_attempt_id = AttemptId::random();
+        let mut alternate = standard_prepared(
+            "resize:precontent-alternate",
+            159,
+            reserve.job_id,
+            retried.version,
+            alternate_attempt_id,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        );
+        alternate.expected_state = JobState::Prepared;
+        alternate.attempt_kind = DurableAttemptKind::Alternate;
+        let alternate_authorized = service
+            .resize_and_authorize(&alternate)
+            .await
+            .expect("authorize alternate");
+        assert_eq!(alternate_authorized.state, JobState::StartAuthorized);
+        assert_eq!(balance(&pool, "consumer").await, (700, 600));
+
+        shutdown(database, ownership, pool).await;
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn conflicting_terminal_is_quarantined_and_review_release_is_once_only() {
     with_isolated_database(|url| async move {
         let (database, ownership, pool) = service_database(&url).await;
@@ -1675,6 +2081,10 @@ async fn deterministic_account_order_survives_cross_account_settlement_stress() 
                 execution_lease_millis: None,
                 provisional_provider_id: None,
                 provisional_session_epoch: None,
+                public_model: Arc::from(""),
+                concrete_model: Arc::from(""),
+                api_key_limit_micro_usd: None,
+                api_key_controlled: false,
             };
             let reserved = service.reserve(&reserve).await.expect("stress reserve");
             let attempt_id = AttemptId::random();
@@ -1951,6 +2361,7 @@ async fn stripe_deposit_and_withdrawal_reversal_race_are_exactly_once() {
                 amount: amount(600),
                 fee: amount(100),
                 method: "instant".into(),
+                idempotency_key: "withdraw:race:idempotency".into(),
                 payload_digest: canonical_json_digest(&json!({"withdrawal": "withdraw-1"}))
                     .expect("payload digest"),
                 external_payload: json!({"withdrawal": "withdraw-1"}),
@@ -2012,6 +2423,25 @@ async fn stripe_deposit_and_withdrawal_reversal_race_are_exactly_once() {
                         result.disposition == WithdrawalDisposition::Applied && result.refunded
                     })
                 }));
+                let failure: (String, String, i64, i64) = sqlx::query_as(
+                    r#"
+                    SELECT idempotency_key, account_id, amount_micro_usd, fee_micro_usd
+                    FROM public.stripe_withdrawal_failures
+                    WHERE withdrawal_id = 'withdraw-1'
+                    "#,
+                )
+                .fetch_one(&pool)
+                .await
+                .expect("withdrawal failure tombstone");
+                assert_eq!(
+                    failure,
+                    (
+                        "withdraw:race:idempotency".to_owned(),
+                        "consumer".to_owned(),
+                        600,
+                        100,
+                    )
+                );
             }
             other => panic!("unexpected withdrawal status {other}"),
         }
@@ -2038,6 +2468,7 @@ async fn failed_sweep_cannot_be_reapplied_and_withdrawal_debit_is_guarded() {
                 amount: amount(600),
                 fee: amount(0),
                 method: "standard".into(),
+                idempotency_key: "withdraw:sweep:idempotency".into(),
                 payload_digest: canonical_json_digest(&json!({"withdrawal": "withdraw-sweep"}))
                     .expect("payload digest"),
                 external_payload: json!({"withdrawal": "withdraw-sweep"}),
@@ -2055,6 +2486,7 @@ async fn failed_sweep_cannot_be_reapplied_and_withdrawal_debit_is_guarded() {
                     amount: amount(500),
                     fee: amount(0),
                     method: "standard".into(),
+                    idempotency_key: "withdraw:too-large:idempotency".into(),
                     payload_digest: canonical_json_digest(
                         &json!({"withdrawal": "withdraw-too-large"}),
                     )
@@ -2166,6 +2598,7 @@ async fn sweep_failure_tombstone_serializes_failure_before_paid_and_concurrent_d
                 amount: amount(500),
                 fee: amount(0),
                 method: "standard".into(),
+                idempotency_key: "withdraw:failure-first:idempotency".into(),
                 payload_digest: canonical_json_digest(&json!({"withdrawal": "failure-first"}))
                     .expect("payload digest"),
                 external_payload: json!({"withdrawal": "failure-first"}),
@@ -2227,6 +2660,7 @@ async fn sweep_failure_tombstone_serializes_failure_before_paid_and_concurrent_d
                 amount: amount(500),
                 fee: amount(0),
                 method: "standard".into(),
+                idempotency_key: "withdraw:concurrent:idempotency".into(),
                 payload_digest: canonical_json_digest(&json!({"withdrawal": "concurrent"}))
                     .expect("payload digest"),
                 external_payload: json!({"withdrawal": "concurrent"}),
@@ -2552,6 +2986,10 @@ fn reserve_request(key: &str, byte: u8, account_id: &str, amount_value: u64) -> 
         execution_lease_millis: None,
         provisional_provider_id: None,
         provisional_session_epoch: None,
+        public_model: Arc::from(""),
+        concrete_model: Arc::from(""),
+        api_key_limit_micro_usd: None,
+        api_key_controlled: false,
     }
 }
 

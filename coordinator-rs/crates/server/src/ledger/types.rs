@@ -335,6 +335,10 @@ pub struct ReserveRequest {
     pub execution_lease_millis: Option<u64>,
     pub provisional_provider_id: Option<Uuid>,
     pub provisional_session_epoch: Option<Version>,
+    pub public_model: Arc<str>,
+    pub concrete_model: Arc<str>,
+    pub api_key_limit_micro_usd: Option<i64>,
+    pub api_key_controlled: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -908,6 +912,7 @@ pub struct WithdrawalRequest {
     pub amount: LedgerAmount,
     pub fee: LedgerAmount,
     pub method: Arc<str>,
+    pub idempotency_key: Arc<str>,
     pub payload_digest: Digest,
     pub external_payload: Value,
 }
@@ -991,6 +996,10 @@ pub enum LedgerError {
     OperationConflict,
     #[error("insufficient account balance")]
     InsufficientBalance,
+    #[error("API key was revoked, expired, changed, or does not authorize this model or route")]
+    ApiKeyControlRejected,
+    #[error("API key cumulative spend limit would be exceeded")]
+    ApiKeySpendLimitExceeded,
     #[error("provider session is covered by a durable hard-untrust epoch")]
     ProviderHardUntrusted,
     #[error("provider terminal requires durable review: {0}")]

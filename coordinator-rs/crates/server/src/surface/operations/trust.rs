@@ -333,6 +333,51 @@ pub(super) async fn mdm_webhook(
         .map_err(|_| OperationsError::payload_too_large("MDM webhook body exceeds 1MiB"))?;
     let payload: Value = serde_json::from_slice(&body)
         .map_err(|error| OperationsError::bad_request(format!("invalid MDM JSON: {error}")))?;
+    if let Some(control) = &state.provider_control {
+        let (command_uuid, command) = mdm_command(&payload)?;
+        if command != "SecurityInfo" {
+            return Err(OperationsError::bad_request(
+                "provider trust webhook only accepts SecurityInfo responses",
+            ));
+        }
+        let disposition =
+            control
+                .ingest_mdm_webhook(payload)
+                .await
+                .map_err(|error| match error {
+                    crate::provider_control::ProviderControlError::MalformedMdmEvent => {
+                        OperationsError::bad_request("malformed MDM SecurityInfo response")
+                    }
+                    crate::provider_control::ProviderControlError::UnsolicitedMdmEvent => {
+                        OperationsError::forbidden("unsolicited or mismatched MDM command response")
+                    }
+                    crate::provider_control::ProviderControlError::MdmEventConflict => {
+                        OperationsError::conflict(
+                            "mdm_event_conflict",
+                            "CommandUUID was already used with different evidence",
+                        )
+                    }
+                    other => OperationsError::internal("process MDM SecurityInfo response", other),
+                })?;
+        if disposition == crate::recovery::ExternalDisposition::Rejected
+            && let Some(fence) = control
+                .mdm_provider_fence(&command_uuid)
+                .await
+                .map_err(|error| OperationsError::internal("load MDM provider fence", error))?
+            && let Some(pilot) = state.pilot()
+        {
+            pilot
+                .fence_provider_epoch(
+                    fence.provider_id,
+                    fence.session_epoch,
+                    "durable MDM posture mismatch",
+                )
+                .await;
+        }
+        state.mark_mutation();
+        state.metrics.increment("mdm_webhooks_accepted");
+        return Ok(StatusCode::OK);
+    }
     let (command_uuid, command) = mdm_command(&payload)?;
     let digest: [u8; 32] = Sha256::digest(&body).into();
     if !state.mdm_commands.expects(&command_uuid, &command) {

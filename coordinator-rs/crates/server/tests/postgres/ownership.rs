@@ -15,7 +15,7 @@ use super::support::{request_json, reset_schema, with_isolated_database};
 #[tokio::test]
 async fn rust_ownership_contends_with_rust_and_raw_go_lock() {
     with_isolated_database(|url| async move {
-        reset_schema(&url, 5, 3, 5, 5).await;
+        reset_schema(&url, 6, 4, 6, 6).await;
 
         let first_database = Database::connect(&url, 4, Duration::from_secs(3))
             .await
@@ -116,7 +116,7 @@ async fn rust_ownership_contends_with_rust_and_raw_go_lock() {
 #[tokio::test]
 async fn disabled_legacy_mode_retains_primary_lock_and_releases_cleanly() {
     with_isolated_database(|url| async move {
-        reset_schema(&url, 5, 3, 5, 5).await;
+        reset_schema(&url, 6, 4, 6, 6).await;
 
         let database = Database::connect(&url, 4, Duration::from_secs(3))
             .await
@@ -179,7 +179,7 @@ async fn disabled_legacy_mode_retains_primary_lock_and_releases_cleanly() {
 #[tokio::test]
 async fn disabled_to_enabled_handoff_drains_and_fences_stale_checkout() {
     with_isolated_database(|url| async move {
-        reset_schema(&url, 5, 3, 5, 5).await;
+        reset_schema(&url, 6, 4, 6, 6).await;
         let mut control = PgConnection::connect(&url)
             .await
             .expect("connect handoff control");
@@ -314,7 +314,7 @@ async fn disabled_to_enabled_handoff_drains_and_fences_stale_checkout() {
 #[tokio::test]
 async fn ownership_connection_loss_fails_readiness_and_stops_runtime() {
     with_isolated_database(|url| async move {
-        reset_schema(&url, 5, 3, 5, 5).await;
+        reset_schema(&url, 6, 4, 6, 6).await;
 
         let database = Database::connect(&url, 4, Duration::from_secs(3))
             .await

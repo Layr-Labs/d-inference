@@ -3,16 +3,22 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
-use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{
+    Json, Router, extract::State, http::StatusCode, middleware, response::IntoResponse,
+    routing::get,
+};
 use serde::Serialize;
 
-use crate::{database::Database, ownership::OwnershipStatus, pilot::PilotHandle};
+use crate::{
+    database::Database, ownership::OwnershipStatus, pilot::PilotHandle, surface::FullSurfaceState,
+};
 
 #[derive(Clone)]
 pub struct AppState {
     database: Database,
     ownership: Option<OwnershipStatus>,
     pilot: Option<PilotHandle>,
+    full_surface: Option<FullSurfaceState>,
     providers: Arc<AtomicUsize>,
     draining: Arc<AtomicBool>,
     inflight: Arc<AtomicU64>,
@@ -24,6 +30,7 @@ impl AppState {
             database,
             ownership: None,
             pilot: None,
+            full_surface: None,
             providers: Arc::new(AtomicUsize::new(0)),
             draining: Arc::new(AtomicBool::new(false)),
             inflight: Arc::new(AtomicU64::new(0)),
@@ -37,6 +44,11 @@ impl AppState {
 
     pub fn with_pilot(mut self, pilot: PilotHandle) -> Self {
         self.pilot = Some(pilot);
+        self
+    }
+
+    pub fn with_full_surface(mut self, full_surface: FullSurfaceState) -> Self {
+        self.full_surface = Some(full_surface);
         self
     }
 
@@ -77,12 +89,23 @@ struct ReadinessResponse {
 }
 
 pub fn router(state: AppState) -> Router {
-    let pilot_routes = crate::http::routes(state.pilot.clone());
-    Router::new()
+    let full_surface_enabled = state.full_surface.is_some();
+    let domain_routes = state.full_surface.as_ref().map_or_else(
+        || crate::http::routes(state.pilot.clone()),
+        |full_surface| crate::surface::router(full_surface.clone()),
+    );
+    let router = Router::new()
         .route("/health", get(health))
         .route("/readyz", get(readiness))
         .with_state(state)
-        .merge(pilot_routes)
+        .merge(domain_routes);
+    if full_surface_enabled {
+        router.layer(middleware::from_fn(
+            crate::surface::enforce_registered_method,
+        ))
+    } else {
+        router
+    }
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
@@ -92,7 +115,10 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     );
     Json(HealthResponse {
         status: "ok",
-        draining: state.draining.load(Ordering::Acquire),
+        draining: state.full_surface.as_ref().map_or_else(
+            || state.draining.load(Ordering::Acquire),
+            |surface| surface.operations.is_draining(),
+        ),
         providers,
         version: option_env!("DARKBLOOM_BUILD_VERSION").unwrap_or("dev"),
         build_commit: option_env!("DARKBLOOM_BUILD_COMMIT").unwrap_or("unknown"),
@@ -101,7 +127,10 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 }
 
 async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
-    let draining = state.draining.load(Ordering::Acquire);
+    let draining = state.full_surface.as_ref().map_or_else(
+        || state.draining.load(Ordering::Acquire),
+        |surface| surface.operations.is_draining(),
+    );
     let inflight = state.pilot.as_ref().map_or_else(
         || state.inflight.load(Ordering::Acquire),
         |pilot| u64::try_from(pilot.active_request_count()).unwrap_or(u64::MAX),

@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
+use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -25,6 +26,8 @@ pub struct IdentitySurfaceConfig {
     pub heartbeat_timeout: Duration,
     pub challenge_max_age: Duration,
     pub maximum_body_bytes: usize,
+    /// Transport peers permitted to supply proxy-appended client addresses.
+    pub trusted_proxy_cidrs: Arc<[IpNet]>,
 }
 
 impl Default for IdentitySurfaceConfig {
@@ -37,6 +40,10 @@ impl Default for IdentitySurfaceConfig {
             heartbeat_timeout: Duration::from_secs(90),
             challenge_max_age: Duration::from_secs(6 * 60),
             maximum_body_bytes: 64 * 1024,
+            trusted_proxy_cidrs: Arc::from([
+                "127.0.0.0/8".parse().expect("static loopback CIDR"),
+                "::1/128".parse().expect("static loopback CIDR"),
+            ]),
         }
     }
 }
@@ -52,6 +59,8 @@ pub enum AuthPrincipal {
 pub struct AuthContext {
     pub principal: AuthPrincipal,
     pub account_id: Arc<str>,
+    /// One-way credential identity used by durable billing provenance.
+    pub credential_hash: Arc<str>,
     pub email: Arc<str>,
     pub role: Arc<str>,
     pub stripe_account_status: Arc<str>,

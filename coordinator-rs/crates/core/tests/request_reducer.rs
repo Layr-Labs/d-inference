@@ -193,6 +193,67 @@ fn legal_hedge_trace_conserves_every_lease_and_permit() {
 }
 
 #[test]
+fn authorized_precontent_failure_releases_primary_and_allows_one_alternate() {
+    let primary = provider_fence(10);
+    let alternate = provider_fence(20);
+    let all = [primary.clone(), alternate.clone()];
+    let mut state = funded_state(&primary);
+    prepare(&mut state, 2, 10, AttemptKind::Primary, &primary, 2).expect("primary");
+    apply(
+        &mut state,
+        3,
+        RequestEvent::StartAuthorized {
+            attempt_id: attempt_id(10),
+            provider: primary,
+        },
+        &context(3, &all),
+    )
+    .expect("authorize primary");
+    apply(
+        &mut state,
+        4,
+        RequestEvent::PreContentFailed {
+            attempt_id: attempt_id(10),
+        },
+        &context(4, &all),
+    )
+    .expect("release uncommitted primary");
+    assert_eq!(state.authorized_attempt(), None);
+    assert!(!state.has_first_content());
+    assert!(matches!(
+        state.attempt(attempt_id(10)).expect("primary").status(),
+        AttemptStatus::Released {
+            reason: AttemptReleaseReason::PreContentFailure
+        }
+    ));
+    assert_eq!(state.resources().active_leases().expect("valid"), 0);
+
+    prepare(&mut state, 5, 20, AttemptKind::Alternate, &alternate, 5).expect("sole alternate");
+    apply(
+        &mut state,
+        6,
+        RequestEvent::StartAuthorized {
+            attempt_id: attempt_id(20),
+            provider: alternate.clone(),
+        },
+        &context(6, &all),
+    )
+    .expect("authorize alternate");
+    apply(
+        &mut state,
+        7,
+        RequestEvent::FirstContent {
+            attempt_id: attempt_id(20),
+            provider: alternate,
+        },
+        &context(7, &all),
+    )
+    .expect("alternate content");
+    assert!(state.has_first_content());
+    state.validate_invariants().expect("valid failover state");
+}
+
+#[test]
 fn invalid_transition_table_is_rejected_transactionally() {
     let fence = provider_fence(10);
     let deadline = AbsoluteDeadline::new(100).expect("valid");

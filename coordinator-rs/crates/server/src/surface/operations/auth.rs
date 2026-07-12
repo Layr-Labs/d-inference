@@ -5,7 +5,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use axum::http::{HeaderMap, HeaderName, header};
+use axum::{
+    extract::Request,
+    http::{HeaderMap, HeaderName, header},
+};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use subtle::ConstantTimeEq;
@@ -26,6 +29,26 @@ pub struct OperationsAuth {
     pub release: ExactBearer,
     pub publishing: PublishingAuth,
     pub mdm: MdmAuth,
+}
+
+/// Trusted identity resolved by the composition-root middleware. This is
+/// intentionally distinct from release, publishing, MDM, and exact admin-key
+/// credentials.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OperationsPrincipal {
+    admin: bool,
+}
+
+impl OperationsPrincipal {
+    #[must_use]
+    pub(crate) const fn new(admin: bool) -> Self {
+        Self { admin }
+    }
+
+    #[must_use]
+    const fn is_admin(self) -> bool {
+        self.admin
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -199,9 +222,16 @@ pub(super) fn require_public(
 pub(super) fn require_admin(
     auth: &OperationsAuth,
     sessions: &AdminSessions,
-    headers: &HeaderMap,
+    request: &Request,
 ) -> Result<(), OperationsError> {
-    let token = bearer(headers).unwrap_or_default();
+    if request
+        .extensions()
+        .get::<OperationsPrincipal>()
+        .is_some_and(|principal| principal.is_admin())
+    {
+        return Ok(());
+    }
+    let token = bearer(request.headers()).unwrap_or_default();
     if auth.admin.accepts(token) || sessions.accepts(token) {
         Ok(())
     } else {

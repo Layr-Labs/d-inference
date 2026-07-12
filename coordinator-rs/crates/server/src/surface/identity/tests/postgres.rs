@@ -1,28 +1,243 @@
 use std::{
     future::Future,
+    net::SocketAddr,
     panic::{AssertUnwindSafe, resume_unwind},
+    sync::Arc,
     time::Duration,
 };
 
-use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use axum::{
+    body::Body,
+    extract::ConnectInfo,
+    http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header},
+};
 use serde_json::{Value, json};
 use sqlx::{Connection as _, PgConnection, PgPool};
+use tower::ServiceExt as _;
 use url::Url;
 use uuid::Uuid;
 
 use super::{
     super::{
-        AuthRequirement, IdentityState, IdentitySurfaceConfig, MutationAuthority, hash_secret,
-        router,
+        AuthRequirement, BoundedRateConfig, BoundedRateLimiter, IdentityState,
+        IdentitySurfaceConfig, MutationAuthority, RateRule, hash_secret, router,
     },
     support::{JwtFixture, call},
 };
 
 const LEGACY_SCHEMA: &str =
     include_str!("../../../../../../../coordinator/store/migrations/000001_legacy_schema.sql");
+const DURABLE_SCHEMA: &str =
+    include_str!("../../../../../../migrations/000002_rust_durable_schema.sql");
+const PILOT_LIFECYCLE_SCHEMA: &str =
+    include_str!("../../../../../../migrations/000003_rust_pilot_lifecycle.sql");
+const OBJECTIVE7_SCHEMA: &str =
+    include_str!("../../../../../../migrations/000004_objective7_controls.sql");
 const OWNER_ID: &str = "identity-test-owner";
 const OWNER_EPOCH: i64 = 7;
 const TEMP_DATABASE_PREFIX: &str = "darkbloom_identity_test_";
+
+#[tokio::test]
+async fn device_code_rate_limit_uses_bounded_transport_identity_and_ignores_spoofed_header() {
+    with_isolated_database(|database_url| async move {
+        let pool = PgPool::connect(&database_url)
+            .await
+            .expect("connect isolated identity database");
+        seed_identity_schema(&pool).await;
+        let jwt = JwtFixture::start().await;
+        let rate_config = BoundedRateConfig {
+            maximum_identities: 2,
+            device_code: RateRule {
+                maximum_requests: 1,
+                window: Duration::from_secs(60),
+            },
+            ..BoundedRateConfig::default()
+        };
+        let state = IdentityState::builder(
+            pool.clone(),
+            MutationAuthority::new(OWNER_ID, OWNER_EPOCH).expect("valid test authority"),
+            jwt.verifier(),
+        )
+        .rate_limiter(Arc::new(
+            BoundedRateLimiter::new(rate_config).expect("bounded device limiter"),
+        ))
+        .build()
+        .expect("build identity state");
+        let app = router(state);
+        let first: SocketAddr = "192.0.2.1:1000".parse().expect("first socket");
+        let second: SocketAddr = "192.0.2.2:2000".parse().expect("second socket");
+        let third: SocketAddr = "192.0.2.3:3000".parse().expect("third socket");
+
+        assert_eq!(
+            call_device_code(&app, first, Some("198.51.100.1"), None).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            call_device_code(&app, first, Some("198.51.100.2"), None).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "caller-controlled headers must not create a new limiter identity"
+        );
+        assert_eq!(
+            call_device_code(&app, second, Some("198.51.100.2"), None).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            call_device_code(&app, third, Some("198.51.100.3"), None).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "distinct transport identities must remain cardinality-bounded"
+        );
+
+        pool.close().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn trusted_loopback_proxy_uses_only_bounded_rightmost_forwarded_identity() {
+    with_isolated_database(|database_url| async move {
+        let pool = PgPool::connect(&database_url)
+            .await
+            .expect("connect isolated identity database");
+        seed_identity_schema(&pool).await;
+        let jwt = JwtFixture::start().await;
+        let state = IdentityState::builder(
+            pool.clone(),
+            MutationAuthority::new(OWNER_ID, OWNER_EPOCH).expect("valid test authority"),
+            jwt.verifier(),
+        )
+        .rate_limiter(Arc::new(
+            BoundedRateLimiter::new(BoundedRateConfig {
+                maximum_identities: 4,
+                device_code: RateRule {
+                    maximum_requests: 1,
+                    window: Duration::from_secs(60),
+                },
+                ..BoundedRateConfig::default()
+            })
+            .expect("bounded proxy limiter"),
+        ))
+        .build()
+        .expect("build identity state");
+        let app = router(state);
+        let loopback: SocketAddr = "127.0.0.1:8080".parse().expect("loopback socket");
+        let ipv6_loopback: SocketAddr = "[::1]:8080".parse().expect("IPv6 loopback socket");
+
+        assert_eq!(
+            call_device_code(&app, loopback, Some("203.0.113.250, 198.51.100.10"), None,).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            call_device_code(&app, loopback, Some("192.0.2.99, 198.51.100.10"), None,).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "left-side spoofing must not replace Caddy's rightmost client"
+        );
+        assert_eq!(
+            call_device_code(&app, loopback, Some("198.51.100.11"), None).await,
+            StatusCode::OK,
+            "one trusted proxy must retain distinct client identities"
+        );
+        assert_eq!(
+            call_device_code(
+                &app,
+                ipv6_loopback,
+                None,
+                Some(r#"for=192.0.2.8;proto=https, for="[2001:db8::8]:443""#),
+            )
+            .await,
+            StatusCode::OK,
+            "RFC 7239 rightmost IPv6 client should be accepted"
+        );
+
+        let oversized_hops = std::iter::repeat_n("198.51.100.20", 17)
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            call_device_code(&app, loopback, Some(&oversized_hops), None).await,
+            StatusCode::OK,
+            "invalid forwarded chains must fall back to the transport peer"
+        );
+        assert_eq!(
+            call_device_code(&app, loopback, Some("not-an-ip"), None).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "all malformed proxy identities must share the bounded peer fallback"
+        );
+
+        pool.close().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn device_code_creation_enforces_durable_global_cap_and_prunes_expired_rows() {
+    with_isolated_database(|database_url| async move {
+        let pool = PgPool::connect(&database_url)
+            .await
+            .expect("connect isolated identity database");
+        seed_identity_schema(&pool).await;
+        let jwt = JwtFixture::start().await;
+        let state = IdentityState::builder(
+            pool.clone(),
+            MutationAuthority::new(OWNER_ID, OWNER_EPOCH).expect("valid test authority"),
+            jwt.verifier(),
+        )
+        .build()
+        .expect("build identity state");
+        let app = router(state);
+        sqlx::query(
+            r#"
+            INSERT INTO public.device_codes (
+                device_code, user_code, account_id, status, expires_at
+            )
+            SELECT
+                'active-device-' || value,
+                'ACTIVE-' || value,
+                '',
+                'pending',
+                NOW() + INTERVAL '15 minutes'
+            FROM generate_series(
+                1,
+                $1::BIGINT
+            ) AS value
+            "#,
+        )
+        .bind(super::super::device::MAX_ACTIVE_DEVICE_CODES)
+        .execute(&pool)
+        .await
+        .expect("fill durable device-code cap");
+        let socket: SocketAddr = "192.0.2.10:1000".parse().expect("cap socket");
+        assert_eq!(
+            call_device_code(&app, socket, Some("203.0.113.1"), None).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+
+        sqlx::query("UPDATE public.device_codes SET expires_at=NOW()-INTERVAL '1 second'")
+            .execute(&pool)
+            .await
+            .expect("expire durable device codes");
+        assert_eq!(
+            call_device_code(&app, socket, Some("203.0.113.2"), None).await,
+            StatusCode::OK
+        );
+        let counts: (i64, i64) = sqlx::query_as(
+            r#"
+            SELECT
+                COUNT(*) FILTER (WHERE expires_at <= NOW()),
+                COUNT(*) FILTER (
+                    WHERE expires_at > NOW()
+                      AND status IN ('pending', 'approved')
+                )
+            FROM public.device_codes
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("inspect pruned device codes");
+        assert_eq!(counts, (0, 1));
+
+        pool.close().await;
+    })
+    .await;
+}
 
 #[tokio::test]
 async fn real_postgres_axum_surface_enforces_auth_concurrency_ownership_and_device_replay() {
@@ -30,21 +245,16 @@ async fn real_postgres_axum_surface_enforces_auth_concurrency_ownership_and_devi
         let pool = PgPool::connect(&database_url)
             .await
             .expect("connect isolated identity database");
-        sqlx::raw_sql(LEGACY_SCHEMA)
-            .execute(&pool)
-            .await
-            .expect("apply real legacy public schema");
+        seed_identity_schema(&pool).await;
         sqlx::query(
             r#"
-            INSERT INTO public.coordinator_ownership (singleton, epoch, owner_id)
-            VALUES (TRUE, $1, $2)
+            INSERT INTO public.users (account_id, privy_user_id, email)
+            VALUES ('migrated-account', 'did:privy:migrated', 'migrated@example.test')
             "#,
         )
-        .bind(OWNER_EPOCH)
-        .bind(OWNER_ID)
         .execute(&pool)
         .await
-        .expect("seed coordinator ownership");
+        .expect("seed pre-billing Privy user");
 
         let jwt = JwtFixture::start().await;
         let state = IdentityState::builder(
@@ -60,12 +270,29 @@ async fn real_postgres_axum_surface_enforces_auth_concurrency_ownership_and_devi
             heartbeat_timeout: Duration::from_secs(90),
             challenge_max_age: Duration::from_secs(6 * 60),
             maximum_body_bytes: 32 * 1024,
+            ..IdentitySurfaceConfig::default()
         })
         .build()
         .expect("build identity state");
         let app = router(state.clone());
         let alice = jwt.valid_token("did:privy:alice");
         let bob = jwt.valid_token("did:privy:bob");
+        let migrated = jwt.valid_token("did:privy:migrated");
+
+        for _ in 0..2 {
+            let (status, _) = call(&app, Method::GET, "/v1/keys", Some(&migrated), None).await;
+            assert_eq!(status, StatusCode::OK);
+        }
+        let migrated_balances: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM public.balances WHERE account_id=$1")
+                .bind("migrated-account")
+                .fetch_one(&pool)
+                .await
+                .expect("migrated balance count");
+        assert_eq!(
+            migrated_balances, 1,
+            "Privy authentication must idempotently migrate billing state"
+        );
 
         let (status, _) = call(&app, Method::GET, "/v1/keys", None, None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -235,6 +462,114 @@ async fn real_postgres_axum_surface_enforces_auth_concurrency_ownership_and_devi
     .await;
 }
 
+async fn call_device_code(
+    app: &axum::Router,
+    socket: SocketAddr,
+    x_forwarded_for: Option<&str>,
+    forwarded: Option<&str>,
+) -> StatusCode {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/device/code")
+        .header("x-darkbloom-client-ip", "203.0.113.254");
+    if let Some(value) = x_forwarded_for {
+        builder = builder.header("x-forwarded-for", value);
+    }
+    if let Some(value) = forwarded {
+        builder = builder.header("forwarded", value);
+    }
+    let mut request = builder.body(Body::empty()).expect("device-code request");
+    request.extensions_mut().insert(ConnectInfo(socket));
+    app.clone()
+        .oneshot(request)
+        .await
+        .expect("device-code response")
+        .status()
+}
+
+async fn seed_identity_schema(pool: &PgPool) {
+    let mut connection = pool
+        .acquire()
+        .await
+        .expect("acquire identity schema connection");
+    sqlx::raw_sql(LEGACY_SCHEMA)
+        .execute(&mut *connection)
+        .await
+        .expect("apply real legacy public schema");
+    sqlx::raw_sql(
+        r#"
+        CREATE SCHEMA rust_coord;
+        CREATE TABLE rust_coord.schema_versions (
+            version BIGINT PRIMARY KEY,
+            minimum_public_schema_version BIGINT NOT NULL,
+            maximum_public_schema_version BIGINT NOT NULL,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        INSERT INTO public.schema_migration_versions (
+            version, name, checksum, transactional
+        )
+        SELECT
+            version,
+            'identity-test-public-' || version,
+            repeat('0', 64),
+            TRUE
+        FROM generate_series(1, 3) AS version;
+        INSERT INTO rust_coord.schema_versions (
+            version, minimum_public_schema_version,
+            maximum_public_schema_version
+        )
+        VALUES (1, 3, 3);
+        "#,
+    )
+    .execute(&mut *connection)
+    .await
+    .expect("seed initial Rust and public schema versions");
+    sqlx::raw_sql(DURABLE_SCHEMA)
+        .execute(&mut *connection)
+        .await
+        .expect("apply real durable Rust schema");
+    record_public_schema_version(&mut connection, 4).await;
+    sqlx::raw_sql(PILOT_LIFECYCLE_SCHEMA)
+        .execute(&mut *connection)
+        .await
+        .expect("apply real pilot lifecycle schema");
+    record_public_schema_version(&mut connection, 5).await;
+    sqlx::raw_sql(OBJECTIVE7_SCHEMA)
+        .execute(&mut *connection)
+        .await
+        .expect("apply real Objective 7 schema");
+    record_public_schema_version(&mut connection, 6).await;
+    sqlx::query(
+        r#"
+        INSERT INTO public.coordinator_ownership (singleton, epoch, owner_id)
+        VALUES (TRUE, $1, $2)
+        "#,
+    )
+    .bind(OWNER_EPOCH)
+    .bind(OWNER_ID)
+    .execute(&mut *connection)
+    .await
+    .expect("seed coordinator ownership");
+}
+
+async fn record_public_schema_version(
+    connection: &mut sqlx::pool::PoolConnection<sqlx::Postgres>,
+    version: i64,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO public.schema_migration_versions (
+            version, name, checksum, transactional
+        )
+        VALUES ($1, 'identity-test-public-' || $1, repeat('0', 64), TRUE)
+        "#,
+    )
+    .bind(version)
+    .execute(&mut **connection)
+    .await
+    .expect("record public schema version");
+}
+
 async fn exercise_legacy_key_endpoints(app: &axum::Router, alice: &str) {
     let (status, created) = call(app, Method::POST, "/v1/auth/keys", Some(alice), None).await;
     assert_eq!(status, StatusCode::OK, "{created}");
@@ -358,7 +693,7 @@ async fn exercise_account_endpoints(app: &axum::Router, pool: &PgPool, alice: &s
     assert_eq!(status, StatusCode::OK, "{models}");
     assert_eq!(models["models"], json!([]));
 
-    let (status, _) = call(
+    let (status, foreign_delete) = call(
         app,
         Method::DELETE,
         "/v1/me/providers/SERIAL-ALICE",
@@ -366,7 +701,7 @@ async fn exercise_account_endpoints(app: &axum::Router, pool: &PgPool, alice: &s
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::FORBIDDEN, "{foreign_delete}");
     let still_present: bool =
         sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM public.providers WHERE id = $1)")
             .bind("provider-offline")

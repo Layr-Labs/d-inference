@@ -8,7 +8,9 @@
 mod anthropic;
 mod canonical;
 mod completions;
+mod control;
 mod error;
+mod http;
 mod limits;
 mod responses;
 mod transport;
@@ -21,7 +23,9 @@ pub use canonical::{
 pub use completions::{
     CompletionsStreamAdapter, adapt_completions_nonstream, parse_completions_request,
 };
+pub use control::{InferenceControl, InferenceControlError};
 pub use error::AdapterError;
+pub use http::{chat, completions, messages, responses};
 pub use limits::{
     MAX_BODY_BYTES, MAX_CONTENT_PARTS, MAX_JSON_TOTAL_STRING_BYTES, MAX_JSON_VALUES, MAX_MESSAGES,
     MAX_MODEL_BYTES, MAX_OUTPUT_TOKENS, MAX_PROMPTS, MAX_RESPONSE_BYTES, MAX_SSE_EVENT_BYTES,

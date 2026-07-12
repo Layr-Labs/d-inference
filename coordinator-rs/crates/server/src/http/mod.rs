@@ -1,7 +1,7 @@
 mod auth;
 mod body;
 mod error;
-mod response;
+pub(crate) mod response;
 
 use std::sync::Arc;
 
@@ -29,15 +29,47 @@ use self::{
 #[derive(Clone)]
 struct PilotHttpState {
     pilot: Option<PilotHandle>,
+    admission: Option<crate::surface::operations::AdmissionGate>,
 }
 
 pub fn routes(pilot: Option<PilotHandle>) -> Router {
-    Router::new()
-        .route("/v1/encryption-key", get(encryption_key))
-        .route("/v1/models", get(models))
-        .route("/v1/chat/completions", post(chat_completions))
-        .route("/ws/provider", get(provider_websocket))
-        .with_state(PilotHttpState { pilot })
+    routes_for_mode(pilot, PilotRouteMode::Isolated)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PilotRouteMode {
+    Isolated,
+    FullSurface,
+}
+
+pub fn routes_for_mode(pilot: Option<PilotHandle>, mode: PilotRouteMode) -> Router {
+    routes_for_mode_with_admission(pilot, mode, None)
+}
+
+pub(crate) fn full_surface_routes(
+    pilot: PilotHandle,
+    admission: crate::surface::operations::AdmissionGate,
+) -> Router {
+    routes_for_mode_with_admission(Some(pilot), PilotRouteMode::FullSurface, Some(admission))
+}
+
+fn routes_for_mode_with_admission(
+    pilot: Option<PilotHandle>,
+    mode: PilotRouteMode,
+    admission: Option<crate::surface::operations::AdmissionGate>,
+) -> Router {
+    match mode {
+        PilotRouteMode::Isolated => Router::new()
+            .route("/v1/encryption-key", get(encryption_key))
+            .route("/v1/models", get(models))
+            .route("/v1/chat/completions", post(chat_completions))
+            .route("/ws/provider", get(provider_websocket))
+            .with_state(PilotHttpState { pilot, admission }),
+        PilotRouteMode::FullSurface => Router::new()
+            .route("/v1/encryption-key", get(encryption_key))
+            .route("/ws/provider", get(provider_websocket))
+            .with_state(PilotHttpState { pilot, admission }),
+    }
 }
 
 async fn encryption_key(
@@ -117,6 +149,7 @@ async fn chat_completions(
             )
         })?,
         billing,
+        controls: crate::pilot::PilotRequestControls::default(),
         plaintext: input.plaintext,
         model,
         output_mode,
@@ -187,9 +220,18 @@ async fn provider_websocket(
             "pilot provider session owner is full",
         ));
     }
+    let admission = state
+        .admission
+        .map(|gate| gate.enter(crate::surface::operations::AdmissionKind::Mutation))
+        .transpose()
+        .map_err(|_| ApiError::draining())?;
     Ok(websocket
         .on_upgrade(move |socket| async move {
-            if let Err(error) = acceptor.try_accept(socket) {
+            let result = match admission {
+                Some(admission) => acceptor.try_accept_guarded(socket, admission),
+                None => acceptor.try_accept(socket),
+            };
+            if let Err(error) = result {
                 tracing::warn!(error = %error, "pilot provider connection rejected after upgrade");
             }
         })

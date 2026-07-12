@@ -483,6 +483,9 @@ type Provider struct {
 
 	// Account linkage (set when provider authenticates via device auth token)
 	AccountID string // internal account ID (from device auth flow)
+	// TokenHash links the ephemeral Go session row to its device credential.
+	// It is persisted only for atomic owner-initiated machine revocation.
+	TokenHash string
 
 	// PrivateOnly excludes this machine from the public fleet entirely: it
 	// serves only its owner's self-route requests. Reported at registration.
@@ -2701,10 +2704,9 @@ func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
 
 // RemoveProviderBySerial reports whether any currently-connected provider
 // matches the identity (serial OR session id) and, if force is set, evicts them
-// from the in-memory map. The DELETE endpoint calls it first with force=false
-// to detect an online box (→409), then after the persisted record is purged it
-// may call with force=true to drop a lingering in-memory entry so an evict-race
-// can't re-persist. Returns true if a matching provider was connected.
+// from the in-memory map. The DELETE endpoint uses force=true before and after
+// the durable credential/trust deletion to fence the live transport and close
+// an evict race. Returns true if a matching provider was connected.
 func (r *Registry) RemoveProviderBySerial(serialOrID string, force bool) (online bool) {
 	if serialOrID == "" {
 		return false

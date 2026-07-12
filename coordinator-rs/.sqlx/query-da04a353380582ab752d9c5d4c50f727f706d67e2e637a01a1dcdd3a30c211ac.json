@@ -9,7 +9,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "fee_projection_checkpoints",
+            "table": "rust_coord.fee_projection_checkpoints",
             "name": "version"
           }
         }

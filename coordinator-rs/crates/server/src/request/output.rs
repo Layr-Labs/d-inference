@@ -79,6 +79,7 @@ pub struct OutputVerifier {
     output_bytes: usize,
     rolling_digest: [u8; 32],
     response_hasher: Sha256,
+    classification_prefix: Vec<u8>,
     content_seen: bool,
     done_seen: bool,
     terminal_seen: bool,
@@ -96,6 +97,7 @@ impl OutputVerifier {
             output_bytes: 0,
             rolling_digest: ROLLING_DIGEST_INITIAL,
             response_hasher: Sha256::new(),
+            classification_prefix: Vec::new(),
             content_seen: false,
             done_seen: false,
             terminal_seen: false,
@@ -166,15 +168,21 @@ impl OutputVerifier {
             });
         }
 
-        let class = classify_chunk(&plaintext);
+        let current_class = classify_chunk(&plaintext);
+        let class = if current_class == ChunkClass::Done || self.content_seen {
+            current_class
+        } else {
+            self.classification_prefix.extend_from_slice(&plaintext);
+            let accumulated = classify_chunk(&self.classification_prefix);
+            if accumulated == ChunkClass::Content {
+                self.classification_prefix.clear();
+            }
+            accumulated
+        };
         let is_final = header.flags.contains(BinaryFrameFlags::FINAL);
         if (class == ChunkClass::Done) != is_final {
             return Err(OutputError::InvalidFinalFraming);
         }
-        if class == ChunkClass::Done && !self.content_seen {
-            return Err(OutputError::DoneBeforeContent);
-        }
-
         let computed_rolling = next_rolling_digest(
             self.rolling_digest,
             header.sequence,
@@ -536,12 +544,53 @@ mod tests {
     }
 
     #[test]
-    fn done_before_content_is_not_a_successful_empty_response() {
-        let done = b"data: [DONE]\n\n";
-        let frame = header(0, 0, [0; 32], done, true);
-        assert_eq!(
-            verifier().accept(&frame, done.to_vec()),
-            Err(OutputError::DoneBeforeContent)
-        );
+    fn signed_completed_terminal_accepts_role_usage_and_done_without_content() {
+        let chunks: [&[u8]; 3] = [
+            br#"data: {"object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}
+
+"#,
+            br#"data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":0,"total_tokens":3}}
+
+"#,
+            b"data: [DONE]\n\n",
+        ];
+        let mut verifier = verifier();
+        let mut rolling = [0; 32];
+        let mut response = Sha256::new();
+        for (sequence, bytes) in chunks.into_iter().enumerate() {
+            let frame = header(
+                u64::try_from(sequence).expect("sequence"),
+                0,
+                rolling,
+                bytes,
+                sequence == 2,
+            );
+            rolling = frame.rolling_digest;
+            response.update(bytes);
+            verifier
+                .accept(&frame, bytes.to_vec())
+                .expect("valid empty-success framing");
+        }
+        assert!(!verifier.content_seen());
+        assert!(verifier.done_seen());
+        let mut terminal = ProviderTerminal {
+            identity: identity(),
+            outcome: TerminalOutcome::Completed,
+            error_class: None,
+            prompt_tokens: 3,
+            completion_tokens: 0,
+            reasoning_tokens: 0,
+            response_hash: Digest::new(response.finalize().into()),
+            final_generated_tokens: 0,
+            rolling_digest: Digest::new(rolling),
+            model: "model".into(),
+            terminal_digest: Digest::default(),
+            signature: TerminalSignature::new(vec![1]),
+        };
+        terminal.terminal_digest = terminal.computed_digest().expect("terminal digest");
+        let summary = verifier
+            .validate_terminal(&terminal, |_, _, _, _| true)
+            .expect("valid signed empty completion");
+        assert_eq!(summary.completion_tokens, 0);
     }
 }

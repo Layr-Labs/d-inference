@@ -44,7 +44,9 @@ use crate::{
         ProviderSession, ProviderSessionConfig, SessionEvent, SessionEventReceiver,
         SessionEventSender, SessionIdentity, receive_registration,
     },
+    provider_control::ProviderControlPlane,
     request::InboundAttemptEvent,
+    surface::operations::AdmissionGuard,
     trust::{
         BoundedBlockingVerifier, ChallengeExpectation, CredentialRegistry, RegistrationTrust,
         TrustFloor, TrustLevel, verify_challenge, verify_registration,
@@ -63,6 +65,7 @@ const UNKNOWN_CURRENT_TERMINAL_LIMIT: usize = 8;
 
 pub struct ProviderConnection {
     pub socket: WebSocket,
+    admission: Option<AdmissionGuard>,
 }
 
 #[derive(Clone)]
@@ -72,8 +75,24 @@ pub struct ProviderAcceptor {
 
 impl ProviderAcceptor {
     pub fn try_accept(&self, socket: WebSocket) -> Result<(), ProviderAcceptError> {
+        self.try_accept_with_admission(socket, None)
+    }
+
+    pub fn try_accept_guarded(
+        &self,
+        socket: WebSocket,
+        admission: AdmissionGuard,
+    ) -> Result<(), ProviderAcceptError> {
+        self.try_accept_with_admission(socket, Some(admission))
+    }
+
+    fn try_accept_with_admission(
+        &self,
+        socket: WebSocket,
+        admission: Option<AdmissionGuard>,
+    ) -> Result<(), ProviderAcceptError> {
         self.sender
-            .try_send(ProviderConnection { socket })
+            .try_send(ProviderConnection { socket, admission })
             .map_err(|error| match error {
                 mpsc::error::TrySendError::Full(_) => ProviderAcceptError::Full,
                 mpsc::error::TrySendError::Closed(_) => ProviderAcceptError::Closed,
@@ -114,6 +133,7 @@ pub struct ProviderServices {
     pub ledger: Option<crate::ledger::LedgerService>,
     pub durable_terminals: bool,
     pub attempt_queries: Arc<super::reconciliation::AttemptQueryRegistry>,
+    pub provider_control: Option<ProviderControlPlane>,
 }
 
 enum ActivationAckEntry {
@@ -277,8 +297,14 @@ impl ProviderOwner {
                     let services = self.services.clone();
                     let shutdown = cancellation.clone();
                     sessions.spawn(async move {
-                        if let Err(error) =
-                            serve_provider(connection.socket, services.clone(), shutdown, permit).await
+                        if let Err(error) = serve_provider(
+                            connection.socket,
+                            services.clone(),
+                            shutdown,
+                            permit,
+                            connection.admission,
+                        )
+                        .await
                         {
                             services.telemetry.emit(PilotTelemetryEvent::ProviderRejected);
                             tracing::warn!(error = %error, "provider session ended");
@@ -448,6 +474,7 @@ async fn serve_provider(
     services: Arc<ProviderServices>,
     shutdown: CancellationToken,
     _permit: OwnedSemaphorePermit,
+    admission: Option<AdmissionGuard>,
 ) -> Result<(), ProviderConnectionError> {
     let registration = receive_registration(
         &mut socket,
@@ -456,37 +483,53 @@ async fn serve_provider(
     )
     .await?;
     let auth_token = registration.registration().auth_token.clone();
-    let pending_finalizer = services.credentials.prepare(&auth_token)?;
-    let pending_provider_id = pending_finalizer.provider_id();
-    let begin_lease = pending_finalizer.lease();
-    let credentials = services.credentials.clone();
-    let pending_result = services
-        .durable_io
-        .run("begin provider credential verification", move || {
-            credentials.begin_prepared(begin_lease)
-        })
-        .await;
-    let pending = match pending_result {
-        Ok(Ok(pending)) => pending,
-        Ok(Err(error)) => {
-            pending_finalizer.abandon();
-            release_pending_credential(&services, pending_finalizer.lease(), pending_provider_id)
-                .await;
-            return Err(error.into());
-        }
-        Err(error) => {
-            pending_finalizer.abandon();
-            release_pending_credential(&services, pending_finalizer.lease(), pending_provider_id)
-                .await;
-            return Err(error.into());
-        }
+    let provider_key = X25519PublicKey::from_base64(&registration.registration().public_key)?;
+    let durable_identity = match &services.provider_control {
+        Some(control) => Some(control.authenticate(&auth_token).await?),
+        None => None,
     };
-    let pending_lease = pending_finalizer.lease();
+    let pending_finalizer = if durable_identity.is_none() {
+        Some(services.credentials.prepare(&auth_token)?)
+    } else {
+        None
+    };
+    let pending_provider_id = pending_finalizer.as_ref().map_or_else(
+        || {
+            durable_identity
+                .as_ref()
+                .expect("durable identity")
+                .provider_id
+        },
+        |pending| pending.provider_id(),
+    );
+    let mut pending = if let Some(finalizer) = &pending_finalizer {
+        let begin_lease = finalizer.lease();
+        let credentials = services.credentials.clone();
+        match services
+            .durable_io
+            .run("begin provider credential verification", move || {
+                credentials.begin_prepared(begin_lease)
+            })
+            .await
+        {
+            Ok(Ok(pending)) => Some(pending),
+            Ok(Err(error)) => {
+                finalizer.abandon();
+                release_pending_credential(&services, finalizer.lease(), pending_provider_id).await;
+                return Err(error.into());
+            }
+            Err(error) => {
+                finalizer.abandon();
+                release_pending_credential(&services, finalizer.lease(), pending_provider_id).await;
+                return Err(error.into());
+            }
+        }
+    } else {
+        None
+    };
     let credential_result = {
         let credential_verification = async {
             let provider_id = pending_provider_id;
-            let provider_key =
-                X25519PublicKey::from_base64(&registration.registration().public_key)?;
             let signed_attestation = registration
                 .signed_attestation()
                 .ok_or(ProviderConnectionError::MissingAttestation)?
@@ -507,29 +550,40 @@ async fn serve_provider(
             .await?;
             let challenge_registration = verified.clone();
             let challenge_expectation = expectation.clone();
-            let established = services.established_trust;
-            let floor = services.trust_floor;
+            let challenge_response = response.clone();
+            let established = if durable_identity.is_some() {
+                TrustLevel::SelfSigned
+            } else {
+                services.established_trust
+            };
+            let floor = if durable_identity.is_some() {
+                TrustFloor::SELF_ROUTE
+            } else {
+                services.trust_floor
+            };
             services
                 .trust_verifier
                 .run(provider_id, move || {
                     verify_challenge(
                         &challenge_registration,
                         &challenge_expectation,
-                        &response,
+                        &challenge_response,
                         established,
                         floor,
                     )
                 })
                 .await?
                 .value?;
-            let signing_key = verified.se_public_key.clone();
-            services
-                .durable_io
-                .run("bind provider identity", move || {
-                    pending.complete(provider_key, signing_key)
-                })
-                .await??;
-            Ok::<_, ProviderConnectionError>((provider_id, provider_key, verified))
+            if let Some(pending) = pending.take() {
+                let signing_key = verified.se_public_key.clone();
+                services
+                    .durable_io
+                    .run("bind provider identity", move || {
+                        pending.complete(provider_key, signing_key)
+                    })
+                    .await??;
+            }
+            Ok::<_, ProviderConnectionError>((provider_id, verified, response))
         };
         tokio::pin!(credential_verification);
         tokio::select! {
@@ -538,13 +592,14 @@ async fn serve_provider(
             result = &mut credential_verification => result,
         }
     };
-    if credential_result.is_err() {
-        pending_finalizer.abandon();
-        release_pending_credential(&services, pending_lease, pending_provider_id).await;
+    if credential_result.is_err()
+        && let Some(finalizer) = &pending_finalizer
+    {
+        finalizer.abandon();
+        release_pending_credential(&services, finalizer.lease(), pending_provider_id).await;
     }
-    let (provider_id, provider_key, verified) = credential_result?;
+    let (provider_id, mut verified, challenge_response) = credential_result?;
 
-    let activation_permit = services.activation.enter().await?;
     let epoch_store = services.epoch_store.clone();
     let epoch = services
         .durable_io
@@ -552,6 +607,16 @@ async fn serve_provider(
             epoch_store.allocate(provider_id)
         })
         .await??;
+    if let (Some(control), Some(identity)) = (&services.provider_control, &durable_identity) {
+        control
+            .bind_identity(identity, provider_key, &verified.se_public_key)
+            .await?;
+        control
+            .establish_hardware_trust(identity, epoch, &verified, &challenge_response)
+            .await?;
+        verified.level = TrustLevel::Hardware;
+    }
+    let activation_permit = services.activation.enter().await?;
     if let Some(ledger) = &services.ledger {
         ledger
             .ensure_provider_trusted(
@@ -603,6 +668,19 @@ async fn serve_provider(
         );
         return Err(ProviderConnectionError::StaleActivation);
     }
+    if let (Some(control), Some(durable_identity)) =
+        (&services.provider_control, durable_identity.as_ref())
+    {
+        control
+            .persist_connected(
+                durable_identity,
+                session.registration().registration(),
+                Uuid::from_bytes(*identity.provider_process_generation.as_bytes()),
+                identity.session_epoch,
+                &verified,
+            )
+            .await?;
+    }
     let negotiated = session.protocol().clone();
     let pilot_session = match build_pilot_session(
         &session,
@@ -635,6 +713,7 @@ async fn serve_provider(
         return Err(error);
     }
     drop(activation_permit);
+    drop(admission);
     services
         .telemetry
         .emit(PilotTelemetryEvent::ProviderConnected);
@@ -945,6 +1024,22 @@ async fn cleanup_current(identity: SessionIdentity, services: &ProviderServices)
         services.requests.cancel_session(identity);
         remove_fleet(identity, &services.fleet).await;
     }
+    if let Some(control) = &services.provider_control
+        && let Err(error) = control
+            .persist_disconnected(
+                identity.provider_id,
+                identity.session_epoch,
+                "session ended",
+            )
+            .await
+    {
+        tracing::warn!(
+            provider_id = %identity.provider_id,
+            session_epoch = identity.session_epoch.0,
+            error = %error,
+            "failed to persist provider disconnect"
+        );
+    }
 }
 
 async fn handle_event(
@@ -961,6 +1056,39 @@ async fn handle_event(
             Ok(())
         }
         SessionEvent::V1 { identity, message } => {
+            if matches!(*message, ProviderMessage::Heartbeat(_))
+                && let Some(control) = &services.provider_control
+            {
+                match control
+                    .persist_heartbeat(identity.provider_id, identity.session_epoch)
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        fence_provider(
+                            identity,
+                            "provider credential was revoked or session was superseded",
+                            &services.directory,
+                            &services.requests,
+                            &services.fleet,
+                        )
+                        .await;
+                        return Ok(());
+                    }
+                    Err(crate::provider_control::ProviderControlError::Draining) => {
+                        fence_provider(
+                            identity,
+                            "coordinator is draining",
+                            &services.directory,
+                            &services.requests,
+                            &services.fleet,
+                        )
+                        .await;
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
             if matches!(*message, ProviderMessage::Heartbeat(_))
                 && let Some(session) = services.directory.current(identity.provider_id)
                 && session.identity == identity
@@ -1269,14 +1397,18 @@ async fn handle_unrouted_terminal(
     let is_historical = terminal.identity.provider_process_generation
         != transport.provider_process_generation
         || terminal.identity.session_epoch < transport.session_epoch;
-    let credentials = services.credentials.clone();
     let terminal_provider = terminal.identity.provider_id;
-    let signing_key = services
-        .durable_io
-        .run("load provider signing identity", move || {
-            credentials.bound_signing_key(terminal_provider)
-        })
-        .await?;
+    let signing_key = if let Some(control) = &services.provider_control {
+        control.bound_signing_key(terminal_provider).await?
+    } else {
+        let credentials = services.credentials.clone();
+        services
+            .durable_io
+            .run("load provider signing identity", move || {
+                credentials.bound_signing_key(terminal_provider)
+            })
+            .await?
+    };
     let Some(signing_key) = signing_key else {
         fence_provider(
             transport,
@@ -1871,6 +2003,8 @@ pub enum ProviderConnectionError {
     Event(#[from] ProviderEventError),
     #[error(transparent)]
     Ledger(#[from] crate::ledger::LedgerError),
+    #[error(transparent)]
+    ProviderControl(#[from] crate::provider_control::ProviderControlError),
 }
 
 #[derive(Debug, Error)]
@@ -1897,6 +2031,8 @@ pub enum ProviderEventError {
     Ledger(#[from] crate::ledger::LedgerError),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    ProviderControl(#[from] crate::provider_control::ProviderControlError),
 }
 
 #[cfg(test)]

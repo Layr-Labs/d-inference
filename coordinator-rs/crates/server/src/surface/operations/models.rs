@@ -5,10 +5,9 @@ use std::{
 
 use axum::{
     Json,
-    body::{Body, to_bytes},
+    body::to_bytes,
     extract::{Path, Query, Request, State},
-    http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Response},
+    http::{HeaderMap, header},
 };
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -1680,9 +1679,4 @@ fn empty_object() -> Value {
 
 const fn is_zero_i64(value: &i64) -> bool {
     *value == 0
-}
-
-#[allow(dead_code)]
-fn _response_type_anchor(_: Body) -> Response {
-    StatusCode::OK.into_response()
 }

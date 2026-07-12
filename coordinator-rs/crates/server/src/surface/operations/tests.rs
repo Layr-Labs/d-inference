@@ -1,11 +1,21 @@
-use std::{collections::BTreeMap, fs, path::PathBuf, process::Command, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::PathBuf,
+    process::Command,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use axum::{
-    Router,
+    Json, Router,
     body::Body,
     extract::{Request as AxumRequest, State},
     http::{Method, Request, Response, StatusCode, header},
-    routing::get,
+    routing::{get, post},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use darkbloom_coordinator_protocol::crypto::{BoxPayload, open_box};
@@ -13,7 +23,7 @@ use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use sqlx::PgPool;
-use tokio::{net::TcpListener, task::JoinHandle};
+use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
 use tower::ServiceExt as _;
 use url::Url;
 use uuid::Uuid;
@@ -21,9 +31,9 @@ use uuid::Uuid;
 use crate::{database::Database, ownership::CoordinatorOwnership};
 
 use super::{
-    AdminOtpConfig, ExactBearer, MdmAuth, OperationsAuth, OperationsBuildError, OperationsSettings,
-    OperationsStateBuilder, PublicAuth, PublishingAuth, StateExportConfig, models::model_r2_prefix,
-    router, router_with_state,
+    AdminOtpConfig, DatadogTelemetrySettings, ExactBearer, MdmAuth, OperationsAuth,
+    OperationsBuildError, OperationsSettings, OperationsStateBuilder, PublicAuth, PublishingAuth,
+    StateExportConfig, TelemetrySettings, models::model_r2_prefix, router, router_with_state,
 };
 
 #[allow(clippy::duplicate_mod)]
@@ -344,6 +354,7 @@ async fn telemetry_privacy_drain_mdm_and_encrypted_export_are_enforced() {
             .expect("state export config");
         let mut configured = settings(&Url::parse("http://127.0.0.1:9/").expect("URL"));
         configured.state_export = Some(export);
+        let restart_settings = configured.clone();
         let state = Arc::new(
             OperationsStateBuilder::new(test.database.clone(), auth(), configured)
                 .with_telemetry_capacity(2)
@@ -362,7 +373,11 @@ async fn telemetry_privacy_drain_mdm_and_encrypted_export_are_enforced() {
             None,
             Some(json!({
                 "events": [
-                    {"message": "one", "fields": {
+                    {
+                        "message": "one",
+                        "machine_id": "spoofed-machine",
+                        "account_id": "spoofed-account",
+                        "fields": {
                         "model": "private-model",
                         "prompt": "must-not-be-retained",
                         "completion": "must-not-be-retained"
@@ -380,8 +395,159 @@ async fn telemetry_privacy_drain_mdm_and_encrypted_export_are_enforced() {
             assert_eq!(record["fields"]["model"], "private-model");
             assert!(record["fields"].get("prompt").is_none());
             assert!(record["fields"].get("completion").is_none());
+            assert_eq!(record["machine_id"], "");
+            assert_eq!(record["account_id"], "");
         }
         assert_eq!(state.telemetry.summary()["dropped"], 1);
+        let over_limit = call(
+            &app,
+            Method::POST,
+            "/v1/telemetry/events",
+            None,
+            Some(json!({
+                "events": (0..28)
+                    .map(|index| json!({"message": format!("rate-{index}")}))
+                    .collect::<Vec<_>>()
+            })),
+        )
+        .await;
+        assert_eq!(over_limit.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let restarted =
+            OperationsStateBuilder::new(test.database.clone(), auth(), restart_settings.clone())
+                .build()
+                .expect("restart operations state");
+        assert_eq!(
+            restarted
+                .telemetry_service()
+                .process_once(Uuid::new_v4())
+                .await
+                .expect("deliver restart-safe durable telemetry"),
+            3
+        );
+        let delivered: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM rust_coord.telemetry_events WHERE status = 'delivered'",
+        )
+        .fetch_one(&test.pool)
+        .await
+        .expect("count delivered telemetry");
+        assert_eq!(delivered, 3);
+
+        let mut sink = TestTelemetrySink::start().await;
+        let sink_state = Arc::new(
+            OperationsStateBuilder::new(test.database.clone(), auth(), restart_settings)
+                .with_telemetry_settings(TelemetrySettings {
+                    persistent_capacity: 2,
+                    delivery_batch_size: 8,
+                    maximum_delivery_attempts: 2,
+                    lease_duration: Duration::from_secs(1),
+                    retry_after: Duration::from_millis(1),
+                    request_timeout: Duration::from_secs(2),
+                    datadog: Some(DatadogTelemetrySettings {
+                        api_key: Arc::from("datadog-test-key"),
+                        logs_url: sink.url.clone(),
+                        environment: Arc::from("test"),
+                        service: Arc::from("coordinator-rs"),
+                    }),
+                })
+                .build()
+                .expect("Datadog telemetry state"),
+        );
+        let sink_app = router_with_state(Arc::clone(&sink_state));
+        assert_eq!(
+            call(
+                &sink_app,
+                Method::POST,
+                "/v1/telemetry/events",
+                None,
+                Some(json!({
+                    "events": [{
+                        "message": "retry then deliver",
+                        "fields": {
+                            "model": "public-model",
+                            "prompt": "never-forward"
+                        }
+                    }]
+                })),
+            )
+            .await
+            .status(),
+            StatusCode::ACCEPTED
+        );
+        let sink_service = sink_state.telemetry_service();
+        assert_eq!(
+            sink_service
+                .process_once(Uuid::new_v4())
+                .await
+                .expect("first Datadog attempt"),
+            1
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert_eq!(
+            sink_service
+                .process_once(Uuid::new_v4())
+                .await
+                .expect("retry Datadog attempt"),
+            1
+        );
+        let first = sink.next_batch().await;
+        let retry = sink.next_batch().await;
+        assert_eq!(
+            first, retry,
+            "retry must preserve the exact sanitized batch"
+        );
+        assert_eq!(first[0]["attributes"]["fields"]["model"], "public-model");
+        assert!(first[0]["attributes"]["fields"].get("prompt").is_none());
+
+        assert_eq!(
+            call(
+                &sink_app,
+                Method::POST,
+                "/v1/telemetry/events",
+                None,
+                Some(json!({"events": [{"message": "permanent drop"}]})),
+            )
+            .await
+            .status(),
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            sink_service
+                .process_once(Uuid::new_v4())
+                .await
+                .expect("permanent Datadog rejection"),
+            1
+        );
+        let _ = sink.next_batch().await;
+        let delivery = sink_service.metrics();
+        assert_eq!(delivery.delivered, 1);
+        assert_eq!(delivery.retried, 1);
+        assert_eq!(delivery.dropped, 1);
+        assert_eq!(delivery.sink_failures, 2);
+        let retained: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rust_coord.telemetry_events")
+            .fetch_one(&test.pool)
+            .await
+            .expect("count bounded durable telemetry");
+        assert_eq!(retained, 2);
+        let metrics = response_json(
+            call(
+                &sink_app,
+                Method::GET,
+                "/v1/admin/metrics",
+                Some(ADMIN_TOKEN),
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(metrics["durable_telemetry"]["delivered"], 1);
+        assert_eq!(metrics["durable_telemetry"]["retried"], 1);
+        assert_eq!(metrics["durable_telemetry"]["dropped"], 1);
+        assert_eq!(metrics["durable_telemetry"]["sink_failures"], 2);
+        assert_eq!(metrics["gauges"]["active_http_inference"], 0);
+        assert_eq!(metrics["gauges"]["active_http_mutations"], 0);
+        assert_eq!(metrics["gauges"]["active_external_operations"], 0);
+        sink.stop();
 
         assert_eq!(
             call(&app, Method::POST, "/v1/admin/drain", None, None)
@@ -564,110 +730,6 @@ impl TestDatabase {
     async fn start(url: &str) -> Self {
         seed_service_schema(url).await;
         let pool = PgPool::connect(url).await.expect("inspection pool");
-        sqlx::raw_sql(
-            r#"
-            CREATE TABLE public.model_version_files (
-                id BIGSERIAL PRIMARY KEY,
-                model_version_id BIGINT NOT NULL REFERENCES public.model_versions(id),
-                path TEXT NOT NULL,
-                size_bytes BIGINT NOT NULL,
-                sha256 TEXT NOT NULL,
-                role TEXT NOT NULL,
-                UNIQUE (model_version_id, path)
-            );
-            CREATE TABLE public.publishing_api_keys (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                key_hash TEXT NOT NULL UNIQUE,
-                active BOOLEAN NOT NULL DEFAULT TRUE,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                last_used_at TIMESTAMPTZ
-            );
-            CREATE TABLE public.releases (
-                version TEXT NOT NULL,
-                platform TEXT NOT NULL,
-                backend TEXT NOT NULL DEFAULT '',
-                binary_hash TEXT NOT NULL DEFAULT '',
-                bundle_hash TEXT NOT NULL DEFAULT '',
-                metallib_hash TEXT NOT NULL DEFAULT '',
-                python_hash TEXT NOT NULL DEFAULT '',
-                runtime_hash TEXT NOT NULL DEFAULT '',
-                template_hashes TEXT NOT NULL DEFAULT '',
-                grpc_binary_hash TEXT NOT NULL DEFAULT '',
-                url TEXT NOT NULL DEFAULT '',
-                changelog TEXT NOT NULL DEFAULT '',
-                active BOOLEAN NOT NULL DEFAULT TRUE,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (version, platform)
-            );
-            CREATE TABLE public.provider_log_reports (
-                id BIGSERIAL PRIMARY KEY,
-                serial_number TEXT NOT NULL,
-                provider_id TEXT NOT NULL DEFAULT '',
-                account_id TEXT NOT NULL DEFAULT '',
-                log_data BYTEA NOT NULL,
-                log_size_bytes BIGINT NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            CREATE TABLE public.users (
-                account_id TEXT PRIMARY KEY,
-                privy_user_id TEXT UNIQUE NOT NULL,
-                email TEXT NOT NULL DEFAULT '',
-                role TEXT NOT NULL DEFAULT '',
-                platform_fee_percent BIGINT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            CREATE TABLE public.providers (
-                id TEXT PRIMARY KEY,
-                hardware JSONB NOT NULL DEFAULT '{}',
-                models JSONB NOT NULL DEFAULT '[]',
-                trust_level TEXT NOT NULL DEFAULT 'none',
-                attested BOOLEAN NOT NULL DEFAULT FALSE,
-                attestation_result JSONB,
-                se_public_key TEXT NOT NULL DEFAULT '',
-                serial_number TEXT NOT NULL DEFAULT '',
-                mda_verified BOOLEAN NOT NULL DEFAULT FALSE,
-                mda_cert_chain JSONB,
-                runtime_verified BOOLEAN NOT NULL DEFAULT FALSE,
-                version TEXT NOT NULL DEFAULT '',
-                last_challenge_verified TIMESTAMPTZ,
-                failed_challenges INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE public.provider_floor_draws (
-                id BIGSERIAL PRIMARY KEY,
-                provider_key TEXT NOT NULL,
-                account_id TEXT NOT NULL DEFAULT '',
-                epoch_id TEXT NOT NULL,
-                amount_micro_usd BIGINT NOT NULL,
-                floor_micro_usd BIGINT NOT NULL DEFAULT 0,
-                earned_micro_usd BIGINT NOT NULL DEFAULT 0,
-                uptime_frac DOUBLE PRECISION NOT NULL DEFAULT 0,
-                memory_gb INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            CREATE TABLE public.inference_routes (
-                id BIGSERIAL PRIMARY KEY,
-                request_id TEXT NOT NULL,
-                provider_id TEXT NOT NULL DEFAULT '',
-                model TEXT NOT NULL,
-                public_model TEXT NOT NULL DEFAULT '',
-                outcome TEXT NOT NULL DEFAULT '',
-                final_status TEXT NOT NULL DEFAULT '',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            CREATE TABLE public.request_rejections (
-                id BIGSERIAL PRIMARY KEY,
-                reason_code TEXT,
-                requested_model TEXT,
-                resolved_model TEXT,
-                could_have_served BOOLEAN,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .expect("augment operations test schema");
         sqlx::query(
             "INSERT INTO public.publishing_api_keys (id,name,key_hash) VALUES ('publisher','test publisher',$1)",
         )
@@ -786,6 +848,73 @@ async fn response_text(response: Response<Body>) -> String {
 
 async fn response_json(response: Response<Body>) -> Value {
     serde_json::from_slice(&response_bytes(response).await).expect("JSON response")
+}
+
+#[derive(Clone)]
+struct TelemetrySinkState {
+    attempts: Arc<AtomicUsize>,
+    batches: mpsc::Sender<Value>,
+}
+
+struct TestTelemetrySink {
+    url: Url,
+    batches: mpsc::Receiver<Value>,
+    task: JoinHandle<()>,
+}
+
+impl TestTelemetrySink {
+    async fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind telemetry sink");
+        let address = listener.local_addr().expect("telemetry sink address");
+        let (batches, receiver) = mpsc::channel(4);
+        let state = TelemetrySinkState {
+            attempts: Arc::new(AtomicUsize::new(0)),
+            batches,
+        };
+        let app = Router::new()
+            .route("/api/v2/logs", post(telemetry_sink))
+            .with_state(state);
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve telemetry sink");
+        });
+        Self {
+            url: Url::parse(&format!("http://{address}/api/v2/logs")).expect("telemetry sink URL"),
+            batches: receiver,
+            task,
+        }
+    }
+
+    async fn next_batch(&mut self) -> Value {
+        tokio::time::timeout(Duration::from_secs(2), self.batches.recv())
+            .await
+            .expect("telemetry sink timeout")
+            .expect("telemetry sink channel")
+    }
+
+    fn stop(self) {
+        self.task.abort();
+    }
+}
+
+async fn telemetry_sink(
+    State(state): State<TelemetrySinkState>,
+    Json(batch): Json<Value>,
+) -> StatusCode {
+    let attempt = state.attempts.fetch_add(1, Ordering::SeqCst);
+    state
+        .batches
+        .send(batch)
+        .await
+        .expect("record telemetry batch");
+    match attempt {
+        0 => StatusCode::INTERNAL_SERVER_ERROR,
+        1 => StatusCode::ACCEPTED,
+        _ => StatusCode::BAD_REQUEST,
+    }
 }
 
 struct ArtifactServer {

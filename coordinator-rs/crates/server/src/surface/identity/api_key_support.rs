@@ -229,8 +229,8 @@ pub fn hash_secret(secret: &str) -> String {
 }
 
 pub(super) fn constant_time_secret_check(expected: &str, stored: Option<&str>) -> bool {
-    let dummy = "0000000000000000000000000000000000000000000000000000000000000000";
-    let candidate = stored.unwrap_or(dummy);
+    let missing_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+    let candidate = stored.unwrap_or(missing_hash);
     let equal = expected.as_bytes().ct_eq(candidate.as_bytes()).unwrap_u8() == 1;
     equal && stored.is_some()
 }

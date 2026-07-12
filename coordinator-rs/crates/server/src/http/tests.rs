@@ -19,8 +19,8 @@ use darkbloom_coordinator_protocol::{
         AttemptId, AttemptIdentity, BinaryFrameFlags, BinaryFrameHeader, BinaryFrameKind,
         CoordinatorControlMessage, Digest, LeaseId, Prepare, Prepared, ProviderControlMessage,
         ProviderProcessGenerationId, ProviderTerminal, RegistrationResponse, ReplayFenceAck,
-        RequestId, ReservationId, Start, StartAck, StructuredError, StructuredErrorClass,
-        TerminalDisposition, TerminalOutcome, TerminalSignature,
+        RequestId, ReservationId, Start, StartAck, StructuredErrorClass, TerminalDisposition,
+        TerminalOutcome, TerminalSignature,
     },
 };
 use futures_util::{SinkExt, StreamExt, stream};
@@ -29,13 +29,21 @@ use p256::{
     elliptic_curve::Generate,
 };
 use sha2::{Digest as _, Sha256};
-use tokio::{sync::Semaphore, task::JoinSet, time::timeout};
+use tokio::{
+    sync::{Semaphore, mpsc, oneshot},
+    task::JoinSet,
+    time::timeout,
+};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_util::sync::CancellationToken;
 use tower::ServiceExt as _;
 use uuid::Uuid;
 
 use crate::{
-    pilot::{PilotConfig, PilotRuntime},
+    pilot::{
+        BillingContext, DurableRequestIdentity, PilotConfig, PilotHandle, PilotRequestControls,
+        PilotRequestError, PilotRequestJob, PilotRuntime, parse_request_facts,
+    },
     request::next_rolling_digest,
 };
 
@@ -50,6 +58,7 @@ const PROCESS_PUBLIC: &str = "3p7bfXt9wbTTW2HC7OQ1Nz+DQ8hbeGdNrfx+FG+IK08=";
 const PROVIDER_TOKEN: &str = "provider-token";
 const ALTERNATE_PROVIDER_TOKEN: &str = "alternate-provider-token";
 const CONSUMER_KEY: &str = "consumer-key";
+const SERVICE_CONSUMER_KEY: &str = "service-consumer-key";
 const WEBSOCKET_RECEIVE_TIMEOUT: Duration = Duration::from_secs(10);
 static RESOURCE_LOAD_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -661,6 +670,7 @@ async fn unacknowledged_replay_proof_survives_runtime_restart_and_promotes_curre
         11,
         prepare,
         false,
+        false,
     )
     .await;
     let response = consumer
@@ -920,18 +930,56 @@ async fn definite_precontent_failure_uses_one_alternate_before_http_headers() {
 
     let consumer = spawn_stream_request(reqwest::Client::new(), address);
     let rejected = receive_prepare(&mut first).await;
+    let start = send_prepared_and_receive_start(&mut first, &rejected).await;
     first
         .send(Message::Text(
-            serde_json::to_string(&ProviderControlMessage::StructuredError(StructuredError {
-                identity: rejected.identity,
-                class: StructuredErrorClass::Capacity,
-                message: Some("definite precontent capacity failure".to_owned()),
+            serde_json::to_string(&ProviderControlMessage::StartAck(StartAck {
+                identity: start.identity,
             }))
-            .expect("structured error JSON")
+            .expect("StartAck JSON")
             .into(),
         ))
         .await
-        .expect("structured error");
+        .expect("StartAck");
+    let usage = br#"data: {"id":"chatcmpl-pilot","object":"chat.completion.chunk","created":1,"model":"darkbloom/pilot-text","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":0,"total_tokens":3}}
+
+"#;
+    let rolling = next_rolling_digest([0; 32], 0, 0, usage);
+    send_output_frame(&mut first, &rejected, 0, 0, rolling, false, 5, usage).await;
+    let mut response_hasher = Sha256::new();
+    response_hasher.update(usage);
+    let mut terminal = ProviderTerminal {
+        identity: rejected.identity.clone(),
+        outcome: TerminalOutcome::Error,
+        error_class: Some(StructuredErrorClass::Fault),
+        prompt_tokens: 3,
+        completion_tokens: 0,
+        reasoning_tokens: 0,
+        response_hash: Digest::new(response_hasher.finalize().into()),
+        final_generated_tokens: 0,
+        rolling_digest: Digest::new(rolling),
+        model: rejected.model.clone(),
+        terminal_digest: Digest::default(),
+        signature: TerminalSignature::default(),
+    };
+    terminal.terminal_digest = terminal.computed_digest().expect("terminal digest");
+    let signature: DerSignature = first_key.sign(terminal.terminal_digest.as_bytes());
+    terminal.signature = TerminalSignature::new(signature.as_bytes().to_vec());
+    first
+        .send(Message::Text(
+            serde_json::to_string(&ProviderControlMessage::Terminal(terminal))
+                .expect("terminal JSON")
+                .into(),
+        ))
+        .await
+        .expect("precontent terminal");
+    let acknowledgement: CoordinatorControlMessage =
+        serde_json::from_str(&next_text(&mut first).await).expect("TerminalAck JSON");
+    let CoordinatorControlMessage::TerminalAck(acknowledgement) = acknowledgement else {
+        panic!("expected TerminalAck");
+    };
+    assert_eq!(acknowledgement.identity, rejected.identity);
+    assert_eq!(acknowledgement.disposition, TerminalDisposition::Released);
     serve_v2_request(&mut alternate, &alternate_key, alternate_session, 7).await;
     let response = consumer
         .await
@@ -953,6 +1001,232 @@ async fn definite_precontent_failure_uses_one_alternate_before_http_headers() {
     server.abort();
     let _ = server.await;
     let _ = std::fs::remove_dir_all(state_directory);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spend_capped_provider_price_releases_primary_and_authorizes_cheaper_alternate_once() {
+    postgres_support::with_isolated_database(|url| async move {
+        let _resource_load_guard = RESOURCE_LOAD_TEST_LOCK.lock().await;
+        postgres_support::seed_service_schema(&url).await;
+        let database = crate::database::Database::connect(&url, 8, Duration::from_secs(3))
+            .await
+            .expect("connect durable price failover database");
+        let ownership =
+            crate::ownership::CoordinatorOwnership::configure(&database, &url, true)
+                .await
+                .expect("configure durable price failover ownership");
+        let pool = sqlx::PgPool::connect(&url)
+            .await
+            .expect("inspect durable price failover");
+        sqlx::query(
+            "INSERT INTO public.balances (account_id, balance_micro_usd, withdrawable_micro_usd) VALUES ('consumer', 100, 100)",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed consumer funds");
+
+        let mut config = test_config();
+        let state_directory = config.state_directory.clone();
+        let primary_id = darkbloom_coordinator_protocol::v2::ProviderId::new([1; 16]);
+        let alternate_id = darkbloom_coordinator_protocol::v2::ProviderId::new([2; 16]);
+        config.provider_credentials = Arc::from([
+            (primary_id, Arc::from(PROVIDER_TOKEN)),
+            (alternate_id, Arc::from(ALTERNATE_PROVIDER_TOKEN)),
+        ]);
+        config.consumer_credentials = Arc::from([crate::pilot::ConsumerCredentialEntry {
+            raw_key: Arc::from(CONSUMER_KEY),
+            account_id: Some(
+                crate::ledger::AccountId::new("consumer").expect("consumer account"),
+            ),
+            api_key_id: Arc::from("price-failover-key"),
+        }]);
+        config.provider_beneficiaries = Arc::from([
+            crate::pilot::ProviderBeneficiaryEntry {
+                provider_id: primary_id,
+                account_id: crate::ledger::AccountId::new("malicious-provider")
+                    .expect("primary beneficiary"),
+                price_override: Some(crate::pilot::ProviderPriceOverride {
+                    pricing_version: crate::ledger::Version::new(2).expect("pricing version"),
+                    input_micro_usd_per_million: crate::ledger::LedgerAmount::new(100_000_000)
+                        .expect("primary input rate"),
+                    output_micro_usd_per_million: crate::ledger::LedgerAmount::new(100_000_000)
+                        .expect("primary output rate"),
+                }),
+            },
+            crate::pilot::ProviderBeneficiaryEntry {
+                provider_id: alternate_id,
+                account_id: crate::ledger::AccountId::new("normal-provider")
+                    .expect("alternate beneficiary"),
+                price_override: None,
+            },
+        ]);
+        config.paid_billing = Some(crate::pilot::PaidBillingPolicy {
+            platform_account_id: crate::ledger::AccountId::new("platform")
+                .expect("platform account"),
+            referral_account_id: None,
+            pricing_version: crate::ledger::Version::new(1).expect("pricing version"),
+            rounding_version: crate::ledger::Version::new(1).expect("rounding version"),
+            base_reservation: crate::ledger::LedgerAmount::new(1).expect("base reservation"),
+            input_micro_usd_per_million: crate::ledger::LedgerAmount::new(1_000_000)
+                .expect("platform input rate"),
+            output_micro_usd_per_million: crate::ledger::LedgerAmount::new(2_000_000)
+                .expect("platform output rate"),
+            provider_share_ppm: 1_000_000,
+            referral_share_ppm: 0,
+        });
+        config.trust_floor = crate::trust::TrustFloor::PUBLIC;
+        config.test_established_trust = Some(crate::trust::TrustLevel::Hardware);
+        let (runtime, handle) = PilotRuntime::build_durable(
+            &config,
+            database.clone(),
+            ownership.status(),
+        )
+        .await
+        .expect("durable price failover runtime");
+        let runtime_task = tokio::spawn(runtime.run());
+        wait_ready(handle.clone()).await;
+        let BillingContext::Paid(consumer_context) = handle
+            .authorize_consumer(CONSUMER_KEY)
+            .expect("configured spend-capped consumer")
+        else {
+            panic!("spend-capped consumer must use paid billing");
+        };
+        sqlx::query(
+            r#"
+            INSERT INTO public.api_keys (
+                key_hash, raw_prefix, owner_account_id, id, name,
+                limit_micro_usd, active, allowed_models
+            ) VALUES ($1, 'spend-', 'consumer', 'price-failover-key',
+                      'spend-capped failover', 20, TRUE, '[]')
+            "#,
+        )
+        .bind(consumer_context.consumer_key_hash.as_ref())
+        .execute(&pool)
+        .await
+        .expect("seed spend-capped API key");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind price failover");
+        let address = listener.local_addr().expect("price failover address");
+        let server_handle = handle.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, routes(Some(server_handle)))
+                .await
+                .expect("serve price failover");
+        });
+
+        let primary_key = SigningKey::generate();
+        let (mut primary, _) = connect_async(format!("ws://{address}/ws/provider"))
+            .await
+            .expect("primary websocket");
+        let primary_session = v2_handshake_with_token(
+            &mut primary,
+            &primary_key,
+            ProviderProcessGenerationId::new([3; 16]),
+            PROVIDER_TOKEN,
+        )
+        .await;
+        assert_eq!(primary_session.provider_id, primary_id);
+
+        let alternate_key = SigningKey::generate();
+        let (mut alternate, _) = connect_async(format!("ws://{address}/ws/provider"))
+            .await
+            .expect("alternate websocket");
+        let alternate_session = v2_handshake_with_token(
+            &mut alternate,
+            &alternate_key,
+            ProviderProcessGenerationId::new([4; 16]),
+            ALTERNATE_PROVIDER_TOKEN,
+        )
+        .await;
+        assert_eq!(alternate_session.provider_id, alternate_id);
+        wait_inference_count(&handle, 2).await;
+
+        let consumer = tokio::spawn(dispatch_spend_capped_request(handle.clone(), 20));
+        let rejected = receive_prepare(&mut primary).await;
+        reject_before_start(&mut primary, &rejected).await;
+
+        serve_v2_request(&mut alternate, &alternate_key, alternate_session, 11).await;
+        let response = consumer
+            .await
+            .expect("consumer task")
+            .expect("consumer response");
+        assert!(
+            String::from_utf8(response)
+                .expect("consumer UTF-8")
+                .contains("\"content\":\"hello\"")
+        );
+        wait_active_request_count(&handle, 0).await;
+
+        sqlx::query(
+            "UPDATE public.api_keys SET limit_micro_usd=6 WHERE id='price-failover-key'",
+        )
+        .execute(&pool)
+        .await
+        .expect("lower key limit below every provider price");
+        let all_expensive = tokio::spawn(dispatch_spend_capped_request(handle.clone(), 6));
+        let primary_rejected = receive_prepare(&mut primary).await;
+        reject_before_start(&mut primary, &primary_rejected).await;
+        let alternate_rejected = receive_prepare(&mut alternate).await;
+        reject_before_start(&mut alternate, &alternate_rejected).await;
+        assert!(matches!(
+            all_expensive.await.expect("all-expensive consumer task"),
+            Err(PilotRequestError::PaymentRequired)
+        ));
+        wait_active_request_count(&handle, 0).await;
+
+        let balance: i64 = sqlx::query_scalar(
+            "SELECT balance_micro_usd FROM public.balances WHERE account_id='consumer'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("consumer balance");
+        assert_eq!(
+            balance, 95,
+            "spend-cap failovers must not debit rejected provider prices"
+        );
+        let resize_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM rust_coord.financial_operations WHERE kind='resize'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("resize count");
+        assert_eq!(resize_count, 1, "only the affordable alternate may resize");
+        let attempt_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM rust_coord.inference_attempts")
+                .fetch_one(&pool)
+                .await
+                .expect("attempt count");
+        assert_eq!(
+            attempt_count, 1,
+            "rejected pre-authorization provider must not create a durable attempt"
+        );
+        let states: Vec<String> = sqlx::query_scalar(
+            "SELECT state FROM rust_coord.inference_jobs WHERE api_key_id='price-failover-key' ORDER BY created_at, job_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("spend-capped job states");
+        assert_eq!(states, vec!["settled", "released"]);
+
+        primary.close(None).await.expect("primary close");
+        alternate.close(None).await.expect("alternate close");
+        handle.shutdown();
+        runtime_task
+            .await
+            .expect("runtime join")
+            .expect("runtime shutdown");
+        server.abort();
+        let _ = server.await;
+        pool.close().await;
+        database
+            .close(Duration::from_secs(2))
+            .await
+            .expect("close database");
+        ownership.release().await.expect("release ownership");
+        let _ = std::fs::remove_dir_all(state_directory);
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1811,15 +2085,34 @@ async fn real_v2_plain_and_sender_sealed_streaming_and_nonstreaming_round_trip()
     })
     .await
     .expect("provider inference eligible");
+    let (terminal_ack_tx, mut terminal_ack_rx) = mpsc::channel(6);
     let provider = tokio::spawn(async move {
-        for request_number in 0..4 {
-            serve_v2_request(&mut socket, &signing_key, session, request_number).await;
+        for request_number in 0..6 {
+            if request_number >= 4 {
+                serve_empty_v2_request(&mut socket, &signing_key, session, request_number).await;
+            } else {
+                serve_v2_request(&mut socket, &signing_key, session, request_number).await;
+            }
+            terminal_ack_tx
+                .send(request_number)
+                .await
+                .expect("terminal ACK notification");
         }
         socket.close(None).await.expect("provider close");
     });
 
     let client = reqwest::Client::new();
-    for (streaming, sealed) in [(true, false), (false, false), (true, true), (false, true)] {
+    for (request_number, (streaming, sealed, empty)) in [
+        (true, false, false),
+        (false, false, false),
+        (true, true, false),
+        (false, true, false),
+        (true, false, true),
+        (false, false, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let plaintext = format!(
             concat!(
                 r#"{{"model":"darkbloom/pilot-text","messages":[{{"role":"user","#,
@@ -1881,7 +2174,15 @@ async fn real_v2_plain_and_sender_sealed_streaming_and_nonstreaming_round_trip()
         };
         if streaming {
             let text = String::from_utf8(opened).expect("stream UTF-8");
-            assert!(text.contains("\"content\":\"hello\""));
+            if empty {
+                assert!(text.contains("\"role\":\"assistant\""));
+                assert!(text.contains(
+                    "\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":0,\"total_tokens\":3}"
+                ));
+                assert!(!text.contains("\"content\":\"hello\""));
+            } else {
+                assert!(text.contains("\"content\":\"hello\""));
+            }
             assert!(text.contains("data: [DONE]"));
             assert_eq!(
                 headers.get(header::CONTENT_TYPE),
@@ -1890,7 +2191,14 @@ async fn real_v2_plain_and_sender_sealed_streaming_and_nonstreaming_round_trip()
         } else {
             let value: serde_json::Value = serde_json::from_slice(&opened).expect("nonstream JSON");
             assert_eq!(value["object"], "chat.completion");
-            assert_eq!(value["choices"][0]["message"]["content"], "hello");
+            assert_eq!(
+                value["choices"][0]["message"]["content"],
+                if empty { "" } else { "hello" }
+            );
+            if empty {
+                assert_eq!(value["usage"]["prompt_tokens"], 3);
+                assert_eq!(value["usage"]["completion_tokens"], 0);
+            }
         }
         if sealed {
             assert_eq!(
@@ -1898,6 +2206,11 @@ async fn real_v2_plain_and_sender_sealed_streaming_and_nonstreaming_round_trip()
                 Some(&"true".parse().expect("header"))
             );
         }
+        assert_eq!(
+            terminal_ack_rx.recv().await,
+            Some(u8::try_from(request_number).expect("bounded request number")),
+            "provider must observe the terminal ACK before the next request"
+        );
     }
 
     provider.await.expect("provider task");
@@ -1912,19 +2225,114 @@ async fn real_v2_plain_and_sender_sealed_streaming_and_nonstreaming_round_trip()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn paid_axum_websocket_request_commits_once_before_terminal_ack_and_replay() {
+async fn full_surface_db_key_request_commits_once_before_terminal_ack_and_replay() {
     postgres_support::with_isolated_database(|url| async move {
         let _resource_load_guard = RESOURCE_LOAD_TEST_LOCK.lock().await;
         postgres_support::seed_service_schema(&url).await;
         let pool = sqlx::PgPool::connect(&url)
             .await
             .expect("connect paid pilot assertions");
-        sqlx::query(
-            "INSERT INTO public.balances (account_id, balance_micro_usd, withdrawable_micro_usd) VALUES ('consumer', 100, 100)",
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO public.model_registry (
+                id, display_name, max_context_length, max_output_length,
+                capabilities, status
+            ) VALUES (
+                'darkbloom/pilot-text', 'Pilot Text', 8192, 4096,
+                ARRAY['text'], 'active'
+            );
+            WITH version AS (
+                INSERT INTO public.model_versions (
+                    model_id, version, r2_prefix, aggregate_sha256,
+                    total_size_bytes, file_count, status
+                ) VALUES (
+                    'darkbloom/pilot-text', '1', 'models/pilot',
+                    repeat('a', 64), 1, 1, 'ready'
+                )
+                RETURNING id
+            )
+            INSERT INTO public.model_active_versions (model_id, model_version_id)
+            SELECT 'darkbloom/pilot-text', id FROM version;
+            INSERT INTO public.model_prices (
+                account_id, model, input_price, output_price
+            ) VALUES
+                ('platform', 'darkbloom/pilot-text', 1000000, 2000000),
+                ('provider', 'darkbloom/pilot-text', 3000000, 4000000),
+                ('consumer', 'darkbloom/pilot-text', 1, 1);
+            UPDATE public.billing_runtime_settings
+            SET provider_share_ppm = 750000,
+                referral_share_ppm = 0;
+            INSERT INTO public.providers (
+                id, account_id, connected, session_id, session_epoch,
+                trust_level, hardware, models, backend
+            ) VALUES (
+                '01010101-0101-0101-0101-010101010101',
+                'provider',
+                TRUE,
+                'paid-test-session',
+                1,
+                'hardware',
+                '{}'::JSONB,
+                '[{"id":"darkbloom/pilot-text"}]'::JSONB,
+                'mlx'
+            );
+            "#,
         )
         .execute(&pool)
         .await
-        .expect("seed paid consumer");
+        .expect("seed full-surface model and provider controls");
+        sqlx::query(
+            r#"
+            INSERT INTO public.balances (
+                account_id, balance_micro_usd, withdrawable_micro_usd
+            ) VALUES
+                ('consumer', 100, 100),
+                ('service-consumer', 100, 100)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed paid consumers");
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO public.users (account_id, privy_user_id, email, role)
+            VALUES
+                (
+                    'consumer', 'did:privy:paid-consumer',
+                    'paid@example.test', ''
+                ),
+                (
+                    'service-consumer', 'did:privy:service-consumer',
+                    'service@example.test', 'service'
+                )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed paid users");
+        sqlx::query(
+            r#"
+            INSERT INTO public.api_keys (
+                key_hash, raw_prefix, owner_account_id, id, name, allowed_models
+            )
+            VALUES
+                (
+                    $1, 'consumer-', 'consumer', 'paid-key',
+                    'paid integration', '[]'
+                ),
+                (
+                    $2, 'service-', 'service-consumer', 'service-key',
+                    'service integration', '[]'
+                )
+            "#,
+        )
+        .bind(crate::surface::identity::hash_secret(CONSUMER_KEY))
+        .bind(crate::surface::identity::hash_secret(
+            SERVICE_CONSUMER_KEY,
+        ))
+        .execute(&pool)
+        .await
+        .expect("seed paid API keys");
         let database = crate::database::Database::connect(&url, 8, Duration::from_secs(3))
             .await
             .expect("connect paid pilot database");
@@ -1936,16 +2344,11 @@ async fn paid_axum_websocket_request_commits_once_before_terminal_ack_and_replay
         let mut config = test_config();
         let state_directory = config.state_directory.clone();
         let provider_id = darkbloom_coordinator_protocol::v2::ProviderId::new([1; 16]);
-        config.consumer_credentials = Arc::from([crate::pilot::ConsumerCredentialEntry {
-            raw_key: Arc::from(CONSUMER_KEY),
-            account_id: Some(
-                crate::ledger::AccountId::new("consumer").expect("consumer account"),
-            ),
-            api_key_id: Arc::from("paid-key"),
-        }]);
+        config.consumer_credentials = Arc::from([]);
         config.provider_beneficiaries = Arc::from([crate::pilot::ProviderBeneficiaryEntry {
             provider_id,
             account_id: crate::ledger::AccountId::new("provider").expect("provider account"),
+            price_override: None,
         }]);
         config.paid_billing = Some(crate::pilot::PaidBillingPolicy {
             platform_account_id: crate::ledger::AccountId::new("platform")
@@ -1963,22 +2366,57 @@ async fn paid_axum_websocket_request_commits_once_before_terminal_ack_and_replay
         });
         config.trust_floor = crate::trust::TrustFloor::PUBLIC;
         config.test_established_trust = Some(crate::trust::TrustLevel::Hardware);
-        let (runtime, handle) = PilotRuntime::build_durable(
+        let admission = crate::surface::operations::AdmissionGate::default();
+        let (runtime, handle) = PilotRuntime::build_durable_with_admission(
             &config,
             database.clone(),
             ownership.status(),
+            admission.clone(),
         )
         .await
         .expect("paid pilot runtime");
         let runtime_task = tokio::spawn(runtime.run());
         wait_ready(handle.clone()).await;
+        let mut full_config = crate::surface::FullSurfaceConfig::disabled();
+        full_config.enabled = true;
+        full_config.admin_key = Arc::from("paid-admin-secret");
+        full_config.release_key = Arc::from("paid-release-secret");
+        full_config.mdm_webhook_secret = Arc::from("paid-mdm-secret");
+        let full_surface = crate::surface::FullSurfaceState::build_with_admission(
+            &full_config,
+            database.clone(),
+            ownership.fence().context(),
+            handle.clone(),
+            admission,
+        )
+        .expect("full paid surface");
+        let full_surface_operations = full_surface.operations.clone();
+        let control_auth = full_surface
+            .identity
+            .auth()
+            .authenticate_api_key(CONSUMER_KEY)
+            .await
+            .expect("authenticate paid control key");
+        full_surface
+            .inference_control
+            .prepare(
+                &control_auth,
+                br#"{"model":"darkbloom/pilot-text","messages":[{"role":"user","content":"paid"}],"stream":true,"max_completion_tokens":4}"#,
+            )
+            .await
+            .expect("prepare dynamic full-surface controls");
+        let app = crate::app::router(
+            crate::app::AppState::new(database.clone())
+                .with_ownership(ownership.status())
+                .with_pilot(handle.clone())
+                .with_full_surface(full_surface),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind paid pilot");
         let address = listener.local_addr().expect("paid pilot address");
-        let server_handle = handle.clone();
         let server = tokio::spawn(async move {
-            axum::serve(listener, routes(Some(server_handle)))
+            axum::serve(listener, app)
                 .await
                 .expect("serve paid pilot");
         });
@@ -1995,32 +2433,61 @@ async fn paid_axum_websocket_request_commits_once_before_terminal_ack_and_replay
         .await;
         wait_inference_count(&handle, 1).await;
         let replay_handle = handle.clone();
+        let (settled_tx, mut settled_rx) = mpsc::channel(1);
+        let (controls_changed_tx, mut controls_changed_rx) = mpsc::channel(1);
+        let (fallback_changed_tx, mut fallback_changed_rx) = mpsc::channel(1);
         let provider = tokio::spawn(async move {
-            let prepare = receive_prepare(&mut socket).await;
-            let terminal =
-                serve_v2_request_from_prepare(&mut socket, &signing_key, session, 0, prepare)
-                    .await;
-            wait_active_request_count(&replay_handle, 0).await;
-            socket
-                .send(Message::Text(
-                    serde_json::to_string(&ProviderControlMessage::Terminal(terminal.clone()))
-                        .expect("terminal replay JSON")
-                        .into(),
-                ))
-                .await
-                .expect("terminal replay");
-            let acknowledgement: CoordinatorControlMessage =
-                serde_json::from_str(&next_text(&mut socket).await)
-                    .expect("terminal replay ACK JSON");
-            let CoordinatorControlMessage::TerminalAck(acknowledgement) = acknowledgement else {
-                panic!("expected replay terminal ACK");
-            };
-            assert_eq!(acknowledgement.terminal_digest, terminal.terminal_digest);
-            assert_eq!(acknowledgement.disposition, TerminalDisposition::Settled);
+            for request_number in 0..4 {
+                let prepare = receive_prepare(&mut socket).await;
+                let terminal = serve_v2_request_from_prepare(
+                    &mut socket,
+                    &signing_key,
+                    session,
+                    request_number,
+                    prepare,
+                )
+                .await;
+                wait_active_request_count(&replay_handle, 0).await;
+                socket
+                    .send(Message::Text(
+                        serde_json::to_string(&ProviderControlMessage::Terminal(terminal.clone()))
+                            .expect("terminal replay JSON")
+                            .into(),
+                    ))
+                    .await
+                    .expect("terminal replay");
+                let acknowledgement: CoordinatorControlMessage =
+                    serde_json::from_str(&next_text(&mut socket).await)
+                        .expect("terminal replay ACK JSON");
+                let CoordinatorControlMessage::TerminalAck(acknowledgement) = acknowledgement
+                else {
+                    panic!("expected replay terminal ACK");
+                };
+                assert_eq!(acknowledgement.terminal_digest, terminal.terminal_digest);
+                assert_eq!(acknowledgement.disposition, TerminalDisposition::Settled);
+                if request_number < 2 {
+                    settled_tx
+                        .send(())
+                        .await
+                        .expect("signal settlement before pricing change");
+                    match request_number {
+                        0 => controls_changed_rx
+                            .recv()
+                            .await
+                            .expect("wait for platform pricing changes"),
+                        1 => fallback_changed_rx
+                            .recv()
+                            .await
+                            .expect("wait for fallback pricing changes"),
+                        _ => unreachable!("only the first two requests await changes"),
+                    };
+                }
+            }
             socket.close(None).await.expect("paid provider close");
         });
 
-        let response = reqwest::Client::new()
+        let client = reqwest::Client::new();
+        let response = client
             .post(format!("http://{address}/v1/chat/completions"))
             .bearer_auth(CONSUMER_KEY)
             .header(header::CONTENT_TYPE, "application/json")
@@ -2031,35 +2498,193 @@ async fn paid_axum_websocket_request_commits_once_before_terminal_ack_and_replay
             .send()
             .await
             .expect("paid consumer response");
-        assert_eq!(response.status(), StatusCode::OK);
+        let status = response.status();
         let body = response.text().await.expect("paid response body");
+        assert_eq!(status, StatusCode::OK, "unexpected response: {body}");
         assert!(body.contains("\"content\":\"hello\""));
+        settled_rx
+            .recv()
+            .await
+            .expect("first request settlement");
+        sqlx::raw_sql(
+            r#"
+            UPDATE public.model_prices
+            SET input_price=2000000, output_price=4000000
+            WHERE account_id='platform'
+              AND model='darkbloom/pilot-text';
+            DELETE FROM public.model_prices
+            WHERE account_id='provider'
+              AND model='darkbloom/pilot-text';
+            UPDATE public.billing_runtime_settings
+            SET provider_share_ppm=500000, referral_share_ppm=200000;
+            INSERT INTO public.referrers (account_id, code)
+            VALUES ('referrer', 'PAID-REFERRER');
+            INSERT INTO public.referrals (referred_account, referrer_code)
+            VALUES ('consumer', 'PAID-REFERRER');
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("change full-surface model pricing and referral controls");
+        controls_changed_tx
+            .send(())
+            .await
+            .expect("release second provider request");
+        let second = client
+            .post(format!("http://{address}/v1/chat/completions"))
+            .bearer_auth(CONSUMER_KEY)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("idempotency-key", "paid-axum-websocket-updated")
+            .body(
+                r#"{"model":"darkbloom/pilot-text","messages":[{"role":"user","content":"paid"}],"stream":true,"max_completion_tokens":4}"#,
+            )
+            .send()
+            .await
+            .expect("updated paid consumer response");
+        let second_status = second.status();
+        let second_body = second.text().await.expect("updated paid response body");
+        assert_eq!(
+            second_status,
+            StatusCode::OK,
+            "unexpected updated response: {second_body}"
+        );
+        assert!(second_body.contains("\"content\":\"hello\""));
+        settled_rx
+            .recv()
+            .await
+            .expect("second request settlement");
+        sqlx::query(
+            "DELETE FROM public.model_prices WHERE account_id='platform' AND model='darkbloom/pilot-text'",
+        )
+        .execute(&pool)
+        .await
+        .expect("remove platform price to exercise exact fallback");
+        fallback_changed_tx
+            .send(())
+            .await
+            .expect("release fallback provider request");
+        let third = client
+            .post(format!("http://{address}/v1/chat/completions"))
+            .bearer_auth(CONSUMER_KEY)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("idempotency-key", "paid-axum-websocket-fallback")
+            .body(
+                r#"{"model":"darkbloom/pilot-text","messages":[{"role":"user","content":"paid"}],"stream":true,"max_completion_tokens":4}"#,
+            )
+            .send()
+            .await
+            .expect("fallback paid consumer response");
+        let third_status = third.status();
+        let third_body = third.text().await.expect("fallback paid response body");
+        assert_eq!(
+            third_status,
+            StatusCode::OK,
+            "unexpected fallback response: {third_body}"
+        );
+        assert!(third_body.contains("\"content\":\"hello\""));
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO public.model_prices (
+                account_id, model, input_price, output_price
+            ) VALUES
+                ('platform', 'darkbloom/pilot-text', 1000000, 2000000),
+                ('provider', 'darkbloom/pilot-text', 100000000, 100000000);
+            UPDATE public.billing_runtime_settings
+            SET provider_share_ppm=100000, referral_share_ppm=900000;
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed malicious provider price for service settlement");
+        let service = client
+            .post(format!("http://{address}/v1/chat/completions"))
+            .bearer_auth(SERVICE_CONSUMER_KEY)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("idempotency-key", "service-axum-websocket")
+            .body(
+                r#"{"model":"darkbloom/pilot-text","messages":[{"role":"user","content":"service"}],"stream":true,"max_completion_tokens":4}"#,
+            )
+            .send()
+            .await
+            .expect("service consumer response");
+        let service_status = service.status();
+        let service_body = service.text().await.expect("service response body");
+        assert_eq!(
+            service_status,
+            StatusCode::OK,
+            "unexpected service response: {service_body}"
+        );
+        assert!(service_body.contains("\"content\":\"hello\""));
         provider.await.expect("paid provider task");
 
-        let job: (String, i64, i64, String, String) = sqlx::query_as(
+        type PaidJobRow = (String, i64, i64, String, String, i64, i64, i32, i64);
+        let jobs: Vec<PaidJobRow> = sqlx::query_as(
             r#"
             SELECT
                 state,
                 accepted_cumulative_tokens,
                 usage_completion_tokens,
                 consumer_key_hash,
-                api_key_id
+                api_key_id,
+                input_micro_usd_per_million,
+                output_micro_usd_per_million,
+                provider_share_ppm,
+                referral_share_ppm
             FROM rust_coord.inference_jobs
             WHERE api_key_id = 'paid-key'
+            ORDER BY created_at, job_id
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("paid durable jobs");
+        assert_eq!(jobs.len(), 3);
+        assert!(jobs.iter().all(|job| job.0 == "settled"));
+        assert!(jobs.iter().all(|job| (job.1, job.2) == (1, 1)));
+        assert!(jobs.iter().all(|job| job.3.len() == 64));
+        assert!(jobs.iter().all(|job| job.4 == "paid-key"));
+        assert_eq!((jobs[0].5, jobs[0].6, jobs[0].7, jobs[0].8), (3_000_000, 4_000_000, 750_000, 0));
+        assert_eq!((jobs[1].5, jobs[1].6, jobs[1].7, jobs[1].8), (2_000_000, 4_000_000, 500_000, 200_000));
+        assert_eq!((jobs[2].5, jobs[2].6, jobs[2].7, jobs[2].8), (50_000, 200_000, 500_000, 200_000));
+        let service_job: (String, i64, i64, i64, i64, i32, i64, i64) = sqlx::query_as(
+            r#"
+            SELECT
+                state,
+                usage_prompt_tokens,
+                usage_completion_tokens,
+                input_micro_usd_per_million,
+                output_micro_usd_per_million,
+                provider_share_ppm,
+                referral_share_ppm,
+                reserved_total_micro_usd
+            FROM rust_coord.inference_jobs
+            WHERE api_key_id = 'service-key'
             "#,
         )
         .fetch_one(&pool)
         .await
-        .expect("paid durable job");
-        assert_eq!(job.0, "settled");
-        assert_eq!((job.1, job.2), (1, 1));
-        assert_eq!(job.3.len(), 64);
-        assert_eq!(job.4, "paid-key");
+        .expect("service durable job");
+        assert_eq!(
+            service_job,
+            (
+                "settled".to_owned(),
+                3,
+                1,
+                1_000_000,
+                2_000_000,
+                1_000_000,
+                0,
+                11,
+            ),
+            "service traffic must reserve and settle at the published platform price and allocation",
+        );
         let balances: Vec<(String, i64, i64)> = sqlx::query_as(
             r#"
             SELECT account_id, balance_micro_usd, withdrawable_micro_usd
             FROM public.balances
-            WHERE account_id IN ('consumer', 'provider', 'platform')
+            WHERE account_id IN (
+                'consumer', 'service-consumer', 'provider', 'platform', 'referrer'
+            )
             ORDER BY account_id
             "#,
         )
@@ -2069,9 +2694,11 @@ async fn paid_axum_websocket_request_commits_once_before_terminal_ack_and_replay
         assert_eq!(
             balances,
             vec![
-                ("consumer".to_owned(), 95, 95),
-                ("platform".to_owned(), 2, 0),
-                ("provider".to_owned(), 3, 3),
+                ("consumer".to_owned(), 75, 75),
+                ("platform".to_owned(), 9, 0),
+                ("provider".to_owned(), 20, 20),
+                ("referrer".to_owned(), 1, 1),
+                ("service-consumer".to_owned(), 95, 95),
             ]
         );
         let projection: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
@@ -2088,14 +2715,67 @@ async fn paid_axum_websocket_request_commits_once_before_terminal_ack_and_replay
         .fetch_one(&pool)
         .await
         .expect("paid projections");
-        assert_eq!(projection, (3, 1, 0, 1, 1, 1));
+        assert_eq!(projection, (12, 4, 0, 4, 4, 4));
         let totals: (i64, i64, i64) = sqlx::query_as(
             "SELECT total_requests, total_prompt_tokens, total_completion_tokens FROM public.usage_totals WHERE id = 1",
         )
         .fetch_one(&pool)
         .await
         .expect("paid usage totals");
-        assert_eq!(totals, (1, 3, 1));
+        assert_eq!(totals, (4, 12, 4));
+
+        full_surface_operations.set_draining(true);
+        for (path, body) in [
+            (
+                "/v1/chat/completions",
+                r#"{"model":"darkbloom/pilot-text","messages":[]}"#,
+            ),
+            ("/v1/keys", r#"{"name":"must-not-mutate"}"#),
+        ] {
+            let rejected = client
+                .post(format!("http://{address}{path}"))
+                .bearer_auth(CONSUMER_KEY)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(body)
+                .send()
+                .await
+                .expect("drained full-surface response");
+            assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS);
+            assert_eq!(
+                rejected
+                    .headers()
+                    .get(header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok()),
+                Some("3")
+            );
+            let rejected_body = rejected
+                .json::<serde_json::Value>()
+                .await
+                .expect("draining JSON");
+            assert_eq!(
+                rejected_body,
+                serde_json::json!({
+                    "error": {
+                        "code": "rate_limit_exceeded",
+                        "type": "rate_limit_exceeded",
+                        "message": "draining rate limit exceeded — retry after 3s"
+                    }
+                })
+            );
+        }
+        let readiness = client
+            .get(format!("http://{address}/readyz"))
+            .send()
+            .await
+            .expect("draining readiness");
+        assert_eq!(readiness.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            readiness
+                .json::<serde_json::Value>()
+                .await
+                .expect("readiness JSON")["draining"],
+            true
+        );
 
         handle.shutdown();
         runtime_task
@@ -2190,7 +2870,7 @@ async fn sealed_stream_rejects_four_mib_separator_flood_and_restores_global_budg
         .await
         .expect("StartAck");
 
-    let separators = vec![b'\n'; 1024 * 1024];
+    let separators = vec![b'\n'; 1024 * 1024 - 1024];
     let mut rolling = [0_u8; 32];
     for sequence in 0..4_u64 {
         rolling = next_rolling_digest(rolling, sequence, 0, &separators);
@@ -2206,6 +2886,15 @@ async fn sealed_stream_rejects_four_mib_separator_flood_and_restores_global_budg
         )
         .await;
     }
+    assert!(
+        !consumer.is_finished(),
+        "separator-only preamble must not commit HTTP response headers"
+    );
+    let content = br#"data: {"id":"chatcmpl-flood","object":"chat.completion.chunk","created":1,"model":"darkbloom/pilot-text","choices":[{"index":0,"delta":{"content":"bounded"},"finish_reason":null}]}
+
+"#;
+    rolling = next_rolling_digest(rolling, 4, 1, content);
+    send_output_frame(&mut socket, &prepare, 4, 1, rolling, false, 25, content).await;
 
     let (status, body_failed) = consumer.await.expect("consumer task");
     assert!(
@@ -2256,6 +2945,79 @@ fn spawn_stream_request(
     })
 }
 
+async fn dispatch_spend_capped_request(
+    handle: PilotHandle,
+    limit_micro_usd: i64,
+) -> Result<Vec<u8>, PilotRequestError> {
+    let plaintext = br#"{"model":"darkbloom/pilot-text","messages":[{"role":"user","content":"spend cap"}],"stream":true,"max_completion_tokens":4}"#.to_vec();
+    let (configured_model, alias) = {
+        let model = handle
+            .catalog()
+            .models()
+            .next()
+            .expect("pilot catalog model");
+        (
+            model.id.clone(),
+            model
+                .aliases
+                .iter()
+                .next()
+                .map_or_else(|| model.id.as_str().to_owned(), ToString::to_string),
+        )
+    };
+    let (model, output_mode, maximum_output_tokens, traits, demand) =
+        parse_request_facts(&plaintext, &configured_model, &alias)?;
+    let billing = handle
+        .authorize_consumer(CONSUMER_KEY)
+        .ok_or_else(|| PilotRequestError::Internal(Arc::from("test consumer missing")))?;
+    let input_permit = handle
+        .try_reserve_input(plaintext.len())
+        .map_err(|_| PilotRequestError::Capacity)?;
+    let response_permit = handle
+        .try_reserve_response()
+        .map_err(|_| PilotRequestError::Capacity)?;
+    let (response_tx, response_rx) = oneshot::channel();
+    handle
+        .request_dispatcher()
+        .try_dispatch(PilotRequestJob {
+            identity: DurableRequestIdentity::from_request_id(Uuid::new_v4())
+                .map_err(|error| PilotRequestError::Internal(Arc::from(error.to_string())))?,
+            billing,
+            controls: PilotRequestControls {
+                billing: None,
+                api_key_limit_micro_usd: Some(limit_micro_usd),
+                api_key_controlled: true,
+                api_key_public_model: Arc::from("darkbloom/pilot-text"),
+                api_key_concrete_model: Arc::from("darkbloom/pilot-text"),
+                required_provider_id: None,
+            },
+            plaintext,
+            model,
+            output_mode,
+            maximum_output_tokens,
+            traits,
+            demand,
+            input_permit,
+            response_permit,
+            response: Some(response_tx),
+            client_cancellation: CancellationToken::new(),
+        })
+        .map_err(|_| PilotRequestError::Capacity)?;
+    let mut response = response_rx.await.map_err(|_| {
+        PilotRequestError::Unavailable(Arc::from("test request worker ended before response"))
+    })??;
+    let mut output = Vec::new();
+    loop {
+        match response.body.recv().await {
+            Ok(Some(chunk)) => output.extend_from_slice(&chunk),
+            Ok(None) => return Ok(output),
+            Err(error) => {
+                return Err(PilotRequestError::Provider(Arc::from(error.to_string())));
+            }
+        }
+    }
+}
+
 async fn receive_prepare(socket: &mut TestWebSocket) -> Prepare {
     let message: CoordinatorControlMessage =
         serde_json::from_str(&next_text(socket).await).expect("Prepare JSON");
@@ -2263,6 +3025,16 @@ async fn receive_prepare(socket: &mut TestWebSocket) -> Prepare {
         panic!("expected Prepare");
     };
     prepare
+}
+
+async fn reject_before_start(socket: &mut TestWebSocket, prepare: &Prepare) {
+    send_prepared(socket, prepare).await;
+    let abort: CoordinatorControlMessage =
+        serde_json::from_str(&next_text(socket).await).expect("Abort JSON");
+    let CoordinatorControlMessage::Abort(abort) = abort else {
+        panic!("spend-capped provider must receive Abort before Start");
+    };
+    assert_eq!(abort.identity, prepare.identity);
 }
 
 async fn send_prepared(socket: &mut TestWebSocket, prepare: &Prepare) {
@@ -2502,6 +3274,25 @@ async fn serve_v2_request(
         serve_v2_request_from_prepare(socket, signing_key, session, request_number, prepare).await;
 }
 
+async fn serve_empty_v2_request(
+    socket: &mut TestWebSocket,
+    signing_key: &SigningKey,
+    session: crate::provider::SessionIdentity,
+    request_number: u8,
+) {
+    let prepare = receive_prepare(socket).await;
+    let _ = serve_v2_request_from_prepare_with_ack(
+        socket,
+        signing_key,
+        session,
+        request_number,
+        prepare,
+        true,
+        true,
+    )
+    .await;
+}
+
 async fn serve_v2_request_from_prepare(
     socket: &mut TestWebSocket,
     signing_key: &SigningKey,
@@ -2516,6 +3307,7 @@ async fn serve_v2_request_from_prepare(
         request_number,
         prepare,
         true,
+        false,
     )
     .await
 }
@@ -2527,6 +3319,7 @@ async fn serve_v2_request_from_prepare_with_ack(
     request_number: u8,
     prepare: Prepare,
     await_terminal_ack: bool,
+    empty_completion: bool,
 ) -> ProviderTerminal {
     assert_eq!(prepare.identity.provider_id, session.provider_id);
     assert_eq!(
@@ -2593,8 +3386,13 @@ async fn serve_v2_request_from_prepare_with_ack(
     let content = br#"data: {"id":"chatcmpl-pilot","object":"chat.completion.chunk","created":1,"model":"darkbloom/pilot-text","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":"stop"}]}
 
 "#;
+    let usage = br#"data: {"id":"chatcmpl-pilot","object":"chat.completion.chunk","created":1,"model":"darkbloom/pilot-text","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":0,"total_tokens":3}}
+
+"#;
     let done = b"data: [DONE]\n\n".as_slice();
-    let chunks = if request_number == 2 {
+    let chunks = if empty_completion {
+        vec![role.as_slice(), usage.as_slice(), done]
+    } else if request_number == 2 {
         let role_split = role.len() - 1;
         let content_split = content.len() / 2;
         vec![
@@ -2610,7 +3408,7 @@ async fn serve_v2_request_from_prepare_with_ack(
     let mut rolling = [0_u8; 32];
     let mut response_hasher = Sha256::new();
     for (sequence, chunk) in chunks.iter().enumerate() {
-        let cumulative_tokens = u64::from(sequence + 1 == chunks.len());
+        let cumulative_tokens = u64::from(!empty_completion && sequence + 1 == chunks.len());
         rolling = next_rolling_digest(
             rolling,
             u64::try_from(sequence).expect("sequence"),
@@ -2654,10 +3452,10 @@ async fn serve_v2_request_from_prepare_with_ack(
         outcome: TerminalOutcome::Completed,
         error_class: None,
         prompt_tokens,
-        completion_tokens: 1,
+        completion_tokens: u64::from(!empty_completion),
         reasoning_tokens: 0,
         response_hash: Digest::new(response_hasher.finalize().into()),
-        final_generated_tokens: 1,
+        final_generated_tokens: u64::from(!empty_completion),
         rolling_digest: Digest::new(rolling),
         model: prepare.model,
         terminal_digest: Digest::default(),
@@ -2677,10 +3475,10 @@ async fn serve_v2_request_from_prepare_with_ack(
     if await_terminal_ack {
         let acknowledgement: CoordinatorControlMessage =
             serde_json::from_str(&next_text(socket).await).expect("terminal ACK JSON");
-        assert!(matches!(
-            acknowledgement,
-            CoordinatorControlMessage::TerminalAck(_)
-        ));
+        assert!(
+            matches!(acknowledgement, CoordinatorControlMessage::TerminalAck(_)),
+            "expected terminal ACK, received {acknowledgement:?}"
+        );
     }
     terminal
 }

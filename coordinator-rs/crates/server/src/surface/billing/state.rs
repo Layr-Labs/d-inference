@@ -10,12 +10,22 @@ use super::{
     stripe::{StripeClient, StripeSettings},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct BillingState {
     pub(super) store: BillingStore,
     pub(super) stripe: Option<Arc<StripeClient>>,
     pub(super) admin_key_digest: Option<[u8; 32]>,
     pub(super) referral: ReferralService,
+}
+
+impl std::fmt::Debug for BillingState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BillingState")
+            .field("stripe_configured", &self.stripe.is_some())
+            .field("admin_key_configured", &self.admin_key_digest.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl BillingState {
@@ -33,14 +43,29 @@ impl BillingState {
     pub fn stripe_configured(&self) -> bool {
         self.stripe.is_some()
     }
+
+    #[must_use]
+    pub fn withdrawal_recovery(&self) -> Option<super::WithdrawalRecovery> {
+        self.stripe
+            .as_ref()
+            .map(|stripe| super::WithdrawalRecovery::from_parts(self.store.clone(), stripe.clone()))
+    }
 }
 
-#[derive(Debug)]
 pub struct BillingStateBuilder {
     database: Database,
     stripe: Option<StripeSettings>,
     admin_key: Arc<str>,
-    referral_share_percent: u32,
+}
+
+impl std::fmt::Debug for BillingStateBuilder {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BillingStateBuilder")
+            .field("stripe_configured", &self.stripe.is_some())
+            .field("admin_key_configured", &!self.admin_key.is_empty())
+            .finish_non_exhaustive()
+    }
 }
 
 impl BillingStateBuilder {
@@ -50,7 +75,6 @@ impl BillingStateBuilder {
             database,
             stripe: None,
             admin_key: Arc::from(""),
-            referral_share_percent: 20,
         }
     }
 
@@ -66,20 +90,9 @@ impl BillingStateBuilder {
         self
     }
 
-    #[must_use]
-    pub fn with_referral_share_percent(mut self, percent: u32) -> Self {
-        self.referral_share_percent = percent;
-        self
-    }
-
     pub fn build(self) -> Result<BillingState, BillingError> {
-        if self.referral_share_percent > 50 {
-            return Err(BillingError::bad_request(
-                "referral share percent must be between 0 and 50",
-            ));
-        }
         let store = BillingStore::new(self.database);
-        let referral = ReferralService::new(store.clone(), self.referral_share_percent);
+        let referral = ReferralService::new(store.clone());
         Ok(BillingState {
             store,
             stripe: self

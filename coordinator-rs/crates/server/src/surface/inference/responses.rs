@@ -1044,6 +1044,37 @@ mod tests {
     }
 
     #[test]
+    fn empty_success_has_completed_response_shapes_and_prompt_usage() {
+        let empty = br#"data: {"id":"chatcmpl-empty","object":"chat.completion.chunk","created":2,"model":"model-a","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-empty","object":"chat.completion.chunk","created":2,"model":"model-a","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":0,"total_tokens":3}}
+
+data: [DONE]
+
+"#;
+        let output = adapt_responses_nonstream(empty, &context()).expect("empty nonstream");
+        let output: Value = serde_json::from_slice(&output).expect("empty response JSON");
+        assert_eq!(output["status"], "completed");
+        assert_eq!(output["output"][0]["content"][0]["text"], "");
+        assert_eq!(output["usage"]["input_tokens"], 3);
+        assert_eq!(output["usage"]["output_tokens"], 0);
+
+        let mut stream = ResponsesStreamAdapter::new(context());
+        assert!(stream.push(empty).expect("held empty stream").is_empty());
+        let output = stream.finish_input().expect("finish empty stream");
+        let text = output
+            .iter()
+            .map(|event| String::from_utf8_lossy(event))
+            .collect::<String>();
+        assert!(text.contains("event: response.created"));
+        assert!(text.contains("event: response.output_text.done"));
+        assert!(text.contains("\"text\":\"\""));
+        assert!(text.contains("event: response.completed"));
+        assert!(text.contains("\"input_tokens\":3"));
+        assert!(text.contains("\"output_tokens\":0"));
+    }
+
+    #[test]
     fn stream_has_canonical_lifecycle_tools_usage_and_errors() {
         let mut adapter = ResponsesStreamAdapter::new(context());
         assert!(

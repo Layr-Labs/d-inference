@@ -5,9 +5,11 @@ use darkbloom_coordinator_server::{
     operator::OperatorCommand,
     ownership::{CoordinatorOwnership, OwnershipError},
     pilot::{PilotHandle, PilotRuntime},
+    provider_control::ProviderControlPlane,
     recovery::{RecoveryRuntime, RecoveryRuntimeConfig},
     runtime, shutdown,
     supervisor::SupervisorStatus,
+    surface::{FullSurfaceState, billing::WithdrawalRecovery, operations::AdmissionGate},
 };
 use std::future::pending;
 use tokio::sync::watch;
@@ -77,8 +79,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if command == OperatorCommand::Recovery {
         let cancellation = CancellationToken::new();
+        let provider_control = config
+            .pilot
+            .mdm_control
+            .clone()
+            .map(|mdm| {
+                Ok::<_, Box<dyn std::error::Error>>(ProviderControlPlane::new(
+                    database.clone(),
+                    config.pilot.configured_provider_identities()?,
+                    mdm,
+                )?)
+            })
+            .transpose()?;
+        let withdrawal_recovery = config
+            .full_surface
+            .stripe
+            .clone()
+            .map(|settings| WithdrawalRecovery::new(database.clone(), settings))
+            .transpose()?;
         let recovery =
-            RecoveryRuntime::new(database.clone(), None, RecoveryRuntimeConfig::default())?;
+            RecoveryRuntime::new(database.clone(), None, RecoveryRuntimeConfig::default())?
+                .with_provider_control(provider_control)
+                .with_withdrawal_recovery(withdrawal_recovery);
         let run = recovery.run(cancellation.clone());
         tokio::pin!(run);
         let mut ownership_lost = false;
@@ -120,14 +142,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     tracing::info!(address = %config.bind_address, "Rust coordinator listening");
 
+    let full_surface_admission = config.full_surface.enabled.then(AdmissionGate::default);
     let (pilot_task, pilot_handle) = if config.pilot.enabled {
-        let (pilot, handle) = match PilotRuntime::build_durable(
-            &config.pilot,
-            database.clone(),
-            ownership.status(),
-        )
-        .await
-        {
+        let built = match &full_surface_admission {
+            Some(admission) => {
+                PilotRuntime::build_durable_with_admission(
+                    &config.pilot,
+                    database.clone(),
+                    ownership.status(),
+                    admission.clone(),
+                )
+                .await
+            }
+            None => {
+                PilotRuntime::build_durable(&config.pilot, database.clone(), ownership.status())
+                    .await
+            }
+        };
+        let (pilot, handle) = match built {
             Ok(value) => value,
             Err(error) => {
                 if let Err(close_error) = database.close(config.shutdown_grace).await {
@@ -148,12 +180,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(handle) = pilot_handle.clone() {
         state = state.with_pilot(handle);
     }
+    let mut admission_gate = full_surface_admission.clone();
+    let mut telemetry_service = None;
+    let mut withdrawal_recovery = None;
+    if config.full_surface.enabled {
+        let handle = pilot_handle
+            .clone()
+            .ok_or("full surface requires inference runtime")?;
+        let full_surface = match FullSurfaceState::build_with_admission(
+            &config.full_surface,
+            database.clone(),
+            ownership.fence().context(),
+            handle,
+            full_surface_admission
+                .clone()
+                .expect("enabled full surface has an admission gate"),
+        ) {
+            Ok(full_surface) => full_surface,
+            Err(error) => {
+                if let Some(pilot) = &pilot_handle {
+                    pilot.shutdown();
+                }
+                if let Some(task) = pilot_task {
+                    let _ = task.await;
+                }
+                if let Err(close_error) = database.clone().close(config.shutdown_grace).await {
+                    tracing::error!(error = %close_error, "database pool close failed after full-surface startup error");
+                }
+                if let Err(release_error) = ownership.release().await {
+                    tracing::error!(error = %release_error, "coordinator ownership release failed after full-surface startup error");
+                }
+                return Err(error.into());
+            }
+        };
+        admission_gate = Some(full_surface.operations.admission_gate());
+        telemetry_service = Some(full_surface.operations.telemetry_service());
+        withdrawal_recovery = full_surface.billing.withdrawal_recovery();
+        state = state.with_full_surface(full_surface);
+    }
     let recovery_cancellation = CancellationToken::new();
     let recovery_runtime = RecoveryRuntime::new(
         database.clone(),
         pilot_handle.clone(),
         RecoveryRuntimeConfig::default(),
-    )?;
+    )?
+    .with_admission_gate(admission_gate)
+    .with_telemetry_service(telemetry_service)
+    .with_withdrawal_recovery(withdrawal_recovery);
     let (recovery_status_tx, recovery_status_rx) = watch::channel(false);
     let recovery_task_cancellation = recovery_cancellation.clone();
     let recovery_task = tokio::spawn(async move {

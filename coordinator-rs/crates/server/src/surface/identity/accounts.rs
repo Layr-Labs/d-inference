@@ -3,6 +3,8 @@ use std::sync::Arc;
 use serde_json::Value;
 use sqlx::FromRow;
 
+use crate::pilot::PilotHandle;
+
 use super::{
     error::IdentityError,
     store::IdentityStore,
@@ -12,15 +14,26 @@ use super::{
     },
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AccountService {
     store: IdentityStore,
     config: Arc<IdentitySurfaceConfig>,
+    pilot: Option<PilotHandle>,
 }
 
 impl AccountService {
     pub fn new(store: IdentityStore, config: Arc<IdentitySurfaceConfig>) -> Self {
-        Self { store, config }
+        Self {
+            store,
+            config,
+            pilot: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_pilot(mut self, pilot: PilotHandle) -> Self {
+        self.pilot = Some(pilot);
+        self
     }
 
     pub async fn providers(&self, account_id: &str) -> Result<ProvidersResponse, IdentityError> {
@@ -328,11 +341,7 @@ impl AccountService {
         {
             return Err(IdentityError::invalid("missing or invalid serial"));
         }
-        let row = self
-            .store
-            .bounded(
-                sqlx::query_as::<_, DeleteProviderRow>(
-                    r#"
+        let delete_provider_sql = r#"
                     WITH authority AS MATERIALIZED (
                         SELECT EXISTS (
                             SELECT 1 FROM public.coordinator_ownership
@@ -340,7 +349,11 @@ impl AccountService {
                             FOR SHARE
                         ) AS ok
                     ), located AS MATERIALIZED (
-                        SELECT providers.id, providers.account_id, providers.last_seen
+                        SELECT
+                            providers.id, providers.account_id,
+                            providers.token_hash, providers.se_public_key,
+                            providers.session_id, providers.session_epoch,
+                            providers.hard_untrust_epoch
                         FROM public.providers AS providers
                         WHERE (
                               (providers.serial_number = $4
@@ -349,31 +362,108 @@ impl AccountService {
                           )
                         FOR UPDATE
                     ), matched AS MATERIALIZED (
-                        SELECT located.id, located.last_seen
+                        SELECT located.*
                         FROM located, authority
                         WHERE located.account_id = $3
                           AND authority.ok
                     ), state AS MATERIALIZED (
                         SELECT
                             EXISTS (SELECT 1 FROM located) AS found,
-                            EXISTS (SELECT 1 FROM matched) AS owned,
-                            EXISTS (
-                                SELECT 1 FROM matched
-                                WHERE last_seen >=
-                                    NOW() - ($5::BIGINT * INTERVAL '1 second')
-                            ) AS online
+                            EXISTS (SELECT 1 FROM matched) AS owned
+                    ), revoked_tokens AS (
+                        UPDATE public.provider_tokens AS tokens
+                        SET active = FALSE, revoked_at = NOW(), updated_at = NOW()
+                        FROM matched
+                        WHERE tokens.account_id = $3
+                          AND tokens.active
+                          AND (
+                              (matched.token_hash <> ''
+                               AND tokens.token_hash = matched.token_hash)
+                              OR (tokens.provider_id <> ''
+                                  AND tokens.provider_id = matched.id)
+                              OR tokens.provider_id = ''
+                          )
+                        RETURNING tokens.token_hash
+                    ), invalidated_reuse AS (
+                        DELETE FROM public.provider_trust_reuse AS reuse
+                        USING matched
+                        WHERE (reuse.provider_id <> ''
+                               AND reuse.provider_id = matched.id)
+                           OR (matched.se_public_key <> ''
+                               AND reuse.se_pubkey = matched.se_public_key)
+                        RETURNING reuse.se_pubkey
+                    ), valid_identities AS MATERIALIZED (
+                        SELECT
+                            CASE
+                                WHEN matched.id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+                                THEN matched.id::UUID
+                                ELSE NULL
+                            END AS provider_id,
+                            GREATEST(
+                                matched.session_epoch,
+                                matched.hard_untrust_epoch,
+                                1
+                            ) AS hard_untrust_epoch
+                        FROM matched
+                    ), hard_untrusted AS (
+                        INSERT INTO rust_coord.provider_hard_untrust_epochs (
+                            provider_id, hard_untrust_epoch, reason,
+                            evidence_digest, owner_epoch
+                        )
+                        SELECT
+                            valid_identities.provider_id,
+                            valid_identities.hard_untrust_epoch,
+                            'owner deleted machine',
+                            decode(
+                                md5($3 || valid_identities.provider_id::TEXT)
+                                || md5(valid_identities.provider_id::TEXT || $3),
+                                'hex'
+                            ),
+                            $2
+                        FROM valid_identities
+                        WHERE valid_identities.provider_id IS NOT NULL
+                        ON CONFLICT (provider_id) DO UPDATE SET
+                            hard_untrust_epoch = GREATEST(
+                                provider_hard_untrust_epochs.hard_untrust_epoch,
+                                EXCLUDED.hard_untrust_epoch
+                            ),
+                            reason = EXCLUDED.reason,
+                            evidence_digest = EXCLUDED.evidence_digest,
+                            owner_epoch = EXCLUDED.owner_epoch,
+                            version = provider_hard_untrust_epochs.version + 1,
+                            updated_at = NOW()
+                        RETURNING provider_id
+                    ), closed_sessions AS (
+                        UPDATE public.provider_sessions AS sessions
+                        SET
+                            last_seen = NOW(),
+                            disconnected_at = COALESCE(
+                                sessions.disconnected_at, NOW()
+                            ),
+                            disconnect_reason = CASE
+                                WHEN sessions.disconnected_at IS NULL
+                                THEN 'credential revoked'
+                                ELSE sessions.disconnect_reason
+                            END
+                        FROM matched
+                        WHERE sessions.session_id IN (
+                            matched.session_id, matched.id
+                        )
+                        RETURNING sessions.session_id
                     ), reputations AS (
                         DELETE FROM public.provider_reputation AS reputation
-                        USING matched, state
+                        USING matched
                         WHERE reputation.provider_id = matched.id
-                          AND NOT state.online
                         RETURNING reputation.provider_id
                     ), deleted AS (
                         DELETE FROM public.providers AS providers
-                        USING matched, state
+                        USING matched
                         WHERE providers.id = matched.id
                           AND providers.account_id = $3
-                          AND NOT state.online
+                          AND (SELECT COUNT(*) FROM revoked_tokens) >= 0
+                          AND (SELECT COUNT(*) FROM invalidated_reuse) >= 0
+                          AND (SELECT COUNT(*) FROM hard_untrusted) >= 0
+                          AND (SELECT COUNT(*) FROM closed_sessions) >= 0
                           AND (SELECT COUNT(*) FROM reputations) >= 0
                         RETURNING providers.id
                     )
@@ -381,18 +471,24 @@ impl AccountService {
                         authority.ok AS authority_ok,
                         state.found,
                         state.owned,
-                        state.online,
-                        (SELECT COUNT(*) FROM deleted)::BIGINT AS rows_removed
+                        (SELECT COUNT(*) FROM deleted)::BIGINT AS rows_removed,
+                        COALESCE(
+                            (SELECT ARRAY_AGG(deleted.id ORDER BY deleted.id)
+                             FROM deleted),
+                            ARRAY[]::TEXT[]
+                        ) AS provider_ids
                     FROM authority
                     CROSS JOIN state
-                    "#,
-                )
-                .bind(self.store.owner_id())
-                .bind(self.store.epoch())
-                .bind(account_id)
-                .bind(serial_or_id)
-                .bind(duration_seconds_i64(self.config.heartbeat_timeout))
-                .fetch_one(self.store.pool()),
+                    "#;
+        let row = self
+            .store
+            .bounded(
+                sqlx::query_as::<_, DeleteProviderRow>(delete_provider_sql)
+                    .bind(self.store.owner_id())
+                    .bind(self.store.epoch())
+                    .bind(account_id)
+                    .bind(serial_or_id)
+                    .fetch_one(self.store.pool()),
             )
             .await?;
         if !row.authority_ok {
@@ -404,13 +500,23 @@ impl AccountService {
         if !row.owned {
             return Err(IdentityError::Forbidden);
         }
-        if row.online {
-            return Err(IdentityError::conflict(
-                "machine is currently online; stop it before removing",
-            ));
-        }
         if row.rows_removed == 0 {
             return Err(IdentityError::not_found("machine not found"));
+        }
+        if let Some(pilot) = &self.pilot {
+            for provider_id in &row.provider_ids {
+                let Ok(provider_id) = uuid::Uuid::parse_str(provider_id) else {
+                    continue;
+                };
+                pilot
+                    .fence_provider(
+                        darkbloom_coordinator_protocol::v2::ProviderId::new(
+                            *provider_id.as_bytes(),
+                        ),
+                        "owner deleted machine",
+                    )
+                    .await;
+            }
         }
         Ok(DeleteProviderResponse {
             deleted: true,
@@ -567,8 +673,8 @@ struct DeleteProviderRow {
     authority_ok: bool,
     found: bool,
     owned: bool,
-    online: bool,
     rows_removed: i64,
+    provider_ids: Vec<String>,
 }
 
 fn attestation_bool(value: Option<&Value>, go_name: &str, wire_name: &str) -> bool {

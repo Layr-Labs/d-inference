@@ -20,6 +20,11 @@ use crate::{
     pilot::PilotHandle,
     projection::FeeProjectionService,
     provider::DeliveryState,
+    provider_control::{ProviderControlError, ProviderControlPlane},
+    surface::{
+        billing::{WithdrawalRecovery, WithdrawalRecoveryAction, WithdrawalRecoveryError},
+        operations::{AdmissionGate, AdmissionKind, TelemetryService},
+    },
 };
 
 const FEE_PROJECTION_NAME: &str = "legacy-fees";
@@ -64,6 +69,10 @@ pub struct RecoveryRuntime {
     ledger: LedgerService,
     fees: FeeProjectionService,
     pilot: Option<PilotHandle>,
+    provider_control: Option<ProviderControlPlane>,
+    admission: Option<AdmissionGate>,
+    telemetry: Option<TelemetryService>,
+    withdrawal_recovery: Option<WithdrawalRecovery>,
     config: RecoveryRuntimeConfig,
 }
 
@@ -73,16 +82,50 @@ impl RecoveryRuntime {
         pilot: Option<PilotHandle>,
         config: RecoveryRuntimeConfig,
     ) -> Result<Self, RecoveryRuntimeError> {
+        let provider_control = pilot.as_ref().and_then(PilotHandle::provider_control);
         Ok(Self {
             recovery: RecoveryService::new(database.clone()),
             ledger: LedgerService::new(database.clone()),
             fees: FeeProjectionService::new(database),
             pilot,
+            provider_control,
+            admission: None,
+            telemetry: None,
+            withdrawal_recovery: None,
             config: config.validate()?,
         })
     }
 
-    /// Runs five independently leased lanes. A fatal worker exit cancels and
+    #[must_use]
+    pub fn with_provider_control(mut self, provider_control: Option<ProviderControlPlane>) -> Self {
+        if provider_control.is_some() {
+            self.provider_control = provider_control;
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn with_admission_gate(mut self, admission: Option<AdmissionGate>) -> Self {
+        self.admission = admission;
+        self
+    }
+
+    #[must_use]
+    pub fn with_telemetry_service(mut self, telemetry: Option<TelemetryService>) -> Self {
+        self.telemetry = telemetry;
+        self
+    }
+
+    #[must_use]
+    pub fn with_withdrawal_recovery(
+        mut self,
+        withdrawal_recovery: Option<WithdrawalRecovery>,
+    ) -> Self {
+        self.withdrawal_recovery = withdrawal_recovery;
+        self
+    }
+
+    /// Runs independently leased recovery lanes. A fatal worker exit cancels and
     /// joins every sibling before returning.
     pub async fn run(self, cancellation: CancellationToken) -> Result<(), RecoveryRuntimeError> {
         let mut workers = JoinSet::new();
@@ -118,10 +161,19 @@ impl RecoveryRuntime {
         spawn_worker(
             &mut workers,
             "fees",
-            services,
+            services.clone(),
             cancellation.clone(),
             |services, cancellation| async move { services.run_fees(cancellation).await },
         );
+        if services.telemetry.is_some() {
+            spawn_worker(
+                &mut workers,
+                "telemetry",
+                services,
+                cancellation.clone(),
+                |services, cancellation| async move { services.run_telemetry(cancellation).await },
+            );
+        }
 
         let outcome = tokio::select! {
             biased;
@@ -524,6 +576,13 @@ impl RecoveryRuntime {
                 () = cancellation.cancelled() => return Ok(()),
                 _ = ticker.tick() => {}
             }
+            let _admission = match &self.admission {
+                Some(gate) => match gate.enter(AdmissionKind::External) {
+                    Ok(guard) => Some(guard),
+                    Err(_) => continue,
+                },
+                None => None,
+            };
             let leases = match self
                 .recovery
                 .claim_external_events(
@@ -544,12 +603,64 @@ impl RecoveryRuntime {
                     return Ok(());
                 }
                 let digest_matches = canonical_json_digest(&lease.payload)? == lease.payload_digest;
-                let disposition = if digest_matches {
-                    // Supported Stripe events are atomically marked applied by
-                    // LedgerService. Any row reaching this worker is unknown.
-                    super::ExternalDisposition::Ignored
-                } else {
+                let disposition = if !digest_matches {
                     super::ExternalDisposition::Failed
+                } else if lease.source.as_ref() == "micromdm"
+                    && lease.event_kind.as_ref() == "SecurityInfo"
+                {
+                    let Some(control) = &self.provider_control else {
+                        tracing::warn!(
+                            event_id = %lease.event_id,
+                            "MDM event retained until the provider control plane is available"
+                        );
+                        continue;
+                    };
+                    match control.recover_mdm_event(&lease).await {
+                        Ok(disposition) => {
+                            if disposition == super::ExternalDisposition::Rejected {
+                                match control.mdm_provider_fence(&lease.event_id).await {
+                                    Ok(Some(fence)) => {
+                                        if let Some(pilot) = &self.pilot {
+                                            pilot
+                                                .fence_provider_epoch(
+                                                    fence.provider_id,
+                                                    fence.session_epoch,
+                                                    "durable MDM posture mismatch",
+                                                )
+                                                .await;
+                                        }
+                                    }
+                                    Ok(None) => {}
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            event_id = %lease.event_id,
+                                            error = %error,
+                                            "MDM provider fence lookup will retry after lease expiry"
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+                            disposition
+                        }
+                        Err(
+                            ProviderControlError::MalformedMdmEvent
+                            | ProviderControlError::UnsolicitedMdmEvent
+                            | ProviderControlError::MdmEventConflict,
+                        ) => super::ExternalDisposition::Rejected,
+                        Err(error) => {
+                            tracing::warn!(
+                                event_id = %lease.event_id,
+                                error = %error,
+                                "MDM event processing will retry after lease expiry"
+                            );
+                            continue;
+                        }
+                    }
+                } else {
+                    // Supported Stripe events are atomically marked applied by
+                    // LedgerService. Any other row reaching this worker is unknown.
+                    super::ExternalDisposition::Ignored
                 };
                 if let Err(error) = self
                     .recovery
@@ -579,6 +690,13 @@ impl RecoveryRuntime {
                 () = cancellation.cancelled() => return Ok(()),
                 _ = ticker.tick() => {}
             }
+            let _admission = match &self.admission {
+                Some(gate) => match gate.enter(AdmissionKind::External) {
+                    Ok(guard) => Some(guard),
+                    Err(_) => continue,
+                },
+                None => None,
+            };
             let leases = match self
                 .recovery
                 .claim_outbox(
@@ -600,17 +718,45 @@ impl RecoveryRuntime {
                 }
                 let disposition = match lease.kind.as_ref() {
                     "fee_projection" => match self.project_fee_page(Uuid::new_v4()).await {
-                        Ok(()) => super::OutboxDisposition::Delivered,
-                        Err(LedgerError::StaleVersion) => super::OutboxDisposition::Retry,
+                        Ok(()) => Some(super::OutboxDisposition::Delivered),
+                        Err(LedgerError::StaleVersion) => Some(super::OutboxDisposition::Retry),
                         Err(error) => {
                             handle_item_error("fee projection outbox", error)?;
-                            super::OutboxDisposition::Retry
+                            Some(super::OutboxDisposition::Retry)
                         }
                     },
-                    // No production payment proxy is intentionally embedded in
-                    // the coordinator. The bounded retry budget terminalizes it.
-                    "external_call" => super::OutboxDisposition::Retry,
-                    _ => super::OutboxDisposition::Cancelled,
+                    "external_call" => {
+                        let Some(recovery) = &self.withdrawal_recovery else {
+                            tracing::warn!(
+                                outbox_id = %lease.outbox_id,
+                                "Stripe withdrawal outbox retained until recovery is configured"
+                            );
+                            continue;
+                        };
+                        match recovery.process(worker_id, &lease).await {
+                            Ok(WithdrawalRecoveryAction::Handled) => None,
+                            Ok(WithdrawalRecoveryAction::Retry) => {
+                                Some(super::OutboxDisposition::Retry)
+                            }
+                            Err(
+                                WithdrawalRecoveryError::InvalidPayload
+                                | WithdrawalRecoveryError::Ledger(_),
+                            ) => Some(super::OutboxDisposition::Failed),
+                            Err(WithdrawalRecoveryError::StaleLease) => continue,
+                            Err(error) => {
+                                tracing::warn!(
+                                    outbox_id = %lease.outbox_id,
+                                    error = %error,
+                                    "Stripe withdrawal recovery will retry"
+                                );
+                                Some(super::OutboxDisposition::Retry)
+                            }
+                        }
+                    }
+                    _ => Some(super::OutboxDisposition::Cancelled),
+                };
+                let Some(disposition) = disposition else {
+                    continue;
                 };
                 if let Err(error) = self
                     .recovery
@@ -641,6 +787,34 @@ impl RecoveryRuntime {
             match self.project_fee_page(worker_id).await {
                 Ok(()) | Err(LedgerError::StaleVersion) => {}
                 Err(error) => handle_claim_error("fee projection", error)?,
+            }
+        }
+    }
+
+    async fn run_telemetry(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<(), RecoveryRuntimeError> {
+        let worker_id = Uuid::new_v4();
+        let Some(telemetry) = &self.telemetry else {
+            return Ok(());
+        };
+        let mut ticker = worker_ticker(self.config.poll_interval);
+        loop {
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => return Ok(()),
+                _ = ticker.tick() => {}
+            }
+            let _admission = match &self.admission {
+                Some(gate) => match gate.enter(AdmissionKind::External) {
+                    Ok(guard) => Some(guard),
+                    Err(_) => continue,
+                },
+                None => None,
+            };
+            if let Err(error) = telemetry.process_once(worker_id).await {
+                tracing::warn!(error = %error, "durable telemetry delivery will retry");
             }
         }
     }

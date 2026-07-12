@@ -18,6 +18,7 @@ scope:
     - Coordinator → Apple MDM / MDA trust services
     - Admin → Coordinator admin API
     - Provider in-process MLX inference engine
+    - Optional provider → privileged fan-helper XPC boundary and AppleSMC writes
     - Coordinator → Solana payment network
     - Apple attestation trust chain (cross-cutting)
   out_of_scope:
@@ -156,6 +157,16 @@ assets:
       Compromise lets an attacker sign profiles (and binaries) macOS treats as coming
       from the registered developer. Optional — when unset the coordinator serves
       profiles unsigned.
+
+  - id: A-014
+    name: provider_fan_control_authority
+    description: >
+      Root authority to place Apple Silicon fans into manual mode, set bounded
+      RPM targets, and temporarily assert the global Ftst fan-control gate.
+    sensitivity: high
+    notes: >
+      Dormant unless the operator explicitly runs sudo darkbloom fan enable.
+      Misuse can reduce cooling or interfere with macOS thermal management.
 
 # ─────────────────────────────────────────────────────────────
 # TRUST BOUNDARIES
@@ -727,6 +738,36 @@ trust_boundaries:
       - "The entire MDM→MDA trust upgrade path is asynchronous and runs in a background
         goroutine. A provider is routable at TrustSelfSigned during the window between
         registration and completion of the full verification chain."
+
+  - id: TB-010
+    name: provider_to_privileged_fan_helper
+    description: >
+      An optional root LaunchDaemon owns the AppleSMC fan-write connection. The
+      unprivileged provider may only renew a bounded activity lease or read status;
+      root may additionally request automatic restoration. The helper is outside
+      the user-writable provider install tree.
+    how_it_works: >
+      Explicit sudo enable verifies the separately signed nested helper and atomically
+      copies it to /Library/PrivilegedHelperTools/io.darkbloom.fan-helper, with a
+      root-owned LaunchDaemon plist and validated JSON policy. Both XPC peers use
+      NSXPCConnection code-signing requirements that pin Team SLDQ2GJ6TL and the
+      io.darkbloom.provider / io.darkbloom.fan-helper identifiers. The helper also
+      requires the configured numeric provider UID. The provider renews every five
+      seconds; expiry after fifteen seconds restores automatic mode. The root helper
+      exposes no arbitrary key/value SMC API and has no network, model, credential,
+      or prompt dependency. Before any manual-mode write it fsyncs a root-owned
+      ownership journal; launchd restart restores those fan indices before accepting
+      another lease.
+    current_limitations:
+      - "Apple does not publish stable GPU sensor names or fan-write semantics. Active
+        support is capability-gated by an explicit M1-M5 catalog and requires real-device
+        validation for each model family."
+      - "No process can catch SIGKILL. Safety after SIGKILL depends on launchd KeepAlive
+        restart plus the durable ownership journal; simultaneous helper death and
+        launchd disablement can leave manual state until reboot or administrator repair."
+      - "The root-installed helper is not replaced by the unprivileged self-updater.
+        Protocol mismatch intentionally leaves it dormant until the operator reruns
+        sudo darkbloom fan enable."
 
 # ─────────────────────────────────────────────────────────────
 # THREATS
@@ -2233,3 +2274,152 @@ threats:
       designated-requirement pin to structural codesign validity, or move the
       candidate-hung timeout below the operator's configured
       startup_preload_timeout_secs plus margin.
+
+  # ── TB-010: Provider → privileged fan helper ─────────────────
+
+  - id: T-044
+    trust_boundary: TB-010
+    stride: Elevation_of_Privilege
+    title: Untrusted local process impersonates the provider to the root fan helper
+    description: >
+      A local process that can acquire or renew a helper lease can cause root-owned
+      AppleSMC writes whenever the configured temperature threshold is met.
+    adversaries: [ADV-001]
+    affected_assets: [A-014]
+    affected_files:
+      - provider-swift/Sources/DarkbloomFanService/FanPeerAuthentication.swift
+      - provider-swift/Sources/DarkbloomFanHelper/FanXPCService.swift
+      - provider-swift/Sources/darkbloom/FanActivityLease.swift
+    mitigations:
+      - description: >
+          Production XPC connections mutually pin exact signing identifiers and
+          Developer ID Team SLDQ2GJ6TL using NSXPCConnection requirements; the
+          helper separately restricts peers to root or the configured numeric UID
+          whose directory-service GeneratedUID still matches the opt-in account.
+        status: implemented
+      - description: >
+          The exported protocol contains only lease, status, and root-only Auto
+          restoration operations; no arbitrary SMC write primitive exists.
+        status: implemented
+    open_findings: []
+    severity: high
+    detection_hint: >
+      Reopens if production accepts identifier-only/ad-hoc peers, trusts a PID or
+      user-controlled name instead of XPC credentials, or adds a generic SMC method.
+
+  - id: T-045
+    trust_boundary: TB-010
+    stride: Tampering
+    title: User-writable helper, plist, or policy turns launchd into root execution
+    description: >
+      A system LaunchDaemon that executes a binary or parses executable paths from a
+      provider-owned home directory would convert ordinary account access into root.
+    adversaries: [ADV-001]
+    affected_assets: [A-014]
+    affected_files:
+      - provider-swift/Sources/darkbloom/Fan/FanServiceManager.swift
+      - provider-swift/Sources/DarkbloomFanService/FanDurableFile.swift
+      - provider-swift/Sources/ProviderCore/Update/FanHelperCapabilityVerifier.swift
+    mitigations:
+      - description: >
+          The helper is copied to a fixed root:wheel 0755 path after exact signature
+          verification; plist and policy are fixed-path, root-owned, non-symlink files.
+        status: implemented
+      - description: >
+          Writes use same-directory temporary files, fchmod/fchown, fsync, atomic
+          rename, and parent-directory fsync. The helper rejects unsafe file metadata.
+        status: implemented
+    open_findings: []
+    severity: critical
+    detection_hint: >
+      Reopens if ProgramArguments points into ~/.darkbloom, a user supplies a path,
+      signature/ownership checks weaken, or config grows command/path fields.
+
+  - id: T-046
+    trust_boundary: TB-010
+    stride: Denial_of_Service
+    title: Helper crash or partial SMC write strands fans in manual mode
+    description: >
+      Manual mode and Ftst can outlive the process that asserted them. A failure
+      between multi-fan writes can also leave inconsistent fan state.
+    adversaries: [ADV-001]
+    affected_assets: [A-014]
+    affected_files:
+      - provider-swift/Sources/DarkbloomFanCore/FanController.swift
+      - provider-swift/Sources/DarkbloomFanHelper/FanDaemon.swift
+      - provider-swift/Sources/DarkbloomFanService/FanOwnershipRecovery.swift
+    mitigations:
+      - description: >
+          Controller writes are verified and transactional; any partial failure
+          restores every possibly touched fan and clears only possibly owned Ftst.
+        status: implemented
+      - description: >
+          A durable ownership journal is committed before the first possible SMC
+          mutation; KeepAlive restart reconciles it before XPC activation.
+        status: implemented
+      - description: >
+          Signal shutdown, sleep, administrator disable, and uninstall restore and
+          verify Auto. Uninstall refuses to delete recovery state if restoration fails.
+        status: implemented
+    open_findings: []
+    severity: high
+    detection_hint: >
+      Reopens if journal persistence moves after an SMC write, rollback stops after
+      the first fan error, or shutdown/uninstall deletes an unresolved journal.
+
+  - id: T-047
+    trust_boundary: TB-010
+    stride: Tampering
+    title: Stale provider or downgrade keeps privileged fan control active
+    description: >
+      Provider stop, schedule closure, update, rollback, or a hung process must not
+      leave a permanent root-authorized manual policy.
+    adversaries: [ADV-001]
+    affected_assets: [A-014]
+    affected_files:
+      - provider-swift/Sources/darkbloom/FanActivityLease.swift
+      - provider-swift/Sources/darkbloom/StartCommand+Modes.swift
+      - provider-swift/Sources/DarkbloomFanHelper/FanDaemon.swift
+    mitigations:
+      - description: >
+          Connection-scoped leases renew every five seconds and expire after fifteen;
+          invalidation and task cancellation request immediate restoration.
+        status: implemented
+      - description: >
+          Sleep revokes the lease and wake requires a fresh renewal. Protocol mismatch
+          and rollback to pre-lease versions leave the helper dormant in Auto.
+        status: implemented
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Reopens if a lease becomes persistent, cancellation stops releasing it, or an
+      incompatible provider can trigger manual mode.
+
+  - id: T-048
+    trust_boundary: TB-010
+    stride: Denial_of_Service
+    title: Incorrect private GPU sensor mapping applies an unsafe fan policy
+    description: >
+      Apple changes private SMC sensor names by chip family. A wrong or stale mapping
+      can engage too early, fail to cool, or hold a manual ceiling while another
+      component overheats.
+    adversaries: []
+    affected_assets: [A-014]
+    affected_files:
+      - provider-swift/Sources/DarkbloomFanCore/FanHardware.swift
+      - provider-swift/Sources/DarkbloomFanCore/FanPolicy.swift
+      - provider-swift/Sources/DarkbloomFanHelper/FanDaemon.swift
+    mitigations:
+      - description: >
+          Explicit M1-M5 allowlists, runtime key/type probing, finite plausible-value
+          checks, missing-sensor fail-safe, and read-only diagnose output.
+        status: implemented
+      - description: >
+          Takeover never lowers the existing target; serious/critical macOS thermal
+          pressure, invalid readings, or control failures restore system Auto.
+        status: implemented
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Every new chip/model or macOS release needs GPU-load correlation and full
+      engage/release/restore hardware validation before support is claimed.

@@ -7,8 +7,8 @@ The provider bundle is built and signed in CI via
 
 High-level flow:
 
-1. Build the `darkbloom` and `darkbloom-enclave` binaries.
-2. Sign with the Developer ID Application certificate.
+1. Build `darkbloom`, `darkbloom-enclave`, and `darkbloom-fan-helper`.
+2. Sign each nested executable with its own identifier, then sign the outer app with the Developer ID Application certificate.
 3. Notarize with Apple.
 4. Compute SHA-256 hashes **after** code signing.
 5. Upload to R2.
@@ -17,11 +17,16 @@ High-level flow:
 > **Important:** hashes must be computed after code signing, not before.
 > Providers verify the hash of the signed binary during install.
 
-Scripts:
+Bundle creation, resource staging, helper signing, notarization, and final
+archive checks live inline in `.github/workflows/release-swift.yml`; there are no
+standalone bundle scripts. `scripts/install.sh` is the end-user installer served
+by the coordinator.
 
-- `scripts/build-bundle.sh` — bundle creation.
-- `scripts/bundle-app.sh` — .app bundle + DMG creation.
-- `scripts/install.sh` — end-user installer (served by coordinator).
+For v0.7.9+, the workflow places the fan helper only at
+`Darkbloom.app/Contents/Helpers/darkbloom-fan-helper`, signs it as
+`io.darkbloom.fan-helper` without provider APNs/keychain entitlements, and seals
+the `fan-helper-v1` capability marker. It must never appear in the flat `bin/`
+verifier layout or be privileged-installed by CI/the ordinary installer.
 
 ## Coordinator release
 
@@ -61,8 +66,9 @@ make ui-build
 
 ## Release-sensitive sync points
 
-- Provider bundle semantics: keep `scripts/build-bundle.sh`,
-  `scripts/install.sh`, and `LatestProviderVersion` in sync.
+- Provider bundle semantics: keep `.github/workflows/release-swift.yml`, both
+  installer copies, updater capability verification, and `LatestProviderVersion`
+  in sync.
 - Install paths or process invocation changes must update both the CLI and the
   install flow.
 - Model registry changes span coordinator registry, provider manifest code,

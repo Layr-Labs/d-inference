@@ -107,6 +107,33 @@ func TestInstallScriptTemplating(t *testing.T) {
 			t.Error("install.sh does not install the Secure Enclave helper")
 		}
 	})
+
+	t.Run("fan helper is verified but never privileged-installed", func(t *testing.T) {
+		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
+		defer srv.Close()
+
+		body := fetchInstallScript(t, srv.URL)
+		for _, required := range []string{
+			"fan-helper-v1",
+			"Contents/Helpers/darkbloom-fan-helper",
+			`identifier "io.darkbloom.fan-helper"`,
+			`certificate leaf[subject.OU] = "SLDQ2GJ6TL"`,
+		} {
+			if !strings.Contains(body, required) {
+				t.Errorf("install.sh is missing fan-helper verification %q", required)
+			}
+		}
+		for _, forbidden := range []string{
+			"sudo ",
+			"launchctl",
+			"/Library/PrivilegedHelperTools",
+			"/Library/LaunchDaemons",
+		} {
+			if strings.Contains(body, forbidden) {
+				t.Errorf("ordinary install.sh performs privileged fan activation via %q", forbidden)
+			}
+		}
+	})
 }
 
 func newTestServerWithBaseURL(t *testing.T, baseURL string) *httptest.Server {

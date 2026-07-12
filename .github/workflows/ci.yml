@@ -76,7 +76,11 @@ jobs:
         working-directory: provider-swift
         # Build the TEST bundle too, so the .xctest bundle exists before we
         # place the metallib next to its runner binary (see next step).
-        run: swift build --build-tests
+        run: |
+          swift build --build-tests
+          # The root helper is a separately packaged executable product and is
+          # not guaranteed to be linked merely because the test bundle builds.
+          swift build --product darkbloom-fan-helper
       - name: Extract mlx.metallib
         working-directory: provider-swift
         run: |
@@ -149,7 +153,9 @@ jobs:
             spm-v2-${{ runner.os }}-
       - name: Build provider-swift
         working-directory: provider-swift
-        run: swift build -c release --product darkbloom
+        run: |
+          swift build -c release --product darkbloom
+          swift build -c release --product darkbloom-fan-helper
       - name: Build nested mlx-swift-lm tests (warms nested cache)
         working-directory: libs/mlx-swift-lm
         # The test-provider job runs CBv2PagedSafetyTests from this nested

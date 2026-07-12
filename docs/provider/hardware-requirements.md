@@ -92,6 +92,9 @@ default).
 - Use `darkbloom status` and `darkbloom doctor` to check thermal state.
 - The provider calls `ProcessLifecycle.preventSystemSleep()` while serving so
   in-flight requests are not interrupted.
+- v0.7.9 adds optional experimental fan control. It requires a Mac that reports
+  at least one fan and a validated GPU sensor; fanless and unknown hardware stays
+  under macOS control. See [Experimental Fan Control](fan-control.md).
 
 ## macOS version support
 

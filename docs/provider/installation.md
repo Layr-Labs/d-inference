@@ -35,6 +35,12 @@ No `sudo` is required. The installer will try to create `/usr/local/bin/darkbloo
 as a convenience symlink, but it falls back to the shell `PATH` update if that
 fails.
 
+The v0.7.9+ app also contains a separately signed experimental fan helper under
+`Darkbloom.app/Contents/Helpers`. The installer verifies and preserves it but
+does not copy it into `/Library`, register launchd, request administrator access,
+or write AppleSMC. Only `sudo darkbloom fan enable` performs that separate opt-in
+step; see [Experimental Fan Control](fan-control.md).
+
 ## Manual install
 
 If you cannot run the curl installer:
@@ -122,6 +128,9 @@ Auto-update is controlled by `provider.auto_update` in `provider.toml`
 ## Uninstalling
 
 ```bash
+# If experimental fan control was enabled, restore Auto and remove it first
+sudo darkbloom fan uninstall
+
 # Stop the daemon and remove the launchd plist
 darkbloom stop --uninstall
 
@@ -135,6 +144,8 @@ rm -rf ~/.config/darkbloom
 
 `darkbloom stop --uninstall` (`provider-swift/Sources/darkbloom/StopCommand.swift`)
 disarms the crash-recovery watchdog and removes the launchd user agent.
+It deliberately does not remove the separately opted-in root fan helper; use the
+fan-specific uninstall command above.
 `darkbloom unenroll` opens System Settings → Device Management so you can remove
 the profile.
 

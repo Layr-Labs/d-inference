@@ -352,6 +352,13 @@ extension UpdateRecoveryStore {
                 target,
                 deep: layout == .app
             )
+            if layout == .app {
+                try FanHelperCapabilityVerifier.verify(
+                    app: bundle,
+                    executable: binary,
+                    signaturePolicy: .darkbloomProduction
+                )
+            }
         } catch {
             throw StoreError.predecessorVerificationFailed(
                 "\(target.lastPathComponent) does not satisfy the pinned Darkbloom "

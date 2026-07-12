@@ -6,6 +6,7 @@ name: Release Provider Bundle (Swift)
 #   - bin/darkbloom          (provider CLI)
 #   - bin/darkbloom-enclave  (Secure Enclave attestation/sign helper)
 #   - bin/mlx.metallib       (compiled Metal kernels for the matching MLX)
+#   - Darkbloom.app/Contents/Helpers/darkbloom-fan-helper (dormant opt-in root helper)
 #   - Darkbloom.app/Contents/Resources/*.bundle (SwiftPM resources)
 #
 # install.sh creates a backward-compatibility symlink from the legacy
@@ -61,6 +62,8 @@ env:
   APPLE_TEAM_ID: 'SLDQ2GJ6TL'
   CLI_NAME: 'darkbloom'
   ENCLAVE_NAME: 'darkbloom-enclave'
+  FAN_HELPER_NAME: 'darkbloom-fan-helper'
+  FAN_HELPER_ID: 'io.darkbloom.fan-helper'
   MIN_MACOS: '14.0'
   # The mlx.metallib (compiled Metal GPU kernels) is BUILT FROM SOURCE from the
   # MLX fork pinned at libs/mlx-swift/Source/Cmlx/mlx — NOT fetched from a PyPI
@@ -321,9 +324,11 @@ jobs:
           set -euo pipefail
           swift build -c release --product darkbloom
           swift build -c release --product darkbloom-enclave
+          swift build -c release --product darkbloom-fan-helper
           BIN_DIR=$(swift build -c release --show-bin-path)
           test -x "$BIN_DIR/$CLI_NAME"
           test -x "$BIN_DIR/$ENCLAVE_NAME"
+          test -x "$BIN_DIR/$FAN_HELPER_NAME"
           echo "BIN_DIR=$BIN_DIR" >> "$GITHUB_ENV"
           ls -la "$BIN_DIR" | head -50
 
@@ -440,11 +445,19 @@ jobs:
           # Wrap the CLI in a minimal .app bundle so the provisioning profile
           # authorizes keychain-access-groups for the persistent SE key.
           APP="$STAGE/Darkbloom.app"
-          mkdir -p "$APP/Contents/MacOS"
+          mkdir -p \
+            "$APP/Contents/MacOS" \
+            "$APP/Contents/Helpers" \
+            "$APP/Contents/Resources/darkbloom-runtime-capabilities"
 
           cp "$BIN_DIR/$CLI_NAME" "$APP/Contents/MacOS/"
           cp "$BIN_DIR/$ENCLAVE_NAME" "$APP/Contents/MacOS/"
           cp "${{ steps.metallib.outputs.metallib }}" "$APP/Contents/MacOS/mlx.metallib"
+          install -m 0755 \
+            "$BIN_DIR/$FAN_HELPER_NAME" \
+            "$APP/Contents/Helpers/$FAN_HELPER_NAME"
+          printf '1\n' \
+            > "$APP/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
 
           cat > "$APP/Contents/Info.plist" << PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -495,6 +508,17 @@ jobs:
           # Hardened-runtime sign each binary and resource, then the bundle.
           # mlx.metallib must be signed before the bundle or codesign rejects
           # it as an unsigned subcomponent.
+          # The fan helper runs as root only after a separate, explicit sudo
+          # command. Give it its own identity and no provider APNs/keychain
+          # entitlements; ordinary installation leaves it sealed and dormant.
+          codesign --force --options runtime --timestamp \
+            --identifier "$FAN_HELPER_ID" \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$DEVELOPER_ID" "$APP/Contents/Helpers/$FAN_HELPER_NAME"
+          FAN_HELPER_REQUIREMENT="anchor apple generic and identifier \"$FAN_HELPER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
+          codesign --verify --strict --verbose=2 \
+            "-R=$FAN_HELPER_REQUIREMENT" \
+            "$APP/Contents/Helpers/$FAN_HELPER_NAME"
           codesign --force --options runtime --timestamp \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/mlx.metallib"
@@ -650,6 +674,16 @@ jobs:
           grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/darkbloom-enclave' /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/mlx.metallib' /tmp/darkbloom-bundle-files.txt
+          if grep -qx './bin/darkbloom-fan-helper' /tmp/darkbloom-bundle-files.txt; then
+            echo "::error::fan helper must not be present in the flat verifier layout"
+            exit 1
+          fi
+          grep -qx \
+            './Darkbloom.app/Contents/Helpers/darkbloom-fan-helper' \
+            /tmp/darkbloom-bundle-files.txt
+          grep -qx \
+            './Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1' \
+            /tmp/darkbloom-bundle-files.txt
           while IFS= read -r bundle_name; do
             grep -qx \
               "./Darkbloom.app/Contents/Resources/${bundle_name}/" \
@@ -669,6 +703,22 @@ jobs:
           rm -rf "$SMOKE_ROOT"
           mkdir -p "$SMOKE_ROOT"
           tar xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$SMOKE_ROOT"
+          FINAL_FAN_HELPER="$SMOKE_ROOT/Darkbloom.app/Contents/Helpers/$FAN_HELPER_NAME"
+          FINAL_FAN_MARKER="$SMOKE_ROOT/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
+          test -f "$FINAL_FAN_HELPER"
+          test ! -L "$FINAL_FAN_HELPER"
+          test -x "$FINAL_FAN_HELPER"
+          test "$(stat -f '%Lp' "$FINAL_FAN_HELPER")" = "755"
+          test -f "$FINAL_FAN_MARKER"
+          test ! -L "$FINAL_FAN_MARKER"
+          test "$(tr -d '[:space:]' < "$FINAL_FAN_MARKER")" = "1"
+          LC_ALL=C grep -a -q -F 'darkbloom-fan-helper-v1' \
+            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME"
+          FAN_HELPER_REQUIREMENT="anchor apple generic and identifier \"$FAN_HELPER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
+          codesign --verify --strict --verbose=2 \
+            "-R=$FAN_HELPER_REQUIREMENT" "$FINAL_FAN_HELPER"
+          codesign --verify --deep --strict --verbose=2 \
+            "$SMOKE_ROOT/Darkbloom.app"
           DARKBLOOM_NO_UPDATE_CHECK=1 \
             "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke
 

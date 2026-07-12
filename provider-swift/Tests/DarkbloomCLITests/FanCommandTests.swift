@@ -36,4 +36,12 @@ struct FanCommandTests {
         #expect(configure.speed == 90)
         #expect(configure.temperature == nil)
     }
+
+    @Test("executable path decoding preserves non-ASCII UTF-8 bytes")
+    func executablePathDecodesNonASCII() {
+        let expected = "/Users/José/Darkbloom.app/Contents/MacOS/darkbloom"
+        let buffer = expected.utf8.map { CChar(bitPattern: $0) } + [0, 65]
+
+        #expect(FanServiceManager.decodeExecutablePath(buffer) == expected)
+    }
 }

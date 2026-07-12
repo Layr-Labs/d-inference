@@ -36,7 +36,7 @@ extension FanServiceManager {
         guard _NSGetExecutablePath(&buffer, &size) == 0 else {
             throw FanServiceManagerError.unsafeFile("could not resolve current executable")
         }
-        let path = String(decoding: buffer.prefix { $0 != 0 }.map(UInt8.init), as: UTF8.self)
+        let path = Self.decodeExecutablePath(buffer)
         guard let resolved = realpath(path, nil) else {
             throw FanServiceManagerError.unsafeFile("could not canonicalize current executable")
         }
@@ -45,6 +45,13 @@ extension FanServiceManager {
         #else
         return URL(fileURLWithPath: CommandLine.arguments[0])
         #endif
+    }
+
+    static func decodeExecutablePath(_ buffer: [CChar]) -> String {
+        String(
+            decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
+            as: UTF8.self
+        )
     }
 
     func verifyRegularExecutable(_ url: URL) throws {

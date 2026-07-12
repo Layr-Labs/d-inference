@@ -547,6 +547,21 @@ async fn telemetry_privacy_drain_mdm_and_encrypted_export_are_enforced() {
         assert_eq!(metrics["gauges"]["active_http_inference"], 0);
         assert_eq!(metrics["gauges"]["active_http_mutations"], 0);
         assert_eq!(metrics["gauges"]["active_external_operations"], 0);
+        assert!(metrics["datadog_bridge"]["enabled"].is_boolean());
+        assert!(metrics["datadog_bridge"]["dropped_full"].is_number());
+        assert!(metrics["durable_states"].as_array().is_some_and(|states| {
+            states.iter().any(|state| {
+                state["relation"] == "telemetry_events"
+                    && state["state"] == "pending"
+                    && state["count"] == 0
+            })
+        }));
+        assert_eq!(metrics["rollback_guard"]["go_fallback_safe"], true);
+        assert_eq!(metrics["build"]["binary"], "rust");
+        assert_eq!(
+            metrics["gauges"]["migration_checksum_valid"],
+            serde_json::Value::Bool(true)
+        );
         sink.stop();
 
         assert_eq!(

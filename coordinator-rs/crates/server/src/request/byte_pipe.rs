@@ -17,6 +17,8 @@ use std::{
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
+use crate::telemetry::datadog::{self, Metric, Tag, TagKey};
+
 use super::error::{CancellationReason, PipeCloseReason, PipeConfigError, PipeError};
 
 /// Process hard bound for a single direct pipe's resident items.
@@ -314,12 +316,22 @@ impl<T: PipeItem> BytePipeSender<T> {
             }
             if state.queue.len() >= self.shared.limits.maximum_items {
                 state.close = CloseState::Failed(PipeCloseReason::ItemOverflow);
+                datadog::counter(
+                    Metric::BytePipeOverflow,
+                    1,
+                    &[Tag::new(TagKey::Kind, "items")],
+                );
                 Some((
                     PipeError::ItemOverflow,
                     PipeCloseReason::ItemOverflow.cancellation_reason(),
                 ))
             } else if bytes > self.shared.limits.maximum_bytes.saturating_sub(state.bytes) {
                 state.close = CloseState::Failed(PipeCloseReason::ByteOverflow);
+                datadog::counter(
+                    Metric::BytePipeOverflow,
+                    1,
+                    &[Tag::new(TagKey::Kind, "bytes")],
+                );
                 Some((
                     PipeError::ByteOverflow,
                     PipeCloseReason::ByteOverflow.cancellation_reason(),

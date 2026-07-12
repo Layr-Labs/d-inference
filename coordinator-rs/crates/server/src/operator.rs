@@ -13,6 +13,7 @@ use crate::{
         review_resolution_operation,
     },
     recovery::RecoveryService,
+    telemetry::state,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,6 +22,7 @@ pub enum OperatorCommand {
     Version,
     ConfigCheck,
     Recovery,
+    StateCounts,
     InvariantScan,
     ReviewResolve {
         job_id: JobId,
@@ -53,6 +55,7 @@ impl OperatorCommand {
             "version" if arguments.len() == 1 => Ok(Self::Version),
             "check-config" | "config-check" if arguments.len() == 1 => Ok(Self::ConfigCheck),
             "recovery" if arguments.len() == 1 => Ok(Self::Recovery),
+            "state-counts" if arguments.len() == 1 => Ok(Self::StateCounts),
             "invariant-scan" if arguments.len() == 1 => Ok(Self::InvariantScan),
             "review-resolve" => parse_review_resolution(&arguments[1..]),
             _ => Err(OperatorCommandError::Usage),
@@ -64,6 +67,7 @@ impl OperatorCommand {
         database: Database,
     ) -> Result<Value, OperatorCommandError> {
         match self {
+            Self::StateCounts => state_counts(database).await,
             Self::InvariantScan => {
                 let report = RecoveryService::new(database).scan_invariants().await?;
                 serde_json::to_value(report).map_err(OperatorCommandError::Json)
@@ -97,6 +101,27 @@ impl OperatorCommand {
             }
         }
     }
+}
+
+async fn state_counts(database: Database) -> Result<Value, OperatorCommandError> {
+    let snapshot = state::snapshot(&database).await?;
+    let compatibility = database.compatibility();
+    Ok(json!({
+        "binary": "rust",
+        "read_only": true,
+        "contains_pii": false,
+        "build": {
+            "version": option_env!("DARKBLOOM_BUILD_VERSION").unwrap_or("dev"),
+            "commit": option_env!("DARKBLOOM_BUILD_COMMIT").unwrap_or("unknown"),
+        },
+        "schema": {
+            "public_version": compatibility.public_version,
+            "rust_version": compatibility.rust_version,
+            "migration_checksum_valid": compatibility.migration_checksum_valid,
+        },
+        "states": snapshot.states,
+        "rollback_guard": snapshot.rollback_guard,
+    }))
 }
 
 fn parse_review_resolution(arguments: &[String]) -> Result<OperatorCommand, OperatorCommandError> {
@@ -146,7 +171,7 @@ fn parse_review_resolution(arguments: &[String]) -> Result<OperatorCommand, Oper
 #[derive(Debug, Error)]
 pub enum OperatorCommandError {
     #[error(
-        "usage: coordinator [serve|version|check-config|config-check|recovery|invariant-scan|review-resolve --job UUID --disposition settle|release --reason TEXT]"
+        "usage: coordinator [serve|version|check-config|config-check|recovery|state-counts|invariant-scan|review-resolve --job UUID --disposition settle|release --reason TEXT]"
     )]
     Usage,
     #[error("operator command arguments must be UTF-8")]
@@ -159,6 +184,8 @@ pub enum OperatorCommandError {
     InvalidReason,
     #[error("command is not a one-shot database operator command")]
     NotOneShot,
+    #[error(transparent)]
+    Diagnostics(#[from] state::StateDiagnosticsError),
     #[error(transparent)]
     Ledger(#[from] crate::ledger::LedgerError),
     #[error("serialize operator result: {0}")]
@@ -182,6 +209,10 @@ mod tests {
         assert_eq!(
             OperatorCommand::parse([OsString::from("check-config")]).expect("check-config"),
             OperatorCommand::ConfigCheck
+        );
+        assert_eq!(
+            OperatorCommand::parse([OsString::from("state-counts")]).expect("state-counts"),
+            OperatorCommand::StateCounts
         );
         assert!(matches!(
             OperatorCommand::parse([OsString::from("config-check;id")]),

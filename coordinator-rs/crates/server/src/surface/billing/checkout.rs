@@ -85,7 +85,7 @@ pub(super) async fn create_session(
             super::stripe::StripeOutcome::Definitive => {
                 BillingError::stripe_unavailable(error.to_string())
             }
-            super::stripe::StripeOutcome::Unknown => BillingError::external_unknown(format!(
+            super::stripe::StripeOutcome::Unknown => BillingError::stripe_unknown(format!(
                 "Stripe checkout outcome is unknown; retry with the same Idempotency-Key ({error})"
             )),
         })?;

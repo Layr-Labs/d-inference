@@ -9,10 +9,20 @@ pub const MAXIMUM_PUBLIC_SCHEMA_VERSION: i64 = 6;
 pub const MINIMUM_RUST_SCHEMA_VERSION: i64 = 4;
 pub const MAXIMUM_RUST_SCHEMA_VERSION: i64 = 4;
 
+const PUBLIC_MIGRATION_CHECKSUMS: [&str; 6] = [
+    "f565ec9ebf5327ece27cb2220867e157a805e93ae5ba4e782fed47ae183583d6",
+    "19094e442b43df4ac4e45cc79a3a12c1c627ce75c3a189a48963afd72d6a5503",
+    "38f7d7db044465256bc841eb545546e35c115ea0af74401637d928672046f216",
+    "9a76eb79c49a4ba8bf576eb07cd8e6c9386641b9e4978cbaffa781321296b3d5",
+    "c4a118c607d2d0951d644ecc9db3621d31dcf7a4aecdb9485f7b8ecf4533b129",
+    "f2e426e4d4bd1d34c908ab724b43d89c2bcabf422323902de321fda83ce4a5a5",
+];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SchemaCompatibility {
     pub public_version: i64,
     pub rust_version: i64,
+    pub migration_checksum_valid: bool,
 }
 
 #[derive(Debug, Error)]
@@ -37,6 +47,8 @@ pub enum SchemaError {
         minimum: i64,
         maximum: i64,
     },
+    #[error("public schema migration checksum mismatch at version {version}")]
+    PublicChecksumMismatch { version: i64 },
     #[error(
         "Rust schema migration history is not contiguous: minimum={minimum}, maximum={maximum}, count={count}"
     )]
@@ -100,6 +112,7 @@ async fn check_unbounded(pool: &PgPool) -> Result<SchemaCompatibility, SchemaErr
             maximum: MAXIMUM_PUBLIC_SCHEMA_VERSION,
         });
     }
+    validate_public_checksums(pool).await?;
 
     let rust = sqlx::query_as::<_, (i64, i64, i64, i64, i64, i64)>(
         r#"
@@ -156,7 +169,31 @@ async fn check_unbounded(pool: &PgPool) -> Result<SchemaCompatibility, SchemaErr
     Ok(SchemaCompatibility {
         public_version: public.1,
         rust_version: rust.0,
+        migration_checksum_valid: true,
     })
+}
+
+async fn validate_public_checksums(pool: &PgPool) -> Result<(), SchemaError> {
+    let rows = sqlx::query_as::<_, (i64, String)>(
+        r#"
+        SELECT version, checksum
+        FROM public.schema_migration_versions
+        ORDER BY version
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(SchemaError::Inspect)?;
+    for (index, expected) in PUBLIC_MIGRATION_CHECKSUMS.iter().enumerate() {
+        let version = i64::try_from(index + 1).expect("migration catalog length fits i64");
+        let valid = rows.get(index).is_some_and(|(found_version, checksum)| {
+            *found_version == version && checksum == expected
+        });
+        if !valid {
+            return Err(SchemaError::PublicChecksumMismatch { version });
+        }
+    }
+    Ok(())
 }
 
 fn validate_history<F>(minimum: i64, maximum: i64, count: i64, error: F) -> Result<(), SchemaError>
@@ -167,4 +204,40 @@ where
         return Err(error(minimum, maximum, count));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Write as _;
+
+    use sha2::{Digest as _, Sha256};
+
+    use super::PUBLIC_MIGRATION_CHECKSUMS;
+
+    const PUBLIC_MIGRATIONS: [&[u8]; 6] = [
+        include_bytes!("../../../../coordinator/store/migrations/000001_legacy_schema.sql"),
+        include_bytes!(
+            "../../../../coordinator/store/migrations/000002_provider_earnings_job_index.sql"
+        ),
+        include_bytes!(
+            "../../../../coordinator/store/migrations/000003_rust_schema_compatibility.sql"
+        ),
+        include_bytes!("../../../../coordinator/store/migrations/000004_rust_durable_schema.sql"),
+        include_bytes!("../../../../coordinator/store/migrations/000005_rust_pilot_lifecycle.sql"),
+        include_bytes!("../../../../coordinator/store/migrations/000006_objective7_controls.sql"),
+    ];
+
+    #[test]
+    fn compiled_public_migration_checksums_match_authoritative_catalog() {
+        for (migration, expected) in PUBLIC_MIGRATIONS.iter().zip(PUBLIC_MIGRATION_CHECKSUMS) {
+            let actual = Sha256::digest(migration).iter().fold(
+                String::with_capacity(64),
+                |mut output, byte| {
+                    write!(output, "{byte:02x}").expect("write digest");
+                    output
+                },
+            );
+            assert_eq!(actual, expected);
+        }
+    }
 }

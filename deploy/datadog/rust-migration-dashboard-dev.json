@@ -1,0 +1,317 @@
+{
+  "title": "Darkbloom Rust Coordinator Migration - Dev",
+  "description": "Rust coordinator cutover health. Custom metrics are bounded, nonblocking, and contain no account, request, key, prompt, provider ID, serial, UDID, or secret tags. Runbook: docs/operations/rust-coordinator-observability.md",
+  "layout_type": "ordered",
+  "notify_list": [],
+  "template_variables": [
+    {"name": "env", "prefix": "env", "default": "development"},
+    {"name": "service", "prefix": "service", "default": "d-inference-coordinator"}
+  ],
+  "widgets": [
+    {
+      "definition": {
+        "type": "note",
+        "content": "## Rust coordinator migration\nAvailability, stage budgets, provider trust/version, bounded queues, durable recovery, ownership, schema checksum, rollback guard, and Stripe ambiguity. `$env` and `$service` are the only deployment selectors.",
+        "background_color": "blue",
+        "font_size": "14",
+        "text_align": "left",
+        "show_tick": false
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Availability and HTTP",
+        "layout_type": "ordered",
+        "show_title": true,
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Requests by status class",
+              "requests": [
+                {
+                  "q": "sum:d_inference.rust.http.requests{$env,$service} by {status_class}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Stage budget exceeded",
+              "requests": [
+                {
+                  "q": "sum:d_inference.rust.http.stage.budget_exceeded{$env,$service} by {stage}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Authentication outcomes",
+              "requests": [
+                {
+                  "q": "sum:d_inference.rust.auth.attempts{$env,$service} by {kind,outcome}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Fleet admission reasons",
+              "requests": [
+                {
+                  "q": "sum:d_inference.rust.fleet.admission{$env,$service} by {outcome,reason}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "p95 / p99 stage latency",
+        "layout_type": "ordered",
+        "show_title": true,
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Parse, reserve, prepare, start, TTFT, chunk, settle",
+              "requests": [
+                {"q": "avg:d_inference.rust.http.stage.duration_ms.95percentile{$env,$service,stage:parse}", "display_type": "line"},
+                {"q": "avg:d_inference.rust.http.stage.duration_ms.99percentile{$env,$service,stage:parse}", "display_type": "line"},
+                {"q": "avg:d_inference.rust.http.stage.duration_ms.95percentile{$env,$service,stage:reserve}", "display_type": "line"},
+                {"q": "avg:d_inference.rust.http.stage.duration_ms.99percentile{$env,$service,stage:reserve}", "display_type": "line"},
+                {"q": "avg:d_inference.rust.http.stage.duration_ms.95percentile{$env,$service,stage:prepare}", "display_type": "line"},
+                {"q": "avg:d_inference.rust.http.stage.duration_ms.99percentile{$env,$service,stage:prepare}", "display_type": "line"},
+                {"q": "avg:d_inference.rust.http.stage.duration_ms.95percentile{$env,$service,stage:start}", "display_type": "line"},
+                {"q": "avg:d_inference.rust.http.stage.duration_ms.99percentile{$env,$service,stage:start}", "display_type": "line"},
+                {"q": "avg:d_inference.rust.http.stage.duration_ms.95percentile{$env,$service,stage:ttft}", "display_type": "line"},
+                {"q": "avg:d_inference.rust.http.stage.duration_ms.99percentile{$env,$service,stage:ttft}", "display_type": "line"},
+                {"q": "avg:d_inference.rust.http.stage.duration_ms.95percentile{$env,$service,stage:chunk}", "display_type": "line"},
+                {"q": "avg:d_inference.rust.http.stage.duration_ms.99percentile{$env,$service,stage:chunk}", "display_type": "line"},
+                {"q": "avg:d_inference.rust.http.stage.duration_ms.95percentile{$env,$service,stage:settle}", "display_type": "line"},
+                {"q": "avg:d_inference.rust.http.stage.duration_ms.99percentile{$env,$service,stage:settle}", "display_type": "line"}
+              ],
+              "yaxis": {"label": "milliseconds", "min": "0", "scale": "linear", "include_zero": true}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Providers and bounded data paths",
+        "layout_type": "ordered",
+        "show_title": true,
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Provider sessions",
+              "requests": [{"q": "max:d_inference.rust.provider.sessions{$env,$service}", "display_type": "line"}]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Provider trust",
+              "requests": [
+                {
+                  "q": "sum:d_inference.rust.provider.trust{$env,$service} by {trust,outcome}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Provider version floor",
+              "requests": [
+                {
+                  "q": "sum:d_inference.rust.provider.version{$env,$service} by {provider_version,outcome}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Writer queue items / bytes p95",
+              "requests": [
+                {"q": "avg:d_inference.rust.writer.queue.items.95percentile{$env,$service} by {lane}", "display_type": "line"},
+                {"q": "avg:d_inference.rust.writer.queue.bytes.95percentile{$env,$service} by {lane}", "display_type": "line"}
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Writer delivery and timeout",
+              "requests": [
+                {
+                  "q": "sum:d_inference.rust.writer.delivery{$env,$service} by {lane,outcome}.as_count()",
+                  "display_type": "bars"
+                },
+                {
+                  "q": "sum:d_inference.rust.writer.timeout{$env,$service} by {lane,kind}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Byte-pipe overflow",
+              "requests": [
+                {
+                  "q": "sum:d_inference.rust.byte_pipe.overflow{$env,$service} by {kind}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Durability, recovery, and billing",
+        "layout_type": "ordered",
+        "show_title": true,
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Active durable states",
+              "requests": [
+                {"q": "max:d_inference.rust.jobs.state{$env,$service} by {kind,state}", "display_type": "line"},
+                {"q": "max:d_inference.rust.outbox.state{$env,$service} by {kind,state}", "display_type": "line"},
+                {"q": "max:d_inference.rust.fee.state{$env,$service} by {kind,state}", "display_type": "line"}
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Oldest active durable state",
+              "requests": [
+                {
+                  "q": "max:d_inference.rust.jobs.age_seconds{$env,$service} by {kind,state}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Ledger transitions and ambiguous commits",
+              "requests": [
+                {
+                  "q": "sum:d_inference.rust.ledger.transition{$env,$service} by {operation,outcome}.as_count()",
+                  "display_type": "bars"
+                },
+                {
+                  "q": "sum:d_inference.rust.ledger.ambiguous_commit{$env,$service} by {operation}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Recovery actions",
+              "requests": [
+                {
+                  "q": "sum:d_inference.rust.recovery.action{$env,$service} by {kind,operation,outcome}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Stripe external_unknown",
+              "requests": [
+                {
+                  "q": "sum:d_inference.rust.billing.external_unknown{$env,$service,source:stripe}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Ownership, schema, drain, and rollback",
+        "layout_type": "ordered",
+        "show_title": true,
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Ownership health and epoch",
+              "requests": [
+                {"q": "min:d_inference.rust.ownership.healthy{$env,$service}", "display_type": "line"},
+                {"q": "max:d_inference.rust.ownership.epoch{$env,$service}", "display_type": "line"}
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Schema versions and checksum",
+              "requests": [
+                {"q": "max:d_inference.rust.schema.version{$env,$service} by {schema}", "display_type": "line"},
+                {"q": "min:d_inference.rust.schema.checksum_valid{$env,$service}", "display_type": "line"}
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Drain and quiescence",
+              "requests": [
+                {"q": "max:d_inference.rust.drain.state{$env,$service} by {mode}", "display_type": "line"},
+                {"q": "min:d_inference.rust.quiescent{$env,$service}", "display_type": "line"}
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Pinned-Go rollback guard",
+              "requests": [
+                {
+                  "q": "min:d_inference.rust.rollback_guard{$env,$service,mode:go_fallback}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

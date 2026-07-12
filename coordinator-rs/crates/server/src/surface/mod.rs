@@ -12,6 +12,7 @@ mod runtime;
 pub use config::{FullSurfaceConfig, FullSurfaceConfigError};
 pub(crate) use http::enforce_registered_method;
 pub use http::router;
+pub(crate) use routes::registered_route;
 pub use routes::{RegisteredRoute, registered_routes};
 pub use runtime::{
     FullSurfaceBuildError, FullSurfaceState, billing_principal, durable_billing_context,

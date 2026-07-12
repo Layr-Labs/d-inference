@@ -21,6 +21,8 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::telemetry::datadog::{self, Metric, Tag, TagKey};
+
 use super::{
     message::{
         AdmissionRequest, FleetCommandError, FleetHandleError, HeartbeatPublishOutcome,
@@ -927,6 +929,28 @@ impl ActorState {
         &mut self,
         request: AdmissionRequest,
     ) -> Result<Result<PermitLease, FleetCommandError>, FleetActorError> {
+        let result = self.admit_unobserved(request);
+        if let Ok(command) = &result {
+            let (outcome, reason) = match command {
+                Ok(_) => ("admitted", "eligible"),
+                Err(error) => ("rejected", admission_reason(error)),
+            };
+            datadog::counter(
+                Metric::FleetAdmission,
+                1,
+                &[
+                    Tag::new(TagKey::Outcome, outcome),
+                    Tag::new(TagKey::Reason, reason),
+                ],
+            );
+        }
+        result
+    }
+
+    fn admit_unobserved(
+        &mut self,
+        request: AdmissionRequest,
+    ) -> Result<Result<PermitLease, FleetCommandError>, FleetActorError> {
         if request.lease_ttl().is_zero() || request.lease_ttl() > self.config.maximum_lease_ttl {
             return Ok(Err(FleetCommandError::InvalidLeaseTtl {
                 maximum: self.config.maximum_lease_ttl,
@@ -1356,6 +1380,27 @@ impl ActorState {
             leases,
             self.stats,
         )
+    }
+}
+
+fn admission_reason(error: &FleetCommandError) -> &'static str {
+    match error {
+        FleetCommandError::ProviderNotFound(_) => "provider_not_found",
+        FleetCommandError::ProviderLimit { .. } => "provider_limit",
+        FleetCommandError::LeaseLimit { .. } => "lease_limit",
+        FleetCommandError::WriterReservationLimit { .. } => "writer_reservation_limit",
+        FleetCommandError::ProviderBusy { .. } => "provider_busy",
+        FleetCommandError::ModelMismatch { .. } => "model_mismatch",
+        FleetCommandError::NoEligibleProvider(_) => "no_eligible_provider",
+        FleetCommandError::StaleProviderFence(_) => "stale_fence",
+        FleetCommandError::InvalidLeaseTtl { .. } => "invalid_lease_ttl",
+        FleetCommandError::WriterItemHeadroom { .. } => "writer_items",
+        FleetCommandError::WriterByteHeadroom { .. } => "writer_bytes",
+        FleetCommandError::LeaseNotFound(_) => "lease_not_found",
+        FleetCommandError::PermitAlreadyActive(_) => "permit_active",
+        FleetCommandError::Admission(_) => "capacity_policy",
+        FleetCommandError::FleetState(_) => "fleet_state",
+        FleetCommandError::Capacity(_) => "capacity",
     }
 }
 

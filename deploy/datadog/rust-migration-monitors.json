@@ -1,0 +1,208 @@
+[
+  {
+    "name": "[Rust migration] Availability error ratio by environment",
+    "type": "query alert",
+    "query": "sum(last_5m):sum:d_inference.rust.http.requests{service:d-inference-coordinator,env IN (development,production),status_class:5xx} by {env}.as_count() / sum:d_inference.rust.http.requests{service:d-inference-coordinator,env IN (development,production)} by {env}.as_count() > 0.05",
+    "message": "Rust coordinator 5xx availability budget exceeded. Follow docs/operations/rust-coordinator-observability.md#availability.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "signal:availability"],
+    "priority": 1,
+    "options": {"notify_no_data": true, "no_data_timeframe": 10, "require_full_window": false, "thresholds": {"critical": 0.05, "warning": 0.02}}
+  },
+  {
+    "name": "[Rust migration] Parse p95 latency",
+    "type": "query alert",
+    "query": "avg(last_10m):avg:d_inference.rust.http.stage.duration_ms.95percentile{service:d-inference-coordinator,env IN (development,production),stage:parse} by {env} > 2000",
+    "message": "Parse p95 exceeded 2s. Follow the stage-latency runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "stage:parse", "percentile:p95"],
+    "options": {"notify_no_data": true, "no_data_timeframe": 15, "require_full_window": false, "thresholds": {"critical": 2000, "warning": 1000}}
+  },
+  {
+    "name": "[Rust migration] Parse p99 latency",
+    "type": "query alert",
+    "query": "avg(last_10m):avg:d_inference.rust.http.stage.duration_ms.99percentile{service:d-inference-coordinator,env IN (development,production),stage:parse} by {env} > 3000",
+    "message": "Parse p99 exceeded 3s. Follow the stage-latency runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "stage:parse", "percentile:p99"],
+    "options": {"notify_no_data": true, "no_data_timeframe": 15, "require_full_window": false, "thresholds": {"critical": 3000, "warning": 2000}}
+  },
+  {
+    "name": "[Rust migration] Reserve p95 latency",
+    "type": "query alert",
+    "query": "avg(last_10m):avg:d_inference.rust.http.stage.duration_ms.95percentile{service:d-inference-coordinator,env IN (development,production),stage:reserve} by {env} > 100",
+    "message": "Reserve p95 exceeded 100ms. Follow the stage-latency runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "stage:reserve", "percentile:p95"],
+    "options": {"notify_no_data": true, "no_data_timeframe": 15, "require_full_window": false, "thresholds": {"critical": 100, "warning": 75}}
+  },
+  {
+    "name": "[Rust migration] Reserve p99 latency",
+    "type": "query alert",
+    "query": "avg(last_10m):avg:d_inference.rust.http.stage.duration_ms.99percentile{service:d-inference-coordinator,env IN (development,production),stage:reserve} by {env} > 250",
+    "message": "Reserve p99 exceeded 250ms. Follow the stage-latency runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "stage:reserve", "percentile:p99"],
+    "options": {"notify_no_data": true, "no_data_timeframe": 15, "require_full_window": false, "thresholds": {"critical": 250, "warning": 150}}
+  },
+  {
+    "name": "[Rust migration] Prepare p95 latency",
+    "type": "query alert",
+    "query": "avg(last_10m):avg:d_inference.rust.http.stage.duration_ms.95percentile{service:d-inference-coordinator,env IN (development,production),stage:prepare} by {env} > 3000",
+    "message": "Prepare p95 exceeded 3s. Follow the stage-latency runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "stage:prepare", "percentile:p95"],
+    "options": {"notify_no_data": true, "no_data_timeframe": 15, "require_full_window": false, "thresholds": {"critical": 3000, "warning": 2000}}
+  },
+  {
+    "name": "[Rust migration] Prepare p99 latency",
+    "type": "query alert",
+    "query": "avg(last_10m):avg:d_inference.rust.http.stage.duration_ms.99percentile{service:d-inference-coordinator,env IN (development,production),stage:prepare} by {env} > 5000",
+    "message": "Prepare p99 exceeded 5s. Follow the stage-latency runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "stage:prepare", "percentile:p99"],
+    "options": {"notify_no_data": true, "no_data_timeframe": 15, "require_full_window": false, "thresholds": {"critical": 5000, "warning": 3000}}
+  },
+  {
+    "name": "[Rust migration] Start p95 latency",
+    "type": "query alert",
+    "query": "avg(last_10m):avg:d_inference.rust.http.stage.duration_ms.95percentile{service:d-inference-coordinator,env IN (development,production),stage:start} by {env} > 100",
+    "message": "Start p95 exceeded 100ms. Follow the stage-latency runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "stage:start", "percentile:p95"],
+    "options": {"notify_no_data": true, "no_data_timeframe": 15, "require_full_window": false, "thresholds": {"critical": 100, "warning": 75}}
+  },
+  {
+    "name": "[Rust migration] Start p99 latency",
+    "type": "query alert",
+    "query": "avg(last_10m):avg:d_inference.rust.http.stage.duration_ms.99percentile{service:d-inference-coordinator,env IN (development,production),stage:start} by {env} > 250",
+    "message": "Start p99 exceeded 250ms. Follow the stage-latency runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "stage:start", "percentile:p99"],
+    "options": {"notify_no_data": true, "no_data_timeframe": 15, "require_full_window": false, "thresholds": {"critical": 250, "warning": 150}}
+  },
+  {
+    "name": "[Rust migration] TTFT p95 latency",
+    "type": "query alert",
+    "query": "avg(last_10m):avg:d_inference.rust.http.stage.duration_ms.95percentile{service:d-inference-coordinator,env IN (development,production),stage:ttft} by {env} > 30000",
+    "message": "TTFT p95 exceeded 30s. Follow the stage-latency runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "stage:ttft", "percentile:p95"],
+    "options": {"notify_no_data": true, "no_data_timeframe": 15, "require_full_window": false, "thresholds": {"critical": 30000, "warning": 20000}}
+  },
+  {
+    "name": "[Rust migration] TTFT p99 latency",
+    "type": "query alert",
+    "query": "avg(last_10m):avg:d_inference.rust.http.stage.duration_ms.99percentile{service:d-inference-coordinator,env IN (development,production),stage:ttft} by {env} > 45000",
+    "message": "TTFT p99 exceeded 45s. Follow the stage-latency runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "stage:ttft", "percentile:p99"],
+    "options": {"notify_no_data": true, "no_data_timeframe": 15, "require_full_window": false, "thresholds": {"critical": 45000, "warning": 30000}}
+  },
+  {
+    "name": "[Rust migration] Chunk p95 latency",
+    "type": "query alert",
+    "query": "avg(last_10m):avg:d_inference.rust.http.stage.duration_ms.95percentile{service:d-inference-coordinator,env IN (development,production),stage:chunk} by {env} > 10000",
+    "message": "Chunk p95 exceeded 10s. Follow the stage-latency runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "stage:chunk", "percentile:p95"],
+    "options": {"notify_no_data": true, "no_data_timeframe": 15, "require_full_window": false, "thresholds": {"critical": 10000, "warning": 5000}}
+  },
+  {
+    "name": "[Rust migration] Chunk p99 latency",
+    "type": "query alert",
+    "query": "avg(last_10m):avg:d_inference.rust.http.stage.duration_ms.99percentile{service:d-inference-coordinator,env IN (development,production),stage:chunk} by {env} > 15000",
+    "message": "Chunk p99 exceeded 15s. Follow the stage-latency runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "stage:chunk", "percentile:p99"],
+    "options": {"notify_no_data": true, "no_data_timeframe": 15, "require_full_window": false, "thresholds": {"critical": 15000, "warning": 10000}}
+  },
+  {
+    "name": "[Rust migration] Settle p95 latency",
+    "type": "query alert",
+    "query": "avg(last_10m):avg:d_inference.rust.http.stage.duration_ms.95percentile{service:d-inference-coordinator,env IN (development,production),stage:settle} by {env} > 2000",
+    "message": "Settlement p95 exceeded 2s. Follow the stage-latency runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "stage:settle", "percentile:p95"],
+    "options": {"notify_no_data": true, "no_data_timeframe": 15, "require_full_window": false, "thresholds": {"critical": 2000, "warning": 1000}}
+  },
+  {
+    "name": "[Rust migration] Settle p99 latency",
+    "type": "query alert",
+    "query": "avg(last_10m):avg:d_inference.rust.http.stage.duration_ms.99percentile{service:d-inference-coordinator,env IN (development,production),stage:settle} by {env} > 5000",
+    "message": "Settlement p99 exceeded 5s. Follow the stage-latency runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "stage:settle", "percentile:p99"],
+    "options": {"notify_no_data": true, "no_data_timeframe": 15, "require_full_window": false, "thresholds": {"critical": 5000, "warning": 2000}}
+  },
+  {
+    "name": "[Rust migration] Writer queue saturation",
+    "type": "query alert",
+    "query": "sum(last_5m):sum:d_inference.rust.writer.delivery{service:d-inference-coordinator,env IN (development,production),outcome:saturated} by {env,lane}.as_count() > 0",
+    "message": "A bounded provider writer lane rejected work. Follow the queue saturation runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "signal:queue_saturation"],
+    "options": {"notify_no_data": false, "require_full_window": false, "thresholds": {"critical": 0}}
+  },
+  {
+    "name": "[Rust migration] Writer queue depth",
+    "type": "query alert",
+    "query": "avg(last_5m):avg:d_inference.rust.writer.queue.items.95percentile{service:d-inference-coordinator,env IN (development,production)} by {env,lane} > 200",
+    "message": "Writer queue p95 is near its finite item bound. Follow the queue saturation runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "signal:queue_depth"],
+    "options": {"notify_no_data": false, "require_full_window": false, "thresholds": {"critical": 200, "warning": 128}}
+  },
+  {
+    "name": "[Rust migration] Stuck durable state",
+    "type": "query alert",
+    "query": "max(last_10m):max:d_inference.rust.jobs.age_seconds{service:d-inference-coordinator,env IN (development,production)} by {env,kind,state} > 300",
+    "message": "An active durable state is older than five minutes. Run `coordinator-rs state-counts` and follow the durable-state runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "signal:durable_state"],
+    "options": {"notify_no_data": true, "no_data_timeframe": 10, "require_full_window": false, "thresholds": {"critical": 300, "warning": 120}}
+  },
+  {
+    "name": "[Rust migration] Provider trust regression",
+    "type": "query alert",
+    "query": "sum(last_10m):sum:d_inference.rust.provider.trust{service:d-inference-coordinator,env IN (development,production),trust IN (self_signed,untrusted)} by {env,trust}.as_count() > 0",
+    "message": "A provider established below hardware trust. Follow the provider trust runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "signal:trust"],
+    "options": {"notify_no_data": false, "require_full_window": false, "thresholds": {"critical": 0}}
+  },
+  {
+    "name": "[Rust migration] Ownership loss",
+    "type": "query alert",
+    "query": "min(last_5m):min:d_inference.rust.ownership.healthy{service:d-inference-coordinator,env IN (development,production)} by {env} < 1",
+    "message": "Coordinator ownership is unhealthy or absent. Do not start another owner; follow the ownership runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "signal:ownership"],
+    "priority": 1,
+    "options": {"notify_no_data": true, "no_data_timeframe": 5, "require_full_window": false, "thresholds": {"critical": 1}}
+  },
+  {
+    "name": "[Rust migration] Ownership epoch churn / split-brain signal",
+    "type": "query alert",
+    "query": "change(avg(last_5m),last_5m):avg:d_inference.rust.ownership.epoch{service:d-inference-coordinator,env IN (development,production)} by {env} > 1",
+    "message": "Ownership epoch changed repeatedly. Verify the one-owner invariant before any restart.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "signal:split_brain"],
+    "priority": 1,
+    "options": {"notify_no_data": false, "require_full_window": false, "thresholds": {"critical": 1}}
+  },
+  {
+    "name": "[Rust migration] Migration checksum invalid",
+    "type": "query alert",
+    "query": "min(last_5m):min:d_inference.rust.schema.checksum_valid{service:d-inference-coordinator,env IN (development,production)} by {env} < 1",
+    "message": "Compiled and database migration checksums disagree, or the Rust process is absent. Stop cutover and follow the schema runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "signal:migration_checksum"],
+    "priority": 1,
+    "options": {"notify_no_data": true, "no_data_timeframe": 5, "require_full_window": false, "thresholds": {"critical": 1}}
+  },
+  {
+    "name": "[Rust migration] Provider below version floor",
+    "type": "query alert",
+    "query": "sum(last_10m):sum:d_inference.rust.provider.version{service:d-inference-coordinator,env IN (development,production),outcome IN (below_floor,invalid,unconfigured)} by {env,provider_version}.as_count() > 0",
+    "message": "A connected provider is below the configured version floor, has an invalid version, or the floor is unconfigured. Follow the provider version runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "signal:provider_version"],
+    "options": {"notify_no_data": false, "require_full_window": false, "thresholds": {"critical": 0}}
+  },
+  {
+    "name": "[Rust migration] Stripe external outcome unknown",
+    "type": "query alert",
+    "query": "sum(last_10m):sum:d_inference.rust.billing.external_unknown{service:d-inference-coordinator,env IN (development,production),source:stripe} by {env}.as_count() > 0",
+    "message": "Stripe outcome is ambiguous. Do not replay manually; follow the Stripe reconciliation runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "signal:stripe_unknown"],
+    "priority": 1,
+    "options": {"notify_no_data": false, "require_full_window": false, "thresholds": {"critical": 0}}
+  },
+  {
+    "name": "[Rust migration] Pinned-Go rollback guard unsafe",
+    "type": "query alert",
+    "query": "min(last_5m):min:d_inference.rust.rollback_guard{service:d-inference-coordinator,env IN (development,production),mode:go_fallback} by {env} < 1",
+    "message": "Durable state makes automatic Go fallback unsafe. Never bypass rollback-check; follow the rollback guard runbook.",
+    "tags": ["service:d-inference-coordinator", "migration:rust", "signal:rollback_guard"],
+    "priority": 1,
+    "options": {"notify_no_data": true, "no_data_timeframe": 10, "require_full_window": false, "thresholds": {"critical": 1}}
+  }
+]

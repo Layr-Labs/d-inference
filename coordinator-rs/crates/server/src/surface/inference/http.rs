@@ -28,6 +28,7 @@ use crate::{
     },
     request::BytePipeReceiver,
     surface::{FullSurfaceBuildError, FullSurfaceState, identity::AuthContext},
+    telemetry::datadog::{self, Metric, Tag, TagKey},
 };
 
 use super::{
@@ -156,6 +157,21 @@ async fn read_input(
     request: Request,
     pilot: &PilotHandle,
 ) -> Result<OpenedInput, InferenceHttpError> {
+    let started = std::time::Instant::now();
+    let result = read_input_unobserved(request, pilot).await;
+    observe_stage(
+        "parse",
+        started.elapsed(),
+        std::time::Duration::from_secs(2),
+        if result.is_ok() { "success" } else { "failure" },
+    );
+    result
+}
+
+async fn read_input_unobserved(
+    request: Request,
+    pilot: &PilotHandle,
+) -> Result<OpenedInput, InferenceHttpError> {
     let input_permit = pilot
         .try_reserve_input(INPUT_RESERVATION_BYTES)
         .map_err(|error| InferenceHttpError::capacity(error.to_string()))?;
@@ -207,15 +223,35 @@ async fn dispatch(
         input.plaintext = canonical.into_body();
     }
     let request_id = durable_request_id(&input.headers, &auth.account_id)?;
+    let prepare_started = std::time::Instant::now();
     let prepared = state
         .inference_control
         .prepare(auth, &input.plaintext)
-        .await?;
-    let (model, output_mode, maximum_output_tokens, traits, demand) = parse_request_facts(
+        .await;
+    observe_stage(
+        "prepare",
+        prepare_started.elapsed(),
+        std::time::Duration::from_secs(3),
+        if prepared.is_ok() {
+            "success"
+        } else {
+            "failure"
+        },
+    );
+    let prepared = prepared?;
+    let parse_started = std::time::Instant::now();
+    let parsed = parse_request_facts(
         &input.plaintext,
         &prepared.catalog.concrete_model,
         &prepared.catalog.public_model,
-    )?;
+    );
+    observe_stage(
+        "parse",
+        parse_started.elapsed(),
+        std::time::Duration::from_millis(250),
+        if parsed.is_ok() { "success" } else { "failure" },
+    );
+    let (model, output_mode, maximum_output_tokens, traits, demand) = parsed?;
     if maximum_output_tokens > prepared.catalog.maximum_output_tokens
         || demand.total_tokens().get() > prepared.catalog.maximum_context_tokens
     {
@@ -223,10 +259,22 @@ async fn dispatch(
             "request exceeds the active model token bounds",
         ));
     }
+    let reserve_started = std::time::Instant::now();
     let response_permit = state
         .pilot
         .try_reserve_response()
-        .map_err(|error| InferenceHttpError::capacity(error.to_string()))?;
+        .map_err(|error| InferenceHttpError::capacity(error.to_string()));
+    observe_stage(
+        "reserve",
+        reserve_started.elapsed(),
+        std::time::Duration::from_millis(100),
+        if response_permit.is_ok() {
+            "success"
+        } else {
+            "failure"
+        },
+    );
+    let response_permit = response_permit?;
     let (response_tx, response_rx) = oneshot::channel();
     let client_cancellation = CancellationToken::new();
     let mut cancellation_guard = CancellationGuard::new(client_cancellation.clone());
@@ -253,10 +301,35 @@ async fn dispatch(
         response: Some(response_tx),
         client_cancellation,
     };
-    state.pilot.request_dispatcher().try_dispatch(job)?;
+    let start_started = std::time::Instant::now();
+    let dispatched = state.pilot.request_dispatcher().try_dispatch(job);
+    observe_stage(
+        "start",
+        start_started.elapsed(),
+        std::time::Duration::from_millis(100),
+        if dispatched.is_ok() {
+            "success"
+        } else {
+            "failure"
+        },
+    );
+    dispatched?;
+    let ttft_started = std::time::Instant::now();
     let response = response_rx.await.map_err(|_| {
         InferenceHttpError::unavailable("request worker ended before source commitment")
-    })??;
+    });
+    let response_succeeded = response.as_ref().is_ok_and(Result::is_ok);
+    observe_stage(
+        "ttft",
+        ttft_started.elapsed(),
+        std::time::Duration::from_secs(30),
+        if response_succeeded {
+            "success"
+        } else {
+            "failure"
+        },
+    );
+    let response = response??;
     cancellation_guard.disarm();
     Ok(Dispatched {
         response,
@@ -295,7 +368,15 @@ async fn nonstream_response(
 ) -> Result<Response<Body>, InferenceHttpError> {
     let mut exact = Vec::new();
     loop {
-        match source.recv().await {
+        let chunk_started = std::time::Instant::now();
+        let chunk = source.recv().await;
+        observe_stage(
+            "chunk",
+            chunk_started.elapsed(),
+            std::time::Duration::from_secs(10),
+            if chunk.is_ok() { "success" } else { "failure" },
+        );
+        match chunk {
             Ok(Some(chunk)) => {
                 if exact.len().saturating_add(chunk.len()) > MAX_CONSUMER_RESPONSE_BYTES {
                     return Err(InferenceHttpError::upstream(
@@ -327,7 +408,15 @@ async fn stream_response(
 ) -> Result<Response<Body>, InferenceHttpError> {
     let mut pending = VecDeque::new();
     loop {
-        match source.recv().await {
+        let chunk_started = std::time::Instant::now();
+        let chunk = source.recv().await;
+        observe_stage(
+            "chunk",
+            chunk_started.elapsed(),
+            std::time::Duration::from_secs(10),
+            if chunk.is_ok() { "success" } else { "failure" },
+        );
+        match chunk {
             Ok(Some(chunk)) => {
                 pending.extend(adapter.push(&chunk)?);
                 if !pending.is_empty() {
@@ -365,7 +454,15 @@ async fn stream_response(
             if state.source_finished {
                 return None;
             }
-            match state.source.recv().await {
+            let chunk_started = std::time::Instant::now();
+            let chunk = state.source.recv().await;
+            observe_stage(
+                "chunk",
+                chunk_started.elapsed(),
+                std::time::Duration::from_secs(10),
+                if chunk.is_ok() { "success" } else { "failure" },
+            );
+            match chunk {
                 Ok(Some(chunk)) => match state.adapter.push(&chunk) {
                     Ok(events) => state.pending.extend(events),
                     Err(error) => {
@@ -398,6 +495,26 @@ async fn stream_response(
         }
     }));
     response(body, "text/event-stream", &pilot, sender.is_some())
+}
+
+fn observe_stage(
+    stage: &'static str,
+    elapsed: std::time::Duration,
+    budget: std::time::Duration,
+    outcome: &'static str,
+) {
+    let tags = [
+        Tag::new(TagKey::Stage, stage),
+        Tag::new(TagKey::Outcome, outcome),
+    ];
+    datadog::histogram(
+        Metric::HttpStageDurationMs,
+        elapsed.as_secs_f64() * 1_000.0,
+        &tags,
+    );
+    if elapsed > budget {
+        datadog::counter(Metric::HttpStageBudgetExceeded, 1, &tags);
+    }
 }
 
 struct AdaptedBody {

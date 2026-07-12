@@ -275,6 +275,7 @@ mod tests {
             compatibility: SchemaCompatibility {
                 public_version: 4,
                 rust_version: 2,
+                migration_checksum_valid: true,
             },
         };
 

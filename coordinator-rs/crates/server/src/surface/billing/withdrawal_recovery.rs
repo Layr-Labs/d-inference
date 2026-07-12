@@ -4,7 +4,12 @@ use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Row, types::Json as SqlJson};
 use uuid::Uuid;
 
-use crate::{database::Database, ledger::canonical_json_digest, recovery::OutboxLease};
+use crate::{
+    database::Database,
+    ledger::canonical_json_digest,
+    recovery::OutboxLease,
+    telemetry::datadog::{self, Metric, Tag, TagKey},
+};
 
 use super::{
     error::BillingError,
@@ -486,6 +491,11 @@ impl WithdrawalRecovery {
         }
         complete_outbox(transaction.connection(), worker_id, lease, "failed", false).await?;
         transaction.commit().await?;
+        datadog::counter(
+            Metric::ExternalUnknown,
+            1,
+            &[Tag::new(TagKey::Source, "stripe")],
+        );
         Ok(WithdrawalRecoveryAction::Handled)
     }
 

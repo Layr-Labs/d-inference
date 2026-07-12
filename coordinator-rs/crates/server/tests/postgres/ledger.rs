@@ -44,6 +44,19 @@ async fn reservation_replay_conflict_and_mixed_provenance_release() {
         assert_eq!(applied.disposition, MutationDisposition::Applied);
         assert_eq!(applied.withdrawable, amount(50_000));
         assert_eq!(balance(&pool, "consumer").await, (20_000, 20_000));
+        let diagnostics = OperatorCommand::StateCounts
+            .execute_one_shot(database.clone())
+            .await
+            .expect("read-only durable state diagnostics");
+        assert_eq!(diagnostics["contains_pii"], false);
+        assert_eq!(diagnostics["rollback_guard"]["go_fallback_safe"], false);
+        assert!(diagnostics["states"].as_array().is_some_and(|states| {
+            states.iter().any(|state| {
+                state["relation"] == "inference_jobs"
+                    && state["state"] == "reserved"
+                    && state["count"] == 1
+            })
+        }));
 
         let replay = service.reserve(&reserve).await.expect("reserve replay");
         assert_eq!(replay.disposition, MutationDisposition::Replayed);

@@ -24,7 +24,9 @@ pub async fn seed_durable_schema(url: &str) {
         .execute(&mut connection)
         .await
         .expect("apply mirrored durable schema migration");
-    sqlx::query("INSERT INTO public.schema_migration_versions (version) VALUES (4)")
+    sqlx::query(
+        "INSERT INTO public.schema_migration_versions (version, checksum) VALUES (4, '9a76eb79c49a4ba8bf576eb07cd8e6c9386641b9e4978cbaffa781321296b3d5')",
+    )
         .execute(&mut connection)
         .await
         .expect("record public durable schema migration");
@@ -32,7 +34,9 @@ pub async fn seed_durable_schema(url: &str) {
         .execute(&mut connection)
         .await
         .expect("apply mirrored pilot lifecycle migration");
-    sqlx::query("INSERT INTO public.schema_migration_versions (version) VALUES (5)")
+    sqlx::query(
+        "INSERT INTO public.schema_migration_versions (version, checksum) VALUES (5, 'c4a118c607d2d0951d644ecc9db3621d31dcf7a4aecdb9485f7b8ecf4533b129')",
+    )
         .execute(&mut connection)
         .await
         .expect("record public pilot lifecycle migration");
@@ -71,7 +75,9 @@ pub async fn seed_durable_schema(url: &str) {
     .execute(&mut connection)
     .await
     .expect("remove migration fixture provider token");
-    sqlx::query("INSERT INTO public.schema_migration_versions (version) VALUES (6)")
+    sqlx::query(
+        "INSERT INTO public.schema_migration_versions (version, checksum) VALUES (6, 'f2e426e4d4bd1d34c908ab724b43d89c2bcabf422323902de321fda83ce4a5a5')",
+    )
         .execute(&mut connection)
         .await
         .expect("record public Objective 7 migration");
@@ -108,7 +114,8 @@ pub async fn reset_schema(
         DROP TABLE IF EXISTS public.schema_migration_versions CASCADE;
 
         CREATE TABLE public.schema_migration_versions (
-            version BIGINT PRIMARY KEY
+            version BIGINT PRIMARY KEY,
+            checksum TEXT NOT NULL CHECK (length(checksum) = 64)
         );
         CREATE TABLE public.schema_migrations (
             id TEXT PRIMARY KEY,
@@ -133,7 +140,19 @@ pub async fn reset_schema(
     .await
     .expect("reset isolated PostgreSQL schemas");
     sqlx::query(
-        "INSERT INTO public.schema_migration_versions (version) SELECT generate_series(1, $1)",
+        r#"
+        INSERT INTO public.schema_migration_versions (version, checksum)
+        SELECT version, CASE version
+            WHEN 1 THEN 'f565ec9ebf5327ece27cb2220867e157a805e93ae5ba4e782fed47ae183583d6'
+            WHEN 2 THEN '19094e442b43df4ac4e45cc79a3a12c1c627ce75c3a189a48963afd72d6a5503'
+            WHEN 3 THEN '38f7d7db044465256bc841eb545546e35c115ea0af74401637d928672046f216'
+            WHEN 4 THEN '9a76eb79c49a4ba8bf576eb07cd8e6c9386641b9e4978cbaffa781321296b3d5'
+            WHEN 5 THEN 'c4a118c607d2d0951d644ecc9db3621d31dcf7a4aecdb9485f7b8ecf4533b129'
+            WHEN 6 THEN 'f2e426e4d4bd1d34c908ab724b43d89c2bcabf422323902de321fda83ce4a5a5'
+            ELSE repeat('0', 64)
+        END
+        FROM generate_series(1, $1) AS version
+        "#,
     )
     .bind(public_version)
     .execute(&mut connection)

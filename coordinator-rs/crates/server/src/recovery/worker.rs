@@ -23,11 +23,16 @@ use crate::{
     provider_control::{ProviderControlError, ProviderControlPlane},
     surface::{
         billing::{WithdrawalRecovery, WithdrawalRecoveryAction, WithdrawalRecoveryError},
-        operations::{AdmissionGate, AdmissionKind, TelemetryService},
+        operations::{AdmissionGate, AdmissionKind, OperationsState, TelemetryService},
+    },
+    telemetry::{
+        datadog::{self, Metric, Tag, TagKey},
+        periodic, state as state_metrics,
     },
 };
 
 const FEE_PROJECTION_NAME: &str = "legacy-fees";
+const STATE_METRICS_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Finite polling and lease bounds shared by all recovery lanes.
 #[derive(Clone, Copy, Debug)]
@@ -65,12 +70,14 @@ impl RecoveryRuntimeConfig {
 
 /// Supervised owner of the durable recovery, outbox, and fee workers.
 pub struct RecoveryRuntime {
+    database: crate::database::Database,
     recovery: RecoveryService,
     ledger: LedgerService,
     fees: FeeProjectionService,
     pilot: Option<PilotHandle>,
     provider_control: Option<ProviderControlPlane>,
     admission: Option<AdmissionGate>,
+    operations: Option<Arc<OperationsState>>,
     telemetry: Option<TelemetryService>,
     withdrawal_recovery: Option<WithdrawalRecovery>,
     config: RecoveryRuntimeConfig,
@@ -84,12 +91,14 @@ impl RecoveryRuntime {
     ) -> Result<Self, RecoveryRuntimeError> {
         let provider_control = pilot.as_ref().and_then(PilotHandle::provider_control);
         Ok(Self {
+            database: database.clone(),
             recovery: RecoveryService::new(database.clone()),
             ledger: LedgerService::new(database.clone()),
             fees: FeeProjectionService::new(database),
             pilot,
             provider_control,
             admission: None,
+            operations: None,
             telemetry: None,
             withdrawal_recovery: None,
             config: config.validate()?,
@@ -107,6 +116,12 @@ impl RecoveryRuntime {
     #[must_use]
     pub fn with_admission_gate(mut self, admission: Option<AdmissionGate>) -> Self {
         self.admission = admission;
+        self
+    }
+
+    #[must_use]
+    pub fn with_operations_state(mut self, operations: Option<Arc<OperationsState>>) -> Self {
+        self.operations = operations;
         self
     }
 
@@ -164,6 +179,13 @@ impl RecoveryRuntime {
             services.clone(),
             cancellation.clone(),
             |services, cancellation| async move { services.run_fees(cancellation).await },
+        );
+        spawn_worker(
+            &mut workers,
+            "state-metrics",
+            services.clone(),
+            cancellation.clone(),
+            |services, cancellation| async move { services.run_state_metrics(cancellation).await },
         );
         if services.telemetry.is_some() {
             spawn_worker(
@@ -236,7 +258,128 @@ impl RecoveryRuntime {
         }
     }
 
+    async fn run_state_metrics(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<(), RecoveryRuntimeError> {
+        periodic::run(STATE_METRICS_INTERVAL, cancellation, || async {
+            self.publish_state_metrics().await;
+        })
+        .await;
+        Ok(())
+    }
+
+    async fn publish_state_metrics(&self) {
+        let compatibility = self.database.compatibility();
+        let authority = self.database.authority();
+        let ownership_healthy = authority
+            .as_ref()
+            .is_some_and(|(_, status)| status.is_healthy());
+        let ownership_epoch = authority
+            .as_ref()
+            .map_or(0, |(context, _)| context.epoch())
+            .max(0);
+        let draining = self.operations.as_ref().map_or_else(
+            || {
+                self.admission
+                    .as_ref()
+                    .is_some_and(|gate| gate.is_draining())
+            },
+            |state| state.is_draining(),
+        );
+
+        datadog::gauge(
+            Metric::OwnershipHealthy,
+            f64::from(u8::from(ownership_healthy)),
+            &[],
+        );
+        datadog::gauge(Metric::OwnershipEpoch, ownership_epoch as f64, &[]);
+        datadog::gauge(
+            Metric::SchemaVersion,
+            compatibility.public_version.max(0) as f64,
+            &[Tag::new(TagKey::Schema, "public")],
+        );
+        datadog::gauge(
+            Metric::SchemaVersion,
+            compatibility.rust_version.max(0) as f64,
+            &[Tag::new(TagKey::Schema, "rust")],
+        );
+        datadog::gauge(
+            Metric::SchemaChecksumValid,
+            f64::from(u8::from(compatibility.migration_checksum_valid)),
+            &[],
+        );
+        datadog::gauge(
+            Metric::DrainState,
+            f64::from(u8::from(draining)),
+            &[Tag::new(TagKey::Mode, "status")],
+        );
+
+        match state_metrics::snapshot(&self.database).await {
+            Ok(snapshot) => {
+                let durable_quiescent = snapshot.rollback_guard.go_fallback_safe;
+                snapshot.emit_datadog();
+                let process_quiescent = self
+                    .operations
+                    .as_ref()
+                    .is_none_or(|state| state.observability_quiescent());
+                datadog::gauge(
+                    Metric::Quiescent,
+                    f64::from(u8::from(
+                        ownership_healthy && durable_quiescent && process_quiescent,
+                    )),
+                    &[],
+                );
+            }
+            Err(error) => {
+                datadog::counter(
+                    Metric::RecoveryAction,
+                    1,
+                    &[
+                        Tag::new(TagKey::Kind, "diagnostics"),
+                        Tag::new(TagKey::Operation, "state_snapshot"),
+                        Tag::new(TagKey::Outcome, "failure"),
+                    ],
+                );
+                datadog::gauge(
+                    Metric::RollbackGuard,
+                    0.0,
+                    &[Tag::new(TagKey::Mode, "go_fallback")],
+                );
+                datadog::gauge(Metric::Quiescent, 0.0, &[]);
+                tracing::warn!(error = %error, "durable state metrics snapshot failed");
+            }
+        }
+    }
+
     async fn process_job(
+        &self,
+        worker_id: Uuid,
+        lease: &JobRecoveryLease,
+    ) -> Result<(), LedgerError> {
+        let action = match lease.action {
+            JobRecoveryAction::ReleasePreAuthorization => "release_pre_authorization",
+            JobRecoveryAction::ReleaseNotSent => "release_not_sent",
+            JobRecoveryAction::ReconcileAuthorized => "reconcile_authorized",
+            JobRecoveryAction::AwaitAuthorizedTerminal => "await_terminal",
+        };
+        let result = self.process_job_unobserved(worker_id, lease).await;
+        datadog::counter(
+            Metric::RecoveryAction,
+            1,
+            &[
+                Tag::new(TagKey::Kind, "job"),
+                Tag::new(TagKey::Operation, action),
+                Tag::new(
+                    TagKey::Outcome,
+                    if result.is_ok() { "success" } else { "failure" },
+                ),
+            ],
+        );
+        result
+    }
+
+    async fn process_job_unobserved(
         &self,
         _worker_id: Uuid,
         lease: &JobRecoveryLease,
@@ -521,6 +664,14 @@ impl RecoveryRuntime {
                     .await
                 {
                     Ok(disposition) => {
+                        datadog::counter(
+                            Metric::RecoveryAction,
+                            1,
+                            &[
+                                Tag::new(TagKey::Kind, "terminal"),
+                                Tag::new(TagKey::Outcome, "success"),
+                            ],
+                        );
                         if let Some(pilot) = &self.pilot
                             && let Err(error) =
                                 pilot.ack_recovered_terminal(&ack_lease, disposition).await
@@ -673,6 +824,23 @@ impl RecoveryRuntime {
                     .await
                 {
                     handle_item_error("external-event recovery", error)?;
+                } else {
+                    datadog::counter(
+                        Metric::RecoveryAction,
+                        1,
+                        &[
+                            Tag::new(TagKey::Kind, "external_event"),
+                            Tag::new(
+                                TagKey::Outcome,
+                                match disposition {
+                                    super::ExternalDisposition::Applied => "applied",
+                                    super::ExternalDisposition::Ignored => "ignored",
+                                    super::ExternalDisposition::Rejected => "rejected",
+                                    super::ExternalDisposition::Failed => "failed",
+                                },
+                            ),
+                        ],
+                    );
                 }
             }
         }
@@ -770,6 +938,23 @@ impl RecoveryRuntime {
                     .await
                 {
                     handle_item_error("outbox recovery", error)?;
+                } else {
+                    datadog::counter(
+                        Metric::RecoveryAction,
+                        1,
+                        &[
+                            Tag::new(TagKey::Kind, "outbox"),
+                            Tag::new(
+                                TagKey::Outcome,
+                                match disposition {
+                                    super::OutboxDisposition::Delivered => "delivered",
+                                    super::OutboxDisposition::Retry => "retry",
+                                    super::OutboxDisposition::Failed => "failed",
+                                    super::OutboxDisposition::Cancelled => "cancelled",
+                                },
+                            ),
+                        ],
+                    );
                 }
             }
         }
@@ -785,8 +970,37 @@ impl RecoveryRuntime {
                 _ = ticker.tick() => {}
             }
             match self.project_fee_page(worker_id).await {
-                Ok(()) | Err(LedgerError::StaleVersion) => {}
-                Err(error) => handle_claim_error("fee projection", error)?,
+                Ok(()) => {
+                    datadog::counter(
+                        Metric::RecoveryAction,
+                        1,
+                        &[
+                            Tag::new(TagKey::Kind, "fee"),
+                            Tag::new(TagKey::Outcome, "projected"),
+                        ],
+                    );
+                }
+                Err(LedgerError::StaleVersion) => {
+                    datadog::counter(
+                        Metric::RecoveryAction,
+                        1,
+                        &[
+                            Tag::new(TagKey::Kind, "fee"),
+                            Tag::new(TagKey::Outcome, "stale"),
+                        ],
+                    );
+                }
+                Err(error) => {
+                    datadog::counter(
+                        Metric::RecoveryAction,
+                        1,
+                        &[
+                            Tag::new(TagKey::Kind, "fee"),
+                            Tag::new(TagKey::Outcome, "failed"),
+                        ],
+                    );
+                    handle_claim_error("fee projection", error)?;
+                }
             }
         }
     }
@@ -880,6 +1094,7 @@ fn handle_claim_error(
     operation: &'static str,
     error: LedgerError,
 ) -> Result<(), RecoveryRuntimeError> {
+    observe_recovery_error(operation, &error);
     if is_fatal(&error) {
         Err(error.into())
     } else {
@@ -892,12 +1107,31 @@ fn handle_item_error(
     operation: &'static str,
     error: LedgerError,
 ) -> Result<(), RecoveryRuntimeError> {
+    observe_recovery_error(operation, &error);
     if is_fatal(&error) {
         Err(error.into())
     } else {
         tracing::warn!(operation, error = %error, "durable worker item remains recoverable");
         Ok(())
     }
+}
+
+fn observe_recovery_error(operation: &'static str, error: &LedgerError) {
+    if matches!(error, LedgerError::CommitOutcomeUnknown { .. }) {
+        datadog::counter(
+            Metric::AmbiguousCommit,
+            1,
+            &[Tag::new(TagKey::Operation, "recovery")],
+        );
+    }
+    datadog::counter(
+        Metric::RecoveryAction,
+        1,
+        &[
+            Tag::new(TagKey::Operation, operation),
+            Tag::new(TagKey::Outcome, "failure"),
+        ],
+    );
 }
 
 fn is_fatal(error: &LedgerError) -> bool {

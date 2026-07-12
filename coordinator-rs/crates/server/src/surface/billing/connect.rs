@@ -359,7 +359,7 @@ fn validate_redirect(candidate: &str, configured: &str) -> Result<(), BillingErr
 pub(super) fn map_stripe(error: super::stripe::StripeError) -> BillingError {
     match error.outcome {
         StripeOutcome::Definitive => BillingError::stripe_unavailable(error.to_string()),
-        StripeOutcome::Unknown => BillingError::external_unknown(format!(
+        StripeOutcome::Unknown => BillingError::stripe_unknown(format!(
             "Stripe operation outcome is unknown; retry with the same Idempotency-Key ({error})"
         )),
     }

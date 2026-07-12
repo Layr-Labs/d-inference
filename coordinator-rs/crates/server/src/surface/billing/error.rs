@@ -7,7 +7,10 @@ use axum::{
 };
 use serde::Serialize;
 
-use crate::ledger::LedgerError;
+use crate::{
+    ledger::LedgerError,
+    telemetry::datadog::{self, Metric, Tag, TagKey},
+};
 
 #[derive(Debug)]
 pub struct BillingError {
@@ -15,6 +18,12 @@ pub struct BillingError {
     code: &'static str,
     message: Cow<'static, str>,
     retry_after: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UnknownSignal {
+    DurableCommit,
+    Stripe,
 }
 
 impl BillingError {
@@ -72,6 +81,12 @@ impl BillingError {
     }
 
     pub(super) fn external_unknown(message: impl Into<Cow<'static, str>>) -> Self {
+        emit_unknown(UnknownSignal::DurableCommit);
+        Self::new(StatusCode::ACCEPTED, "external_unknown", message)
+    }
+
+    pub(super) fn stripe_unknown(message: impl Into<Cow<'static, str>>) -> Self {
+        emit_unknown(UnknownSignal::Stripe);
         Self::new(StatusCode::ACCEPTED, "external_unknown", message)
     }
 
@@ -110,12 +125,27 @@ impl BillingError {
             LedgerError::OwnershipUnavailable | LedgerError::OwnershipLost => {
                 Self::unavailable("coordinator ownership is unavailable")
             }
-            LedgerError::Timeout | LedgerError::CommitOutcomeUnknown { .. } => {
+            LedgerError::Timeout => {
+                Self::external_unknown("the durable operation outcome is being reconciled")
+            }
+            LedgerError::CommitOutcomeUnknown { .. } => {
                 Self::external_unknown("the durable operation outcome is being reconciled")
             }
             LedgerError::Invalid(error) => Self::bad_request(error.to_string()),
             error => Self::internal(operation, error),
         }
+    }
+}
+
+fn emit_unknown(signal: UnknownSignal) {
+    let (metric, key, value) = unknown_signal(signal);
+    datadog::counter(metric, 1, &[Tag::new(key, value)]);
+}
+
+const fn unknown_signal(signal: UnknownSignal) -> (Metric, TagKey, &'static str) {
+    match signal {
+        UnknownSignal::DurableCommit => (Metric::AmbiguousCommit, TagKey::Operation, "billing"),
+        UnknownSignal::Stripe => (Metric::ExternalUnknown, TagKey::Source, "stripe"),
     }
 }
 
@@ -170,4 +200,21 @@ struct ErrorBody {
     kind: &'static str,
     code: &'static str,
     message: Cow<'static, str>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn durable_and_stripe_unknown_outcomes_have_distinct_signals() {
+        assert_eq!(
+            unknown_signal(UnknownSignal::DurableCommit),
+            (Metric::AmbiguousCommit, TagKey::Operation, "billing")
+        );
+        assert_eq!(
+            unknown_signal(UnknownSignal::Stripe),
+            (Metric::ExternalUnknown, TagKey::Source, "stripe")
+        );
+    }
 }

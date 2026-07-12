@@ -8,6 +8,8 @@ use axum::{
 };
 use serde::Serialize;
 
+use crate::telemetry::datadog::{self, Metric, Tag, TagKey};
+
 use super::{
     FullSurfaceBuildError, FullSurfaceState, billing,
     billing::BillingError,
@@ -66,6 +68,22 @@ async fn shared_context(
         match state.operations.admission_gate().enter(kind) {
             Ok(guard) => Some(guard),
             Err(_) => {
+                datadog::counter(
+                    Metric::FleetAdmission,
+                    1,
+                    &[
+                        Tag::new(TagKey::Outcome, "rejected"),
+                        Tag::new(TagKey::Reason, "draining"),
+                        Tag::new(
+                            TagKey::Kind,
+                            match kind {
+                                AdmissionKind::Inference => "inference",
+                                AdmissionKind::Mutation => "mutation",
+                                AdmissionKind::External => "external",
+                            },
+                        ),
+                    ],
+                );
                 return Ok(drain_rejection());
             }
         }
@@ -75,37 +93,48 @@ async fn shared_context(
     match auth_class {
         SharedAuth::None => {}
         SharedAuth::Required => {
+            let started = std::time::Instant::now();
             let context = state
                 .identity
                 .auth()
                 .authenticate(request.headers(), AuthRequirement::PrivyOrApiKey)
-                .await?;
+                .await;
+            observe_auth("privy_or_api_key", &context, started.elapsed());
+            let context = context?;
             install_context(&mut request, context)?;
         }
         SharedAuth::OptionalPrivy => {
-            if let Ok(context) = state
+            let started = std::time::Instant::now();
+            let context = state
                 .identity
                 .auth()
                 .authenticate(request.headers(), AuthRequirement::Privy)
-                .await
-            {
+                .await;
+            observe_auth("privy", &context, started.elapsed());
+            if let Ok(context) = context {
                 install_context(&mut request, context)?;
             }
         }
         SharedAuth::OptionalAny => {
-            let context = match state
+            let started = std::time::Instant::now();
+            let primary = state
                 .identity
                 .auth()
                 .authenticate(request.headers(), AuthRequirement::PrivyOrApiKey)
-                .await
-            {
+                .await;
+            observe_auth("privy_or_api_key", &primary, started.elapsed());
+            let context = match primary {
                 Ok(context) => Some(context),
-                Err(_) => state
-                    .identity
-                    .auth()
-                    .authenticate(request.headers(), AuthRequirement::ProviderToken)
-                    .await
-                    .ok(),
+                Err(_) => {
+                    let started = std::time::Instant::now();
+                    let provider = state
+                        .identity
+                        .auth()
+                        .authenticate(request.headers(), AuthRequirement::ProviderToken)
+                        .await;
+                    observe_auth("provider_token", &provider, started.elapsed());
+                    provider.ok()
+                }
             };
             if let Some(context) = context {
                 install_context(&mut request, context)?;
@@ -113,6 +142,42 @@ async fn shared_context(
         }
     }
     Ok(next.run(request).await)
+}
+
+fn observe_auth(
+    kind: &'static str,
+    result: &Result<super::identity::AuthContext, IdentityError>,
+    elapsed: std::time::Duration,
+) {
+    let outcome = if result.is_ok() { "success" } else { "failure" };
+    datadog::counter(
+        Metric::AuthAttempts,
+        1,
+        &[
+            Tag::new(TagKey::Kind, kind),
+            Tag::new(TagKey::Outcome, outcome),
+        ],
+    );
+    datadog::histogram(
+        Metric::HttpStageDurationMs,
+        elapsed.as_secs_f64() * 1_000.0,
+        &[
+            Tag::new(TagKey::Stage, "auth"),
+            Tag::new(TagKey::Kind, kind),
+            Tag::new(TagKey::Outcome, outcome),
+        ],
+    );
+    if elapsed > std::time::Duration::from_secs(2) {
+        datadog::counter(
+            Metric::HttpStageBudgetExceeded,
+            1,
+            &[
+                Tag::new(TagKey::Stage, "auth"),
+                Tag::new(TagKey::Kind, kind),
+                Tag::new(TagKey::Outcome, outcome),
+            ],
+        );
+    }
 }
 
 fn drain_rejection() -> Response {

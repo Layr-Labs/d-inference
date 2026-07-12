@@ -21,6 +21,7 @@ use crate::{
         StartDispatchRequest, TerminalFacts, TerminalOutcome as DurableTerminalOutcome, Version,
     },
     request::VerifiedTerminal,
+    telemetry::datadog::{self, Metric, Tag, TagKey},
 };
 
 use super::{
@@ -220,11 +221,10 @@ impl DurableExecution {
             api_key_limit_micro_usd: self.api_key_limit_micro_usd,
             api_key_controlled: self.api_key_controlled,
         };
-        let reservation = services
-            .ledger
-            .reserve(&request)
-            .await
-            .map_err(map_ledger_error)?;
+        let started = std::time::Instant::now();
+        let reservation = services.ledger.reserve(&request).await;
+        observe_ledger("reserve", started.elapsed(), reservation.is_ok());
+        let reservation = reservation.map_err(map_ledger_error)?;
         if reservation.disposition == MutationDisposition::Replayed {
             self.authorization_uncertain = true;
             return Err(PilotRequestError::Unavailable(Arc::from(
@@ -371,7 +371,10 @@ impl DurableExecution {
             start_deadline_millis: u64::try_from(start_deadline.as_millis())
                 .map_err(|_| map_ledger_input(crate::ledger::InputError::ArithmeticOverflow))?,
         };
-        let result = match services.ledger.resize_and_authorize(&request).await {
+        let started = std::time::Instant::now();
+        let authorization = services.ledger.resize_and_authorize(&request).await;
+        observe_ledger("resize", started.elapsed(), authorization.is_ok());
+        let result = match authorization {
             Ok(result) => result,
             Err(error) => return Err(self.authorization_error(error)),
         };
@@ -394,6 +397,11 @@ impl DurableExecution {
             error,
             crate::ledger::LedgerError::CommitOutcomeUnknown { .. }
         ) {
+            datadog::counter(
+                Metric::AmbiguousCommit,
+                1,
+                &[Tag::new(TagKey::Operation, "resize")],
+            );
             self.authorization_uncertain = true;
             PilotRequestError::Unavailable(Arc::from(format!(
                 "start authorization commit outcome is unknown; recovery owns the job: {error}"
@@ -417,6 +425,7 @@ impl DurableExecution {
         let authorized = self.authorized.as_mut().ok_or_else(|| {
             PilotRequestError::Internal(Arc::from("start dispatch preceded authorization"))
         })?;
+        let started = std::time::Instant::now();
         let result = services
             .ledger
             .record_start_dispatch(&StartDispatchRequest {
@@ -428,8 +437,9 @@ impl DurableExecution {
                 expected_attempt_state: authorized.attempt_state,
                 disposition,
             })
-            .await
-            .map_err(map_ledger_error)?;
+            .await;
+        observe_ledger("start", started.elapsed(), result.is_ok());
+        let result = result.map_err(map_ledger_error)?;
         authorized.job_version = result.job_version;
         authorized.job_state = result.job_state;
         authorized.attempt_version = result.attempt_version;
@@ -671,11 +681,10 @@ impl DurableExecution {
                 accepted_cumulative_tokens: summary.completion_tokens,
                 reason: Arc::from("provider terminal did not complete"),
             };
-            services
-                .ledger
-                .release_terminal(&request)
-                .await
-                .map_err(map_ledger_error)?;
+            let started = std::time::Instant::now();
+            let result = services.ledger.release_terminal(&request).await;
+            observe_ledger("terminal", started.elapsed(), result.is_ok());
+            result.map_err(map_ledger_error)?;
             return Ok(TerminalDisposition::Released);
         }
         let BillingContext::Paid(consumer) = &self.consumer else {
@@ -724,11 +733,10 @@ impl DurableExecution {
             consumer_key_hash: consumer.consumer_key_hash.clone(),
             review: None,
         };
-        services
-            .ledger
-            .settle(&request)
-            .await
-            .map_err(map_ledger_error)?;
+        let started = std::time::Instant::now();
+        let result = services.ledger.settle(&request).await;
+        observe_ledger("settle", started.elapsed(), result.is_ok());
+        result.map_err(map_ledger_error)?;
         Ok(TerminalDisposition::Settled)
     }
 
@@ -863,7 +871,8 @@ impl DurableExecution {
             "version": reservation.version.as_i64(),
         }))
         .map_err(|error| PilotRequestError::Internal(Arc::from(error.to_string())))?;
-        services
+        let started = std::time::Instant::now();
+        let result = services
             .ledger
             .release(&ReleaseRequest {
                 operation: self
@@ -875,9 +884,50 @@ impl DurableExecution {
                 expected_state: reservation.state,
                 reason: Arc::from(reason),
             })
-            .await
-            .map_err(map_ledger_error)?;
+            .await;
+        observe_ledger("release", started.elapsed(), result.is_ok());
+        result.map_err(map_ledger_error)?;
         Ok(())
+    }
+}
+
+fn observe_ledger(operation: &'static str, elapsed: Duration, success: bool) {
+    let outcome = if success { "success" } else { "failure" };
+    let stage = match operation {
+        "reserve" => "reserve",
+        "resize" => "prepare",
+        "start" => "start",
+        "settle" => "settle",
+        "terminal" => "terminal",
+        "release" => "settle",
+        _ => "other",
+    };
+    let tags = [
+        Tag::new(TagKey::Operation, operation),
+        Tag::new(TagKey::Outcome, outcome),
+    ];
+    datadog::counter(Metric::LedgerTransition, 1, &tags);
+    datadog::histogram(
+        Metric::HttpStageDurationMs,
+        elapsed.as_secs_f64() * 1_000.0,
+        &[
+            Tag::new(TagKey::Stage, stage),
+            Tag::new(TagKey::Outcome, outcome),
+        ],
+    );
+    let budget = match stage {
+        "prepare" | "settle" | "terminal" => Duration::from_secs(3),
+        _ => Duration::from_secs(2),
+    };
+    if elapsed > budget {
+        datadog::counter(
+            Metric::HttpStageBudgetExceeded,
+            1,
+            &[
+                Tag::new(TagKey::Stage, stage),
+                Tag::new(TagKey::Outcome, outcome),
+            ],
+        );
     }
 }
 
@@ -902,6 +952,16 @@ fn map_ledger_input(error: crate::ledger::InputError) -> PilotRequestError {
 }
 
 fn map_ledger_error(error: crate::ledger::LedgerError) -> PilotRequestError {
+    if matches!(
+        &error,
+        crate::ledger::LedgerError::CommitOutcomeUnknown { .. }
+    ) {
+        datadog::counter(
+            Metric::AmbiguousCommit,
+            1,
+            &[Tag::new(TagKey::Operation, "ledger")],
+        );
+    }
     match error {
         crate::ledger::LedgerError::InsufficientBalance
         | crate::ledger::LedgerError::ApiKeySpendLimitExceeded => {

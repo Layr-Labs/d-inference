@@ -13,6 +13,7 @@ use crate::ledger::{
     ExternalId, LedgerAmount, LedgerError, Operation, OperationId, OperationKey, OutboxId,
     WithdrawalId, WithdrawalRequest, WithdrawalStatus, WithdrawalTransition, canonical_json_digest,
 };
+use crate::telemetry::datadog::{self, Metric, Tag, TagKey};
 
 use super::{
     auth::{idempotency_key, operation_suffix, privy_principal},
@@ -135,12 +136,10 @@ pub(super) async fn withdraw(
     };
     if let Err(error) = state.store.ledger().create_withdrawal(&create).await {
         return match error {
-            LedgerError::CommitOutcomeUnknown { .. } | LedgerError::Timeout => {
-                Ok(external_unknown(
-                    &withdrawal_id,
-                    "withdrawal durable commit outcome is unknown",
-                ))
-            }
+            LedgerError::CommitOutcomeUnknown { .. } | LedgerError::Timeout => Ok(durable_unknown(
+                &withdrawal_id,
+                "withdrawal durable commit outcome is unknown",
+            )),
             error => Err(BillingError::from_ledger("create withdrawal", error)),
         };
     }
@@ -155,7 +154,7 @@ pub(super) async fn withdraw(
     {
         Ok(transfer) => transfer,
         Err(error) if error.outcome == StripeOutcome::Unknown => {
-            return Ok(external_unknown(
+            return Ok(stripe_unknown(
                 &withdrawal_id,
                 "Stripe transfer outcome is unknown; retry with the same Idempotency-Key",
             ));
@@ -198,12 +197,10 @@ pub(super) async fn withdraw(
         .await
     {
         return match error {
-            LedgerError::CommitOutcomeUnknown { .. } | LedgerError::Timeout => {
-                Ok(external_unknown(
-                    &withdrawal_id,
-                    "transfer succeeded but local status is unknown",
-                ))
-            }
+            LedgerError::CommitOutcomeUnknown { .. } | LedgerError::Timeout => Ok(durable_unknown(
+                &withdrawal_id,
+                "transfer succeeded but local status is unknown",
+            )),
             error => Err(BillingError::from_ledger("persist Stripe transfer", error)),
         };
     }
@@ -234,7 +231,7 @@ pub(super) async fn withdraw(
     {
         Ok(payout) => payout,
         Err(error) if error.outcome == StripeOutcome::Unknown => {
-            return Ok(external_unknown(
+            return Ok(stripe_unknown(
                 &withdrawal_id,
                 "Stripe instant payout outcome is unknown; no fee was refunded",
             ));
@@ -509,7 +506,25 @@ pub(super) async fn mark_outbox_delivered(
         .map_err(|error| BillingError::external_unknown(error.to_string()))
 }
 
-fn external_unknown(withdrawal_id: &str, message: &str) -> Response {
+fn durable_unknown(withdrawal_id: &str, message: &str) -> Response {
+    datadog::counter(
+        Metric::AmbiguousCommit,
+        1,
+        &[Tag::new(TagKey::Operation, "billing")],
+    );
+    external_unknown_response(withdrawal_id, message)
+}
+
+fn stripe_unknown(withdrawal_id: &str, message: &str) -> Response {
+    datadog::counter(
+        Metric::ExternalUnknown,
+        1,
+        &[Tag::new(TagKey::Source, "stripe")],
+    );
+    external_unknown_response(withdrawal_id, message)
+}
+
+fn external_unknown_response(withdrawal_id: &str, message: &str) -> Response {
     (
         StatusCode::ACCEPTED,
         Json(json!({

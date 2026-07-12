@@ -13,6 +13,11 @@ use serde_json::{Value, json};
 use sqlx::{Row, types::Json as SqlJson};
 use tokio::time::{Instant, sleep};
 
+use crate::telemetry::{
+    datadog::{self, Metric, Tag, TagKey},
+    state as state_metrics,
+};
+
 use super::{
     OperationsState,
     auth::{require_admin, require_admin_key},
@@ -137,6 +142,11 @@ pub(super) async fn metrics(
     let counters = state.metrics.snapshot();
     let telemetry = state.telemetry.summary();
     let telemetry_delivery = state.telemetry_service.metrics();
+    let datadog_bridge = datadog::snapshot();
+    let durable_states = state_metrics::snapshot(&state.database)
+        .await
+        .map_err(|error| OperationsError::internal("snapshot durable state counts", error))?;
+    durable_states.emit_datadog();
     let fleet = state.pilot().map(|pilot| pilot.fleet_snapshot());
     let pilot_telemetry = state.pilot().map(|pilot| {
         let latency = pilot.telemetry().latency_summary().map(|summary| {
@@ -164,6 +174,11 @@ pub(super) async fn metrics(
         "active_http_inference": state.active_http_inference(),
         "active_http_mutations": state.active_http_mutations(),
         "active_external_operations": state.active_external_operations(),
+        "ownership_healthy": state.database.authority().is_some_and(|(_, status)| status.is_healthy()),
+        "ownership_epoch": state.database.authority().map_or(0, |(context, _)| context.epoch()),
+        "public_schema_version": state.database.compatibility().public_version,
+        "rust_schema_version": state.database.compatibility().rust_version,
+        "migration_checksum_valid": state.database.compatibility().migration_checksum_valid,
     });
     if query.format.as_deref() == Some("prom") {
         let mut body = String::new();
@@ -220,6 +235,32 @@ pub(super) async fn metrics(
         ] {
             body.push_str(&format!("# TYPE {name} counter\n{name} {value}\n"));
         }
+        for (name, value) in [
+            ("datadog_bridge_accepted_total", datadog_bridge.accepted),
+            (
+                "datadog_bridge_dropped_full_total",
+                datadog_bridge.dropped_full,
+            ),
+            (
+                "datadog_bridge_dropped_closed_total",
+                datadog_bridge.dropped_closed,
+            ),
+            (
+                "datadog_bridge_dropped_transport_total",
+                datadog_bridge.dropped_transport,
+            ),
+            (
+                "datadog_bridge_send_failures_total",
+                datadog_bridge.send_failures,
+            ),
+        ] {
+            body.push_str(&format!("# TYPE {name} counter\n{name} {value}\n"));
+        }
+        body.push_str("# TYPE datadog_bridge_remaining_capacity gauge\n");
+        body.push_str(&format!(
+            "datadog_bridge_remaining_capacity {}\n",
+            datadog_bridge.remaining_capacity
+        ));
         let mut response = Body::from(body).into_response();
         response.headers_mut().insert(
             header::CONTENT_TYPE,
@@ -232,7 +273,17 @@ pub(super) async fn metrics(
         "gauges": gauges,
         "telemetry": telemetry,
         "durable_telemetry": telemetry_delivery,
+        "datadog_bridge": datadog_bridge,
         "pilot_telemetry": pilot_telemetry,
+        "durable_states": durable_states.states,
+        "rollback_guard": durable_states.rollback_guard,
+        "build": {
+            "binary": "rust",
+            "version": option_env!("DARKBLOOM_BUILD_VERSION").unwrap_or("dev"),
+            "commit": option_env!("DARKBLOOM_BUILD_COMMIT").unwrap_or("unknown"),
+            "date": option_env!("DARKBLOOM_BUILD_DATE").unwrap_or("unknown"),
+            "rust_package_version": env!("CARGO_PKG_VERSION"),
+        },
     }))
     .into_response())
 }
@@ -422,6 +473,18 @@ pub(super) async fn drain(
             sleep(Duration::from_millis(25)).await;
         }
     }
+    datadog::gauge(
+        Metric::DrainState,
+        f64::from(u8::from(draining)),
+        &[Tag::new(
+            TagKey::Mode,
+            match mode {
+                DrainMode::Inference => "inference",
+                DrainMode::Handoff => "handoff",
+            },
+        )],
+    );
+    datadog::gauge(Metric::Quiescent, f64::from(u8::from(quiescent)), &[]);
     Ok(Json(json!({
         "draining": draining,
         "mode": match mode {
@@ -595,6 +658,12 @@ pub(super) async fn quiescence(
         && active_recovery_leases == 0
         && ownership_healthy
         && pilot_ready;
+    datadog::gauge(
+        Metric::DrainState,
+        f64::from(u8::from(state.is_draining())),
+        &[Tag::new(TagKey::Mode, "status")],
+    );
+    datadog::gauge(Metric::Quiescent, f64::from(u8::from(quiescent)), &[]);
     Ok(Json(json!({
         "draining": state.is_draining(),
         "external_fenced": state.admission.external_fenced(),

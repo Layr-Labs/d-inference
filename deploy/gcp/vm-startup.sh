@@ -162,12 +162,29 @@ read_env_value() {
 
 DD_API_KEY_VALUE=$(read_env_value DD_API_KEY || true)
 DD_SITE_VALUE=$(read_env_value DD_SITE || true)
+DD_ENV_VALUE=$(read_env_value DD_ENV || true)
 if [[ -n "$DD_API_KEY_VALUE" ]]; then
   if ! command -v datadog-agent >/dev/null 2>&1; then
     DD_API_KEY="$DD_API_KEY_VALUE" DD_SITE="${DD_SITE_VALUE:-datadoghq.com}" \
       bash -c "$(curl -fsSL https://s3.amazonaws.com/dd-agent/scripts/install_script_agent7.sh)"
   fi
   usermod -a -G systemd-journal dd-agent
+  DATADOG_CONFIG=/etc/datadog-agent/datadog.yaml
+  sed -i \
+    '/^# BEGIN D-INFERENCE HISTOGRAMS$/,/^# END D-INFERENCE HISTOGRAMS$/d' \
+    "$DATADOG_CONFIG"
+  cat >>"$DATADOG_CONFIG" <<'EOF'
+# BEGIN D-INFERENCE HISTOGRAMS
+histogram_aggregates:
+  - max
+  - median
+  - avg
+  - count
+histogram_percentiles:
+  - 0.95
+  - 0.99
+# END D-INFERENCE HISTOGRAMS
+EOF
   install -d -m 0755 /etc/datadog-agent/conf.d/journald.d
   cat >/etc/datadog-agent/conf.d/journald.d/conf.yaml <<EOF
 logs:
@@ -178,12 +195,22 @@ logs:
     service: d-inference-coordinator
     source: coordinator
     tags:
-      - env:${ENVIRONMENT}
+      - env:${DD_ENV_VALUE:-$ENVIRONMENT}
+EOF
+  install -d -m 0755 /etc/systemd/system/datadog-agent.service.d
+  cat >/etc/systemd/system/datadog-agent.service.d/d-inference-observability.conf <<'EOF'
+[Service]
+Environment=DD_LOGS_ENABLED=true
+Environment=DD_APM_ENABLED=true
+Environment=DD_APM_RECEIVER_PORT=8126
+Environment=DD_DOGSTATSD_PORT=8125
 EOF
 fi
-unset DD_API_KEY_VALUE DD_SITE_VALUE
+unset DD_API_KEY_VALUE DD_SITE_VALUE DD_ENV_VALUE DATADOG_CONFIG
 
 systemctl daemon-reload
+[[ -z "$(read_env_value DD_API_KEY || true)" ]] ||
+  systemctl restart datadog-agent.service
 systemctl enable docker.service caddy.service d-inference-coordinator.service
 systemctl disable d-inference-recovery.service >/dev/null 2>&1 || true
 [[ "$ENVIRONMENT" != "dev" ]] || systemctl restart cloud-sql-proxy.service

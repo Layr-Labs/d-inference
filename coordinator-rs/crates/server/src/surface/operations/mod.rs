@@ -334,6 +334,34 @@ impl OperationsState {
         self.admission.active_external()
     }
 
+    /// Reports whether every in-process request, lease, and writer obligation
+    /// is idle. Durable database state and ownership are checked separately by
+    /// the periodic gauge publisher.
+    #[must_use]
+    pub fn observability_quiescent(&self) -> bool {
+        let Some(pilot) = &self.pilot else {
+            return self.active_http_inference() == 0
+                && self.active_http_mutations() == 0
+                && self.active_external_operations() == 0;
+        };
+        let fleet = pilot.fleet_snapshot();
+        let writer_reserved_items = fleet.providers().fold(0_usize, |reserved, provider| {
+            reserved.saturating_add(
+                provider
+                    .writer_headroom()
+                    .available_items()
+                    .saturating_sub(provider.effective_writer_items()),
+            )
+        });
+        pilot.readiness().is_ready()
+            && pilot.active_request_count() == 0
+            && fleet.active_lease_count() == 0
+            && writer_reserved_items == 0
+            && self.active_http_inference() == 0
+            && self.active_http_mutations() == 0
+            && self.active_external_operations() == 0
+    }
+
     #[must_use]
     pub fn telemetry_service(&self) -> TelemetryService {
         self.telemetry_service.clone()

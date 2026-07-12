@@ -10,19 +10,21 @@ use darkbloom_coordinator_server::{
     runtime, shutdown,
     supervisor::SupervisorStatus,
     surface::{FullSurfaceState, billing::WithdrawalRecovery, operations::AdmissionGate},
+    telemetry::datadog::{self, Metric, Observability, Tag, TagKey},
 };
-use std::future::pending;
+use std::{future::pending, time::Duration};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .init();
+    let observability = Observability::install()?;
+    let result = run().await;
+    observability.shutdown(Duration::from_secs(5)).await;
+    result
+}
 
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let command = OperatorCommand::from_env()?;
     if command == OperatorCommand::Version {
         println!(
@@ -59,8 +61,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(
         public_schema_version = database.compatibility().public_version,
         rust_schema_version = database.compatibility().rust_version,
+        migration_checksum_valid = database.compatibility().migration_checksum_valid,
         "PostgreSQL schema compatibility verified"
     );
+    datadog::gauge(
+        Metric::SchemaVersion,
+        database.compatibility().public_version as f64,
+        &[Tag::new(TagKey::Schema, "public")],
+    );
+    datadog::gauge(
+        Metric::SchemaVersion,
+        database.compatibility().rust_version as f64,
+        &[Tag::new(TagKey::Schema, "rust")],
+    );
+    datadog::gauge(Metric::SchemaChecksumValid, 1.0, &[]);
+    if command == OperatorCommand::StateCounts {
+        let output = command.execute_one_shot(database.clone()).await;
+        let close_result = database.close(config.shutdown_grace).await;
+        let output = output?;
+        close_result?;
+        println!("{}", serde_json::to_string(&output)?);
+        return Ok(());
+    }
     let ownership = match CoordinatorOwnership::configure(
         &database,
         &config.database_url,
@@ -88,6 +110,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Rust coordinator legacy ownership acquired with epoch activation disabled"
         );
     }
+    datadog::gauge(Metric::OwnershipHealthy, 1.0, &[]);
+    datadog::gauge(Metric::OwnershipEpoch, ownership.epoch() as f64, &[]);
 
     if matches!(
         command,
@@ -138,6 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             () = recovery_ownership.wait_until_unhealthy() => {
                 ownership_lost = true;
+                datadog::gauge(Metric::OwnershipHealthy, 0.0, &[]);
                 cancellation.cancel();
                 run.await
             }
@@ -206,6 +231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state = state.with_pilot(handle);
     }
     let mut admission_gate = full_surface_admission.clone();
+    let mut operations_state = None;
     let mut telemetry_service = None;
     let mut withdrawal_recovery = None;
     if config.full_surface.enabled {
@@ -239,6 +265,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
         admission_gate = Some(full_surface.operations.admission_gate());
+        operations_state = Some(full_surface.operations.clone());
         telemetry_service = Some(full_surface.operations.telemetry_service());
         withdrawal_recovery = full_surface.billing.withdrawal_recovery();
         state = state.with_full_surface(full_surface);
@@ -250,6 +277,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         RecoveryRuntimeConfig::default(),
     )?
     .with_admission_gate(admission_gate)
+    .with_operations_state(operations_state)
     .with_telemetry_service(telemetry_service)
     .with_withdrawal_recovery(withdrawal_recovery);
     let (recovery_status_tx, recovery_status_rx) = watch::channel(false);
@@ -270,6 +298,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tokio::select! {
                 () = shutdown::signal() => {}
                 () = shutdown_ownership.wait_until_unhealthy() => {
+                    datadog::gauge(Metric::OwnershipHealthy, 0.0, &[]);
                     tracing::error!("coordinator ownership lost; shutting down runtime");
                 }
                 () = wait_for_pilot_exit(monitor_pilot) => {

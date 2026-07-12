@@ -49,6 +49,12 @@ RUN cargo build --release --locked --package darkbloom-coordinator-server \
 # since the dormant ACME device-attest leg was removed).
 # Rebuild base only when tool versions change: docker build -f Dockerfile.base -t eigengajesh/d-inference-base:latest . && docker push
 FROM --platform=linux/amd64 eigengajesh/d-inference-base:v1-amd64@sha256:4ea05ea089ac61f8d5999f175fbfaeb20171f74cf721dac7ce278a4f28fe9671
+ARG BUILD_VERSION
+ARG BUILD_COMMIT
+ARG BUILD_DATE
+LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.revision="${BUILD_COMMIT}" \
+      org.opencontainers.image.created="${BUILD_DATE}"
 
 # The pinned v1 base predates the authenticated MicroMDM curl preflight. Keep
 # this explicit until the next pinned base revision includes Dockerfile.base.
@@ -86,6 +92,8 @@ ENV EIGENINFERENCE_PORT=8080
 ENV EIGENINFERENCE_MDM_URL=https://localhost:9002
 ENV EIGENINFERENCE_MDM_API_KEY=eigeninference-micromdm-api
 ENV EIGENINFERENCE_COORDINATOR_BINARY=go
+ENV DD_VERSION=${BUILD_VERSION}
+ENV DD_GIT_COMMIT_SHA=${BUILD_COMMIT}
 
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=6s --start-period=60s --retries=3 \

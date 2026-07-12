@@ -11,6 +11,9 @@ RestartPreventExitStatus=75
 RestartSec=5
 TimeoutStartSec=10min
 TimeoutStopSec=60
+SyslogIdentifier=d-inference-coordinator
+StandardOutput=journal
+StandardError=journal
 ExecStart=/usr/local/bin/d-inference-run.sh
 ExecStop=-/usr/bin/docker stop -t 45 d-inference-coordinator
 

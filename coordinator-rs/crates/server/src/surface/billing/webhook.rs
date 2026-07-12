@@ -401,7 +401,7 @@ async fn mark_automatic_sweep_paid(
         .await
         .map_err(|error| match error.outcome {
             StripeOutcome::Definitive => BillingError::stripe_unavailable(error.to_string()),
-            StripeOutcome::Unknown => BillingError::external_unknown(error.to_string()),
+            StripeOutcome::Unknown => BillingError::stripe_unknown(error.to_string()),
         })?;
     if live.status != "paid" {
         return Ok(());
@@ -411,7 +411,7 @@ async fn mark_automatic_sweep_paid(
         .await
         .map_err(|error| match error.outcome {
             StripeOutcome::Definitive => BillingError::stripe_unavailable(error.to_string()),
-            StripeOutcome::Unknown => BillingError::external_unknown(error.to_string()),
+            StripeOutcome::Unknown => BillingError::stripe_unknown(error.to_string()),
         })?;
     let delay = if account.service_agreement
         == required_service_agreement(&stripe.settings().platform_country, &account.country)

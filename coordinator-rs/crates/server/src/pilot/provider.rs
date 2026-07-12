@@ -47,6 +47,7 @@ use crate::{
     provider_control::ProviderControlPlane,
     request::InboundAttemptEvent,
     surface::operations::AdmissionGuard,
+    telemetry::datadog::{self, Metric, Tag, TagKey},
     trust::{
         BoundedBlockingVerifier, ChallengeExpectation, CredentialRegistry, RegistrationTrust,
         TrustFloor, TrustLevel, verify_challenge, verify_registration,
@@ -307,6 +308,15 @@ impl ProviderOwner {
                         .await
                         {
                             services.telemetry.emit(PilotTelemetryEvent::ProviderRejected);
+                            datadog::counter(
+                                Metric::ProviderTrust,
+                                1,
+                                &[
+                                    Tag::new(TagKey::Trust, "unknown"),
+                                    Tag::new(TagKey::Outcome, "rejected"),
+                                    Tag::new(TagKey::Reason, "session_error"),
+                                ],
+                            );
                             tracing::warn!(error = %error, "provider session ended");
                         }
                     });
@@ -682,6 +692,13 @@ async fn serve_provider(
             .await?;
     }
     let negotiated = session.protocol().clone();
+    let raw_provider_version = session.registration().registration().version.as_str();
+    let provider_version = provider_version_class(raw_provider_version);
+    let trust_level = match verified.level {
+        TrustLevel::Untrusted => "untrusted",
+        TrustLevel::SelfSigned => "self_signed",
+        TrustLevel::Hardware => "hardware",
+    };
     let pilot_session = match build_pilot_session(
         &session,
         negotiated,
@@ -717,6 +734,27 @@ async fn serve_provider(
     services
         .telemetry
         .emit(PilotTelemetryEvent::ProviderConnected);
+    datadog::gauge(
+        Metric::ProviderSessions,
+        services.directory.visible_count() as f64,
+        &[],
+    );
+    datadog::counter(
+        Metric::ProviderVersion,
+        1,
+        &[
+            Tag::new(TagKey::ProviderVersion, provider_version),
+            Tag::new(TagKey::Outcome, provider_version),
+        ],
+    );
+    datadog::counter(
+        Metric::ProviderTrust,
+        1,
+        &[
+            Tag::new(TagKey::Trust, trust_level),
+            Tag::new(TagKey::Outcome, "established"),
+        ],
+    );
 
     let wait = session.wait();
     tokio::pin!(wait);
@@ -735,11 +773,63 @@ async fn serve_provider(
     };
     services.activation.forget(identity);
     cleanup_current(identity, &services).await;
+    datadog::gauge(
+        Metric::ProviderSessions,
+        services.directory.visible_count() as f64,
+        &[],
+    );
     if let Some(replay_result) = replay_result {
         replay_result?;
     }
     result?;
     Ok(())
+}
+
+fn provider_version_class(value: &str) -> &'static str {
+    let minimum = std::env::var("EIGENINFERENCE_MIN_PROVIDER_VERSION").unwrap_or_default();
+    let current = std::env::var("EIGENINFERENCE_PROVIDER_VERSION").unwrap_or_default();
+    classify_provider_version(value, &minimum, &current)
+}
+
+fn classify_provider_version(value: &str, minimum: &str, current: &str) -> &'static str {
+    if minimum.is_empty() {
+        return "unconfigured";
+    }
+    let (Some(version), Some(floor)) = (numeric_version(value), numeric_version(minimum)) else {
+        return "invalid";
+    };
+    if version < floor {
+        return "below_floor";
+    }
+    if current.is_empty() {
+        return "at_or_above_floor";
+    }
+    let Some(current) = numeric_version(current).filter(|current| *current >= floor) else {
+        return "invalid";
+    };
+    match version.cmp(&current) {
+        std::cmp::Ordering::Less => "older_supported",
+        std::cmp::Ordering::Equal => "current",
+        std::cmp::Ordering::Greater => "newer",
+    }
+}
+
+fn numeric_version(value: &str) -> Option<[u16; 3]> {
+    let core = value
+        .strip_prefix('v')
+        .unwrap_or(value)
+        .split(['-', '+'])
+        .next()?;
+    let mut components = core.split('.');
+    let parsed = [
+        components.next()?.parse().ok()?,
+        components.next()?.parse().ok()?,
+        components.next()?.parse().ok()?,
+    ];
+    if components.next().is_some() {
+        return None;
+    }
+    Some(parsed)
 }
 
 async fn release_pending_credential(
@@ -2042,6 +2132,40 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
+
+    #[test]
+    fn provider_version_tags_use_only_fixed_floor_buckets() {
+        assert_eq!(numeric_version("v0.6.31-dev.1"), Some([0, 6, 31]));
+        assert_eq!(numeric_version("1.2.3.4"), None);
+        assert_eq!(
+            classify_provider_version("0.6.30", "0.6.31", "0.7.5"),
+            "below_floor"
+        );
+        assert_eq!(
+            classify_provider_version("0.6.31", "0.6.31", "0.7.5"),
+            "older_supported"
+        );
+        assert_eq!(
+            classify_provider_version("0.7.5+build", "0.6.31", "0.7.5"),
+            "current"
+        );
+        assert_eq!(
+            classify_provider_version("0.8.0", "0.6.31", "0.7.5"),
+            "newer"
+        );
+        assert_eq!(
+            classify_provider_version("0.7.5", "0.6.31", ""),
+            "at_or_above_floor"
+        );
+        assert_eq!(
+            classify_provider_version("provider-controlled", "0.6.31", "0.7.5"),
+            "invalid"
+        );
+        assert_eq!(
+            classify_provider_version("0.7.5", "", "0.7.5"),
+            "unconfigured"
+        );
+    }
 
     #[tokio::test]
     async fn paused_older_activation_cannot_publish_after_newer_activation() {

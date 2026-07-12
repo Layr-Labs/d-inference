@@ -17,6 +17,8 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::telemetry::datadog::{self, Metric, Tag, TagKey};
+
 /// Item and byte bounds for one FIFO lane.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WriterLaneLimits {
@@ -198,6 +200,7 @@ impl DeliveryState {
 pub struct DeliveryReceipt {
     state: watch::Receiver<DeliveryState>,
     wait_timeout: Duration,
+    lane: WriterLane,
 }
 
 /// Queue-admitted frame held behind an explicit durable release gate.
@@ -244,9 +247,20 @@ impl DeliveryReceipt {
                     .map_err(|_| DeliveryReceiptError::WriterUnavailable)?;
             }
         };
-        timeout(wait_timeout, wait)
-            .await
-            .map_err(|_| DeliveryReceiptError::Timeout)?
+        match timeout(wait_timeout, wait).await {
+            Ok(result) => result,
+            Err(_) => {
+                datadog::counter(
+                    Metric::WriterTimeout,
+                    1,
+                    &[
+                        Tag::new(TagKey::Kind, "receipt"),
+                        Tag::new(TagKey::Lane, self.lane.as_str()),
+                    ],
+                );
+                Err(DeliveryReceiptError::Timeout)
+            }
+        }
     }
 }
 
@@ -266,6 +280,15 @@ pub enum DeliveryReceiptError {
 enum WriterLane {
     Control,
     Data,
+}
+
+impl WriterLane {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Control => "control",
+            Self::Data => "data",
+        }
+    }
 }
 
 /// Immediate queue-admission failure.
@@ -361,6 +384,17 @@ impl QueueState {
     }
 }
 
+fn emit_queue_metrics(state: &QueueState) {
+    for (lane, items, bytes) in [
+        ("control", state.control_items, state.control_bytes),
+        ("data", state.data_items, state.data_bytes),
+    ] {
+        let tags = [Tag::new(TagKey::Lane, lane)];
+        datadog::histogram(Metric::WriterQueueItems, items as f64, &tags);
+        datadog::histogram(Metric::WriterQueueBytes, bytes as f64, &tags);
+    }
+}
+
 #[derive(Debug)]
 struct WriterQueue {
     config: ProviderWriterConfig,
@@ -401,8 +435,24 @@ impl WriterQueue {
         }
         if !self.has_capacity(&state, lane, bytes) {
             if lane == WriterLane::Data {
+                datadog::counter(
+                    Metric::WriterDelivery,
+                    1,
+                    &[
+                        Tag::new(TagKey::Lane, lane.as_str()),
+                        Tag::new(TagKey::Outcome, "saturated"),
+                    ],
+                );
                 return Err(WriterEnqueueError::DataSaturated);
             }
+            datadog::counter(
+                Metric::WriterDelivery,
+                1,
+                &[
+                    Tag::new(TagKey::Lane, lane.as_str()),
+                    Tag::new(TagKey::Outcome, "saturated"),
+                ],
+            );
             let reason: Arc<str> = Arc::from("control correctness capacity exhausted");
             Self::fail_queued_locked(&mut state, reason.clone());
             state.closed = Some(reason);
@@ -439,12 +489,14 @@ impl WriterQueue {
             }
         }
         state.bump_revision();
+        emit_queue_metrics(&state);
         drop(state);
         self.notify.notify_one();
         Ok((
             DeliveryReceipt {
                 state: receipt,
                 wait_timeout: self.config.receipt_timeout,
+                lane,
             },
             release,
         ))
@@ -547,6 +599,7 @@ impl WriterQueue {
             }
         }
         state.bump_revision();
+        emit_queue_metrics(&state);
     }
 
     fn fence(&self, reason: Arc<str>) {
@@ -768,10 +821,26 @@ impl ProviderWriter {
 
             match result {
                 SendResult::OnWire => {
+                    datadog::counter(
+                        Metric::WriterDelivery,
+                        1,
+                        &[
+                            Tag::new(TagKey::Lane, lane.as_str()),
+                            Tag::new(TagKey::Outcome, "on_wire"),
+                        ],
+                    );
                     let _ = delivery.send_replace(DeliveryState::OnWire);
                     self.queue.complete(lane, bytes);
                 }
                 SendResult::Cancelled => {
+                    datadog::counter(
+                        Metric::WriterDelivery,
+                        1,
+                        &[
+                            Tag::new(TagKey::Lane, lane.as_str()),
+                            Tag::new(TagKey::Outcome, "sent_unknown"),
+                        ],
+                    );
                     let _ = delivery.send_replace(DeliveryState::SentUnknown);
                     self.queue.complete(lane, bytes);
                     self.queue
@@ -779,6 +848,22 @@ impl ProviderWriter {
                     break;
                 }
                 SendResult::TimedOut => {
+                    datadog::counter(
+                        Metric::WriterTimeout,
+                        1,
+                        &[
+                            Tag::new(TagKey::Lane, lane.as_str()),
+                            Tag::new(TagKey::Kind, "send"),
+                        ],
+                    );
+                    datadog::counter(
+                        Metric::WriterDelivery,
+                        1,
+                        &[
+                            Tag::new(TagKey::Lane, lane.as_str()),
+                            Tag::new(TagKey::Outcome, "sent_unknown"),
+                        ],
+                    );
                     let _ = delivery.send_replace(DeliveryState::SentUnknown);
                     self.queue.complete(lane, bytes);
                     self.queue
@@ -788,6 +873,14 @@ impl ProviderWriter {
                     ));
                 }
                 SendResult::Transport(error) => {
+                    datadog::counter(
+                        Metric::WriterDelivery,
+                        1,
+                        &[
+                            Tag::new(TagKey::Lane, lane.as_str()),
+                            Tag::new(TagKey::Outcome, "sent_unknown"),
+                        ],
+                    );
                     let _ = delivery.send_replace(DeliveryState::SentUnknown);
                     self.queue.complete(lane, bytes);
                     self.queue.fence(Arc::from(format!(

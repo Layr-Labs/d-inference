@@ -17,6 +17,9 @@ futures-util = { version = "0.3.32", features = ["sink"] }
 hmac = "0.13.0"
 ipnet = "2.12.0"
 jsonwebtoken = { version = "10.4.0", default-features = false, features = ["aws_lc_rs", "use_pem"] }
+opentelemetry = { version = "0.32.0", features = ["trace"] }
+opentelemetry-datadog = { version = "0.20.0", features = ["reqwest-blocking-client"] }
+opentelemetry_sdk = { version = "0.32.1", features = ["trace", "rt-tokio"] }
 p256 = { version = "0.14.0", features = ["ecdsa", "pkcs8", "pem"] }
 rand = "0.10.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "stream", "rustls"] }
@@ -31,6 +34,7 @@ tokio = { version = "1.52.3", features = ["full"] }
 tokio-stream = "0.1.18"
 tokio-util = { version = "0.7.18", features = ["rt"] }
 tracing = "0.1.44"
+tracing-opentelemetry = { version = "0.33.0", default-features = false }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
 url = "2.5.8"
 uuid = { version = "1.23.4", features = ["v4"] }

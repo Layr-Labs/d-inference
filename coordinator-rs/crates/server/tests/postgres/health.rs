@@ -49,11 +49,28 @@ async fn health_and_readiness_use_real_postgres() {
             payload,
             serde_json::json!({
                 "status": "ok",
+                "binary": "rust",
+                "service": std::env::var("DD_SERVICE")
+                    .unwrap_or_else(|_| "d-inference-coordinator".to_owned()),
+                "environment": std::env::var("DD_ENV")
+                    .unwrap_or_else(|_| "development".to_owned()),
                 "draining": true,
                 "providers": 0,
                 "version": "dev",
                 "build_commit": "unknown",
-                "build_date": "unknown"
+                "build_date": "unknown",
+                "build": {
+                    "version": "dev",
+                    "commit": "unknown",
+                    "date": "unknown",
+                    "rust_package_version": env!("CARGO_PKG_VERSION")
+                },
+                "schema": {
+                    "public_version": 6,
+                    "rust_version": 4,
+                    "migration_checksum_valid": true
+                },
+                "ownership_healthy": true
             })
         );
         let (status, payload) = request_json(&app, "/readyz").await;
@@ -88,7 +105,11 @@ async fn assert_matches_contract(app: &axum::Router, path: &str, contract: &Http
     let (status, payload) = request_json(app, path).await;
     assert_eq!(status.as_u16(), contract.status);
     let expected: Value = serde_json::from_str(&contract.body).expect("contract body JSON");
-    assert_eq!(payload, expected);
+    let expected = expected.as_object().expect("contract body object");
+    let payload = payload.as_object().expect("response body object");
+    for (key, value) in expected {
+        assert_eq!(payload.get(key), Some(value), "contract field {key}");
+    }
 }
 
 fn contract<'a>(contracts: &'a HttpContracts, name: &str) -> &'a HttpResponse {

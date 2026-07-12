@@ -124,12 +124,12 @@ extension Start {
         try? LocalEndpoint.writeInfo(info)
         defer { LocalEndpoint.removeInfo() }
 
-        // Wait forever (until SIGINT). The optional fan helper receives a
-        // renewable activity lease only after the server has successfully
-        // bound. A stopped/crashed local server therefore releases fan control.
+        // The optional fan helper receives a renewable activity lease only
+        // after the server has successfully bound, and only for the lifetime
+        // of the actual Hummingbird service task. A stopped/crashed local
+        // server therefore releases fan control.
         await withFanActivityLease(providerVersion: ProviderCore.version) {
-            let waitForever = AsyncStream<Never> { _ in }
-            for await _ in waitForever {}
+            await server.waitUntilStopped()
         }
     }
 

@@ -26,6 +26,8 @@ actor FanDaemon {
     private let uptime: Uptime
     private let journalOwner: (uid: uid_t, gid: gid_t)?
     private let requireRootJournalOwnership: Bool
+    private let recordFanOwnership: @Sendable () throws -> Void
+    private let recordFtstOwnership: @Sendable () throws -> Void
 
     private var policy: FanPolicyStateMachine
     private var pollTask: Task<Void, Never>?
@@ -59,6 +61,25 @@ actor FanDaemon {
         self.uptime = uptime
         self.journalOwner = journalOwner
         self.requireRootJournalOwnership = requireRootJournalOwnership
+        let journalURL = paths.sessionJournal
+        let fanIndices = inventory.fans.map(\.index)
+        let recordOwnership: @Sendable (Bool) throws -> Void = { ownsFtst in
+            try FanDurableFile.writeJSON(
+                FanSessionJournal(
+                    fanIndices: fanIndices,
+                    ownsFtst: ownsFtst
+                ),
+                to: journalURL,
+                permissions: 0o600,
+                owner: journalOwner
+            )
+        }
+        self.recordFanOwnership = {
+            try recordOwnership(false)
+        }
+        self.recordFtstOwnership = {
+            try recordOwnership(true)
+        }
         self.policy = FanPolicyStateMachine(configuration: configuration.policy)
         self.mode = configuration.enabled ? .waitingForProvider : .disabled
     }
@@ -241,10 +262,12 @@ actor FanDaemon {
         case .stayAutomatic(let reason):
             mode = serviceMode(for: reason)
         case .engage(let speedPercent, _):
-            try preflightForControl()
-            try persistOwnershipIntent()
             do {
-                let session = try await controller.engage(speedPercent: speedPercent)
+                let session = try await controller.engage(
+                    speedPercent: speedPercent,
+                    beforeFanWrite: recordFanOwnership,
+                    beforeFtstWrite: recordFtstOwnership
+                )
                 try persistOwnership(session)
                 lastMaintenanceAt = uptime()
                 mode = .manual
@@ -256,11 +279,15 @@ actor FanDaemon {
             }
         case .maintain:
             if uptime() - lastMaintenanceAt >= Self.maintenanceIntervalSeconds {
-                // Maintenance can newly need Ftst after firmware reclaims mode.
-                // Widen the crash journal before that possible write, then narrow
-                // it to the controller's actual ownership on success.
-                try persistOwnershipIntent()
-                let session = try await controller.maintain()
+                // Refresh the journal with current ownership. The controller
+                // widens Ftst ownership only after it observes the gate free,
+                // immediately before a possible write.
+                if let currentSession = await controller.currentSession() {
+                    try persistOwnership(currentSession)
+                }
+                let session = try await controller.maintain(
+                    beforeFtstWrite: recordFtstOwnership
+                )
                 try persistOwnership(session)
                 lastMaintenanceAt = uptime()
             }
@@ -271,32 +298,6 @@ actor FanDaemon {
             }
             mode = serviceMode(for: reason)
         }
-    }
-
-    private func preflightForControl() throws {
-        let readings = try reader.fanReadings(in: inventory)
-        let foreign = readings.filter { $0.mode == .manual }.map { $0.capability.index }
-        guard foreign.isEmpty else {
-            throw FanControllerError.foreignManualControl(indices: foreign)
-        }
-        if let ftstKey = inventory.ftstKey {
-            let value = try readerValue(ftstKey)
-            guard value == 0 else {
-                throw FanControllerError.foreignFtst(rawValue: value)
-            }
-        }
-    }
-
-    private func persistOwnershipIntent() throws {
-        try FanDurableFile.writeJSON(
-            FanSessionJournal(
-                fanIndices: inventory.fans.map(\.index),
-                ownsFtst: inventory.ftstKey != nil
-            ),
-            to: paths.sessionJournal,
-            permissions: 0o600,
-            owner: journalOwner
-        )
     }
 
     private func persistOwnership(_ session: FanControlSession) throws {
@@ -352,10 +353,6 @@ actor FanDaemon {
             await controller.isControlling
                 || FileManager.default.fileExists(atPath: paths.sessionJournal.path)
         }
-    }
-
-    private func readerValue(_ key: SMCKey) throws -> UInt8 {
-        try backend.read(key).uint8()
     }
 
     private func serviceMode(for reason: FanPolicyReason) -> FanServiceMode {

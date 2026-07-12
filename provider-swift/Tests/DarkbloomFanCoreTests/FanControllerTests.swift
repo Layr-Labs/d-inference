@@ -120,11 +120,16 @@ struct FanControllerTests {
         let backend = makeFanBackend()
         backend.setUI8("F1Md", 1)
         let controller = try makeController(backend: backend)
+        let callback = CallbackCounter()
 
         let error = await captureControllerError {
-            _ = try await controller.engage(speedPercent: 80)
+            _ = try await controller.engage(
+                speedPercent: 80,
+                beforeFanWrite: { callback.increment() }
+            )
         }
         #expect(error == .foreignManualControl(indices: [1]))
+        #expect(callback.value == 0)
         #expect(try backend.uint8("F1Md") == 1)
         #expect(!backend.operations.contains(where: {
             if case .write = $0 { return true }
@@ -635,5 +640,22 @@ private func waitForSemaphore(
         DispatchQueue.global().async {
             continuation.resume(returning: semaphore.wait(timeout: timeout))
         }
+    }
+}
+
+private final class CallbackCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func increment() {
+        lock.lock()
+        count += 1
+        lock.unlock()
     }
 }

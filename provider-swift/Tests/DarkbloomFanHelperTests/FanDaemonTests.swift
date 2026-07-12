@@ -158,6 +158,52 @@ struct FanDaemonTests {
         #expect(!renewal.ok)
         #expect(!(await harness.daemon.status()).enabled)
     }
+
+    @Test("Ftst ownership is journaled immediately before the first write")
+    func ftstIntentPrecedesWrite() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        harness.backend.rejectNextManualWrite()
+
+        _ = await harness.daemon.renewLease(
+            sessionID: UUID(),
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.9"
+        )
+        await harness.daemon.tick()
+
+        #expect(harness.backend.byte("Ftst") == 1)
+        #expect(harness.backend.journalClaimedFtstBeforeFirstFtstWrite)
+        let journal = try FanDurableFile.readJSON(
+            FanSessionJournal.self,
+            from: harness.paths.sessionJournal,
+            requireRootOwnership: false
+        )
+        #expect(journal.ownsFtst)
+    }
+
+    @Test("maintenance never journals or clears a foreign Ftst gate")
+    func maintenancePreservesForeignFtst() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+
+        _ = await harness.daemon.renewLease(
+            sessionID: UUID(),
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.9"
+        )
+        await harness.daemon.tick()
+        #expect(harness.backend.byte("F0Md") == 1)
+
+        harness.clock.advance(by: 6)
+        harness.backend.setByte("F0Md", to: FanMode.system.rawValue)
+        harness.backend.rejectNextManualWrite(claimingFtst: true)
+        await harness.daemon.tick()
+
+        #expect(harness.backend.byte("F0Md") == 0)
+        #expect(harness.backend.byte("Ftst") == 1)
+        #expect(!FileManager.default.fileExists(atPath: harness.paths.sessionJournal.path))
+    }
 }
 
 private struct FanDaemonHarness {
@@ -266,7 +312,10 @@ private final class DaemonBackend: SMCBackend, @unchecked Sendable {
     ]
     private var bytes: [SMCKey: UInt8] = ["F0Md": 0, "Ftst": 0]
     private(set) var journalExistedBeforeFirstManualWrite = false
+    private(set) var journalClaimedFtstBeforeFirstFtstWrite = false
     private var failAutomaticRestore = false
+    private var rejectManualWrite = false
+    private var claimFtstOnManualRejection = false
 
     init(journalURL: URL) {
         self.journalURL = journalURL
@@ -301,6 +350,18 @@ private final class DaemonBackend: SMCBackend, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         if bytes[key] != nil {
+            if key == "F0Md", raw[0] == 1, rejectManualWrite {
+                rejectManualWrite = false
+                if claimFtstOnManualRejection {
+                    bytes["Ftst"] = 1
+                    claimFtstOnManualRejection = false
+                }
+                throw SMCError.firmwareRejected(
+                    operation: .writeBytes,
+                    key: key,
+                    result: 0x82
+                )
+            }
             if key == "F0Md", raw[0] == 0, failAutomaticRestore {
                 failAutomaticRestore = false
                 throw SMCError.injectedFailure("transient automatic restore failure")
@@ -309,6 +370,16 @@ private final class DaemonBackend: SMCBackend, @unchecked Sendable {
                 journalExistedBeforeFirstManualWrite = FileManager.default.fileExists(
                     atPath: journalURL.path
                 )
+            }
+            if key == "Ftst", raw[0] == 1,
+               !journalClaimedFtstBeforeFirstFtstWrite
+            {
+                let journal = try? FanDurableFile.readJSON(
+                    FanSessionJournal.self,
+                    from: journalURL,
+                    requireRootOwnership: false
+                )
+                journalClaimedFtstBeforeFirstFtstWrite = journal?.ownsFtst == true
             }
             bytes[key] = raw[0]
             return
@@ -330,6 +401,19 @@ private final class DaemonBackend: SMCBackend, @unchecked Sendable {
     func failNextAutomaticRestore() {
         lock.lock()
         failAutomaticRestore = true
+        lock.unlock()
+    }
+
+    func setByte(_ key: SMCKey, to value: UInt8) {
+        lock.lock()
+        bytes[key] = value
+        lock.unlock()
+    }
+
+    func rejectNextManualWrite(claimingFtst: Bool = false) {
+        lock.lock()
+        rejectManualWrite = true
+        claimFtstOnManualRejection = claimingFtst
         lock.unlock()
     }
 }

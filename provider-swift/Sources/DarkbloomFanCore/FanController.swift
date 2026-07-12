@@ -173,7 +173,11 @@ public actor TransactionalFanController {
     }
 
     @discardableResult
-    public func engage(speedPercent: Double) throws -> FanControlSession {
+    public func engage(
+        speedPercent: Double,
+        beforeFanWrite: @Sendable () throws -> Void = {},
+        beforeFtstWrite: @Sendable () throws -> Void = {}
+    ) throws -> FanControlSession {
         let allowedSpeed = FanPolicyConfiguration.minimumSpeedPercent...FanPolicyConfiguration.maximumSpeedPercent
         guard speedPercent.isFinite,
               allowedSpeed.contains(speedPercent)
@@ -237,6 +241,10 @@ public actor TransactionalFanController {
         }
 
         do {
+            // All foreign-ownership and capability checks are complete. Record
+            // possible ownership immediately before the first fan-mode write,
+            // which may land even if the backend reports an error.
+            try beforeFanWrite()
             for reading in readings {
                 let fan = reading.capability
                 // Mark intent before the first mode write. A backend can fail
@@ -250,7 +258,7 @@ public actor TransactionalFanController {
                     guard shouldAttemptFtst(after: directFailure) else {
                         throw directFailure
                     }
-                    try acquireFtstIfNeeded()
+                    try acquireFtstIfNeeded(beforeFtstWrite: beforeFtstWrite)
                     try retryManualMode(fan)
                 }
                 guard let target = targets[fan.index] else {
@@ -260,7 +268,9 @@ public actor TransactionalFanController {
                 targetRPMByFan[fan.index] = target
             }
 
-            try verifyFtstOwnershipAtTransactionEnd()
+            try verifyFtstOwnershipAtTransactionEnd(
+                beforeFtstWrite: beforeFtstWrite
+            )
 
             return FanControlSession(
                 targetRPMByFan: targetRPMByFan,
@@ -294,7 +304,9 @@ public actor TransactionalFanController {
     /// with engage/restore. Any failure restores every tracked fan to automatic
     /// control rather than leaving a partially repaired session active.
     @discardableResult
-    public func maintain() throws -> FanControlSession {
+    public func maintain(
+        beforeFtstWrite: @Sendable () throws -> Void = {}
+    ) throws -> FanControlSession {
         guard isControlling else {
             throw FanControllerError.notControlling
         }
@@ -317,7 +329,7 @@ public actor TransactionalFanController {
             // Reassert a gate that this session already owns before touching
             // individual modes.
             if mayOwnFtst {
-                try acquireFtstIfNeeded()
+                try acquireFtstIfNeeded(beforeFtstWrite: beforeFtstWrite)
             }
 
             for fan in possiblyControlledFans.values.sorted(by: { $0.index < $1.index }) {
@@ -334,7 +346,7 @@ public actor TransactionalFanController {
                         guard shouldAttemptFtst(after: directFailure) else {
                             throw directFailure
                         }
-                        try acquireFtstIfNeeded()
+                        try acquireFtstIfNeeded(beforeFtstWrite: beforeFtstWrite)
                         try retryManualMode(fan)
                     }
                 case .unknown(let value):
@@ -345,7 +357,9 @@ public actor TransactionalFanController {
                 }
                 try writeAndVerifyTarget(fan, rpm: target)
             }
-            try verifyFtstOwnershipAtTransactionEnd()
+            try verifyFtstOwnershipAtTransactionEnd(
+                beforeFtstWrite: beforeFtstWrite
+            )
 
             return FanControlSession(
                 targetRPMByFan: targetRPMByFan,
@@ -412,7 +426,9 @@ public actor TransactionalFanController {
         )
     }
 
-    private func acquireFtstIfNeeded() throws {
+    private func acquireFtstIfNeeded(
+        beforeFtstWrite: @Sendable () throws -> Void
+    ) throws {
         guard let ftstKey = inventory.ftstKey else {
             throw FanControllerError.smc(.keyNotFound("Ftst"))
         }
@@ -424,8 +440,10 @@ public actor TransactionalFanController {
             throw FanControllerError.foreignFtst(rawValue: initial)
         }
 
-        // From this point onward a thrown write may still have landed. Mark the
-        // gate as ours before issuing it so rollback always attempts to clear it.
+        // The caller durably records possible ownership only after we know the
+        // gate is free, immediately before the first write that may still land
+        // despite throwing. Then mirror that intent in memory for rollback.
+        try beforeFtstWrite()
         mayOwnFtst = true
         do {
             try backend.write(ftstKey, bytes: [1])
@@ -446,7 +464,9 @@ public actor TransactionalFanController {
         }
     }
 
-    private func verifyFtstOwnershipAtTransactionEnd() throws {
+    private func verifyFtstOwnershipAtTransactionEnd(
+        beforeFtstWrite: @Sendable () throws -> Void
+    ) throws {
         guard let ftstKey = inventory.ftstKey else { return }
         if mayOwnFtst {
             let current = try readUI8(ftstKey)
@@ -454,6 +474,7 @@ public actor TransactionalFanController {
                 throw FanControllerError.foreignFtst(rawValue: current)
             }
             if current == 0 {
+                try beforeFtstWrite()
                 try backend.write(ftstKey, bytes: [1])
                 timing.sleep(timing.ftstSettleSeconds)
                 let refreshed = try readUI8(ftstKey)

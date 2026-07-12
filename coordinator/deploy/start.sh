@@ -1,6 +1,24 @@
 #!/bin/sh
 set -e
 
+COORDINATOR_BINARY=${EIGENINFERENCE_COORDINATOR_BINARY:-go}
+case "$COORDINATOR_BINARY" in
+    go)
+        COORDINATOR_EXEC=/usr/local/bin/coordinator-go
+        ;;
+    rust)
+        COORDINATOR_EXEC=/usr/local/bin/coordinator-rs
+        ;;
+    *)
+        echo "EIGENINFERENCE_COORDINATOR_BINARY must be exactly go or rust" >&2
+        exit 64
+        ;;
+esac
+if [ ! -x "$COORDINATOR_EXEC" ]; then
+    echo "selected coordinator binary is unavailable" >&2
+    exit 70
+fi
+
 # EigenCloud persistent storage (survives upgrades via blue-green disk transfer).
 PERSIST=${USER_PERSISTENT_DATA_PATH:-/mnt/disks/userdata}
 mkdir -p "$PERSIST/micromdm"
@@ -8,21 +26,31 @@ mkdir -p "$PERSIST/micromdm"
 # Symlink /data -> persistent storage so all components use the same paths.
 ln -sfn "$PERSIST" /data
 
+P12_CHECK=${COORDINATOR_P12_CHECK:-/usr/local/bin/coordinator-p12-check}
+MDM_ROTATION_FAILURE=/data/micromdm/.push_rotation_failed
+
+has_valid_uploaded_mdm_identity() {
+    state=/data/micromdm/.push_imported
+    [ -r "$state" ] &&
+        [ -r /data/micromdm/push.crt ] &&
+        [ -r /data/micromdm/push.key ] ||
+        return 1
+    state_hash=$(awk -F= '$1 == "hash" { print substr($0, 6); exit }' "$state")
+    state_version=$(awk -F= '$1 == "version" { print substr($0, 9); exit }' "$state")
+    case "$state_hash" in
+        ''|*[!0-9a-f]*) return 1 ;;
+    esac
+    [ "${#state_hash}" -eq 64 ] && [ -n "$state_version" ] ||
+        return 1
+    "$P12_CHECK" installed mdm /data/micromdm/push.crt \
+        /data/micromdm/push.key >/dev/null 2>&1
+}
+
 # ---- MicroMDM ----
 if [ -n "$MICROMDM_API_KEY" ]; then
-    # Decode push cert from PKCS#12 bundle on first boot
-    # P12 is base64url-encoded (no +/) to survive KMS/shell pipeline intact.
-    if [ -n "$MDM_PUSH_P12_B64" ] && [ ! -f /data/micromdm/push.crt ]; then
-        echo "Decoding MDM push certificate from PKCS#12..."
-        printf '%s' "$MDM_PUSH_P12_B64" | tr '_-' '/+' | base64 -d > /tmp/push.p12
-        openssl pkcs12 -in /tmp/push.p12 -clcerts -nokeys -passin pass:eigeninference \
-            -out /data/micromdm/push.crt 2>/dev/null
-        openssl pkcs12 -in /tmp/push.p12 -nocerts -nodes -passin pass:eigeninference \
-            -out /tmp/push_pkcs8.key 2>/dev/null
-        openssl rsa -in /tmp/push_pkcs8.key -traditional -out /data/micromdm/push.key 2>/dev/null
-        rm -f /tmp/push.p12 /tmp/push_pkcs8.key
-        chmod 600 /data/micromdm/push.key
-        echo "Key format: $(head -1 /data/micromdm/push.key)"
+    EXISTING_MDM_IDENTITY=false
+    if has_valid_uploaded_mdm_identity; then
+        EXISTING_MDM_IDENTITY=true
     fi
 
     # Generate self-signed TLS cert for MicroMDM on first boot (internal only)
@@ -59,20 +87,32 @@ if [ -n "$MICROMDM_API_KEY" ]; then
         -command-webhook-url "${MDM_WEBHOOK_URL}" \
         >> /data/micromdm.log 2>&1 &
 
-    # Wait for MicroMDM to be ready, then import push cert if needed
+    # Wait for MicroMDM to be ready, then upload a new push certificate only
+    # when its Secret Manager version or decoded content hash changed.
     sleep 2
-    if [ -f /data/micromdm/push.crt ] && [ ! -f /data/micromdm/.push_imported ]; then
-        echo "Importing MDM push certificate..."
+    if [ -n "${MDM_PUSH_P12_B64:-}" ]; then
         mdmctl config set \
             -name eigeninference \
             -server-url "https://localhost:9002" \
             -api-token "${MICROMDM_API_KEY:-eigeninference-micromdm-api}" \
             -skip-verify
-        mdmctl mdmcert upload \
-            -cert /data/micromdm/push.crt \
-            -private-key /data/micromdm/push.key \
-            2>&1 || echo "Push cert import failed (may already exist)"
-        touch /data/micromdm/.push_imported
+        if /usr/local/bin/mdm-cert-rotate; then
+            rm -f "$MDM_ROTATION_FAILURE"
+        else
+            rotation_status=$?
+            failure_tmp=${MDM_ROTATION_FAILURE}.tmp.$$
+            umask 077
+            printf 'failed_at=%s\nstatus=%s\n' \
+                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                "$rotation_status" >"$failure_tmp"
+            mv "$failure_tmp" "$MDM_ROTATION_FAILURE"
+            echo "MicroMDM push certificate rotation failed; metric=mdm.push_certificate_rotation_failure value=1" >&2
+            if [ "$EXISTING_MDM_IDENTITY" != true ]; then
+                echo "No valid previously uploaded MDM identity exists; refusing first-install startup" >&2
+                exit "$rotation_status"
+            fi
+            echo "Preserving the valid uploaded MDM identity so rollback remains available." >&2
+        fi
     fi
     echo "MicroMDM ready (port 9002)."
 else
@@ -83,5 +123,5 @@ fi
 # Optional profile signing: the coordinator reads PROFILE_SIGNING_P12_B64 (+
 # _PASSWORD) straight from the env and CMS-signs the /v1/enroll .mobileconfig.
 # Inject via KMS like MDM_PUSH_P12_B64; unset/invalid → profiles served unsigned.
-echo "Starting coordinator..."
-exec coordinator
+echo "Starting ${COORDINATOR_BINARY} coordinator..."
+exec "$COORDINATOR_EXEC"

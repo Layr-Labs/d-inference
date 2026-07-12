@@ -208,6 +208,9 @@ type Server struct {
 	backgroundClosing    bool
 	backgroundTasks      sync.WaitGroup
 	backgroundTaskCount  atomic.Int64
+	handoffContext       context.Context
+	handoffCancel        context.CancelFunc
+	handoffOnce          sync.Once
 
 	// knownBinaryHashes is the set of accepted provider binary SHA-256 hashes.
 	// When binaryHashPolicyConfigured is true, providers whose binary hash is
@@ -691,6 +694,7 @@ func setRequestRateLimitHeaders(w http.ResponseWriter, st ratelimit.Stat) {
 func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger *slog.Logger) *Server {
 	// Wire the store into the registry for provider fleet persistence.
 	reg.SetStore(st)
+	handoffContext, handoffCancel := context.WithCancel(context.Background())
 
 	s := &Server{
 		registry:             reg,
@@ -711,6 +715,8 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		zombieCanceller:      newZombieStreamCanceller(),
 		routeTelemetry:       newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 		providerConnections:  make(map[*websocket.Conn]struct{}),
+		handoffContext:       handoffContext,
+		handoffCancel:        handoffCancel,
 	}
 	s.registerDefaultGauges()
 	s.routes()
@@ -758,11 +764,27 @@ func (s *Server) submitTelemetry(name string, fn func()) {
 // Close drains correctness-critical completion work before stopping the
 // best-effort routing-telemetry sink. It is idempotent.
 func (s *Server) BeginShutdown() {
+	s.processShuttingDown.Store(true)
 	s.providerSessionMu.Lock()
 	s.providerClosing = true
 	s.providerSessionMu.Unlock()
-	s.processShuttingDown.Store(true)
 	s.SetDraining(true)
+	s.CancelHandoffTasks()
+}
+
+// BeginHandoff establishes the irreversible deployment-handoff fence. New
+// mutations, providers, and background mutators are rejected before existing
+// provider sessions are closed. Completion and settlement workers deliberately
+// remain available so work admitted before the fence can reach a durable
+// terminal state.
+func (s *Server) BeginHandoff() {
+	if s == nil {
+		return
+	}
+	s.handoffOnce.Do(func() {
+		s.BeginShutdown()
+		s.FenceProviderSessions()
+	})
 }
 
 func (s *Server) StopCompletionProcessing() {
@@ -839,6 +861,7 @@ func (s *Server) FlushSettlementHoldsWithContext(ctx context.Context) bool {
 
 func (s *Server) Close() {
 	s.BeginShutdown()
+	s.CancelHandoffTasks()
 	s.FenceProviderSessions()
 	providerCtx, providerCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	s.WaitForProviderSessions(providerCtx)

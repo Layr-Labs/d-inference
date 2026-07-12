@@ -38,6 +38,9 @@ const coordinatorDrainRetryAfter = 3 * time.Second
 // requests finish, and /readyz reports not-ready. Pass false to un-drain (e.g.
 // to roll back an aborted upgrade). Safe for concurrent use.
 func (s *Server) SetDraining(draining bool) {
+	if !draining && s.processShuttingDown.Load() {
+		return
+	}
 	s.coordinatorDraining.Store(draining)
 }
 
@@ -212,9 +215,11 @@ func (s *Server) handleAdminDrain(w http.ResponseWriter, r *http.Request) {
 	// empty body surfaces as io.EOF, which we tolerate as "no override" and keep
 	// the draining=true default. The body is still capped for safety.
 	draining := true
+	mode := "inference"
 	if r.Body != nil && r.ContentLength != 0 {
 		var payload struct {
-			Draining *bool `json:"draining"`
+			Draining *bool  `json:"draining"`
+			Mode     string `json:"mode"`
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxControlPlaneBodyBytes)
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil && !errors.Is(err, io.EOF) {
@@ -231,15 +236,36 @@ func (s *Server) handleAdminDrain(w http.ResponseWriter, r *http.Request) {
 		if payload.Draining != nil {
 			draining = *payload.Draining
 		}
+		if payload.Mode != "" {
+			mode = payload.Mode
+		}
 	}
 
-	s.SetDraining(draining)
+	switch mode {
+	case "inference":
+		s.SetDraining(draining)
+		draining = s.IsDraining()
+	case "handoff":
+		if !draining {
+			writeJSON(w, http.StatusBadRequest,
+				errorResponse("invalid_request_error", "handoff drain cannot be disabled"))
+			return
+		}
+		s.BeginHandoff()
+		draining = true
+	default:
+		writeJSON(w, http.StatusBadRequest,
+			errorResponse("invalid_request_error", "mode must be inference or handoff"))
+		return
+	}
 	s.logger.Info("coordinator drain state changed",
 		"draining", draining,
+		"mode", mode,
 		"inflight", s.Inflight(),
 	)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"draining": draining,
+		"mode":     mode,
 		"inflight": s.Inflight(),
 	})
 }

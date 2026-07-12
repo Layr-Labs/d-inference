@@ -24,7 +24,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let command = OperatorCommand::from_env()?;
+    if command == OperatorCommand::Version {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "binary": "rust",
+                "version": option_env!("DARKBLOOM_BUILD_VERSION").unwrap_or("dev"),
+                "build_commit": option_env!("DARKBLOOM_BUILD_COMMIT").unwrap_or("unknown"),
+                "build_date": option_env!("DARKBLOOM_BUILD_DATE").unwrap_or("unknown"),
+            }))?
+        );
+        return Ok(());
+    }
     let config = Config::from_env()?;
+    if command == OperatorCommand::ConfigCheck {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "binary": "rust",
+                "configuration_valid": true,
+                "database_configured": true,
+                "ownership_configured": config.ownership_enabled,
+                "full_surface_configured": config.full_surface.enabled,
+            }))?
+        );
+        return Ok(());
+    }
     let database = Database::connect(
         &config.database_url,
         config.database_max_connections,

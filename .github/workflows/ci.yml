@@ -111,6 +111,41 @@ jobs:
       - name: Verify Go-to-Rust NaCl compatibility
         run: go test ./coordinator/internal/e2e -run '^TestCrossLanguageEncryption$' -count=1
 
+  test-deployment-image:
+    name: Deployment Image & Shell Tests
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b163ceea73d27597364c9af683 # v4.2.2
+      - name: Validate shell syntax and behavior
+        run: |
+          git ls-files 'coordinator/deploy/*.sh' 'deploy/gcp/*.sh' 'deploy/gcp/tests/*.sh' |
+            xargs -r -n1 bash -n
+          deploy/gcp/tests/run.sh
+      - name: Run ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          git ls-files 'coordinator/deploy/*.sh' 'deploy/gcp/*.sh' 'deploy/gcp/tests/*.sh' |
+            xargs -r shellcheck -e SC1090,SC1091,SC2317
+      - name: Parse deployment and workflow YAML
+        run: |
+          ruby -e 'require "yaml"; ARGV.each { |path| YAML.parse_file(path) }' \
+            deploy/gcp/cloudbuild.yaml deploy/gcp/cloudbuild-prod.yaml \
+            .github/workflows/*.yml
+      - name: Build reproducible dual coordinator image
+        run: |
+          docker build \
+            --file coordinator/Dockerfile \
+            --build-arg BUILD_VERSION="${GITHUB_SHA::12}" \
+            --build-arg BUILD_COMMIT="${GITHUB_SHA::12}" \
+            --tag darkbloom/coordinator:ci \
+            .
+      - name: Validate image layout and versions
+        run: |
+          docker run --rm \
+            --entrypoint /usr/local/bin/coordinator-image-check \
+            darkbloom/coordinator:ci smoke
+
   test-provider:
     name: Provider Tests
     runs-on: blacksmith-12vcpu-macos-latest

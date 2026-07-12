@@ -333,7 +333,7 @@ func TestCoordinatorCommandCannotInvokeMigrationRunner(t *testing.T) {
 	}
 }
 
-func TestDevDeploymentMigratesBeforeCoordinatorRestart(t *testing.T) {
+func TestDevDeploymentUsesExternalMigrationBeforeSerialHandoff(t *testing.T) {
 	read := func(path string) string {
 		t.Helper()
 		content, err := os.ReadFile(path)
@@ -344,37 +344,70 @@ func TestDevDeploymentMigratesBeforeCoordinatorRestart(t *testing.T) {
 	}
 
 	cloudBuild := read("../../deploy/gcp/cloudbuild.yaml")
-	migrateAt := strings.Index(cloudBuild, "deploy/gcp/migrate-coordinator.sh")
-	tagAt := strings.Index(cloudBuild, "--metadata=DINF_IMAGE_TAG=$SHORT_SHA")
-	startupAt := strings.Index(cloudBuild, "--metadata-from-file=startup-script=")
-	restartAt := strings.Index(cloudBuild, "systemctl restart d-inference-coordinator")
-	if migrateAt < 0 || tagAt < 0 || startupAt < 0 || restartAt < 0 ||
-		migrateAt >= tagAt || migrateAt >= startupAt ||
-		tagAt >= restartAt || startupAt >= restartAt {
-		t.Fatal("Cloud Build must migrate before committing boot metadata and restart")
+	deployAt := strings.Index(cloudBuild, "deploy/gcp/deploy-dev.sh")
+	latestAt := strings.Index(cloudBuild, "id: push-latest")
+	if deployAt < 0 || latestAt < 0 || deployAt >= latestAt {
+		t.Fatal("Cloud Build must finish the serial dev deploy before advancing latest")
 	}
 
-	migrateScript := read("../../deploy/gcp/migrate-coordinator.sh")
+	remoteDeploy := read("../../deploy/gcp/remote-deploy.sh")
 	for _, required := range []string{
 		"set -euo pipefail",
 		"--entrypoint /usr/local/bin/coordinator-migrate",
 		"-lock-timeout=10s",
 		"-statement-timeout=30m",
+		"remote_deployment_transaction",
 	} {
-		if !strings.Contains(migrateScript, required) {
-			t.Fatalf("dev migration script is missing %q", required)
+		if !strings.Contains(remoteDeploy, required) {
+			t.Fatalf("remote deployment script is missing %q", required)
 		}
 	}
 
+	common := read("../../deploy/gcp/deploy-common.sh")
+	transactionAt := strings.Index(common, "remote_deployment_transaction()")
+	if transactionAt < 0 {
+		t.Fatal("serial deployment transaction is missing")
+	}
+	transaction := common[transactionAt:]
+	ordered := []string{
+		"validate_candidate_config || return 1",
+		"migrate_candidate || return 1",
+		"drain_current_owner",
+		"wait_current_quiescence",
+		"stop_current_owner",
+		"check_candidate_invariants",
+		"start_candidate",
+		"validate_running_candidate",
+	}
+	previous := -1
+	for _, step := range ordered {
+		at := strings.Index(transaction, step)
+		if at < 0 || at <= previous {
+			t.Fatalf("serial deployment transaction has invalid order at %q", step)
+		}
+		previous = at
+	}
+
+	devDeploy := read("../../deploy/gcp/deploy-dev.sh")
+	remoteAt := strings.Index(devDeploy, "remote-deploy.sh")
+	metadataAt := strings.Index(devDeploy, "gcloud compute instances add-metadata")
+	if remoteAt < 0 || metadataAt < 0 || remoteAt >= metadataAt {
+		t.Fatal("dev deploy must complete remote validation before committing boot metadata")
+	}
+
 	vmStartup := read("../../deploy/gcp/vm-startup.sh")
-	migrateAt = strings.Index(vmStartup, "--entrypoint /usr/local/bin/coordinator-migrate")
-	serveAt := strings.Index(vmStartup, "exec /usr/bin/docker run")
-	if migrateAt < 0 || serveAt < 0 || migrateAt >= serveAt {
-		t.Fatal("VM startup must run migrations before launching the coordinator")
+	if strings.Contains(vmStartup, "coordinator-migrate") {
+		t.Fatal("VM startup must not apply schema migrations")
 	}
 
 	dockerfile := read("../Dockerfile")
-	if !strings.Contains(dockerfile, "/usr/local/bin/coordinator-migrate") {
-		t.Fatal("coordinator image does not contain the migration command")
+	for _, binary := range []string{
+		"/usr/local/bin/coordinator-go",
+		"/usr/local/bin/coordinator-rs",
+		"/usr/local/bin/coordinator-migrate",
+	} {
+		if !strings.Contains(dockerfile, binary) {
+			t.Fatalf("coordinator image does not contain %s", binary)
+		}
 	}
 }

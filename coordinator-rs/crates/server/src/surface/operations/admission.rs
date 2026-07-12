@@ -15,6 +15,7 @@ pub struct AdmissionGate {
 #[derive(Debug, Default)]
 struct AdmissionState {
     draining: AtomicBool,
+    handoff: AtomicBool,
     external_fenced: AtomicBool,
     active_inference: AtomicU64,
     active_mutations: AtomicU64,
@@ -41,10 +42,18 @@ impl AdmissionGate {
     }
 
     pub fn set_draining(&self, draining: bool) {
+        if !draining && self.inner.handoff.load(Ordering::SeqCst) {
+            return;
+        }
         self.inner.draining.store(draining, Ordering::SeqCst);
         if !draining {
             self.inner.external_fenced.store(false, Ordering::SeqCst);
         }
+    }
+
+    pub fn begin_handoff(&self) {
+        self.inner.handoff.store(true, Ordering::SeqCst);
+        self.inner.draining.store(true, Ordering::SeqCst);
     }
 
     #[must_use]
@@ -178,5 +187,14 @@ mod tests {
             worker.join().expect("worker");
             assert_eq!(gate.active_mutations(), 0);
         }
+    }
+
+    #[test]
+    fn handoff_drain_is_irreversible() {
+        let gate = AdmissionGate::default();
+        gate.begin_handoff();
+        gate.set_draining(false);
+        assert!(gate.is_draining());
+        assert!(gate.enter(AdmissionKind::Mutation).is_err());
     }
 }

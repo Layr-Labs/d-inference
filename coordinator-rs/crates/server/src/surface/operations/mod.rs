@@ -305,6 +305,10 @@ impl OperationsState {
         self.admission.set_draining(draining);
     }
 
+    pub fn begin_handoff(&self) {
+        self.admission.begin_handoff();
+    }
+
     #[must_use]
     pub fn mutation_count(&self) -> u64 {
         self.mutations.load(std::sync::atomic::Ordering::Acquire)

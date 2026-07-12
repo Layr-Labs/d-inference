@@ -137,13 +137,22 @@ func (r *Registry) StartWarmPoolController(ctx context.Context, cfg WarmPoolConf
 	if !cfg.Enabled {
 		return func() {}
 	}
-	r.ConfigureWarmPool(cfg)
 	ctx, cancel := context.WithCancel(ctx)
+	go r.RunWarmPoolController(ctx, cfg)
+	return cancel
+}
+
+// RunWarmPoolController runs the configured controller synchronously until ctx
+// is cancelled so the serving owner can join it before releasing ownership.
+func (r *Registry) RunWarmPoolController(ctx context.Context, cfg WarmPoolConfig) {
+	if !cfg.Enabled {
+		return
+	}
+	r.ConfigureWarmPool(cfg)
 	r.mu.RLock()
 	controller := r.warmPool
 	r.mu.RUnlock()
-	go controller.run(ctx)
-	return cancel
+	controller.run(ctx)
 }
 
 // RequestWarmPoolTrigger coalesces a hot-path warm-pool kick into the

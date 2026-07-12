@@ -38,9 +38,14 @@ func (s *Server) Quiescence() QuiescenceSnapshot {
 		default:
 		}
 	}
+	backgroundTasks := s.backgroundTaskCount.Load() + s.registry.BackgroundTaskCount()
 	telemetryQueued := 0
+	telemetryWorkers := int64(0)
 	if s.routeTelemetry != nil {
-		telemetryQueued = len(s.routeTelemetry.ch)
+		telemetryQueued = s.routeTelemetry.outstandingCount()
+		if s.processShuttingDown.Load() {
+			telemetryWorkers = s.routeTelemetry.workerCount()
+		}
 	}
 	snapshot := QuiescenceSnapshot{
 		HTTPInference:         s.Inflight(),
@@ -59,7 +64,7 @@ func (s *Server) Quiescence() QuiescenceSnapshot {
 		SettlementCallbacks:   callbacks,
 		OwnershipHealthy:      ownershipHealthy,
 		TelemetryQueued:       telemetryQueued,
-		BackgroundTasks:       s.backgroundTaskCount.Load() + s.registry.BackgroundTaskCount(),
+		BackgroundTasks:       backgroundTasks + telemetryWorkers,
 	}
 	snapshot.Quiescent = snapshot.HTTPInference == 0 &&
 		snapshot.HTTPMutations == 0 &&
@@ -73,6 +78,7 @@ func (s *Server) Quiescence() QuiescenceSnapshot {
 		snapshot.CompletionOutstanding == 0 &&
 		snapshot.SettlementHeld == 0 &&
 		snapshot.SettlementCallbacks == 0 &&
+		snapshot.TelemetryQueued == 0 &&
 		snapshot.BackgroundTasks == 0 &&
 		snapshot.OwnershipHealthy
 	return snapshot
@@ -81,13 +87,19 @@ func (s *Server) Quiescence() QuiescenceSnapshot {
 func (s *Server) WaitForQuiescence(ctx context.Context) bool {
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
+	consecutive := 0
 	for {
 		if s.Quiescence().Quiescent {
-			return true
+			consecutive++
+			if consecutive >= 2 {
+				return true
+			}
+		} else {
+			consecutive = 0
 		}
 		select {
 		case <-ctx.Done():
-			return s.Quiescence().Quiescent
+			return false
 		case <-ticker.C:
 		}
 	}

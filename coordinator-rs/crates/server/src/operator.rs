@@ -18,6 +18,8 @@ use crate::{
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OperatorCommand {
     Serve,
+    Version,
+    ConfigCheck,
     Recovery,
     InvariantScan,
     ReviewResolve {
@@ -48,6 +50,8 @@ impl OperatorCommand {
         };
         match command {
             "serve" if arguments.len() == 1 => Ok(Self::Serve),
+            "version" if arguments.len() == 1 => Ok(Self::Version),
+            "check-config" | "config-check" if arguments.len() == 1 => Ok(Self::ConfigCheck),
             "recovery" if arguments.len() == 1 => Ok(Self::Recovery),
             "invariant-scan" if arguments.len() == 1 => Ok(Self::InvariantScan),
             "review-resolve" => parse_review_resolution(&arguments[1..]),
@@ -88,7 +92,9 @@ impl OperatorCommand {
                     "version": result.version.as_i64(),
                 }))
             }
-            Self::Serve | Self::Recovery => Err(OperatorCommandError::NotOneShot),
+            Self::Serve | Self::Version | Self::ConfigCheck | Self::Recovery => {
+                Err(OperatorCommandError::NotOneShot)
+            }
         }
     }
 }
@@ -140,7 +146,7 @@ fn parse_review_resolution(arguments: &[String]) -> Result<OperatorCommand, Oper
 #[derive(Debug, Error)]
 pub enum OperatorCommandError {
     #[error(
-        "usage: coordinator [serve|recovery|invariant-scan|review-resolve --job UUID --disposition settle|release --reason TEXT]"
+        "usage: coordinator [serve|version|check-config|config-check|recovery|invariant-scan|review-resolve --job UUID --disposition settle|release --reason TEXT]"
     )]
     Usage,
     #[error("operator command arguments must be UTF-8")]
@@ -151,7 +157,7 @@ pub enum OperatorCommandError {
     InvalidDisposition,
     #[error("review reason must be 1..=4096 trimmed non-control bytes")]
     InvalidReason,
-    #[error("serve and recovery are not one-shot commands")]
+    #[error("command is not a one-shot database operator command")]
     NotOneShot,
     #[error(transparent)]
     Ledger(#[from] crate::ledger::LedgerError),
@@ -162,6 +168,33 @@ pub enum OperatorCommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_deployment_preflight_commands_exactly() {
+        assert_eq!(
+            OperatorCommand::parse([OsString::from("version")]).expect("version"),
+            OperatorCommand::Version
+        );
+        assert_eq!(
+            OperatorCommand::parse([OsString::from("config-check")]).expect("config-check"),
+            OperatorCommand::ConfigCheck
+        );
+        assert_eq!(
+            OperatorCommand::parse([OsString::from("check-config")]).expect("check-config"),
+            OperatorCommand::ConfigCheck
+        );
+        assert!(matches!(
+            OperatorCommand::parse([OsString::from("config-check;id")]),
+            Err(OperatorCommandError::Usage)
+        ));
+        assert!(matches!(
+            OperatorCommand::parse([
+                OsString::from("config-check"),
+                OsString::from("--unexpected")
+            ]),
+            Err(OperatorCommandError::Usage)
+        ));
+    }
 
     #[test]
     fn review_resolution_requires_a_journal_reason() {

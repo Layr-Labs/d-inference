@@ -4866,20 +4866,26 @@ func (r *Registry) ProviderIDs() []string {
 // that haven't sent a heartbeat within the given timeout. It stops when
 // the context is cancelled.
 func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration) {
+	saferun.Go(r.logger, "registry.evictionLoop", func() {
+		r.RunEvictionLoop(ctx, timeout)
+	})
+}
+
+// RunEvictionLoop runs stale-provider eviction synchronously until ctx is
+// cancelled, allowing the serving process to join it before ownership handoff.
+func (r *Registry) RunEvictionLoop(ctx context.Context, timeout time.Duration) {
 	ticker := time.NewTicker(timeout / 3)
 	r.backgroundTasks.Add(1)
-	saferun.Go(r.logger, "registry.evictionLoop", func() {
-		defer r.backgroundTasks.Add(-1)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				r.evictStale(timeout)
-			}
+	defer r.backgroundTasks.Add(-1)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.evictStale(timeout)
 		}
-	})
+	}
 }
 
 func (r *Registry) BackgroundTaskCount() int64 {

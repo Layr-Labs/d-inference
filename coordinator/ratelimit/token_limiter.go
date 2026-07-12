@@ -177,11 +177,45 @@ func (t *TokenLimiter) OutputStat(accountID string) (Stat, bool) {
 
 // StartPruner launches idle-bucket pruning for any enforced dimensions.
 func (t *TokenLimiter) StartPruner(ctx context.Context, logger *slog.Logger, recoverFn func()) {
+	go func() {
+		if recoverFn != nil {
+			defer recoverFn()
+		}
+		t.RunPruner(ctx, logger)
+	}()
+}
+
+// RunPruner synchronously prunes all enabled token dimensions until ctx is
+// cancelled.
+func (t *TokenLimiter) RunPruner(ctx context.Context, logger *slog.Logger) {
+	var interval time.Duration
 	if t.input != nil {
-		t.input.StartPruner(ctx, logger, recoverFn)
+		interval = t.input.cfg.PruneEvery
 	}
-	if t.output != nil {
-		t.output.StartPruner(ctx, logger, recoverFn)
+	if interval <= 0 && t.output != nil {
+		interval = t.output.cfg.PruneEvery
+	}
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			dropped := 0
+			if t.input != nil {
+				dropped += t.input.Prune()
+			}
+			if t.output != nil {
+				dropped += t.output.Prune()
+			}
+			if dropped > 0 && logger != nil {
+				logger.Debug("token limiter pruned idle accounts", "dropped", dropped)
+			}
+		}
 	}
 }
 

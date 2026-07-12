@@ -362,6 +362,14 @@ pub(super) async fn utilization(
 #[serde(deny_unknown_fields)]
 struct DrainRequest {
     draining: Option<bool>,
+    mode: Option<DrainMode>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum DrainMode {
+    Inference,
+    Handoff,
 }
 
 pub(super) async fn drain(
@@ -372,15 +380,27 @@ pub(super) async fn drain(
     let body = to_bytes(request.into_body(), MAX_ADMIN_BODY)
         .await
         .map_err(|_| OperationsError::payload_too_large("drain body exceeds 64KB"))?;
-    let draining = if body.is_empty() {
-        true
+    let request = if body.is_empty() {
+        DrainRequest {
+            draining: None,
+            mode: None,
+        }
     } else {
         serde_json::from_slice::<DrainRequest>(&body)
             .map_err(|error| OperationsError::bad_request(format!("invalid JSON: {error}")))?
-            .draining
-            .unwrap_or(true)
     };
-    state.set_draining(draining);
+    let draining = request.draining.unwrap_or(true);
+    let mode = request.mode.unwrap_or(DrainMode::Inference);
+    if mode == DrainMode::Handoff && !draining {
+        return Err(OperationsError::bad_request(
+            "handoff drain cannot be disabled",
+        ));
+    }
+    match mode {
+        DrainMode::Inference => state.set_draining(draining),
+        DrainMode::Handoff => state.begin_handoff(),
+    }
+    let draining = state.is_draining();
     state.metrics.increment("drain_changes");
     let mut quiescent = !draining;
     if draining {
@@ -404,6 +424,10 @@ pub(super) async fn drain(
     }
     Ok(Json(json!({
         "draining": draining,
+        "mode": match mode {
+            DrainMode::Inference => "inference",
+            DrainMode::Handoff => "handoff",
+        },
         "quiescent": quiescent,
         "external_fenced": state.admission.external_fenced(),
         "inflight": state.pilot().map_or(0, |pilot| pilot.active_request_count()),

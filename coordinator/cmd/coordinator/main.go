@@ -48,7 +48,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
 
@@ -73,6 +72,13 @@ func main() {
 	logger := slog.New(slogHandler)
 	slog.SetDefault(logger)
 
+	if handled, exitCode := runOperatorCommand(os.Args[1:], logger); handled {
+		if exitCode != 0 {
+			os.Exit(exitCode)
+		}
+		return
+	}
+
 	// Read all configuration from environment variables.
 	cfg := config.ReadAppConfig()
 	if err := cfg.Check(); err != nil {
@@ -90,6 +96,7 @@ func main() {
 	defer cancel()
 
 	var st store.Store
+	var memoryStoreForPruning *store.MemoryStore
 	if cfg.StoreConfig.DatabaseURL != "" {
 		pgStore, err := store.NewPostgres(ctx, cfg.StoreConfig)
 		if err != nil {
@@ -119,22 +126,8 @@ func main() {
 
 		memStore := store.NewMemory(store.Config{AdminKey: adminKey})
 		st = memStore
+		memoryStoreForPruning = memStore
 		logger.Warn("using in-memory store — billing state will not survive restart (set EIGENINFERENCE_DATABASE_URL for production)")
-
-		pruneInterval := 15 * time.Minute
-		pruneMax := store.DefaultPruneMaxEntries
-		saferun.Go(logger, "memory_store_pruner", func() {
-			ticker := time.NewTicker(pruneInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					memStore.Prune(pruneMax)
-				}
-			}
-		})
 	}
 
 	if err := st.CheckRollbackSafe(ctx); err != nil {
@@ -235,8 +228,6 @@ func main() {
 	reg.ConfigureCacheAffinity(cfg.RegistryCfg.CacheAffinity)
 	cacheAffinityCfg := reg.CacheAffinityConfigSnapshot()
 	logger.Info("cache affinity configured", "ttl", cacheAffinityCfg.TTL.String(), "bonus_ms", cacheAffinityCfg.BonusMs, "enabled", cacheAffinityCfg.BonusMs > 0)
-	stopWarmPool := reg.StartWarmPoolController(ctx, cfg.RegistryCfg.WarmPool)
-	defer stopWarmPool()
 	if cfg.RegistryCfg.WarmPool.Enabled {
 		logger.Info("warm-pool controller enabled", "observe_only", cfg.RegistryCfg.WarmPool.ObserveOnly, "interval", cfg.RegistryCfg.WarmPool.Interval.String())
 	}
@@ -255,13 +246,32 @@ func main() {
 	// submitting telemetry); Close is idempotent and never blocks on in-flight
 	// writes, so it cannot stall shutdown.
 	defer srv.Close()
+	if memoryStoreForPruning != nil {
+		srv.StartHandoffTask("memory_store_pruner", func(ctx context.Context) {
+			ticker := time.NewTicker(15 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					memoryStoreForPruning.Prune(store.DefaultPruneMaxEntries)
+				}
+			}
+		})
+	}
+	srv.StartHandoffTask("registry.warmPoolController", func(ctx context.Context) {
+		reg.RunWarmPoolController(ctx, cfg.RegistryCfg.WarmPool)
+	})
 
 	// Per-account rate limiter on consumer (inference) endpoints. The default
 	// is intentionally generous (20 rps / burst 120) — the fleet token-budget
 	// admission is the real capacity ceiling, so this is a fairness/abuse guard.
 	if cfg.RateLimitCfg.RPS > 0 {
 		rl := ratelimit.New(cfg.RateLimitCfg)
-		rl.StartPruner(ctx, logger, func() { saferun.Recover(logger, "ratelimit_pruner") })
+		srv.StartHandoffTask("ratelimit_pruner", func(ctx context.Context) {
+			rl.RunPruner(ctx, logger)
+		})
 		srv.SetRateLimiter(rl)
 		logger.Info("per-account rate limiter enabled", "rps", cfg.RateLimitCfg.RPS, "burst", cfg.RateLimitCfg.Burst)
 	} else {
@@ -271,7 +281,9 @@ func main() {
 	// Stricter per-account limiter on financial endpoints.
 	if cfg.FinancialRL.RPS > 0 {
 		frl := ratelimit.New(cfg.FinancialRL)
-		frl.StartPruner(ctx, logger, func() { saferun.Recover(logger, "financial_ratelimit_pruner") })
+		srv.StartHandoffTask("financial_ratelimit_pruner", func(ctx context.Context) {
+			frl.RunPruner(ctx, logger)
+		})
 		srv.SetFinancialRateLimiter(frl)
 		logger.Info("financial-endpoint rate limiter enabled", "rps", cfg.FinancialRL.RPS, "burst", cfg.FinancialRL.Burst)
 	} else {
@@ -289,7 +301,9 @@ func main() {
 	// prepaid balance, and the fleet token-budget admission ceiling.
 	if cfg.ServiceRL.RPS > 0 {
 		srl := ratelimit.New(cfg.ServiceRL)
-		srl.StartPruner(ctx, logger, func() { saferun.Recover(logger, "service_ratelimit_pruner") })
+		srv.StartHandoffTask("service_ratelimit_pruner", func(ctx context.Context) {
+			srl.RunPruner(ctx, logger)
+		})
 		srv.SetServiceRateLimiter(srl)
 		logger.Info("service-account rate limiter enabled", "rps", cfg.ServiceRL.RPS, "burst", cfg.ServiceRL.Burst)
 	} else {
@@ -306,12 +320,16 @@ func main() {
 	var consumerTokenLimiter, serviceTokenLimiter *ratelimit.TokenLimiter
 	if consumerTok.InputPerMinute > 0 || consumerTok.OutputPerMinute > 0 {
 		consumerTokenLimiter = ratelimit.NewTokenLimiter(consumerTok.InputPerMinute/60, consumerTok.InputBurst, consumerTok.OutputPerMinute/60, consumerTok.OutputBurst)
-		consumerTokenLimiter.StartPruner(ctx, logger, func() { saferun.Recover(logger, "consumer_token_ratelimit_pruner") })
+		srv.StartHandoffTask("consumer_token_ratelimit_pruner", func(ctx context.Context) {
+			consumerTokenLimiter.RunPruner(ctx, logger)
+		})
 		logger.Info("consumer token rate limiter enabled", "itpm", consumerTok.InputPerMinute, "otpm", consumerTok.OutputPerMinute)
 	}
 	if serviceTok.InputPerMinute > 0 || serviceTok.OutputPerMinute > 0 {
 		serviceTokenLimiter = ratelimit.NewTokenLimiter(serviceTok.InputPerMinute/60, serviceTok.InputBurst, serviceTok.OutputPerMinute/60, serviceTok.OutputBurst)
-		serviceTokenLimiter.StartPruner(ctx, logger, func() { saferun.Recover(logger, "service_token_ratelimit_pruner") })
+		srv.StartHandoffTask("service_token_ratelimit_pruner", func(ctx context.Context) {
+			serviceTokenLimiter.RunPruner(ctx, logger)
+		})
 		logger.Info("service token rate limiter enabled", "itpm", serviceTok.InputPerMinute, "otpm", serviceTok.OutputPerMinute)
 	}
 	srv.SetTokenLimiters(consumerTokenLimiter, serviceTokenLimiter)
@@ -326,9 +344,13 @@ func main() {
 	// key sets an override; otherwise the key inherits the account-level limits.
 	// They carry no global rate of their own (each call supplies the key's rate).
 	keyRPMLimiter := ratelimit.New(ratelimit.Config{RPS: ratelimit.DefaultRPS, Burst: ratelimit.DefaultBurst})
-	keyRPMLimiter.StartPruner(ctx, logger, func() { saferun.Recover(logger, "key_rpm_ratelimit_pruner") })
+	srv.StartHandoffTask("key_rpm_ratelimit_pruner", func(ctx context.Context) {
+		keyRPMLimiter.RunPruner(ctx, logger)
+	})
 	keyTokenLimiter := ratelimit.NewKeyTokenLimiter()
-	keyTokenLimiter.StartPruner(ctx, logger, func() { saferun.Recover(logger, "key_token_ratelimit_pruner") })
+	srv.StartHandoffTask("key_token_ratelimit_pruner", func(ctx context.Context) {
+		keyTokenLimiter.RunPruner(ctx, logger)
+	})
 	srv.SetKeyLimiters(keyRPMLimiter, keyTokenLimiter)
 	logger.Info("per-key rate limiters enabled (RPM + ITPM/OTPM overrides)")
 
@@ -804,27 +826,29 @@ func main() {
 	srv.SeedTrustReuseCache(ctx)
 
 	// Start background eviction of stale providers.
-	reg.StartEvictionLoop(ctx, 90*time.Second)
+	srv.StartHandoffTask("registry.evictionLoop", func(ctx context.Context) {
+		reg.RunEvictionLoop(ctx, 90*time.Second)
+	})
 
 	// Push gauge values to DogStatsD periodically.
-	srv.StartBackgroundTask("api.ddGaugeLoop", func() { srv.StartDDGaugeLoop(ctx) })
+	srv.StartHandoffTask("api.ddGaugeLoop", srv.StartDDGaugeLoop)
 
 	// Reclaim expired read-cache entries periodically (bounds memory growth).
-	srv.StartBackgroundTask("api.readCacheJanitor", func() { srv.StartReadCacheJanitor(ctx) })
+	srv.StartHandoffTask("api.readCacheJanitor", srv.StartReadCacheJanitor)
 
 	// Flag any model decoding far below its active-param/hardware class (W8 —
 	// auto-detects the gemma-dense decode bug). Spawns its own panic-safe loop.
-	srv.StartThroughputAnomalyDetector(ctx)
+	srv.StartThroughputAnomalyDetector(srv.HandoffContext())
 
 	// Base-rewards settlement (only when enabled).
 	if br := srv.BaseRewards(); br != nil {
-		srv.StartBackgroundTask("base_rewards_settlement", func() { br.Run(ctx) })
+		srv.StartHandoffTask("base_rewards_settlement", br.Run)
 	}
 
 	// Stripe payout reconciler: heals connected accounts stuck on a legacy
 	// manual payout schedule and alerts on withdrawals stuck in "transferred".
 	// No-op when Stripe Connect isn't configured. Spawns its own panic-safe loop.
-	srv.StartStripePayoutReconciler(ctx)
+	srv.StartStripePayoutReconciler(srv.HandoffContext())
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{
@@ -890,7 +914,8 @@ func main() {
 	// WaitForInflightZero — so providers begin draining+reconnecting while we wait
 	// for in-flight HTTP to finish. The canonical combined shutdown order is:
 	// SetDraining → BroadcastGoingAway → cancel → WaitForInflightZero → Shutdown.
-	cancel() // Stop the eviction loop.
+	srv.CancelHandoffTasks()
+	cancel()
 
 	// Wait for already-admitted in-flight requests to finish before shutting the
 	// HTTP server down. Streaming responses can run well past the 15s Shutdown

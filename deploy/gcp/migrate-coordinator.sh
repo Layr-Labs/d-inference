@@ -1,12 +1,13 @@
 #!/bin/bash
-# Apply the schema embedded in a pinned dev coordinator image.
-# Cloud Build pipes this script to the VM before restarting systemd.
+# Apply the schema embedded in an explicitly pinned coordinator image.
+# This command never changes VM metadata or restarts the serving owner.
 set -euo pipefail
 
-TAG="${1:?usage: migrate-coordinator.sh IMAGE_TAG [ADOPT_LEGACY]}"
+IMAGE="${1:?usage: migrate-coordinator.sh IMAGE_REF [ADOPT_LEGACY]}"
 ADOPT_LEGACY="${2:-false}"
-if [[ ! "$TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
-  echo "invalid coordinator image tag: $TAG" >&2
+if [[ ! "$IMAGE" =~ ^[A-Za-z0-9._/@:-]+$ ]] ||
+  [[ "$IMAGE" != *":"* && "$IMAGE" != *"@sha256:"* ]]; then
+  echo "invalid coordinator image reference" >&2
   exit 2
 fi
 if [[ "$ADOPT_LEGACY" != "true" && "$ADOPT_LEGACY" != "false" ]]; then
@@ -15,16 +16,15 @@ if [[ "$ADOPT_LEGACY" != "true" && "$ADOPT_LEGACY" != "false" ]]; then
 fi
 
 META="http://metadata.google.internal/computeMetadata/v1/instance"
-REGISTRY="us-central1-docker.pkg.dev"
-IMAGE="${REGISTRY}/sepolia-ai/coordinator/coordinator:${TAG}"
+REGISTRY="${IMAGE%%/*}"
 
 TOKEN=$(curl -fsSL -H "Metadata-Flavor: Google" \
   "$META/service-accounts/default/token" \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+  | jq -er '.access_token')
 printf '%s' "$TOKEN" | /usr/bin/docker login \
   -u oauth2accesstoken \
   --password-stdin \
-  "$REGISTRY"
+  "$REGISTRY" >/dev/null
 unset TOKEN
 
 /usr/bin/docker pull "$IMAGE"

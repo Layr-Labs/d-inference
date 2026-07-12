@@ -41,8 +41,34 @@ func (t *KeyTokenLimiter) lockFor(key string) *sync.Mutex {
 
 // StartPruner launches idle-bucket pruning for both token dimensions.
 func (t *KeyTokenLimiter) StartPruner(ctx context.Context, logger *slog.Logger, recoverFn func()) {
-	t.input.StartPruner(ctx, logger, recoverFn)
-	t.output.StartPruner(ctx, logger, recoverFn)
+	go func() {
+		if recoverFn != nil {
+			defer recoverFn()
+		}
+		t.RunPruner(ctx, logger)
+	}()
+}
+
+// RunPruner synchronously prunes both per-key token dimensions until ctx is
+// cancelled.
+func (t *KeyTokenLimiter) RunPruner(ctx context.Context, logger *slog.Logger) {
+	interval := t.input.cfg.PruneEvery
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			dropped := t.input.Prune() + t.output.Prune()
+			if dropped > 0 && logger != nil {
+				logger.Debug("key token limiter pruned idle accounts", "dropped", dropped)
+			}
+		}
+	}
 }
 
 // Allow charges inputTokens/outputTokens against the key's per-key token

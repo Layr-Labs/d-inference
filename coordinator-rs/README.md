@@ -90,10 +90,24 @@ The same binary exposes bounded owner-fenced maintenance modes:
 
 ```text
 coordinator serve
+coordinator version
+coordinator check-config
 coordinator recovery
 coordinator invariant-scan
 coordinator review-resolve --job UUID --disposition settle|release --reason TEXT
 ```
+
+The deployment image installs this binary as
+`/usr/local/bin/coordinator-rs` alongside `/usr/local/bin/coordinator-go`.
+`EIGENINFERENCE_COORDINATOR_BINARY=go|rust` is validated by the container
+launcher and defaults to Go. `check-config` (`config-check` remains an alias)
+parses the complete selected Rust configuration without connecting to
+PostgreSQL, so deploy preflight does not contend with the active owner.
+
+`recovery` still acquires the primary coordinator ownership lock. The GCP
+`d-inference-recovery.service` is therefore an offline, mutually exclusive
+maintenance mode; serving embeds its supervised recovery runtime and does not
+run this command as a concurrent sidecar.
 
 The isolated hardware pilot requires static consumer/provider mappings and
 `EIGENINFERENCE_RUST_BILLING_JSON`. The production full surface deliberately

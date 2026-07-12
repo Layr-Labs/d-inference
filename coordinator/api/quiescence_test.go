@@ -67,6 +67,11 @@ func TestProcessShutdownGateRejectsEveryMutationAndProviderWebSocket(t *testing.
 	defer server.Close()
 	defer srv.Close()
 	srv.BeginShutdown()
+	backgroundCtx, backgroundCancel := context.WithTimeout(context.Background(), time.Second)
+	defer backgroundCancel()
+	if !srv.WaitForBackgroundTasks(backgroundCtx) {
+		t.Fatal("shutdown background tasks did not join")
+	}
 
 	for _, request := range []struct {
 		method string
@@ -196,5 +201,171 @@ func TestQuiescenceTracksBackgroundMutatorsUntilJoined(t *testing.T) {
 	}
 	if snapshot := srv.Quiescence(); snapshot.BackgroundTasks != 0 {
 		t.Fatalf("background tasks after join = %d", snapshot.BackgroundTasks)
+	}
+}
+
+func TestAdminHandoffFencesProvidersAndBackgroundWhileCompletionsDrain(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetAdminKey("test-key")
+	server := httptest.NewServer(srv.Handler())
+	defer server.Close()
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	connection, _, err := websocket.Dial(
+		ctx,
+		"ws"+strings.TrimPrefix(server.URL, "http")+"/ws/provider",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+
+	backgroundStopped := make(chan struct{})
+	if !srv.StartHandoffTask("test.handoff-background", func(ctx context.Context) {
+		<-ctx.Done()
+		close(backgroundStopped)
+	}) {
+		t.Fatal("handoff background task was rejected before handoff")
+	}
+
+	completionStarted := make(chan struct{})
+	releaseCompletion := make(chan struct{})
+	if !srv.completions.submit(func() {
+		close(completionStarted)
+		<-releaseCompletion
+	}) {
+		t.Fatal("completion task was rejected before handoff")
+	}
+	<-completionStarted
+
+	request, err := http.NewRequest(
+		http.MethodPost,
+		server.URL+"/v1/admin/drain",
+		strings.NewReader(`{"mode":"handoff"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer test-key")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("handoff status = %d, want 200", response.StatusCode)
+	}
+
+	select {
+	case <-backgroundStopped:
+	case <-ctx.Done():
+		t.Fatal("Server-owned handoff context was not cancelled")
+	}
+	if !srv.WaitForProviderSessions(ctx) {
+		t.Fatalf("provider session survived handoff: %+v", srv.Quiescence())
+	}
+	if snapshot := srv.Quiescence(); snapshot.CompletionOutstanding != 1 || snapshot.Quiescent {
+		t.Fatalf("handoff did not preserve admitted completion work: %+v", snapshot)
+	}
+	if srv.StartHandoffTask("test.must-not-restart", func(context.Context) {}) {
+		t.Fatal("background mutator restarted after handoff fence")
+	}
+	srv.SetDraining(false)
+	if !srv.IsDraining() {
+		t.Fatal("irreversible handoff fence was cleared")
+	}
+
+	close(releaseCompletion)
+	if !srv.WaitForQuiescence(ctx) {
+		t.Fatalf("handoff did not reach quiescence after completion: %+v", srv.Quiescence())
+	}
+}
+
+func TestInferenceDrainLeavesProviderAndHandoffContextRunning(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetAdminKey("test-key")
+	server := httptest.NewServer(srv.Handler())
+	defer server.Close()
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	connection, _, err := websocket.Dial(
+		ctx,
+		"ws"+strings.TrimPrefix(server.URL, "http")+"/ws/provider",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+
+	request, err := http.NewRequest(
+		http.MethodPost,
+		server.URL+"/v1/admin/drain",
+		strings.NewReader(`{"draining":true}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer test-key")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("drain status = %d, want 200", response.StatusCode)
+	}
+	if got := srv.providerSessionCount.Load(); got != 1 {
+		t.Fatalf("normal inference drain closed provider sessions: %d", got)
+	}
+	select {
+	case <-srv.HandoffContext().Done():
+		t.Fatal("normal inference drain cancelled handoff context")
+	default:
+	}
+}
+
+func TestHandoffRaceCannotRestartBackgroundMutator(t *testing.T) {
+	for range 50 {
+		srv, _ := testServer(t)
+		start := make(chan struct{})
+		accepted := make(chan bool, 1)
+		handoffDone := make(chan struct{})
+		go func() {
+			<-start
+			accepted <- srv.StartHandoffTask(
+				"test.racing-background",
+				func(ctx context.Context) { <-ctx.Done() },
+			)
+		}()
+		go func() {
+			<-start
+			srv.BeginHandoff()
+			close(handoffDone)
+		}()
+		close(start)
+		wasAccepted := <-accepted
+		<-handoffDone
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		if !srv.WaitForBackgroundTasks(ctx) {
+			cancel()
+			t.Fatal("background task admitted during handoff did not join")
+		}
+		cancel()
+		if wasAccepted && srv.backgroundTaskCount.Load() != 0 {
+			t.Fatal("accepted racing task survived the handoff context")
+		}
+		if srv.StartHandoffTask("test.restart", func(context.Context) {}) {
+			t.Fatal("handoff allowed a background task restart")
+		}
+		srv.Close()
 	}
 }

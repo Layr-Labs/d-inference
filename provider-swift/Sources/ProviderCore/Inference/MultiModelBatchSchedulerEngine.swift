@@ -374,6 +374,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         upstream: upstream,
                         cancelUpstream: { await bridge.cancel(requestId: visionRequestId) },
                         toolHandler: nil,
+                        requiresToolCall: false,
                         releaseBox: releaseBox
                     )
                 } catch is CancellationError {
@@ -554,6 +555,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             upstream: upstream,
             cancelUpstream: cancelUpstream,
             toolHandler: toolHandler,
+            requiresToolCall: prepared.requiresToolCall,
             releaseBox: releaseBox
         )
     }
@@ -568,6 +570,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         upstream: AsyncStream<GenerationEvent>,
         cancelUpstream: @escaping @Sendable () async -> Void,
         toolHandler: BatchedToolStreamHandler?,
+        requiresToolCall: Bool,
         releaseBox: OneShotRelease
     ) -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         AsyncThrowingStream { continuation in
@@ -579,6 +582,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 var lastTokenAt: Date?
                 var stopReason: String = "stop"
                 var failed: String?
+                var deferredContent: [String] = []
                 startedAt = Date()
 
                 for await event in upstream {
@@ -597,8 +601,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                 if let visible = handler.processChunk(text),
                                     !visible.isEmpty
                                 {
-                                    continuation.yield(.content(visible))
+                                    if requiresToolCall {
+                                        deferredContent.append(visible)
+                                    } else {
+                                        continuation.yield(.content(visible))
+                                    }
                                 }
+                            } else if requiresToolCall {
+                                deferredContent.append(text)
                             } else {
                                 continuation.yield(.content(text))
                             }
@@ -632,11 +642,22 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     return
                 }
 
-                // Flush remaining tool calls on successful completion.
-                if let handler = toolHandler {
-                    for toolCall in handler.finish() {
-                        continuation.yield(.toolCall(toolCall))
-                    }
+                // Flush remaining tool calls on successful completion. Forced
+                // choices hold text until a call is proven, so a non-compliant
+                // model can never return a normal text answer with `stop`.
+                let toolCalls = toolHandler?.finish() ?? []
+                if requiresToolCall && toolCalls.isEmpty {
+                    await releaseBox.fire()
+                    continuation.finish(
+                        throwing: MultiModelBatchSchedulerEngineError.generationFailed(
+                            "model did not emit the required tool call"))
+                    return
+                }
+                for content in deferredContent {
+                    continuation.yield(.content(content))
+                }
+                for toolCall in toolCalls {
+                    continuation.yield(.toolCall(toolCall))
                 }
 
                 let now = Date()

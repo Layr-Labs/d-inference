@@ -1054,6 +1054,39 @@ struct EngineV2RequestRoutingTests {
         #expect(engine.submitted[0].promptTokens == [1, 2, 3, 4, 5])
     }
 
+    @Test("required tool choice rejects a text-only model completion")
+    func requiredToolChoiceRejectsTextOnlyCompletion() async throws {
+        let engine = WiringScriptedEngine(script: .stream([
+            .delta(text: "plain answer", tokens: [10], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 2)),
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "gemma-4-26b-qat-4bit": .init(
+                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        modelType: "gemma4",
+                        engineV2Bridge: bridge)
+                ]
+            })
+        let request = OpenAIChatCompletionRequest(
+            model: "gemma-4-26b-qat-4bit",
+            messages: [.init(role: .user, content: .text("hello"))],
+            tools: [.init(function: .init(name: "calculate"))],
+            toolChoice: .mode(.required))
+
+        var events: [MLXServerGenerationEvent] = []
+        do {
+            let stream = try await providerEngine.streamChatCompletion(request: request)
+            for try await event in stream { events.append(event) }
+            Issue.record("expected required tool call failure")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == .generationFailed("model did not emit the required tool call"))
+        }
+        #expect(events.isEmpty, "text must stay suppressed when no required call is emitted")
+    }
+
     @Test("coordinator path threads cacheScope and logprobs plumbing into the bridge")
     func coordinatorPathThreadsSaltAndLogprobs() async throws {
         let engine = WiringScriptedEngine(script: .stream([

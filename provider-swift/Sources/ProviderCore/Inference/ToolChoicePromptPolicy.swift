@@ -6,19 +6,23 @@ enum ToolChoicePromptPolicy {
     struct Prepared: Sendable {
         let messages: [OpenAIChatMessage]
         let tools: [OpenAITool]?
+        let requiresToolCall: Bool
     }
 
     static func prepare(_ request: OpenAIChatCompletionRequest) throws -> Prepared {
+        try validateToolNames(request.tools)
         switch request.toolChoice {
         case nil, .mode(.auto):
-            return Prepared(messages: request.messages, tools: request.tools)
+            return Prepared(
+                messages: request.messages, tools: request.tools, requiresToolCall: false)
 
         case .mode(.none):
             return Prepared(
                 messages: addingInstruction(
                     "Do not call any tool. Answer the user directly without emitting a tool call.",
                     to: request.messages),
-                tools: nil)
+                tools: nil,
+                requiresToolCall: false)
 
         case .mode(.required):
             guard let tools = request.tools, !tools.isEmpty else {
@@ -40,7 +44,8 @@ enum ToolChoicePromptPolicy {
             }
             return Prepared(
                 messages: forcingInstruction(instruction, in: request.messages),
-                tools: tools)
+                tools: tools,
+                requiresToolCall: true)
 
         case .function(let name):
             guard let selected = request.tools?.first(where: { $0.function.name == name }) else {
@@ -54,7 +59,27 @@ enum ToolChoicePromptPolicy {
                 + "string argument without an obvious value, use the user's request text."
             return Prepared(
                 messages: forcingInstruction(instruction, in: request.messages),
-                tools: [selected])
+                tools: [selected],
+                requiresToolCall: true)
+        }
+    }
+
+    private static func validateToolNames(_ tools: [OpenAITool]?) throws {
+        for tool in tools ?? [] where !isValidFunctionName(tool.function.name) {
+            throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                "tool function names must match ^[a-zA-Z0-9_-]{1,64}$")
+        }
+    }
+
+    private static func isValidFunctionName(_ name: String) -> Bool {
+        let bytes = name.utf8
+        guard (1...64).contains(bytes.count) else { return false }
+        return bytes.allSatisfy { byte in
+            (48...57).contains(byte)
+                || (65...90).contains(byte)
+                || (97...122).contains(byte)
+                || byte == 45
+                || byte == 95
         }
     }
 

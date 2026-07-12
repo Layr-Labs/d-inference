@@ -156,7 +156,9 @@ import Testing
 @Test func standaloneServerWaitTracksServiceLifetime() async throws {
     let server = StandaloneServer(config: StandaloneServerConfig(port: 0))
     try await server.start()
-    #expect(await server.waitUntilBound(timeoutSeconds: 2))
+    // The full Swift suite runs more than a thousand tests concurrently on CI;
+    // allow scheduler contention without weakening the lifetime assertion.
+    #expect(await server.waitUntilBound(timeoutSeconds: 10))
 
     let completion = StandaloneServerCompletion()
     let waiter = Task {

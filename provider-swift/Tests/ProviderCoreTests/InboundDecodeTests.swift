@@ -42,6 +42,25 @@ struct InboundDecodeTests {
         #expect(req.tools?.first?.function.name == "add")
     }
 
+    @Test("OpenRouter reasoning and named tool choice survive inbound decoding")
+    func openRouterToolControlsDecode() throws {
+        let req = try decode(#"""
+        {
+          "model":"gemma-4-26b",
+          "messages":[{"role":"user","content":"weather in Boston?"}],
+          "tools":[{"type":"function","function":{"name":"get_current_weather","strict":true,
+            "parameters":{"type":"object","properties":{"location":{"type":"string"}}}}}],
+          "tool_choice":{"type":"function","function":{"name":"get_current_weather"}},
+          "reasoning":{"enabled":true},
+          "stream":true
+        }
+        """#)
+
+        #expect(req.reasoning?.enabled == true)
+        #expect(req.toolChoice == .function(name: "get_current_weather"))
+        #expect(req.tools?.first?.function.name == "get_current_weather")
+    }
+
     // MARK: - Hosted / builtin / custom tools (pass-through ignore)
 
     @Test("hosted web_search tool is dropped, request still decodes")

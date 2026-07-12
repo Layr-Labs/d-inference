@@ -14,6 +14,20 @@ import MLXLMServer
 
 extension MultiModelBatchSchedulerEngine {
 
+    static func templateAdditionalContext(
+        for request: OpenAIChatCompletionRequest,
+        reasoningEffort: String?
+    ) -> [String: any Sendable]? {
+        var context: [String: any Sendable] = [:]
+        if let reasoningEffort {
+            context["reasoning_effort"] = reasoningEffort
+        }
+        if let reasoningEnabled = request.reasoning?.enabled {
+            context["enable_thinking"] = reasoningEnabled
+        }
+        return context.isEmpty ? nil : context
+    }
+
     /// Translate an upstream `OpenAIChatCompletionRequest` into the
     /// internal `ChatCompletionRequest` submitted through EngineV2.
     ///

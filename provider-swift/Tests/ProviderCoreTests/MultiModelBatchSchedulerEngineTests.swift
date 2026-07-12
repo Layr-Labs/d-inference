@@ -187,6 +187,40 @@ func multiModelEngineTranslateOverlaysSamplingFields() {
     #expect(sampling.seed == 1234)
 }
 
+@Test("template context forwards OpenRouter reasoning.enabled")
+func templateContextForwardsReasoningEnabled() {
+    let enabled = OpenAIChatCompletionRequest(
+        model: "gemma-4",
+        messages: [.init(role: .user, content: .text("hi"))],
+        reasoning: .init(enabled: true))
+    let disabled = OpenAIChatCompletionRequest(
+        model: "gemma-4",
+        messages: [.init(role: .user, content: .text("hi"))],
+        reasoning: .init(enabled: false))
+
+    let enabledContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: enabled, reasoningEffort: nil)
+    let disabledContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: disabled, reasoningEffort: nil)
+
+    #expect(enabledContext?["enable_thinking"] as? Bool == true)
+    #expect(disabledContext?["enable_thinking"] as? Bool == false)
+}
+
+@Test("template context composes reasoning.enabled with reasoning_effort")
+func templateContextComposesReasoningControls() {
+    let request = OpenAIChatCompletionRequest(
+        model: "gemma-4",
+        messages: [.init(role: .user, content: .text("hi"))],
+        reasoning: .init(enabled: true))
+
+    let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request, reasoningEffort: "high")
+
+    #expect(context?["enable_thinking"] as? Bool == true)
+    #expect(context?["reasoning_effort"] as? String == "high")
+}
+
 // MARK: - Engine error mapping (P2 #6)
 //
 // Pins the `MultiModelBatchSchedulerEngineError.fromSchedulerMessage`

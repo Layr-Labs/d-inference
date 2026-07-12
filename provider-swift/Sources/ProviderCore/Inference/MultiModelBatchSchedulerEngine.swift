@@ -448,17 +448,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // Tokenize the full OpenAI request (including tools, tool_call_id,
         // reasoning_content, etc.) ourselves rather than going through the
         // lossy `translate()` → `ChatMessage` path that drops tool fields.
-        let messages = request.messages.map { $0.templateMessageDict() }
-        let toolSpecs = request.tools?.map { $0.toolSpec() }
-        // Surface `reasoning_effort` to the Jinja render context. Templates
-        // that don't reference the key (most models) ignore the extra
-        // variable; gpt-oss / Harmony reads it to emit `Reasoning: <effort>`.
-        let additionalContext: [String: any Sendable]?
-        if let reasoningEffort {
-            additionalContext = ["reasoning_effort": reasoningEffort]
-        } else {
-            additionalContext = nil
+        let prepared: ToolChoicePromptPolicy.Prepared
+        do {
+            prepared = try ToolChoicePromptPolicy.prepare(request)
+        } catch {
+            await releaseBox.fire()
+            throw error
         }
+        let messages = prepared.messages.map { $0.templateMessageDict() }
+        let toolSpecs = prepared.tools?.map { $0.toolSpec() }
+        let additionalContext = Self.templateAdditionalContext(
+            for: request, reasoningEffort: reasoningEffort)
         let promptTokens: [Int]
         do {
             // Strip JSON `null` / `Optional` leaves (NSNull, the
@@ -483,7 +483,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // Resolve tool call format before submitting so a bad
         // `tool_call_parser` value does not leave an orphaned request.
         let toolHandler: BatchedToolStreamHandler?
-        if let requestTools = request.tools, !requestTools.isEmpty {
+        if prepared.tools?.isEmpty == false {
             let format: ToolCallFormat
             do {
                 format = try ServerToolParser.resolve(

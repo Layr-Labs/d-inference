@@ -152,10 +152,11 @@ extension ProviderLoop {
         tokenizer: TokenizerHandle,
         reasoningEffort: String?
     ) -> Int {
-        let messages = request.messages.map { $0.templateMessageDict() }
-        let toolSpecs = request.tools?.map { $0.toolSpec() }
-        let additionalContext: [String: any Sendable]? =
-            reasoningEffort.map { ["reasoning_effort": $0] }
+        guard let prepared = try? ToolChoicePromptPolicy.prepare(request) else { return 0 }
+        let messages = prepared.messages.map { $0.templateMessageDict() }
+        let toolSpecs = prepared.tools?.map { $0.toolSpec() }
+        let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: request, reasoningEffort: reasoningEffort)
         // Must mirror the production tokenize path (sanitize JSON
         // null / Optional leaves) so this recount matches what was prefilled
         // and doesn't itself throw on a null-bearing request.

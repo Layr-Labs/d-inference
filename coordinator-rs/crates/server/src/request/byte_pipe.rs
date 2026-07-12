@@ -301,6 +301,19 @@ impl<T: PipeItem> BytePipeSender<T> {
     ///
     /// This method never waits for the receiver and never spawns a task.
     pub fn try_send(&self, item: T) -> Result<(), PipeError> {
+        #[cfg(feature = "fault-injection")]
+        if crate::fault::checkpoint_sync(
+            crate::fault::FaultPoint::BytePipeOverflow,
+            file!(),
+            module_path!(),
+            line!(),
+            "BytePipeSender::try_send",
+        )
+        .is_err()
+        {
+            self.shared.fail(PipeCloseReason::ByteOverflow);
+            return Err(PipeError::ByteOverflow);
+        }
         let bytes = item.pipe_bytes();
         let failure = {
             let mut state = self.shared.lock();

@@ -25,6 +25,7 @@ const ADMIN_SESSION_TTL: Duration = Duration::from_secs(60 * 60);
 #[derive(Clone, Debug)]
 pub struct OperationsAuth {
     pub public: PublicAuth,
+    pub read_only: ExactBearer,
     pub admin: ExactBearer,
     pub release: ExactBearer,
     pub publishing: PublishingAuth,
@@ -236,6 +237,19 @@ pub(super) fn require_admin(
         Ok(())
     } else {
         Err(OperationsError::forbidden("admin access required"))
+    }
+}
+
+pub(super) fn require_read_only(
+    auth: &OperationsAuth,
+    headers: &HeaderMap,
+) -> Result<(), OperationsError> {
+    if auth.read_only.accepts(bearer(headers).unwrap_or_default()) {
+        Ok(())
+    } else {
+        Err(OperationsError::forbidden(
+            "read-only operations credential required",
+        ))
     }
 }
 

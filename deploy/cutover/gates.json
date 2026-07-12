@@ -1,0 +1,320 @@
+{
+  "schema_version": 2,
+  "policy_version": 2,
+  "future_skew_seconds": 300,
+  "assessment_validity_seconds": 900,
+  "approval_validity_seconds": 900,
+  "gates": {
+    "isolated-pilot": {
+      "environment": "isolated",
+      "authorization_max_age_seconds": 172800,
+      "requires": [],
+      "reports": {
+        "load": {
+          "maximum_age_seconds": 604800
+        },
+        "differential": {
+          "maximum_age_seconds": 604800
+        },
+        "fault": {
+          "maximum_age_seconds": 604800,
+          "required_boundary_count": 21,
+          "required_coverage": [
+            "bounded_backpressure",
+            "exactly_one_disposition",
+            "historical_ack",
+            "no_double_money_mutation",
+            "no_failover_after_auth",
+            "preauthorization_failover_only",
+            "quiescence_ownership_fencing",
+            "same_lease_recovery"
+          ]
+        }
+      }
+    },
+    "sampled-shadow-replay": {
+      "environment": "isolated",
+      "authorization_max_age_seconds": 172800,
+      "requires": [
+        "isolated-pilot"
+      ],
+      "reports": {
+        "route_trace": {
+          "maximum_age_seconds": 86400,
+          "mode": "sampled_shadow",
+          "minimum_observed_route_ratio": 0.01,
+          "minimum_routed_requests": 1000,
+          "maximum_error_ratio": 0.02,
+          "maximum_latency_p95_ms": 30000,
+          "ownership_mode": "observe_only_no_owner"
+        }
+      }
+    },
+    "rollback-drill": {
+      "environment": "isolated",
+      "authorization_max_age_seconds": 172800,
+      "requires": [
+        "sampled-shadow-replay"
+      ],
+      "reports": {
+        "rollback_drill": {
+          "maximum_age_seconds": 604800,
+          "coverage_script_path": "scripts/rehearse-coordinator-rollback.sh",
+          "required_postgres_image": "postgres:16@sha256:be01cf82fc7dbba824acf0a82e150b4b360f3ff93c6631d7844af431e841a95c",
+          "required_coverage": [
+            "additive_schema_go_compatibility",
+            "candidate_failure_injection",
+            "distinct_immutable_images",
+            "durable_historical_terminal_ack",
+            "fallback_serving_before_and_after",
+            "local_container_handoff",
+            "provider_v1_fallback",
+            "single_database_owner"
+          ]
+        }
+      }
+    },
+    "dedicated-canary": {
+      "environment": "canary",
+      "authorization_max_age_seconds": 172800,
+      "requires": [
+        "sampled-shadow-replay",
+        "rollback-drill"
+      ],
+      "reports": {
+        "route_trace": {
+          "maximum_age_seconds": 86400,
+          "mode": "dedicated_self_route",
+          "minimum_observed_route_ratio": 1.0,
+          "minimum_routed_requests": 10000,
+          "maximum_error_ratio": 0.02,
+          "maximum_latency_p95_ms": 30000,
+          "ownership_mode": "single_rust_owner"
+        },
+        "live_snapshot": {
+          "maximum_age_seconds": 900,
+          "traffic_mode": "dedicated_self_route",
+          "minimum_provider_version": "0.7.5",
+          "minimum_v2_fraction": 0.01,
+          "allow_v1": true,
+          "expected_binary": "rust",
+          "require_read_replica": false,
+          "minimum_requests": 100,
+          "maximum_error_ratio": 0.02,
+          "maximum_latency_p95_ms": 30000,
+          "datadog_query_path": "deploy/cutover/datadog-queries-canary.json",
+          "rds_query_path": "deploy/cutover/rds-readonly.sql"
+        }
+      }
+    },
+    "bake-24h": {
+      "environment": "production",
+      "authorization_max_age_seconds": 608400,
+      "requires": [
+        "full-cutover"
+      ],
+      "reports": {
+        "bake_observation": {
+          "maximum_age_seconds": 900,
+          "gate": "bake-24h",
+          "minimum_duration_seconds": 86400,
+          "traffic_mode": "atomic_single_owner",
+          "maximum_gap_seconds": 0,
+          "minimum_samples": 96,
+          "minimum_requests": 10000,
+          "minimum_unique_requests": 10000,
+          "maximum_error_ratio": 0.02,
+          "maximum_latency_p95_ms": 30000
+        },
+        "live_snapshot": {
+          "maximum_age_seconds": 900,
+          "traffic_mode": "atomic_single_owner",
+          "minimum_provider_version": "0.7.5",
+          "minimum_v2_fraction": 0.01,
+          "allow_v1": true,
+          "expected_binary": "rust",
+          "require_historical_terminal_ack": true,
+          "require_read_replica": true,
+          "minimum_requests": 100,
+          "maximum_error_ratio": 0.02,
+          "maximum_latency_p95_ms": 30000,
+          "datadog_query_path": "deploy/cutover/datadog-queries.json",
+          "rds_query_path": "deploy/cutover/rds-readonly.sql"
+        }
+      }
+    },
+    "bake-7d": {
+      "environment": "production",
+      "authorization_max_age_seconds": 2595600,
+      "requires": [
+        "bake-24h"
+      ],
+      "reports": {
+        "bake_observation": {
+          "maximum_age_seconds": 900,
+          "gate": "bake-7d",
+          "minimum_duration_seconds": 604800,
+          "traffic_mode": "atomic_single_owner",
+          "maximum_gap_seconds": 0,
+          "minimum_samples": 672,
+          "minimum_requests": 100000,
+          "minimum_unique_requests": 100000,
+          "maximum_error_ratio": 0.02,
+          "maximum_latency_p95_ms": 30000
+        },
+        "live_snapshot": {
+          "maximum_age_seconds": 900,
+          "traffic_mode": "atomic_single_owner",
+          "minimum_provider_version": "0.7.5",
+          "minimum_v2_fraction": 0.1,
+          "allow_v1": true,
+          "expected_binary": "rust",
+          "require_historical_terminal_ack": true,
+          "require_read_replica": true,
+          "minimum_requests": 100,
+          "maximum_error_ratio": 0.02,
+          "maximum_latency_p95_ms": 30000,
+          "datadog_query_path": "deploy/cutover/datadog-queries.json",
+          "rds_query_path": "deploy/cutover/rds-readonly.sql"
+        }
+      }
+    },
+    "full-cutover": {
+      "environment": "production",
+      "authorization_max_age_seconds": 900,
+      "deployment_target_required": true,
+      "requires": [
+        "dedicated-canary",
+        "rollback-drill"
+      ],
+      "reports": {
+        "live_snapshot": {
+          "source_environment": "canary",
+          "maximum_age_seconds": 900,
+          "traffic_mode": "dedicated_self_route",
+          "minimum_provider_version": "0.7.5",
+          "minimum_v2_fraction": 0.95,
+          "allow_v1": true,
+          "expected_binary": "rust",
+          "require_historical_terminal_ack": true,
+          "require_read_replica": false,
+          "minimum_requests": 100,
+          "maximum_error_ratio": 0.02,
+          "maximum_latency_p95_ms": 30000,
+          "datadog_query_path": "deploy/cutover/datadog-queries-canary.json",
+          "rds_query_path": "deploy/cutover/rds-readonly.sql"
+        }
+      }
+    },
+    "bake-30d": {
+      "environment": "production",
+      "authorization_max_age_seconds": 7779600,
+      "requires": [
+        "bake-7d"
+      ],
+      "reports": {
+        "bake_observation": {
+          "maximum_age_seconds": 900,
+          "gate": "bake-30d",
+          "minimum_duration_seconds": 2592000,
+          "traffic_mode": "atomic_single_owner",
+          "maximum_gap_seconds": 0,
+          "minimum_samples": 2880,
+          "minimum_requests": 1000000,
+          "minimum_unique_requests": 1000000,
+          "maximum_error_ratio": 0.02,
+          "maximum_latency_p95_ms": 30000
+        },
+        "live_snapshot": {
+          "maximum_age_seconds": 900,
+          "traffic_mode": "atomic_single_owner",
+          "minimum_provider_version": "0.7.5",
+          "minimum_v2_fraction": 0.95,
+          "allow_v1": true,
+          "expected_binary": "rust",
+          "require_historical_terminal_ack": true,
+          "require_read_replica": true,
+          "minimum_requests": 100,
+          "maximum_error_ratio": 0.02,
+          "maximum_latency_p95_ms": 30000,
+          "datadog_query_path": "deploy/cutover/datadog-queries.json",
+          "rds_query_path": "deploy/cutover/rds-readonly.sql"
+        }
+      }
+    },
+    "bake-90d": {
+      "environment": "production",
+      "authorization_max_age_seconds": 86400,
+      "requires": [
+        "bake-30d"
+      ],
+      "reports": {
+        "bake_observation": {
+          "maximum_age_seconds": 900,
+          "gate": "bake-90d",
+          "minimum_duration_seconds": 7776000,
+          "traffic_mode": "atomic_single_owner",
+          "maximum_gap_seconds": 0,
+          "minimum_samples": 8640,
+          "minimum_requests": 3000000,
+          "minimum_unique_requests": 3000000,
+          "maximum_error_ratio": 0.02,
+          "maximum_latency_p95_ms": 30000,
+          "require_zero_go_mutations_90d": true
+        },
+        "live_snapshot": {
+          "maximum_age_seconds": 900,
+          "traffic_mode": "atomic_single_owner",
+          "minimum_provider_version": "0.7.5",
+          "minimum_v2_fraction": 0.99,
+          "allow_v1": true,
+          "expected_binary": "rust",
+          "require_historical_terminal_ack": true,
+          "require_read_replica": true,
+          "minimum_requests": 100,
+          "maximum_error_ratio": 0.02,
+          "maximum_latency_p95_ms": 30000,
+          "require_zero_go_mutations_90d": true,
+          "datadog_query_path": "deploy/cutover/datadog-queries.json",
+          "rds_query_path": "deploy/cutover/rds-readonly.sql"
+        }
+      }
+    },
+    "go-retirement": {
+      "environment": "production",
+      "authorization_max_age_seconds": 900,
+      "requires": [
+        "bake-90d"
+      ],
+      "reports": {
+        "live_snapshot": {
+          "maximum_age_seconds": 900,
+          "traffic_mode": "atomic_single_owner",
+          "minimum_provider_version": "0.7.5",
+          "minimum_v2_fraction": 1.0,
+          "allow_v1": false,
+          "expected_binary": "rust",
+          "require_historical_terminal_ack": true,
+          "require_read_replica": true,
+          "minimum_requests": 100,
+          "maximum_error_ratio": 0.02,
+          "maximum_latency_p95_ms": 30000,
+          "require_zero_go_mutations_90d": true,
+          "datadog_query_path": "deploy/cutover/datadog-queries.json",
+          "rds_query_path": "deploy/cutover/rds-readonly.sql"
+        },
+        "retirement_inventory": {
+          "maximum_age_seconds": 86400,
+          "required_true": [
+            "go_compatibility_archive_verified",
+            "go_fallback_dependency_inventory_empty",
+            "historical_terminal_ack_archive_verified",
+            "migration_owner_transferred",
+            "rollback_artifacts_retained",
+            "v1_provider_inventory_empty"
+          ]
+        }
+      }
+    }
+  }
+}

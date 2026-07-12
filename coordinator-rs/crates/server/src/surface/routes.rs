@@ -217,6 +217,10 @@ mod tests {
             };
             let call = &source[open + 1..close];
             let path = first_string(call).expect("route path must be a string literal");
+            if path.starts_with("/_pilot/") {
+                offset = close + 1;
+                continue;
+            }
             for (needle, method) in [
                 ("get(", "GET"),
                 ("post(", "POST"),

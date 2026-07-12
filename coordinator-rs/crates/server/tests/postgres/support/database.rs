@@ -109,11 +109,35 @@ impl TemporaryDatabase {
             quote_identifier(&self.name)
         );
         // `self.name` is the same generated and identifier-quoted UUID name.
-        let drop_result = sqlx::query(sqlx::AssertSqlSafe(drop_sql))
-            .execute(&mut connection)
-            .await
-            .map(|_| ())
-            .map_err(|error| format!("drop {}: {error}", self.name));
+        let mut drop_result = Err(format!("drop {} was not attempted", self.name));
+        for attempt in 0..10_u32 {
+            match sqlx::query(sqlx::AssertSqlSafe(drop_sql.clone()))
+                .execute(&mut connection)
+                .await
+            {
+                Ok(_) => {
+                    drop_result = Ok(());
+                    break;
+                }
+                Err(error)
+                    if attempt < 9
+                        && matches!(
+                            error.as_database_error().and_then(|error| error.code()),
+                            Some(code) if code == "42501" || code == "55006"
+                        ) =>
+                {
+                    drop_result = Err(format!("drop {}: {error}", self.name));
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        25 * u64::from(attempt + 1),
+                    ))
+                    .await;
+                }
+                Err(error) => {
+                    drop_result = Err(format!("drop {}: {error}", self.name));
+                    break;
+                }
+            }
+        }
         let close_result = connection
             .close()
             .await

@@ -934,6 +934,7 @@ fn build_pilot_session(
     catalog: &MemoryCatalog,
 ) -> Result<PilotSession, ProviderConnectionError> {
     let identity = session.identity();
+    let trust_level = trust.level;
     let registration = session.registration().registration();
     let model = catalog.models().next().expect("one-model catalog");
     let advertised = registration.models.iter().find(|candidate| {
@@ -962,6 +963,7 @@ fn build_pilot_session(
         writer: session.writer(),
         provider_key,
         signing_key: trust.se_public_key,
+        trust_level,
         fence,
         control_only: true,
         model_eligible,

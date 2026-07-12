@@ -14,6 +14,11 @@ production image, but must never execute the production deploy.
 - Confirm `/mnt/disks/userdata` is mounted on the VM.
 - Read the ownership rollout in
   [coordinator-ownership-rollout.md](coordinator-ownership-rollout.md).
+- For any Rust pilot, canary, handoff, bake, or retirement action, verify the
+  current signed authorization from
+  [coordinator-cutover.md](coordinator-cutover.md). The authorization is
+  preflight evidence only and does not replace this runbook's typed human
+  production confirmations.
 
 ## Topology
 
@@ -118,13 +123,26 @@ runbook, set the explicit acknowledgement, and answer four typed confirmations:
 
 ```bash
 export DINF_HUMAN_PROD_DEPLOY=I_AM_A_HUMAN
-deploy/gcp/deploy-prod.sh <image-tag> go <expected-commit>
+deploy/gcp/deploy-prod.sh \
+  <go-image@sha256:digest> go <full-40-char-commit> \
+  <go-image@sha256:digest> -
 ```
 
-For Rust cutover, replace `go` with `rust`. The script prints the account,
-project, zone, VM, image, selector, commit, and transaction before changing
-anything. It asks for a second `COMMIT-METADATA` confirmation after the live
-candidate passes.
+Rust additionally requires a self-contained, signed `full-cutover`
+authorization. Before any remote migration or drain, the script verifies it
+against the fixed operator-host gate and approver public keys and checks the
+current policy hash/version, human approval, complete predecessor chain,
+environment, age, commit, and distinct immutable candidate/fallback images:
+
+```bash
+deploy/gcp/deploy-prod.sh \
+  <rust-image@sha256:digest> rust <full-40-char-commit> \
+  <go-image@sha256:digest> <full-cutover.authorization.json>
+```
+
+The script prints the account, project, zone, VM, image, selector, commit, and
+transaction before changing anything. It asks for a second `COMMIT-METADATA`
+confirmation after the live candidate passes.
 
 Do not invoke this script from an agent, automation, cron, or Cloud Build.
 

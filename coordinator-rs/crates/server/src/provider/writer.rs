@@ -3,12 +3,18 @@
 use std::{
     collections::VecDeque,
     fmt,
-    sync::{Arc, Mutex},
+    future::{Future, poll_fn},
+    pin::Pin,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::Poll,
     time::Duration,
 };
 
 use axum::extract::ws::Message;
-use futures_util::{Sink, SinkExt};
+use futures_util::Sink;
 use serde::Serialize;
 use thiserror::Error;
 use tokio::{
@@ -429,6 +435,22 @@ impl WriterQueue {
         staged: bool,
     ) -> Result<(DeliveryReceipt, Option<oneshot::Sender<()>>), WriterEnqueueError> {
         let bytes = frame.byte_len();
+        #[cfg(feature = "fault-injection")]
+        if crate::fault::checkpoint_sync(
+            crate::fault::FaultPoint::ProviderWriterSaturation,
+            file!(),
+            module_path!(),
+            line!(),
+            "WriterQueue::try_enqueue_inner",
+        )
+        .is_err()
+        {
+            if lane == WriterLane::Data {
+                return Err(WriterEnqueueError::DataSaturated);
+            }
+            self.fence(Arc::from("injected control writer saturation"));
+            return Err(WriterEnqueueError::ControlSaturatedSessionFenced);
+        }
         let mut state = self.lock_state();
         if let Some(reason) = &state.closed {
             return Err(WriterEnqueueError::Closed(reason.clone()));
@@ -767,7 +789,7 @@ pub enum ProviderWriterError {
     /// Send/flush did not complete by the finite per-frame deadline.
     #[error("provider WebSocket send timed out after {0:?}")]
     SendTimeout(Duration),
-    /// Transport failure after sending began has ambiguous delivery.
+    /// Transport failure while attempting to send a provider frame.
     #[error("provider WebSocket send failed: {0}")]
     Transport(Arc<str>),
 }
@@ -791,6 +813,8 @@ impl ProviderWriter {
             let lane = item.lane;
             let bytes = item.bytes;
             let delivery = item.delivery;
+            #[cfg(feature = "fault-injection")]
+            let staged = item.release.is_some();
             if let Some(release) = item.release {
                 let released = tokio::select! {
                     biased;
@@ -805,17 +829,69 @@ impl ProviderWriter {
                     continue;
                 }
             }
-            let send = sink.send(item.frame.into_message());
+            #[cfg(feature = "fault-injection")]
+            let yield_after_start =
+                staged && crate::fault::is_armed(crate::fault::FaultPoint::StartSentUnknown);
+            #[cfg(not(feature = "fault-injection"))]
+            let yield_after_start = false;
+            let send_started = AtomicBool::new(false);
+            let send = send_frame(
+                &mut sink,
+                item.frame.into_message(),
+                yield_after_start,
+                &send_started,
+            );
             tokio::pin!(send);
-            let result = tokio::select! {
-                biased;
-                () = self.queue.cancellation.cancelled() => SendResult::Cancelled,
-                result = timeout(self.queue.config.send_timeout, &mut send) => {
-                    match result {
-                        Ok(Ok(())) => SendResult::OnWire,
-                        Ok(Err(error)) => SendResult::Transport(Arc::from(error.to_string())),
-                        Err(_) => SendResult::TimedOut,
+            let first_poll =
+                poll_fn(|context| Poll::Ready(Future::poll(send.as_mut(), context))).await;
+            let result = match first_poll {
+                Poll::Ready(Ok(())) => SendResult::OnWire,
+                Poll::Ready(Err(error)) => SendResult::Transport {
+                    error: Arc::from(error.to_string()),
+                    started: send_started.load(Ordering::Acquire),
+                },
+                Poll::Pending if send_started.load(Ordering::Acquire) => {
+                    #[cfg(feature = "fault-injection")]
+                    if staged
+                        && crate::fault::checkpoint_async(
+                            crate::fault::FaultPoint::StartSentUnknown,
+                            file!(),
+                            module_path!(),
+                            line!(),
+                            "ProviderWriter::run",
+                        )
+                        .await
+                        .is_err()
+                    {
+                        SendResult::InjectedAmbiguity
+                    } else {
+                        await_send_result(
+                            &self.queue.cancellation,
+                            self.queue.config.send_timeout,
+                            &mut send,
+                            &send_started,
+                        )
+                        .await
                     }
+                    #[cfg(not(feature = "fault-injection"))]
+                    {
+                        await_send_result(
+                            &self.queue.cancellation,
+                            self.queue.config.send_timeout,
+                            &mut send,
+                            &send_started,
+                        )
+                        .await
+                    }
+                }
+                Poll::Pending => {
+                    await_send_result(
+                        &self.queue.cancellation,
+                        self.queue.config.send_timeout,
+                        &mut send,
+                        &send_started,
+                    )
+                    .await
                 }
             };
 
@@ -832,7 +908,31 @@ impl ProviderWriter {
                     let _ = delivery.send_replace(DeliveryState::OnWire);
                     self.queue.complete(lane, bytes);
                 }
-                SendResult::Cancelled => {
+                SendResult::Cancelled { started } => {
+                    let outcome = if started { "sent_unknown" } else { "failed" };
+                    datadog::counter(
+                        Metric::WriterDelivery,
+                        1,
+                        &[
+                            Tag::new(TagKey::Lane, lane.as_str()),
+                            Tag::new(TagKey::Outcome, outcome),
+                        ],
+                    );
+                    let state = if started {
+                        DeliveryState::SentUnknown
+                    } else {
+                        DeliveryState::Failed(Arc::from("provider session cancelled before send"))
+                    };
+                    let _ = delivery.send_replace(state);
+                    self.queue.complete(lane, bytes);
+                    self.queue.fence(Arc::from(if started {
+                        "provider session cancelled during send"
+                    } else {
+                        "provider session cancelled before send"
+                    }));
+                    break;
+                }
+                SendResult::InjectedAmbiguity => {
                     datadog::counter(
                         Metric::WriterDelivery,
                         1,
@@ -844,10 +944,10 @@ impl ProviderWriter {
                     let _ = delivery.send_replace(DeliveryState::SentUnknown);
                     self.queue.complete(lane, bytes);
                     self.queue
-                        .fence(Arc::from("provider session cancelled during send"));
+                        .fence(Arc::from("provider session faulted during send"));
                     break;
                 }
-                SendResult::TimedOut => {
+                SendResult::TimedOut { started } => {
                     datadog::counter(
                         Metric::WriterTimeout,
                         1,
@@ -856,15 +956,23 @@ impl ProviderWriter {
                             Tag::new(TagKey::Kind, "send"),
                         ],
                     );
+                    let outcome = if started { "sent_unknown" } else { "failed" };
                     datadog::counter(
                         Metric::WriterDelivery,
                         1,
                         &[
                             Tag::new(TagKey::Lane, lane.as_str()),
-                            Tag::new(TagKey::Outcome, "sent_unknown"),
+                            Tag::new(TagKey::Outcome, outcome),
                         ],
                     );
-                    let _ = delivery.send_replace(DeliveryState::SentUnknown);
+                    let state = if started {
+                        DeliveryState::SentUnknown
+                    } else {
+                        DeliveryState::Failed(Arc::from(
+                            "provider WebSocket send timed out before send",
+                        ))
+                    };
+                    let _ = delivery.send_replace(state);
                     self.queue.complete(lane, bytes);
                     self.queue
                         .fence(Arc::from("provider WebSocket send timed out"));
@@ -872,16 +980,24 @@ impl ProviderWriter {
                         self.queue.config.send_timeout,
                     ));
                 }
-                SendResult::Transport(error) => {
+                SendResult::Transport { error, started } => {
+                    let outcome = if started { "sent_unknown" } else { "failed" };
                     datadog::counter(
                         Metric::WriterDelivery,
                         1,
                         &[
                             Tag::new(TagKey::Lane, lane.as_str()),
-                            Tag::new(TagKey::Outcome, "sent_unknown"),
+                            Tag::new(TagKey::Outcome, outcome),
                         ],
                     );
-                    let _ = delivery.send_replace(DeliveryState::SentUnknown);
+                    let state = if started {
+                        DeliveryState::SentUnknown
+                    } else {
+                        DeliveryState::Failed(Arc::from(format!(
+                            "provider WebSocket send failed before send: {error}"
+                        )))
+                    };
+                    let _ = delivery.send_replace(state);
                     self.queue.complete(lane, bytes);
                     self.queue.fence(Arc::from(format!(
                         "provider WebSocket send failed: {error}"
@@ -896,9 +1012,75 @@ impl ProviderWriter {
 
 enum SendResult {
     OnWire,
-    Cancelled,
-    TimedOut,
-    Transport(Arc<str>),
+    Cancelled { started: bool },
+    InjectedAmbiguity,
+    TimedOut { started: bool },
+    Transport { error: Arc<str>, started: bool },
+}
+
+fn send_frame<'a, S, E>(
+    sink: &'a mut S,
+    message: Message,
+    mut yield_after_start: bool,
+    started_signal: &'a AtomicBool,
+) -> impl Future<Output = Result<(), E>> + 'a
+where
+    S: Sink<Message, Error = E> + Unpin + 'a,
+{
+    let mut message = Some(message);
+    let mut started = false;
+    poll_fn(move |context| {
+        if !started {
+            match Pin::new(&mut *sink).poll_ready(context) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Pending => return Poll::Pending,
+            }
+            if let Err(error) =
+                Pin::new(&mut *sink).start_send(message.take().expect("provider frame starts once"))
+            {
+                return Poll::Ready(Err(error));
+            }
+            started = true;
+            started_signal.store(true, Ordering::Release);
+            if yield_after_start {
+                yield_after_start = false;
+                context.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+        }
+        Pin::new(&mut *sink).poll_flush(context)
+    })
+}
+
+async fn await_send_result<F, E>(
+    cancellation: &CancellationToken,
+    send_timeout: Duration,
+    send: &mut Pin<&mut F>,
+    started_signal: &AtomicBool,
+) -> SendResult
+where
+    F: Future<Output = Result<(), E>>,
+    E: fmt::Display,
+{
+    tokio::select! {
+        biased;
+        () = cancellation.cancelled() => SendResult::Cancelled {
+            started: started_signal.load(Ordering::Acquire),
+        },
+        result = timeout(send_timeout, send) => {
+            match result {
+                Ok(Ok(())) => SendResult::OnWire,
+                Ok(Err(error)) => SendResult::Transport {
+                    error: Arc::from(error.to_string()),
+                    started: started_signal.load(Ordering::Acquire),
+                },
+                Err(_) => SendResult::TimedOut {
+                    started: started_signal.load(Ordering::Acquire),
+                },
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -906,10 +1088,11 @@ mod tests {
     use std::{
         convert::Infallible,
         pin::Pin,
+        sync::atomic::{AtomicUsize, Ordering},
         task::{Context, Poll},
     };
 
-    use futures_util::Sink;
+    use futures_util::{Sink, poll};
     use tokio::{sync::mpsc, time::timeout};
 
     use super::*;
@@ -1131,6 +1314,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn timeout_before_sink_ownership_is_definitely_unsent() {
+        let cancellation = CancellationToken::new();
+        let (writer, handle) = provider_writer(config(), cancellation.clone()).expect("writer");
+        let unsent = handle
+            .try_send_control(OutboundFrame::Text("first".into()))
+            .expect("first");
+        let result = writer.run(NeverReadySink).await;
+        assert!(matches!(result, Err(ProviderWriterError::SendTimeout(_))));
+        assert!(matches!(
+            unsent.wait().await.expect("definitely-unsent receipt"),
+            DeliveryState::Failed(_)
+        ));
+        assert!(cancellation.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn transport_failure_before_sink_ownership_is_definitely_unsent() {
+        let cancellation = CancellationToken::new();
+        let (writer, handle) = provider_writer(config(), cancellation.clone()).expect("writer");
+        let unsent = handle
+            .try_send_control(OutboundFrame::Text("first".into()))
+            .expect("first");
+        let result = writer.run(ReadyErrorSink).await;
+        assert!(matches!(
+            result,
+            Err(ProviderWriterError::Transport(error)) if error.as_ref() == "poll_ready failed"
+        ));
+        assert!(matches!(
+            unsent.wait().await.expect("definitely-unsent receipt"),
+            DeliveryState::Failed(_)
+        ));
+        assert!(cancellation.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn ambiguous_pending_edge_occurs_only_after_sink_owns_frame() {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let mut sink = ObservedPendingSink {
+            starts: starts.clone(),
+        };
+        let started_signal = AtomicBool::new(false);
+        let send = send_frame(
+            &mut sink,
+            Message::Text("start".into()),
+            true,
+            &started_signal,
+        );
+        tokio::pin!(send);
+        assert!(matches!(poll!(&mut send), Poll::Pending));
+        assert!(started_signal.load(Ordering::Acquire));
+        assert_eq!(
+            starts.load(Ordering::Acquire),
+            1,
+            "ambiguous edge fired before start_send transferred ownership"
+        );
+    }
+
+    #[tokio::test]
     async fn receipt_wait_is_independently_bounded() {
         let cancellation = CancellationToken::new();
         let (_writer, handle) = provider_writer(config(), cancellation).expect("writer");
@@ -1141,6 +1382,100 @@ mod tests {
     }
 
     struct PendingSink;
+    struct NeverReadySink;
+    struct ReadyErrorSink;
+
+    struct ObservedPendingSink {
+        starts: Arc<AtomicUsize>,
+    }
+
+    impl Sink<Message> for ObservedPendingSink {
+        type Error = Infallible;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            self.starts.fetch_add(1, Ordering::AcqRel);
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl Sink<Message> for NeverReadySink {
+        type Error = Infallible;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+
+        fn start_send(self: Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            panic!("start_send must not run while poll_ready is pending")
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            panic!("poll_flush must not run before start_send")
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl Sink<Message> for ReadyErrorSink {
+        type Error = &'static str;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Err("poll_ready failed"))
+        }
+
+        fn start_send(self: Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            panic!("start_send must not run after poll_ready fails")
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            panic!("poll_flush must not run before start_send")
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
 
     impl Sink<Message> for PendingSink {
         type Error = Infallible;

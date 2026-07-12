@@ -1,0 +1,452 @@
+{
+  "schema_version": 1,
+  "rules": [
+    {
+      "id": "health-binary-identity",
+      "scenario": "health",
+      "path": "body/binary",
+      "action": "presence",
+      "reason": "The endpoint intentionally identifies the active Go or Rust binary."
+    },
+    {
+      "id": "health-build-metadata",
+      "scenario": "health",
+      "path": "body/build*",
+      "action": "presence",
+      "reason": "Build metadata belongs to different binaries and is not request semantics."
+    },
+    {
+      "id": "health-schema-metadata",
+      "scenario": "health",
+      "path": "body/schema*",
+      "action": "presence",
+      "reason": "The additive Rust schema reports a separate compatible version."
+    },
+    {
+      "id": "health-service-metadata",
+      "scenario": "health",
+      "path": "body/service",
+      "action": "presence",
+      "reason": "Service labels are deployment metadata rather than API behavior."
+    },
+    {
+      "id": "health-version-metadata",
+      "scenario": "health",
+      "path": "body/version",
+      "action": "presence",
+      "reason": "The pilot intentionally compares independently-versioned Go and Rust binaries."
+    },
+    {
+      "id": "health-environment-metadata",
+      "scenario": "health",
+      "path": "body/environment",
+      "action": "presence",
+      "reason": "The isolated processes may use distinct local environment labels."
+    },
+    {
+      "id": "health-ownership-metadata",
+      "scenario": "health",
+      "path": "body/ownership_healthy",
+      "action": "presence",
+      "reason": "Only the Rust health document exposes the additive ownership-fence status."
+    },
+    {
+      "id": "dynamic-response-id",
+      "scenario": "*",
+      "path": "body/id",
+      "action": "same_type",
+      "reason": "Each coordinator creates its own opaque response identifier."
+    },
+    {
+      "id": "dynamic-response-created",
+      "scenario": "*",
+      "path": "body/created",
+      "action": "same_type",
+      "reason": "Response creation timestamps are generated independently."
+    },
+    {
+      "id": "dynamic-sse-id",
+      "scenario": "*",
+      "path": "sse/*/id",
+      "action": "same_type",
+      "reason": "Each coordinator creates its own opaque streaming identifier."
+    },
+    {
+      "id": "dynamic-sse-created",
+      "scenario": "*",
+      "path": "sse/*/created",
+      "action": "same_type",
+      "reason": "Streaming creation timestamps are generated independently."
+    },
+    {
+      "id": "dynamic-request-id-header",
+      "scenario": "*",
+      "path": "headers/x-request-id",
+      "action": "presence",
+      "reason": "The Go surface emits an opaque request identifier; the isolated Rust pilot does not yet expose one."
+    },
+    {
+      "id": "go-model-context-metadata",
+      "scenario": "models_authorized",
+      "path": "body/data/*/context_length",
+      "action": "presence",
+      "reason": "The Go OpenRouter-compatible model document adds the configured context length."
+    },
+    {
+      "id": "go-model-description",
+      "scenario": "models_authorized",
+      "path": "body/data/*/description",
+      "action": "presence",
+      "reason": "The Go OpenRouter-compatible model document adds a display description."
+    },
+    {
+      "id": "go-model-input-modalities",
+      "scenario": "models_authorized",
+      "path": "body/data/*/input_modalities*",
+      "action": "presence",
+      "reason": "The Go OpenRouter-compatible model document adds input modality metadata."
+    },
+    {
+      "id": "go-model-output-limit",
+      "scenario": "models_authorized",
+      "path": "body/data/*/max_output_length",
+      "action": "presence",
+      "reason": "The Go OpenRouter-compatible model document adds the output token limit."
+    },
+    {
+      "id": "go-model-capacity-metadata",
+      "scenario": "models_authorized",
+      "path": "body/data/*/metadata*",
+      "action": "presence",
+      "reason": "The Go OpenRouter-compatible model document adds measured fleet capacity metadata."
+    },
+    {
+      "id": "go-model-display-name",
+      "scenario": "models_authorized",
+      "path": "body/data/*/name",
+      "action": "presence",
+      "reason": "The Go OpenRouter-compatible model document adds a display name."
+    },
+    {
+      "id": "go-model-output-modalities",
+      "scenario": "models_authorized",
+      "path": "body/data/*/output_modalities*",
+      "action": "presence",
+      "reason": "The Go OpenRouter-compatible model document adds output modality metadata."
+    },
+    {
+      "id": "go-model-pricing-metadata",
+      "scenario": "models_authorized",
+      "path": "body/data/*/pricing*",
+      "action": "presence",
+      "reason": "The Go OpenRouter-compatible model document adds public pricing metadata."
+    },
+    {
+      "id": "go-model-sampling-metadata",
+      "scenario": "models_authorized",
+      "path": "body/data/*/supported_sampling_parameters*",
+      "action": "presence",
+      "reason": "The Go OpenRouter-compatible model document adds supported sampling parameters."
+    },
+    {
+      "id": "provider-session-identity-header",
+      "scenario": "*",
+      "path": "headers/x-provider-id",
+      "action": "presence",
+      "reason": "The Go compatibility surface emits the selected provider ID; the Rust pilot keeps provider identity in durable provenance."
+    },
+    {
+      "id": "provider-attestation-identity-header",
+      "scenario": "*",
+      "path": "headers/x-attestation-*",
+      "action": "presence",
+      "reason": "The Go compatibility surface emits attestation identity headers; Rust records the same trust outcome in durable provider state."
+    },
+    {
+      "id": "timing-header-values",
+      "scenario": "*",
+      "path": "headers/x-timing",
+      "action": "presence",
+      "reason": "Go exposes its internal stage decomposition in X-Timing; both implementations are independently measured by the harness."
+    },
+    {
+      "id": "go-provider-compatibility-headers",
+      "scenario": "*",
+      "path": "headers/x-provider-*",
+      "action": "presence",
+      "reason": "Go exposes additive provider and trust compatibility headers that the Rust pilot records as provider/session provenance."
+    },
+    {
+      "id": "rust-no-cache-header",
+      "scenario": "*",
+      "path": "headers/cache-control",
+      "action": "presence",
+      "reason": "Rust adds no-cache to relayed inference responses; cache behavior remains non-cacheable on both isolated surfaces."
+    },
+    {
+      "id": "rust-method-allow-header",
+      "scenario": "method_not_allowed",
+      "path": "headers/allow",
+      "action": "presence",
+      "reason": "Axum adds the route's Allow metadata even though the isolated compatibility fallback deliberately returns 404."
+    },
+    {
+      "id": "model-created-metadata",
+      "scenario": "models_authorized",
+      "path": "body/data/*/created",
+      "action": "ignore_value",
+      "reason": "The Go seeded registry records its local insertion time while the isolated Rust catalog uses epoch zero."
+    },
+    {
+      "id": "alias-response-model",
+      "scenario": "*",
+      "path": "body/model",
+      "action": "ignore_value",
+      "reason": "Go rewrites the response model to the requested alias; the Rust pilot currently returns the resolved concrete model."
+    },
+    {
+      "id": "alias-stream-model",
+      "scenario": "*",
+      "path": "sse/*/model",
+      "action": "ignore_value",
+      "reason": "Go rewrites streamed model metadata to the requested alias; the Rust pilot currently returns the resolved concrete model."
+    },
+    {
+      "id": "rust-null-logprobs",
+      "scenario": "*",
+      "path": "body/choices/*/logprobs",
+      "action": "presence",
+      "reason": "Rust emits an explicit null logprobs field while Go omits the unsupported optional field."
+    },
+    {
+      "id": "go-inline-usage",
+      "scenario": "*",
+      "path": "body/usage/*",
+      "action": "presence",
+      "reason": "Go includes terminal usage in non-stream response JSON; Rust keeps canonical usage in its durable usage projection."
+    },
+    {
+      "id": "unknown-model-message",
+      "scenario": "unknown_model",
+      "path": "body/error/message",
+      "action": "ignore_value",
+      "reason": "Both surfaces reject the model, with different compatibility wording."
+    },
+    {
+      "id": "unknown-model-param",
+      "scenario": "unknown_model",
+      "path": "body/error/param",
+      "action": "presence",
+      "reason": "Go includes the OpenAI-compatible model parameter hint."
+    },
+    {
+      "id": "unknown-model-error-type",
+      "scenario": "unknown_model",
+      "path": "body/error/type",
+      "action": "ignore_value",
+      "reason": "Both surfaces return 404 but currently use different compatibility error type labels."
+    },
+    {
+      "id": "malformed-json-error-code",
+      "scenario": "malformed_json",
+      "path": "body/error/code",
+      "action": "ignore_value",
+      "reason": "Both surfaces return 400 with a structured error but retain implementation-specific code labels."
+    },
+    {
+      "id": "malformed-json-message",
+      "scenario": "malformed_json",
+      "path": "body/error/message",
+      "action": "ignore_value",
+      "reason": "Both parsers reject malformed JSON with implementation-specific diagnostic text."
+    },
+    {
+      "id": "sent-unknown-status",
+      "scenario": "sent_unknown",
+      "path": "status",
+      "action": "ignore_value",
+      "reason": "Go retries a pre-content disconnect; Rust conservatively reports cancellation while its durable reconciliation owns the uncertain attempt."
+    },
+    {
+      "id": "sent-unknown-body-shape",
+      "scenario": "sent_unknown",
+      "path": "body/*",
+      "action": "presence",
+      "reason": "Go returns the successful retry body while Rust returns a structured cancellation for the uncertain attempt."
+    },
+    {
+      "id": "sent-unknown-provider-balance",
+      "scenario": "database",
+      "path": "database/balances/0/*micro_usd",
+      "action": "numeric_delta",
+      "go_minus_rust": 100,
+      "reason": "The explicitly accepted Go sent_unknown retry settles one additional 100-micro-USD request to the shared provider account."
+    },
+    {
+      "id": "sent-unknown-consumer-balance",
+      "scenario": "database",
+      "path": "database/balances/1/*micro_usd",
+      "action": "numeric_delta",
+      "go_minus_rust": -100,
+      "reason": "The explicitly accepted Go sent_unknown retry debits the consumer by one additional 100-micro-USD request."
+    },
+    {
+      "id": "sent-unknown-provider-ledger-net",
+      "scenario": "database",
+      "path": "database/ledger/0/net_micro_usd",
+      "action": "numeric_delta",
+      "go_minus_rust": 100,
+      "reason": "Canonical net ledger movement includes the one explicitly accepted Go sent_unknown retry settlement."
+    },
+    {
+      "id": "sent-unknown-consumer-ledger-net",
+      "scenario": "database",
+      "path": "database/ledger/1/net_micro_usd",
+      "action": "numeric_delta",
+      "go_minus_rust": -100,
+      "reason": "Canonical net ledger movement includes the one explicitly accepted Go sent_unknown retry charge."
+    },
+    {
+      "id": "sent-unknown-provider-earning-amount",
+      "scenario": "database",
+      "path": "database/provider_earnings/0/amount_micro_usd",
+      "action": "numeric_delta",
+      "go_minus_rust": 100,
+      "reason": "The Go retry produces one additional fixed-price provider earning."
+    },
+    {
+      "id": "sent-unknown-provider-earning-completion",
+      "scenario": "database",
+      "path": "database/provider_earnings/0/completion_tokens",
+      "action": "numeric_delta",
+      "go_minus_rust": 10,
+      "reason": "The Go retry produces the synthetic peer's ten additional completion tokens."
+    },
+    {
+      "id": "sent-unknown-provider-earning-prompt",
+      "scenario": "database",
+      "path": "database/provider_earnings/0/prompt_tokens",
+      "action": "numeric_delta",
+      "go_minus_rust": 3,
+      "reason": "The Go retry produces the synthetic peer's three additional prompt tokens."
+    },
+    {
+      "id": "sent-unknown-provider-earning-count",
+      "scenario": "database",
+      "path": "database/provider_earnings/0/entries",
+      "action": "numeric_delta",
+      "go_minus_rust": 1,
+      "reason": "The Go retry produces exactly one additional provider earning."
+    },
+    {
+      "id": "sent-unknown-settlement-cost",
+      "scenario": "database",
+      "path": "database/settlement_provenance/0/cost_micro_usd",
+      "action": "numeric_delta",
+      "go_minus_rust": 100,
+      "reason": "Alias settlement provenance includes the one explicitly accepted Go retry."
+    },
+    {
+      "id": "sent-unknown-settlement-provider",
+      "scenario": "database",
+      "path": "database/settlement_provenance/0/provider_micro_usd",
+      "action": "numeric_delta",
+      "go_minus_rust": 100,
+      "reason": "Alias settlement provider allocation includes the one explicitly accepted Go retry."
+    },
+    {
+      "id": "sent-unknown-settlement-completion",
+      "scenario": "database",
+      "path": "database/settlement_provenance/0/completion_tokens",
+      "action": "numeric_delta",
+      "go_minus_rust": 10,
+      "reason": "Alias settlement provenance includes ten completion tokens from the Go retry."
+    },
+    {
+      "id": "sent-unknown-settlement-prompt",
+      "scenario": "database",
+      "path": "database/settlement_provenance/0/prompt_tokens",
+      "action": "numeric_delta",
+      "go_minus_rust": 3,
+      "reason": "Alias settlement provenance includes three prompt tokens from the Go retry."
+    },
+    {
+      "id": "sent-unknown-settlement-count",
+      "scenario": "database",
+      "path": "database/settlement_provenance/0/jobs",
+      "action": "numeric_delta",
+      "go_minus_rust": 1,
+      "reason": "Alias settlement provenance includes exactly one additional Go retry job."
+    },
+    {
+      "id": "sent-unknown-usage-cost",
+      "scenario": "database",
+      "path": "database/usage/0/cost_micro_usd",
+      "action": "numeric_delta",
+      "go_minus_rust": 100,
+      "reason": "Alias usage includes the one explicitly accepted Go retry."
+    },
+    {
+      "id": "sent-unknown-usage-completion",
+      "scenario": "database",
+      "path": "database/usage/0/completion_tokens",
+      "action": "numeric_delta",
+      "go_minus_rust": 10,
+      "reason": "Alias usage includes ten completion tokens from the Go retry."
+    },
+    {
+      "id": "sent-unknown-usage-prompt",
+      "scenario": "database",
+      "path": "database/usage/0/prompt_tokens",
+      "action": "numeric_delta",
+      "go_minus_rust": 3,
+      "reason": "Alias usage includes three prompt tokens from the Go retry."
+    },
+    {
+      "id": "sent-unknown-usage-count",
+      "scenario": "database",
+      "path": "database/usage/0/requests",
+      "action": "numeric_delta",
+      "go_minus_rust": 1,
+      "reason": "Alias usage includes exactly one additional Go retry request."
+    },
+    {
+      "id": "sent-unknown-usage-total-completion",
+      "scenario": "database",
+      "path": "database/usage_totals/0/total_completion_tokens",
+      "action": "numeric_delta",
+      "go_minus_rust": 10,
+      "reason": "Usage totals include ten completion tokens from the explicitly accepted Go retry."
+    },
+    {
+      "id": "sent-unknown-usage-total-prompt",
+      "scenario": "database",
+      "path": "database/usage_totals/0/total_prompt_tokens",
+      "action": "numeric_delta",
+      "go_minus_rust": 3,
+      "reason": "Usage totals include three prompt tokens from the explicitly accepted Go retry."
+    },
+    {
+      "id": "sent-unknown-usage-total-count",
+      "scenario": "database",
+      "path": "database/usage_totals/0/total_requests",
+      "action": "numeric_delta",
+      "go_minus_rust": 1,
+      "reason": "Usage totals include exactly one additional Go retry request."
+    },
+    {
+      "id": "rust-attempt-delivery-provenance",
+      "scenario": "database",
+      "path": "database/attempt_delivery*",
+      "action": "presence",
+      "reason": "Rust records protocol-v2 not_sent/queued/on_wire/sent_unknown provenance that Go cannot represent."
+    },
+    {
+      "id": "rust-frozen-job-provenance",
+      "scenario": "database",
+      "path": "database/job_provenance*",
+      "action": "presence",
+      "reason": "Rust additionally freezes pricing and allocation terms on each durable job; canonical balances, ledger, earnings, and usage remain exact comparison surfaces."
+    }
+  ]
+}

@@ -523,6 +523,16 @@ impl LedgerService {
             )
             .await?;
         self.db.bounded(transaction.commit()).await?;
+        crate::fault_checkpoint_async!(
+            ResizeAuthorization,
+            "LedgerService::resize_and_authorize",
+            |error| {
+                LedgerError::CommitOutcomeUnknown {
+                    operation: prepared.operation.key.clone(),
+                    diagnostic: error.to_string().into(),
+                }
+            }
+        );
         Ok(row)
     }
 

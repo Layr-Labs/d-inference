@@ -47,6 +47,15 @@ pub enum DatabaseError {
     },
     #[error("PostgreSQL pool close exceeded {0:?}")]
     CloseTimeout(Duration),
+    #[cfg(feature = "pilot-load")]
+    #[error("pilot balance seed requires a nonempty account and positive amount")]
+    PilotSeedInput,
+    #[cfg(feature = "pilot-load")]
+    #[error("seed pilot balance: {0}")]
+    PilotSeed(#[source] sqlx::Error),
+    #[cfg(feature = "pilot-load")]
+    #[error("seed pilot balance exceeded {0:?}")]
+    PilotSeedTimeout(Duration),
 }
 
 impl Database {
@@ -145,6 +154,47 @@ impl Database {
 
     pub fn compatibility(&self) -> SchemaCompatibility {
         self.compatibility
+    }
+
+    #[cfg(feature = "pilot-load")]
+    #[must_use]
+    pub fn pilot_pool_stats(&self) -> (usize, usize) {
+        (
+            self.pool.size() as usize - self.pool.num_idle(),
+            self.pool.options().get_max_connections() as usize,
+        )
+    }
+
+    #[cfg(feature = "pilot-load")]
+    pub async fn seed_pilot_balance(
+        &self,
+        account_id: &str,
+        amount_micro_usd: i64,
+    ) -> Result<(), DatabaseError> {
+        if account_id.is_empty() || amount_micro_usd <= 0 {
+            return Err(DatabaseError::PilotSeedInput);
+        }
+        timeout(
+            self.operation_timeout,
+            sqlx::query(
+                r#"
+                INSERT INTO public.balances (
+                    account_id,
+                    balance_micro_usd,
+                    withdrawable_micro_usd
+                )
+                VALUES ($1, $2, $2)
+                ON CONFLICT (account_id) DO NOTHING
+                "#,
+            )
+            .bind(account_id)
+            .bind(amount_micro_usd)
+            .execute(&self.pool),
+        )
+        .await
+        .map_err(|_| DatabaseError::PilotSeedTimeout(self.operation_timeout))?
+        .map_err(DatabaseError::PilotSeed)?;
+        Ok(())
     }
 
     pub async fn begin_owned(&self) -> Result<OwnedTransaction<'_>, DatabaseError> {

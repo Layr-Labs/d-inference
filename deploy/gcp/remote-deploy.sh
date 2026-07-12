@@ -2,10 +2,11 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck disable=SC1091 # SCRIPT_DIR is resolved from this script's absolute path.
 source "$SCRIPT_DIR/deploy-common.sh"
 
-[[ $# -eq 5 ]] || {
-  echo "usage: remote-deploy.sh IMAGE SELECTOR EXPECTED_COMMIT GO_FALLBACK_IMAGE ADOPT_LEGACY" >&2
+[[ $# -eq 5 || $# -eq 6 ]] || {
+  echo "usage: remote-deploy.sh IMAGE SELECTOR EXPECTED_COMMIT GO_FALLBACK_IMAGE ADOPT_LEGACY [CUTOVER_ENVIRONMENT_ID]" >&2
   exit 64
 }
 
@@ -14,6 +15,7 @@ CANDIDATE_SELECTOR=$2
 EXPECTED_COMMIT=$3
 GO_FALLBACK_INPUT=$4
 ADOPT_LEGACY=$5
+CUTOVER_ENVIRONMENT_ID=${6:-$(printf '%064d' 0)}
 readonly ENV_FILE=/etc/d-inference/env
 readonly SECRET_DIR=/etc/d-inference/secrets
 readonly DATA_MOUNT=/mnt/disks/userdata
@@ -27,6 +29,8 @@ validate_image_ref "$GO_FALLBACK_INPUT" || fail "invalid pinned Go fallback imag
 [[ "$EXPECTED_COMMIT" =~ ^[A-Fa-f0-9]{7,64}$ ]] || fail "invalid expected commit"
 [[ "$ADOPT_LEGACY" == "true" || "$ADOPT_LEGACY" == "false" ]] ||
   fail "ADOPT_LEGACY must be true or false"
+[[ "$CUTOVER_ENVIRONMENT_ID" =~ ^[a-f0-9]{64}$ ]] ||
+  fail "CUTOVER_ENVIRONMENT_ID must be a lowercase SHA-256"
 [[ -r "$ENV_FILE" ]] || fail "coordinator env file is unavailable"
 [[ -d "$SECRET_DIR" ]] || fail "coordinator secret directory is unavailable"
 mountpoint -q "$DATA_MOUNT" || fail "persistent state disk is not mounted"
@@ -43,10 +47,16 @@ AUTH_CONFIG=$(mktemp)
 make_curl_auth_config "$AUTH_CONFIG" "$ADMIN_KEY" ||
   fail "admin key cannot be represented safely"
 unset ADMIN_KEY
-trap 'rm -f "$AUTH_CONFIG"' EXIT
+READ_ONLY_KEY=$(read_env_value "$ENV_FILE" EIGENINFERENCE_READ_ONLY_KEY) ||
+  fail "read-only operations key is missing from coordinator env file"
+READ_ONLY_AUTH_CONFIG=$(mktemp)
+make_curl_auth_config "$READ_ONLY_AUTH_CONFIG" "$READ_ONLY_KEY" ||
+  fail "read-only operations key cannot be represented safely"
+unset READ_ONLY_KEY
+trap 'rm -f "$AUTH_CONFIG" "$READ_ONLY_AUTH_CONFIG"' EXIT
 
 refresh_auth_config() {
-  local admin_key auth_temporary
+  local admin_key read_only_key auth_temporary read_temporary
   admin_key=$(read_env_value "$ENV_FILE" EIGENINFERENCE_ADMIN_KEY) ||
     fail "admin key is missing from restored coordinator env file" ||
     return 1
@@ -58,6 +68,17 @@ refresh_auth_config() {
   fi
   unset admin_key
   mv "$auth_temporary" "$AUTH_CONFIG"
+  read_only_key=$(read_env_value "$ENV_FILE" EIGENINFERENCE_READ_ONLY_KEY) ||
+    fail "read-only operations key is missing from restored coordinator env file" ||
+    return 1
+  read_temporary=$(mktemp)
+  if ! make_curl_auth_config "$read_temporary" "$read_only_key"; then
+    unset read_only_key
+    rm -f "$read_temporary"
+    return 1
+  fi
+  unset read_only_key
+  mv "$read_temporary" "$READ_ONLY_AUTH_CONFIG"
 }
 
 registry_login() {
@@ -183,7 +204,7 @@ drain_current_owner() {
 wait_current_quiescence() {
   [[ "$OLD_RUNNING" == "true" ]] || return 0
   log "Waiting for detailed coordinator quiescence"
-  if wait_for_quiescence "$AUTH_CONFIG" "${DINF_QUIESCENCE_ATTEMPTS:-120}" \
+  if wait_for_quiescence "$READ_ONLY_AUTH_CONFIG" "${DINF_QUIESCENCE_ATTEMPTS:-120}" \
     "${DINF_POLL_INTERVAL_SECONDS:-5}"; then
     return 0
   fi
@@ -282,8 +303,8 @@ write_candidate_file() {
   local temporary
   temporary="${CANDIDATE_FILE}.tmp.$$"
   umask 077
-  printf 'DINF_IMAGE=%s\nDINF_COORDINATOR_BINARY=%s\n' \
-    "$image" "$selector" >"$temporary" ||
+  printf 'DINF_IMAGE=%s\nDINF_COORDINATOR_BINARY=%s\nDINF_CUTOVER_ENVIRONMENT_ID=%s\n' \
+    "$image" "$selector" "$CUTOVER_ENVIRONMENT_ID" >"$temporary" ||
     return 1
   mv "$temporary" "$CANDIDATE_FILE"
 }
@@ -301,6 +322,20 @@ start_candidate() {
 validate_running_candidate() {
   wait_for_candidate "$EXPECTED_COMMIT" "$PREVIOUS_PROVIDERS" "$AUTH_CONFIG" \
     "${DINF_CANDIDATE_ATTEMPTS:-60}" "${DINF_POLL_INTERVAL_SECONDS:-5}" ||
+    return 1
+  local configured_image labeled_image
+  configured_image=$(docker_cmd inspect --format '{{.Config.Image}}' \
+    d-inference-coordinator) ||
+    return 1
+  labeled_image=$(docker_cmd inspect --format \
+    '{{index .Config.Labels "com.darkbloom.image-digest"}}' \
+    d-inference-coordinator) ||
+    return 1
+  [[ "$configured_image" == "$CANDIDATE_IMAGE" &&
+    "$labeled_image" == "$CANDIDATE_IMAGE" ]] ||
+    return 1
+  curl_cmd --silent --show-error --fail http://127.0.0.1:8080/health |
+    jq -e --arg digest "$CANDIDATE_IMAGE" '.image_digest == $digest' >/dev/null ||
     return 1
   verify_state_mount d-inference-coordinator || return 1
   verify_container_selector "$CANDIDATE_SELECTOR" d-inference-coordinator ||
@@ -352,7 +387,7 @@ handoff_failed_candidate() {
 
 wait_failed_candidate_quiescence() {
   failed_candidate_running || return 0
-  wait_for_quiescence "$AUTH_CONFIG" "${DINF_QUIESCENCE_ATTEMPTS:-120}" \
+  wait_for_quiescence "$READ_ONLY_AUTH_CONFIG" "${DINF_QUIESCENCE_ATTEMPTS:-120}" \
     "${DINF_POLL_INTERVAL_SECONDS:-5}"
 }
 
@@ -410,5 +445,6 @@ DINF_IMAGE=$CANDIDATE_IMAGE
 DINF_COORDINATOR_BINARY=$CANDIDATE_SELECTOR
 DINF_GO_FALLBACK_IMAGE=$([[ "$CANDIDATE_SELECTOR" == "go" ]] && printf '%s' "$CANDIDATE_IMAGE" || printf '%s' "$GO_FALLBACK_IMAGE")
 DINF_PREVIOUS_GO_FALLBACK_IMAGE=$GO_FALLBACK_IMAGE
+DINF_CUTOVER_ENVIRONMENT_ID=$CUTOVER_ENVIRONMENT_ID
 EOF
 log "Candidate passed all deployment checks; awaiting metadata commit"

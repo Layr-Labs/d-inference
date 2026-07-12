@@ -111,7 +111,7 @@ impl RecoveryService {
                         jobs.input_micro_usd_per_million,
                         jobs.output_micro_usd_per_million,
                         jobs.provider_share_ppm,
-                        jobs.referral_share_ppm,
+                        jobs.referral_share_ppm::INTEGER AS referral_share_ppm,
                         jobs.consumer_key_hash,
                         attempts.version AS attempt_version
                     FROM rust_coord.inference_jobs AS jobs

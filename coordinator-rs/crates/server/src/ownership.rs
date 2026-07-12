@@ -50,6 +50,9 @@ pub enum OwnershipError {
     },
     #[error("coordinator ownership lost")]
     Lost,
+    #[cfg(feature = "fault-injection")]
+    #[error("injected ownership fault at {0}")]
+    InjectedFault(&'static str),
     #[error("coordinator ownership monitor task failed: {0}")]
     MonitorTask(#[source] tokio::task::JoinError),
 }
@@ -262,6 +265,19 @@ impl CoordinatorOwnership {
             abandon_connection(connection, operation_timeout, false).await;
             return Err(error);
         }
+        #[cfg(feature = "fault-injection")]
+        if let Err(error) = crate::fault::checkpoint_async(
+            crate::fault::FaultPoint::MigrationLock,
+            file!(),
+            module_path!(),
+            line!(),
+            "CoordinatorOwnership::acquire",
+        )
+        .await
+        {
+            abandon_connection(connection, operation_timeout, true).await;
+            return Err(OwnershipError::InjectedFault(error.point().as_str()));
+        }
 
         let activated = match bounded_query(
             operation_timeout,
@@ -291,7 +307,7 @@ impl CoordinatorOwnership {
         }
 
         let context = if enabled {
-            let owner_id: Arc<str> = Uuid::new_v4().to_string().into();
+            let owner_id: Arc<str> = format!("rust:{}", Uuid::new_v4()).into();
             let epoch = match bounded_query(
                 operation_timeout,
                 "advance coordinator ownership epoch",
@@ -455,6 +471,17 @@ async fn monitor_connection(
                 return clean_release(connection, &context, &status, operation_timeout).await;
             }
             _ = ticker.tick() => {
+                #[cfg(feature = "fault-injection")]
+                if let Err(error) = crate::fault::checkpoint_async(
+                    crate::fault::FaultPoint::OwnershipConnectionLoss,
+                    file!(),
+                    module_path!(),
+                    line!(),
+                    "monitor_connection",
+                ).await {
+                    status.mark_lost();
+                    return Err(OwnershipError::InjectedFault(error.point().as_str()));
+                }
                 let ping = bounded_query(
                     operation_timeout,
                     "monitor coordinator ownership connection",

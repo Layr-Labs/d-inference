@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "quick": {
+      "description": "Pull-request pilot gate using paired synthetic protocol-v1 and protocol-v2 peers.",
+      "seed": 901,
+      "duration_seconds": 120,
+      "soak": false,
+      "base_requests": 20,
+      "request_multiplier": 10,
+      "chunk_multiplier": 10,
+      "websocket_sessions": 1000,
+      "concurrency_ramp": [1, 4, 16, 32],
+      "slow_consumer_fraction": 0.1,
+      "slow_consumer_delay_ms": 25,
+      "required_scenarios": [
+        "health",
+        "models_authorized",
+        "models_unauthorized",
+        "models_invalid_auth",
+        "chat_unauthorized",
+        "chat_stream",
+        "chat_nonstream",
+        "chat_alias_stream",
+        "unknown_model",
+        "malformed_json",
+        "route_not_found",
+        "method_not_allowed",
+        "session_replacement",
+        "hedge",
+        "sent_unknown"
+      ],
+      "stage_budgets_ms": {
+        "headers": {"p50": 500, "p95": 2000, "p99": 5000, "max": 10000},
+        "ttft": {"p50": 750, "p95": 3000, "p99": 7000, "max": 15000},
+        "body": {"p50": 1500, "p95": 5000, "p99": 10000, "max": 20000},
+        "total": {"p50": 1500, "p95": 5000, "p99": 10000, "max": 20000}
+      },
+      "resource_bounds": {
+        "rss_growth_bytes": 268435456,
+        "tasks_growth": 256,
+        "fd_growth": 128,
+        "mailbox_utilization": 0.9,
+        "database_pool_utilization": 0.9
+      },
+      "regression_thresholds": {
+        "latency_percent": 20,
+        "throughput_percent": 10,
+        "prediction_error_percent": 20,
+        "resource_percent": 20
+      },
+      "require_billing_snapshot": true,
+      "require_prediction_samples": true,
+      "require_resource_counters": true,
+      "require_peer_counters": true,
+      "require_regression_baseline": true
+    },
+    "scheduled": {
+      "description": "Thirty-minute isolated synthetic pilot soak.",
+      "seed": 901,
+      "duration_seconds": 1800,
+      "soak": true,
+      "base_requests": 100,
+      "request_multiplier": 10,
+      "chunk_multiplier": 10,
+      "websocket_sessions": 1000,
+      "concurrency_ramp": [1, 8, 32, 64, 128],
+      "slow_consumer_fraction": 0.2,
+      "slow_consumer_delay_ms": 100,
+      "required_scenarios": [
+        "health",
+        "models_authorized",
+        "models_unauthorized",
+        "models_invalid_auth",
+        "chat_unauthorized",
+        "chat_stream",
+        "chat_nonstream",
+        "chat_alias_stream",
+        "unknown_model",
+        "malformed_json",
+        "route_not_found",
+        "method_not_allowed",
+        "session_replacement",
+        "hedge",
+        "sent_unknown"
+      ],
+      "stage_budgets_ms": {
+        "headers": {"p50": 500, "p95": 2000, "p99": 5000, "max": 10000},
+        "ttft": {"p50": 750, "p95": 3000, "p99": 7000, "max": 15000},
+        "body": {"p50": 1500, "p95": 5000, "p99": 10000, "max": 20000},
+        "total": {"p50": 1500, "p95": 5000, "p99": 10000, "max": 20000}
+      },
+      "resource_bounds": {
+        "rss_growth_bytes": 536870912,
+        "tasks_growth": 512,
+        "fd_growth": 256,
+        "mailbox_utilization": 0.9,
+        "database_pool_utilization": 0.9
+      },
+      "regression_thresholds": {
+        "latency_percent": 15,
+        "throughput_percent": 8,
+        "prediction_error_percent": 15,
+        "resource_percent": 15
+      },
+      "require_billing_snapshot": true,
+      "require_prediction_samples": true,
+      "require_resource_counters": true,
+      "require_peer_counters": true,
+      "require_regression_baseline": true
+    },
+    "swift-hardware": {
+      "description": "Explicit macOS Apple-Silicon provider-v2 pilot.",
+      "seed": 901,
+      "duration_seconds": 1800,
+      "soak": true,
+      "base_requests": 20,
+      "request_multiplier": 10,
+      "chunk_multiplier": 10,
+      "websocket_sessions": 1,
+      "concurrency_ramp": [1, 2, 4, 8],
+      "slow_consumer_fraction": 0.1,
+      "slow_consumer_delay_ms": 100,
+      "required_scenarios": [
+        "health",
+        "models_authorized",
+        "models_unauthorized",
+        "models_invalid_auth",
+        "chat_unauthorized",
+        "chat_stream",
+        "chat_nonstream",
+        "chat_alias_stream",
+        "unknown_model",
+        "malformed_json",
+        "route_not_found",
+        "method_not_allowed"
+      ],
+      "stage_budgets_ms": {
+        "headers": {"p50": 5000, "p95": 15000, "p99": 30000, "max": 60000},
+        "ttft": {"p50": 10000, "p95": 30000, "p99": 60000, "max": 120000},
+        "body": {"p50": 30000, "p95": 90000, "p99": 180000, "max": 300000},
+        "total": {"p50": 30000, "p95": 90000, "p99": 180000, "max": 300000}
+      },
+      "resource_bounds": {
+        "rss_growth_bytes": 2147483648,
+        "tasks_growth": 512,
+        "fd_growth": 256,
+        "mailbox_utilization": 0.9,
+        "database_pool_utilization": 0.9
+      },
+      "regression_thresholds": {
+        "latency_percent": 20,
+        "throughput_percent": 10,
+        "prediction_error_percent": 20,
+        "resource_percent": 20
+      },
+      "require_billing_snapshot": true,
+      "require_prediction_samples": true,
+      "require_resource_counters": true,
+      "require_peer_counters": false,
+      "require_regression_baseline": false
+    }
+  }
+}

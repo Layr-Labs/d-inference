@@ -134,6 +134,10 @@ func main() {
 		logger.Error("refusing unsafe Go rollback", "error", err)
 		os.Exit(1)
 	}
+	if err := seedPilotLoadState(st); err != nil {
+		logger.Error("failed to seed isolated pilot-load state", "error", err)
+		os.Exit(1)
+	}
 
 	// ActivateCoordinatorOwnership holds the global single-active lock, so every
 	// unfinalized reservation visible before admission starts belongs to a dead
@@ -852,7 +856,7 @@ func main() {
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{
-		Addr:    ":" + cfg.ServerConfig.Port,
+		Addr:    pilotListenAddress(cfg.ServerConfig.Port),
 		Handler: srv.Handler(),
 		// ReadHeaderTimeout bounds the request-header read phase independently of
 		// the body, closing the slow-header (Slowloris) DoS window: a client that

@@ -223,14 +223,14 @@ func TestPostgresRollbackGuardRejectsUnresolvedRustState(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := backend.CheckRollbackSafe(ctx); err != nil {
-		t.Fatalf("terminal Rust schema v4 state rejected: %v", err)
+		t.Fatalf("terminal Rust schema v5 state rejected: %v", err)
 	}
 	if _, err := backend.pool.Exec(ctx,
 		`CREATE TABLE rust_coord.unrecognized_work (id BIGINT PRIMARY KEY)`); err != nil {
 		t.Fatal(err)
 	}
 	if err := backend.CheckRollbackSafe(ctx); err == nil ||
-		!strings.Contains(err.Error(), "unknown Rust schema v4 shape") {
+		!strings.Contains(err.Error(), "unknown Rust schema v5 shape") {
 		t.Fatalf("unknown Rust relation guard error = %v", err)
 	}
 	if _, err := backend.pool.Exec(ctx, `
@@ -246,12 +246,12 @@ func TestPostgresRollbackGuardRejectsUnresolvedRustState(t *testing.T) {
 		ALTER TABLE rust_coord.inference_jobs DROP COLUMN future_shape;
 		INSERT INTO rust_coord.schema_versions (
 			version, minimum_public_schema_version, maximum_public_schema_version
-		) VALUES (5, 7, 7)`); err != nil {
+		) VALUES (6, 8, 8)`); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_, _ = backend.pool.Exec(context.Background(),
-			`DELETE FROM rust_coord.schema_versions WHERE version = 5`)
+			`DELETE FROM rust_coord.schema_versions WHERE version = 6`)
 	})
 	if err := backend.CheckRollbackSafe(ctx); err == nil ||
 		!strings.Contains(err.Error(), "unsupported Rust schema history") {

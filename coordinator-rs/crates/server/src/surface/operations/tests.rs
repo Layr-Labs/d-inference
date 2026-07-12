@@ -48,6 +48,7 @@ use schema_seed::seed_service_schema;
 
 const PUBLIC_TOKEN: &str = "operations-public";
 const ADMIN_TOKEN: &str = "operations-admin";
+const READ_ONLY_TOKEN: &str = "operations-read-only";
 const RELEASE_TOKEN: &str = "operations-release";
 const PUBLISHING_TOKEN: &str = "operations-publishing";
 const MDM_TOKEN: &str = "operations-mdm";
@@ -65,6 +66,31 @@ async fn routes_enforce_auth_and_preserve_release_hash_and_404_semantics() {
         )]))
         .await;
         let app = test.app(settings(&artifacts.base_url), 16, None);
+
+        let admin_cannot_read_ops = call(
+            &app,
+            Method::GET,
+            "/v1/admin/utilization",
+            Some(ADMIN_TOKEN),
+            None,
+        )
+        .await;
+        assert_eq!(admin_cannot_read_ops.status(), StatusCode::FORBIDDEN);
+        let utilization = response_json(
+            call(
+                &app,
+                Method::GET,
+                "/v1/admin/utilization",
+                Some(READ_ONLY_TOKEN),
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            utilization["protocol"],
+            json!({"v1": 0, "v2": 0, "v2_inference_eligible": 0})
+        );
 
         let install = call(&app, Method::GET, "/install.sh", None, None).await;
         assert_eq!(install.status(), StatusCode::OK);
@@ -534,7 +560,7 @@ async fn telemetry_privacy_drain_mdm_and_encrypted_export_are_enforced() {
                 &sink_app,
                 Method::GET,
                 "/v1/admin/metrics",
-                Some(ADMIN_TOKEN),
+                Some(READ_ONLY_TOKEN),
                 None,
             )
             .await,
@@ -562,6 +588,12 @@ async fn telemetry_privacy_drain_mdm_and_encrypted_export_are_enforced() {
             metrics["gauges"]["migration_checksum_valid"],
             serde_json::Value::Bool(true)
         );
+        let retained_after_read: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM rust_coord.telemetry_events")
+                .fetch_one(&test.pool)
+                .await
+                .expect("count durable telemetry after read-only metrics");
+        assert_eq!(retained_after_read, retained);
         sink.stop();
 
         assert_eq!(
@@ -794,6 +826,7 @@ impl TestDatabase {
 fn auth() -> OperationsAuth {
     OperationsAuth {
         public: PublicAuth::Bearer(ExactBearer::required(PUBLIC_TOKEN).expect("public auth")),
+        read_only: ExactBearer::required(READ_ONLY_TOKEN).expect("read-only auth"),
         admin: ExactBearer::required(ADMIN_TOKEN).expect("admin auth"),
         release: ExactBearer::required(RELEASE_TOKEN).expect("release auth"),
         publishing: PublishingAuth { enabled: true },

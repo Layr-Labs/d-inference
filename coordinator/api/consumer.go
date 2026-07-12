@@ -22,6 +22,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -3006,12 +3007,19 @@ func microToUSD(micro int64) float64 { return float64(micro) / 1_000_000 }
 // draining=true for observability, but the status code stays 200.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, types.HealthResponse{
-		Status:      "ok",
-		Draining:    s.IsDraining(),
-		Providers:   s.registry.ProviderCount(),
-		Version:     BuildVersion,
-		BuildCommit: BuildCommit,
-		BuildDate:   BuildDate,
+		Status:           "ok",
+		Draining:         s.IsDraining(),
+		Providers:        s.registry.ProviderCount(),
+		Version:          BuildVersion,
+		BuildCommit:      BuildCommit,
+		BuildDate:        BuildDate,
+		ImageDigest:      os.Getenv("EIGENINFERENCE_IMAGE_DIGEST"),
+		ListenerIdentity: os.Getenv("EIGENINFERENCE_LISTENER_IDENTITY"),
+		CoordinatorOwnershipID: os.Getenv(
+			"EIGENINFERENCE_COORDINATOR_OWNERSHIP_ID",
+		),
+		CoordinatorAppID: os.Getenv("EIGENINFERENCE_PRIVY_APP_ID"),
+		EnvironmentID:    os.Getenv("EIGENINFERENCE_ENVIRONMENT_ID"),
 	})
 }
 

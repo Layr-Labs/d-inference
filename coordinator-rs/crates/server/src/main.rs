@@ -39,6 +39,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let config = Config::from_env()?;
+    #[cfg(feature = "pilot-load")]
+    require_pilot_load_loopback(config.bind_address)?;
     if command == OperatorCommand::ConfigCheck {
         println!(
             "{}",
@@ -177,6 +179,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         release_result?;
         return Ok(());
     }
+
+    #[cfg(feature = "pilot-load")]
+    seed_pilot_load_balance(&database).await?;
 
     let listener = match tokio::net::TcpListener::bind(config.bind_address).await {
         Ok(listener) => listener,
@@ -401,4 +406,40 @@ async fn wait_for_pilot_exit(pilot: Option<PilotHandle>) {
             return;
         }
     }
+}
+
+#[cfg(feature = "pilot-load")]
+fn require_pilot_load_loopback(address: std::net::SocketAddr) -> Result<(), &'static str> {
+    if address.ip().is_loopback() {
+        Ok(())
+    } else {
+        Err("pilot-load coordinator bind address must be loopback")
+    }
+}
+
+#[cfg(all(test, feature = "pilot-load"))]
+mod pilot_load_bind_tests {
+    use super::require_pilot_load_loopback;
+
+    #[test]
+    fn pilot_load_binary_rejects_non_loopback_bind_addresses() {
+        assert!(require_pilot_load_loopback("127.0.0.1:18081".parse().expect("IPv4")).is_ok());
+        assert!(require_pilot_load_loopback("[::1]:18081".parse().expect("IPv6")).is_ok());
+        assert!(require_pilot_load_loopback("0.0.0.0:18081".parse().expect("wildcard")).is_err());
+    }
+}
+
+#[cfg(feature = "pilot-load")]
+async fn seed_pilot_load_balance(database: &Database) -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var("EIGENINFERENCE_RUST_PILOT_LOAD_SEED_ENABLED").as_deref() != Ok("true") {
+        return Ok(());
+    }
+    let account_id = std::env::var("EIGENINFERENCE_RUST_PILOT_FUNDING_ACCOUNT_ID")
+        .map_err(|_| "pilot-load funding account is required")?;
+    let amount = std::env::var("EIGENINFERENCE_RUST_PILOT_FUNDING_MICRO_USD")
+        .map_err(|_| "pilot-load funding amount is required")?
+        .parse::<i64>()
+        .map_err(|_| "pilot-load funding amount must be an integer")?;
+    database.seed_pilot_balance(&account_id, amount).await?;
+    Ok(())
 }

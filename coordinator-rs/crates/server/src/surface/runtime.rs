@@ -75,6 +75,7 @@ impl FullSurfaceState {
 
         let operations_auth = OperationsAuth {
             public: PublicAuth::Open,
+            read_only: ExactBearer::required(&config.read_only_key)?,
             admin: ExactBearer::required(&config.admin_key)?,
             release: ExactBearer::required(&config.release_key)?,
             publishing: PublishingAuth {

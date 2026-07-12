@@ -5,6 +5,16 @@ This runbook covers the Rust migration dashboards and monitors in
 handoff and rollback remain human-operated procedures in
 `coordinator-deploy.md`.
 
+Cutover evidence is collected by the GET-only, explicit-site client in
+`scripts/cutover_readiness/clients.py` under
+[`coordinator-cutover.md`](coordinator-cutover.md). A missing Datadog site,
+empty series, stale snapshot, or threshold ambiguity blocks the gate; it is not
+permission to query another site or waive the signal.
+The collector cannot accept a query file override: canary/production query
+definitions are repository-pinned and their hashes are signed into evidence.
+Coordinator metrics, utilization, and quiescence require the dedicated
+read-only operations bearer; the admin bearer is intentionally rejected.
+
 ## Signal contract
 
 The Rust process sends custom metrics to the local Datadog Agent over

@@ -13,7 +13,12 @@ Runbooks are written for operators. For architecture and security context, see t
 
 | Runbook | Scope | Audience |
 |---|---|---|
-| [`coordinator-deploy.md`](coordinator-deploy.md) | Build and deploy the coordinator (Go) and provider CLI (Swift) | Infra / release engineer |
+| [`coordinator-deploy.md`](coordinator-deploy.md) | Build and serially deploy the dual Go/Rust coordinator image | Infra / release engineer |
+| [`coordinator-cutover.md`](coordinator-cutover.md) | Evidence gates for pilot, canaries, cutover, bakes, and retirement | Release / security / on-call |
+| [`coordinator-incident-response.md`](coordinator-incident-response.md) | Stop and recover a failed Rust migration gate | Incident commander / on-call |
+| [`coordinator-ownership-matrix.md`](coordinator-ownership-matrix.md) | Separate evidence, approval, mutation, and incident ownership | Engineering / security |
+| [`go-coordinator-retirement.md`](go-coordinator-retirement.md) | Eventual post-90-day Go retirement checklist | Coordinator / release owners |
+| [`rust-coordinator-observability.md`](rust-coordinator-observability.md) | Rust migration signals and diagnostics | On-call / observability |
 | [`dev-environment.md`](dev-environment.md) | Stand up and operate the GCP dev environment | Infra engineer |
 | [`model-migration.md`](model-migration.md) | Zero-downtime model alias / build cutover | Model ops / on-call |
 | [`state-export.md`](state-export.md) | Extract and rehydrate sealed coordinator state (`DAR-70`) | Infra engineer (human-only) |

@@ -135,6 +135,11 @@ impl TerminalDispositionStore {
         }
         candidate.entries.push_back(record.clone());
         write_json_atomic(&self.path, &candidate)?;
+        crate::fault_checkpoint_sync!(
+            TerminalCacheFsync,
+            "TerminalDispositionStore::finalize",
+            |error| TerminalStoreError::InjectedFault(error.point().as_str())
+        );
         *state = candidate;
         Ok(TerminalResolution::Finalized(record.disposition))
     }
@@ -227,6 +232,10 @@ pub enum TerminalStoreError {
     /// On-disk schema is incompatible.
     #[error("unsupported terminal disposition store version {0}")]
     UnsupportedVersion(u32),
+    /// Deliberate test-only persistence failure.
+    #[cfg(feature = "fault-injection")]
+    #[error("injected terminal-store fault at {0}")]
+    InjectedFault(&'static str),
     /// Durable cache operation failed.
     #[error(transparent)]
     Durable(#[from] DurableFileError),

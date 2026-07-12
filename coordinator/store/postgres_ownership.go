@@ -93,7 +93,7 @@ func (s *PostgresStore) ActivateCoordinatorOwnership(ctx context.Context, enable
 		return nil
 	}
 
-	s.ownershipID = uuid.NewString()
+	s.ownershipID = "go:" + uuid.NewString()
 	if err := ownershipConn.QueryRow(ctx,
 		`INSERT INTO coordinator_ownership (singleton, epoch, owner_id, acquired_at)
 		 VALUES (TRUE, 1, $1, NOW())

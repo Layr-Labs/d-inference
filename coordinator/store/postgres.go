@@ -75,6 +75,8 @@ func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
 	// also named rust_coord into that schema after migration 3. Pin serving to
 	// public unless an isolated test/deployment explicitly supplies a path.
 	pinDefaultPostgresSchema(cfg.ConnConfig.RuntimeParams)
+	cfg.ConnConfig.RuntimeParams["application_name"] =
+		"darkbloom-go-coordinator:" + uuid.NewString()
 	poolFence := &poolOwnershipFence{}
 	cfg.BeforeAcquire = poolFence.beforeAcquire
 	cfg.AfterRelease = poolFence.afterRelease

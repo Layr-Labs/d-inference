@@ -4,18 +4,19 @@ use sqlx::PgPool;
 use thiserror::Error;
 use tokio::time::timeout;
 
-pub const MINIMUM_PUBLIC_SCHEMA_VERSION: i64 = 6;
-pub const MAXIMUM_PUBLIC_SCHEMA_VERSION: i64 = 6;
+pub const MINIMUM_PUBLIC_SCHEMA_VERSION: i64 = 7;
+pub const MAXIMUM_PUBLIC_SCHEMA_VERSION: i64 = 7;
 pub const MINIMUM_RUST_SCHEMA_VERSION: i64 = 4;
-pub const MAXIMUM_RUST_SCHEMA_VERSION: i64 = 4;
+pub const MAXIMUM_RUST_SCHEMA_VERSION: i64 = 5;
 
-const PUBLIC_MIGRATION_CHECKSUMS: [&str; 6] = [
+const PUBLIC_MIGRATION_CHECKSUMS: [&str; 7] = [
     "f565ec9ebf5327ece27cb2220867e157a805e93ae5ba4e782fed47ae183583d6",
     "19094e442b43df4ac4e45cc79a3a12c1c627ce75c3a189a48963afd72d6a5503",
     "38f7d7db044465256bc841eb545546e35c115ea0af74401637d928672046f216",
     "9a76eb79c49a4ba8bf576eb07cd8e6c9386641b9e4978cbaffa781321296b3d5",
     "c4a118c607d2d0951d644ecc9db3621d31dcf7a4aecdb9485f7b8ecf4533b129",
     "f2e426e4d4bd1d34c908ab724b43d89c2bcabf422323902de321fda83ce4a5a5",
+    "eee91c778786161b6dac8c070c82a130c4c96c98f2a0bb96f28876b864cdb62d",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,6 +50,9 @@ pub enum SchemaError {
     },
     #[error("public schema migration checksum mismatch at version {version}")]
     PublicChecksumMismatch { version: i64 },
+    #[cfg(feature = "fault-injection")]
+    #[error("injected schema fault at {0}")]
+    InjectedFault(&'static str),
     #[error(
         "Rust schema migration history is not contiguous: minimum={minimum}, maximum={maximum}, count={count}"
     )]
@@ -184,6 +188,9 @@ async fn validate_public_checksums(pool: &PgPool) -> Result<(), SchemaError> {
     .fetch_all(pool)
     .await
     .map_err(SchemaError::Inspect)?;
+    crate::fault_checkpoint_async!(MigrationChecksum, "validate_public_checksums", |error| {
+        SchemaError::InjectedFault(error.point().as_str())
+    });
     for (index, expected) in PUBLIC_MIGRATION_CHECKSUMS.iter().enumerate() {
         let version = i64::try_from(index + 1).expect("migration catalog length fits i64");
         let valid = rows.get(index).is_some_and(|(found_version, checksum)| {

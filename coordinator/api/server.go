@@ -1794,6 +1794,7 @@ func (s *Server) routes() {
 
 	// Health check — no auth required.
 	s.mux.HandleFunc("GET /health", s.handleHealth)
+	s.registerPilotCounterRoutes()
 
 	// Readiness probe — no auth required. Reports graceful-drain state so load
 	// balancers and the deploy script treat a draining coordinator as not-ready
@@ -2691,6 +2692,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 				"method:" + r.Method,
 				"path:" + pathLabel,
 				"status_code:" + statusStr,
+				"binary:go",
 			}
 			s.dd.Incr("http.requests", tags)
 			s.dd.Histogram("http.latency_ms", float64(dur.Milliseconds()), tags)

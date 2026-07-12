@@ -64,12 +64,27 @@ fn routes_for_mode_with_admission(
             .route("/v1/models", get(models))
             .route("/v1/chat/completions", post(chat_completions))
             .route("/ws/provider", get(provider_websocket))
+            .fallback(not_found)
+            .method_not_allowed_fallback(not_found)
             .with_state(PilotHttpState { pilot, admission }),
         PilotRouteMode::FullSurface => Router::new()
             .route("/v1/encryption-key", get(encryption_key))
             .route("/ws/provider", get(provider_websocket))
             .with_state(PilotHttpState { pilot, admission }),
     }
+}
+
+async fn not_found(request: Request) -> ApiError {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        "invalid_request_error",
+        "invalid_request_error",
+        format!(
+            "endpoint {} {} is not implemented",
+            request.method(),
+            request.uri().path()
+        ),
+    )
 }
 
 async fn encryption_key(
@@ -94,10 +109,15 @@ async fn models(
         .catalog()
         .models()
         .map(|model| Model {
-            id: Arc::from(model.id.as_str()),
+            id: model
+                .aliases
+                .iter()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| Arc::from(model.id.as_str())),
             object: "model",
             created: 0,
-            owned_by: "darkbloom",
+            owned_by: "eigeninference",
         })
         .collect();
     Ok(Json(ModelList {
@@ -130,7 +150,7 @@ async fn chat_completions(
         .iter()
         .next()
         .map_or(model.id.as_str(), AsRef::as_ref);
-    let (model, output_mode, maximum_output_tokens, traits, demand) =
+    let (model, public_model, output_mode, maximum_output_tokens, traits, demand) =
         parse_request_facts(&input.plaintext, &model.id, alias)?;
     let response_permit = pilot.try_reserve_response().map_err(|error| {
         pilot.telemetry().emit(PilotTelemetryEvent::RequestRejected);
@@ -149,7 +169,11 @@ async fn chat_completions(
             )
         })?,
         billing,
-        controls: crate::pilot::PilotRequestControls::default(),
+        controls: crate::pilot::PilotRequestControls {
+            api_key_public_model: public_model,
+            api_key_concrete_model: Arc::from(model.as_str()),
+            ..crate::pilot::PilotRequestControls::default()
+        },
         plaintext: input.plaintext,
         model,
         output_mode,

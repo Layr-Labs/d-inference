@@ -629,6 +629,7 @@ func validateRustSchemaHistory(ctx context.Context, queryer schemaQueryer) (int6
 		{2, 4, 4},
 		{3, 5, 5},
 		{4, 6, 6},
+		{5, 7, 7},
 	}
 	if len(got) < 2 || len(got) > len(all) {
 		return 0, fmt.Errorf("rust_coord schema history = %v, want a supported prefix of %v", got, all)

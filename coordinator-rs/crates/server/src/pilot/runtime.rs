@@ -319,6 +319,16 @@ impl PilotHandle {
     }
 
     #[must_use]
+    pub fn provider_protocol_counts(&self) -> (usize, usize, usize) {
+        self.directory.protocol_counts()
+    }
+
+    #[must_use]
+    pub fn provider_trust_counts(&self) -> (usize, usize, usize) {
+        self.directory.trust_counts()
+    }
+
+    #[must_use]
     pub fn active_request_count(&self) -> usize {
         self.request_table.len()
     }
@@ -739,7 +749,7 @@ impl PilotRuntime {
             catalog,
             consumer_credentials: ConsumerCredential::configured(
                 &config.consumer_credentials,
-                config.trust_floor == crate::trust::TrustFloor::PUBLIC,
+                static_paid_consumer_mode(config),
             )?,
             input_budget: Arc::new(ByteBudget::new(
                 config.input_budget_bytes,
@@ -770,6 +780,10 @@ impl PilotRuntime {
         drop(fleet_lifetime);
         result
     }
+}
+
+fn static_paid_consumer_mode(config: &PilotConfig) -> bool {
+    config.paid_billing.is_some() || config.trust_floor == crate::trust::TrustFloor::PUBLIC
 }
 
 #[derive(Clone)]
@@ -962,6 +976,7 @@ mod tests {
         let model = catalog.models().next().expect("model");
         assert_eq!(model.input_micro_usd_per_million.get(), 123);
         assert_eq!(model.output_micro_usd_per_million.get(), 456);
+        assert!(static_paid_consumer_mode(&config));
     }
 
     #[test]

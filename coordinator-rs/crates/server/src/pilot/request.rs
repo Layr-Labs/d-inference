@@ -213,11 +213,21 @@ impl RequestOwner {
     }
 }
 
+/// Validated routing, output, trait, and admission facts parsed from plaintext.
+pub type ParsedRequestFacts = (
+    ModelId,
+    Arc<str>,
+    OutputMode,
+    u64,
+    RequestTraits,
+    AdmissionDemand,
+);
+
 pub fn parse_request_facts(
     plaintext: &[u8],
     configured_model: &ModelId,
     configured_alias: &str,
-) -> Result<(ModelId, OutputMode, u64, RequestTraits, AdmissionDemand), PilotRequestError> {
+) -> Result<ParsedRequestFacts, PilotRequestError> {
     super::json_limits::validate_json_structure(plaintext)
         .map_err(|error| PilotRequestError::InvalidRequest(Arc::from(error.to_string())))?;
     let value: Value = serde_json::from_slice(plaintext)
@@ -290,6 +300,7 @@ pub fn parse_request_facts(
     }
     Ok((
         configured_model.clone(),
+        Arc::from(requested),
         output_mode,
         maximum_output_tokens,
         traits,
@@ -912,6 +923,9 @@ async fn run_attempt_inner(
         .record_start_dispatch(StartDispatchDisposition::Queued)
         .await
         .map_err(AttemptFailure::fatal)?;
+    crate::fault_checkpoint_async!(StartQueued, "run_provider_attempt", |error| {
+        AttemptFailure::fatal(PilotRequestError::Unavailable(Arc::from(error.to_string())))
+    });
     let start_receipt = staged_start.commit();
     let wait_for_durable_terminal = durable.is_paid();
     let delivery = match renewal
@@ -942,14 +956,21 @@ async fn run_attempt_inner(
         .await
         .map_err(AttemptFailure::fatal)?;
     match &delivery {
-        crate::provider::DeliveryState::OnWire => durable
-            .record_start_dispatch(StartDispatchDisposition::OnWire)
-            .await
-            .map_err(AttemptFailure::fatal)?,
-        crate::provider::DeliveryState::SentUnknown => durable
-            .record_start_dispatch(StartDispatchDisposition::SentUnknown)
-            .await
-            .map_err(AttemptFailure::fatal)?,
+        crate::provider::DeliveryState::OnWire => {
+            durable
+                .record_start_dispatch(StartDispatchDisposition::OnWire)
+                .await
+                .map_err(AttemptFailure::fatal)?;
+            crate::fault_checkpoint_async!(StartOnWire, "run_provider_attempt", |error| {
+                AttemptFailure::fatal(PilotRequestError::Unavailable(Arc::from(error.to_string())))
+            });
+        }
+        crate::provider::DeliveryState::SentUnknown => {
+            durable
+                .record_start_dispatch(StartDispatchDisposition::SentUnknown)
+                .await
+                .map_err(AttemptFailure::fatal)?;
+        }
         crate::provider::DeliveryState::Failed(_) | crate::provider::DeliveryState::Queued => {}
     }
     if matches!(
@@ -1137,6 +1158,9 @@ async fn accept_terminal(
     services: &RequestServices,
     durable: &mut DurableExecution,
 ) -> Result<TerminalAcceptance, PilotRequestError> {
+    crate::fault_checkpoint_async!(TerminalReceive, "accept_terminal", |error| {
+        PilotRequestError::Unavailable(Arc::from(error.to_string()))
+    });
     let key = TerminalKey::from(&terminal.identity);
     if !durable.is_paid() {
         let terminal_store = services.terminal_store.clone();
@@ -1310,6 +1334,9 @@ async fn accept_terminal(
             }
             resolution.disposition()
         };
+        crate::fault_checkpoint_async!(TerminalCommit, "accept_terminal", |error| {
+            PilotRequestError::Unavailable(Arc::from(error.to_string()))
+        });
         if let Err(error) = send_terminal_ack(session, terminal, wire_disposition, services).await {
             tracing::warn!(
                 error = %error,
@@ -1387,6 +1414,9 @@ async fn accept_terminal(
         }
         resolution.disposition()
     };
+    crate::fault_checkpoint_async!(TerminalCommit, "accept_terminal", |error| {
+        PilotRequestError::Unavailable(Arc::from(error.to_string()))
+    });
     send_terminal_ack(session, terminal, wire_disposition, services).await?;
     Ok(TerminalAcceptance::Finalized)
 }
@@ -1440,6 +1470,9 @@ async fn send_terminal_ack(
         .await;
         return Err(error.into());
     }
+    crate::fault_checkpoint_async!(TerminalAck, "send_terminal_ack", |error| {
+        PilotRequestError::Unavailable(Arc::from(error.to_string()))
+    });
     Ok(())
 }
 
@@ -2048,7 +2081,23 @@ impl From<crate::provider::WriterEnqueueError> for AttemptFailure {
 
 #[cfg(test)]
 mod tests {
-    use super::{allows_alternate, terminal_facts_fit_storage};
+    use super::{allows_alternate, parse_request_facts, terminal_facts_fit_storage};
+
+    #[test]
+    fn alias_request_keeps_concrete_route_and_requested_public_model() {
+        let configured =
+            darkbloom_coordinator_core::ids::ModelId::new("darkbloom/pilot-text".to_owned())
+                .expect("configured model");
+        let (route_model, public_model, ..) = parse_request_facts(
+            br#"{"model":"darkbloom-pilot","messages":[]}"#,
+            &configured,
+            "darkbloom-pilot",
+        )
+        .expect("alias request");
+
+        assert_eq!(route_model, configured);
+        assert_eq!(public_model.as_ref(), "darkbloom-pilot");
+    }
 
     #[test]
     fn self_route_only_never_admits_speculative_or_failover_alternates() {

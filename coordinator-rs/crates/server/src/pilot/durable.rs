@@ -114,6 +114,22 @@ impl DurableExecution {
         self.identity.job_id
     }
 
+    fn public_model(&self, fallback: &str) -> Arc<str> {
+        if self.api_key_public_model.is_empty() {
+            Arc::from(fallback)
+        } else {
+            self.api_key_public_model.clone()
+        }
+    }
+
+    fn concrete_model(&self, fallback: &str) -> Arc<str> {
+        if self.api_key_concrete_model.is_empty() {
+            Arc::from(fallback)
+        } else {
+            self.api_key_concrete_model.clone()
+        }
+    }
+
     pub(super) fn execution_lease_renewal(&self) -> Option<ExecutionLeaseRenewal> {
         let services = self.services.as_ref()?;
         let worker_id = self.execution_worker_id?;
@@ -173,6 +189,8 @@ impl DurableExecution {
             .as_ref()
             .or(services.billing.as_ref())
             .ok_or_else(|| PilotRequestError::Unavailable(Arc::from("billing unavailable")))?;
+        let public_model = self.public_model(model.as_str());
+        let concrete_model = self.concrete_model(model.as_str());
         let body_digest: [u8; 32] = sha2::Sha256::digest(plaintext).into();
         let immutable = serde_json::to_vec(&serde_json::json!({
             "account_id": consumer.account_id.as_str(),
@@ -182,8 +200,8 @@ impl DurableExecution {
             "consumer_key_hash": consumer.consumer_key_hash.as_ref(),
             "job_id": self.identity.job_id.as_uuid(),
             "model": model.as_str(),
-            "public_model": self.api_key_public_model.as_ref(),
-            "concrete_model": self.api_key_concrete_model.as_ref(),
+            "public_model": public_model.as_ref(),
+            "concrete_model": concrete_model.as_ref(),
             "provisional_provider_id": plan.session.identity.provider_id,
             "provisional_session_epoch": plan.session.identity.session_epoch.0,
             "request_id": self.identity.request_id,
@@ -216,8 +234,8 @@ impl DurableExecution {
             provisional_session_epoch: Some(
                 Version::new(plan.session.identity.session_epoch.0).map_err(map_ledger_input)?,
             ),
-            public_model: self.api_key_public_model.clone(),
-            concrete_model: self.api_key_concrete_model.clone(),
+            public_model,
+            concrete_model,
             api_key_limit_micro_usd: self.api_key_limit_micro_usd,
             api_key_controlled: self.api_key_controlled,
         };
@@ -278,6 +296,8 @@ impl DurableExecution {
                     "provider beneficiary account is not configured",
                 ))
             })?;
+        let public_model = self.public_model(&prepared.model);
+        let concrete_model = self.concrete_model(&prepared.model);
         let amounts = policy
             .amounts(prepared.prompt_tokens, prepared.max_output_tokens)
             .map_err(|error| PilotRequestError::ProviderPricing(Arc::from(error.to_string())))?;
@@ -319,7 +339,7 @@ impl DurableExecution {
             "pricing_version": policy.pricing_version.as_i64(),
             "provider_account_id": provider_account.as_str(),
             "provider_share_ppm": policy.provider_share_ppm,
-            "public_model": plan.prepare.model.as_str(),
+            "public_model": public_model.as_ref(),
             "referral_account_id": policy
                 .referral_account_id
                 .as_ref()
@@ -351,8 +371,8 @@ impl DurableExecution {
                 .identity
                 .dispatch_nonce(attempt_ordinal, prepared.identity.provider_id),
             request_digest: CoreDigest::new(*prepared.request_digest.as_bytes()),
-            concrete_model: Arc::from(prepared.model.as_str()),
-            public_model: Arc::from(plan.prepare.model.as_str()),
+            concrete_model,
+            public_model,
             pricing_version: policy.pricing_version,
             rounding_version: policy.rounding_version,
             billable_input_tokens: prepared.prompt_tokens,

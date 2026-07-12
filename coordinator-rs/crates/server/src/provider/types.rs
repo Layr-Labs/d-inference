@@ -217,6 +217,11 @@ impl SessionEventSender {
         event: SessionEvent,
         cancellation: &CancellationToken,
     ) -> Result<(), SessionEventSendError> {
+        crate::fault_checkpoint_async!(
+            ProviderReaderSaturation,
+            "SessionEventSender::send",
+            |_error| SessionEventSendError::Full
+        );
         tokio::select! {
             biased;
             () = cancellation.cancelled() => Err(SessionEventSendError::Cancelled),

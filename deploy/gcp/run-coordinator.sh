@@ -35,9 +35,13 @@ file_value() {
 if [[ -f "$CANDIDATE_FILE" ]]; then
   IMAGE=$(file_value "$CANDIDATE_FILE" DINF_IMAGE)
   SELECTOR=$(file_value "$CANDIDATE_FILE" DINF_COORDINATOR_BINARY)
+  ENVIRONMENT_ID=$(file_value "$CANDIDATE_FILE" DINF_CUTOVER_ENVIRONMENT_ID ||
+    printf '%064d' 0)
 else
   IMAGE=$(metadata_value DINF_IMAGE)
   SELECTOR=$(metadata_value DINF_COORDINATOR_BINARY)
+  ENVIRONMENT_ID=$(metadata_value DINF_CUTOVER_ENVIRONMENT_ID 2>/dev/null ||
+    printf '%064d' 0)
 fi
 
 [[ "$IMAGE" =~ ^[a-zA-Z0-9._/:@-]+@sha256:[a-fA-F0-9]{64}$ ]] || {
@@ -46,6 +50,10 @@ fi
 }
 [[ "$SELECTOR" == "go" || "$SELECTOR" == "rust" ]] || {
   echo "DINF_COORDINATOR_BINARY must be exactly go or rust" >&2
+  exit 64
+}
+[[ "$ENVIRONMENT_ID" =~ ^[a-f0-9]{64}$ ]] || {
+  echo "DINF_CUTOVER_ENVIRONMENT_ID must be a lowercase SHA-256" >&2
   exit 64
 }
 [[ -r "$ENV_FILE" ]] || {
@@ -88,6 +96,15 @@ printf '%s' "$token" | /usr/bin/docker login \
   -u oauth2accesstoken --password-stdin "$registry" >/dev/null
 unset token
 /usr/bin/docker pull "$IMAGE" >/dev/null
+if ! /usr/bin/docker image inspect \
+  --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE" |
+  awk -v expected="$IMAGE" '
+    $0 == expected { found = 1 }
+    END { exit !found }
+  '; then
+  echo "pulled image metadata does not contain the configured immutable digest" >&2
+  exit 65
+fi
 
 if /usr/bin/docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
   /usr/bin/docker rm "$CONTAINER_NAME" >/dev/null
@@ -97,6 +114,8 @@ fi
   --network host \
   --env-file "$ENV_FILE" \
   --env "EIGENINFERENCE_COORDINATOR_BINARY=$SELECTOR" \
+  --env "EIGENINFERENCE_ENVIRONMENT_ID=$ENVIRONMENT_ID" \
+  --env "EIGENINFERENCE_IMAGE_DIGEST=$IMAGE" \
   --mount "type=bind,source=$DATA_MOUNT,target=$DATA_MOUNT" \
   --mount "type=bind,source=$SECRET_DIR,target=/run/d-inference-secrets,readonly" \
   --entrypoint /usr/local/bin/coordinator-image-check \
@@ -108,8 +127,11 @@ exec /usr/bin/docker run \
   --stop-timeout 45 \
   --label com.darkbloom.role=serving \
   --label "com.darkbloom.binary=$SELECTOR" \
+  --label "com.darkbloom.image-digest=$IMAGE" \
   --env-file "$ENV_FILE" \
   --env "EIGENINFERENCE_COORDINATOR_BINARY=$SELECTOR" \
+  --env "EIGENINFERENCE_ENVIRONMENT_ID=$ENVIRONMENT_ID" \
+  --env "EIGENINFERENCE_IMAGE_DIGEST=$IMAGE" \
   --mount "type=bind,source=$DATA_MOUNT,target=$DATA_MOUNT" \
   --mount "type=bind,source=$SECRET_DIR,target=/run/d-inference-secrets,readonly" \
   "$IMAGE"

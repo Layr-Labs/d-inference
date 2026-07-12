@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "oracle_version": 1,
+  "contracts": {
+    "health": {
+      "statuses": [200],
+      "headers": {"content-type": "application/json"},
+      "body": {"kind": "json", "required": ["/status"], "equals": {"/status": "ok"}}
+    },
+    "models_authorized": {
+      "statuses": [200],
+      "headers": {"content-type": "application/json"},
+      "body": {"kind": "json", "required": ["/object", "/data"], "equals": {"/object": "list"}}
+    },
+    "models_unauthorized": {
+      "statuses": [401],
+      "headers": {"content-type": "application/json"},
+      "body": {"kind": "json", "required": ["/error"]}
+    },
+    "models_invalid_auth": {
+      "statuses": [401],
+      "headers": {"content-type": "application/json"},
+      "body": {"kind": "json", "required": ["/error"]}
+    },
+    "chat_unauthorized": {
+      "statuses": [401],
+      "headers": {"content-type": "application/json"},
+      "body": {"kind": "json", "required": ["/error"]}
+    },
+    "chat_stream": {
+      "statuses": [200],
+      "headers": {"content-type": "text/event-stream"},
+      "body": {"kind": "sse", "minimum_events": 2, "done": true, "content_matches": "content", "response_model": "trace_expected"}
+    },
+    "chat_alias_stream": {
+      "statuses": [200],
+      "headers": {"content-type": "text/event-stream"},
+      "body": {"kind": "sse", "minimum_events": 2, "done": true, "content_matches": "content", "response_model": "trace_expected"}
+    },
+    "chat_nonstream": {
+      "statuses": [200],
+      "headers": {"content-type": "application/json"},
+      "body": {"kind": "json", "required": ["/object", "/choices/0"], "response_model": "trace_expected"}
+    },
+    "unknown_model": {
+      "statuses": [404],
+      "headers": {"content-type": "application/json"},
+      "body": {"kind": "json", "required": ["/error"]}
+    },
+    "malformed_json": {
+      "statuses": [400],
+      "headers": {"content-type": "application/json"},
+      "body": {"kind": "json", "required": ["/error"]}
+    },
+    "route_not_found": {
+      "statuses": [404],
+      "headers": {"content-type": "application/json"},
+      "body": {"kind": "json", "required": ["/error"]}
+    },
+    "method_not_allowed": {
+      "statuses": [404],
+      "headers": {"content-type": "application/json"},
+      "body": {"kind": "json", "required": ["/error"]}
+    },
+    "session_replacement": {
+      "statuses": [200],
+      "headers": {"content-type": "text/event-stream"},
+      "body": {"kind": "sse", "minimum_events": 2, "done": true, "content_matches": "content", "response_model": "trace_expected"}
+    },
+    "hedge": {
+      "statuses": [200],
+      "headers": {"content-type": "text/event-stream"},
+      "body": {"kind": "sse", "minimum_events": 2, "done": true, "content_matches": "content", "response_model": "trace_expected"}
+    },
+    "sent_unknown": {
+      "statuses": [200],
+      "headers": {"content-type": "application/json"},
+      "body": {"kind": "json", "required": ["/object", "/choices/0"], "response_model": "trace_expected"},
+      "implementation_overrides": {
+        "rust": {
+          "statuses": [499],
+          "body": {"kind": "json", "required": ["/error"]}
+        }
+      }
+    },
+    "load_stream": {
+      "statuses": [200],
+      "headers": {"content-type": "text/event-stream"},
+      "body": {"kind": "sse", "minimum_events": 2, "done": true, "content_matches": "content", "response_model": "trace_expected"}
+    },
+    "load_nonstream": {
+      "statuses": [200],
+      "headers": {"content-type": "application/json"},
+      "body": {"kind": "json", "required": ["/object", "/choices/0"], "response_model": "trace_expected"}
+    }
+  }
+}

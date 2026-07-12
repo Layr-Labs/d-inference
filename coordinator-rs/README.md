@@ -13,15 +13,31 @@ The Rust binary is not a production target until the migration's protocol,
 money, recovery, parity, pilot, and rollback gates pass. The Go coordinator
 remains authoritative during this phase.
 
+Pilot, canary, cutover, bake, and eventual Go-retirement evidence is governed
+by `deploy/cutover/gates.json` and
+`docs/operations/coordinator-cutover.md`. `scripts/cutover-readiness.py`
+performs read-only collection and signed preflight evaluation only; it has no
+deployment or production-mutation command.
+
 ## Commands
 
 ```bash
 make coordinator-rs-fmt
 make coordinator-rs-lint
 make coordinator-rs-test
+make coordinator-rs-fault-test
 make coordinator-rs-build
 make coordinator-rs-sqlx
 ```
+
+`coordinator-rs-fault-test` enables the compile-time-only `fault-injection`
+feature and runs every recovery validator with one test thread. Production
+builds omit the injector entirely. Tests emit cryptographically signed receipts
+containing the compiled production hook site, exact armed/executed action and
+outcome, process/run/commit identity, hit count, and passed invariant
+assertions. `scripts/fault-matrix.py` verifies those receipts, derives only the
+actions actually tested, and fails when any registered boundary lacks
+executable coverage.
 
 ## Environment matrix
 

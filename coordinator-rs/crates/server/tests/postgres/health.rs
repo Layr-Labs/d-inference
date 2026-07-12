@@ -30,7 +30,7 @@ struct HttpResponse {
 #[tokio::test]
 async fn health_and_readiness_use_real_postgres() {
     with_isolated_database(|url| async move {
-        reset_schema(&url, 6, 4, 6, 6).await;
+        reset_schema(&url, 7, 5, 7, 7).await;
         let database = Database::connect(&url, 2, Duration::from_secs(3))
             .await
             .expect("connect real PostgreSQL");
@@ -54,20 +54,33 @@ async fn health_and_readiness_use_real_postgres() {
                     .unwrap_or_else(|_| "d-inference-coordinator".to_owned()),
                 "environment": std::env::var("DD_ENV")
                     .unwrap_or_else(|_| "development".to_owned()),
+                "listener_identity": std::env::var("EIGENINFERENCE_LISTENER_IDENTITY")
+                    .unwrap_or_default(),
+                "coordinator_ownership_id":
+                    std::env::var("EIGENINFERENCE_COORDINATOR_OWNERSHIP_ID")
+                        .unwrap_or_default(),
+                "coordinator_app_id": std::env::var("EIGENINFERENCE_PRIVY_APP_ID")
+                    .unwrap_or_default(),
+                "environment_id": std::env::var("EIGENINFERENCE_ENVIRONMENT_ID")
+                    .unwrap_or_default(),
                 "draining": true,
                 "providers": 0,
                 "version": "dev",
                 "build_commit": "unknown",
                 "build_date": "unknown",
+                "image_digest": std::env::var("EIGENINFERENCE_IMAGE_DIGEST")
+                    .unwrap_or_default(),
                 "build": {
                     "version": "dev",
                     "commit": "unknown",
                     "date": "unknown",
-                    "rust_package_version": env!("CARGO_PKG_VERSION")
+                    "rust_package_version": env!("CARGO_PKG_VERSION"),
+                    "image_digest": std::env::var("EIGENINFERENCE_IMAGE_DIGEST")
+                        .unwrap_or_default()
                 },
                 "schema": {
-                    "public_version": 6,
-                    "rust_version": 4,
+                    "public_version": 7,
+                    "rust_version": 5,
                     "migration_checksum_valid": true
                 },
                 "ownership_healthy": true

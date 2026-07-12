@@ -22,8 +22,8 @@ func TestPostgresMigrationsFreshDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(result.Applied) != "[1 2 3 4 5 6]" {
-		t.Fatalf("applied = %v, want [1 2 3 4 5 6]", result.Applied)
+	if fmt.Sprint(result.Applied) != "[1 2 3 4 5 6 7]" {
+		t.Fatalf("applied = %v, want [1 2 3 4 5 6 7]", result.Applied)
 	}
 	if result.DatabaseVersion != MaximumSupportedSchemaVersion {
 		t.Fatalf("database version = %d", result.DatabaseVersion)
@@ -72,9 +72,9 @@ func TestPostgresMigrationsFreshDatabase(t *testing.T) {
 		LIMIT 1`).Scan(&rustSchemaVersion, &minimumPublic, &maximumPublic); err != nil {
 		t.Fatal(err)
 	}
-	if rustSchemaVersion != 4 || minimumPublic != 6 || maximumPublic != 6 {
+	if rustSchemaVersion != 5 || minimumPublic != 7 || maximumPublic != 7 {
 		t.Fatalf(
-			"Rust schema compatibility = version %d public [%d,%d], want version 4 public [6,6]",
+			"Rust schema compatibility = version %d public [%d,%d], want version 5 public [7,7]",
 			rustSchemaVersion,
 			minimumPublic,
 			maximumPublic,
@@ -96,6 +96,236 @@ func TestPostgresMigrationsFreshDatabase(t *testing.T) {
 	if len(result.Applied) != 0 {
 		t.Fatalf("re-entrant apply ran versions %v", result.Applied)
 	}
+}
+
+func TestPostgresGoWriteAuditRecordsSessionAndOwnership(t *testing.T) {
+	databaseURL := migrationTestDatabase(t)
+	ctx := context.Background()
+	if _, err := ApplyPostgresMigrations(ctx, databaseURL, MigrationOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	conn := migrationTestConn(t, databaseURL)
+	defer conn.Close(ctx)
+	if _, err := conn.Exec(ctx,
+		`SET application_name = 'darkbloom-go-coordinator:test-session';
+		 INSERT INTO coordinator_ownership (
+		     singleton, epoch, owner_id, acquired_at
+		 ) VALUES (TRUE, 1, 'go:test-owner', NOW())`); err != nil {
+		t.Fatal(err)
+	}
+	var mutations, ownershipEpochs int64
+	if err := conn.QueryRow(ctx, `
+		SELECT
+		    COALESCE((SELECT SUM(mutation_count)
+		              FROM coordinator_write_audit
+		              WHERE "binary" = 'go' AND session_id = 'test-session'), 0),
+		    (SELECT COUNT(*) FROM coordinator_ownership_history
+		     WHERE owner_binary = 'go' AND owner_id = 'go:test-owner')`,
+	).Scan(&mutations, &ownershipEpochs); err != nil {
+		t.Fatal(err)
+	}
+	if mutations != 2 || ownershipEpochs != 1 {
+		t.Fatalf(
+			"Go audit mutations=%d ownership_epochs=%d, want 2 and 1",
+			mutations,
+			ownershipEpochs,
+		)
+	}
+	if _, err := conn.Exec(ctx,
+		`SET application_name = 'darkbloom-rust-coordinator:test-session';
+		 UPDATE coordinator_ownership SET acquired_at = NOW()`); err != nil {
+		t.Fatal(err)
+	}
+	var afterRust int64
+	if err := conn.QueryRow(ctx, `
+		SELECT COALESCE(SUM(mutation_count), 0)
+		FROM coordinator_write_audit
+		WHERE "binary" = 'go' AND session_id = 'test-session'`,
+	).Scan(&afterRust); err != nil {
+		t.Fatal(err)
+	}
+	if afterRust != mutations {
+		t.Fatalf("Rust-tagged write changed Go audit count to %d", afterRust)
+	}
+}
+
+func TestPostgresGoAuditDefinitionsFailClosedOnTampering(t *testing.T) {
+	tests := []struct {
+		name   string
+		tamper string
+		check  int
+	}{
+		{
+			name: "disabled trigger",
+			tamper: `ALTER TABLE public.coordinator_ownership
+				DISABLE TRIGGER record_coordinator_ownership_history`,
+			check: 0,
+		},
+		{
+			name: "no-op function",
+			tamper: `CREATE OR REPLACE FUNCTION public.audit_go_coordinator_write()
+				RETURNS trigger
+				LANGUAGE plpgsql
+				AS $function$
+				BEGIN
+				    RETURN NULL;
+				END
+				$function$`,
+			check: 1,
+		},
+		{
+			name: "rewired trigger",
+			tamper: `DO $block$
+				DECLARE
+				    audit_trigger TEXT;
+				BEGIN
+				    SELECT trigger.tgname
+				    INTO STRICT audit_trigger
+				    FROM pg_trigger trigger
+				    WHERE trigger.tgrelid =
+				          'public.coordinator_ownership_history'::regclass
+				      AND trigger.tgname LIKE 'audit_go_write_%';
+				    EXECUTE format(
+				        'DROP TRIGGER %I ON public.coordinator_ownership_history',
+				        audit_trigger
+				    );
+				    EXECUTE format(
+				        'CREATE TRIGGER %I AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON public.coordinator_ownership_history FOR EACH STATEMENT EXECUTE FUNCTION public.record_coordinator_ownership_history()',
+				        audit_trigger
+				    );
+				END
+				$block$`,
+			check: 1,
+		},
+		{
+			name: "changed function owner",
+			tamper: `UPDATE public.coordinator_audit_definition_manifest
+				SET expected_owner = 'unexpected-owner'
+				WHERE object_identity = 'public.audit_go_coordinator_write()'`,
+			check: 2,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			databaseURL := migrationTestDatabase(t)
+			ctx := context.Background()
+			if _, err := ApplyPostgresMigrations(ctx, databaseURL, MigrationOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			conn := migrationTestConn(t, databaseURL)
+			defer conn.Close(ctx)
+			before := goAuditIntegrityChecks(t, ctx, conn)
+			for index, valid := range before {
+				if !valid {
+					t.Fatalf("baseline integrity check %d is false", index)
+				}
+			}
+			if _, err := conn.Exec(ctx, test.tamper); err != nil {
+				t.Fatal(err)
+			}
+			after := goAuditIntegrityChecks(t, ctx, conn)
+			if after[test.check] {
+				t.Fatalf("tampered integrity check %d remained true: %v", test.check, after)
+			}
+		})
+	}
+}
+
+func goAuditIntegrityChecks(
+	t *testing.T,
+	ctx context.Context,
+	conn *pgx.Conn,
+) [4]bool {
+	t.Helper()
+	const query = `
+		SELECT
+		    (
+		        SELECT COUNT(*) > 0
+		          AND BOOL_AND(trigger.oid IS NOT NULL AND trigger.tgenabled = 'O')
+		        FROM public.coordinator_audit_definition_manifest manifest
+		        LEFT JOIN pg_namespace namespace
+		          ON namespace.nspname = manifest.table_schema
+		        LEFT JOIN pg_class class
+		          ON class.relnamespace = namespace.oid
+		         AND class.relname = manifest.table_name
+		        LEFT JOIN pg_trigger trigger
+		          ON trigger.tgrelid = class.oid
+		         AND namespace.nspname || '.' || class.relname || '.' ||
+		             trigger.tgname = manifest.object_identity
+		         AND NOT trigger.tgisinternal
+		        WHERE manifest.object_kind = 'trigger'
+		    ),
+		    NOT EXISTS (
+		        SELECT 1
+		        FROM public.coordinator_audit_definition_manifest manifest
+		        WHERE manifest.definition_sha256 <> CASE manifest.object_kind
+		            WHEN 'function' THEN (
+		                SELECT encode(
+		                    sha256(convert_to(pg_get_functiondef(procedure.oid), 'UTF8')),
+		                    'hex'
+		                )
+		                FROM pg_proc procedure
+		                JOIN pg_namespace namespace
+		                  ON namespace.oid = procedure.pronamespace
+		                WHERE namespace.nspname || '.' || procedure.proname || '()' =
+		                      manifest.object_identity
+		            )
+		            WHEN 'trigger' THEN (
+		                SELECT encode(
+		                    sha256(convert_to(pg_get_triggerdef(trigger.oid, false), 'UTF8')),
+		                    'hex'
+		                )
+		                FROM pg_trigger trigger
+		                JOIN pg_class class ON class.oid = trigger.tgrelid
+		                JOIN pg_namespace namespace
+		                  ON namespace.oid = class.relnamespace
+		                WHERE namespace.nspname || '.' || class.relname || '.' ||
+		                      trigger.tgname = manifest.object_identity
+		                  AND NOT trigger.tgisinternal
+		            )
+		        END
+		    ),
+		    NOT EXISTS (
+		        SELECT 1
+		        FROM public.coordinator_audit_definition_manifest manifest
+		        WHERE manifest.expected_owner <> CASE manifest.object_kind
+		            WHEN 'function' THEN (
+		                SELECT pg_get_userbyid(procedure.proowner)
+		                FROM pg_proc procedure
+		                JOIN pg_namespace namespace
+		                  ON namespace.oid = procedure.pronamespace
+		                WHERE namespace.nspname || '.' || procedure.proname || '()' =
+		                      manifest.object_identity
+		            )
+		            WHEN 'trigger' THEN (
+		                SELECT pg_get_userbyid(class.relowner)
+		                FROM pg_trigger trigger
+		                JOIN pg_class class ON class.oid = trigger.tgrelid
+		                JOIN pg_namespace namespace
+		                  ON namespace.oid = class.relnamespace
+		                WHERE namespace.nspname || '.' || class.relname || '.' ||
+		                      trigger.tgname = manifest.object_identity
+		                  AND NOT trigger.tgisinternal
+		            )
+		        END
+		    ),
+		    EXISTS (
+		        SELECT 1
+		        FROM public.coordinator_audit_definition_manifest manifest
+		        WHERE manifest.object_kind = 'trigger'
+		          AND manifest.table_schema = 'public'
+		          AND manifest.table_name = 'coordinator_ownership_history'
+		    )`
+	var checks [4]bool
+	if err := conn.QueryRow(ctx, query).Scan(
+		&checks[0],
+		&checks[1],
+		&checks[2],
+		&checks[3],
+	); err != nil {
+		t.Fatal(err)
+	}
+	return checks
 }
 
 func TestPostgresMigrationsUpgradePublicV3AndRustV1(t *testing.T) {
@@ -137,8 +367,8 @@ func TestPostgresMigrationsUpgradePublicV3AndRustV1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(result.Applied) != "[4 5 6]" {
-		t.Fatalf("upgrade applied = %v, want [4 5 6]", result.Applied)
+	if fmt.Sprint(result.Applied) != "[4 5 6 7]" {
+		t.Fatalf("upgrade applied = %v, want [4 5 6 7]", result.Applied)
 	}
 	if err := validateRustSchemaV2Shape(ctx, conn); err != nil {
 		t.Fatalf("upgraded Rust schema shape: %v", err)
@@ -281,8 +511,8 @@ func TestPostgresMigrationsSuccessfullyAdoptLegacyDatabaseExplicitly(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(result.Applied) != "[1 2 3 4 5 6]" {
-		t.Fatalf("legacy adoption applied = %v, want [1 2 3 4 5 6]", result.Applied)
+	if fmt.Sprint(result.Applied) != "[1 2 3 4 5 6 7]" {
+		t.Fatalf("legacy adoption applied = %v, want [1 2 3 4 5 6 7]", result.Applied)
 	}
 	var balance, withdrawable int64
 	if err := conn.QueryRow(ctx, `
@@ -436,8 +666,8 @@ func TestPostgresMigrationRecoversInvalidConcurrentIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(result.Applied) != "[2 3 4 5 6]" {
-		t.Fatalf("recovery applied = %v, want [2 3 4 5 6]", result.Applied)
+	if fmt.Sprint(result.Applied) != "[2 3 4 5 6 7]" {
+		t.Fatalf("recovery applied = %v, want [2 3 4 5 6 7]", result.Applied)
 	}
 	if valid, err := concurrentIndexDefinitionMatches(ctx, conn, "idx_provider_earnings_job"); err != nil {
 		t.Fatal(err)
@@ -518,8 +748,8 @@ func TestPostgresMigrationRepairsValidWrongConcurrentIndex(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if fmt.Sprint(result.Applied) != "[2 3 4 5 6]" {
-				t.Fatalf("repair applied = %v, want [2 3 4 5 6]", result.Applied)
+			if fmt.Sprint(result.Applied) != "[2 3 4 5 6 7]" {
+				t.Fatalf("repair applied = %v, want [2 3 4 5 6 7]", result.Applied)
 			}
 			if matches, err := concurrentIndexDefinitionMatches(
 				ctx,

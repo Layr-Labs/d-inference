@@ -228,6 +228,9 @@ impl FeeProjectionService {
             .allocations
             .last()
             .map(|allocation| allocation.allocation_id);
+        crate::fault_checkpoint_async!(FeeProjection, "FeeProjectionService::complete", |_error| {
+            LedgerError::Timeout
+        });
         let authority = self.db.authority()?;
         let next = self
             .db

@@ -553,21 +553,27 @@ impl ReplayProofStore {
         candidate: &ReplayFile,
     ) -> Result<(), ReplayStoreError> {
         if self.legacy_monolith {
-            return write_json_atomic(&self.path, candidate).map_err(Into::into);
-        }
-        let path = provider_partition_path(&self.partition_directory, provider_id);
-        if let Some(partition) = candidate.providers.get(&provider_id) {
-            write_json_atomic(
-                &path,
-                &ReplayProviderFile {
-                    version: REPLAY_STORE_VERSION,
-                    provider_id,
-                    partition: partition.clone(),
-                },
-            )?;
+            write_json_atomic(&self.path, candidate)?;
         } else {
-            remove_json_atomic(&path)?;
+            let path = provider_partition_path(&self.partition_directory, provider_id);
+            if let Some(partition) = candidate.providers.get(&provider_id) {
+                write_json_atomic(
+                    &path,
+                    &ReplayProviderFile {
+                        version: REPLAY_STORE_VERSION,
+                        provider_id,
+                        partition: partition.clone(),
+                    },
+                )?;
+            } else {
+                remove_json_atomic(&path)?;
+            }
         }
+        crate::fault_checkpoint_sync!(
+            ReplayProofFsync,
+            "ReplayProofStore::persist_provider",
+            |error| ReplayStoreError::InjectedFault(error.point().as_str())
+        );
         Ok(())
     }
 }
@@ -887,6 +893,10 @@ pub enum ReplayStoreError {
     /// On-disk schema is incompatible.
     #[error("unsupported replay store version {0}")]
     UnsupportedVersion(u32),
+    /// Deliberate test-only persistence failure.
+    #[cfg(feature = "fault-injection")]
+    #[error("injected replay-store fault at {0}")]
+    InjectedFault(&'static str),
     /// Durable journal operation failed.
     #[error(transparent)]
     Durable(#[from] DurableFileError),

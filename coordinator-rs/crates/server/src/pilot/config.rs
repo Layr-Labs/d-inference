@@ -185,6 +185,16 @@ impl PilotConfig {
             .map_or_else(|_| PathBuf::from(DEFAULT_STATE_DIRECTORY), PathBuf::from);
         let configured_providers =
             std::env::var("EIGENINFERENCE_RUST_PROVIDER_CREDENTIALS_JSON").ok();
+        #[cfg(feature = "pilot-load")]
+        let configured_providers = match configured_providers {
+            some @ Some(_) => some,
+            None => std::env::var("EIGENINFERENCE_RUST_PROVIDER_CREDENTIALS_FILE")
+                .ok()
+                .filter(|path| !path.is_empty())
+                .map(std::fs::read_to_string)
+                .transpose()
+                .map_err(|_| PilotConfigError::InvalidProviderCredentials)?,
+        };
         if full_surface_enabled
             && configured_providers
                 .as_ref()
@@ -224,6 +234,29 @@ impl PilotConfig {
             std::env::var("EIGENINFERENCE_RUST_PILOT_MODEL_ALIAS")
                 .unwrap_or_else(|_| DEFAULT_MODEL_ALIAS.to_owned()),
         );
+        #[cfg(feature = "pilot-load")]
+        {
+            config.maximum_sessions = pilot_load_positive_usize(
+                "EIGENINFERENCE_RUST_PILOT_MAXIMUM_SESSIONS",
+                config.maximum_sessions,
+            )?;
+            config.maximum_requests = pilot_load_positive_usize(
+                "EIGENINFERENCE_RUST_PILOT_MAXIMUM_REQUESTS",
+                config.maximum_requests,
+            )?;
+            config.request_queue_capacity = pilot_load_positive_usize(
+                "EIGENINFERENCE_RUST_PILOT_REQUEST_QUEUE_CAPACITY",
+                config.request_queue_capacity,
+            )?;
+            config.input_budget_bytes = pilot_load_positive_usize(
+                "EIGENINFERENCE_RUST_PILOT_INPUT_BUDGET_BYTES",
+                config.input_budget_bytes,
+            )?;
+            config.response_budget_bytes = pilot_load_positive_usize(
+                "EIGENINFERENCE_RUST_PILOT_RESPONSE_BUDGET_BYTES",
+                config.response_budget_bytes,
+            )?;
+        }
         config.trust_floor = match std::env::var("EIGENINFERENCE_RUST_PILOT_TRUST_FLOOR")
             .as_deref()
             .unwrap_or(if full_surface_enabled {
@@ -235,6 +268,13 @@ impl PilotConfig {
             "hardware" => TrustFloor::PUBLIC,
             other => return Err(PilotConfigError::InvalidTrustFloor(other.to_owned())),
         };
+        #[cfg(feature = "pilot-load")]
+        if !full_surface_enabled
+            && let Ok(encoded) = std::env::var("EIGENINFERENCE_RUST_PILOT_BILLING_JSON")
+            && !encoded.is_empty()
+        {
+            config.paid_billing = Some(parse_paid_billing(encoded)?);
+        }
         if full_surface_enabled && config.trust_floor != TrustFloor::PUBLIC {
             return Err(PilotConfigError::FullSurfaceRequiresHardwareTrust);
         }
@@ -327,6 +367,21 @@ fn required(name: &'static str) -> Result<String, PilotConfigError> {
         .ok()
         .filter(|value| !value.is_empty())
         .ok_or(PilotConfigError::Missing(name))
+}
+
+#[cfg(feature = "pilot-load")]
+fn pilot_load_positive_usize(
+    name: &'static str,
+    default: usize,
+) -> Result<usize, PilotConfigError> {
+    match std::env::var(name) {
+        Ok(value) => value
+            .parse::<usize>()
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or(PilotConfigError::InvalidBounds),
+        Err(_) => Ok(default),
+    }
 }
 
 fn parse_bounded_seconds(
@@ -517,14 +572,17 @@ fn validate(config: &PilotConfig) -> Result<(), PilotConfigError> {
     {
         return Err(PilotConfigError::InvalidBounds);
     }
+    if config.paid_billing.is_some()
+        && (config
+            .consumer_credentials
+            .iter()
+            .any(|credential| credential.account_id.is_none())
+            || config.provider_beneficiaries.len() != config.provider_credentials.len())
+    {
+        return Err(PilotConfigError::PaidBillingRequired);
+    }
     if config.trust_floor == TrustFloor::PUBLIC {
-        if config.mdm_control.is_none()
-            || config
-                .consumer_credentials
-                .iter()
-                .any(|credential| credential.account_id.is_none())
-            || config.provider_beneficiaries.len() != config.provider_credentials.len()
-        {
+        if config.mdm_control.is_none() {
             return Err(PilotConfigError::PaidBillingRequired);
         }
         if config.dynamic_controls {

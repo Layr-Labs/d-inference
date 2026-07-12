@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck disable=SC1091 # SCRIPT_DIR is resolved from this script's absolute path.
 source "$SCRIPT_DIR/deploy-common.sh"
 
 FALLBACK_IMAGE=${1:?usage: rollback-after-commit-failure.sh GO_FALLBACK_IMAGE}
@@ -12,6 +13,7 @@ readonly ENV_FILE=/etc/d-inference/env
 readonly SECRET_DIR=/etc/d-inference/secrets
 readonly DATA_MOUNT=/mnt/disks/userdata
 readonly CANDIDATE_FILE=/run/d-inference/candidate.env
+readonly RESULT_FILE=/run/d-inference/deploy-result.env
 readonly SNAPSHOT_POINTER=/etc/d-inference/previous-known-good.path
 [[ -r "$ENV_FILE" ]] || fail "coordinator env file is unavailable"
 [[ -d "$SECRET_DIR" ]] || fail "coordinator secret directory is unavailable"
@@ -20,7 +22,11 @@ ADMIN_KEY=$(read_env_value "$ENV_FILE" EIGENINFERENCE_ADMIN_KEY)
 AUTH_CONFIG=$(mktemp)
 make_curl_auth_config "$AUTH_CONFIG" "$ADMIN_KEY"
 unset ADMIN_KEY
-trap 'rm -f "$AUTH_CONFIG"' EXIT
+READ_ONLY_KEY=$(read_env_value "$ENV_FILE" EIGENINFERENCE_READ_ONLY_KEY)
+READ_ONLY_AUTH_CONFIG=$(mktemp)
+make_curl_auth_config "$READ_ONLY_AUTH_CONFIG" "$READ_ONLY_KEY"
+unset READ_ONLY_KEY
+trap 'rm -f "$AUTH_CONFIG" "$READ_ONLY_AUTH_CONFIG"' EXIT
 
 PREVIOUS_PROVIDERS=$(curl_cmd --silent --show-error --fail \
   http://127.0.0.1:8080/health | jq -er '.providers') ||
@@ -52,7 +58,7 @@ EOF
 if candidate_running; then
   log "Handoff-draining uncommitted candidate before metadata rollback"
   if ! set_handoff_drain "$AUTH_CONFIG" ||
-    ! wait_for_quiescence "$AUTH_CONFIG" 120 5; then
+    ! wait_for_quiescence "$READ_ONLY_AUTH_CONFIG" 120 5; then
     if ! refuse_unsafe_rollback; then
       fail "CRITICAL: uncommitted candidate could not be ownership-fenced"
       exit 44
@@ -75,6 +81,9 @@ restore_previous_known_good_env "$ENV_FILE" "$SECRET_DIR" "$SNAPSHOT_POINTER" ||
 ADMIN_KEY=$(read_env_value "$ENV_FILE" EIGENINFERENCE_ADMIN_KEY)
 make_curl_auth_config "$AUTH_CONFIG" "$ADMIN_KEY"
 unset ADMIN_KEY
+READ_ONLY_KEY=$(read_env_value "$ENV_FILE" EIGENINFERENCE_READ_ONLY_KEY)
+make_curl_auth_config "$READ_ONLY_AUTH_CONFIG" "$READ_ONLY_KEY"
+unset READ_ONLY_KEY
 
 log "Metadata commit failed; running pinned Go image CheckRollbackSafe"
 docker_cmd run --rm \
@@ -91,8 +100,12 @@ docker_cmd run --rm \
 
 umask 077
 temporary="${CANDIDATE_FILE}.tmp.$$"
-printf 'DINF_IMAGE=%s\nDINF_COORDINATOR_BINARY=go\n' \
-  "$FALLBACK_IMAGE" >"$temporary"
+ENVIRONMENT_ID=$(read_env_value "$RESULT_FILE" DINF_CUTOVER_ENVIRONMENT_ID ||
+  printf '%064d' 0)
+[[ "$ENVIRONMENT_ID" =~ ^[a-f0-9]{64}$ ]] ||
+  fail "deployment result has invalid environment_id"
+printf 'DINF_IMAGE=%s\nDINF_COORDINATOR_BINARY=go\nDINF_CUTOVER_ENVIRONMENT_ID=%s\n' \
+  "$FALLBACK_IMAGE" "$ENVIRONMENT_ID" >"$temporary"
 mv "$temporary" "$CANDIDATE_FILE"
 rm -f /run/systemd/system/d-inference-coordinator.service.d/rollback-fence.conf \
   /run/d-inference/automatic-rollback-refused

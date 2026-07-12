@@ -21,11 +21,15 @@ case "$ENVIRONMENT" in
     DOMAIN=api.dev.darkbloom.xyz
     CONSOLE_DOMAIN=console.dev.darkbloom.xyz
     DD_ENVIRONMENT=development
+    LISTENER_IDENTITY=api.dev.darkbloom.xyz:443
+    OWNERSHIP_IDENTITY=darkbloom-development-single-owner
     ;;
   prod)
     DOMAIN=api.darkbloom.dev
     CONSOLE_DOMAIN=console.darkbloom.dev
     DD_ENVIRONMENT=production
+    LISTENER_IDENTITY=api.darkbloom.dev:443
+    OWNERSHIP_IDENTITY=darkbloom-production-single-owner
     ;;
   *)
     echo "usage: refresh-env.sh {dev|prod}" >&2
@@ -134,6 +138,7 @@ EIGENINFERENCE_ADMIN_EMAILS=gajesh@eigenlabs.org
 EIGENINFERENCE_REFERRAL_SHARE_PCT=15
 EIGENINFERENCE_R2_CDN_URL=$(fetch eigeninference-r2-cdn-url)
 EIGENINFERENCE_ADMIN_KEY=$(fetch eigeninference-admin-key)
+EIGENINFERENCE_READ_ONLY_KEY=$(fetch eigeninference-read-only-key)
 EIGENINFERENCE_RELEASE_KEY=$(fetch eigeninference-release-key)
 EIGENINFERENCE_PRIVY_APP_ID=$(fetch eigeninference-privy-app-id)
 EIGENINFERENCE_PRIVY_APP_SECRET=$(fetch eigeninference-privy-app-secret)
@@ -162,6 +167,8 @@ EIGENINFERENCE_IPAPI_KEY=$(fetch eigeninference-ipapi-key)
 DD_API_KEY=$(fetch eigeninference-dd-api-key)
 DD_SITE=$(fetch eigeninference-dd-site)
 DD_ENV=${DD_ENVIRONMENT}
+EIGENINFERENCE_LISTENER_IDENTITY=${LISTENER_IDENTITY}
+EIGENINFERENCE_COORDINATOR_OWNERSHIP_ID=${OWNERSHIP_IDENTITY}
 DD_SERVICE=d-inference-coordinator
 DD_AGENT_HOST=127.0.0.1
 DD_DOGSTATSD_ENABLED=true
@@ -172,6 +179,7 @@ unset MDM_API_KEY MDM_PUSH_VERSION MDM_PUSH_PASSWORD
 
 CRITICAL_VARS=(
   EIGENINFERENCE_ADMIN_KEY
+  EIGENINFERENCE_READ_ONLY_KEY
   EIGENINFERENCE_RELEASE_KEY
   EIGENINFERENCE_PRIVY_APP_ID
   EIGENINFERENCE_PRIVY_APP_SECRET

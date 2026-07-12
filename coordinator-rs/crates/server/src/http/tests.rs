@@ -378,11 +378,741 @@ async fn real_axum_websocket_v1_is_visible_but_never_inference_eligible() {
     let _ = std::fs::remove_dir_all(state_directory);
 }
 
+#[cfg(feature = "fault-injection")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn network_proxy_faults_wrap_real_coordinator_and_provider_peers() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    #[derive(Clone, Copy)]
+    enum ProxyFault {
+        Disconnect,
+        Reorder,
+        Truncate,
+    }
+
+    for (index, mode) in [
+        ProxyFault::Disconnect,
+        ProxyFault::Reorder,
+        ProxyFault::Truncate,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (runtime, handle, state_directory) = test_runtime().await;
+        let runtime_task = tokio::spawn(runtime.run());
+        wait_ready(handle.clone()).await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind proxied coordinator");
+        let coordinator_address = listener.local_addr().expect("coordinator address");
+        let server_handle = handle.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, routes(Some(server_handle)))
+                .await
+                .expect("serve proxied coordinator");
+        });
+
+        let proxy = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind provider fault proxy");
+        let proxy_address = proxy.local_addr().expect("provider proxy address");
+        let (fault_tx, fault_rx) = oneshot::channel();
+        let (fault_ready_tx, fault_ready_rx) = oneshot::channel();
+        let proxy_task = tokio::spawn(async move {
+            let (mut provider, _) = proxy.accept().await.expect("accept proxied provider");
+            let mut coordinator = tokio::net::TcpStream::connect(coordinator_address)
+                .await
+                .expect("connect proxy to coordinator");
+            tokio::select! {
+                copied = tokio::io::copy_bidirectional(&mut provider, &mut coordinator) => {
+                    copied.expect("copy provider traffic before injected fault");
+                    panic!("provider proxy closed before fault release");
+                }
+                released = fault_rx => {
+                    released.expect("release provider proxy fault");
+                }
+            }
+            fault_ready_tx
+                .send(())
+                .expect("report provider proxy fault barrier");
+            match mode {
+                ProxyFault::Disconnect => {
+                    provider
+                        .shutdown()
+                        .await
+                        .expect("shutdown proxied provider");
+                    coordinator
+                        .shutdown()
+                        .await
+                        .expect("shutdown proxied coordinator");
+                }
+                ProxyFault::Reorder | ProxyFault::Truncate => {
+                    let mut frame = vec![0_u8; 8 * 1024];
+                    let length = timeout(Duration::from_secs(2), provider.read(&mut frame))
+                        .await
+                        .expect("provider did not send corruptible frame")
+                        .expect("read provider frame");
+                    assert!(length >= 2, "provider frame too short to corrupt");
+                    let split = length / 2;
+                    match mode {
+                        ProxyFault::Reorder => {
+                            coordinator
+                                .write_all(&frame[split..length])
+                                .await
+                                .expect("write reordered suffix");
+                            coordinator
+                                .write_all(&frame[..split])
+                                .await
+                                .expect("write reordered prefix");
+                        }
+                        ProxyFault::Truncate => {
+                            coordinator
+                                .write_all(&frame[..split])
+                                .await
+                                .expect("write truncated provider frame");
+                        }
+                        ProxyFault::Disconnect => unreachable!("handled above"),
+                    }
+                    coordinator
+                        .shutdown()
+                        .await
+                        .expect("close corrupted coordinator stream");
+                    provider
+                        .shutdown()
+                        .await
+                        .expect("close corrupted provider stream");
+                }
+            }
+        });
+
+        let (mut socket, _) = connect_async(format!("ws://{proxy_address}/ws/provider"))
+            .await
+            .expect("connect provider through fault proxy");
+        let signing_key = SigningKey::generate();
+        let _session = v2_handshake(
+            &mut socket,
+            &signing_key,
+            ProviderProcessGenerationId::new([u8::try_from(index + 70).expect("generation"); 16]),
+        )
+        .await;
+        wait_inference_count(&handle, 1).await;
+        fault_tx.send(()).expect("release proxy fault");
+        fault_ready_rx
+            .await
+            .expect("provider proxy did not reach fault barrier");
+        if !matches!(mode, ProxyFault::Disconnect) {
+            let _ = socket
+                .send(Message::Text(
+                    r#"{"type":"heartbeat","active_requests":0}"#.into(),
+                ))
+                .await;
+        }
+        proxy_task.await.expect("provider fault proxy");
+        timeout(Duration::from_secs(2), async {
+            while handle.visible_provider_count() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("corrupted provider session did not close");
+
+        handle.shutdown();
+        runtime_task
+            .await
+            .expect("proxied runtime join")
+            .expect("proxied runtime shutdown");
+        server.abort();
+        let _ = server.await;
+        let _ = std::fs::remove_dir_all(state_directory);
+    }
+}
+
+#[cfg(feature = "fault-injection")]
+#[test]
+fn fault_child_coordinator_fixture() {
+    use std::io::Write as _;
+
+    const MODE: &str = "DARKBLOOM_COORDINATOR_FAULT_CHILD_MODE";
+    let Ok(mode) = std::env::var(MODE) else {
+        return;
+    };
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn")
+        .with_writer(std::io::stderr)
+        .try_init();
+    let database_url = std::env::var("DARKBLOOM_COORDINATOR_FAULT_CHILD_DATABASE_URL")
+        .expect("fault child database URL");
+    let state_directory = PathBuf::from(
+        std::env::var_os("DARKBLOOM_COORDINATOR_FAULT_CHILD_STATE")
+            .expect("fault child state directory"),
+    );
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("fault child Tokio runtime");
+    runtime.block_on(async move {
+        let database = crate::database::Database::connect(&database_url, 4, Duration::from_secs(3))
+            .await
+            .expect("fault child database");
+        let ownership =
+            crate::ownership::CoordinatorOwnership::configure(&database, &database_url, true)
+                .await
+                .expect("fault child ownership");
+        let mut config = test_config();
+        config.state_directory = state_directory;
+        configure_paid_fault_pilot(
+            &mut config,
+            darkbloom_coordinator_protocol::v2::ProviderId::new([1; 16]),
+        );
+        let admission = crate::surface::operations::AdmissionGate::default();
+        let (coordinator, handle) = PilotRuntime::build_durable_with_admission(
+            &config,
+            database.clone(),
+            ownership.status(),
+            admission.clone(),
+        )
+        .await
+        .expect("fault child coordinator");
+        let coordinator_task = tokio::spawn(coordinator.run());
+        wait_ready(handle.clone()).await;
+        let full_surface = crate::surface::FullSurfaceState::build_with_admission(
+            &paid_fault_surface_config(),
+            database.clone(),
+            ownership.fence().context(),
+            handle.clone(),
+            admission.clone(),
+        )
+        .expect("fault child paid surface");
+        let recovery_cancellation = CancellationToken::new();
+        let recovery_task = if mode == "recover" {
+            let recovery = crate::recovery::RecoveryRuntime::new(
+                database.clone(),
+                Some(handle.clone()),
+                crate::recovery::RecoveryRuntimeConfig {
+                    batch_size: 8,
+                    lease_duration: Duration::from_millis(250),
+                    poll_interval: Duration::from_millis(10),
+                    outbox_retry_after: Duration::from_millis(50),
+                },
+            )
+            .expect("fault child recovery runtime")
+            .with_admission_gate(Some(admission));
+            let cancellation = recovery_cancellation.clone();
+            let start_path = PathBuf::from(
+                std::env::var_os("DARKBLOOM_COORDINATOR_FAULT_CHILD_RECOVERY_START_PATH")
+                    .expect("fault child recovery start path"),
+            );
+            Some(tokio::spawn(async move {
+                loop {
+                    if start_path.exists() {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                recovery.run(cancellation).await
+            }))
+        } else {
+            None
+        };
+        let fault = if mode == "run" {
+            let action = match std::env::var("DARKBLOOM_COORDINATOR_FAULT_CHILD_ACTION").as_deref()
+            {
+                Ok("delay") => crate::fault::FaultAction::Delay,
+                Ok("crash") => {
+                    crate::fault::enable_child_abort_mode()
+                        .expect("enable coordinator child abort");
+                    crate::fault::FaultAction::Crash
+                }
+                other => panic!("invalid coordinator child fault action: {other:?}"),
+            };
+            Some(
+                crate::fault::arm(crate::fault::FaultPoint::StartQueued, action)
+                    .expect("arm active paid coordinator fault"),
+            )
+        } else {
+            None
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fault child Axum listener");
+        let address = listener.local_addr().expect("fault child address");
+        let app = crate::app::router(
+            crate::app::AppState::new(database.clone())
+                .with_ownership(ownership.status())
+                .with_pilot(handle.clone())
+                .with_full_surface(full_surface),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("fault child Axum server");
+        });
+        let health = reqwest::get(format!("http://{address}/v1/encryption-key"))
+            .await
+            .expect("fault child health");
+        assert_eq!(health.status(), StatusCode::OK);
+        println!("DARKBLOOM_FAULT_COORDINATOR_LISTENING={address}");
+        std::io::stdout()
+            .flush()
+            .expect("flush fault child listening");
+        if mode == "run" {
+            fault
+                .as_ref()
+                .expect("run fault guard")
+                .wait_until_hit(Duration::from_secs(15))
+                .await
+                .expect("active paid fault boundary");
+            if fault.as_ref().expect("run fault guard").action() == crate::fault::FaultAction::Delay
+            {
+                let marker = PathBuf::from(
+                    std::env::var_os("DARKBLOOM_FAULT_CHILD_HIT_PATH")
+                        .expect("active paid fault marker path"),
+                );
+                timeout(Duration::from_secs(5), async {
+                    loop {
+                        if crate::fault::read_abort_marker(&marker).is_ok() {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("active paid delay marker was not durable");
+            }
+            println!("DARKBLOOM_FAULT_COORDINATOR_ACTIVE");
+            std::io::stdout().flush().expect("flush fault child ready");
+            std::future::pending::<()>().await;
+        }
+        assert_eq!(mode, "recover");
+        println!("DARKBLOOM_FAULT_COORDINATOR_RECOVERED");
+        std::io::stdout()
+            .flush()
+            .expect("flush fault child recovery");
+        std::future::pending::<()>().await;
+        #[allow(unreachable_code)]
+        {
+            handle.shutdown();
+            coordinator_task
+                .await
+                .expect("fault child coordinator join")
+                .expect("fault child coordinator shutdown");
+            server.abort();
+            let _ = server.await;
+            database
+                .close(Duration::from_secs(2))
+                .await
+                .expect("close fault child database");
+            ownership
+                .release()
+                .await
+                .expect("release fault child ownership");
+            recovery_cancellation.cancel();
+            if let Some(recovery_task) = recovery_task {
+                recovery_task
+                    .await
+                    .expect("fault child recovery join")
+                    .expect("fault child recovery shutdown");
+            }
+        }
+    });
+}
+
+#[cfg(feature = "fault-injection")]
+#[tokio::test(flavor = "current_thread")]
+async fn child_kill_and_crash_recover_active_paid_request_on_same_lease() {
+    use darkbloom_coordinator_protocol::v2::{AttemptStatus, AttemptStatusState};
+    use std::{
+        io::{BufRead as _, BufReader},
+        os::unix::process::ExitStatusExt as _,
+        process::{Command, Stdio},
+        sync::mpsc as std_mpsc,
+    };
+
+    for (label, action, expected_signal) in [("sigkill", "delay", 9), ("crash", "crash", 6)] {
+        postgres_support::with_isolated_database(|url| async move {
+            postgres_support::seed_service_schema(&url).await;
+            let pool = sqlx::PgPool::connect(&url)
+                .await
+                .expect("connect active child assertions");
+            seed_paid_fault_surface(&pool).await;
+            let initial = paid_fault_snapshot(&pool).await;
+            let state_directory = std::env::temp_dir()
+                .join(format!("darkbloom-fault-child-{label}-{}", Uuid::new_v4()));
+            let hit_path = state_directory.join("active-fault-hit.json");
+            let recovery_start_path = state_directory.join("start-recovery");
+            std::fs::create_dir_all(&state_directory).expect("create active child state");
+            let signing_key = SigningKey::generate();
+            let generation = ProviderProcessGenerationId::new([51; 16]);
+            let executable = std::env::current_exe().expect("fault child test executable");
+            let spawn_child = |mode: &str, action: Option<&str>| {
+                let mut command = Command::new(&executable);
+                command
+                    .args([
+                        "--exact",
+                        "http::tests::fault_child_coordinator_fixture",
+                        "--nocapture",
+                    ])
+                    .env("DARKBLOOM_COORDINATOR_FAULT_CHILD_MODE", mode)
+                    .env("DARKBLOOM_COORDINATOR_FAULT_CHILD_DATABASE_URL", &url)
+                    .env("DARKBLOOM_COORDINATOR_FAULT_CHILD_STATE", &state_directory)
+                    .env("DARKBLOOM_FAULT_CHILD_ABORT", "1")
+                    .env("DARKBLOOM_FAULT_CHILD_HIT_PATH", &hit_path)
+                    .env(
+                        "DARKBLOOM_COORDINATOR_FAULT_CHILD_RECOVERY_START_PATH",
+                        &recovery_start_path,
+                    )
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit());
+                if let Some(action) = action {
+                    command.env("DARKBLOOM_COORDINATOR_FAULT_CHILD_ACTION", action);
+                }
+                let mut child = command.spawn().expect("spawn paid coordinator child");
+                let stdout = child.stdout.take().expect("paid child stdout");
+                let (line_tx, line_rx) = std_mpsc::sync_channel(8);
+                let reader = std::thread::spawn(move || {
+                    for line in BufReader::new(stdout).lines() {
+                        line_tx
+                            .send(line.expect("read paid coordinator child output"))
+                            .expect("report paid coordinator child output");
+                    }
+                });
+                (child, line_rx, reader)
+            };
+            let wait_line = |lines: &std_mpsc::Receiver<String>, prefix: &str| {
+                timeout_line(lines, prefix, Duration::from_secs(15))
+            };
+
+            let (mut child, child_lines, child_reader) = spawn_child("run", Some(action));
+            let child_pid = child.id();
+            let listening = wait_line(&child_lines, "DARKBLOOM_FAULT_COORDINATOR_LISTENING=");
+            let address = listening
+                .strip_prefix("DARKBLOOM_FAULT_COORDINATOR_LISTENING=")
+                .expect("paid child listening prefix")
+                .to_owned();
+            let (mut socket, _) = connect_async(format!("ws://{address}/ws/provider"))
+                .await
+                .expect("connect long-lived paid child provider");
+            let original_session = v2_handshake(&mut socket, &signing_key, generation).await;
+            let request = tokio::spawn({
+                let address = address.clone();
+                async move {
+                    let response = reqwest::Client::new()
+                        .post(format!("http://{address}/v1/chat/completions"))
+                        .bearer_auth(CONSUMER_KEY)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header("idempotency-key", format!("paid-child-{label}"))
+                        .body(paid_fault_request())
+                        .send()
+                        .await;
+                    if let Ok(response) = response {
+                        let _ = response.bytes().await;
+                    }
+                }
+            });
+            let prepare = receive_prepare(&mut socket).await;
+            send_prepared_only(&mut socket, original_session, &prepare).await;
+            if action == "delay" {
+                let active = wait_line(&child_lines, "DARKBLOOM_FAULT_COORDINATOR_ACTIVE");
+                assert_eq!(active, "DARKBLOOM_FAULT_COORDINATOR_ACTIVE");
+                child.kill().expect("SIGKILL active paid coordinator child");
+            }
+            let status = child
+                .wait()
+                .expect("wait for faulted paid coordinator child");
+            assert_eq!(
+                status.signal(),
+                Some(expected_signal),
+                "unexpected {label} child status: {status}"
+            );
+            child_reader.join().expect("join paid child stdout");
+            let execution =
+                crate::fault::read_abort_marker(&hit_path).expect("read active child fault marker");
+            assert_eq!(
+                execution.hook_id,
+                crate::fault::FaultPoint::StartQueued.as_str()
+            );
+            assert_eq!(execution.process_id, child_pid);
+            assert_eq!(
+                execution.armed_action,
+                if action == "delay" {
+                    crate::fault::FaultAction::Delay
+                } else {
+                    crate::fault::FaultAction::Crash
+                }
+            );
+            assert_eq!(execution.executed_action, execution.armed_action);
+            assert_eq!(
+                execution.outcome,
+                if action == "delay" {
+                    crate::fault::FaultOutcome::DelayBlocked
+                } else {
+                    crate::fault::FaultOutcome::ProcessAborted
+                }
+            );
+
+            let active = paid_fault_snapshot(&pool).await;
+            assert_eq!(active.jobs, 1);
+            assert_eq!(active.settled_jobs, 0);
+            assert_eq!(active.terminals, 0);
+            assert_eq!(active.conflicts, 0);
+            assert!(active.consumer_balance < initial.consumer_balance);
+            assert_eq!(active.operations, active.distinct_operations);
+            let (attempts, state): (i64, String) = sqlx::query_as(
+                r#"
+                SELECT
+                    (SELECT COUNT(*) FROM rust_coord.inference_attempts),
+                    (SELECT state FROM rust_coord.inference_attempts LIMIT 1)
+                "#,
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("inspect active authorized attempt");
+            assert_eq!(attempts, 1, "active paid child created a failover attempt");
+            assert_eq!(state, "queued");
+
+            timeout(Duration::from_secs(5), request)
+                .await
+                .expect("killed child HTTP request remained live")
+                .expect("join killed child HTTP request");
+            sqlx::raw_sql(
+                r#"
+                UPDATE rust_coord.inference_jobs
+                SET lease_until = NOW() - INTERVAL '1 millisecond'
+                WHERE worker_owner IS NOT NULL;
+                UPDATE rust_coord.inference_attempts
+                SET lease_until = NOW() - INTERVAL '1 millisecond'
+                WHERE worker_owner IS NOT NULL;
+                "#,
+            )
+            .execute(&pool)
+            .await
+            .expect("advance abandoned execution lease after confirmed process death");
+            let _ = std::fs::remove_file(&recovery_start_path);
+            let (mut recovery, recovery_lines, recovery_reader) = spawn_child("recover", None);
+            let listening = wait_line(&recovery_lines, "DARKBLOOM_FAULT_COORDINATOR_LISTENING=");
+            let recovery_address = listening
+                .strip_prefix("DARKBLOOM_FAULT_COORDINATOR_LISTENING=")
+                .expect("recovery child listening prefix");
+            let (mut recovered_socket, _) =
+                connect_async(format!("ws://{recovery_address}/ws/provider"))
+                    .await
+                    .expect("reconnect same provider process");
+            let recovered_session =
+                v2_handshake(&mut recovered_socket, &signing_key, generation).await;
+            assert!(recovered_session.session_epoch > original_session.session_epoch);
+            std::fs::write(&recovery_start_path, b"start")
+                .expect("release deterministic recovery barrier");
+
+            let recovered_start_result = timeout(Duration::from_secs(10), async {
+                loop {
+                    let message: CoordinatorControlMessage =
+                        serde_json::from_str(&next_text(&mut recovered_socket).await)
+                            .expect("recovery control JSON");
+                    match message {
+                        CoordinatorControlMessage::CoordinatorReplayFence(proof) => {
+                            recovered_socket
+                                .send(Message::Text(
+                                    serde_json::to_string(&ProviderControlMessage::ReplayFenceAck(
+                                        ReplayFenceAck {
+                                            proof_id: proof.proof_id,
+                                            provider_id: proof.provider_id,
+                                            provider_process_generation: proof
+                                                .provider_process_generation,
+                                        },
+                                    ))
+                                    .expect("recovery replay ACK JSON")
+                                    .into(),
+                                ))
+                                .await
+                                .expect("recovery replay ACK");
+                        }
+                        CoordinatorControlMessage::QueryAttempt(query) => {
+                            assert_eq!(query.identity, prepare.identity);
+                            recovered_socket
+                                .send(Message::Text(
+                                    serde_json::to_string(&ProviderControlMessage::AttemptStatus(
+                                        AttemptStatus {
+                                            identity: query.identity,
+                                            state: AttemptStatusState::Prepared,
+                                            terminal_digest: None,
+                                        },
+                                    ))
+                                    .expect("recovered status JSON")
+                                    .into(),
+                                ))
+                                .await
+                                .expect("report recovered prepared attempt");
+                        }
+                        CoordinatorControlMessage::Start(start) => break start,
+                        other => panic!("unexpected recovery control: {other:?}"),
+                    }
+                }
+            })
+            .await;
+            let recovered_start = match recovered_start_result {
+                Ok(start) => start,
+                Err(error) => {
+                    let diagnostics: Vec<(String, Option<String>, Option<String>, String)> =
+                        sqlx::query_as(
+                            r#"
+                            SELECT
+                                job.state,
+                                job.worker_owner::text,
+                                job.lease_until::text,
+                                attempt.state
+                            FROM rust_coord.inference_jobs job
+                            JOIN rust_coord.inference_attempts attempt USING (job_id)
+                            "#,
+                        )
+                        .fetch_all(&pool)
+                        .await
+                        .expect("load recovery timeout diagnostics");
+                    panic!("same-lease recovery did not send Start: {error:?}; {diagnostics:?}");
+                }
+            };
+            assert_eq!(recovered_start.identity, prepare.identity);
+            recovered_socket
+                .send(Message::Text(
+                    serde_json::to_string(&ProviderControlMessage::StartAck(StartAck {
+                        identity: recovered_start.identity.clone(),
+                    }))
+                    .expect("recovered StartAck JSON")
+                    .into(),
+                ))
+                .await
+                .expect("acknowledge recovered Start");
+            let terminal = signed_error_terminal(&signing_key, &prepare);
+            recovered_socket
+                .send(Message::Text(
+                    serde_json::to_string(&ProviderControlMessage::Terminal(terminal.clone()))
+                        .expect("recovered terminal JSON")
+                        .into(),
+                ))
+                .await
+                .expect("send recovered terminal");
+            let terminal_recovery = timeout(Duration::from_secs(10), async {
+                loop {
+                    let status: Option<String> = sqlx::query_scalar(
+                        "SELECT status FROM rust_coord.provider_terminals LIMIT 1",
+                    )
+                    .fetch_optional(&pool)
+                    .await
+                    .expect("inspect recovered terminal status");
+                    if status.as_deref() == Some("released") {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+            if let Err(error) = terminal_recovery {
+                let diagnostics: (
+                    String,
+                    String,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                ) = sqlx::query_as(
+                    r#"
+                    SELECT
+                        job.state,
+                        attempt.state,
+                        terminal.status,
+                        terminal.error_class,
+                        terminal.lease_until::text
+                    FROM rust_coord.inference_jobs job
+                    JOIN rust_coord.inference_attempts attempt USING (job_id)
+                    LEFT JOIN rust_coord.provider_terminals terminal USING (job_id)
+                    "#,
+                )
+                .fetch_one(&pool)
+                .await
+                .expect("load terminal recovery diagnostics");
+                panic!(
+                    "recovery worker did not commit terminal release: {error:?}; {diagnostics:?}"
+                );
+            }
+            recovered_socket
+                .send(Message::Text(
+                    serde_json::to_string(&ProviderControlMessage::Terminal(terminal.clone()))
+                        .expect("historical terminal replay JSON")
+                        .into(),
+                ))
+                .await
+                .expect("replay committed historical terminal");
+            let acknowledgement =
+                receive_historical_terminal_ack(&mut recovered_socket, &terminal).await;
+            assert_eq!(acknowledgement.disposition, TerminalDisposition::Released);
+
+            timeout(Duration::from_secs(10), async {
+                loop {
+                    let recovered = paid_fault_snapshot(&pool).await;
+                    if recovered.terminals == 1 {
+                        assert_eq!(recovered.jobs, 1);
+                        assert_eq!(recovered.settled_jobs, 0);
+                        assert_eq!(recovered.conflicts, 0);
+                        assert_eq!(recovered.consumer_balance, initial.consumer_balance);
+                        assert_eq!(recovered.operations, recovered.distinct_operations);
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("paid child terminal did not recover financially");
+            let attempts: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM rust_coord.inference_attempts")
+                    .fetch_one(&pool)
+                    .await
+                    .expect("count recovered paid child attempts");
+            assert_eq!(attempts, 1, "recovery failed over after authorization");
+            crate::fault::write_test_receipt_from_executions(
+                &format!("paid_active_start_queued_{label}"),
+                &[execution],
+                &["no_failover_after_auth", "same_lease_recovery"],
+            )
+            .expect("write active paid child receipt");
+
+            recovered_socket
+                .close(None)
+                .await
+                .expect("close recovered provider");
+            recovery
+                .kill()
+                .expect("stop recovered paid coordinator child");
+            let _ = recovery.wait();
+            recovery_reader.join().expect("join recovery child stdout");
+            pool.close().await;
+            let _ = std::fs::remove_dir_all(state_directory);
+        })
+        .await;
+    }
+}
+
+#[cfg(feature = "fault-injection")]
+fn timeout_line(lines: &std::sync::mpsc::Receiver<String>, prefix: &str, wait: Duration) -> String {
+    let deadline = Instant::now() + wait;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let line = lines
+            .recv_timeout(remaining)
+            .unwrap_or_else(|error| panic!("child did not emit {prefix:?}: {error}"));
+        if line.starts_with(prefix) {
+            return line;
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn one_thousand_concurrent_real_websocket_sessions_remain_bounded() {
     let _resource_load_guard = RESOURCE_LOAD_TEST_LOCK.lock().await;
     const SESSION_COUNT: usize = 1_000;
     const HANDSHAKE_CONCURRENCY: usize = 16;
+    const HANDSHAKE_P50_BUDGET: Duration = Duration::from_secs(30);
+    const HANDSHAKE_P95_BUDGET: Duration = Duration::from_secs(60);
+    const HANDSHAKE_P99_BUDGET: Duration = Duration::from_secs(75);
+    const HANDSHAKE_MAX_BUDGET: Duration = Duration::from_secs(90);
 
     let mut config = test_config();
     config.provider_credentials = (0..SESSION_COUNT)
@@ -420,14 +1150,14 @@ async fn one_thousand_concurrent_real_websocket_sessions_remain_bounded() {
         let signing_key = signing_key.clone();
         let handshake_slots = handshake_slots.clone();
         handshakes.spawn(async move {
-            let (mut socket, _) = connect_async(format!("ws://{address}/ws/provider"))
-                .await
-                .expect("load websocket");
             let permit = handshake_slots
                 .acquire_owned()
                 .await
                 .expect("handshake slots");
             let started = Instant::now();
+            let (mut socket, _) = connect_async(format!("ws://{address}/ws/provider"))
+                .await
+                .expect("load websocket");
             let token = format!("load-provider-token-{index}");
             let generation = ProviderProcessGenerationId::new(
                 u128::try_from(index + SESSION_COUNT + 1)
@@ -471,12 +1201,26 @@ async fn one_thousand_concurrent_real_websocket_sessions_remain_bounded() {
     let mut latencies: Vec<_> = sessions.iter().map(|(_, latency)| *latency).collect();
     latencies.sort_unstable();
     assert_eq!(latencies.len(), SESSION_COUNT);
-    let minimum = latencies[0];
+    let p50 = latencies[SESSION_COUNT * 50 / 100 - 1];
     let p95 = latencies[SESSION_COUNT * 95 / 100 - 1];
     let p99 = latencies[SESSION_COUNT * 99 / 100 - 1];
-    assert!(minimum <= p95);
-    assert!(p95 <= p99);
-    assert!(p99 <= latencies[SESSION_COUNT - 1]);
+    let maximum = latencies[SESSION_COUNT - 1];
+    assert!(
+        p50 <= HANDSHAKE_P50_BUDGET,
+        "1,000-session handshake p50 {p50:?} exceeded {HANDSHAKE_P50_BUDGET:?}"
+    );
+    assert!(
+        p95 <= HANDSHAKE_P95_BUDGET,
+        "1,000-session handshake p95 {p95:?} exceeded {HANDSHAKE_P95_BUDGET:?}"
+    );
+    assert!(
+        p99 <= HANDSHAKE_P99_BUDGET,
+        "1,000-session handshake p99 {p99:?} exceeded {HANDSHAKE_P99_BUDGET:?}"
+    );
+    assert!(
+        maximum <= HANDSHAKE_MAX_BUDGET,
+        "1,000-session handshake max {maximum:?} exceeded {HANDSHAKE_MAX_BUDGET:?}"
+    );
 
     let mut closes = JoinSet::new();
     for (mut socket, _) in sessions {
@@ -2344,28 +3088,7 @@ async fn full_surface_db_key_request_commits_once_before_terminal_ack_and_replay
         let mut config = test_config();
         let state_directory = config.state_directory.clone();
         let provider_id = darkbloom_coordinator_protocol::v2::ProviderId::new([1; 16]);
-        config.consumer_credentials = Arc::from([]);
-        config.provider_beneficiaries = Arc::from([crate::pilot::ProviderBeneficiaryEntry {
-            provider_id,
-            account_id: crate::ledger::AccountId::new("provider").expect("provider account"),
-            price_override: None,
-        }]);
-        config.paid_billing = Some(crate::pilot::PaidBillingPolicy {
-            platform_account_id: crate::ledger::AccountId::new("platform")
-                .expect("platform account"),
-            referral_account_id: None,
-            pricing_version: crate::ledger::Version::new(1).expect("pricing version"),
-            rounding_version: crate::ledger::Version::new(1).expect("rounding version"),
-            base_reservation: crate::ledger::LedgerAmount::new(1).expect("base reservation"),
-            input_micro_usd_per_million: crate::ledger::LedgerAmount::new(1_000_000)
-                .expect("input rate"),
-            output_micro_usd_per_million: crate::ledger::LedgerAmount::new(2_000_000)
-                .expect("output rate"),
-            provider_share_ppm: 750_000,
-            referral_share_ppm: 0,
-        });
-        config.trust_floor = crate::trust::TrustFloor::PUBLIC;
-        config.test_established_trust = Some(crate::trust::TrustLevel::Hardware);
+        configure_paid_fault_pilot(&mut config, provider_id);
         let admission = crate::surface::operations::AdmissionGate::default();
         let (runtime, handle) = PilotRuntime::build_durable_with_admission(
             &config,
@@ -2380,6 +3103,7 @@ async fn full_surface_db_key_request_commits_once_before_terminal_ack_and_replay
         let mut full_config = crate::surface::FullSurfaceConfig::disabled();
         full_config.enabled = true;
         full_config.admin_key = Arc::from("paid-admin-secret");
+        full_config.read_only_key = Arc::from("paid-read-only-secret");
         full_config.release_key = Arc::from("paid-release-secret");
         full_config.mdm_webhook_secret = Arc::from("paid-mdm-secret");
         let full_surface = crate::surface::FullSurfaceState::build_with_admission(
@@ -2795,6 +3519,743 @@ async fn full_surface_db_key_request_commits_once_before_terminal_ack_and_replay
     .await;
 }
 
+#[cfg(feature = "fault-injection")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn signed_fault_receipts_cover_real_paid_http_postgres_websocket_lifecycle() {
+    use crate::fault::{FaultAction, FaultPoint, arm, write_test_receipt};
+
+    postgres_support::with_isolated_database(|url| async move {
+        let _resource_load_guard = RESOURCE_LOAD_TEST_LOCK.lock().await;
+        postgres_support::seed_service_schema(&url).await;
+        let pool = sqlx::PgPool::connect(&url)
+            .await
+            .expect("connect fault lifecycle assertions");
+        seed_paid_fault_surface(&pool).await;
+        let database = crate::database::Database::connect(&url, 8, Duration::from_secs(3))
+            .await
+            .expect("connect fault lifecycle database");
+        let ownership =
+            crate::ownership::CoordinatorOwnership::configure(&database, &url, true)
+                .await
+                .expect("configure fault lifecycle ownership");
+
+        let mut config = test_config();
+        let state_directory = config.state_directory.clone();
+        let provider_id = darkbloom_coordinator_protocol::v2::ProviderId::new([1; 16]);
+        config.consumer_credentials = Arc::from([]);
+        config.provider_beneficiaries = Arc::from([crate::pilot::ProviderBeneficiaryEntry {
+            provider_id,
+            account_id: crate::ledger::AccountId::new("provider").expect("provider account"),
+            price_override: None,
+        }]);
+        config.paid_billing = Some(crate::pilot::PaidBillingPolicy {
+            platform_account_id: crate::ledger::AccountId::new("platform")
+                .expect("platform account"),
+            referral_account_id: None,
+            pricing_version: crate::ledger::Version::new(1).expect("pricing version"),
+            rounding_version: crate::ledger::Version::new(1).expect("rounding version"),
+            base_reservation: crate::ledger::LedgerAmount::new(1).expect("base reservation"),
+            input_micro_usd_per_million: crate::ledger::LedgerAmount::new(1_000_000)
+                .expect("input rate"),
+            output_micro_usd_per_million: crate::ledger::LedgerAmount::new(2_000_000)
+                .expect("output rate"),
+            provider_share_ppm: 750_000,
+            referral_share_ppm: 0,
+        });
+        config.trust_floor = crate::trust::TrustFloor::PUBLIC;
+        config.test_established_trust = Some(crate::trust::TrustLevel::Hardware);
+
+        let admission = crate::surface::operations::AdmissionGate::default();
+        let (runtime, handle) = PilotRuntime::build_durable_with_admission(
+            &config,
+            database.clone(),
+            ownership.status(),
+            admission.clone(),
+        )
+        .await
+        .expect("fault lifecycle runtime");
+        let runtime_task = tokio::spawn(runtime.run());
+        wait_ready(handle.clone()).await;
+        let full_config = paid_fault_surface_config();
+        let full_surface = crate::surface::FullSurfaceState::build_with_admission(
+            &full_config,
+            database.clone(),
+            ownership.fence().context(),
+            handle.clone(),
+            admission,
+        )
+        .expect("fault lifecycle full surface");
+        let control_auth = full_surface
+            .identity
+            .auth()
+            .authenticate_api_key(CONSUMER_KEY)
+            .await
+            .expect("authenticate fault lifecycle key");
+        full_surface
+            .inference_control
+            .prepare(&control_auth, paid_fault_request())
+            .await
+            .expect("prepare fault lifecycle controls");
+        let app = crate::app::router(
+            crate::app::AppState::new(database.clone())
+                .with_ownership(ownership.status())
+                .with_pilot(handle.clone())
+                .with_full_surface(full_surface),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fault lifecycle server");
+        let address = listener.local_addr().expect("fault lifecycle address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve fault lifecycle");
+        });
+
+        let (mut socket, _) = connect_async(format!("ws://{address}/ws/provider"))
+            .await
+            .expect("fault lifecycle provider websocket");
+        let signing_key = SigningKey::generate();
+        let session = v2_handshake(
+            &mut socket,
+            &signing_key,
+            ProviderProcessGenerationId::new([42; 16]),
+        )
+        .await;
+        wait_inference_count(&handle, 1).await;
+        let (terminal_tx, mut terminal_rx) = mpsc::channel(7);
+        let provider_signing_key = signing_key.clone();
+        let provider = tokio::spawn(async move {
+            for request_number in 0_u8..7 {
+                let prepare = receive_prepare(&mut socket).await;
+                let terminal = serve_v2_request_from_prepare(
+                    &mut socket,
+                    &provider_signing_key,
+                    session,
+                    request_number,
+                    prepare,
+                )
+                .await;
+                terminal_tx
+                    .send(terminal)
+                    .await
+                    .expect("retain terminal for restart");
+            }
+            let prepare = receive_prepare(&mut socket).await;
+            send_prepared_only(&mut socket, session, &prepare).await;
+            let first_after_prepared = timeout(Duration::from_secs(5), socket.next())
+                .await
+                .expect("sent-unknown provider was not fenced");
+            match first_after_prepared {
+                None | Some(Err(_)) => {}
+                Some(Ok(Message::Text(payload))) => {
+                    let message: CoordinatorControlMessage =
+                        serde_json::from_str(&payload).expect("ambiguous Start JSON");
+                    let CoordinatorControlMessage::Start(start) = message else {
+                        panic!("unexpected control after ambiguous Start: {message:?}");
+                    };
+                    assert_eq!(
+                        start.identity, prepare.identity,
+                        "ambiguous transport changed the authorized lease"
+                    );
+                    let closed = timeout(Duration::from_secs(5), socket.next())
+                        .await
+                        .expect("sent-unknown provider remained open after Start");
+                    assert!(
+                        closed.is_none() || closed.is_some_and(|message| message.is_err()),
+                        "sent-unknown provider was not fenced after an ambiguous Start"
+                    );
+                }
+                Some(Ok(other)) => {
+                    panic!("unexpected frame after ambiguous Start: {other:?}");
+                }
+            }
+        });
+
+        let mut terminals = Vec::new();
+        let scenarios = [
+            (
+                FaultPoint::ReserveCommit,
+                "paid_http_reserve_commit",
+                &["exactly_one_disposition", "no_double_money_mutation"][..],
+            ),
+            (
+                FaultPoint::ResizeAuthorization,
+                "paid_http_resize_authorization",
+                &["no_double_money_mutation", "no_failover_after_auth"][..],
+            ),
+            (
+                FaultPoint::StartQueued,
+                "paid_http_start_queued",
+                &["no_failover_after_auth", "same_lease_recovery"][..],
+            ),
+            (
+                FaultPoint::StartOnWire,
+                "paid_http_start_on_wire",
+                &["no_failover_after_auth", "same_lease_recovery"][..],
+            ),
+            (
+                FaultPoint::TerminalReceive,
+                "paid_http_terminal_receive",
+                &["exactly_one_disposition", "historical_ack"][..],
+            ),
+            (
+                FaultPoint::TerminalCommit,
+                "paid_http_terminal_commit",
+                &[
+                    "exactly_one_disposition",
+                    "no_double_money_mutation",
+                    "historical_ack",
+                ][..],
+            ),
+            (
+                FaultPoint::TerminalAck,
+                "paid_http_terminal_ack",
+                &["historical_ack", "exactly_one_disposition"][..],
+            ),
+        ];
+        let client = reqwest::Client::new();
+        for (index, (point, test_id, assertions)) in scenarios.into_iter().enumerate() {
+            let fault = arm(point, FaultAction::Delay).expect("arm async lifecycle delay");
+            let request_client = client.clone();
+            let request_url = format!("http://{address}/v1/chat/completions");
+            let request = tokio::spawn(async move {
+                let response = request_client
+                    .post(request_url)
+                    .bearer_auth(CONSUMER_KEY)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("idempotency-key", format!("fault-paid-{index}"))
+                    .body(paid_fault_request())
+                    .send()
+                    .await
+                    .expect("fault lifecycle HTTP response");
+                let status = response.status();
+                let body = response.text().await.expect("fault lifecycle body");
+                (status, body)
+            });
+            fault
+                .wait_until_hit(Duration::from_secs(5))
+                .await
+                .expect("real lifecycle checkpoint");
+            assert_paid_fault_boundary(&pool, point, index + 1).await;
+            fault.release();
+            let (status, body) = timeout(Duration::from_secs(10), request)
+                .await
+                .expect("fault lifecycle request timeout")
+                .expect("fault lifecycle request task");
+            assert_eq!(status, StatusCode::OK, "unexpected response: {body}");
+            assert!(body.contains("\"content\":\"hello\""));
+            terminals.push(
+                timeout(Duration::from_secs(5), terminal_rx.recv())
+                    .await
+                    .expect("provider terminal completion timeout")
+                    .expect("provider terminal channel closed early"),
+            );
+            write_test_receipt(test_id, &[&fault], assertions)
+                .expect("write real lifecycle receipt");
+            drop(fault);
+        }
+        let sent_unknown_fault =
+            arm(FaultPoint::StartSentUnknown, FaultAction::Fail).expect("arm sent-unknown fault");
+        let sent_unknown_client = client.clone();
+        let sent_unknown_request = tokio::spawn(async move {
+            let response = sent_unknown_client
+                .post(format!("http://{address}/v1/chat/completions"))
+                .bearer_auth(CONSUMER_KEY)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("idempotency-key", "fault-paid-sent-unknown")
+                .body(paid_fault_request())
+                .send()
+                .await
+                .expect("sent-unknown HTTP response");
+            let _ = response.bytes().await;
+        });
+        sent_unknown_fault
+            .wait_until_hit(Duration::from_secs(5))
+            .await
+            .expect("real Start sent-unknown checkpoint");
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let state: Option<String> = sqlx::query_scalar(
+                    "SELECT state FROM rust_coord.inference_attempts ORDER BY created_at DESC LIMIT 1",
+                )
+                .fetch_optional(&pool)
+                .await
+                .expect("inspect sent-unknown attempt");
+                if state.as_deref() == Some("sent_unknown") {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("sent-unknown disposition was not persisted");
+        let latest_attempts: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM rust_coord.inference_attempts
+            WHERE job_id = (
+                SELECT job_id FROM rust_coord.inference_jobs
+                ORDER BY created_at DESC LIMIT 1
+            )
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count sent-unknown attempts");
+        assert_eq!(latest_attempts, 1, "sent-unknown authorization failed over");
+        write_test_receipt(
+            "paid_http_start_sent_unknown",
+            &[&sent_unknown_fault],
+            &["no_failover_after_auth", "same_lease_recovery"],
+        )
+        .expect("write sent-unknown lifecycle receipt");
+        drop(sent_unknown_fault);
+        timeout(Duration::from_secs(10), sent_unknown_request)
+            .await
+            .expect("sent-unknown HTTP request did not terminate")
+            .expect("sent-unknown HTTP task");
+        provider.await.expect("fault lifecycle provider");
+        assert_eq!(terminals.len(), 7);
+        assert!(
+            terminal_rx.recv().await.is_none(),
+            "provider emitted an unexpected additional terminal"
+        );
+
+        let before_restart = paid_fault_snapshot(&pool).await;
+        assert_eq!(before_restart.jobs, 8);
+        assert_eq!(before_restart.settled_jobs, 7);
+        assert_eq!(before_restart.terminals, 7);
+        assert_eq!(before_restart.conflicts, 0);
+        assert_eq!(
+            before_restart.operations, before_restart.distinct_operations,
+            "faulted lifecycle duplicated a money operation"
+        );
+
+        handle.shutdown();
+        runtime_task
+            .await
+            .expect("fault lifecycle runtime join")
+            .expect("fault lifecycle runtime shutdown");
+        server.abort();
+        let _ = server.await;
+        pool.close().await;
+        database
+            .close(Duration::from_secs(2))
+            .await
+            .expect("close fault lifecycle database");
+        ownership
+            .release()
+            .await
+            .expect("release fault lifecycle ownership");
+
+        let pool = sqlx::PgPool::connect(&url)
+            .await
+            .expect("reconnect fault lifecycle assertions");
+        let database = crate::database::Database::connect(&url, 8, Duration::from_secs(3))
+            .await
+            .expect("restart fault lifecycle database");
+        let ownership =
+            crate::ownership::CoordinatorOwnership::configure(&database, &url, true)
+                .await
+                .expect("restart fault lifecycle ownership");
+        let (runtime, restarted_handle) = PilotRuntime::build_durable(
+            &config,
+            database.clone(),
+            ownership.status(),
+        )
+        .await
+        .expect("restart fault lifecycle runtime");
+        let runtime_task = tokio::spawn(runtime.run());
+        wait_ready(restarted_handle.clone()).await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind restarted fault lifecycle server");
+        let address = listener
+            .local_addr()
+            .expect("restarted fault lifecycle address");
+        let app = crate::app::router(
+            crate::app::AppState::new(database.clone())
+                .with_ownership(ownership.status())
+                .with_pilot(restarted_handle.clone()),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve restarted fault lifecycle");
+        });
+        let (mut socket, _) = connect_async(format!("ws://{address}/ws/provider"))
+            .await
+            .expect("reconnect fault lifecycle provider");
+        let restarted_session = v2_handshake(
+            &mut socket,
+            &signing_key,
+            ProviderProcessGenerationId::new([43; 16]),
+        )
+        .await;
+        assert!(
+            terminals
+                .iter()
+                .all(|terminal| restarted_session.session_epoch > terminal.identity.session_epoch),
+            "restarted provider session did not fence historical terminal epochs"
+        );
+        for terminal in &terminals {
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&ProviderControlMessage::Terminal(terminal.clone()))
+                        .expect("historical terminal JSON")
+                        .into(),
+                ))
+                .await
+                .expect("replay historical terminal after restart");
+            let acknowledgement =
+                receive_historical_terminal_ack(&mut socket, terminal).await;
+            assert_eq!(acknowledgement.disposition, TerminalDisposition::Settled);
+        }
+        assert_eq!(paid_fault_snapshot(&pool).await, before_restart);
+
+        socket
+            .close(None)
+            .await
+            .expect("close restarted fault lifecycle provider");
+        restarted_handle.shutdown();
+        runtime_task
+            .await
+            .expect("restarted fault runtime join")
+            .expect("restarted fault runtime shutdown");
+        server.abort();
+        let _ = server.await;
+        pool.close().await;
+        database
+            .close(Duration::from_secs(2))
+            .await
+            .expect("close restarted fault database");
+        ownership
+            .release()
+            .await
+            .expect("release restarted fault ownership");
+        let _ = std::fs::remove_dir_all(state_directory);
+    })
+    .await;
+}
+
+#[cfg(feature = "fault-injection")]
+async fn seed_paid_fault_surface(pool: &sqlx::PgPool) {
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO public.model_registry (
+            id, display_name, max_context_length, max_output_length,
+            capabilities, status
+        ) VALUES (
+            'darkbloom/pilot-text', 'Pilot Text', 8192, 4096,
+            ARRAY['text'], 'active'
+        );
+        WITH version AS (
+            INSERT INTO public.model_versions (
+                model_id, version, r2_prefix, aggregate_sha256,
+                total_size_bytes, file_count, status
+            ) VALUES (
+                'darkbloom/pilot-text', '1', 'models/pilot',
+                repeat('a', 64), 1, 1, 'ready'
+            )
+            RETURNING id
+        )
+        INSERT INTO public.model_active_versions (model_id, model_version_id)
+        SELECT 'darkbloom/pilot-text', id FROM version;
+        INSERT INTO public.model_prices (
+            account_id, model, input_price, output_price
+        ) VALUES
+            ('platform', 'darkbloom/pilot-text', 1000000, 2000000),
+            ('provider', 'darkbloom/pilot-text', 3000000, 4000000);
+        UPDATE public.billing_runtime_settings
+        SET provider_share_ppm = 750000, referral_share_ppm = 0;
+        INSERT INTO public.providers (
+            id, account_id, connected, session_id, session_epoch,
+            trust_level, hardware, models, backend
+        ) VALUES (
+            '01010101-0101-0101-0101-010101010101',
+            'provider', TRUE, 'fault-paid-session', 1, 'hardware',
+            '{}'::JSONB, '[{"id":"darkbloom/pilot-text"}]'::JSONB, 'mlx'
+        );
+        INSERT INTO public.balances (
+            account_id, balance_micro_usd, withdrawable_micro_usd
+        ) VALUES ('consumer', 1000, 1000);
+        INSERT INTO public.users (account_id, privy_user_id, email, role)
+        VALUES ('consumer', 'did:privy:fault-consumer', 'fault@example.test', '');
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("seed paid fault lifecycle");
+    sqlx::query(
+        r#"
+        INSERT INTO public.api_keys (
+            key_hash, raw_prefix, owner_account_id, id, name, allowed_models
+        ) VALUES ($1, 'consumer-', 'consumer', 'fault-paid-key', 'fault paid', '[]')
+        "#,
+    )
+    .bind(crate::surface::identity::hash_secret(CONSUMER_KEY))
+    .execute(pool)
+    .await
+    .expect("seed paid fault API key");
+}
+
+#[cfg(feature = "fault-injection")]
+fn paid_fault_request() -> &'static [u8] {
+    br#"{"model":"darkbloom/pilot-text","messages":[{"role":"user","content":"fault"}],"stream":true,"max_completion_tokens":4}"#
+}
+
+fn configure_paid_fault_pilot(
+    config: &mut crate::pilot::PilotConfig,
+    provider_id: darkbloom_coordinator_protocol::v2::ProviderId,
+) {
+    config.consumer_credentials = Arc::from([]);
+    config.provider_beneficiaries = Arc::from([crate::pilot::ProviderBeneficiaryEntry {
+        provider_id,
+        account_id: crate::ledger::AccountId::new("provider").expect("provider account"),
+        price_override: None,
+    }]);
+    config.paid_billing = Some(crate::pilot::PaidBillingPolicy {
+        platform_account_id: crate::ledger::AccountId::new("platform").expect("platform account"),
+        referral_account_id: None,
+        pricing_version: crate::ledger::Version::new(1).expect("pricing version"),
+        rounding_version: crate::ledger::Version::new(1).expect("rounding version"),
+        base_reservation: crate::ledger::LedgerAmount::new(1).expect("base reservation"),
+        input_micro_usd_per_million: crate::ledger::LedgerAmount::new(1_000_000)
+            .expect("input rate"),
+        output_micro_usd_per_million: crate::ledger::LedgerAmount::new(2_000_000)
+            .expect("output rate"),
+        provider_share_ppm: 750_000,
+        referral_share_ppm: 0,
+    });
+    config.trust_floor = crate::trust::TrustFloor::PUBLIC;
+    config.test_established_trust = Some(crate::trust::TrustLevel::Hardware);
+}
+
+#[cfg(feature = "fault-injection")]
+fn paid_fault_surface_config() -> crate::surface::FullSurfaceConfig {
+    let mut config = crate::surface::FullSurfaceConfig::disabled();
+    config.enabled = true;
+    config.admin_key = Arc::from("fault-admin-secret");
+    config.read_only_key = Arc::from("fault-read-only-secret");
+    config.release_key = Arc::from("fault-release-secret");
+    config.mdm_webhook_secret = Arc::from("fault-mdm-secret");
+    config
+}
+
+#[cfg(feature = "fault-injection")]
+async fn assert_paid_fault_boundary(
+    pool: &sqlx::PgPool,
+    point: crate::fault::FaultPoint,
+    expected_jobs: usize,
+) {
+    let observed_jobs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rust_coord.inference_jobs")
+        .fetch_one(pool)
+        .await
+        .expect("count fault lifecycle jobs");
+    assert_eq!(
+        observed_jobs,
+        i64::try_from(expected_jobs).expect("bounded test job count")
+    );
+    match point {
+        crate::fault::FaultPoint::ReserveCommit => {
+            let state: String = sqlx::query_scalar(
+                "SELECT state FROM rust_coord.inference_jobs ORDER BY created_at DESC LIMIT 1",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("reserved fault job");
+            assert_eq!(state, "reserved");
+        }
+        crate::fault::FaultPoint::ResizeAuthorization => {
+            let state: String = sqlx::query_scalar(
+                "SELECT state FROM rust_coord.inference_jobs ORDER BY created_at DESC LIMIT 1",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("authorized fault job");
+            assert_eq!(state, "start_authorized");
+        }
+        crate::fault::FaultPoint::StartQueued => {
+            let state: String = sqlx::query_scalar(
+                "SELECT state FROM rust_coord.inference_attempts ORDER BY created_at DESC LIMIT 1",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("queued fault attempt");
+            assert_eq!(state, "queued");
+        }
+        crate::fault::FaultPoint::StartOnWire => {
+            let state: String = sqlx::query_scalar(
+                "SELECT state FROM rust_coord.inference_attempts ORDER BY created_at DESC LIMIT 1",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("on-wire fault attempt");
+            assert_eq!(state, "on_wire");
+        }
+        crate::fault::FaultPoint::TerminalReceive => {
+            let state: String = sqlx::query_scalar(
+                "SELECT state FROM rust_coord.inference_jobs ORDER BY created_at DESC LIMIT 1",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("terminal receive fault job");
+            assert_eq!(state, "running");
+        }
+        crate::fault::FaultPoint::TerminalCommit | crate::fault::FaultPoint::TerminalAck => {
+            let state: String = sqlx::query_scalar(
+                "SELECT state FROM rust_coord.inference_jobs ORDER BY created_at DESC LIMIT 1",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("terminal commit fault job");
+            assert_eq!(state, "settled");
+        }
+        _ => panic!("unexpected paid fault boundary {point}"),
+    }
+}
+
+#[cfg(feature = "fault-injection")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PaidFaultSnapshot {
+    jobs: i64,
+    settled_jobs: i64,
+    terminals: i64,
+    conflicts: i64,
+    operations: i64,
+    distinct_operations: i64,
+    consumer_balance: i64,
+}
+
+#[cfg(feature = "fault-injection")]
+async fn paid_fault_snapshot(pool: &sqlx::PgPool) -> PaidFaultSnapshot {
+    let row: (i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+        r#"
+        SELECT
+            (SELECT COUNT(*) FROM rust_coord.inference_jobs),
+            (SELECT COUNT(*) FROM rust_coord.inference_jobs WHERE state = 'settled'),
+            (SELECT COUNT(*) FROM rust_coord.provider_terminals),
+            (SELECT COUNT(*) FROM rust_coord.provider_terminals WHERE conflict),
+            (SELECT COUNT(*) FROM rust_coord.financial_operations),
+            (SELECT COUNT(DISTINCT operation_key) FROM rust_coord.financial_operations),
+            (SELECT balance_micro_usd FROM public.balances WHERE account_id = 'consumer')
+        "#,
+    )
+    .fetch_one(pool)
+    .await
+    .expect("fault lifecycle snapshot");
+    PaidFaultSnapshot {
+        jobs: row.0,
+        settled_jobs: row.1,
+        terminals: row.2,
+        conflicts: row.3,
+        operations: row.4,
+        distinct_operations: row.5,
+        consumer_balance: row.6,
+    }
+}
+
+#[cfg(feature = "fault-injection")]
+async fn send_prepared_only(
+    socket: &mut TestWebSocket,
+    session: crate::provider::SessionIdentity,
+    prepare: &Prepare,
+) {
+    assert_eq!(prepare.identity.provider_id, session.provider_id);
+    assert_eq!(
+        prepare.identity.provider_process_generation,
+        session.provider_process_generation
+    );
+    assert_eq!(prepare.identity.session_epoch, session.session_epoch);
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&ProviderControlMessage::Prepared(Prepared {
+                identity: prepare.identity.clone(),
+                model: prepare.model.clone(),
+                request_digest: prepare.request_digest,
+                lease_ttl_ms: 5_000,
+                prompt_tokens: 3,
+                max_output_tokens: 4,
+                engine_queue_depth: 0,
+                reserved_kv_bytes: 2 * 1024 * 1024,
+                reserved_media_bytes: 0,
+                prefill_can_begin: true,
+                estimated_prefill_ms: Some(1),
+            }))
+            .expect("sent-unknown Prepared JSON")
+            .into(),
+        ))
+        .await
+        .expect("sent-unknown Prepared");
+}
+
+#[cfg(feature = "fault-injection")]
+async fn receive_historical_terminal_ack(
+    socket: &mut TestWebSocket,
+    terminal: &ProviderTerminal,
+) -> darkbloom_coordinator_protocol::v2::TerminalAck {
+    timeout(Duration::from_secs(15), async {
+        loop {
+            let message: CoordinatorControlMessage =
+                serde_json::from_str(&next_text(socket).await).expect("historical control JSON");
+            match message {
+                CoordinatorControlMessage::TerminalAck(acknowledgement) => {
+                    assert_eq!(acknowledgement.identity, terminal.identity);
+                    assert_eq!(acknowledgement.terminal_digest, terminal.terminal_digest);
+                    return acknowledgement;
+                }
+                CoordinatorControlMessage::CoordinatorReplayFence(proof) => {
+                    socket
+                        .send(Message::Text(
+                            serde_json::to_string(&ProviderControlMessage::ReplayFenceAck(
+                                ReplayFenceAck {
+                                    proof_id: proof.proof_id,
+                                    provider_id: proof.provider_id,
+                                    provider_process_generation: proof.provider_process_generation,
+                                },
+                            ))
+                            .expect("replay fence ACK JSON")
+                            .into(),
+                        ))
+                        .await
+                        .expect("acknowledge restart replay fence");
+                }
+                CoordinatorControlMessage::QueryAttempt(query) => {
+                    assert_eq!(query.identity, terminal.identity);
+                    socket
+                        .send(Message::Text(
+                            serde_json::to_string(&ProviderControlMessage::AttemptStatus(
+                                darkbloom_coordinator_protocol::v2::AttemptStatus {
+                                    identity: query.identity,
+                                    state: darkbloom_coordinator_protocol::v2::AttemptStatusState::Terminal,
+                                    terminal_digest: Some(terminal.terminal_digest),
+                                },
+                            ))
+                            .expect("historical terminal status JSON")
+                            .into(),
+                        ))
+                        .await
+                        .expect("report historical terminal status");
+                    socket
+                        .send(Message::Text(
+                            serde_json::to_string(&ProviderControlMessage::Terminal(
+                                terminal.clone(),
+                            ))
+                            .expect("historical terminal replay JSON")
+                            .into(),
+                        ))
+                        .await
+                        .expect("replay historical terminal after status query");
+                }
+                other => panic!("unexpected historical replay control: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("historical terminal ACK after restart")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sealed_stream_rejects_four_mib_separator_flood_and_restores_global_budget() {
     let _resource_load_guard = RESOURCE_LOAD_TEST_LOCK.lock().await;
@@ -2965,7 +4426,7 @@ async fn dispatch_spend_capped_request(
                 .map_or_else(|| model.id.as_str().to_owned(), ToString::to_string),
         )
     };
-    let (model, output_mode, maximum_output_tokens, traits, demand) =
+    let (model, _, output_mode, maximum_output_tokens, traits, demand) =
         parse_request_facts(&plaintext, &configured_model, &alias)?;
     let billing = handle
         .authorize_consumer(CONSUMER_KEY)
@@ -3153,6 +4614,28 @@ async fn send_terminal(
         ))
         .await
         .expect("terminal");
+}
+
+#[cfg(feature = "fault-injection")]
+fn signed_error_terminal(signing_key: &SigningKey, prepare: &Prepare) -> ProviderTerminal {
+    let mut terminal = ProviderTerminal {
+        identity: prepare.identity.clone(),
+        outcome: TerminalOutcome::Error,
+        error_class: Some(StructuredErrorClass::Fault),
+        prompt_tokens: 3,
+        completion_tokens: 0,
+        reasoning_tokens: 0,
+        response_hash: Digest::new(Sha256::digest([]).into()),
+        final_generated_tokens: 0,
+        rolling_digest: Digest::new([0; 32]),
+        model: prepare.model.clone(),
+        terminal_digest: Digest::default(),
+        signature: TerminalSignature::default(),
+    };
+    terminal.terminal_digest = terminal.computed_digest().expect("error terminal digest");
+    let signature: DerSignature = signing_key.sign(terminal.terminal_digest.as_bytes());
+    terminal.signature = TerminalSignature::new(signature.as_bytes().to_vec());
+    terminal
 }
 
 async fn assert_cancel_for(socket: &mut TestWebSocket, expected: &AttemptIdentity) {

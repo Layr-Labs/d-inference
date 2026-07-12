@@ -13,15 +13,24 @@ pub fn authenticate_consumer(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .filter(|value| !value.is_empty())
-        .ok_or_else(unauthorized)?;
-    pilot.authorize_consumer(token).ok_or_else(unauthorized)
+        .ok_or_else(missing_credentials)?;
+    pilot.authorize_consumer(token).ok_or_else(invalid_api_key)
 }
 
-fn unauthorized() -> ApiError {
+fn missing_credentials() -> ApiError {
     ApiError::new(
         StatusCode::UNAUTHORIZED,
-        "invalid_api_key",
         "authentication_error",
-        "invalid pilot API key",
+        "authentication_error",
+        "missing credentials — use Authorization: Bearer <token>",
+    )
+}
+
+fn invalid_api_key() -> ApiError {
+    ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        "authentication_error",
+        "authentication_error",
+        "invalid API key",
     )
 }

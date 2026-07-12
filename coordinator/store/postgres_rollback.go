@@ -107,7 +107,8 @@ func (s *PostgresStore) CheckRollbackSafe(ctx context.Context) error {
 		return fmt.Errorf("store: inspect Rust schema history: %w", err)
 	}
 	if rustMinimum != 1 || rustCount != rustMaximum ||
-		(rustMaximum != 1 && rustMaximum != 2 && rustMaximum != 3 && rustMaximum != 4) {
+		(rustMaximum != 1 && rustMaximum != 2 && rustMaximum != 3 &&
+			rustMaximum != 4 && rustMaximum != 5) {
 		return fmt.Errorf(
 			"store: unsafe Go rollback: unsupported Rust schema history min=%d max=%d count=%d",
 			rustMinimum, rustMaximum, rustCount,

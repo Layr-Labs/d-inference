@@ -251,7 +251,7 @@ async fn dispatch(
         std::time::Duration::from_millis(250),
         if parsed.is_ok() { "success" } else { "failure" },
     );
-    let (model, output_mode, maximum_output_tokens, traits, demand) = parsed?;
+    let (model, _requested_model, output_mode, maximum_output_tokens, traits, demand) = parsed?;
     if maximum_output_tokens > prepared.catalog.maximum_output_tokens
         || demand.total_tokens().get() > prepared.catalog.maximum_context_tokens
     {

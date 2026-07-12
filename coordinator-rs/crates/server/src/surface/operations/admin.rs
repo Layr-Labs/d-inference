@@ -20,7 +20,7 @@ use crate::telemetry::{
 
 use super::{
     OperationsState,
-    auth::{require_admin, require_admin_key},
+    auth::{require_admin, require_admin_key, require_read_only},
     error::OperationsError,
 };
 
@@ -136,9 +136,9 @@ pub(super) struct MetricsQuery {
 pub(super) async fn metrics(
     State(state): State<Arc<OperationsState>>,
     Query(query): Query<MetricsQuery>,
-    request: Request,
+    headers: HeaderMap,
 ) -> Result<Response, OperationsError> {
-    require_admin_key(&state.auth, request.headers())?;
+    require_read_only(&state.auth, &headers)?;
     let counters = state.metrics.snapshot();
     let telemetry = state.telemetry.summary();
     let telemetry_delivery = state.telemetry_service.metrics();
@@ -146,7 +146,6 @@ pub(super) async fn metrics(
     let durable_states = state_metrics::snapshot(&state.database)
         .await
         .map_err(|error| OperationsError::internal("snapshot durable state counts", error))?;
-    durable_states.emit_datadog();
     let fleet = state.pilot().map(|pilot| pilot.fleet_snapshot());
     let pilot_telemetry = state.pilot().map(|pilot| {
         let latency = pilot.telemetry().latency_summary().map(|summary| {
@@ -347,15 +346,22 @@ pub(super) async fn utilization(
     State(state): State<Arc<OperationsState>>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, OperationsError> {
-    require_admin_key(&state.auth, &headers)?;
+    require_read_only(&state.auth, &headers)?;
     let Some(pilot) = state.pilot() else {
         return Ok(Json(json!({
             "providers": 0, "active_leases": 0, "by_model": [],
             "token_capacity": 0, "tokens_in_use": 0,
             "concurrency_limit": 0, "concurrency_in_use": 0,
+            "protocol": {
+                "v1": 0,
+                "v2": 0,
+                "v2_inference_eligible": 0,
+            },
         })));
     };
     let fleet = pilot.fleet_snapshot();
+    let (protocol_v1, protocol_v2, protocol_v2_inference_eligible) =
+        pilot.provider_protocol_counts();
     let mut token_capacity = 0_u64;
     let mut tokens_in_use = 0_u64;
     let mut concurrency_limit = 0_u64;
@@ -405,6 +411,11 @@ pub(super) async fn utilization(
         "concurrency_in_use": concurrency_in_use,
         "token_utilization": ratio(tokens_in_use, token_capacity),
         "concurrency_utilization": ratio(concurrency_in_use, concurrency_limit),
+        "protocol": {
+            "v1": protocol_v1,
+            "v2": protocol_v2,
+            "v2_inference_eligible": protocol_v2_inference_eligible,
+        },
         "by_model": by_model,
     })))
 }
@@ -552,9 +563,9 @@ async fn ready_to_fence_external(state: &OperationsState) -> Result<bool, Operat
 
 pub(super) async fn quiescence(
     State(state): State<Arc<OperationsState>>,
-    request: Request,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, OperationsError> {
-    require_admin(&state.auth, &state.admin_sessions, &request)?;
+    require_read_only(&state.auth, &headers)?;
     let fleet = state.pilot().map(|pilot| pilot.fleet_snapshot());
     let providers = fleet
         .as_ref()
@@ -658,12 +669,6 @@ pub(super) async fn quiescence(
         && active_recovery_leases == 0
         && ownership_healthy
         && pilot_ready;
-    datadog::gauge(
-        Metric::DrainState,
-        f64::from(u8::from(state.is_draining())),
-        &[Tag::new(TagKey::Mode, "status")],
-    );
-    datadog::gauge(Metric::Quiescent, f64::from(u8::from(quiescent)), &[]);
     Ok(Json(json!({
         "draining": state.is_draining(),
         "external_fenced": state.admission.external_fenced(),

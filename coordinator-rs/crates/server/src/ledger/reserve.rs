@@ -419,6 +419,12 @@ impl LedgerService {
             )
             .await?;
         self.db.bounded(transaction.commit()).await?;
+        crate::fault_checkpoint_async!(ReserveCommit, "LedgerService::reserve", |error| {
+            LedgerError::CommitOutcomeUnknown {
+                operation: request.operation.key.clone(),
+                diagnostic: error.to_string().into(),
+            }
+        });
         Ok(row)
     }
 

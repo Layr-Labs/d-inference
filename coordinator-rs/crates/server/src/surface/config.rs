@@ -29,6 +29,7 @@ pub struct FullSurfaceConfig {
     pub identity: IdentitySurfaceConfig,
     pub rates: BoundedRateConfig,
     pub admin_key: Arc<str>,
+    pub read_only_key: Arc<str>,
     pub release_key: Arc<str>,
     pub mdm_webhook_secret: Arc<str>,
     pub publishing_enabled: bool,
@@ -54,6 +55,7 @@ impl fmt::Debug for FullSurfaceConfig {
             .field("identity", &self.identity)
             .field("rates", &self.rates)
             .field("admin_key_configured", &!self.admin_key.is_empty())
+            .field("read_only_key_configured", &!self.read_only_key.is_empty())
             .field("release_key_configured", &!self.release_key.is_empty())
             .field(
                 "mdm_webhook_secret_configured",
@@ -88,6 +90,7 @@ impl FullSurfaceConfig {
             identity: IdentitySurfaceConfig::default(),
             rates: BoundedRateConfig::default(),
             admin_key: Arc::from(""),
+            read_only_key: Arc::from(""),
             release_key: Arc::from(""),
             mdm_webhook_secret: Arc::from(""),
             publishing_enabled: false,
@@ -158,6 +161,7 @@ impl FullSurfaceConfig {
             },
             rates: BoundedRateConfig::default(),
             admin_key: Arc::from(required(lookup, "EIGENINFERENCE_ADMIN_KEY")?),
+            read_only_key: Arc::from(required(lookup, "EIGENINFERENCE_READ_ONLY_KEY")?),
             release_key: Arc::from(required(lookup, "EIGENINFERENCE_RELEASE_KEY")?),
             mdm_webhook_secret: Arc::from(required(lookup, "EIGENINFERENCE_MDM_WEBHOOK_SECRET")?),
             publishing_enabled: env_bool(lookup, "MODEL_REGISTRY_PUBLISHING_ENABLED", true)?,
@@ -676,6 +680,7 @@ mod tests {
             ("EIGENINFERENCE_RUST_FULL_SURFACE_ENABLED", "true"),
             ("EIGENINFERENCE_PRIVY_APP_ID", "test-privy-app"),
             ("EIGENINFERENCE_ADMIN_KEY", "admin-super-secret"),
+            ("EIGENINFERENCE_READ_ONLY_KEY", "read-only-super-secret"),
             ("EIGENINFERENCE_RELEASE_KEY", "release-super-secret"),
             ("EIGENINFERENCE_MDM_WEBHOOK_SECRET", "mdm-super-secret"),
         ])

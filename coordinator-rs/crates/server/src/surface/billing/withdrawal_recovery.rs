@@ -175,7 +175,7 @@ impl WithdrawalRecovery {
         {
             return Ok(transfer);
         }
-        match self
+        let outcome = self
             .stripe
             .create_transfer(
                 &payload.stripe_account_id,
@@ -183,8 +183,17 @@ impl WithdrawalRecovery {
                 &payload.transfer_idempotency_key,
                 &payload.withdrawal_id,
             )
-            .await
-        {
+            .await;
+        crate::fault_checkpoint_async!(
+            ExternalCallUnknown,
+            "WithdrawalRecoveryService::reconcile_transfer",
+            |error| StripeError {
+                code: String::new(),
+                message: error.to_string(),
+                outcome: StripeOutcome::Unknown,
+            }
+        );
+        match outcome {
             Ok(transfer) => Ok(transfer),
             Err(error) if error.outcome == StripeOutcome::Unknown => self
                 .stripe
@@ -213,7 +222,7 @@ impl WithdrawalRecovery {
         {
             return Ok(payout);
         }
-        match self
+        let outcome = self
             .stripe
             .create_payout(
                 &payload.stripe_account_id,
@@ -221,8 +230,8 @@ impl WithdrawalRecovery {
                 &payload.payout_idempotency_key,
                 &payload.withdrawal_id,
             )
-            .await
-        {
+            .await;
+        match outcome {
             Ok(payout) => Ok(payout),
             Err(error) if error.outcome == StripeOutcome::Unknown => self
                 .stripe

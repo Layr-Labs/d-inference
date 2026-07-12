@@ -18,7 +18,7 @@ const (
 	// MinimumSupportedSchemaVersion and MaximumSupportedSchemaVersion bound the
 	// database schemas this coordinator binary may serve against.
 	MinimumSupportedSchemaVersion int64 = 2
-	MaximumSupportedSchemaVersion int64 = 6
+	MaximumSupportedSchemaVersion int64 = 7
 
 	schemaMigrationTable = "schema_migration_versions"
 )

@@ -15,7 +15,7 @@ use crate::{
     crypto::{ProviderRequestSeal, X25519PublicKey},
     provider::{NegotiatedProtocol, ProviderWriterHandle, SessionIdentity},
     request::{BytePipeSender, CancellationReason, InboundAttemptEvent, RequestCancellation},
-    trust::{P256PublicIdentity, verify_signature},
+    trust::{P256PublicIdentity, TrustLevel, verify_signature},
 };
 
 /// Immutable request-routing view of one authenticated current session.
@@ -26,6 +26,7 @@ pub struct PilotSession {
     pub writer: ProviderWriterHandle,
     pub provider_key: X25519PublicKey,
     pub signing_key: P256PublicIdentity,
+    pub trust_level: TrustLevel,
     pub fence: ProviderFence,
     pub control_only: bool,
     pub model_eligible: bool,
@@ -236,6 +237,32 @@ impl SessionDirectory {
     }
 
     #[must_use]
+    pub fn protocol_counts(&self) -> (usize, usize, usize) {
+        self.lock()
+            .sessions
+            .values()
+            .fold((0, 0, 0), |counts, session| {
+                increment_protocol_counts(
+                    counts,
+                    session.is_v2(),
+                    !session.control_only && session.model_eligible,
+                )
+            })
+    }
+
+    #[must_use]
+    pub fn trust_counts(&self) -> (usize, usize, usize) {
+        self.lock().sessions.values().fold(
+            (0, 0, 0),
+            |(untrusted, self_signed, hardware), session| match session.trust_level {
+                TrustLevel::Untrusted => (untrusted + 1, self_signed, hardware),
+                TrustLevel::SelfSigned => (untrusted, self_signed + 1, hardware),
+                TrustLevel::Hardware => (untrusted, self_signed, hardware + 1),
+            },
+        )
+    }
+
+    #[must_use]
     pub fn sessions(&self) -> Vec<PilotSession> {
         self.lock().sessions.values().cloned().collect()
     }
@@ -247,9 +274,39 @@ impl SessionDirectory {
     }
 }
 
+fn increment_protocol_counts(
+    (v1, v2, v2_inference_eligible): (usize, usize, usize),
+    is_v2: bool,
+    inference_eligible: bool,
+) -> (usize, usize, usize) {
+    if is_v2 {
+        (
+            v1,
+            v2.saturating_add(1),
+            v2_inference_eligible.saturating_add(usize::from(inference_eligible)),
+        )
+    } else {
+        (v1.saturating_add(1), v2, v2_inference_eligible)
+    }
+}
+
 impl Default for SessionDirectory {
     fn default() -> Self {
         Self::new(4_096)
+    }
+}
+
+#[cfg(test)]
+mod protocol_count_tests {
+    use super::increment_protocol_counts;
+
+    #[test]
+    fn counts_v1_v2_and_only_inference_eligible_v2_sessions() {
+        let counts = increment_protocol_counts((0, 0, 0), false, true);
+        let counts = increment_protocol_counts(counts, true, true);
+        let counts = increment_protocol_counts(counts, true, false);
+
+        assert_eq!(counts, (1, 2, 1));
     }
 }
 

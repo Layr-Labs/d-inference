@@ -442,6 +442,11 @@ impl RequestTask {
         match state {
             Ok(DispatchState::OnWire) if attempt.phase == AttemptPhase::PrepareQueued => {
                 attempt.phase = AttemptPhase::PrepareOnWire;
+                crate::fault_checkpoint_sync!(
+                    PrepareSent,
+                    "RequestTask::observe_prepare_delivery",
+                    |error| RequestExecutionError::OutboundFailed(Arc::from(error.to_string()))
+                );
             }
             Err(RequestExecutionError::SentUnknown) => {
                 attempt.phase = AttemptPhase::SentUnknown;
@@ -480,6 +485,9 @@ impl RequestTask {
         )?;
         attempt.prepared = Some(prepared);
         attempt.phase = AttemptPhase::Prepared;
+        crate::fault_checkpoint_sync!(PrepareReceived, "RequestTask::accept_prepared", |error| {
+            RequestExecutionError::InvalidPrepared(Arc::from(error.to_string()))
+        });
         Ok(attempt_id)
     }
 
@@ -771,6 +779,9 @@ impl RequestTask {
             debug_assert!(output.first_content);
             self.state = reduction.state;
             self.event_sequence = next_sequence;
+            crate::fault_checkpoint_sync!(FirstChunk, "RequestTask::accept_chunk", |error| {
+                RequestExecutionError::OutboundFailed(Arc::from(error.to_string()))
+            });
         }
         for item in output.ready {
             if let Err(error) = self.response.try_send(item) {

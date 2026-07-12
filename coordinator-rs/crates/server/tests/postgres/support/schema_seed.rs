@@ -10,12 +10,18 @@ const PILOT_LIFECYCLE_MIGRATION: &str =
     include_str!("../../../../../migrations/000003_rust_pilot_lifecycle.sql");
 const OBJECTIVE7_CONTROLS_MIGRATION: &str =
     include_str!("../../../../../migrations/000004_objective7_controls.sql");
+const GO_RETIREMENT_AUDIT_MIGRATION: &str =
+    include_str!("../../../../../../coordinator/store/migrations/000007_go_retirement_audit.sql");
 
 pub async fn seed_durable_schema(url: &str) {
     reset_schema(url, 3, 1, 3, 3).await;
     let mut connection = PgConnection::connect(url)
         .await
         .expect("connect durable schema seed");
+    sqlx::query("SET search_path TO public")
+        .execute(&mut connection)
+        .await
+        .expect("pin durable seed schema");
     sqlx::raw_sql(LEGACY_PUBLIC_SCHEMA)
         .execute(&mut connection)
         .await
@@ -81,6 +87,16 @@ pub async fn seed_durable_schema(url: &str) {
         .execute(&mut connection)
         .await
         .expect("record public Objective 7 migration");
+    sqlx::raw_sql(GO_RETIREMENT_AUDIT_MIGRATION)
+        .execute(&mut connection)
+        .await
+        .expect("apply Go retirement audit migration");
+    sqlx::query(
+        "INSERT INTO public.schema_migration_versions (version, checksum) VALUES (7, 'eee91c778786161b6dac8c070c82a130c4c96c98f2a0bb96f28876b864cdb62d')",
+    )
+    .execute(&mut connection)
+    .await
+    .expect("record public Go retirement audit migration");
     connection.close().await.expect("close durable schema seed");
 }
 
@@ -134,6 +150,7 @@ pub async fn reset_schema(
             maximum_public_schema_version BIGINT NOT NULL,
             applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+        SET search_path TO public;
         "#,
     )
     .execute(&mut connection)
@@ -149,6 +166,7 @@ pub async fn reset_schema(
             WHEN 4 THEN '9a76eb79c49a4ba8bf576eb07cd8e6c9386641b9e4978cbaffa781321296b3d5'
             WHEN 5 THEN 'c4a118c607d2d0951d644ecc9db3621d31dcf7a4aecdb9485f7b8ecf4533b129'
             WHEN 6 THEN 'f2e426e4d4bd1d34c908ab724b43d89c2bcabf422323902de321fda83ce4a5a5'
+            WHEN 7 THEN 'eee91c778786161b6dac8c070c82a130c4c96c98f2a0bb96f28876b864cdb62d'
             ELSE repeat('0', 64)
         END
         FROM generate_series(1, $1) AS version

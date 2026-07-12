@@ -74,6 +74,7 @@ export interface MyProvider {
   models: MyModelInfo[];
   backend?: string;
   version?: string;
+  release_channel?: "stable" | "beta";
   serial_number?: string;
 
   trust_level: "hardware" | "self_signed" | "none" | string;
@@ -125,6 +126,7 @@ export interface MyProvider {
 export interface MyProvidersResponse {
   providers: MyProvider[];
   latest_provider_version: string;
+  latest_beta_provider_version?: string;
   min_provider_version: string;
   heartbeat_timeout_seconds: number;
   challenge_max_age_seconds: number;
@@ -161,5 +163,6 @@ export interface MySummaryResponse {
   last_7d_jobs: number;
   counts: MyFleetCounts;
   latest_provider_version: string;
+  latest_beta_provider_version?: string;
   min_provider_version: string;
 }

@@ -34,6 +34,9 @@ public enum ProviderMessage: Sendable, Equatable {
         /// When true, this machine serves only its owner's self-route requests,
         /// never the public fleet. Mirrors RegisterMessage.PrivateOnly (Go).
         public var privateOnly: Bool
+        /// Persisted automatic-update cohort. Stable is omitted on the wire for
+        /// compatibility; beta providers remain normal public traffic workers.
+        public var releaseChannel: ProviderReleaseChannel
         /// APNs code-identity attestation (v0.6.0). Device token the coordinator
         /// pushes the E_K(nonce) challenge to + which APNs environment it belongs
         /// to. Mirrors RegisterMessage.APNsDeviceToken/APNsEnvironment (Go).
@@ -57,6 +60,7 @@ public enum ProviderMessage: Sendable, Equatable {
             templateHashes: [String: String] = [:],
             privacyCapabilities: PrivacyCapabilities? = nil,
             privateOnly: Bool = false,
+            releaseChannel: ProviderReleaseChannel = .stable,
             apnsDeviceToken: String? = nil,
             apnsEnvironment: String? = nil
         ) {
@@ -76,6 +80,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.templateHashes = templateHashes
             self.privacyCapabilities = privacyCapabilities
             self.privateOnly = privateOnly
+            self.releaseChannel = releaseChannel
             self.apnsDeviceToken = apnsDeviceToken
             self.apnsEnvironment = apnsEnvironment
         }
@@ -336,6 +341,7 @@ extension ProviderMessage: Codable {
         case templateHashes = "template_hashes"
         case privacyCapabilities = "privacy_capabilities"
         case privateOnly = "private_only"
+        case releaseChannel = "release_channel"
         case apnsDeviceToken = "apns_device_token"
         case apnsEnvironment = "apns_environment"
         // Heartbeat
@@ -401,6 +407,9 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(r.privacyCapabilities, forKey: .privacyCapabilities)
             if r.privateOnly {
                 try container.encode(true, forKey: .privateOnly)
+            }
+            if r.releaseChannel != .stable {
+                try container.encode(r.releaseChannel, forKey: .releaseChannel)
             }
             try container.encodeIfPresent(r.apnsDeviceToken, forKey: .apnsDeviceToken)
             try container.encodeIfPresent(r.apnsEnvironment, forKey: .apnsEnvironment)
@@ -519,6 +528,7 @@ extension ProviderMessage: Codable {
                 templateHashes: try container.decodeIfPresent([String: String].self, forKey: .templateHashes) ?? [:],
                 privacyCapabilities: try container.decodeIfPresent(PrivacyCapabilities.self, forKey: .privacyCapabilities),
                 privateOnly: try container.decodeIfPresent(Bool.self, forKey: .privateOnly) ?? false,
+                releaseChannel: try container.decodeIfPresent(ProviderReleaseChannel.self, forKey: .releaseChannel) ?? .stable,
                 apnsDeviceToken: try container.decodeIfPresent(String.self, forKey: .apnsDeviceToken),
                 apnsEnvironment: try container.decodeIfPresent(String.self, forKey: .apnsEnvironment)
             ))

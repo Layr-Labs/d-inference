@@ -74,6 +74,17 @@ struct WatchdogCommandTests {
         #expect(!settings.autoUpdate)
     }
 
+    @Test("watchdog uses the persisted beta release channel")
+    func honoursReleaseChannel() {
+        let url = writeTempConfig("""
+        [provider]
+        name = "x"
+        release_channel = "beta"
+        """)
+        defer { try? FileManager.default.removeItem(at: url) }
+        #expect(Watchdog.settings(configPath: url.path).releaseChannel == .beta)
+    }
+
     @Test("DARKBLOOM_NO_UPDATE_CHECK disables only watchdog updates")
     func environmentUpdateOptOut() {
         let url = writeTempConfig("""

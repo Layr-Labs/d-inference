@@ -126,6 +126,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			mda_verified BOOLEAN NOT NULL DEFAULT FALSE,
 			mda_cert_chain JSONB,
 			version TEXT NOT NULL DEFAULT '',
+			release_channel TEXT NOT NULL DEFAULT 'stable',
 			runtime_verified BOOLEAN NOT NULL DEFAULT FALSE,
 			python_hash TEXT NOT NULL DEFAULT '',
 			runtime_hash TEXT NOT NULL DEFAULT '',
@@ -150,6 +151,12 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS mda_verified BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS mda_cert_chain JSONB; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS version TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS release_channel TEXT NOT NULL DEFAULT 'stable'; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'providers_release_channel_check') THEN
+				ALTER TABLE providers ADD CONSTRAINT providers_release_channel_check CHECK (release_channel IN ('stable', 'beta'));
+			END IF;
+		END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS runtime_verified BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS python_hash TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS runtime_hash TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
@@ -484,6 +491,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS releases (
 			version TEXT NOT NULL,
 			platform TEXT NOT NULL,
+			channel TEXT NOT NULL DEFAULT 'stable',
 			backend TEXT NOT NULL DEFAULT '',
 			binary_hash TEXT NOT NULL DEFAULT '',
 			bundle_hash TEXT NOT NULL DEFAULT '',
@@ -498,6 +506,15 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (version, platform)
 		)`,
+		`DO $$ BEGIN
+			ALTER TABLE releases ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'stable';
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
+		`DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'releases_channel_check') THEN
+				ALTER TABLE releases ADD CONSTRAINT releases_channel_check CHECK (channel IN ('stable', 'beta'));
+			END IF;
+		END $$`,
 		`DO $$ BEGIN
 			ALTER TABLE releases ADD COLUMN IF NOT EXISTS backend TEXT NOT NULL DEFAULT '';
 		EXCEPTION WHEN others THEN NULL;
@@ -3680,18 +3697,30 @@ func (s *PostgresStore) ListStripeWithdrawalsForStripeAccount(stripeAccountID, s
 func (s *PostgresStore) SetRelease(release *Release) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if !validReleaseVersion(release.Version) || release.Platform == "" {
+		return fmt.Errorf("version and platform must be valid")
+	}
+	channel, ok := normalizeReleaseChannel(release.Channel)
+	if !ok {
+		return fmt.Errorf("invalid release channel %q", release.Channel)
+	}
+	release.Channel = channel
 
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO releases (version, platform, backend, binary_hash, bundle_hash, metallib_hash, python_hash, runtime_hash, template_hashes, url, changelog, active, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, NOW())
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO releases (version, platform, backend, binary_hash, bundle_hash, metallib_hash, python_hash, runtime_hash, template_hashes, url, changelog, channel, active, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, TRUE, NOW())
 		 ON CONFLICT (version, platform) DO UPDATE SET
-		   backend = $3, binary_hash = $4, bundle_hash = $5, metallib_hash = $6, python_hash = $7, runtime_hash = $8, template_hashes = $9, url = $10, changelog = $11, active = TRUE`,
+		   backend = $3, binary_hash = $4, bundle_hash = $5, metallib_hash = $6, python_hash = $7, runtime_hash = $8, template_hashes = $9, url = $10, changelog = $11, active = TRUE
+		 WHERE releases.channel = EXCLUDED.channel`,
 		release.Version, release.Platform, release.Backend, release.BinaryHash, release.BundleHash,
 		release.MetallibHash, release.PythonHash, release.RuntimeHash, release.TemplateHashes,
-		release.URL, release.Changelog,
+		release.URL, release.Changelog, release.Channel,
 	)
 	if err != nil {
 		return fmt.Errorf("store: set release: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("release %s/%s is already registered on a different channel", release.Version, release.Platform)
 	}
 	return nil
 }
@@ -3701,7 +3730,7 @@ func (s *PostgresStore) ListReleases() []Release {
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT version, platform, COALESCE(backend, ''), binary_hash, bundle_hash, COALESCE(metallib_hash, ''),
+		`SELECT version, platform, COALESCE(channel, 'stable'), COALESCE(backend, ''), binary_hash, bundle_hash, COALESCE(metallib_hash, ''),
 		        COALESCE(python_hash, ''), COALESCE(runtime_hash, ''), COALESCE(template_hashes, ''),
 		        url, changelog, active, created_at
 		 FROM releases ORDER BY created_at DESC`,
@@ -3714,7 +3743,7 @@ func (s *PostgresStore) ListReleases() []Release {
 	var releases []Release
 	for rows.Next() {
 		var r Release
-		if err := rows.Scan(&r.Version, &r.Platform, &r.Backend, &r.BinaryHash, &r.BundleHash, &r.MetallibHash,
+		if err := rows.Scan(&r.Version, &r.Platform, &r.Channel, &r.Backend, &r.BinaryHash, &r.BundleHash, &r.MetallibHash,
 			&r.PythonHash, &r.RuntimeHash, &r.TemplateHashes,
 			&r.URL, &r.Changelog, &r.Active, &r.CreatedAt); err != nil {
 			continue
@@ -3724,12 +3753,15 @@ func (s *PostgresStore) ListReleases() []Release {
 	return releases
 }
 
-func (s *PostgresStore) GetLatestRelease(platform string) *Release {
+func (s *PostgresStore) GetLatestRelease(platform, channel string) *Release {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if _, ok := normalizeReleaseChannel(channel); !ok {
+		return nil
+	}
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT version, platform, COALESCE(backend, ''), binary_hash, bundle_hash, COALESCE(metallib_hash, ''),
+		`SELECT version, platform, COALESCE(channel, 'stable'), COALESCE(backend, ''), binary_hash, bundle_hash, COALESCE(metallib_hash, ''),
 		        COALESCE(python_hash, ''), COALESCE(runtime_hash, ''), COALESCE(template_hashes, ''),
 		        url, changelog, active, created_at
 		 FROM releases WHERE platform = $1 AND active = TRUE`, platform,
@@ -3742,10 +3774,13 @@ func (s *PostgresStore) GetLatestRelease(platform string) *Release {
 	var latest *Release
 	for rows.Next() {
 		var r Release
-		if err := rows.Scan(&r.Version, &r.Platform, &r.Backend, &r.BinaryHash, &r.BundleHash, &r.MetallibHash,
+		if err := rows.Scan(&r.Version, &r.Platform, &r.Channel, &r.Backend, &r.BinaryHash, &r.BundleHash, &r.MetallibHash,
 			&r.PythonHash, &r.RuntimeHash, &r.TemplateHashes,
 			&r.URL, &r.Changelog, &r.Active, &r.CreatedAt); err != nil {
 			return nil
+		}
+		if !releaseVisibleToChannel(r.Channel, channel) {
+			continue
 		}
 		if latest == nil ||
 			releaseVersionGreater(r.Version, latest.Version) ||
@@ -4393,6 +4428,11 @@ func providerStatsJSON(raw json.RawMessage) json.RawMessage {
 func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	if channel, ok := normalizeReleaseChannel(p.ReleaseChannel); ok {
+		p.ReleaseChannel = channel
+	} else {
+		p.ReleaseChannel = ReleaseChannelStable
+	}
 
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO providers (
@@ -4404,7 +4444,7 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
+			registered_at, last_seen, public_key, release_channel
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7,
 			$8, $9, $10,
@@ -4413,7 +4453,7 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			$17, $18, $19,
 			$20, $21, $22, $23,
 			$24, $25,
-			$26, $27, $28
+			$26, $27, $28, $29
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			hardware = $2, models = $3, backend = $4, location = $5,
@@ -4425,7 +4465,7 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			lifetime_requests_served = $20, lifetime_tokens_generated = $21,
 			last_session_requests_served = $22, last_session_tokens_generated = $23,
 			lifetime_stats = $24, last_session_stats = $25,
-			last_seen = $27, public_key = $28`,
+			last_seen = $27, public_key = $28, release_channel = $29`,
 		p.ID, p.Hardware, p.Models, p.Backend,
 		marshalProviderLocation(p.Location),
 		p.TrustLevel, p.Attested,
@@ -4436,7 +4476,7 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 		p.LifetimeRequestsServed, p.LifetimeTokensGenerated,
 		p.LastSessionRequestsServed, p.LastSessionTokensGenerated,
 		providerStatsJSON(p.LifetimeStats), providerStatsJSON(p.LastSessionStats),
-		p.RegisteredAt, p.LastSeen, p.PublicKey,
+		p.RegisteredAt, p.LastSeen, p.PublicKey, p.ReleaseChannel,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert provider: %w", err)
@@ -4459,7 +4499,7 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
+			registered_at, last_seen, public_key, release_channel
 		 FROM providers WHERE id = $1`, id,
 	).Scan(
 		&p.ID, &p.Hardware, &p.Models, &p.Backend,
@@ -4472,7 +4512,7 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
 		&p.LifetimeStats, &p.LastSessionStats,
-		&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
+		&p.RegisteredAt, &p.LastSeen, &p.PublicKey, &p.ReleaseChannel,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: provider not found: %w", err)
@@ -4496,7 +4536,7 @@ func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) 
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
+			registered_at, last_seen, public_key, release_channel
 		 FROM providers WHERE serial_number = $1 AND serial_number != ''
 		 ORDER BY last_seen DESC LIMIT 1`, serial,
 	).Scan(
@@ -4510,7 +4550,7 @@ func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) 
 		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
 		&p.LifetimeStats, &p.LastSessionStats,
-		&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
+		&p.RegisteredAt, &p.LastSeen, &p.PublicKey, &p.ReleaseChannel,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: provider with serial not found: %w", err)
@@ -4556,7 +4596,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
+			registered_at, last_seen, public_key, release_channel
 		 FROM providers ORDER BY last_seen DESC`,
 	)
 	if err != nil {
@@ -4579,7 +4619,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
 			&p.LifetimeStats, &p.LastSessionStats,
-			&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
+			&p.RegisteredAt, &p.LastSeen, &p.PublicKey, &p.ReleaseChannel,
 		); err != nil {
 			continue
 		}
@@ -4618,7 +4658,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
+			registered_at, last_seen, public_key, release_channel
 		 FROM providers
 		 WHERE account_id = $1
 		 ORDER BY COALESCE(NULLIF(serial_number, ''),
@@ -4647,7 +4687,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
 			&p.LifetimeStats, &p.LastSessionStats,
-			&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
+			&p.RegisteredAt, &p.LastSeen, &p.PublicKey, &p.ReleaseChannel,
 		); err != nil {
 			continue
 		}

@@ -1,9 +1,39 @@
 package store
 
 import (
-	"fmt"
 	"strings"
+
+	"golang.org/x/mod/semver"
 )
+
+const (
+	ReleaseChannelStable = "stable"
+	ReleaseChannelBeta   = "beta"
+)
+
+func normalizeReleaseChannel(channel string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(channel)) {
+	case "", ReleaseChannelStable:
+		return ReleaseChannelStable, true
+	case ReleaseChannelBeta:
+		return ReleaseChannelBeta, true
+	default:
+		return "", false
+	}
+}
+
+func releaseVisibleToChannel(releaseChannel, requestedChannel string) bool {
+	releaseChannel, releaseOK := normalizeReleaseChannel(releaseChannel)
+	requestedChannel, requestedOK := normalizeReleaseChannel(requestedChannel)
+	if !releaseOK || !requestedOK {
+		return false
+	}
+	return releaseChannel == ReleaseChannelStable || requestedChannel == ReleaseChannelBeta
+}
+
+func validReleaseVersion(version string) bool {
+	return semver.IsValid("v" + strings.TrimPrefix(strings.TrimSpace(version), "v"))
+}
 
 func releaseVersionGreater(a, b string) bool {
 	if a == "" {
@@ -12,22 +42,5 @@ func releaseVersionGreater(a, b string) bool {
 	if b == "" {
 		return true
 	}
-	aParts := strings.Split(a, ".")
-	bParts := strings.Split(b, ".")
-	for i := 0; i < len(aParts) || i < len(bParts); i++ {
-		var ai, bi int
-		if i < len(aParts) {
-			fmt.Sscanf(aParts[i], "%d", &ai)
-		}
-		if i < len(bParts) {
-			fmt.Sscanf(bParts[i], "%d", &bi)
-		}
-		if ai > bi {
-			return true
-		}
-		if ai < bi {
-			return false
-		}
-	}
-	return false
+	return semver.Compare("v"+strings.TrimPrefix(a, "v"), "v"+strings.TrimPrefix(b, "v")) > 0
 }

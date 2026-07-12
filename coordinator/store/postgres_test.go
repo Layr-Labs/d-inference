@@ -57,6 +57,7 @@ func TestPostgresProviderRecordStatsPersisted(t *testing.T) {
 		Attested:                   true,
 		SEPublicKey:                "se-key",
 		SerialNumber:               "serial-1",
+		ReleaseChannel:             ReleaseChannelBeta,
 		LifetimeRequestsServed:     42,
 		LifetimeTokensGenerated:    1234,
 		LastSessionRequestsServed:  7,
@@ -85,6 +86,9 @@ func TestPostgresProviderRecordStatsPersisted(t *testing.T) {
 	}
 	if got.LastSessionTokensGenerated != rec.LastSessionTokensGenerated {
 		t.Errorf("last_session_tokens_generated = %d, want %d", got.LastSessionTokensGenerated, rec.LastSessionTokensGenerated)
+	}
+	if got.ReleaseChannel != ReleaseChannelBeta {
+		t.Errorf("release_channel = %q, want %q", got.ReleaseChannel, ReleaseChannelBeta)
 	}
 }
 

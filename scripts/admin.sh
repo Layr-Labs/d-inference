@@ -102,7 +102,8 @@ cmd_releases_deactivate() {
 
 cmd_releases_latest() {
     local platform="${1:-macos-arm64}"
-    curl -fsSL "$COORDINATOR_URL/v1/releases/latest?platform=$platform" | python3 -m json.tool
+    local channel="${2:-stable}"
+    curl -fsSL "$COORDINATOR_URL/v1/releases/latest?platform=$platform&channel=$channel" | python3 -m json.tool
 }
 
 cmd_models_list() {
@@ -138,7 +139,7 @@ case "${1:-help}" in
         case "${2:-list}" in
             list) cmd_releases_list ;;
             deactivate) cmd_releases_deactivate "${3:-}" "${4:-}" ;;
-            latest) cmd_releases_latest "${3:-}" ;;
+            latest) cmd_releases_latest "${3:-}" "${4:-}" ;;
             *) echo "Usage: $0 releases [list|deactivate|latest]" ;;
         esac
         ;;
@@ -158,7 +159,7 @@ case "${1:-help}" in
         echo "  login                          Authenticate with Privy (email OTP)"
         echo "  logout                         Remove stored token"
         echo "  releases list                  List all releases"
-        echo "  releases latest [platform]     Show latest active release"
+        echo "  releases latest [platform] [stable|beta]  Show latest release for a channel"
         echo "  releases deactivate <version>  Deactivate a release"
         echo "  models list                    List model catalog"
         echo "  raw <METHOD> <path> [body]     Raw API call with auth"

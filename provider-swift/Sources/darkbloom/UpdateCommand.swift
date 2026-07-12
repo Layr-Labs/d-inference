@@ -35,7 +35,10 @@ struct Update: AsyncParsableCommand {
         print("")
 
         let coordinatorURL = coordinator ?? config.coordinator.url
-        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+        let updater = SelfUpdater(
+            coordinatorBaseURL: coordinatorURL,
+            releaseChannel: config.provider.releaseChannel
+        )
 
         if checkOnly {
             let result = await updater.checkForUpdate(

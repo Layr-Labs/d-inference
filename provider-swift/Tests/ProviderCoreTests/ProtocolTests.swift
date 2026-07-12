@@ -67,6 +67,31 @@ import Testing
     #expect(register.privateOnly == true)
 }
 
+@Test func registerEncodesBetaReleaseChannelOnlyWhenOptedIn() throws {
+    let stable = ProviderMessage.register(ProviderMessage.Register(
+        hardware: sampleHardware(),
+        models: [sampleModel()],
+        backend: "mlx_swift_lm"
+    ))
+    let stableObject = try jsonObject(try ProviderProtocolCodec.encodeProviderMessage(stable))
+    #expect(stableObject["release_channel"] == nil)
+
+    let beta = ProviderMessage.register(ProviderMessage.Register(
+        hardware: sampleHardware(),
+        models: [sampleModel()],
+        backend: "mlx_swift_lm",
+        releaseChannel: .beta
+    ))
+    let betaData = try ProviderProtocolCodec.encodeProviderMessage(beta)
+    let betaObject = try jsonObject(betaData)
+    #expect(betaObject["release_channel"] as? String == "beta")
+
+    guard case .register(let decoded) = try ProviderProtocolCodec.decodeProviderMessage(from: betaData) else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(decoded.releaseChannel == .beta)
+}
+
 @Test func registerEncodesAPNsFieldsOnlyWhenPresent() throws {
     // Omitted when nil (mirrors Go `omitempty`).
     let off = ProviderMessage.register(ProviderMessage.Register(
@@ -111,6 +136,7 @@ import Testing
         backend: "mlx_swift_lm",
         attestation: RawJSON(rawBytes: Data(raw.utf8)),
         privateOnly: true,
+        releaseChannel: .beta,
         apnsDeviceToken: "cb1ceb489ec9",
         apnsEnvironment: "production"
     ))
@@ -119,6 +145,7 @@ import Testing
     #expect(object["apns_device_token"] as? String == "cb1ceb489ec9")
     #expect(object["apns_environment"] as? String == "production")
     #expect(object["private_only"] as? Bool == true)
+    #expect(object["release_channel"] as? String == "beta")
     // Raw attestation bytes preserved verbatim (the reason this path exists).
     let json = String(data: data, encoding: .utf8) ?? ""
     #expect(json.contains(#""attestation":\#(raw)"#))
@@ -128,6 +155,7 @@ import Testing
     #expect(r.apnsDeviceToken == "cb1ceb489ec9")
     #expect(r.apnsEnvironment == "production")
     #expect(r.privateOnly == true)
+    #expect(r.releaseChannel == .beta)
 }
 
 @Test func codeAttestationResponseEncodesSnakeCaseAndRoundTrips() throws {

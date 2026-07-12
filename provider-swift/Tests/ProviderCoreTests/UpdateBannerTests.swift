@@ -29,16 +29,17 @@ struct UpdateBannerTests {
         #expect(!UpdateBanner.isNewerSemver("0.99.99", than: "1.0.0"))
     }
 
-    @Test("pre-release suffix is stripped before comparison")
-    func preReleaseSuffixStripped() {
+    @Test("pre-release ordering follows SemVer")
+    func preReleaseOrdering() {
         #expect(!UpdateBanner.isNewerSemver("0.5.0-rc1", than: "0.5.0"))
         #expect(UpdateBanner.isNewerSemver("0.5.1-rc1", than: "0.5.0"))
+        #expect(UpdateBanner.isNewerSemver("0.5.0-beta.2", than: "0.5.0-beta.1"))
+        #expect(UpdateBanner.isNewerSemver("0.5.0", than: "0.5.0-beta.9"))
     }
 
-    @Test("missing parts default to zero")
-    func missingPartsDefaultToZero() {
-        // "0.5" parses to [0, 5] which expands to [0, 5, 0] for comparison.
+    @Test("invalid abbreviated versions are rejected")
+    func abbreviatedVersionsRejected() {
         #expect(!UpdateBanner.isNewerSemver("0.5", than: "0.5.0"))
-        #expect(UpdateBanner.isNewerSemver("0.5.1", than: "0.5"))
+        #expect(!UpdateBanner.isNewerSemver("0.5.1", than: "0.5"))
     }
 }

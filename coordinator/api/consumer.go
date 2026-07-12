@@ -2998,7 +2998,7 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 
 	var resp types.VersionResponse
 	// Try release table first.
-	if release := s.store.GetLatestRelease("macos-arm64"); release != nil {
+	if release := s.store.GetLatestRelease("macos-arm64", store.ReleaseChannelStable); release != nil {
 		resp = types.VersionResponse{
 			Version:      release.Version,
 			Platform:     release.Platform,

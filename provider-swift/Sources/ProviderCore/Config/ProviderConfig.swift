@@ -19,6 +19,11 @@ import TOMLKit
 
 // MARK: - Config structs
 
+public enum ProviderReleaseChannel: String, Sendable, Equatable, Codable {
+    case stable
+    case beta
+}
+
 public struct ProviderSettings: Sendable, Equatable, Codable {
     public var name: String
     public var memoryReserveGB: UInt64
@@ -26,6 +31,9 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
     /// When true (default), the watchdog relaunches the provider ~5 min after a
     /// crash. `false` opts out while keeping the provider installed.
     public var autoRestart: Bool
+    /// Signed release cohort used by every manual and automatic update check.
+    /// Beta remains fully routable; this only changes release discovery.
+    public var releaseChannel: ProviderReleaseChannel
     /// Maximum random delay (seconds) inserted between staging a verified
     /// background auto-update bundle and beginning the drain+restart. Staggers
     /// fleet restarts after a release so every provider is not cold at once (the
@@ -40,13 +48,15 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
         memoryReserveGB: UInt64 = 4,
         autoUpdate: Bool = true,
         autoRestart: Bool = true,
-        updateJitterSeconds: UInt64 = 300
+        updateJitterSeconds: UInt64 = 300,
+        releaseChannel: ProviderReleaseChannel = .stable
     ) {
         self.name = name
         self.memoryReserveGB = memoryReserveGB
         self.autoUpdate = autoUpdate
         self.autoRestart = autoRestart
         self.updateJitterSeconds = updateJitterSeconds
+        self.releaseChannel = releaseChannel
     }
 
     enum CodingKeys: String, CodingKey {
@@ -55,6 +65,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
         case autoUpdate = "auto_update"
         case autoRestart = "auto_restart"
         case updateJitterSeconds = "update_jitter_seconds"
+        case releaseChannel = "release_channel"
     }
 
     public init(from decoder: Decoder) throws {
@@ -64,6 +75,8 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
         self.autoUpdate = try container.decodeIfPresent(Bool.self, forKey: .autoUpdate) ?? true
         self.autoRestart = try container.decodeIfPresent(Bool.self, forKey: .autoRestart) ?? true
         self.updateJitterSeconds = try container.decodeIfPresent(UInt64.self, forKey: .updateJitterSeconds) ?? 300
+        let rawReleaseChannel = try container.decodeIfPresent(String.self, forKey: .releaseChannel)
+        self.releaseChannel = rawReleaseChannel.flatMap(ProviderReleaseChannel.init(rawValue:)) ?? .stable
     }
 }
 

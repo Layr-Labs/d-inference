@@ -160,7 +160,10 @@ enum DoctorRunner {
         // as a follow-up. Below-min providers are still flagged indirectly: the
         // coordinator marks them RuntimeVerified=false and the trust section
         // above reports the resulting "not earning" state.
-        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+        let updater = SelfUpdater(
+            coordinatorBaseURL: coordinatorURL,
+            releaseChannel: snapshot.config.provider.releaseChannel
+        )
         switch await updater.checkForUpdate() {
         case .updateAvailable(let current, let latest):
             out.append(VersionDiagnostic.diagnose(current: current, minimum: nil, latest: latest.version))

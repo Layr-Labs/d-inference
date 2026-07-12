@@ -19,6 +19,7 @@ export type RoutingState = "routable" | "degraded" | "blocked" | "offline";
 export type RoutingCtx = Pick<
   MyProvidersResponse,
   | "latest_provider_version"
+  | "latest_beta_provider_version"
   | "min_provider_version"
   | "heartbeat_timeout_seconds"
   | "challenge_max_age_seconds"
@@ -27,6 +28,7 @@ export type RoutingCtx = Pick<
 /** Default ctx so callers (and tests) never pass undefined fields. */
 export const DEFAULT_CTX: RoutingCtx = {
   latest_provider_version: "",
+  latest_beta_provider_version: "",
   min_provider_version: "",
   heartbeat_timeout_seconds: 90,
   challenge_max_age_seconds: 360,

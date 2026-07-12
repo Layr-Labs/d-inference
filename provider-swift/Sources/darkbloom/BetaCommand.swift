@@ -5,20 +5,27 @@ import ProviderCore
 struct Beta: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "beta",
-        abstract: "Manage opt-in beta features.",
+        abstract: "Join the beta release cohort or manage beta features.",
         discussion: """
-        Beta features are experimental and off by default. Toggling one writes a
-        field in your provider TOML config, so the change also applies to the
-        launchd daemon (unlike environment variables, which the daemon does not
-        inherit).
+        The beta release cohort receives signed prereleases through the same
+        automatic update, rollback, and traffic-serving path as stable providers.
+        Cohort membership is persisted in provider.toml and reported to the
+        coordinator at registration. Individual beta feature toggles remain
+        available separately.
 
         Subcommands:
-          list                 Show all beta features and whether each is on (default).
-          enable <feature>     Turn a beta feature on.
-          disable <feature>    Turn a beta feature off.
+          list                 Show release cohort and feature states (default).
+          enable               Join the beta release cohort.
+          disable              Return to stable release discovery.
+          enable <feature>     Turn an individual beta feature on.
+          disable <feature>    Turn an individual beta feature off.
           status [feature]     Show details for all features, or one.
 
-        Most changes require a restart to take effect:
+        Cohort changes require a restart to update registration and background checks:
+          darkbloom beta enable
+          darkbloom restart
+
+        Individual features use the existing form:
           darkbloom beta enable kv-quant
           darkbloom restart
         """,
@@ -55,7 +62,7 @@ extension Beta {
             let config = snapshot.config
 
             if json {
-                let payload = BetaFeatures.all.map { feature in
+                let features = BetaFeatures.all.map { feature in
                     BetaFeatureReport(
                         id: feature.id,
                         title: feature.title,
@@ -64,12 +71,24 @@ extension Beta {
                         summary: feature.summary
                     )
                 }
-                try printJSON(payload)
+                let releaseCohort = BetaFeatureReport(
+                    id: "release-channel",
+                    title: "Beta releases",
+                    enabled: config.provider.releaseChannel == .beta,
+                    requiresRestart: true,
+                    summary: "Use `darkbloom beta enable` without a feature id to opt in."
+                )
+                try printJSON([releaseCohort] + features)
                 return
             }
 
-            print("Beta features (config: \(describeConfigPath(snapshot)))")
+            print("Beta releases: \(config.provider.releaseChannel == .beta ? "ENABLED" : "disabled")")
+            print("Release channel: \(config.provider.releaseChannel.rawValue)")
+            print("Config: \(describeConfigPath(snapshot))")
+            print("Beta providers continue serving normal network traffic.")
+            print("Change with: darkbloom beta \(config.provider.releaseChannel == .beta ? "disable" : "enable")  (then: darkbloom restart)")
             print("")
+            print("Individual beta features:")
             if BetaFeatures.all.isEmpty {
                 print("  (none available in this build)")
             } else {
@@ -79,7 +98,7 @@ extension Beta {
                 }
             }
             print("")
-            print("Enable with:  darkbloom beta enable <feature>   (then: darkbloom restart)")
+            print("Enable a feature with: darkbloom beta enable <feature>  (then: darkbloom restart)")
             print("Details with: darkbloom beta status <feature>")
         }
     }
@@ -110,6 +129,10 @@ extension Beta {
                 features = [match]
             } else {
                 features = BetaFeatures.all
+                print("Beta releases: \(config.provider.releaseChannel == .beta ? "ENABLED" : "disabled")")
+                print("  Release channel: \(config.provider.releaseChannel.rawValue)")
+                print("  Prereleases use the normal signed update, rollback, and traffic-serving path.")
+                print("  Requires `darkbloom restart` after a cohort change.")
             }
 
             print("Config: \(describeConfigPath(snapshot))")
@@ -135,11 +158,15 @@ extension Beta {
 
         @OptionGroup var configOptions: ConfigOptions
 
-        @Argument(help: "Beta feature id (see `darkbloom beta list`).")
-        var feature: String
+        @Argument(help: "Optional beta feature id. Omit it to join the beta release cohort.")
+        var feature: String?
 
         mutating func run() async throws {
-            try setBetaFeature(feature, enabled: true, configOptions: configOptions)
+            if let feature {
+                try setBetaFeature(feature, enabled: true, configOptions: configOptions)
+            } else {
+                try setBetaReleaseChannel(.beta, configOptions: configOptions)
+            }
         }
     }
 
@@ -150,11 +177,15 @@ extension Beta {
 
         @OptionGroup var configOptions: ConfigOptions
 
-        @Argument(help: "Beta feature id (see `darkbloom beta list`).")
-        var feature: String
+        @Argument(help: "Optional beta feature id. Omit it to leave the beta release cohort.")
+        var feature: String?
 
         mutating func run() async throws {
-            try setBetaFeature(feature, enabled: false, configOptions: configOptions)
+            if let feature {
+                try setBetaFeature(feature, enabled: false, configOptions: configOptions)
+            } else {
+                try setBetaReleaseChannel(.stable, configOptions: configOptions)
+            }
         }
     }
 }
@@ -186,12 +217,7 @@ private func setBetaFeature(
     // the launchd daemon resolve that canonical path first, so writing back to
     // the (legacy) snapshot.configPath would leave the restarted daemon on the
     // stale value. Re-resolving the default returns the post-migration canonical.
-    let savePath: URL
-    if configOptions.config != nil {
-        savePath = snapshot.configPath
-    } else {
-        savePath = try ConfigManager.defaultConfigPath()
-    }
+    let savePath = try betaConfigSavePath(snapshot: snapshot, configOptions: configOptions)
 
     // Already in the desired state and the target file exists — no-op.
     if feature.isEnabled(in: config) == enabled
@@ -209,4 +235,47 @@ private func setBetaFeature(
         print("  Restart to apply:  darkbloom restart")
     }
     print("  Config: \(savePath.path)")
+}
+
+private func setBetaReleaseChannel(
+    _ channel: ProviderReleaseChannel,
+    configOptions: ConfigOptions
+) throws {
+    let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+    var config = snapshot.config
+    let savePath = try betaConfigSavePath(snapshot: snapshot, configOptions: configOptions)
+
+    if config.provider.releaseChannel == channel
+        && (channel != .beta || config.provider.autoUpdate)
+        && FileManager.default.fileExists(atPath: savePath.path) {
+        print("Release channel is already \(channel.rawValue).")
+        return
+    }
+
+    config.provider.releaseChannel = channel
+    if channel == .beta {
+        config.provider.autoUpdate = true
+    }
+    try ConfigManager.save(config, to: savePath)
+
+    if channel == .beta {
+        print("Beta release cohort ENABLED.")
+        print("  This provider will receive signed beta releases and continue serving normal traffic.")
+        print("  Automatic updates are enabled so the provider stays on the beta track.")
+    } else {
+        print("Beta release cohort disabled; release channel is stable.")
+        print("  An installed beta is not downgraded; the provider stays on it until a newer stable release exists.")
+    }
+    print("  Restart to apply: darkbloom restart")
+    print("  Config: \(savePath.path)")
+}
+
+private func betaConfigSavePath(
+    snapshot: RuntimeSnapshot,
+    configOptions: ConfigOptions
+) throws -> URL {
+    if configOptions.config != nil {
+        return snapshot.configPath
+    }
+    return try ConfigManager.defaultConfigPath()
 }

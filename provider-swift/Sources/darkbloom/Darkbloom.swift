@@ -78,12 +78,18 @@ public func runUpdateBannerIfEnabled() async {
     // wrapper is uninitialized outside ArgumentParser's decoding lifecycle
     // and accessing it causes a fatal error. Pass nil to use defaults.
     let coordinatorURL: String
+    let releaseChannel: ProviderReleaseChannel
     if let snapshot = try? loadRuntimeSnapshot(configPath: nil) {
         coordinatorURL = snapshot.config.coordinator.url
+        releaseChannel = snapshot.config.provider.releaseChannel
     } else {
         coordinatorURL = "https://api.darkbloom.dev"
+        releaseChannel = .stable
     }
-    await UpdateBanner.run(coordinatorURL: coordinatorURL)
+    await UpdateBanner.run(
+        coordinatorURL: coordinatorURL,
+        releaseChannel: releaseChannel
+    )
 }
 
 // MARK: - Shared Options

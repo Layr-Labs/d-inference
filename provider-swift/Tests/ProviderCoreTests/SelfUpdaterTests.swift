@@ -158,6 +158,76 @@ struct SelfUpdaterTests {
         #expect(reason.contains("unsupported release platform"))
     }
 
+    @Test("beta updater accepts beta releases while stable updater rejects them")
+    func releaseChannelSelectionIsFailClosed() async throws {
+        let mock = MockCoordinator(release: MockReleaseFixture(
+            version: "99.0.0-beta.1",
+            channel: .beta
+        ))
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let betaResult = await SelfUpdater(
+            coordinatorBaseURL: baseURL.absoluteString,
+            releaseChannel: .beta
+        ).checkForUpdate()
+        guard case .updateAvailable(_, let betaRelease) = betaResult else {
+            Issue.record("beta updater did not accept beta release: \(betaResult)")
+            return
+        }
+        #expect(betaRelease.channel == .beta)
+
+        let stableResult = await SelfUpdater(
+            coordinatorBaseURL: baseURL.absoluteString,
+            releaseChannel: .stable
+        ).checkForUpdate()
+        guard case .checkFailed(let reason) = stableResult else {
+            Issue.record("stable updater accepted beta release: \(stableResult)")
+            return
+        }
+        #expect(reason.contains("beta release"))
+    }
+
+    @Test("stable updater rejects a beta version mislabeled as stable")
+    func stableUpdaterRejectsMislabeledBetaVersion() async throws {
+        let mock = MockCoordinator(release: MockReleaseFixture(
+            version: "99.0.0-beta.1",
+            channel: .stable
+        ))
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let result = await SelfUpdater(
+            coordinatorBaseURL: baseURL.absoluteString,
+            releaseChannel: .stable
+        ).checkForUpdate()
+        guard case .checkFailed(let reason) = result else {
+            Issue.record("stable updater accepted mislabeled beta version: \(result)")
+            return
+        }
+        #expect(reason.contains("beta version"))
+    }
+
+    @Test("beta updater accepts a newer promoted stable release")
+    func betaUpdaterAcceptsStablePromotion() async throws {
+        let mock = MockCoordinator(release: MockReleaseFixture(
+            version: "99.0.0",
+            channel: .stable
+        ))
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let result = await SelfUpdater(
+            coordinatorBaseURL: baseURL.absoluteString,
+            releaseChannel: .beta
+        ).checkForUpdate()
+        guard case .updateAvailable(_, let release) = result else {
+            Issue.record("beta updater rejected stable promotion: \(result)")
+            return
+        }
+        #expect(release.channel == .stable)
+    }
+
     @Test("ReleaseInfo sha256 compatibility returns bundle hash")
     func releaseInfoShaCompatibility() {
         let hash = String(repeating: "d", count: 64)

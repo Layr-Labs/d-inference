@@ -30,6 +30,7 @@ Sent on WebSocket connect. Go: [`RegisterMessage`](../../coordinator/protocol/me
 | `prefill_tps` / `decode_tps` | number | no | Benchmark throughput |
 | `auth_token` | string | no | Device-linked provider token from `darkbloom login` |
 | `private_only` | bool | no | `true` ⇒ only owner's self-route requests |
+| `release_channel` | string | no | `"beta"` for the opt-in beta updater cohort; omitted means stable and never changes traffic eligibility |
 | `apns_device_token` / `apns_environment` | string | no | APNs code-identity attestation (v0.6.0+) |
 | `python_hash` / `runtime_hash` | string | no | Runtime integrity hashes |
 | `template_hashes` | object | no | `name → SHA-256` |

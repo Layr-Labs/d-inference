@@ -311,7 +311,7 @@ func TestAdminDeleteReleaseBlocksActiveBinaryHashWhenEnforced(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Fatalf("delete without force status = %d, want %d; body=%s", w.Code, http.StatusConflict, w.Body.String())
 	}
-	if latest := st.GetLatestRelease("macos-arm64"); latest == nil || !latest.Active {
+	if latest := st.GetLatestRelease("macos-arm64", store.ReleaseChannelStable); latest == nil || !latest.Active {
 		t.Fatal("release should remain active after protected delete")
 	}
 
@@ -322,7 +322,7 @@ func TestAdminDeleteReleaseBlocksActiveBinaryHashWhenEnforced(t *testing.T) {
 	if forceW.Code != http.StatusOK {
 		t.Fatalf("force delete status = %d, want %d; body=%s", forceW.Code, http.StatusOK, forceW.Body.String())
 	}
-	if latest := st.GetLatestRelease("macos-arm64"); latest != nil {
+	if latest := st.GetLatestRelease("macos-arm64", store.ReleaseChannelStable); latest != nil {
 		t.Fatal("release should be inactive after forced delete")
 	}
 }

@@ -57,6 +57,10 @@ public struct BetaFeature: Sendable, Identifiable {
 
 /// The registry of opt-in beta features.
 ///
+/// These are local experimental overrides, not release-cohort gates. A beta
+/// release must ship its intended behavior in the build itself; joining the
+/// beta release channel must never require enabling every entry here by hand.
+///
 /// Adding a beta toggle = adding one ``BetaFeature`` entry here (and its backing
 /// `ProviderConfig` field). The `darkbloom beta` command and `darkbloom status`
 /// are driven entirely off this list, so they need no per-feature code.

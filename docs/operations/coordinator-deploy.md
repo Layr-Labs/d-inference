@@ -164,7 +164,8 @@ Provider releases are built and shipped by `.github/workflows/release-swift.yml`
 3. Embeds the provisioning profile and signs with Developer ID Application.
 4. Notarizes with Apple.
 5. Computes SHA-256 hashes **after** signing/notarization.
-6. Uploads the tarball to R2 under `releases/v${VERSION}` and `releases/latest`.
+6. Uploads the tarball to R2 under `releases/v${VERSION}` and the matching
+   channel pointer (`releases/latest` for stable or `releases/beta/latest` for beta).
 7. Registers the release with `POST /v1/releases` using `RELEASE_KEY`.
 8. Creates a GitHub release.
 
@@ -177,6 +178,7 @@ Tag conventions:
 | Tag shape | Environment |
 |---|---|
 | `vX.Y.Z` | Prod (requires GitHub Environment approval if configured) |
+| `vX.Y.Z-beta.N` | Prod beta cohort; registered as `channel=beta`, does not replace stable latest |
 | `vX.Y.Z-dev.N` | Dev |
 | `vX.Y.Z-swift` or `vX.Y.Z-swift.N` | Accepted aliases during migration |
 
@@ -189,6 +191,22 @@ exists** — fixed by registering the release, not by bumping code.
 git tag -a v0.7.4 -m "Release v0.7.4"
 git push origin master --tags
 ```
+
+### First beta rollout
+
+1. Deploy the coordinator schema/API changes before publishing any beta release.
+2. Ship these CLI changes in a stable provider release so existing machines can
+   run `darkbloom beta enable` and restart.
+3. Confirm opted-in machines register with `release_channel=beta` and remain in
+   normal routing before publishing a beta artifact.
+4. Publish the first beta with a strictly newer SemVer core than the bootstrap
+   stable release. For example, after stable `0.7.9`, use `0.7.10-beta.1`, not
+   `0.7.9-beta.1` (which SemVer orders below `0.7.9`).
+5. Verify stable discovery still returns the stable release and beta discovery
+   returns the beta release with `scripts/admin.sh releases latest macos-arm64 stable`
+   and `scripts/admin.sh releases latest macos-arm64 beta`.
+6. Do not raise the global minimum provider version to a beta version. Wait for
+   the promoted stable release and fleet convergence.
 
 ### Required GitHub secrets
 

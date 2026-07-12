@@ -119,6 +119,9 @@ public enum ProviderProtocolCodec {
         if register.privateOnly {
             try fields.append(("private_only", encodeValue(true)))
         }
+        if register.releaseChannel != .stable {
+            try fields.append(("release_channel", encodeValue(register.releaseChannel)))
+        }
         try appendIfPresent(register.apnsDeviceToken, key: "apns_device_token", to: &fields)
         try appendIfPresent(register.apnsEnvironment, key: "apns_environment", to: &fields)
 

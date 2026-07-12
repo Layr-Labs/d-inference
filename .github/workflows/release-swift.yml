@@ -18,6 +18,7 @@ name: Release Provider Bundle (Swift)
 #
 # Swift cutover tag conventions:
 #   - vX.Y.Z           -> prod Swift release (reviewer approval required)
+#   - vX.Y.Z-beta.N    -> prod beta-cohort release (reviewer approval required)
 #   - vX.Y.Z-dev.N     -> dev Swift release
 #   - vX.Y.Z-swift     -> accepted alias while the migration is in progress
 #   - vX.Y.Z-swift.N   -> accepted alias while the migration is in progress
@@ -52,6 +53,12 @@ on:
         description: 'Optional version string when running manually (otherwise derived from tag)'
         required: false
         type: string
+      release_channel:
+        description: 'Release cohort (tagged *-beta.* versions infer beta)'
+        required: false
+        type: choice
+        options: [stable, beta]
+        default: stable
 
 permissions:
   contents: write   # gh release create
@@ -78,27 +85,55 @@ jobs:
     outputs:
       environment: ${{ steps.pick.outputs.environment }}
       version: ${{ steps.pick.outputs.version }}
+      channel: ${{ steps.pick.outputs.channel }}
     steps:
       - id: pick
+        env:
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+          INPUT_VERSION_OVERRIDE: ${{ inputs.version_override }}
+          INPUT_RELEASE_CHANNEL: ${{ inputs.release_channel }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if [ -n "${{ inputs.environment }}" ]; then
-            ENV="${{ inputs.environment }}"
-          elif [[ "${{ github.ref_name }}" == *-dev.* ]]; then
+          if [ -n "$INPUT_ENVIRONMENT" ]; then
+            ENV="$INPUT_ENVIRONMENT"
+          elif [[ "$REF_NAME" == *-dev.* ]]; then
             ENV="dev"
           else
             ENV="prod"
           fi
           echo "environment=$ENV" >> "$GITHUB_OUTPUT"
 
-          if [ -n "${{ inputs.version_override }}" ]; then
-            VERSION="${{ inputs.version_override }}"
+          if [ -n "$INPUT_VERSION_OVERRIDE" ]; then
+            VERSION="$INPUT_VERSION_OVERRIDE"
           else
             REF="${GITHUB_REF_NAME#v}"
             VERSION="${REF%-swift*}"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Resolved env=$ENV version=$VERSION"
+
+          if [ -n "$INPUT_RELEASE_CHANNEL" ]; then
+            CHANNEL="$INPUT_RELEASE_CHANNEL"
+          elif [[ "$VERSION" == *-beta.* ]]; then
+            CHANNEL="beta"
+          else
+            CHANNEL="stable"
+          fi
+          if [[ "$VERSION" == *-beta || "$VERSION" == *-beta.* ]]; then
+            IS_BETA_VERSION=true
+          else
+            IS_BETA_VERSION=false
+          fi
+          if [ "$CHANNEL" = "beta" ] && [ "$IS_BETA_VERSION" != true ]; then
+            echo "::error::Beta releases must use a -beta SemVer prerelease (for example 0.8.0-beta.1)"
+            exit 1
+          fi
+          if [ "$CHANNEL" = "stable" ] && [ "$IS_BETA_VERSION" = true ]; then
+            echo "::error::A -beta SemVer prerelease cannot be published on the stable channel"
+            exit 1
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "Resolved env=$ENV version=$VERSION channel=$CHANNEL"
 
   build-and-release:
     name: Build, sign, notarize, upload, register
@@ -108,6 +143,7 @@ jobs:
 
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
+      RELEASE_CHANNEL: ${{ needs.resolve-env.outputs.channel }}
       ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
 
     steps:
@@ -695,15 +731,23 @@ jobs:
             "${PREFIX}/darkbloom-bundle-macos-arm64.tar.gz" \
             --endpoint-url "$R2_ENDPOINT" --only-show-errors
 
-          # Latest pointer for `install.sh` discovery. Publish under both
+          # Stable and beta pointers are separate so a beta publication can
+          # never replace the anonymous installer's stable latest artifact.
+          if [ "$RELEASE_CHANNEL" = "beta" ]; then
+            LATEST_PREFIX="s3://${R2_BUCKET}/releases/beta/latest"
+          else
+            LATEST_PREFIX="s3://${R2_BUCKET}/releases/latest"
+          fi
+
+          # Publish under both
           # the canonical `darkbloom-bundle` name and the legacy
           # `eigeninference-bundle` name for backward compatibility with
           # any caller that hardcoded the old filename.
           aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
-            "s3://${R2_BUCKET}/releases/latest/darkbloom-bundle-macos-arm64.tar.gz" \
+            "${LATEST_PREFIX}/darkbloom-bundle-macos-arm64.tar.gz" \
             --endpoint-url "$R2_ENDPOINT" --only-show-errors
           aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
-            "s3://${R2_BUCKET}/releases/latest/eigeninference-bundle-macos-arm64.tar.gz" \
+            "${LATEST_PREFIX}/eigeninference-bundle-macos-arm64.tar.gz" \
             --endpoint-url "$R2_ENDPOINT" --only-show-errors
 
       - name: Compute template hashes
@@ -744,6 +788,7 @@ jobs:
           payload = {
               "version":         os.environ["VERSION"],
               "platform":        "macos-arm64",
+              "channel":         os.environ["RELEASE_CHANNEL"],
               "backend":         "mlx-swift",
               "binary_hash":     os.environ["BINARY_HASH"],
               "bundle_hash":     os.environ["BUNDLE_HASH"],
@@ -759,13 +804,20 @@ jobs:
             -H "Content-Type: application/json" \
             -d @/tmp/release-payload.json
           echo
-          echo "Release v${VERSION} registered with coordinator"
+          echo "Release v${VERSION} registered with coordinator on ${RELEASE_CHANNEL} channel"
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          if [ "$RELEASE_CHANNEL" = "beta" ]; then
+            INSTALL_GUIDE="Join with \`darkbloom beta enable\`, restart, then use the normal automatic or manual update path."
+            RELEASE_FLAGS=(--prerelease --latest=false)
+          else
+            INSTALL_GUIDE="\`curl -fsSL ${{ env.coordinator_url }}/install.sh | bash\`"
+            RELEASE_FLAGS=()
+          fi
           cat > /tmp/release-notes.md <<NOTES
           ## Provider v${VERSION} (Swift CLI)
 
@@ -778,15 +830,14 @@ jobs:
 
           ### Install
 
-          \`\`\`bash
-          curl -fsSL ${{ env.coordinator_url }}/install.sh | bash
-          \`\`\`
+          ${INSTALL_GUIDE}
 
           NOTES
           gh release create "${{ github.ref_name }}" \
             /tmp/darkbloom-bundle-macos-arm64.tar.gz \
             --title "${{ github.ref_name }}" \
             --notes-file /tmp/release-notes.md \
+            "${RELEASE_FLAGS[@]}" \
             --generate-notes
 
       - name: Cleanup keychain

@@ -465,6 +465,10 @@ type Provider struct {
 	// PrivateOnly excludes this machine from the public fleet entirely: it
 	// serves only its owner's self-route requests. Reported at registration.
 	PrivateOnly bool
+	// ReleaseChannel is the provider's persisted updater cohort. It is
+	// observational only and never gates routing: beta providers serve the same
+	// traffic as stable providers.
+	ReleaseChannel string
 
 	// APNs code-identity attestation (v0.6.0). The device token the coordinator
 	// pushes the E_K(nonce) code-identity challenge to, bound 1:1 to PublicKey (K).
@@ -2532,6 +2536,10 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 			pubKey = "" // clear so provider can register but won't receive encrypted requests
 		}
 	}
+	releaseChannel := store.ReleaseChannelStable
+	if msg.ReleaseChannel == store.ReleaseChannelBeta {
+		releaseChannel = store.ReleaseChannelBeta
+	}
 
 	p := &Provider{
 		ID:                      id,
@@ -2541,6 +2549,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: msg.EncryptedResponseChunks,
 		PrivateOnly:             msg.PrivateOnly,
+		ReleaseChannel:          releaseChannel,
 		APNsDeviceToken:         msg.APNsDeviceToken,
 		APNsEnvironment:         msg.APNsEnvironment,
 		PrefillTPS:              msg.PrefillTPS,

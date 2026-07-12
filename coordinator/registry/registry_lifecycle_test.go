@@ -32,6 +32,36 @@ func TestDisconnectUnknown(t *testing.T) {
 	reg.Disconnect("nonexistent")
 }
 
+func TestBetaProviderRemainsPubliclyRoutable(t *testing.T) {
+	registrationRegistry := New(testLogger())
+	msg := testRegisterMessage()
+	msg.ReleaseChannel = "beta"
+	registered := registrationRegistry.Register("registered-beta", nil, msg)
+	if registered.ReleaseChannel != "beta" {
+		t.Fatalf("registered release channel = %q, want beta", registered.ReleaseChannel)
+	}
+
+	reg := New(testLogger())
+	model := "beta-routing-model"
+	p := makeSchedulerProvider(t, reg, "beta-provider", model, 80)
+	p.mu.Lock()
+	p.ReleaseChannel = "beta"
+	p.mu.Unlock()
+
+	if p.ReleaseChannel != "beta" {
+		t.Fatalf("release channel = %q, want beta", p.ReleaseChannel)
+	}
+	if p.PrivateOnly {
+		t.Fatal("beta cohort must not make a provider private-only")
+	}
+	selected, decision := reg.ReserveProviderEx(model, &PendingRequest{
+		RequestID: "beta-request", Model: model, RequestedMaxTokens: 64,
+	})
+	if selected == nil || selected.ID != p.ID {
+		t.Fatalf("beta provider was not selected: selected=%v decision=%+v", selected, decision)
+	}
+}
+
 func TestSetProviderIdle(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()

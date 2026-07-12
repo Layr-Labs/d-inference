@@ -576,16 +576,23 @@ func main() {
 			PythonHashes:   make(map[string]bool),
 			RuntimeHashes:  make(map[string]bool),
 			TemplateHashes: make(map[string]string),
+			MetallibHashes: make(map[string]bool),
 		}
 		for _, pair := range strings.Split(templateHashes, ",") {
 			parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
 			if len(parts) == 2 {
-				manifest.TemplateHashes[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+				name := strings.TrimSpace(parts[0])
+				hash := strings.TrimSpace(parts[1])
+				manifest.TemplateHashes[name] = hash
+				if name == "mlx_metallib" {
+					manifest.MetallibHashes[hash] = true
+				}
 			}
 		}
-		srv.SetRuntimeManifest(manifest)
+		srv.MergeRuntimeManifest(manifest)
 		logger.Info("runtime manifest configured from env",
 			"template_hashes", len(manifest.TemplateHashes),
+			"metallib_hashes", len(manifest.MetallibHashes),
 		)
 	}
 

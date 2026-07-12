@@ -2827,12 +2827,27 @@ func (s *MemoryStore) SetRelease(release *Release) error {
 	if release.Version == "" || release.Platform == "" {
 		return errors.New("version and platform are required")
 	}
+	if !validReleaseVersion(release.Version) {
+		return fmt.Errorf("invalid release version %q", release.Version)
+	}
 	r := *release
+	channel, ok := normalizeReleaseChannel(r.Channel)
+	if !ok {
+		return fmt.Errorf("invalid release channel %q", r.Channel)
+	}
+	r.Channel = channel
+	key := releaseKey(r.Version, r.Platform)
+	if existing, exists := s.releases[key]; exists {
+		existingChannel, _ := normalizeReleaseChannel(existing.Channel)
+		if existingChannel != r.Channel {
+			return fmt.Errorf("release %s/%s is already registered on channel %s", r.Version, r.Platform, existingChannel)
+		}
+	}
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = time.Now()
 	}
 	r.Active = true
-	s.releases[releaseKey(r.Version, r.Platform)] = &r
+	s.releases[key] = &r
 	return nil
 }
 
@@ -2849,12 +2864,15 @@ func (s *MemoryStore) ListReleases() []Release {
 	return releases
 }
 
-func (s *MemoryStore) GetLatestRelease(platform string) *Release {
+func (s *MemoryStore) GetLatestRelease(platform, channel string) *Release {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if _, ok := normalizeReleaseChannel(channel); !ok {
+		return nil
+	}
 	var latest *Release
 	for _, r := range s.releases {
-		if r.Platform != platform || !r.Active {
+		if r.Platform != platform || !r.Active || !releaseVisibleToChannel(r.Channel, channel) {
 			continue
 		}
 		if latest == nil ||
@@ -2887,6 +2905,11 @@ func (s *MemoryStore) DeleteRelease(version, platform string) error {
 func (s *MemoryStore) UpsertProvider(_ context.Context, p ProviderRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if channel, ok := normalizeReleaseChannel(p.ReleaseChannel); ok {
+		p.ReleaseChannel = channel
+	} else {
+		p.ReleaseChannel = ReleaseChannelStable
+	}
 
 	// Update serial index
 	if p.SerialNumber != "" {

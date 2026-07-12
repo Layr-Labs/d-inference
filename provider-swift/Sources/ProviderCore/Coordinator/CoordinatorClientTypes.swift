@@ -59,6 +59,7 @@ public struct CoordinatorClientConfig: Sendable {
     /// serves it exclusively to its owner's self-route requests, never the
     /// public fleet.
     public let privateOnly: Bool
+    public let releaseChannel: ProviderReleaseChannel
     /// APNs code-identity (v0.6.0): the device token to push the E_K(nonce)
     /// code-identity challenge to, and which APNs environment it belongs to.
     /// nil on headless/no-GUI boxes (no token) — those register un-attested.
@@ -79,6 +80,7 @@ public struct CoordinatorClientConfig: Sendable {
         modelHashes: [String: String] = [:],
         privacyCapabilities: PrivacyCapabilities? = nil,
         privateOnly: Bool = false,
+        releaseChannel: ProviderReleaseChannel = .stable,
         apnsDeviceToken: String? = nil,
         apnsEnvironment: String? = nil
     ) {
@@ -95,6 +97,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.modelHashes = modelHashes
         self.privacyCapabilities = privacyCapabilities
         self.privateOnly = privateOnly
+        self.releaseChannel = releaseChannel
         self.apnsDeviceToken = apnsDeviceToken
         self.apnsEnvironment = apnsEnvironment
     }
@@ -206,4 +209,3 @@ public enum CoordinatorError: Error, CustomStringConvertible {
         }
     }
 }
-

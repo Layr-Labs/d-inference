@@ -1,6 +1,32 @@
-# Beta Features
+# Beta Releases And Features
 
-Beta features are experimental provider capabilities that are **off by default**.
+The beta release cohort is opt-in and receives signed prereleases through the
+same automatic update, rollback, and traffic-serving path as stable providers.
+Joining beta does not remove the provider from public traffic.
+
+```bash
+darkbloom beta enable
+darkbloom restart
+```
+
+This writes `provider.release_channel = "beta"` to
+`~/.config/darkbloom/provider.toml`. The provider reports the cohort when it
+registers, and manual, startup, background, and watchdog update checks request
+the beta channel. Joining also enables `provider.auto_update` so the machine
+stays on the beta track. Beta discovery includes stable releases, so a final `X.Y.Z`
+naturally supersedes `X.Y.Z-beta.N`.
+
+To stop receiving future beta releases:
+
+```bash
+darkbloom beta disable
+darkbloom restart
+```
+
+Leaving beta does not downgrade an already-installed prerelease. It remains in
+place until a newer stable version is published.
+
+Individual beta features are experimental provider capabilities that are **off by default**.
 They are validated enough to try in production but may change, carry caveats, or
 only apply to specific model families. Enable them per provider when you want to
 opt in.
@@ -23,6 +49,8 @@ The registry of available features lives in
 ```bash
 darkbloom beta list                 # show all beta features and whether each is on (default)
 darkbloom beta status [feature]     # show details for all features, or one
+darkbloom beta enable               # join the beta release cohort
+darkbloom beta disable              # return to stable release discovery
 darkbloom beta enable <feature>     # turn a feature on
 darkbloom beta disable <feature>    # turn a feature off
 ```
@@ -36,8 +64,8 @@ darkbloom beta enable kv-quant
 darkbloom restart
 ```
 
-You can also see which beta features are active in `darkbloom status` (the
-`Beta features:` line), or edit the TOML directly.
+You can also see the release channel and active beta features in `darkbloom
+status`, or edit the TOML directly.
 
 ## Available features
 

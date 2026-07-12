@@ -39,6 +39,7 @@ export interface FleetData {
 
 const DEFAULT_CTX_FROM = (resp: MyProvidersResponse | null): RoutingCtx => ({
   latest_provider_version: resp?.latest_provider_version ?? "",
+  latest_beta_provider_version: resp?.latest_beta_provider_version ?? "",
   min_provider_version: resp?.min_provider_version ?? "",
   heartbeat_timeout_seconds: resp?.heartbeat_timeout_seconds ?? 90,
   challenge_max_age_seconds: resp?.challenge_max_age_seconds ?? 360,

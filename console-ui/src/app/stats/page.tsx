@@ -867,7 +867,9 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
 
       <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
         <ZoomableMapViewport
-          className="relative aspect-[2/1] min-h-[260px] overflow-hidden rounded-xl border border-border-dim shadow-inner"
+          // min-h only from sm up: with aspect-ratio, a base min-height would
+          // transfer into a 520px min-width and overflow narrow viewports.
+          className="relative aspect-[2/1] overflow-hidden rounded-xl border border-border-dim shadow-inner sm:min-h-[260px]"
           style={{
             background:
               "radial-gradient(115% 78% at 50% -10%, color-mix(in srgb, var(--accent-brand) 11%, transparent), transparent 55%), radial-gradient(85% 70% at 50% 118%, color-mix(in srgb, var(--accent-green) 7%, transparent), transparent 52%), linear-gradient(180deg, var(--bg-primary), var(--bg-secondary))",
@@ -1025,7 +1027,9 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
           )}
         </ZoomableMapViewport>
 
-        <div className="space-y-4">
+        {/* h-0 + min-h-full: the map defines the row height and this side
+            scrolls, instead of stretching the section with whitespace. */}
+        <div className="space-y-4 lg:h-0 lg:min-h-full lg:overflow-y-auto lg:pr-1">
           <div className="grid grid-cols-2 gap-3">
             <FlowMetric label="30m requests" value={formatNumber(recentRequests)} sub={`${formatNumber(peakRequests)} peak/min`} />
             <FlowMetric label="30m tokens" value={formatNumber(recentTokens)} sub={`${formatNumber(Math.round(recentTokens / recentBuckets.length))}/min avg`} />
@@ -1205,7 +1209,7 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-5">
         <div
-          className="relative aspect-[2/1] min-h-[260px] overflow-hidden rounded-lg border border-border-dim shadow-inner"
+          className="relative aspect-[2/1] overflow-hidden rounded-lg border border-border-dim shadow-inner sm:min-h-[260px]"
           style={{
             background:
               "radial-gradient(110% 80% at 50% -8%, color-mix(in srgb, var(--accent-green) 9%, transparent), transparent 55%), linear-gradient(180deg, var(--bg-primary), var(--bg-secondary))",
@@ -1272,7 +1276,9 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
           )}
         </div>
 
-        <div className="space-y-5">
+        {/* Same height-cap trick as Live Network Flow: the map sets the row
+            height and the origin/region lists scroll within it. */}
+        <div className="space-y-5 lg:h-0 lg:min-h-full lg:overflow-y-auto lg:pr-1">
           <div>
             <h3 className="text-xs font-mono text-text-tertiary uppercase tracking-wider mb-3">
               Top Origins

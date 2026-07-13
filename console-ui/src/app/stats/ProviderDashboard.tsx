@@ -286,7 +286,9 @@ export function ProviderDashboard({ providers }: { providers: ProviderStats[] })
           </div>
         ) : (
           <div className="grid items-start gap-3 md:grid-cols-[minmax(235px,0.78fr)_minmax(0,1.22fr)]">
-            <div className="space-y-2 md:max-h-[760px] md:overflow-y-auto md:pr-1">
+            {/* h-0 + min-h-full: the detail panel defines the row height and
+                the fleet list scrolls to match, instead of trailing whitespace. */}
+            <div className="space-y-2 md:h-0 md:min-h-full md:overflow-y-auto md:pr-1">
               {filteredProviders.map((provider) => (
                 <ProviderRow key={provider.id} provider={provider} selected={provider.id === selectedProvider?.id} onSelect={() => setSelectedProviderId(provider.id)} />
               ))}

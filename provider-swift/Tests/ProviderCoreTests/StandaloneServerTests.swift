@@ -153,10 +153,32 @@ import Testing
     #expect(StandaloneServer.schedulerErrorStatus(for: "unexpected backend failure") == .internalServerError)
 }
 
-@Test func standaloneServerStartsAndStops() async throws {
-    let server = standaloneTestServer()
+@Test func standaloneServerWaitTracksServiceLifetime() async throws {
+    let server = StandaloneServer(config: StandaloneServerConfig(port: 0))
     try await server.start()
-    await server.stopAndWait()
+    // The full Swift suite runs more than a thousand tests concurrently on CI;
+    // allow scheduler contention without weakening the lifetime assertion.
+    #expect(await server.waitUntilBound(timeoutSeconds: 10))
+
+    let completion = StandaloneServerCompletion()
+    let waiter = Task {
+        await server.waitUntilStopped()
+        await completion.markComplete()
+    }
+    try await Task.sleep(nanoseconds: 100_000_000)
+    #expect(!(await completion.isComplete))
+
+    await server.stop()
+    await waiter.value
+    #expect(await completion.isComplete)
+}
+
+private actor StandaloneServerCompletion {
+    private(set) var isComplete = false
+
+    func markComplete() {
+        isComplete = true
+    }
 }
 
 // MARK: - Direct/local mode: bearer-token auth

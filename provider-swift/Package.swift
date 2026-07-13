@@ -10,7 +10,11 @@ let package = Package(
     products: [
         .library(name: "ProviderCoreFoundation", targets: ["ProviderCoreFoundation"]),
         .library(name: "ProviderCore", targets: ["ProviderCore"]),
+        .library(name: "DarkbloomFanCore", targets: ["DarkbloomFanCore"]),
+        .library(name: "DarkbloomFanProtocol", targets: ["DarkbloomFanProtocol"]),
+        .library(name: "DarkbloomFanService", targets: ["DarkbloomFanService"]),
         .executable(name: "darkbloom", targets: ["darkbloom"]),
+        .executable(name: "darkbloom-fan-helper", targets: ["DarkbloomFanHelper"]),
         .executable(name: "darkbloom-enclave", targets: ["DarkbloomEnclaveCLI"]),
         .executable(name: "darkbloom-publish", targets: ["darkbloom-publish"]),
     ],
@@ -50,6 +54,31 @@ let package = Package(
         .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", exact: "2.6.0"),
     ],
     targets: [
+        .target(
+            name: "DarkbloomFanCore",
+            path: "Sources/DarkbloomFanCore",
+            linkerSettings: [.linkedFramework("IOKit")]
+        ),
+        .target(
+            name: "DarkbloomFanProtocol",
+            path: "Sources/DarkbloomFanProtocol"
+        ),
+        .target(
+            name: "DarkbloomFanService",
+            dependencies: ["DarkbloomFanCore", "DarkbloomFanProtocol"],
+            path: "Sources/DarkbloomFanService",
+            linkerSettings: [.linkedFramework("Security")]
+        ),
+        .executableTarget(
+            name: "DarkbloomFanHelper",
+            dependencies: [
+                "DarkbloomFanCore",
+                "DarkbloomFanProtocol",
+                "DarkbloomFanService",
+            ],
+            path: "Sources/DarkbloomFanHelper"
+        ),
+
         // ----------------------------------------------------------------
         // ProviderCoreFoundation: Linux-buildable subset containing the
         // model hashing primitives (ModelScanner file discovery,
@@ -125,6 +154,9 @@ let package = Package(
         .executableTarget(
             name: "darkbloom",
             dependencies: [
+                "DarkbloomFanCore",
+                "DarkbloomFanProtocol",
+                "DarkbloomFanService",
                 "ProviderCore",
                 "ProviderBenchmark",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
@@ -192,6 +224,31 @@ let package = Package(
             name: "ProviderCoreFoundationTests",
             dependencies: ["ProviderCoreFoundation"],
             path: "Tests/ProviderCoreFoundationTests"
+        ),
+
+        .testTarget(
+            name: "DarkbloomFanCoreTests",
+            dependencies: ["DarkbloomFanCore"],
+            path: "Tests/DarkbloomFanCoreTests"
+        ),
+        .testTarget(
+            name: "DarkbloomFanServiceTests",
+            dependencies: [
+                "DarkbloomFanCore",
+                "DarkbloomFanProtocol",
+                "DarkbloomFanService",
+            ],
+            path: "Tests/DarkbloomFanServiceTests"
+        ),
+        .testTarget(
+            name: "DarkbloomFanHelperTests",
+            dependencies: [
+                "DarkbloomFanCore",
+                "DarkbloomFanHelper",
+                "DarkbloomFanProtocol",
+                "DarkbloomFanService",
+            ],
+            path: "Tests/DarkbloomFanHelperTests"
         ),
 
         // ----------------------------------------------------------------

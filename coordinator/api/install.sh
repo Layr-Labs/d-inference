@@ -26,6 +26,8 @@ COORD_URL="${COORD_URL:-__DARKBLOOM_COORD_URL__}"
 INSTALL_DIR="$HOME/.darkbloom"
 BIN_DIR="$INSTALL_DIR/bin"
 DARKBLOOM_DESIGNATED_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
+DARKBLOOM_FAN_HELPER_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
+FAN_HELPER_REQUIREMENT="$DARKBLOOM_FAN_HELPER_REQUIREMENT"
 INSTALL_TEST_MODE=0
 
 fail_install() {
@@ -74,6 +76,45 @@ binary_contains_paged_code() {
     LC_ALL=C grep -a -q -F 'engine_v2_kv_backend' "$binary"
 }
 
+verify_fan_helper_capability() {
+    local app=$1
+    local executable="$app/Contents/MacOS/darkbloom"
+    local marker="$app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
+    local helper="$app/Contents/Helpers/darkbloom-fan-helper"
+    local code_present=0
+    local marker_present=0
+    local helper_present=0
+
+    LC_ALL=C grep -a -q -F 'darkbloom-fan-helper-v1' "$executable" \
+        && code_present=1
+    if [ -e "$marker" ] || [ -L "$marker" ]; then marker_present=1; fi
+    if [ -e "$helper" ] || [ -L "$helper" ]; then helper_present=1; fi
+    [ "$code_present" -eq "$marker_present" ] \
+        && [ "$marker_present" -eq "$helper_present" ] || {
+        fail_install "Fan-helper CLI capability, marker, and nested helper must be present together."
+        return 1
+    }
+    [ "$marker_present" -eq 1 ] || return 0
+
+    [ -f "$marker" ] && [ ! -L "$marker" ] \
+        && [ "$(tr -d '[:space:]' < "$marker")" = "1" ] || {
+        fail_install "Fan-helper capability marker is invalid."
+        return 1
+    }
+    [ -f "$helper" ] && [ ! -L "$helper" ] && [ -x "$helper" ] || {
+        fail_install "Bundled fan helper must be a regular executable, not a symlink."
+        return 1
+    }
+    [ "$(stat -f '%Lp' "$helper" 2>/dev/null || true)" = "755" ] || {
+        fail_install "Bundled fan helper must have mode 0755."
+        return 1
+    }
+    verify_code_requirement "$helper" 0 "$FAN_HELPER_REQUIREMENT" || {
+        fail_install "Bundled fan helper does not satisfy the pinned helper signature requirement."
+        return 1
+    }
+}
+
 verify_staged_app() {
     local app=$1
     local executable="$app/Contents/MacOS/darkbloom"
@@ -87,6 +128,7 @@ verify_staged_app() {
     else
         verify_staged_app_signature "$app" || return 1
     fi
+    verify_fan_helper_capability "$app" || return 1
 
     local code_has_paged=0
     local marker_present=0
@@ -279,11 +321,12 @@ if [ "${1:-}" = "--verify-staged-app-signature-test" ]; then
 fi
 
 if [ "${1:-}" = "--install-bundle-test" ]; then
-    [ "$#" -eq 5 ] || {
-        echo "usage: $0 --install-bundle-test <archive> <install-dir> <binary-hash> <metallib-hash>" >&2
+    { [ "$#" -eq 5 ] || [ "$#" -eq 6 ]; } || {
+        echo "usage: $0 --install-bundle-test <archive> <install-dir> <binary-hash> <metallib-hash> [fan-helper-requirement]" >&2
         exit 64
     }
     INSTALL_TEST_MODE=1
+    if [ "$#" -eq 6 ]; then FAN_HELPER_REQUIREMENT=$6; fi
     install_bundle_atomically "$2" "$3" "$4" "$5"
     exit $?
 fi

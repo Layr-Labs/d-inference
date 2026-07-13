@@ -283,6 +283,13 @@ public actor StandaloneServer {
         return didBind
     }
 
+    /// Wait for the Hummingbird service task to exit. Local mode uses this as
+    /// its serving lifetime so optional fan control ends with the HTTP server.
+    public func waitUntilStopped() async {
+        let task = serverTask
+        _ = await task?.value
+    }
+
     /// Stop the server.
     public func stop() {
         serverTask?.cancel()

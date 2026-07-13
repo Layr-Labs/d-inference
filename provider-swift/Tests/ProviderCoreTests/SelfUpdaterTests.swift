@@ -234,8 +234,10 @@ struct SelfUpdaterTests {
 
         // Create an .app bundle layout inside the staging area.
         let appMacOS = stage.appendingPathComponent("Darkbloom.app/Contents/MacOS")
+        let appHelpers = stage.appendingPathComponent("Darkbloom.app/Contents/Helpers")
         let binFlat = stage.appendingPathComponent("bin")
         try FileManager.default.createDirectory(at: appMacOS, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: appHelpers, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: binFlat, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: install, withIntermediateDirectories: true)
         let oldAppBin = install.appendingPathComponent("Darkbloom.app/Contents/MacOS")
@@ -252,6 +254,11 @@ struct SelfUpdaterTests {
         try Data("app darkbloom".utf8).write(to: appMacOS.appendingPathComponent("darkbloom"))
         try Data("app enclave".utf8).write(to: appMacOS.appendingPathComponent("darkbloom-enclave"))
         try Data("app metallib".utf8).write(to: appMacOS.appendingPathComponent("mlx.metallib"))
+        let fanHelper = appHelpers.appendingPathComponent("darkbloom-fan-helper")
+        try Data("app fan helper".utf8).write(to: fanHelper)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fanHelper.path)
         let resourceBundle = stage.appendingPathComponent(
             "Darkbloom.app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle",
             isDirectory: true)
@@ -299,6 +306,17 @@ struct SelfUpdaterTests {
         #expect(
             (try String(contentsOf: installedPagedResource, encoding: .utf8))
                 == "paged kernel source")
+        let installedFanHelper = install.appendingPathComponent(
+            "Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
+        )
+        #expect(
+            try String(contentsOf: installedFanHelper, encoding: .utf8)
+                == "app fan helper"
+        )
+        let helperAttributes = try FileManager.default.attributesOfItem(
+            atPath: installedFanHelper.path
+        )
+        #expect((helperAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o755)
 
         // bin/ should contain symlinks to the .app bundle, not flat copies.
         let installedBin = install.appendingPathComponent("bin")
@@ -386,21 +404,25 @@ struct SelfUpdaterTests {
 
     private func makeSignedRuntimeFixture(
         root: URL,
-        includeResource: Bool
+        includeResource: Bool,
+        includeFanHelper: Bool = true
     ) throws -> (URL, ReleaseInfo, URL) {
         let fm = FileManager.default
         let stage = root.appendingPathComponent("signed-src", isDirectory: true)
         let app = stage.appendingPathComponent("Darkbloom.app", isDirectory: true)
         let appMacOS = app.appendingPathComponent("Contents/MacOS", isDirectory: true)
+        let helpers = app.appendingPathComponent("Contents/Helpers", isDirectory: true)
         let resources = app.appendingPathComponent("Contents/Resources", isDirectory: true)
         let bin = stage.appendingPathComponent("bin", isDirectory: true)
         let install = root.appendingPathComponent("install", isDirectory: true)
         try fm.createDirectory(at: appMacOS, withIntermediateDirectories: true)
+        try fm.createDirectory(at: helpers, withIntermediateDirectories: true)
         try fm.createDirectory(at: resources, withIntermediateDirectories: true)
         try fm.createDirectory(at: bin, withIntermediateDirectories: true)
         try fm.createDirectory(at: install, withIntermediateDirectories: true)
 
         let darkbloom = try debugBuildProduct("darkbloom")
+        let fanHelper = try debugBuildProduct("darkbloom-fan-helper")
         let metallib = try debugBuildProduct("mlx.metallib")
         try fm.copyItem(
             at: darkbloom,
@@ -411,6 +433,13 @@ struct SelfUpdaterTests {
         try fm.copyItem(
             at: metallib,
             to: appMacOS.appendingPathComponent("mlx.metallib"))
+        let stagedFanHelper = helpers.appendingPathComponent("darkbloom-fan-helper")
+        if includeFanHelper {
+            try fm.copyItem(at: fanHelper, to: stagedFanHelper)
+            try fm.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: stagedFanHelper.path)
+        }
         let info: [String: Any] = [
             "CFBundleIdentifier": "io.darkbloom.selfupdater-test",
             "CFBundleExecutable": "darkbloom",
@@ -428,6 +457,8 @@ struct SelfUpdaterTests {
         try fm.createDirectory(at: capability, withIntermediateDirectories: true)
         try Data("1\n".utf8).write(
             to: capability.appendingPathComponent("paged-kernel-v1"))
+        try Data("1\n".utf8).write(
+            to: capability.appendingPathComponent("fan-helper-v1"))
         if includeResource {
             let builtBundle = try debugBuildProduct(
                 PackagedRuntimeSmoke.mlxLMCommonBundleName)
@@ -438,6 +469,11 @@ struct SelfUpdaterTests {
                     isDirectory: true))
         }
 
+        if includeFanHelper {
+            try runTestProcess(
+                "/usr/bin/codesign",
+                ["--force", "--sign", "-", "--identifier", "io.darkbloom.fan-helper", stagedFanHelper.path])
+        }
         try runTestProcess(
             "/usr/bin/codesign",
             ["--force", "--sign", "-", appMacOS.appendingPathComponent("mlx.metallib").path])
@@ -515,6 +551,114 @@ struct SelfUpdaterTests {
         #expect(
             !FileManager.default.fileExists(
                 atPath: missingInstall.appendingPathComponent("Darkbloom.app").path))
+    }
+
+    @Test("fan-capable signed app without its helper is rejected")
+    func signedAppRequiresFanHelper() throws {
+        _ = LiveInferenceFixtures.ensureMetallibColocated()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "self-updater-fan-helper-test-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let updater = SelfUpdater(coordinatorBaseURL: "https://api.example.test")
+        let (tarball, release, install) = try makeSignedRuntimeFixture(
+            root: root,
+            includeResource: true,
+            includeFanHelper: false
+        )
+
+        guard case .failure(let error) = updater.stageSignedBundleForTesting(
+            from: tarball,
+            release: release,
+            installDir: install
+        ) else {
+            Issue.record("fan-capable app without its helper unexpectedly staged")
+            return
+        }
+        #expect("\(error)".contains("fan-capable artifact"))
+    }
+
+    @Test("fan capability verifier requires a regular executable helper")
+    func fanCapabilityRequiresExecutableHelper() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fan-capability-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (app, executable, helper) = try makeFanCapabilityFixture(root: root)
+
+        try FanHelperCapabilityVerifier.verify(
+            app: app,
+            executable: executable,
+            signaturePolicy: nil
+        )
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o644],
+            ofItemAtPath: helper.path
+        )
+        #expect(throws: (any Error).self) {
+            try FanHelperCapabilityVerifier.verify(
+                app: app,
+                executable: executable,
+                signaturePolicy: nil
+            )
+        }
+    }
+
+    @Test("fan capability verifier rejects a symlink helper")
+    func fanCapabilityRejectsSymlinkHelper() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fan-capability-link-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (app, executable, helper) = try makeFanCapabilityFixture(root: root)
+        let payload = helper.deletingLastPathComponent().appendingPathComponent("payload")
+        try FileManager.default.moveItem(at: helper, to: payload)
+        try FileManager.default.createSymbolicLink(
+            atPath: helper.path,
+            withDestinationPath: payload.path
+        )
+
+        #expect(throws: (any Error).self) {
+            try FanHelperCapabilityVerifier.verify(
+                app: app,
+                executable: executable,
+                signaturePolicy: nil
+            )
+        }
+    }
+
+    private func makeFanCapabilityFixture(
+        root: URL
+    ) throws -> (app: URL, executable: URL, helper: URL) {
+        let app = root.appendingPathComponent("Darkbloom.app")
+        let executable = app.appendingPathComponent("Contents/MacOS/darkbloom")
+        let helper = app.appendingPathComponent(
+            FanHelperCapabilityVerifier.helperRelativePath
+        )
+        let marker = app.appendingPathComponent(
+            FanHelperCapabilityVerifier.markerRelativePath
+        )
+        try FileManager.default.createDirectory(
+            at: executable.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: helper.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: marker.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(FanHelperCapabilityVerifier.binaryCapability.utf8).write(to: executable)
+        try Data("helper".utf8).write(to: helper)
+        try Data("1\n".utf8).write(to: marker)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: helper.path
+        )
+        return (app, executable, helper)
     }
 
     @Test("staging extracts and verifies WITHOUT touching the live layout")

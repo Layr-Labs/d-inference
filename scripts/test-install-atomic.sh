@@ -15,10 +15,12 @@ cat > "$ROOT/paged.c" <<'C'
 #include <unistd.h>
 
 static const char *capability = "engine_v2_kv_backend";
+static const char *fan_capability = "darkbloom-fan-helper-v1";
 
 int main(int argc, char **argv) {
     if (argc < 2 || strcmp(argv[1], "runtime-smoke") != 0) {
         fputs(capability, stderr);
+        fputs(fan_capability, stderr);
         return 0;
     }
     char resolved[PATH_MAX];
@@ -41,8 +43,13 @@ cat > "$ROOT/legacy.c" <<'C'
 int main(void) { return 0; }
 C
 
+cat > "$ROOT/fan-helper.c" <<'C'
+int main(void) { return 0; }
+C
+
 clang -Os "$ROOT/paged.c" -o "$ROOT/paged"
 clang -Os "$ROOT/legacy.c" -o "$ROOT/legacy"
+clang -Os "$ROOT/fan-helper.c" -o "$ROOT/fan-helper"
 
 # A pristine Mac has no Xcode Command Line Tools: /usr/bin/strings, otool,
 # nm, etc. are shims that prompt/fail. Prove the installers never need them
@@ -51,7 +58,7 @@ clang -Os "$ROOT/legacy.c" -o "$ROOT/legacy"
 # CLT shims first on PATH, so any hidden invocation aborts the install.
 CLT_SHIMS="$ROOT/clt-shims"
 mkdir -p "$CLT_SHIMS"
-for tool in strings otool nm xcrun swift swiftc clang gcc ld libtool lipo; do
+for tool in strings otool nm xcrun swift swiftc clang gcc ld libtool lipo sudo launchctl; do
     cat > "$CLT_SHIMS/$tool" <<SHIM
 #!/bin/bash
 echo "xcode-select: note: no developer tools were found ($tool shim)" >&2
@@ -75,10 +82,26 @@ assert_no_clt_tools() {
 assert_no_clt_tools "$REPO_ROOT/scripts/install.sh"
 assert_no_clt_tools "$REPO_ROOT/coordinator/api/install.sh"
 
+assert_no_privileged_install() {
+    local script=$1
+    local offending
+    offending=$(sed 's/#.*$//' "$script" \
+        | grep -nE '(^|[^[:alnum:]_])(sudo|launchctl)([^[:alnum:]_]|$)|/Library/PrivilegedHelperTools' \
+        || true)
+    if [ -n "$offending" ]; then
+        echo "ordinary installer contains privileged activation in $script:" >&2
+        echo "$offending" >&2
+        exit 1
+    fi
+}
+assert_no_privileged_install "$REPO_ROOT/scripts/install.sh"
+assert_no_privileged_install "$REPO_ROOT/coordinator/api/install.sh"
+
 make_artifact() {
     local output=$1
     local capability=$2
     local include_resource=$3
+    local include_fan=${4:-no}
     local stage="$ROOT/stage-$RANDOM"
     local app="$stage/Darkbloom.app"
     local binary="$ROOT/$capability"
@@ -106,6 +129,20 @@ PLIST
             printf 'kernel\n' \
                 > "$app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
         fi
+    fi
+
+    if [ "$include_fan" = "yes" ]; then
+        mkdir -p \
+            "$app/Contents/Helpers" \
+            "$app/Contents/Resources/darkbloom-runtime-capabilities"
+        install -m 0755 \
+            "$ROOT/fan-helper" \
+            "$app/Contents/Helpers/darkbloom-fan-helper"
+        printf '1\n' \
+            > "$app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
+        codesign --force --sign - \
+            --identifier io.darkbloom.fan-helper \
+            "$app/Contents/Helpers/darkbloom-fan-helper"
     fi
 
     codesign --force --sign - "$app/Contents/MacOS/mlx.metallib"
@@ -140,20 +177,21 @@ run_install() {
     local install_dir=$2
     artifact_hashes "$archive"
     PATH="$CLT_SHIMS:$PATH" bash "$INSTALLER" --install-bundle-test \
-        "$archive" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH"
+        "$archive" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
+        "$FAN_HELPER_REQUIREMENT"
 }
 
 run_install_without_hashes() {
     PATH="$CLT_SHIMS:$PATH" bash "$INSTALLER" --install-bundle-test \
-        "$1" "$2" "" ""
+        "$1" "$2" "" "" "$FAN_HELPER_REQUIREMENT"
 }
 
 VALID="$ROOT/valid.tar.gz"
 MISSING="$ROOT/missing.tar.gz"
 LEGACY="$ROOT/legacy.tar.gz"
-make_artifact "$VALID" paged yes
-make_artifact "$MISSING" paged no
-make_artifact "$LEGACY" legacy no
+make_artifact "$VALID" paged yes yes
+make_artifact "$MISSING" paged no yes
+make_artifact "$LEGACY" legacy no no
 
 # The designated requirement must be applied to the complete app target,
 # whose main-executable signature seals Contents/Resources.
@@ -164,13 +202,21 @@ APP_REQUIREMENT=$(codesign -d -r- \
     "$SIGNATURE_ROOT/Darkbloom.app" 2>&1 \
     | awk -F' => ' '/designated/{print $2; exit}')
 [ -n "$APP_REQUIREMENT" ]
+FAN_HELPER_REQUIREMENT=$(codesign -d -r- \
+    "$SIGNATURE_ROOT/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper" 2>&1 \
+    | awk -F' => ' '/designated/{print $2; exit}')
+[ -n "$FAN_HELPER_REQUIREMENT" ]
 PRODUCTION_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
+PRODUCTION_FAN_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 for installer in \
     "$REPO_ROOT/scripts/install.sh" \
     "$REPO_ROOT/coordinator/api/install.sh"
 do
     grep -Fqx \
         "DARKBLOOM_DESIGNATED_REQUIREMENT='$PRODUCTION_REQUIREMENT'" \
+        "$installer"
+    grep -Fqx \
+        "DARKBLOOM_FAN_HELPER_REQUIREMENT='$PRODUCTION_FAN_REQUIREMENT'" \
         "$installer"
     bash "$installer" --verify-staged-app-signature-test \
         "$SIGNATURE_ROOT/Darkbloom.app" "$APP_REQUIREMENT"
@@ -181,6 +227,88 @@ do
         exit 1
     fi
 done
+
+make_fan_variant() {
+    local output=$1
+    local mutation=$2
+    local stage="$ROOT/fan-variant-$mutation-$RANDOM"
+    local app="$stage/Darkbloom.app"
+    local helper="$app/Contents/Helpers/darkbloom-fan-helper"
+    local marker="$app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
+    mkdir -p "$stage"
+    tar xzf "$VALID" -C "$stage"
+
+    case "$mutation" in
+        missing-helper)
+            rm -f "$helper"
+            ;;
+        missing-marker)
+            rm -f "$marker"
+            ;;
+        non-executable)
+            chmod 0644 "$helper"
+            ;;
+        symlink)
+            rm -f "$helper"
+            ln -s ../MacOS/darkbloom "$helper"
+            ;;
+        wrong-identifier)
+            codesign --force --sign - \
+                --identifier not.darkbloom.fan-helper "$helper"
+            ;;
+        tampered)
+            printf 'tampered\n' >> "$helper"
+            ;;
+        *)
+            echo "unknown fan variant: $mutation" >&2
+            exit 1
+            ;;
+    esac
+
+    # Keep the outer app structurally valid except for the intentional tamper,
+    # so each negative case exercises the dedicated fan-helper checks.
+    if [ "$mutation" != "tampered" ]; then
+        codesign --force --sign - "$app"
+        # Re-signing the outer app may update its main executable signature.
+        # Keep the release verifier's flat payload byte-identical so rejection
+        # reaches the dedicated fan-helper invariant under test.
+        cp "$app/Contents/MacOS/darkbloom" "$stage/bin/darkbloom"
+        cp "$app/Contents/MacOS/darkbloom-enclave" "$stage/bin/darkbloom-enclave"
+        cp "$app/Contents/MacOS/mlx.metallib" "$stage/bin/mlx.metallib"
+    fi
+    tar czf "$output" -C "$stage" .
+    rm -rf "$stage"
+}
+
+FAN_MISSING_HELPER="$ROOT/fan-missing-helper.tar.gz"
+FAN_MISSING_MARKER="$ROOT/fan-missing-marker.tar.gz"
+FAN_NON_EXECUTABLE="$ROOT/fan-non-executable.tar.gz"
+FAN_SYMLINK="$ROOT/fan-symlink.tar.gz"
+FAN_WRONG_ID="$ROOT/fan-wrong-id.tar.gz"
+FAN_TAMPERED="$ROOT/fan-tampered.tar.gz"
+make_fan_variant "$FAN_MISSING_HELPER" missing-helper
+make_fan_variant "$FAN_MISSING_MARKER" missing-marker
+make_fan_variant "$FAN_NON_EXECUTABLE" non-executable
+make_fan_variant "$FAN_SYMLINK" symlink
+make_fan_variant "$FAN_WRONG_ID" wrong-identifier
+make_fan_variant "$FAN_TAMPERED" tampered
+
+assert_fan_variants_rejected() {
+    local install_dir=$1
+    for archive in \
+        "$FAN_MISSING_HELPER" \
+        "$FAN_MISSING_MARKER" \
+        "$FAN_NON_EXECUTABLE" \
+        "$FAN_SYMLINK" \
+        "$FAN_WRONG_ID" \
+        "$FAN_TAMPERED"
+    do
+        if run_install "$archive" "$install_dir"; then
+            echo "invalid fan-helper artifact unexpectedly installed: $archive" >&2
+            exit 1
+        fi
+    done
+}
 
 # Make the registered flat metallib differ from the signed app payload.
 # Structural app verification alone must not admit it.
@@ -196,6 +324,8 @@ INSTALL="$ROOT/install"
 mkdir -p "$INSTALL/Darkbloom.app"
 printf 'old\n' > "$INSTALL/Darkbloom.app/sentinel"
 
+assert_fan_variants_rejected "$INSTALL"
+test -f "$INSTALL/Darkbloom.app/sentinel"
 if run_install_without_hashes "$VALID" "$INSTALL"; then
     echo "app release without payload hashes unexpectedly installed" >&2
     exit 1
@@ -215,10 +345,19 @@ test -f "$INSTALL/Darkbloom.app/sentinel"
 run_install "$VALID" "$INSTALL"
 test ! -f "$INSTALL/Darkbloom.app/sentinel"
 DARKBLOOM_NO_UPDATE_CHECK=1 "$INSTALL/bin/darkbloom" runtime-smoke
+INSTALLED_FAN_HELPER="$INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
+INSTALLED_FAN_MARKER="$INSTALL/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
+test -f "$INSTALLED_FAN_HELPER"
+test ! -L "$INSTALLED_FAN_HELPER"
+test -x "$INSTALLED_FAN_HELPER"
+test "$(stat -f '%Lp' "$INSTALLED_FAN_HELPER")" = "755"
+test "$(tr -d '[:space:]' < "$INSTALLED_FAN_MARKER")" = "1"
+codesign --verify --strict "-R=$FAN_HELPER_REQUIREMENT" "$INSTALLED_FAN_HELPER"
 
 LEGACY_INSTALL="$ROOT/legacy-install"
 run_install "$LEGACY" "$LEGACY_INSTALL"
 test -x "$LEGACY_INSTALL/bin/darkbloom"
+test ! -e "$LEGACY_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
 
 TAMPER_ROOT="$ROOT/tamper"
 mkdir -p "$TAMPER_ROOT"
@@ -237,6 +376,8 @@ INSTALLER="$REPO_ROOT/coordinator/api/install.sh"
 COORD_INSTALL="$ROOT/coordinator-install"
 mkdir -p "$COORD_INSTALL/Darkbloom.app"
 printf 'coordinator-old\n' > "$COORD_INSTALL/Darkbloom.app/sentinel"
+assert_fan_variants_rejected "$COORD_INSTALL"
+test -f "$COORD_INSTALL/Darkbloom.app/sentinel"
 if run_install_without_hashes "$VALID" "$COORD_INSTALL"; then
     echo "coordinator installer accepted an app without payload hashes" >&2
     exit 1
@@ -254,5 +395,12 @@ fi
 test -f "$COORD_INSTALL/Darkbloom.app/sentinel"
 run_install "$VALID" "$COORD_INSTALL"
 test ! -f "$COORD_INSTALL/Darkbloom.app/sentinel"
+test -x "$COORD_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
+test "$(stat -f '%Lp' "$COORD_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper")" = "755"
+
+COORD_LEGACY_INSTALL="$ROOT/coordinator-legacy-install"
+run_install "$LEGACY" "$COORD_LEGACY_INSTALL"
+test -x "$COORD_LEGACY_INSTALL/bin/darkbloom"
+test ! -e "$COORD_LEGACY_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
 
 echo "atomic installer tests passed"

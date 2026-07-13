@@ -45,6 +45,7 @@ struct Darkbloom: AsyncParsableCommand {
             Report.self,
             AutoUpdate.self,
             Beta.self,
+            Fan.self,
             Watchdog.self,
             RuntimeSmoke.self,
         ]

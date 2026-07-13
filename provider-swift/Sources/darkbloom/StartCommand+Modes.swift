@@ -124,10 +124,13 @@ extension Start {
         try? LocalEndpoint.writeInfo(info)
         defer { LocalEndpoint.removeInfo() }
 
-        // Wait forever (until SIGINT). In standalone mode we don't have a
-        // coordinator event stream to drive the loop, so we just block.
-        let waitForever = AsyncStream<Never> { _ in }
-        for await _ in waitForever {}
+        // The optional fan helper receives a renewable activity lease only
+        // after the server has successfully bound, and only for the lifetime
+        // of the actual Hummingbird service task. A stopped/crashed local
+        // server therefore releases fan control.
+        await withFanActivityLease(providerVersion: ProviderCore.version) {
+            await server.waitUntilStopped()
+        }
     }
 
 
@@ -263,7 +266,7 @@ extension Start {
                 try await runScheduled(loopConfig: loopConfig, schedule: schedule)
             } else {
                 let loop = try ProviderLoop(config: loopConfig)
-                try await loop.run()
+                try await runProviderLoopWithFanLease(loop)
             }
         } catch {
             TelemetryClient.shared.emit(
@@ -348,7 +351,7 @@ extension Start {
             let loop = try ProviderLoop(config: loopConfig)
             try await withThrowingTaskGroup(of: ScheduledLoopResult.self) { group in
                 group.addTask {
-                    try await loop.run()
+                    try await runProviderLoopWithFanLease(loop)
                     return .loopEnded
                 }
                 group.addTask {
@@ -373,6 +376,12 @@ extension Start {
     private func sleepNanoseconds(for interval: TimeInterval) -> UInt64 {
         let seconds = max(1.0, min(interval, Double(UInt64.max) / 1_000_000_000))
         return UInt64(seconds * 1_000_000_000)
+    }
+
+    private func runProviderLoopWithFanLease(_ loop: ProviderLoop) async throws {
+        try await withFanActivityLease(providerVersion: ProviderCore.version) {
+            try await loop.run()
+        }
     }
 
 }

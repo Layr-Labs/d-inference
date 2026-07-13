@@ -596,9 +596,15 @@ public struct SelfUpdater: Sendable {
                         try verifyRuntimeCapabilities(
                             app: extractedApp,
                             executable: appDarkbloom,
-                            fileManager: fm)
+                            fileManager: fm,
+                            signaturePolicy: signaturePolicy)
                     }
                 } else {
+                    if verification.verifyRuntimeCapabilities {
+                        try FanHelperCapabilityVerifier.rejectFanCapableFlatExecutable(
+                            flatDarkbloom
+                        )
+                    }
                     try verifyCodeSignature(
                         file: flatDarkbloom,
                         label: "darkbloom",
@@ -659,6 +665,13 @@ public struct SelfUpdater: Sendable {
                         file: app,
                         label: "Darkbloom.app",
                         deep: true
+                    )
+                    try FanHelperCapabilityVerifier.verify(
+                        app: app,
+                        executable: app.appendingPathComponent(
+                            "Contents/MacOS/darkbloom"
+                        ),
+                        signaturePolicy: .darkbloomProduction
                     )
                 } else {
                     try verifyCodeSignature(
@@ -1087,8 +1100,14 @@ public struct SelfUpdater: Sendable {
     private func verifyRuntimeCapabilities(
         app: URL,
         executable: URL,
-        fileManager: FileManager
+        fileManager: FileManager,
+        signaturePolicy: DarkbloomCodeSignature.Policy
     ) throws {
+        try FanHelperCapabilityVerifier.verify(
+            app: app,
+            executable: executable,
+            signaturePolicy: signaturePolicy
+        )
         let marker = app.appendingPathComponent(
             PackagedRuntimeSmoke.pagedCapabilityRelativePath)
         let markerPresent = fileManager.fileExists(atPath: marker.path)

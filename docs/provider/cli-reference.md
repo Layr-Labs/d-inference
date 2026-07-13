@@ -227,6 +227,27 @@ darkbloom beta disable <feature>    # turn off
 is required. See [Beta Features](beta-features.md) for the full guide. `darkbloom
 beta list` also accepts `--json`.
 
+## `darkbloom fan` (experimental)
+
+Inspect or opt into provider-only temperature-based fan control.
+
+```bash
+darkbloom fan status [--json]
+darkbloom fan diagnose [--json]
+sudo darkbloom fan enable [--speed 80] [--temperature 45]
+sudo darkbloom fan configure [--speed 60...90] [--temperature C]
+sudo darkbloom fan disable
+sudo darkbloom fan uninstall
+```
+
+Ordinary Darkbloom installation leaves the bundled helper dormant. State changes
+require explicit `sudo`; read-only status and diagnostics do not. The helper
+applies a target only while a signed provider holds an activity lease and a
+validated GPU sensor exceeds the threshold. Defaults are 80% of each fan's
+reported maximum, engage at 45 C, and release below 40 C. See
+[Experimental Fan Control](fan-control.md) for hardware gates and recovery
+behavior.
+
 ## `darkbloom login`
 
 Link this machine to a Darkbloom account via RFC 8628 device-code flow.

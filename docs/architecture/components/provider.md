@@ -1,6 +1,6 @@
 # Provider
 
-The provider is the Apple Silicon Mac node that runs inference. It is implemented in Swift as the `darkbloom` CLI, with shared logic in `ProviderCore` and a small `darkbloom-enclave` helper for attestation/signing operations. The provider connects outbound to the coordinator over WebSocket, decrypts prompts in-process, runs inference via `mlx-swift-lm`, and encrypts responses back to the coordinator.
+The provider is the Apple Silicon Mac node that runs inference. It is implemented in Swift as the `darkbloom` CLI, with shared logic in `ProviderCore`, a small `darkbloom-enclave` helper for attestation/signing operations, and an optional minimal root helper for experimental fan control. The provider connects outbound to the coordinator over WebSocket, decrypts prompts in-process, runs inference via `mlx-swift-lm`, and encrypts responses back to the coordinator.
 
 The provider is the decryption endpoint for prompts. Its hardened process and Secure Enclave-bound identity are the core privacy guarantee.
 
@@ -18,12 +18,13 @@ The provider is the decryption endpoint for prompts. Its hardened process and Se
 | Crypto: NaCl Box, node keypair, response encryption | `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift`, `X25519ChaChaPoly.swift` |
 | KV cache, prefix caching, disk accounting | `provider-swift/Sources/ProviderCore/KVCache/` |
 | Security hardening: anti-debug, env scrub, SIP checks | `provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift`, `EnvironmentScrubber.swift`, `AntiDebug.swift` |
+| Opt-in fan policy, AppleSMC access, signed provider lease | `provider-swift/Sources/DarkbloomFanCore/`, `DarkbloomFanHelper/`, `darkbloom/FanActivityLease.swift` |
 
 ## Key modules
 
 ### CLI (`provider-swift/Sources/darkbloom/`)
 
-`main.swift` is the entry point. Long-running serve modes (`start --foreground`, `start --local`) are hosted under an `NSApplication(.accessory)` run loop so the process can receive APNs code-identity pushes; other commands run through ArgumentParser's async dispatch. `Darkbloom.swift` declares the top-level `AsyncParsableCommand` with subcommands: `start`, `stop`, `restart`, `status`, `doctor`, `models`, `login`, `logout`, `benchmark`, `update`, `verify`, `enroll`, `unenroll`, `logs`, `report`, `autoupdate`, `watchdog`, and `local`.
+`main.swift` is the entry point. Long-running serve modes (`start --foreground`, `start --local`) are hosted under an `NSApplication(.accessory)` run loop so the process can receive APNs code-identity pushes; other commands run through ArgumentParser's async dispatch. `Darkbloom.swift` declares the top-level `AsyncParsableCommand`, including the opt-in experimental `fan` command.
 
 ### ProviderCore
 
@@ -46,6 +47,21 @@ APNs code-identity attestation (v0.6.0+) is implemented in `ProviderCore/Apns/AP
 
 `provider-swift/Sources/darkbloom-enclave-cli/` is a small executable that wraps Secure Enclave attestation/signing helpers. It is used by `install.sh` to render an attestation blob before the main provider daemon is running. Subcommands include `attest`, `sign`, `info`, and `wallet-address`.
 
+### Experimental fan helper
+
+`provider-swift/Sources/DarkbloomFanHelper/` is a separate root LaunchDaemon that
+can write only the fan-related AppleSMC keys exposed by `DarkbloomFanCore`. It is
+not installed during ordinary provider setup. Explicit `sudo darkbloom fan
+enable` copies the independently signed executable to
+`/Library/PrivilegedHelperTools` and binds it to one provider UID.
+
+The helper accepts an activity lease only from the exact Darkbloom Developer ID
+team and provider signing identifier. It receives no prompts, model data,
+credentials, or network access. Lease expiry, XPC invalidation, sleep, thermal
+pressure, and write failures restore macOS automatic fan mode. The boundary is
+defined in `DarkbloomFanProtocol/FanIPC.swift`, `DarkbloomFanService/`, and
+`DarkbloomFanHelper/FanXPCService.swift`.
+
 ## Privacy-relevant boundaries
 
 - **Provider as decryption endpoint**: The provider's X25519 private key is generated in-process and never leaves the Mac. Only this process can open the coordinator's per-request NaCl Box. See `Crypto/NodeKeyPair.swift` and the decryption path in `ProviderLoop.swift`.
@@ -53,6 +69,7 @@ APNs code-identity attestation (v0.6.0+) is implemented in `ProviderCore/Apns/AP
 - **Secure Enclave binding**: The SE P-256 identity and the X25519 node key are bound to the provider binary and machine. Attestation challenges prove liveness and fresh SIP/Secure Boot status.
 - **Memory and disk**: Model weights and live KV use unified memory. The default prefix-cache tier stores encrypted blocks on SSD with a Secure-Enclave-wrapped KEK and leaves serving RAM for live KV. See `KVCacheSSD/SSDPrefixCache.swift`, `KVCache/EncryptedKVStore.swift`, and `KVCache/SecureEnclaveKeyWrappingService.swift`.
 - **No prompt logging**: The provider decrypts prompts only to feed the inference engine. It does not log prompt content; logs contain request IDs, model IDs, and token counts.
+- **Fan-helper IPC**: Optional fan control adds a semantic local XPC lease, not an inference IPC path. The root helper cannot receive prompt or key material and exposes no arbitrary SMC operation.
 
 For the hop-by-hop encryption model, see [`../security/encryption.md`](../security/encryption.md) and the coordinator-side description in [`coordinator.md`](coordinator.md).
 

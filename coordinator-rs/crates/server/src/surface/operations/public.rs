@@ -311,6 +311,97 @@ pub(super) async fn network_totals(
     })))
 }
 
+pub(super) async fn network_series(
+    State(state): State<Arc<OperationsState>>,
+    headers: HeaderMap,
+    Query(query): Query<WindowQuery>,
+) -> Result<Json<Value>, OperationsError> {
+    require_public(&state.auth, &headers)?;
+    let (window, duration_seconds, bucket_seconds) =
+        parse_network_series_window(query.window.as_deref())?;
+    let bounds = sqlx::query(
+        r#"
+        WITH bounds AS (
+            SELECT date_bin(
+                $1::BIGINT * INTERVAL '1 second',
+                NOW(),
+                TIMESTAMPTZ '1970-01-01 00:00:00+00'
+            ) AS end_at
+        )
+        SELECT
+            to_char(
+                (end_at - $2::BIGINT * INTERVAL '1 second') AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS"Z"'
+            ) AS start_at,
+            to_char(
+                end_at AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS"Z"'
+            ) AS end_at,
+            extract(epoch FROM end_at)::BIGINT AS end_epoch
+        FROM bounds
+        "#,
+    )
+    .bind(bucket_seconds)
+    .bind(duration_seconds)
+    .fetch_one(state.pool())
+    .await
+    .map_err(|error| OperationsError::internal("load network series bounds", error))?;
+    let start_at = bounds.get::<String, _>("start_at");
+    let end_at = bounds.get::<String, _>("end_at");
+    let end_epoch = bounds.get::<i64, _>("end_epoch");
+    let rows = sqlx::query(
+        r#"
+        WITH bounds AS (
+            SELECT to_timestamp($3::DOUBLE PRECISION) AS end_at
+        )
+        SELECT
+            to_char(
+                to_timestamp(
+                    floor(
+                        extract(epoch FROM usage.created_at)
+                        / $1::DOUBLE PRECISION
+                    ) * $1::DOUBLE PRECISION
+                ) AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS"Z"'
+            ) AS timestamp,
+            COUNT(*)::BIGINT AS requests,
+            COALESCE(SUM(usage.prompt_tokens), 0)::BIGINT AS prompt_tokens,
+            COALESCE(SUM(usage.completion_tokens), 0)::BIGINT AS completion_tokens
+        FROM public.usage, bounds
+        WHERE usage.created_at >= end_at - $2::BIGINT * INTERVAL '1 second'
+          AND usage.created_at < end_at
+        GROUP BY 1
+        ORDER BY 1
+        LIMIT 256
+        "#,
+    )
+    .bind(bucket_seconds)
+    .bind(duration_seconds)
+    .bind(end_epoch)
+    .fetch_all(state.pool())
+    .await
+    .map_err(|error| OperationsError::internal("load network series", error))?;
+    let time_series = rows
+        .into_iter()
+        .map(|row| {
+            json!({
+                "timestamp": row.get::<String, _>("timestamp"),
+                "requests": row.get::<i64, _>("requests"),
+                "prompt_tokens": row.get::<i64, _>("prompt_tokens"),
+                "completion_tokens": row.get::<i64, _>("completion_tokens"),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(json!({
+        "window": window,
+        "bucket_seconds": bucket_seconds,
+        "start_at": start_at,
+        "end_at": end_at,
+        "time_series": time_series,
+        "updated_at": database_now(state.pool()).await?,
+    })))
+}
+
 pub(super) async fn version(
     State(state): State<Arc<OperationsState>>,
     headers: HeaderMap,
@@ -410,6 +501,20 @@ fn parse_window(window: Option<&str>) -> Result<(&str, Option<i64>), OperationsE
     }
 }
 
+fn parse_network_series_window(
+    window: Option<&str>,
+) -> Result<(&'static str, i64, i64), OperationsError> {
+    match window.unwrap_or("30m") {
+        "" | "30m" => Ok(("30m", 30 * 60, 60)),
+        "24h" | "1d" => Ok(("24h", 24 * 60 * 60, 30 * 60)),
+        "7d" => Ok(("7d", 7 * 24 * 60 * 60, 4 * 60 * 60)),
+        "30d" => Ok(("30d", 30 * 24 * 60 * 60, 12 * 60 * 60)),
+        _ => Err(OperationsError::bad_request(
+            "window must be one of: 30m, 24h, 7d, 30d",
+        )),
+    }
+}
+
 fn pseudonym(account_id: &str) -> String {
     if account_id.is_empty() {
         return "anon".to_owned();
@@ -431,4 +536,30 @@ async fn database_now(pool: &sqlx::PgPool) -> Result<String, OperationsError> {
     .fetch_one(pool)
     .await
     .map_err(|error| OperationsError::internal("read database time", error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_network_series_window;
+
+    #[test]
+    fn network_series_windows_match_the_go_contract() {
+        assert_eq!(
+            parse_network_series_window(None).expect("default"),
+            ("30m", 1_800, 60)
+        );
+        assert_eq!(
+            parse_network_series_window(Some("1d")).expect("day alias"),
+            ("24h", 86_400, 1_800)
+        );
+        assert_eq!(
+            parse_network_series_window(Some("7d")).expect("week"),
+            ("7d", 604_800, 14_400)
+        );
+        assert_eq!(
+            parse_network_series_window(Some("30d")).expect("month"),
+            ("30d", 2_592_000, 43_200)
+        );
+        assert!(parse_network_series_window(Some("31d")).is_err());
+    }
 }

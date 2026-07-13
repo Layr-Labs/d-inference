@@ -1535,7 +1535,7 @@ threats:
       Changes to IdleTimeoutPolicy.swift or the inference loop that could defer
       or skip idle detection should be reviewed.
 
-  - id: T-041
+  - id: T-049
     trust_boundary: TB-007
     stride: Information_Disclosure
     title: Cross-tenant prefix-cache sharing + TTFT timing oracle (v0.7.5 ships the encrypted SSD offload tier — HMAC-keyed at-rest artifacts, default-on for CBv2-supported models with per-donation gating)
@@ -2424,7 +2424,7 @@ threats:
       Every new chip/model or macOS release needs GPU-load correlation and full
       engage/release/restore hardware validation before support is claimed.
 
-  - id: T-049
+  - id: T-050
     trust_boundary: TB-006
     stride: Tampering
     title: Forged or bypassed Rust cutover evidence authorizes an unsafe handoff

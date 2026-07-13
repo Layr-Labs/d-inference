@@ -446,6 +446,7 @@ pub fn router_with_state(state: Arc<OperationsState>) -> Router {
         .route("/v1/stats", get(public::stats))
         .route("/v1/leaderboard", get(public::leaderboard))
         .route("/v1/network/totals", get(public::network_totals))
+        .route("/v1/network/series", get(public::network_series))
         .route("/api/version", get(public::version))
         .route("/v1/releases", post(releases::register_release))
         .route("/v1/releases/latest", get(releases::latest_release))

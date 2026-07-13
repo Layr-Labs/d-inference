@@ -435,6 +435,18 @@
       "disposition": "implement"
     },
     {
+      "pattern": "GET /v1/network/series",
+      "method": "GET",
+      "path": "/v1/network/series",
+      "handler": "handleNetworkSeries",
+      "auth": "public",
+      "area": "public_read",
+      "side_effects": "read",
+      "rust_owner": "full-surface adapter",
+      "pilot": false,
+      "disposition": "implement"
+    },
+    {
       "pattern": "GET /api/version",
       "method": "GET",
       "path": "/api/version",

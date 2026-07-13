@@ -360,18 +360,32 @@ extension EngineV2Factory {
         let steppableModel = CBv2SteppableLanguageModelAdapter(model)
         let admissionConfig = AdmissionV2.Config()
         let compiledDecodeConfig = CBv2CompiledDecodeConfig()
+        let cacheProvider = CBv2LayerCacheBank(caches: caches)
+        var effectiveCompiledConfig = compiledDecodeConfig
+        var compiledDecodeVetoed = !backend.producesCompiledDecodeEligibleRows
+        if effectiveCompiledConfig.attentionSoftcap == nil {
+            if let claim = cacheProvider.uniformAttentionSoftcap {
+                effectiveCompiledConfig.attentionSoftcap = claim
+            } else {
+                compiledDecodeVetoed = true
+            }
+        }
 
         // Mirror the exact external reserve EngineV2 derives for compiled
         // decode so a prepared lease and the eventual submit use the same
         // admission ceiling on both contiguous and paged backends.
-        let compiledAdmissionReserve =
-            CBv2CompiledDecode.build(
+        let compiledAdmissionReserve: Int
+        if compiledDecodeVetoed {
+            compiledAdmissionReserve = 0
+        } else {
+            compiledAdmissionReserve = CBv2CompiledDecode.build(
                 model: steppableModel,
                 layerKinds: layerKinds,
-                config: compiledDecodeConfig,
+                config: effectiveCompiledConfig,
                 maxConcurrentRequests: schedulerConfig.maxConcurrentRequests,
                 kvBytesCapacity: backend.bytesCapacity
             )?.admissionPaddingReserve ?? 0
+        }
         let preparedAdmission = EngineV2PreparedAdmission(
             layerKinds: layerKinds,
             config: admissionConfig,
@@ -381,7 +395,7 @@ extension EngineV2Factory {
             model: steppableModel,
             layerKinds: layerKinds,
             backend: backend,
-            cacheProvider: CBv2LayerCacheBank(caches: caches),
+            cacheProvider: cacheProvider,
             sampler: CBv2DefaultSampler(),
             detokenizerFactory: CBv2TextDetokenizerFactory(tokenizer: tokenizer),
             schedulerConfig: schedulerConfig,

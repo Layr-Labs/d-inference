@@ -13,8 +13,8 @@ export function modelBrand(modelId: string, family?: string): ModelBrand {
     return {
       maker: "openai",
       makerLabel: "OpenAI",
-      logoSrc: "/brand/openai-wordmark.webp",
-      logoAlt: "OpenAI",
+      logoSrc: "/brand/openai-icon.png",
+      logoAlt: "OpenAI logo",
     };
   }
   if (identity.includes("gemma")) {

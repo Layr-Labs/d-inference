@@ -21,19 +21,15 @@ export function ModelMakerMark({
     );
   }
 
-  let imageClass = compact ? "h-7 w-7 object-contain" : "h-9 w-9 object-contain";
-  if (brand.maker === "openai") {
-    imageClass = compact ? "h-auto w-7" : "h-auto w-10";
-  }
+  const imageClass = compact ? "h-7 w-7 object-contain" : "h-9 w-9 object-contain";
   return (
     <div className={`flex shrink-0 items-center justify-center overflow-hidden border border-border-dim bg-white ${tileSize}`} title={brand.logoAlt}>
       <Image
         src={brand.logoSrc}
         alt={brand.logoAlt}
-        width={brand.maker === "openai" ? 84 : 52}
-        height={brand.maker === "openai" ? 42 : 47}
+        width={52}
+        height={52}
         className={imageClass}
-        unoptimized={brand.maker === "openai"}
       />
     </div>
   );

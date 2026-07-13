@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { modelBrand } from "./model-brand";
 
 describe("modelBrand", () => {
-  it("uses the OpenAI wordmark for GPT-OSS aliases", () => {
+  it("uses the standalone OpenAI icon for GPT-OSS aliases", () => {
     expect(modelBrand("gpt-oss-20b")).toMatchObject({
       maker: "openai",
-      logoSrc: "/brand/openai-wordmark.webp",
+      logoSrc: "/brand/openai-icon.png",
     });
   });
 

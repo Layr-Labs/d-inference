@@ -55,6 +55,7 @@ public struct FanControlOwnership: Equatable, Sendable {
 public enum FanRollbackStep: String, Equatable, Codable, Sendable {
     case restoreMode
     case clearFtst
+    case persistOwnership
 }
 
 public enum FanRollbackError: Error, Equatable, Sendable, CustomStringConvertible {
@@ -62,6 +63,7 @@ public enum FanRollbackError: Error, Equatable, Sendable, CustomStringConvertibl
     case hardware(FanHardwareError)
     case modeNotAutomatic(rawValue: UInt8)
     case ftstStillSet(rawValue: UInt8)
+    case persistence(String)
 
     public var description: String {
         switch self {
@@ -69,6 +71,7 @@ public enum FanRollbackError: Error, Equatable, Sendable, CustomStringConvertibl
         case .hardware(let error): return error.description
         case .modeNotAutomatic(let value): return "fan mode remained \(value)"
         case .ftstStillSet(let value): return "Ftst remained \(value)"
+        case .persistence(let detail): return detail
         }
     }
 }
@@ -281,11 +284,33 @@ public actor TransactionalFanController {
                     try acquireFtstIfNeeded(recordOwnership: recordOwnership)
                     try retryManualMode(fan)
                 }
-                guard let target = targets[fan.index] else {
+                guard let precomputedTarget = targets[fan.index] else {
                     throw FanControllerError.incompleteSession(index: fan.index)
                 }
-                try writeAndVerifyTarget(fan, rpm: target)
-                targetRPMByFan[fan.index] = target
+                // Re-read the takeover floor after manual mode is verified.
+                // The OS or another controller may have raised actual/target
+                // RPM since the initial snapshot; never write an older floor.
+                let liveActual = try readRPM(
+                    fan.actualKey,
+                    fanIndex: fan.index
+                )
+                let liveTarget = try readRPM(
+                    fan.targetKey,
+                    fanIndex: fan.index
+                )
+                let finalTarget = max(
+                    precomputedTarget,
+                    max(liveActual, liveTarget)
+                )
+                guard finalTarget <= reading.maximumRPM else {
+                    throw FanControllerError.takeoverFloorExceedsMaximum(
+                        index: fan.index,
+                        floor: finalTarget,
+                        maximum: reading.maximumRPM
+                    )
+                }
+                try writeAndVerifyTarget(fan, rpm: finalTarget)
+                targetRPMByFan[fan.index] = finalTarget
             }
 
             try verifyFtstOwnershipAtTransactionEnd(
@@ -298,7 +323,7 @@ public actor TransactionalFanController {
             )
         } catch {
             let primary = normalize(error)
-            let failures = restoreTrackedState()
+            let failures = restoreTrackedState(recordOwnership: recordOwnership)
             if !failures.isEmpty {
                 throw FanControllerError.rollbackFailed(
                     primary: primary,
@@ -309,8 +334,10 @@ public actor TransactionalFanController {
         }
     }
 
-    public func restoreAutomatic() throws {
-        let failures = restoreTrackedState()
+    public func restoreAutomatic(
+        recordOwnership: @Sendable (FanControlOwnership) throws -> Void = { _ in }
+    ) throws {
+        let failures = restoreTrackedState(recordOwnership: recordOwnership)
         if !failures.isEmpty {
             throw FanControllerError.rollbackFailed(
                 primary: .smc(.injectedFailure("explicit automatic restore")),
@@ -331,7 +358,7 @@ public actor TransactionalFanController {
             throw FanControllerError.notControlling
         }
         guard !possiblyControlledFans.isEmpty else {
-            let failures = restoreTrackedState()
+            let failures = restoreTrackedState(recordOwnership: recordOwnership)
             if !failures.isEmpty {
                 throw FanControllerError.rollbackFailed(
                     primary: .notControlling,
@@ -404,7 +431,7 @@ public actor TransactionalFanController {
             )
         } catch {
             let primary = normalize(error)
-            let failures = restoreTrackedState()
+            let failures = restoreTrackedState(recordOwnership: recordOwnership)
             if !failures.isEmpty {
                 throw FanControllerError.rollbackFailed(
                     primary: primary,
@@ -586,7 +613,9 @@ public actor TransactionalFanController {
         )
     }
 
-    private func restoreTrackedState() -> [FanRollbackFailure] {
+    private func restoreTrackedState(
+        recordOwnership: @Sendable (FanControlOwnership) throws -> Void = { _ in }
+    ) -> [FanRollbackFailure] {
         var failures: [FanRollbackFailure] = []
         var stillUncertain: [Int: FanCapability] = [:]
 
@@ -639,6 +668,21 @@ public actor TransactionalFanController {
             ftstStillUncertain = true
         }
 
+        do {
+            try recordOwnership(FanControlOwnership(
+                fanIndices: Array(stillUncertain.keys),
+                ownsFtst: ftstStillUncertain
+            ))
+        } catch {
+            failures.append(FanRollbackFailure(
+                fanIndex: nil,
+                step: .persistOwnership,
+                error: .persistence(String(describing: error))
+            ))
+            // Disk still describes the broader pre-rollback ownership. Keep
+            // memory equally conservative so the next retry cannot omit it.
+            return failures
+        }
         possiblyControlledFans = stillUncertain
         targetRPMByFan = targetRPMByFan.filter { stillUncertain[$0.key] != nil }
         mayOwnFtst = ftstStillUncertain

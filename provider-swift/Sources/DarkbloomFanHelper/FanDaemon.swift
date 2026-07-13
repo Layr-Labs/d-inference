@@ -315,7 +315,9 @@ actor FanDaemon {
         }
         do {
             if await controller.isControlling {
-                try await controller.restoreAutomatic()
+                try await controller.restoreAutomatic(
+                    recordOwnership: recordOwnership
+                )
             } else {
                 try FanOwnershipRecovery.reconcile(
                     backend: backend,

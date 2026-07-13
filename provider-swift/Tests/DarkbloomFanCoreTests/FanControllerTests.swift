@@ -59,6 +59,85 @@ struct FanControllerTests {
         try await controller.restoreAutomatic()
     }
 
+    @Test("takeover re-reads a target raised after the initial snapshot")
+    func takeoverRereadsLateTargetRaise() async throws {
+        let backend = makeFanBackend(fanCount: 1, includeFtst: false)
+        let controller = try makeController(backend: backend)
+        backend.installReadHook { key, count in
+            if key == "F0Tg", count == 1 {
+                backend.setFloat("F0Tg", 4_500)
+            }
+        }
+
+        let session = try await controller.engage(speedPercent: 60)
+        #expect(session.targetRPMByFan[0] == 4_500)
+        #expect(abs(try backend.float("F0Tg") - 4_500) < 0.001)
+        try await controller.restoreAutomatic()
+    }
+
+    @Test("takeover re-reads actual RPM raised after the initial snapshot")
+    func takeoverRereadsLateActualRaise() async throws {
+        let backend = makeFanBackend(fanCount: 1, includeFtst: false)
+        let controller = try makeController(backend: backend)
+        backend.installReadHook { key, count in
+            if key == "F0Tg", count == 1 {
+                backend.setFloat("F0Ac", 4_700)
+            }
+        }
+
+        let session = try await controller.engage(speedPercent: 60)
+        #expect(session.targetRPMByFan[0] == 4_700)
+        #expect(abs(try backend.float("F0Tg") - 4_700) < 0.001)
+        try await controller.restoreAutomatic()
+    }
+
+    @Test("Ftst fallback still re-reads the final takeover floor")
+    func ftstFallbackRereadsLateTargetRaise() async throws {
+        let backend = makeFanBackend(fanCount: 1)
+        backend.queue([
+            .failBefore(.firmwareRejected(
+                operation: .writeBytes,
+                key: "F0Md",
+                result: 0x82
+            )),
+            .succeed,
+        ], for: "F0Md")
+        backend.installWriteHook { key, bytes in
+            if key == "Ftst", bytes == [1] {
+                backend.setFloat("F0Tg", 4_600)
+            }
+        }
+        let controller = try makeController(backend: backend)
+
+        let session = try await controller.engage(speedPercent: 60)
+        #expect(session.ownsFtst)
+        #expect(session.targetRPMByFan[0] == 4_600)
+        #expect(abs(try backend.float("F0Tg") - 4_600) < 0.001)
+        try await controller.restoreAutomatic()
+    }
+
+    @Test("a late takeover floor above maximum aborts to Auto")
+    func takeoverRejectsLateFloorAboveMaximum() async throws {
+        let backend = makeFanBackend(fanCount: 1, includeFtst: false)
+        let controller = try makeController(backend: backend)
+        backend.installReadHook { key, count in
+            if key == "F0Tg", count == 1 {
+                backend.setFloat("F0Ac", 5_100)
+            }
+        }
+
+        let error = await captureControllerError {
+            _ = try await controller.engage(speedPercent: 60)
+        }
+        #expect(error == .takeoverFloorExceedsMaximum(
+            index: 0,
+            floor: 5_100,
+            maximum: 5_000
+        ))
+        #expect(try backend.uint8("F0Md") == FanMode.automatic.rawValue)
+        #expect(await controller.currentSession() == nil)
+    }
+
     @Test("an automatic RPM above maximum refuses takeover before writes")
     func invalidTakeoverFloor() async throws {
         let backend = makeFanBackend(fanCount: 1)
@@ -180,6 +259,7 @@ struct FanControllerTests {
         #expect(!backend.operations.contains(.write("F1Md", [1])))
         #expect(recorder.values == [
             FanControlOwnership(fanIndices: [0], ownsFtst: false),
+            FanControlOwnership(fanIndices: [], ownsFtst: false),
         ])
     }
 
@@ -211,6 +291,7 @@ struct FanControllerTests {
             FanControlOwnership(fanIndices: [0], ownsFtst: false),
             FanControlOwnership(fanIndices: [0, 1], ownsFtst: false),
             FanControlOwnership(fanIndices: [0], ownsFtst: false),
+            FanControlOwnership(fanIndices: [], ownsFtst: false),
         ])
     }
 
@@ -482,6 +563,39 @@ struct FanControllerTests {
         #expect(await controller.currentSession() == nil)
     }
 
+    @Test("failed journal narrowing retains conservative in-memory ownership")
+    func journalNarrowingFailureRetainsBroadOwnership() async throws {
+        let backend = makeFanBackend(fanCount: 1, includeFtst: false)
+        backend.queue([
+            .failBefore(.injectedFailure("target failed")),
+        ], for: "F0Tg")
+        let controller = try makeController(backend: backend)
+        let recorder = OwnershipRecorder { ownership in
+            if ownership.fanIndices.isEmpty {
+                throw OwnershipRecorderError.injected
+            }
+        }
+
+        let error = await captureControllerError {
+            _ = try await controller.engage(
+                speedPercent: 80,
+                recordOwnership: recorder.record
+            )
+        }
+        guard let error,
+              case .rollbackFailed(_, let failures) = error
+        else {
+            Issue.record("expected rollback failure, got \(String(describing: error))")
+            return
+        }
+        #expect(failures.contains(where: { $0.step == .persistOwnership }))
+        #expect(await controller.isControlling)
+        #expect(try backend.uint8("F0Md") == FanMode.automatic.rawValue)
+
+        try await controller.restoreAutomatic()
+        #expect(await controller.currentSession() == nil)
+    }
+
     @Test("rollback continues to later fans after an earlier restore fails")
     func rollbackAttemptsEveryFan() async throws {
         let backend = makeFanBackend()
@@ -491,9 +605,13 @@ struct FanControllerTests {
         ], for: "F0Md")
         backend.queue([.failBefore(.injectedFailure("fan one target failed"))], for: "F1Tg")
         let controller = try makeController(backend: backend)
+        let recorder = OwnershipRecorder()
 
         let error = await captureControllerError {
-            _ = try await controller.engage(speedPercent: 80)
+            _ = try await controller.engage(
+                speedPercent: 80,
+                recordOwnership: recorder.record
+            )
         }
         guard let error, case .rollbackFailed(_, let failures) = error else {
             Issue.record("expected rollback failure, got \(String(describing: error))")
@@ -502,6 +620,10 @@ struct FanControllerTests {
         #expect(failures.contains(where: { $0.fanIndex == 0 }))
         #expect(try backend.uint8("F1Md") == 0)
         #expect(backend.operations.contains(.write("F1Md", [0])))
+        #expect(recorder.values.last == FanControlOwnership(
+            fanIndices: [0],
+            ownsFtst: false
+        ))
     }
 
     @Test("rollback verifies automatic mode instead of trusting a successful write")
@@ -549,9 +671,13 @@ struct FanControllerTests {
         ], for: "Ftst")
         backend.queue([.failBefore(.injectedFailure("target failed"))], for: "F0Tg")
         let controller = try makeController(backend: backend)
+        let recorder = OwnershipRecorder()
 
         let error = await captureControllerError {
-            _ = try await controller.engage(speedPercent: 80)
+            _ = try await controller.engage(
+                speedPercent: 80,
+                recordOwnership: recorder.record
+            )
         }
         guard let error, case .rollbackFailed(_, let failures) = error else {
             Issue.record("expected rollback failure, got \(String(describing: error))")
@@ -559,6 +685,10 @@ struct FanControllerTests {
         }
         #expect(failures.contains(where: { $0.step == .clearFtst }))
         #expect((await controller.currentSession())?.ownsFtst == true)
+        #expect(recorder.values.last == FanControlOwnership(
+            fanIndices: [],
+            ownsFtst: true
+        ))
 
         try await controller.restoreAutomatic()
         #expect(try backend.uint8("Ftst") == 0)
@@ -850,9 +980,11 @@ private final class CallbackCounter: @unchecked Sendable {
 private final class OwnershipRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [FanControlOwnership] = []
-    private let onRecord: @Sendable (FanControlOwnership) -> Void
+    private let onRecord: @Sendable (FanControlOwnership) throws -> Void
 
-    init(onRecord: @escaping @Sendable (FanControlOwnership) -> Void = { _ in }) {
+    init(
+        onRecord: @escaping @Sendable (FanControlOwnership) throws -> Void = { _ in }
+    ) {
         self.onRecord = onRecord
     }
 
@@ -862,10 +994,14 @@ private final class OwnershipRecorder: @unchecked Sendable {
         return recorded
     }
 
-    func record(_ ownership: FanControlOwnership) {
+    func record(_ ownership: FanControlOwnership) throws {
         lock.lock()
         recorded.append(ownership)
         lock.unlock()
-        onRecord(ownership)
+        try onRecord(ownership)
     }
+}
+
+private enum OwnershipRecorderError: Error {
+    case injected
 }

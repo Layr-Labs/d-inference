@@ -7,9 +7,9 @@ import os
 import tempfile
 import threading
 import unittest
+import unittest.mock as mock
 import urllib.parse
 from dataclasses import replace
-from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 

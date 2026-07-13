@@ -337,8 +337,11 @@ def _wait_peer_recovery(
                 and coordinator.get("providers") == expected_sessions
             ):
                 return
-        except Exception:
-            pass
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            # Both processes may be between listeners or responses while a
+            # recovery cycle converges; retry only these transient probe errors.
+            time.sleep(0.1)
+            continue
         time.sleep(0.1)
     raise RuntimeError(
         "peer did not recover all "

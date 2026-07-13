@@ -8,6 +8,7 @@ import signal
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -62,13 +63,17 @@ class ManagedProcess:
         try:
             os.killpg(self.process.pid, signal.SIGINT)
         except ProcessLookupError:
-            pass
+            # The process group can exit between poll() and signal delivery.
+            self.process.wait(timeout=1)
+            self.log_handle.close()
+            return
         try:
             self.process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             try:
                 os.killpg(self.process.pid, signal.SIGKILL)
             except ProcessLookupError:
+                # The grace-period wait observed a timeout just as the group exited.
                 pass
             self.process.wait(timeout=5)
         self.log_handle.close()
@@ -288,8 +293,10 @@ def wait_ready(process: ManagedProcess, url: str, timeout_seconds: float = 60) -
                 if response.status == 200:
                     response.read()
                     return
-        except Exception:
-            pass
+        except (urllib.error.URLError, TimeoutError):
+            # Listener startup and reconnects transiently refuse health probes.
+            time.sleep(0.2)
+            continue
         time.sleep(0.2)
     raise RuntimeError(f"{process.name} did not become healthy at {health_url}")
 
@@ -321,8 +328,10 @@ def wait_peer_ready(
                 and document.get("connected_sessions") == expected_sessions
             ):
                 return
-        except Exception:
-            pass
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            # Peer startup can close or partially answer this bounded JSON probe.
+            time.sleep(0.2)
+            continue
         time.sleep(0.2)
     raise RuntimeError(
         f"{process.name} did not establish {expected_sessions} sessions; inspect {process.log_path}"
@@ -352,8 +361,10 @@ def wait_provider_count(
                 and document.get("providers") == expected_sessions
             ):
                 return
-        except Exception:
-            pass
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            # Provider reconnects transiently interrupt coordinator health reads.
+            time.sleep(0.5)
+            continue
         time.sleep(0.5)
     raise RuntimeError(
         f"{process.name} did not establish {expected_sessions} provider sessions; "
@@ -628,7 +639,7 @@ def _counter_snapshot(url: str, bearer: str | None) -> dict | None:
     try:
         with urllib.request.urlopen(request, timeout=3) as response:
             document = json.load(response)
-    except Exception:
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
         return None
     if not isinstance(document, dict):
         return None

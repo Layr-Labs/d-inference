@@ -212,7 +212,7 @@ for runtime_marker in \
   }
 done
 
-python3 -m unittest \
+env -u GITHUB_ACTIONS python3 -m unittest \
   scripts.tests.test_cutover_readiness \
   scripts.tests.test_fault_matrix
 

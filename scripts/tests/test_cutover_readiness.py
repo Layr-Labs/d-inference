@@ -7,8 +7,8 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import unittest.mock as mock
 import urllib.parse
-from unittest import mock
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path

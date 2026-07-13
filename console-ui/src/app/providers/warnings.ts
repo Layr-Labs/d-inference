@@ -10,6 +10,9 @@
 // rules and FindProviderWithTrust exclusion checks.
 
 import type { MyProvider, MyProvidersResponse } from "./types";
+import { semverLess } from "./semver";
+
+export { semverLess } from "./semver";
 
 export type WarningSeverity = "blocking" | "degrading" | "info";
 
@@ -20,26 +23,12 @@ export interface Warning {
   detail: string;
 }
 
-export function semverLess(a: string, b: string): boolean {
-  if (!a) return Boolean(b);
-  if (!b) return false;
-  const ap = a.split(".").map((n) => parseInt(n, 10) || 0);
-  const bp = b.split(".").map((n) => parseInt(n, 10) || 0);
-  const len = Math.max(ap.length, bp.length);
-  for (let i = 0; i < len; i++) {
-    const av = ap[i] ?? 0;
-    const bv = bp[i] ?? 0;
-    if (av < bv) return true;
-    if (av > bv) return false;
-  }
-  return false;
-}
-
 export function computeWarnings(
   p: MyProvider,
   ctx: Pick<
     MyProvidersResponse,
     | "latest_provider_version"
+    | "latest_beta_provider_version"
     | "min_provider_version"
     | "heartbeat_timeout_seconds"
     | "challenge_max_age_seconds"
@@ -271,10 +260,15 @@ export function computeWarnings(
     });
   }
 
+  const releaseChannel = p.release_channel ?? "stable";
+  const latestVersion =
+    releaseChannel === "beta"
+      ? ctx.latest_beta_provider_version || ctx.latest_provider_version
+      : ctx.latest_provider_version;
   if (
-    ctx.latest_provider_version &&
+    latestVersion &&
     p.version &&
-    semverLess(p.version, ctx.latest_provider_version) &&
+    semverLess(p.version, latestVersion) &&
     !out.some((w) => w.id === "version_below_min")
   ) {
     const isOffline = p.status === "offline" || p.status === "never_seen";
@@ -285,8 +279,8 @@ export function computeWarnings(
         ? "Version may be outdated"
         : "Newer provider version available",
       detail: isOffline
-        ? `Last seen on v${p.version}. Latest is v${ctx.latest_provider_version}. Start the provider to verify — if already updated, the version will refresh automatically.`
-        : `Running v${p.version}. Latest is v${ctx.latest_provider_version}. Update via the installer when convenient.`,
+        ? `Last seen on v${p.version}. Latest for the ${releaseChannel} channel is v${latestVersion}. Start the provider to verify — if already updated, the version will refresh automatically.`
+        : `Running v${p.version}. Latest for the ${releaseChannel} channel is v${latestVersion}. Update via the provider CLI when convenient.`,
     });
   }
 

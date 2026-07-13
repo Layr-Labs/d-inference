@@ -1,6 +1,28 @@
 import Testing
 @testable import ProviderCore
 
+@Test func configReleaseChannelDefaultsStableAndRoundTripsBeta() throws {
+    let defaults = ConfigManager.parse("""
+    [provider]
+    name = "test-provider"
+    """)
+    #expect(defaults.provider.releaseChannel == .stable)
+
+    let original = ProviderConfig(
+        provider: ProviderSettings(name: "test-provider", releaseChannel: .beta)
+    )
+    let toml = ConfigManager.serialize(original)
+    #expect(toml.contains("release_channel"))
+    #expect(ConfigManager.parse(toml).provider.releaseChannel == .beta)
+
+    let unknown = ConfigManager.parse("""
+    [provider]
+    name = "test-provider"
+    release_channel = "canary"
+    """)
+    #expect(unknown.provider.releaseChannel == .stable)
+}
+
 @Test func configParsingDefaultsMaxModelSlotsWhenMissing() throws {
     let config = ConfigManager.parse("""
     [provider]

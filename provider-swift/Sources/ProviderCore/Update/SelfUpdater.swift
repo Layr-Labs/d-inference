@@ -5,6 +5,7 @@ import CryptoKit
 public struct ReleaseInfo: Sendable {
     public let version: String
     public let platform: String
+    public let channel: ProviderReleaseChannel
     public let url: String
     public let bundleHash: String
     public let binaryHash: String?
@@ -13,6 +14,7 @@ public struct ReleaseInfo: Sendable {
     public init(
         version: String,
         platform: String,
+        channel: ProviderReleaseChannel = .stable,
         url: String,
         bundleHash: String,
         binaryHash: String? = nil,
@@ -20,6 +22,7 @@ public struct ReleaseInfo: Sendable {
     ) {
         self.version = version
         self.platform = platform
+        self.channel = channel
         self.url = url
         self.bundleHash = bundleHash
         self.binaryHash = binaryHash
@@ -60,6 +63,7 @@ public struct SelfUpdater: Sendable {
     private let installRootOverride: URL?
     private let verifyCodeSignatures: Bool
     private let currentVersion: String
+    private let releaseChannel: ProviderReleaseChannel
     private let urlSession: URLSession
     private let now: @Sendable () -> Double
     /// Test seam threaded into every `UpdateRecoveryStore` this updater
@@ -77,12 +81,17 @@ public struct SelfUpdater: Sendable {
 
     /// Production initializer: signature verification is ALWAYS on. There is no
     /// public way to construct a `SelfUpdater` that skips signature checks.
-    public init(coordinatorBaseURL: String, urlSession: URLSession = .shared) {
+    public init(
+        coordinatorBaseURL: String,
+        releaseChannel: ProviderReleaseChannel = .stable,
+        urlSession: URLSession = .shared
+    ) {
         self.init(
             coordinatorBaseURL: coordinatorBaseURL,
             installRoot: nil,
             verifyCodeSignatures: true,
             currentVersion: ProviderCore.version,
+            releaseChannel: releaseChannel,
             urlSession: urlSession,
             now: { Date().timeIntervalSince1970 }
         )
@@ -117,6 +126,7 @@ public struct SelfUpdater: Sendable {
         installRoot: URL?,
         verifyCodeSignatures: Bool,
         currentVersion: String,
+        releaseChannel: ProviderReleaseChannel = .stable,
         urlSession: URLSession = .shared,
         now: @escaping @Sendable () -> Double = {
             Date().timeIntervalSince1970
@@ -135,6 +145,7 @@ public struct SelfUpdater: Sendable {
         self.installRootOverride = installRoot
         self.verifyCodeSignatures = verifyCodeSignatures
         self.currentVersion = currentVersion
+        self.releaseChannel = releaseChannel
         self.urlSession = urlSession
         self.now = now
         self.recoveryFaultInjector = recoveryFaultInjector
@@ -268,7 +279,7 @@ public struct SelfUpdater: Sendable {
     }
 
     private func fetchLatestRelease() async -> LatestReleaseFetch {
-        let endpoint = "\(coordinatorBaseURL)/v1/releases/latest?platform=macos-arm64"
+        let endpoint = "\(coordinatorBaseURL)/v1/releases/latest?platform=macos-arm64&channel=\(releaseChannel.rawValue)"
 
         guard let url = URL(string: endpoint) else {
             return .failed("invalid coordinator URL: \(endpoint)")
@@ -298,6 +309,23 @@ public struct SelfUpdater: Sendable {
             guard platform == "macos-arm64" else {
                 return .failed("coordinator returned unsupported release platform \(platform)")
             }
+            let responseChannel: ProviderReleaseChannel
+            if let rawChannel = json["channel"] as? String {
+                guard let parsed = ProviderReleaseChannel(rawValue: rawChannel) else {
+                    return .failed("coordinator returned unsupported release channel \(rawChannel)")
+                }
+                responseChannel = parsed
+            } else {
+                responseChannel = .stable
+            }
+            if releaseChannel == .stable && responseChannel != .stable {
+                return .failed("coordinator returned a beta release to the stable channel")
+            }
+            if releaseChannel == .stable,
+               let parsedVersion = SemanticVersion(version),
+               parsedVersion.prerelease.first == .text("beta") {
+                return .failed("coordinator returned a beta version to the stable channel")
+            }
             guard let bundleHash = (json["bundle_hash"] as? String)
                     ?? (json["sha256"] as? String)
                     ?? (json["binary_hash"] as? String)
@@ -308,6 +336,7 @@ public struct SelfUpdater: Sendable {
             return .release(ReleaseInfo(
                 version: version,
                 platform: platform,
+                channel: responseChannel,
                 url: downloadURL,
                 bundleHash: bundleHash,
                 binaryHash: json["binary_hash"] as? String,

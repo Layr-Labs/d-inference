@@ -109,6 +109,25 @@ func TestRegisterMessagePrivateOnlySymmetry(t *testing.T) {
 	}
 }
 
+func TestRegisterMessageReleaseChannelSymmetry(t *testing.T) {
+	swiftJSON := `{"type":"register","hardware":{},"models":[],"backend":"mlx-swift","release_channel":"beta"}`
+	var decoded RegisterMessage
+	if err := json.Unmarshal([]byte(swiftJSON), &decoded); err != nil {
+		t.Fatalf("unmarshal swift payload: %v", err)
+	}
+	if decoded.ReleaseChannel != "beta" {
+		t.Fatalf("release_channel = %q, want beta", decoded.ReleaseChannel)
+	}
+
+	data, err := json.Marshal(RegisterMessage{Type: TypeRegister})
+	if err != nil {
+		t.Fatalf("marshal stable payload: %v", err)
+	}
+	if strings.Contains(string(data), "release_channel") {
+		t.Fatalf("empty stable release channel should be omitted, got %s", data)
+	}
+}
+
 func TestRegisterMessageAPNsFieldsSymmetry(t *testing.T) {
 	// A register payload exactly as the Swift ProviderMessage encoder emits it
 	// with the v0.6.0 APNs code-identity fields present.

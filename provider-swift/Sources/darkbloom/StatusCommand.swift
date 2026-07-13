@@ -25,6 +25,7 @@ struct Status: AsyncParsableCommand {
         print("Backend port: \(config.backend.port)")
         print("Configured model: \(config.backend.model ?? "auto-select")")
         print("Idle timeout: \(config.backend.idleTimeoutMins == 0 ? "disabled" : "\(config.backend.idleTimeoutMins)m")")
+        print("Release channel: \(config.provider.releaseChannel.rawValue) (manage with `darkbloom beta`)")
         let enabledBeta = BetaFeatures.enabledIDs(in: config)
         print("Beta features: \(enabledBeta.isEmpty ? "none" : enabledBeta.joined(separator: ", ")) (manage with `darkbloom beta`)")
         print("Auto-restart: \(autoRestartStatus(config: config))")

@@ -96,6 +96,7 @@ public struct MockDeviceCodeFixture: Sendable {
 public struct MockReleaseFixture: Sendable {
     public var version: String
     public var platform: String
+    public var channel: ProviderReleaseChannel
     public var url: String
     public var bundleHash: String
     public var binaryHash: String?
@@ -104,6 +105,7 @@ public struct MockReleaseFixture: Sendable {
     public init(
         version: String = "0.99.0",
         platform: String = "macos-arm64",
+        channel: ProviderReleaseChannel = .stable,
         url: String = "https://example.test/darkbloom-bundle-macos-arm64.tar.gz",
         bundleHash: String = String(repeating: "a", count: 64),
         binaryHash: String? = nil,
@@ -111,6 +113,7 @@ public struct MockReleaseFixture: Sendable {
     ) {
         self.version = version
         self.platform = platform
+        self.channel = channel
         self.url = url
         self.bundleHash = bundleHash
         self.binaryHash = binaryHash
@@ -459,6 +462,7 @@ public final class MockCoordinator: @unchecked Sendable {
             let body = ReleaseLatestPayload(
                 version: self.release.version,
                 platform: self.release.platform,
+                channel: self.release.channel,
                 url: releaseURL,
                 bundle_hash: self.release.bundleHash,
                 binary_hash: self.release.binaryHash,
@@ -683,6 +687,7 @@ private final class PortBox: @unchecked Sendable {
 private struct ReleaseLatestPayload: Encodable {
     let version: String
     let platform: String
+    let channel: ProviderReleaseChannel
     let url: String
     let bundle_hash: String
     let binary_hash: String?

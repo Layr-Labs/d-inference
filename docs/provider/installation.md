@@ -84,6 +84,7 @@ name = "darkbloom-mac16-1"
 memory_reserve_gb = 4
 auto_update = true
 auto_restart = true
+release_channel = "stable"
 
 [backend]
 enabled_models = []
@@ -124,6 +125,13 @@ darkbloom autoupdate disable
 
 Auto-update is controlled by `provider.auto_update` in `provider.toml`
 (`provider-swift/Sources/darkbloom/AutoUpdateCommand.swift`).
+
+To opt into signed beta releases through the same update and rollback path:
+
+```bash
+darkbloom beta enable
+darkbloom restart
+```
 
 ## Uninstalling
 

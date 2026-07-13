@@ -49,6 +49,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
+	"golang.org/x/mod/semver"
 )
 
 // apiKeyCacheEntry stores the authenticated key record for a single raw API
@@ -158,7 +159,11 @@ const minProviderVersionForDesiredModels = "0.5.17"
 // the store, falling back to the hardcoded LatestProviderVersion when
 // no release record exists.
 func (s *Server) latestReleasedVersion() string {
-	if release := s.store.GetLatestRelease("macos-arm64"); release != nil {
+	return s.latestReleasedVersionForChannel(store.ReleaseChannelStable)
+}
+
+func (s *Server) latestReleasedVersionForChannel(channel string) string {
+	if release := s.store.GetLatestRelease("macos-arm64", channel); release != nil {
 		return release.Version
 	}
 	return LatestProviderVersion
@@ -1254,6 +1259,7 @@ func (s *Server) SyncRuntimeManifest() {
 		PythonHashes:   make(map[string]bool),
 		RuntimeHashes:  make(map[string]bool),
 		TemplateHashes: make(map[string]string),
+		MetallibHashes: make(map[string]bool),
 	}
 
 	// Sort releases ascending by version so newer releases' template hashes
@@ -1296,6 +1302,7 @@ func (s *Server) SyncRuntimeManifest() {
 					"error", err,
 				)
 			} else {
+				manifest.MetallibHashes[normalized] = true
 				manifest.TemplateHashes["mlx_metallib"] = normalized
 				hasAny = true
 			}
@@ -1308,6 +1315,7 @@ func (s *Server) SyncRuntimeManifest() {
 			"python_hashes", len(manifest.PythonHashes),
 			"runtime_hashes", len(manifest.RuntimeHashes),
 			"template_hashes", len(manifest.TemplateHashes),
+			"metallib_hashes", len(manifest.MetallibHashes),
 		)
 	} else if len(releases) > 0 {
 		// Explicit empty: releases exist but none have hashes. Clear manifest.
@@ -1380,6 +1388,7 @@ type RuntimeManifest struct {
 	PythonHashes   map[string]bool   `json:"python_hashes"`   // set of accepted Python runtime hashes
 	RuntimeHashes  map[string]bool   `json:"runtime_hashes"`  // set of accepted inference runtime hashes
 	TemplateHashes map[string]string `json:"template_hashes"` // template_name -> expected hash
+	MetallibHashes map[string]bool   `json:"metallib_hashes"` // accepted mlx.metallib hashes across stable and beta releases
 }
 
 // SetRuntimeManifest configures the known-good runtime manifest for provider
@@ -1393,24 +1402,7 @@ func semverGreater(a, b string) bool {
 	if b == "" {
 		return true
 	}
-	aParts := strings.Split(a, ".")
-	bParts := strings.Split(b, ".")
-	for i := 0; i < len(aParts) || i < len(bParts); i++ {
-		var ai, bi int
-		if i < len(aParts) {
-			fmt.Sscanf(aParts[i], "%d", &ai)
-		}
-		if i < len(bParts) {
-			fmt.Sscanf(bParts[i], "%d", &bi)
-		}
-		if ai > bi {
-			return true
-		}
-		if ai < bi {
-			return false
-		}
-	}
-	return false // equal
+	return semver.Compare("v"+strings.TrimPrefix(a, "v"), "v"+strings.TrimPrefix(b, "v")) > 0
 }
 
 // semverLess returns true if version a is less than version b.
@@ -1420,6 +1412,43 @@ func semverLess(a, b string) bool {
 
 func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
 	s.knownRuntimeManifest = m
+}
+
+// MergeRuntimeManifest adds operator-supplied accepted hashes without removing
+// release-derived stable or beta hashes. Environment overrides are an additive
+// emergency control, not a way to silently deroute another active cohort.
+func (s *Server) MergeRuntimeManifest(m *RuntimeManifest) {
+	if m == nil {
+		return
+	}
+	if s.knownRuntimeManifest == nil {
+		s.knownRuntimeManifest = &RuntimeManifest{}
+	}
+	dst := s.knownRuntimeManifest
+	if dst.PythonHashes == nil {
+		dst.PythonHashes = make(map[string]bool)
+	}
+	if dst.RuntimeHashes == nil {
+		dst.RuntimeHashes = make(map[string]bool)
+	}
+	if dst.TemplateHashes == nil {
+		dst.TemplateHashes = make(map[string]string)
+	}
+	if dst.MetallibHashes == nil {
+		dst.MetallibHashes = make(map[string]bool)
+	}
+	for hash := range m.PythonHashes {
+		dst.PythonHashes[hash] = true
+	}
+	for hash := range m.RuntimeHashes {
+		dst.RuntimeHashes[hash] = true
+	}
+	for name, hash := range m.TemplateHashes {
+		dst.TemplateHashes[name] = hash
+	}
+	for hash := range m.MetallibHashes {
+		dst.MetallibHashes[hash] = true
+	}
 }
 
 func (s *Server) verifyRuntimeHashesForBackend(backend, pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
@@ -1438,6 +1467,32 @@ func (s *Server) verifyRuntimeHashesForBackend(backend, pythonHash, runtimeHash 
 	}
 
 	manifest := s.knownRuntimeManifest
+	acceptedMetallibHashes := manifest.MetallibHashes
+	if len(acceptedMetallibHashes) == 0 {
+		acceptedMetallibHashes = map[string]bool{}
+		if expected := manifest.TemplateHashes["mlx_metallib"]; expected != "" {
+			acceptedMetallibHashes[expected] = true
+		}
+	}
+	if len(acceptedMetallibHashes) > 0 {
+		got := templateHashes["mlx_metallib"]
+		if got == "" {
+			return false, []protocol.RuntimeMismatch{{
+				Component: "template:mlx_metallib",
+				Expected:  "reported hash matching one of known-good values",
+				Got:       "(missing)",
+			}}
+		}
+		if !acceptedMetallibHashes[got] {
+			return false, []protocol.RuntimeMismatch{{
+				Component: "template:mlx_metallib",
+				Expected:  "one of known-good hashes",
+				Got:       got,
+			}}
+		}
+		return true, nil
+	}
+
 	scoped := &RuntimeManifest{
 		PythonHashes:   map[string]bool{},
 		RuntimeHashes:  map[string]bool{},
@@ -1536,6 +1591,7 @@ func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
 			"python_hashes":   s.knownRuntimeManifest.PythonHashes,
 			"runtime_hashes":  s.knownRuntimeManifest.RuntimeHashes,
 			"template_hashes": s.knownRuntimeManifest.TemplateHashes,
+			"metallib_hashes": s.knownRuntimeManifest.MetallibHashes,
 		}
 	}
 	body, err := json.Marshal(resp)

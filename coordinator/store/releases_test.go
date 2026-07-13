@@ -13,7 +13,7 @@ func TestReleases(t *testing.T) {
 	if len(releases) != 0 {
 		t.Fatalf("expected 0 releases, got %d", len(releases))
 	}
-	if r := s.GetLatestRelease("macos-arm64"); r != nil {
+	if r := s.GetLatestRelease("macos-arm64", ReleaseChannelStable); r != nil {
 		t.Fatal("expected nil latest release")
 	}
 
@@ -49,7 +49,7 @@ func TestReleases(t *testing.T) {
 	}
 
 	// Latest should be r2.
-	latest := s.GetLatestRelease("macos-arm64")
+	latest := s.GetLatestRelease("macos-arm64", ReleaseChannelStable)
 	if latest == nil {
 		t.Fatal("expected non-nil latest release")
 	}
@@ -67,7 +67,7 @@ func TestReleases(t *testing.T) {
 	}
 
 	// Unknown platform returns nil.
-	if r := s.GetLatestRelease("linux-amd64"); r != nil {
+	if r := s.GetLatestRelease("linux-amd64", ReleaseChannelStable); r != nil {
 		t.Error("expected nil for unknown platform")
 	}
 
@@ -77,7 +77,7 @@ func TestReleases(t *testing.T) {
 	}
 
 	// Latest should now be r1.
-	latest = s.GetLatestRelease("macos-arm64")
+	latest = s.GetLatestRelease("macos-arm64", ReleaseChannelStable)
 	if latest == nil {
 		t.Fatal("expected non-nil latest after deactivation")
 	}
@@ -121,11 +121,58 @@ func TestGetLatestReleasePrefersHigherSemverOverNewerTimestamp(t *testing.T) {
 		t.Fatalf("SetRelease 0.3.8: %v", err)
 	}
 
-	latest := s.GetLatestRelease("macos-arm64")
+	latest := s.GetLatestRelease("macos-arm64", ReleaseChannelStable)
 	if latest == nil {
 		t.Fatal("expected non-nil latest release")
 	}
 	if latest.Version != "0.3.9" {
 		t.Fatalf("latest version = %q, want %q", latest.Version, "0.3.9")
+	}
+}
+
+func TestReleaseChannelsIsolateStableAndAdvanceBetaToFinal(t *testing.T) {
+	for name, s := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			for _, release := range []*Release{
+				{Version: "0.7.8", Platform: "macos-arm64", Channel: ReleaseChannelStable},
+				{Version: "0.7.9-beta.1", Platform: "macos-arm64", Channel: ReleaseChannelBeta},
+			} {
+				if err := s.SetRelease(release); err != nil {
+					t.Fatalf("SetRelease(%s): %v", release.Version, err)
+				}
+			}
+
+			if got := s.GetLatestRelease("macos-arm64", ReleaseChannelStable); got == nil || got.Version != "0.7.8" {
+				t.Fatalf("stable latest = %#v, want 0.7.8", got)
+			}
+			if got := s.GetLatestRelease("macos-arm64", ReleaseChannelBeta); got == nil || got.Version != "0.7.9-beta.1" {
+				t.Fatalf("beta latest = %#v, want 0.7.9-beta.1", got)
+			}
+
+			if err := s.SetRelease(&Release{
+				Version: "0.7.9", Platform: "macos-arm64", Channel: ReleaseChannelStable,
+			}); err != nil {
+				t.Fatalf("SetRelease(final): %v", err)
+			}
+			if got := s.GetLatestRelease("macos-arm64", ReleaseChannelBeta); got == nil || got.Version != "0.7.9" {
+				t.Fatalf("beta latest after final = %#v, want 0.7.9", got)
+			}
+		})
+	}
+}
+
+func TestSetReleaseDefaultsChannelAndRejectsUnknown(t *testing.T) {
+	s := NewMemory(Config{})
+	if err := s.SetRelease(&Release{Version: "1.0.0", Platform: "macos-arm64"}); err != nil {
+		t.Fatalf("SetRelease(default): %v", err)
+	}
+	if got := s.GetLatestRelease("macos-arm64", ReleaseChannelStable); got == nil || got.Channel != ReleaseChannelStable {
+		t.Fatalf("default channel release = %#v, want stable", got)
+	}
+	if err := s.SetRelease(&Release{Version: "1.0.1", Platform: "macos-arm64", Channel: "canary"}); err == nil {
+		t.Fatal("SetRelease accepted unknown channel")
+	}
+	if err := s.SetRelease(&Release{Version: "1.0.0", Platform: "macos-arm64", Channel: ReleaseChannelBeta}); err == nil {
+		t.Fatal("SetRelease allowed an existing release to change channels")
 	}
 }

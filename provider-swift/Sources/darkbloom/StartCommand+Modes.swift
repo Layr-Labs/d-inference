@@ -161,14 +161,18 @@ extension Start {
         let authToken = AuthTokenStore.load()
         if let identity = ProcessIdentity.current() {
             try? SelfUpdater(
-                coordinatorBaseURL: coordinatorURL
+                coordinatorBaseURL: coordinatorURL,
+                releaseChannel: config.provider.releaseChannel
             ).confirmRunningCandidateLaunch(
                 processStartedAt: Double(identity.startTimeMicros) / 1_000_000
             )
         }
 
         if config.provider.autoUpdate {
-            try await runStartupAutoUpdate(coordinatorURL: coordinatorURL)
+            try await runStartupAutoUpdate(
+                coordinatorURL: coordinatorURL,
+                releaseChannel: config.provider.releaseChannel
+            )
         }
 
         // ----- Process-level lifecycle: PID lock + caffeinate. -----
@@ -280,12 +284,18 @@ extension Start {
         await TelemetryClient.shared.shutdown()
     }
 
-    private func runStartupAutoUpdate(coordinatorURL: String) async throws {
+    private func runStartupAutoUpdate(
+        coordinatorURL: String,
+        releaseChannel: ProviderReleaseChannel
+    ) async throws {
         if ProcessInfo.processInfo.environment["DARKBLOOM_NO_UPDATE_CHECK"] != nil {
             return
         }
         print("Checking for provider update...")
-        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+        let updater = SelfUpdater(
+            coordinatorBaseURL: coordinatorURL,
+            releaseChannel: releaseChannel
+        )
         switch await updater.update() {
         case .alreadyUpToDate:
             return

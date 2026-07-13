@@ -21,12 +21,14 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"golang.org/x/mod/semver"
 )
 
 const (
 	maxReleaseRegisterBodyBytes = 64 * 1024
 	maxReleaseArtifactBytes     = 2 << 30 // 2 GiB
 	maxReleaseProviderBinBytes  = 512 << 20
+	maxReleaseMetallibBytes     = 512 << 20
 	releaseArtifactTimeout      = 2 * time.Minute
 )
 
@@ -39,6 +41,7 @@ var (
 type registerReleaseRequest struct {
 	Version        string `json:"version"`
 	Platform       string `json:"platform"`
+	Channel        string `json:"channel,omitempty"`
 	Backend        string `json:"backend,omitempty"`
 	BinaryHash     string `json:"binary_hash"`
 	BundleHash     string `json:"bundle_hash"`
@@ -54,6 +57,7 @@ func (req registerReleaseRequest) toRelease() store.Release {
 	return store.Release{
 		Version:        req.Version,
 		Platform:       req.Platform,
+		Channel:        req.Channel,
 		Backend:        req.Backend,
 		BinaryHash:     req.BinaryHash,
 		BundleHash:     req.BundleHash,
@@ -98,6 +102,13 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 		return
 	}
+	if existing, ok := findRelease(s.store.ListReleases(), release.Version, release.Platform); ok && existing.Channel != release.Channel {
+		writeJSON(w, http.StatusConflict, errorResponse(
+			"release_channel_conflict",
+			fmt.Sprintf("release %s/%s is already registered on channel %s", release.Version, release.Platform, existing.Channel),
+		))
+		return
+	}
 
 	if s.r2CDNURL == "" {
 		s.logger.Error("release: artifact verification unavailable because R2 CDN URL is not configured",
@@ -135,11 +146,12 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 	// out the TTL.
 	s.readCache.Invalidate("api_version:v1")
 	s.readCache.Invalidate("runtime_manifest:v1")
-	s.readCache.Invalidate("latest_release:v1")
+	s.invalidateLatestReleaseCache(release.Platform)
 
 	s.logger.Info("release registered",
 		"version", release.Version,
 		"platform", release.Platform,
+		"channel", release.Channel,
 		"binary_hash", release.BinaryHash[:min(16, len(release.BinaryHash))]+"...",
 	)
 
@@ -159,6 +171,10 @@ func (s *Server) releaseKeyAuthorized(token string) bool {
 func (s *Server) validateReleaseMetadata(release *store.Release) error {
 	release.Version = strings.TrimSpace(release.Version)
 	release.Platform = strings.TrimSpace(release.Platform)
+	release.Channel = strings.ToLower(strings.TrimSpace(release.Channel))
+	if release.Channel == "" {
+		release.Channel = store.ReleaseChannelStable
+	}
 	release.Backend = strings.TrimSpace(release.Backend)
 	release.BinaryHash = strings.TrimSpace(release.BinaryHash)
 	release.BundleHash = strings.TrimSpace(release.BundleHash)
@@ -174,11 +190,26 @@ func (s *Server) validateReleaseMetadata(release *store.Release) error {
 	if !releaseVersionPattern.MatchString(release.Version) {
 		return fmt.Errorf("version must be semver, e.g. 1.2.3 or 1.2.3-dev.1")
 	}
+	canonicalVersion := "v" + strings.TrimPrefix(release.Version, "v")
+	if !semver.IsValid(canonicalVersion) {
+		return fmt.Errorf("version must be valid semver")
+	}
 	if release.Platform == "" {
 		return fmt.Errorf("platform is required")
 	}
 	if !releasePlatformPattern.MatchString(release.Platform) {
 		return fmt.Errorf("platform contains invalid characters")
+	}
+	if release.Channel != store.ReleaseChannelStable && release.Channel != store.ReleaseChannelBeta {
+		return fmt.Errorf("channel must be stable or beta")
+	}
+	prerelease := semver.Prerelease(canonicalVersion)
+	isBetaVersion := prerelease == "-beta" || strings.HasPrefix(prerelease, "-beta.")
+	if release.Channel == store.ReleaseChannelBeta && !isBetaVersion {
+		return fmt.Errorf("beta channel requires a -beta prerelease version")
+	}
+	if release.Channel == store.ReleaseChannelStable && isBetaVersion {
+		return fmt.Errorf("a -beta prerelease version cannot be registered on the stable channel")
 	}
 
 	var err error
@@ -394,7 +425,9 @@ func (s *Server) verifyReleaseArtifact(ctx context.Context, release *store.Relea
 
 	tarReader := tar.NewReader(gz)
 	binaryHash := sha256.New()
+	metallibHash := sha256.New()
 	foundBinary := false
+	foundMetallib := false
 	for {
 		header, err := tarReader.Next()
 		if err == io.EOF {
@@ -407,26 +440,44 @@ func (s *Server) verifyReleaseArtifact(ctx context.Context, release *store.Relea
 		if err != nil {
 			return err
 		}
-		if cleanName != "bin/darkbloom" {
-			continue
+		switch cleanName {
+		case "bin/darkbloom":
+			if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+				return fmt.Errorf("bundled provider binary is not a regular file")
+			}
+			if foundBinary {
+				return fmt.Errorf("bundle contains multiple provider binaries")
+			}
+			if header.Size < 0 || header.Size > maxReleaseProviderBinBytes {
+				return fmt.Errorf("provider binary exceeds maximum size")
+			}
+			n, err := io.Copy(binaryHash, io.LimitReader(tarReader, maxReleaseProviderBinBytes+1))
+			if err != nil {
+				return fmt.Errorf("read provider binary: %w", err)
+			}
+			if n > maxReleaseProviderBinBytes {
+				return fmt.Errorf("provider binary exceeds maximum size")
+			}
+			foundBinary = true
+		case "bin/mlx.metallib":
+			if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+				return fmt.Errorf("bundled mlx.metallib is not a regular file")
+			}
+			if foundMetallib {
+				return fmt.Errorf("bundle contains multiple mlx.metallib files")
+			}
+			if header.Size < 0 || header.Size > maxReleaseMetallibBytes {
+				return fmt.Errorf("mlx.metallib exceeds maximum size")
+			}
+			n, err := io.Copy(metallibHash, io.LimitReader(tarReader, maxReleaseMetallibBytes+1))
+			if err != nil {
+				return fmt.Errorf("read mlx.metallib: %w", err)
+			}
+			if n > maxReleaseMetallibBytes {
+				return fmt.Errorf("mlx.metallib exceeds maximum size")
+			}
+			foundMetallib = true
 		}
-		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
-			return fmt.Errorf("bundled provider binary is not a regular file")
-		}
-		if foundBinary {
-			return fmt.Errorf("bundle contains multiple provider binaries")
-		}
-		if header.Size < 0 || header.Size > maxReleaseProviderBinBytes {
-			return fmt.Errorf("provider binary exceeds maximum size")
-		}
-		n, err := io.Copy(binaryHash, io.LimitReader(tarReader, maxReleaseProviderBinBytes+1))
-		if err != nil {
-			return fmt.Errorf("read provider binary: %w", err)
-		}
-		if n > maxReleaseProviderBinBytes {
-			return fmt.Errorf("provider binary exceeds maximum size")
-		}
-		foundBinary = true
 	}
 	if !foundBinary {
 		return fmt.Errorf("bundle is missing bin/darkbloom")
@@ -435,6 +486,15 @@ func (s *Server) verifyReleaseArtifact(ctx context.Context, release *store.Relea
 	actualBinaryHash := hex.EncodeToString(binaryHash.Sum(nil))
 	if actualBinaryHash != release.BinaryHash {
 		return fmt.Errorf("binary_hash does not match bundled provider binary")
+	}
+	if release.MetallibHash != "" {
+		if !foundMetallib {
+			return fmt.Errorf("bundle is missing bin/mlx.metallib")
+		}
+		actualMetallibHash := hex.EncodeToString(metallibHash.Sum(nil))
+		if actualMetallibHash != release.MetallibHash {
+			return fmt.Errorf("metallib_hash does not match bundled mlx.metallib")
+		}
 	}
 	return nil
 }
@@ -452,21 +512,30 @@ func cleanReleaseTarPath(name string) (string, error) {
 }
 
 // handleLatestRelease handles GET /v1/releases/latest.
-// Public endpoint — returns the latest active release for a platform.
-// Used by install.sh to get the download URL and expected hash.
+// Public endpoint — returns the latest active release for a platform/channel.
+// The omitted/default channel is stable for install.sh; beta is an explicit
+// provider opt-in and includes stable releases for final-version promotion.
 func (s *Server) handleLatestRelease(w http.ResponseWriter, r *http.Request) {
 	platform := r.URL.Query().Get("platform")
 	if platform == "" {
 		platform = "macos-arm64"
 	}
+	channel := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("channel")))
+	if channel == "" {
+		channel = store.ReleaseChannelStable
+	}
+	if channel != store.ReleaseChannelStable && channel != store.ReleaseChannelBeta {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "channel must be stable or beta"))
+		return
+	}
 
-	cacheKey := "latest_release:v1:" + platform
+	cacheKey := latestReleaseCacheKey(platform, channel)
 	if cached, ok := s.readCache.Get(cacheKey); ok {
 		writeCachedJSON(w, cached)
 		return
 	}
 
-	release := s.store.GetLatestRelease(platform)
+	release := s.store.GetLatestRelease(platform, channel)
 	if release == nil {
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "no active release for platform "+platform))
 		return
@@ -479,6 +548,15 @@ func (s *Server) handleLatestRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	s.readCache.Set(cacheKey, body, time.Minute)
 	writeCachedJSON(w, body)
+}
+
+func latestReleaseCacheKey(platform, channel string) string {
+	return "latest_release:v1:" + platform + ":" + channel
+}
+
+func (s *Server) invalidateLatestReleaseCache(platform string) {
+	s.readCache.Invalidate(latestReleaseCacheKey(platform, store.ReleaseChannelStable))
+	s.readCache.Invalidate(latestReleaseCacheKey(platform, store.ReleaseChannelBeta))
 }
 
 // handleAdminListReleases handles GET /v1/admin/releases.
@@ -518,7 +596,7 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 	if req.Platform == "" {
 		req.Platform = "macos-arm64"
 	}
-	if s.binaryHashEnforce && !req.Force {
+	if !req.Force {
 		if release, ok := findReleaseForDeactivation(s.store.ListReleases(), req.Version, req.Platform); ok {
 			if activeProviders := s.registry.CountProvidersByBinaryHash(release.BinaryHash); activeProviders > 0 {
 				writeJSON(w, http.StatusConflict, errorResponse(
@@ -538,6 +616,9 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 	// Re-sync known hashes after deactivation.
 	s.SyncBinaryHashes()
 	s.SyncRuntimeManifest()
+	s.readCache.Invalidate("api_version:v1")
+	s.readCache.Invalidate("runtime_manifest:v1")
+	s.invalidateLatestReleaseCache(req.Platform)
 
 	s.logger.Info("admin: release deactivated", "version", req.Version, "platform", req.Platform)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -548,8 +629,13 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 }
 
 func findReleaseForDeactivation(releases []store.Release, version, platform string) (store.Release, bool) {
+	release, ok := findRelease(releases, version, platform)
+	return release, ok && release.Active
+}
+
+func findRelease(releases []store.Release, version, platform string) (store.Release, bool) {
 	for _, release := range releases {
-		if release.Version == version && release.Platform == platform && release.Active {
+		if release.Version == version && release.Platform == platform {
 			return release, true
 		}
 	}

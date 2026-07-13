@@ -52,9 +52,15 @@ export function ProviderDashboard() {
   const updateAvailable = useMemo(
     () =>
       providers.some(
-        (p) => p.version && ctx.latest_provider_version && semverLess(p.version, ctx.latest_provider_version)
+        (p) => {
+          const latest =
+            p.release_channel === "beta"
+              ? ctx.latest_beta_provider_version || ctx.latest_provider_version
+              : ctx.latest_provider_version;
+          return Boolean(p.version && latest && semverLess(p.version, latest));
+        }
       ),
-    [providers, ctx.latest_provider_version]
+    [providers, ctx.latest_beta_provider_version, ctx.latest_provider_version]
   );
 
   if (!ready) return <Shell><LoadingState /></Shell>;

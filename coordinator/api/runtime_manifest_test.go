@@ -48,6 +48,59 @@ func TestSyncRuntimeManifestIncludesSwiftMetallibHash(t *testing.T) {
 	}
 }
 
+func TestSyncRuntimeManifestAcceptsStableAndBetaMetallibs(t *testing.T) {
+	srv, st := runtimeManifestTestServer(t)
+	stableHash := strings.Repeat("a", 64)
+	betaHash := strings.Repeat("b", 64)
+	for _, release := range []*store.Release{
+		{
+			Version: "0.7.8", Platform: "macos-arm64", Channel: store.ReleaseChannelStable,
+			Backend: "mlx-swift", BinaryHash: strings.Repeat("c", 64), BundleHash: strings.Repeat("d", 64),
+			MetallibHash: stableHash,
+		},
+		{
+			Version: "0.7.9-beta.1", Platform: "macos-arm64", Channel: store.ReleaseChannelBeta,
+			Backend: "mlx-swift", BinaryHash: strings.Repeat("e", 64), BundleHash: strings.Repeat("f", 64),
+			MetallibHash: betaHash,
+		},
+	} {
+		if err := st.SetRelease(release); err != nil {
+			t.Fatalf("SetRelease(%s): %v", release.Version, err)
+		}
+	}
+
+	srv.SyncRuntimeManifest()
+	if srv.knownRuntimeManifest == nil {
+		t.Fatal("knownRuntimeManifest = nil")
+	}
+	if !srv.knownRuntimeManifest.MetallibHashes[stableHash] || !srv.knownRuntimeManifest.MetallibHashes[betaHash] {
+		t.Fatalf("metallib hashes = %#v, want stable and beta", srv.knownRuntimeManifest.MetallibHashes)
+	}
+	for _, hash := range []string{stableHash, betaHash} {
+		if ok, mismatches := srv.verifyRuntimeHashesForBackend("mlx-swift", "", "", map[string]string{"mlx_metallib": hash}); !ok {
+			t.Errorf("metallib %q rejected: %#v", hash, mismatches)
+		}
+	}
+}
+
+func TestMergeRuntimeManifestPreservesReleaseDerivedMetallibs(t *testing.T) {
+	srv, _ := runtimeManifestTestServer(t)
+	releaseHash := strings.Repeat("a", 64)
+	overrideHash := strings.Repeat("b", 64)
+	srv.SetRuntimeManifest(&RuntimeManifest{
+		TemplateHashes: map[string]string{"mlx_metallib": releaseHash},
+		MetallibHashes: map[string]bool{releaseHash: true},
+	})
+	srv.MergeRuntimeManifest(&RuntimeManifest{
+		TemplateHashes: map[string]string{"mlx_metallib": overrideHash},
+		MetallibHashes: map[string]bool{overrideHash: true},
+	})
+
+	if !srv.knownRuntimeManifest.MetallibHashes[releaseHash] || !srv.knownRuntimeManifest.MetallibHashes[overrideHash] {
+		t.Fatalf("metallib hashes = %#v, want release and override", srv.knownRuntimeManifest.MetallibHashes)
+	}
+}
+
 func TestVerifyRuntimeHashesForSwiftRequiresMetallibButNotLegacyRuntime(t *testing.T) {
 	srv, _ := runtimeManifestTestServer(t)
 	metallibHash := strings.Repeat("a", 64)

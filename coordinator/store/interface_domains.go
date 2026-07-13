@@ -396,8 +396,10 @@ type ReleaseStore interface {
 	// ListReleases returns all releases, ordered by created_at descending.
 	ListReleases() []Release
 
-	// GetLatestRelease returns the latest active release for a platform.
-	GetLatestRelease(platform string) *Release
+	// GetLatestRelease returns the latest active release visible to a channel.
+	// The beta channel includes stable releases so beta providers naturally
+	// converge onto a final stable build when it supersedes a prerelease.
+	GetLatestRelease(platform, channel string) *Release
 
 	// DeleteRelease deactivates a release by version and platform.
 	DeleteRelease(version, platform string) error

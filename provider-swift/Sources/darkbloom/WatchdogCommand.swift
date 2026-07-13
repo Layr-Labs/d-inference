@@ -71,6 +71,7 @@ struct Watchdog: AsyncParsableCommand {
         )
         let updater = SelfUpdater(
             coordinatorBaseURL: settings.coordinatorURL,
+            releaseChannel: settings.releaseChannel,
             urlSession: SelfUpdater.watchdogURLSession()
         )
         let recovery = WatchdogRecoveryService(
@@ -171,6 +172,7 @@ struct Watchdog: AsyncParsableCommand {
         let autoRestart: Bool
         let autoUpdate: Bool
         let coordinatorURL: String
+        let releaseChannel: ProviderReleaseChannel
         /// Derived from the operator's `startup_preload_timeout_secs` so a
         /// raised preload window never reads as a hung candidate launch.
         let candidateStartupTimeoutSeconds: Double
@@ -193,6 +195,7 @@ struct Watchdog: AsyncParsableCommand {
             autoUpdate: config.provider.autoUpdate
                 && environment["DARKBLOOM_NO_UPDATE_CHECK"] == nil,
             coordinatorURL: config.coordinator.url,
+            releaseChannel: config.provider.releaseChannel,
             candidateStartupTimeoutSeconds:
                 WatchdogRecoveryService.candidateStartupTimeout(
                     preloadTimeoutSecs: config.backend.startupPreloadTimeoutSecs

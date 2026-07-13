@@ -719,6 +719,7 @@ type PublishingAPIKey struct {
 type Release struct {
 	Version        string    `json:"version"`                   // semver, e.g. "0.5.0"
 	Platform       string    `json:"platform"`                  // "macos-arm64"
+	Channel        string    `json:"channel"`                   // "stable" or "beta"
 	Backend        string    `json:"backend,omitempty"`         // "mlx-swift" (post-cutover) or "vllm-mlx" (legacy)
 	BinaryHash     string    `json:"binary_hash"`               // SHA-256 of darkbloom binary (attestation verification)
 	BundleHash     string    `json:"bundle_hash"`               // SHA-256 of the bundle tarball (install.sh download verification)
@@ -857,6 +858,7 @@ type ProviderRecord struct {
 	MDAVerified                bool            `json:"mda_verified"`
 	MDACertChain               json.RawMessage `json:"mda_cert_chain,omitempty"`
 	Version                    string          `json:"version,omitempty"`
+	ReleaseChannel             string          `json:"release_channel,omitempty"`
 	RuntimeVerified            bool            `json:"runtime_verified"`
 	PythonHash                 string          `json:"python_hash,omitempty"`
 	RuntimeHash                string          `json:"runtime_hash,omitempty"`

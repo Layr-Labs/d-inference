@@ -284,6 +284,7 @@ func (r *Registry) persistProviderNow(p *Provider) {
 			MDAVerified:                p.MDAVerified,
 			MDACertChain:               mdaCertJSON,
 			Version:                    p.Version,
+			ReleaseChannel:             p.ReleaseChannel,
 			RuntimeVerified:            p.RuntimeVerified,
 			PythonHash:                 p.PythonHash,
 			RuntimeHash:                p.RuntimeHash,

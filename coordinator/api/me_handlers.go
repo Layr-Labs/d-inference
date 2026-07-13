@@ -52,11 +52,12 @@ type myProvider struct {
 	LastHeartbeat *time.Time `json:"last_heartbeat,omitempty"`
 
 	// Identity / hardware
-	Hardware     protocol.Hardware    `json:"hardware"`
-	Models       []protocol.ModelInfo `json:"models"`
-	Backend      string               `json:"backend,omitempty"`
-	Version      string               `json:"version,omitempty"`
-	SerialNumber string               `json:"serial_number,omitempty"`
+	Hardware       protocol.Hardware    `json:"hardware"`
+	Models         []protocol.ModelInfo `json:"models"`
+	Backend        string               `json:"backend,omitempty"`
+	Version        string               `json:"version,omitempty"`
+	ReleaseChannel string               `json:"release_channel"`
+	SerialNumber   string               `json:"serial_number,omitempty"`
 
 	// Trust & attestation
 	TrustLevel  string `json:"trust_level"`
@@ -117,11 +118,12 @@ type myProvider struct {
 }
 
 type myProvidersResponse struct {
-	Providers             []myProvider `json:"providers"`
-	LatestProviderVersion string       `json:"latest_provider_version"`
-	MinProviderVersion    string       `json:"min_provider_version"`
-	HeartbeatTimeoutSec   int          `json:"heartbeat_timeout_seconds"`
-	ChallengeMaxAgeSec    int          `json:"challenge_max_age_seconds"`
+	Providers                 []myProvider `json:"providers"`
+	LatestProviderVersion     string       `json:"latest_provider_version"`
+	LatestBetaProviderVersion string       `json:"latest_beta_provider_version"`
+	MinProviderVersion        string       `json:"min_provider_version"`
+	HeartbeatTimeoutSec       int          `json:"heartbeat_timeout_seconds"`
+	ChallengeMaxAgeSec        int          `json:"challenge_max_age_seconds"`
 }
 
 // myFleetCounts aggregates machine counts by status for the dashboard header.
@@ -149,6 +151,7 @@ type mySummaryResponse struct {
 	Last7dJobs                  int64         `json:"last_7d_jobs"`
 	Counts                      myFleetCounts `json:"counts"`
 	LatestProviderVersion       string        `json:"latest_provider_version"`
+	LatestBetaProviderVersion   string        `json:"latest_beta_provider_version"`
 	MinProviderVersion          string        `json:"min_provider_version"`
 }
 
@@ -213,6 +216,7 @@ func (s *Server) handleMySummary(w http.ResponseWriter, r *http.Request) {
 		Last7dJobs:                  last7dJobs,
 		Counts:                      counts,
 		LatestProviderVersion:       s.latestReleasedVersion(),
+		LatestBetaProviderVersion:   s.latestReleasedVersionForChannel(store.ReleaseChannelBeta),
 		MinProviderVersion:          s.minProviderVersion,
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -342,11 +346,12 @@ func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := myProvidersResponse{
-		Providers:             fleet,
-		LatestProviderVersion: s.latestReleasedVersion(),
-		MinProviderVersion:    s.minProviderVersion,
-		HeartbeatTimeoutSec:   90,
-		ChallengeMaxAgeSec:    int((6 * time.Minute).Seconds()),
+		Providers:                 fleet,
+		LatestProviderVersion:     s.latestReleasedVersion(),
+		LatestBetaProviderVersion: s.latestReleasedVersionForChannel(store.ReleaseChannelBeta),
+		MinProviderVersion:        s.minProviderVersion,
+		HeartbeatTimeoutSec:       90,
+		ChallengeMaxAgeSec:        int((6 * time.Minute).Seconds()),
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -467,6 +472,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.AccountID = rec.AccountID
 		mp.Backend = rec.Backend
 		mp.Version = rec.Version
+		mp.ReleaseChannel = rec.ReleaseChannel
 		mp.SerialNumber = rec.SerialNumber
 		mp.TrustLevel = rec.TrustLevel
 		mp.Attested = rec.Attested
@@ -547,6 +553,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.Models = append([]protocol.ModelInfo{}, live.Models...)
 		mp.Backend = live.Backend
 		mp.Version = live.Version
+		mp.ReleaseChannel = live.ReleaseChannel
 		mp.TrustLevel = string(live.TrustLevel)
 		mp.Attested = live.Attested
 		mp.MDAVerified = live.MDAVerified
@@ -620,6 +627,9 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		// Concurrency limit lookup acquires its own lock.
 		mp.PendingRequests = live.PendingCount()
 		mp.MaxConcurrency = live.MaxConcurrency()
+	}
+	if mp.ReleaseChannel == "" {
+		mp.ReleaseChannel = store.ReleaseChannelStable
 	}
 
 	return mp

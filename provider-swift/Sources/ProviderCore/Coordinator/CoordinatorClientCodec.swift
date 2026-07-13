@@ -52,6 +52,7 @@ public enum CoordinatorClientCodec {
             templateHashes: config.runtimeHashes?.templateHashes ?? [:],
             privacyCapabilities: privacyCapabilities,
             privateOnly: config.privateOnly,
+            releaseChannel: config.releaseChannel,
             apnsDeviceToken: effectiveToken,
             apnsEnvironment: effectiveEnv
         ))

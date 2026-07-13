@@ -152,6 +152,7 @@ type RegisterMessage struct {
 	DecodeTPS               float64         `json:"decode_tps,omitempty"`                // benchmark: decode tokens per second
 	AuthToken               string          `json:"auth_token,omitempty"`                // device-linked provider token (from darkbloom login)
 	PrivateOnly             bool            `json:"private_only,omitempty"`              // when true, this machine serves only its owner's self-route requests, never the public fleet
+	ReleaseChannel          string          `json:"release_channel,omitempty"`           // "beta" for opt-in prerelease updates; omitted means stable
 
 	// APNs code-identity attestation (v0.6.0): the device token the coordinator
 	// pushes the E_K(nonce) code-identity challenge to, and which APNs environment

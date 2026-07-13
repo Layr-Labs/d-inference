@@ -7,6 +7,26 @@ import (
 	"time"
 )
 
+func TestMemoryProviderReleaseChannelPersistence(t *testing.T) {
+	st := NewMemory(Config{})
+	ctx := context.Background()
+	if err := st.UpsertProvider(ctx, ProviderRecord{ID: "beta", ReleaseChannel: ReleaseChannelBeta}); err != nil {
+		t.Fatalf("UpsertProvider(beta): %v", err)
+	}
+	if err := st.UpsertProvider(ctx, ProviderRecord{ID: "stable"}); err != nil {
+		t.Fatalf("UpsertProvider(stable): %v", err)
+	}
+	for id, want := range map[string]string{"beta": ReleaseChannelBeta, "stable": ReleaseChannelStable} {
+		got, err := st.GetProviderRecord(ctx, id)
+		if err != nil {
+			t.Fatalf("GetProviderRecord(%s): %v", id, err)
+		}
+		if got.ReleaseChannel != want {
+			t.Errorf("GetProviderRecord(%s).ReleaseChannel = %q, want %q", id, got.ReleaseChannel, want)
+		}
+	}
+}
+
 // TestMemoryGetMDAChainBySerial_NotShadowedByNewerEmptyRow is the durability fix
 // for the MDA-reuse race: a reconnect creates a new row (fresh provider id) that
 // can be persisted with an empty chain before the chain is reattached. A plain

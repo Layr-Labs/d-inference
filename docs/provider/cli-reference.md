@@ -208,13 +208,15 @@ This toggles `provider.auto_update` in `provider.toml`.
 
 ## `darkbloom beta`
 
-Manage opt-in beta features. Beta features are off by default and config-backed
-(a TOML field), so they apply to the launchd daemon too — unlike environment
-variables, which the daemon does not inherit.
+Join the opt-in beta release cohort or manage individual beta features. Cohort
+membership is config-backed and uses the normal signed automatic update,
+rollback, and traffic-serving path.
 
 ```bash
-darkbloom beta list                 # all features + on/off (default subcommand)
+darkbloom beta list                 # release cohort and feature states
 darkbloom beta status [feature]     # details for all features, or one
+darkbloom beta enable               # receive beta releases (then restart)
+darkbloom beta disable              # stop future beta releases (then restart)
 darkbloom beta enable <feature>     # turn on (then: darkbloom restart)
 darkbloom beta disable <feature>    # turn off
 ```
@@ -223,9 +225,10 @@ darkbloom beta disable <feature>    # turn off
 |---------|--------|
 | `kv-quant` | Forward-compatibility toggle; v0.7.5 warns and continues with fp16 KV |
 
-`enable`/`disable` read-modify-write the TOML config and report whether a restart
-is required. See [Beta Features](beta-features.md) for the full guide. `darkbloom
-beta list` also accepts `--json`.
+Without a feature argument, `enable`/`disable` write
+`provider.release_channel`. With a feature argument, they retain the existing
+per-feature behavior. See [Beta Releases And Features](beta-features.md) for the
+full guide. `darkbloom beta list` also accepts `--json`.
 
 ## `darkbloom fan` (experimental)
 

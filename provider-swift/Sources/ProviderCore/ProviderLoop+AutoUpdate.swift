@@ -78,7 +78,10 @@ extension ProviderLoop {
     /// the phase transitions, staged-bundle handoff, and drain bookkeeping
     /// stay race-free.
     private func performAutoUpdateCheck(coordinatorURL: String) async {
-        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+        let updater = SelfUpdater(
+            coordinatorBaseURL: coordinatorURL,
+            releaseChannel: loopConfig.config.provider.releaseChannel
+        )
         let me = self
         let logger = self.logger
         let jitterMaxSeconds = loopConfig.config.provider.updateJitterSeconds

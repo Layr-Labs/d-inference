@@ -158,6 +158,7 @@ extension ProviderLoop {
             modelHashes: loopConfig.modelHashes,
             privacyCapabilities: privacyCapabilitiesForRegistration(),
             privateOnly: loopConfig.config.coordinator.privateOnly,
+            releaseChannel: loopConfig.config.provider.releaseChannel,
             apnsDeviceToken: apnsDeviceToken,
             apnsEnvironment: apnsDeviceToken != nil ? "production" : nil
         )

@@ -1597,7 +1597,7 @@ func boundedProviderUsage(pr *registry.PendingRequest, usage protocol.UsageInfo)
 		usage.CompletionTokens = pr.RequestedMaxTokens
 		capped = true
 	}
-	if pr != nil && pr.SessionPrivKey != nil {
+	if pr != nil && pr.EstimatedPromptTokens > 0 {
 		promptUpper := int64(max(1024, pr.EstimatedPromptTokens*8))
 		if promptUpper > math.MaxInt32 {
 			promptUpper = math.MaxInt32

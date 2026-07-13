@@ -480,6 +480,33 @@ func TestInvalidProviderUsageReleasesReservationWithoutPayout(t *testing.T) {
 	assertPendingResponseClosed(t, pr)
 }
 
+func TestBoundedProviderUsageCapsPlainRequestPromptEstimate(t *testing.T) {
+	pending := &registry.PendingRequest{
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    50,
+	}
+	usage, invalid, capped := boundedProviderUsage(pending, protocol.UsageInfo{
+		PromptTokens:     2_000,
+		CompletionTokens: 40,
+		ReasoningTokens:  20,
+	})
+	if invalid || !capped {
+		t.Fatalf("bounded usage = %+v invalid=%t capped=%t", usage, invalid, capped)
+	}
+	if usage.PromptTokens != 1_024 {
+		t.Fatalf("prompt tokens = %d, want conservative cap 1024", usage.PromptTokens)
+	}
+
+	unknownEstimate := &registry.PendingRequest{RequestedMaxTokens: 50}
+	usage, invalid, capped = boundedProviderUsage(unknownEstimate, protocol.UsageInfo{
+		PromptTokens:     2_000,
+		CompletionTokens: 40,
+	})
+	if invalid || capped || usage.PromptTokens != 2_000 {
+		t.Fatalf("unknown estimate was capped: %+v invalid=%t capped=%t", usage, invalid, capped)
+	}
+}
+
 func TestProviderCompletionUsageIsCappedAtFundedOutputBound(t *testing.T) {
 	srv, st, ledger := billingTestServer(t)
 	const (

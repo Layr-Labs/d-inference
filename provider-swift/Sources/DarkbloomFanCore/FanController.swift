@@ -353,7 +353,7 @@ public actor TransactionalFanController {
             }
 
             for fan in possiblyControlledFans.values.sorted(by: { $0.index < $1.index }) {
-                let target = targetRPMByFan[fan.index]!
+                let savedTarget = targetRPMByFan[fan.index]!
                 let rawMode = try readUI8(fan.modeKey)
                 switch FanMode(rawValue: rawMode) {
                 case .manual:
@@ -375,7 +375,24 @@ public actor TransactionalFanController {
                         rawValue: value
                     )
                 }
-                try writeAndVerifyTarget(fan, rpm: target)
+
+                // Never reduce cooling during maintenance. Firmware or an
+                // operator may have raised the live target while this session
+                // remained manual; adopt that higher value as the new floor.
+                let liveTarget = try readRPM(fan.targetKey, fanIndex: fan.index)
+                let maximum = try maximumRPM(for: fan)
+                guard liveTarget <= maximum else {
+                    throw FanControllerError.takeoverFloorExceedsMaximum(
+                        index: fan.index,
+                        floor: liveTarget,
+                        maximum: maximum
+                    )
+                }
+                let maintainedTarget = max(savedTarget, liveTarget)
+                targetRPMByFan[fan.index] = maintainedTarget
+                if abs(liveTarget - maintainedTarget) > Self.targetToleranceRPM {
+                    try writeAndVerifyTarget(fan, rpm: maintainedTarget)
+                }
             }
             try verifyFtstOwnershipAtTransactionEnd(
                 recordOwnership: recordOwnership
@@ -631,6 +648,29 @@ public actor TransactionalFanController {
     private func readUI8(_ key: SMCKey) throws -> UInt8 {
         do {
             return try backend.read(key).uint8()
+        } catch {
+            throw normalize(error)
+        }
+    }
+
+    private func maximumRPM(for fan: FanCapability) throws -> Double {
+        if let cached = inventory.fanLimits[fan.index]?.maximumRPM {
+            return cached
+        }
+        return try readRPM(fan.maximumKey, fanIndex: fan.index)
+    }
+
+    private func readRPM(_ key: SMCKey, fanIndex: Int) throws -> Double {
+        do {
+            let rpm = try backend.read(key).float32()
+            guard rpm.isFinite, rpm >= 0 else {
+                throw FanHardwareError.invalidFanRPM(
+                    index: fanIndex,
+                    field: key.rawValue,
+                    value: rpm
+                )
+            }
+            return rpm
         } catch {
             throw normalize(error)
         }

@@ -640,6 +640,88 @@ struct FanControllerTests {
         #expect(!backend.operations.contains(.write("F0Md", [1])))
     }
 
+    @Test("maintain adopts a higher live manual target and never lowers it")
+    func maintainPreservesHigherManualTarget() async throws {
+        let backend = makeFanBackend(fanCount: 1, includeFtst: false)
+        let controller = try makeController(backend: backend)
+        _ = try await controller.engage(speedPercent: 80)
+        backend.setFloat("F0Tg", 4_500)
+        backend.resetOperations()
+
+        let raised = try await controller.maintain()
+        #expect(raised.targetRPMByFan[0] == 4_500)
+        #expect(abs(try backend.float("F0Tg") - 4_500) < 0.001)
+        #expect(!backend.operations.contains(where: {
+            if case .write("F0Tg", _) = $0 { return true }
+            return false
+        }))
+
+        backend.setFloat("F0Tg", 0)
+        backend.resetOperations()
+        let restored = try await controller.maintain()
+        #expect(restored.targetRPMByFan[0] == 4_500)
+        #expect(abs(try backend.float("F0Tg") - 4_500) < 0.001)
+    }
+
+    @Test("maintain preserves a higher target while reclaiming system mode")
+    func maintainPreservesHigherTargetAcrossModeRepair() async throws {
+        let backend = makeFanBackend(fanCount: 1, includeFtst: false)
+        let controller = try makeController(backend: backend)
+        _ = try await controller.engage(speedPercent: 80)
+        backend.setUI8("F0Md", FanMode.system.rawValue)
+        backend.setFloat("F0Tg", 4_500)
+        backend.resetOperations()
+
+        let session = try await controller.maintain()
+        #expect(session.targetRPMByFan[0] == 4_500)
+        #expect(try backend.uint8("F0Md") == FanMode.manual.rawValue)
+        #expect(abs(try backend.float("F0Tg") - 4_500) < 0.001)
+    }
+
+    @Test("an impossible live maintenance target fails safe to Auto")
+    func maintainRejectsTargetAboveMaximum() async throws {
+        let backend = makeFanBackend(fanCount: 1, includeFtst: false)
+        let controller = try makeController(backend: backend)
+        _ = try await controller.engage(speedPercent: 80)
+        backend.setFloat("F0Tg", 5_100)
+
+        let error = await captureControllerError {
+            _ = try await controller.maintain()
+        }
+        #expect(error == .takeoverFloorExceedsMaximum(
+            index: 0,
+            floor: 5_100,
+            maximum: 5_000
+        ))
+        #expect(try backend.uint8("F0Md") == FanMode.automatic.rawValue)
+        #expect(await controller.currentSession() == nil)
+    }
+
+    @Test("a negative live maintenance target fails safe to Auto")
+    func maintainRejectsNegativeTarget() async throws {
+        let backend = makeFanBackend(fanCount: 1, includeFtst: false)
+        let controller = try makeController(backend: backend)
+        _ = try await controller.engage(speedPercent: 80)
+        backend.setFloat("F0Tg", -1)
+
+        let error = await captureControllerError {
+            _ = try await controller.maintain()
+        }
+        guard let error,
+              case .hardware(.invalidFanRPM(
+                  index: 0,
+                  field: "F0Tg",
+                  value: let value
+              )) = error
+        else {
+            Issue.record("expected invalid target error, got \(String(describing: error))")
+            return
+        }
+        #expect(value == -1)
+        #expect(try backend.uint8("F0Md") == FanMode.automatic.rawValue)
+        #expect(await controller.currentSession() == nil)
+    }
+
     @Test("maintain reacquires an owned Ftst gate reset by sleep")
     func reacquiresFtstAfterSleep() async throws {
         let backend = makeFanBackend(fanCount: 1)
@@ -671,6 +753,7 @@ struct FanControllerTests {
         let backend = makeFanBackend()
         let controller = try makeController(backend: backend)
         _ = try await controller.engage(speedPercent: 80)
+        backend.setFloat("F1Tg", 0)
         backend.queue([.failAfter(.injectedFailure("maintenance target failed"))], for: "F1Tg")
 
         let error = await captureControllerError {

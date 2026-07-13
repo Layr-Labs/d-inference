@@ -81,6 +81,17 @@ func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 	// cancellation. A genuine after-commit client disconnect returns WITHOUT
 	// refunding, so it is not yet finalized and is still parked + counted.
 	if pr.IsReservationFinalized() {
+		// Finalized-and-never-parked is still a request TERMINAL: the
+		// consumer handler has returned and this record will never be held,
+		// so no late provider terminal can claim it to drop its memoized
+		// chunk key — without this it pins the session key until the cap
+		// reset. Usually a no-op (handleComplete/handleInferenceError already
+		// forgetAndZero'd before finalizing), but the relay's stream-timeout/
+		// provider-incomplete refund paths finalize WITHOUT a read-loop
+		// terminal ever running. Plain forget, NO zeroing: consumer
+		// goroutine — a late chunk decrypt may be in flight on the provider
+		// read loop (see chunkKeyCache's zeroing policy).
+		s.chunkKeys.forget(pr.SessionPrivKey)
 		return
 	}
 	// Single chokepoint for post-commit consumer disconnects: the request
@@ -92,7 +103,10 @@ func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 	// dimensions — so it is not duplicated here.
 	if s.settlements == nil {
 		// Defensive: a Server built without newSettlementHolder still refunds
-		// rather than leaking the reservation.
+		// rather than leaking the reservation. The request is terminal here —
+		// drop its memoized chunk key too (plain forget, no zeroing: this runs
+		// on the consumer goroutine, not the provider read loop).
+		s.chunkKeys.forget(pr.SessionPrivKey)
 		if s.refundReservedBalance(pr, "no_terminal_after_cancel:"+pr.RequestID) {
 			s.updateInferenceRouteOutcomeForPending(pr, noTerminalAfterCancelOutcome(pr))
 			s.recordNoTerminalAfterCancel(pr.Model)
@@ -101,6 +115,14 @@ func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 		return
 	}
 	s.settlements.hold(pr, s.terminalSettleGrace(), func(expired *registry.PendingRequest) {
+		// Grace expired with no provider terminal: the request is abandoned
+		// for good, so drop its memoized chunk-decryption key. This runs on
+		// the AfterFunc timer goroutine — plain forget, NO zeroing, which
+		// would race a late chunk decrypt on the provider read loop (see
+		// chunkKeyCache's zeroing policy). Unconditional: even when the
+		// refund below no-ops (already-finalized dup park), no terminal
+		// handler ever claimed this record to forget the key.
+		s.chunkKeys.forget(expired.SessionPrivKey)
 		// Log only if this actually refunded — a request already settled by
 		// handleComplete leaves a dup here whose refund no-ops (FinalizeReservation).
 		if s.refundReservedBalance(expired, "no_terminal_after_cancel:"+expired.RequestID) {

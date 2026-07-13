@@ -970,6 +970,13 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				"ciphertext":           encrypted.Ciphertext,
 			},
 		}
+		// A retry reuses the queue PR object: overwriting SessionPrivKey below
+		// would permanently orphan the previous attempt's memoized chunk key
+		// (the cache is keyed by pointer identity). Forget the OLD key first.
+		// Plain forget, NO zeroing — this is the dispatch goroutine, and the
+		// abandoned attempt's provider read loop may still be decrypting a
+		// late chunk with it (see chunkKeyCache's zeroing policy).
+		s.chunkKeys.forget(d.pr.SessionPrivKey)
 		d.pr.SessionPrivKey = &sessionKeys.PrivateKey
 		// pr.ReservedMicroUSD was already set in the struct literal and may
 		// have been increased by reserveAdditionalForProvider. Don't overwrite.

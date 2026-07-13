@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -145,8 +146,237 @@ func TestChunkKeyCacheForgetRemoves(t *testing.T) {
 
 func TestChunkKeyCacheForgetNilAndEmptyAreSafe(t *testing.T) {
 	var c chunkKeyCache
-	c.forget(nil)           // nil priv is a documented no-op
-	c.forget(new([32]byte)) // forget on a zero-value cache (nil map) must not panic
+	c.forget(nil)                  // nil priv is a documented no-op
+	c.forget(new([32]byte))        // forget on a zero-value cache (nil map) must not panic
+	c.forgetAndZero(nil)           // same no-op guarantees for the zeroing variant
+	c.forgetAndZero(new([32]byte)) // absent entry on a nil map must not panic
+}
+
+// forgetAndZero removes the entry AND scrubs the 32-byte shared key so the
+// secret does not linger on the heap (read-loop terminal paths only — see the
+// zeroing policy on chunkKeyCache).
+func TestChunkKeyCacheForgetAndZeroRemovesAndZeroes(t *testing.T) {
+	var c chunkKeyCache
+	peerPub, _, _ := testPeerKeyB64(t)
+	priv := new([32]byte)
+	if _, err := rand.Read(priv[:]); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+
+	shared, err := c.sharedKey(priv, peerPub)
+	if err != nil {
+		t.Fatalf("sharedKey: %v", err)
+	}
+	if *shared == ([32]byte{}) {
+		t.Fatal("sanity: freshly computed shared key should not be all-zero")
+	}
+
+	c.forgetAndZero(priv)
+
+	c.mu.Lock()
+	_, stillThere := c.m[priv]
+	c.mu.Unlock()
+	if stillThere {
+		t.Fatal("forgetAndZero should remove the entry")
+	}
+	if *shared != ([32]byte{}) {
+		t.Error("forgetAndZero should zero the shared key array")
+	}
+
+	// Cache still functions: the same inputs recompute the same value under a
+	// fresh array (the zeroed one is never reused).
+	recomputed, err := c.sharedKey(priv, peerPub)
+	if err != nil {
+		t.Fatalf("sharedKey after forgetAndZero: %v", err)
+	}
+	if recomputed == shared {
+		t.Error("recompute after forgetAndZero must allocate a new array, not reuse the zeroed one")
+	}
+	if *recomputed == ([32]byte{}) {
+		t.Error("recomputed shared key should be the real value, not zeroes")
+	}
+}
+
+// The plain forget must NOT zero — cross-goroutine callers rely on the array
+// staying intact for a possibly-in-flight decrypt on the provider read loop.
+func TestChunkKeyCacheForgetDoesNotZero(t *testing.T) {
+	var c chunkKeyCache
+	peerPub, _, _ := testPeerKeyB64(t)
+	priv := new([32]byte)
+	if _, err := rand.Read(priv[:]); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+
+	shared, err := c.sharedKey(priv, peerPub)
+	if err != nil {
+		t.Fatalf("sharedKey: %v", err)
+	}
+	want := *shared
+	c.forget(priv)
+	if *shared != want {
+		t.Error("forget must leave the shared key array intact (no zeroing cross-goroutine)")
+	}
+}
+
+// A forgotten priv must never be re-cached: forget tombstones it, so a late
+// straggler decrypt — or one whose unlocked X25519 compute window in sharedKey
+// raced the forget — hands back a working key WITHOUT re-inserting an entry
+// that no terminal path remains to clean up.
+func TestChunkKeyCacheForgetPreventsRecache(t *testing.T) {
+	var c chunkKeyCache
+	peerPub, _, _ := testPeerKeyB64(t)
+	priv := new([32]byte)
+	if _, err := rand.Read(priv[:]); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+
+	first, err := c.sharedKey(priv, peerPub)
+	if err != nil {
+		t.Fatalf("sharedKey: %v", err)
+	}
+	c.forget(priv)
+
+	late, err := c.sharedKey(priv, peerPub) // late straggler decrypt
+	if err != nil {
+		t.Fatalf("sharedKey after forget: %v", err)
+	}
+	if *late != *first {
+		t.Error("straggler decrypt must still get the correct key value")
+	}
+	c.mu.Lock()
+	_, cached := c.m[priv]
+	c.mu.Unlock()
+	if cached {
+		t.Error("a forgotten priv must not be re-cached by a late sharedKey call")
+	}
+}
+
+// The tombstone also protects the cancel-before-first-chunk case: a forget on
+// a priv that never entered the cache must still block a later first-chunk
+// decrypt from caching. Same guarantee for the zeroing variant.
+func TestChunkKeyCacheForgetBeforeFirstUsePreventsCache(t *testing.T) {
+	for name, forget := range map[string]func(*chunkKeyCache, *[32]byte){
+		"forget":        (*chunkKeyCache).forget,
+		"forgetAndZero": (*chunkKeyCache).forgetAndZero,
+	} {
+		var c chunkKeyCache
+		peerPub, _, _ := testPeerKeyB64(t)
+		priv := new([32]byte)
+		if _, err := rand.Read(priv[:]); err != nil {
+			t.Fatalf("rand: %v", err)
+		}
+
+		forget(&c, priv) // request cancelled before any chunk arrived
+
+		if _, err := c.sharedKey(priv, peerPub); err != nil {
+			t.Fatalf("%s: sharedKey after early forget: %v", name, err)
+		}
+		c.mu.Lock()
+		_, cached := c.m[priv]
+		c.mu.Unlock()
+		if cached {
+			t.Errorf("%s: a late first chunk must not cache a tombstoned priv", name)
+		}
+	}
+}
+
+// The tombstone set is bounded: once it hits chunkKeyDeadMax it is dropped
+// wholesale, after which an old tombstoned priv may cache again (the race
+// window a tombstone protects is milliseconds; this is the documented
+// safety-net trade-off).
+func TestChunkKeyCacheDeadTombstoneCapResets(t *testing.T) {
+	var c chunkKeyCache
+	peerPub, _, _ := testPeerKeyB64(t)
+
+	first := new([32]byte)
+	first[0] = 0xF1
+	c.forget(first)
+	// chunkKeyDeadMax more tombstones guarantee at least one wholesale reset
+	// after first's tombstone landed. The fillers must be KEPT ALIVE for the
+	// duration of the loop: tombstones are keyed by address (uintptr, no GC
+	// pinning — that's the point of the design), so letting the GC reclaim
+	// fillers mid-loop would reuse addresses and the set would never reach
+	// the cap.
+	fillers := make([]*[32]byte, chunkKeyDeadMax)
+	for i := 0; i < chunkKeyDeadMax; i++ {
+		fillers[i] = new([32]byte)
+		c.forget(fillers[i])
+	}
+	runtime.KeepAlive(fillers)
+	c.mu.Lock()
+	deadLen := len(c.dead)
+	c.mu.Unlock()
+	if deadLen > chunkKeyDeadMax {
+		t.Fatalf("tombstone set grew past the cap: %d > %d", deadLen, chunkKeyDeadMax)
+	}
+
+	if _, err := c.sharedKey(first, peerPub); err != nil {
+		t.Fatalf("sharedKey after tombstone reset: %v", err)
+	}
+	c.mu.Lock()
+	_, cached := c.m[first]
+	c.mu.Unlock()
+	if !cached {
+		t.Error("after the tombstone wholesale reset the priv should cache again")
+	}
+}
+
+// forgetPeer sweeps every entry cached under one peer public key — the
+// provider-disconnect catch-all — without zeroing and without tombstoning
+// (same-keypair replacement sessions must be able to keep caching).
+func TestChunkKeyCacheForgetPeerSweepsWithoutZeroingOrTombstoning(t *testing.T) {
+	var c chunkKeyCache
+	peerA, _, _ := testPeerKeyB64(t)
+	peerB, _, _ := testPeerKeyB64(t)
+
+	privA1, privA2, privB := &[32]byte{1}, &[32]byte{2}, &[32]byte{3}
+	sharedA1, err := c.sharedKey(privA1, peerA)
+	if err != nil {
+		t.Fatalf("sharedKey A1: %v", err)
+	}
+	wantA1 := *sharedA1
+	if _, err := c.sharedKey(privA2, peerA); err != nil {
+		t.Fatalf("sharedKey A2: %v", err)
+	}
+	sharedB, err := c.sharedKey(privB, peerB)
+	if err != nil {
+		t.Fatalf("sharedKey B: %v", err)
+	}
+
+	c.forgetPeer(peerA)
+
+	c.mu.Lock()
+	_, a1 := c.m[privA1]
+	_, a2 := c.m[privA2]
+	_, b := c.m[privB]
+	c.mu.Unlock()
+	if a1 || a2 {
+		t.Error("forgetPeer should sweep every entry for the matching peer")
+	}
+	if !b {
+		t.Error("forgetPeer must not touch entries for other peers")
+	}
+	if *sharedA1 != wantA1 {
+		t.Error("forgetPeer must NOT zero swept keys (replacement session may be decrypting)")
+	}
+	if again, _ := c.sharedKey(privB, peerB); again != sharedB {
+		t.Error("unswept entry should still hit the cache")
+	}
+
+	// NOT tombstoned: a replacement session reusing the keypair re-caches.
+	if _, err := c.sharedKey(privA1, peerA); err != nil {
+		t.Fatalf("sharedKey re-cache after forgetPeer: %v", err)
+	}
+	c.mu.Lock()
+	_, recached := c.m[privA1]
+	c.mu.Unlock()
+	if !recached {
+		t.Error("forgetPeer must not tombstone: a live replacement session must re-cache")
+	}
+
+	c.forgetPeer("") // empty peer is a documented no-op
+	var empty chunkKeyCache
+	empty.forgetPeer(peerA) // nil map must not panic
 }
 
 func TestChunkKeyCacheInvalidPeerKeyNotCached(t *testing.T) {

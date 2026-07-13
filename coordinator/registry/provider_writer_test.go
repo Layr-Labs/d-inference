@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -328,21 +329,25 @@ func TestProviderWriterWatchdogClosesStalledWrite(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("timed out waiting for watchdog to abort the stalled write")
 	}
-	if !w.writeTimedOut.Load() {
-		t.Fatal("writeTimedOut not set by watchdog")
-	}
 	select {
 	case <-w.done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("writer did not shut down after watchdog closed the socket")
 	}
+	// Timeout attribution is per frame: only the frame that lost its own
+	// deadline CAS reports errProviderWriteTimeout. Later write attempts on
+	// the dead writer must report errProviderWriterStopped, never a stale
+	// timeout.
 	if err := w.write(context.Background(), []byte(`{"after":"close"}`)); err != errProviderWriterStopped {
 		t.Fatalf("write after watchdog close = %v, want errProviderWriterStopped", err)
+	}
+	if err := w.writeControl(context.Background(), []byte(`{"after":"close"}`)); err != errProviderWriterStopped {
+		t.Fatalf("writeControl after watchdog close = %v, want errProviderWriterStopped", err)
 	}
 }
 
 // TestProviderWriterWatchdogFiresOnPastDeadline unit-tests watchWrites: a
-// published deadline in the past makes the watchdog set writeTimedOut and
+// published deadline in the past makes the watchdog claim it (CAS to 0) and
 // close the socket within one tick.
 func TestProviderWriterWatchdogFiresOnPastDeadline(t *testing.T) {
 	serverConn, _ := testWebSocketPair(t)
@@ -357,16 +362,217 @@ func TestProviderWriterWatchdogFiresOnPastDeadline(t *testing.T) {
 	go w.watchWrites(watchdogStop)
 
 	deadline := time.Now().Add(5 * time.Second)
-	for !w.writeTimedOut.Load() {
+	for w.writeDeadline.Load() != 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("watchdog did not fire on a past write deadline")
+			t.Fatal("watchdog did not claim a past write deadline")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelWrite()
-	if err := serverConn.Write(writeCtx, websocket.MessageText, []byte(`{"x":1}`)); err == nil {
-		t.Fatal("expected write on watchdog-closed socket to fail")
+	// The socket close happens just after the claim; poll until a write on
+	// the watchdog-closed socket fails.
+	for {
+		writeCtx, cancelWrite := context.WithTimeout(context.Background(), time.Second)
+		err := serverConn.Write(writeCtx, websocket.MessageText, []byte(`{"x":1}`))
+		cancelWrite()
+		if err != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("watchdog claimed the deadline but never closed the socket")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestProviderWriterDeadlineCASExactlyOneWinner pins the deadline CAS
+// protocol: when a frame's deadline has expired, writeFrame's release and the
+// watchdog's claim race — exactly one side must win. If the writer wins, the
+// frame completed in time and the watchdog must not tear down the socket; if
+// the watchdog wins, the frame must be reported as timed out even when
+// conn.Write returned nil. Run under -race with many iterations to flush the
+// TOCTOU window.
+func TestProviderWriterDeadlineCASExactlyOneWinner(t *testing.T) {
+	w := &providerWriter{}
+	for i := 0; i < 10000; i++ {
+		deadline := time.Now().Add(-time.Millisecond).UnixNano()
+		w.writeDeadline.Store(deadline)
+		var writerWon, watchdogWon bool
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			writerWon = w.releaseWriteDeadline(deadline)
+		}()
+		go func() {
+			defer wg.Done()
+			watchdogWon = w.claimExpiredWriteDeadline(time.Now().UnixNano())
+		}()
+		wg.Wait()
+		if writerWon == watchdogWon {
+			t.Fatalf("iteration %d: writerWon=%v watchdogWon=%v, want exactly one winner", i, writerWon, watchdogWon)
+		}
+		if got := w.writeDeadline.Load(); got != 0 {
+			t.Fatalf("iteration %d: writeDeadline = %d after race, want 0", i, got)
+		}
+	}
+}
+
+// TestProviderWriterDeadlineClaimSemantics unit-tests the watchdog's claim
+// path: no in-flight write and unexpired deadlines are never claimed, an
+// expired deadline is claimed at most once, and a release after a successful
+// claim loses.
+func TestProviderWriterDeadlineClaimSemantics(t *testing.T) {
+	w := &providerWriter{}
+	now := time.Now().UnixNano()
+
+	if w.claimExpiredWriteDeadline(now) {
+		t.Fatal("claim with no write in flight must fail")
+	}
+
+	future := now + int64(time.Hour)
+	w.writeDeadline.Store(future)
+	if w.claimExpiredWriteDeadline(now) {
+		t.Fatal("claim of an unexpired deadline must fail")
+	}
+	if got := w.writeDeadline.Load(); got != future {
+		t.Fatalf("unexpired deadline mutated by failed claim: %d, want %d", got, future)
+	}
+	if !w.releaseWriteDeadline(future) {
+		t.Fatal("release of an unclaimed deadline must win")
+	}
+
+	expired := now - 1
+	w.writeDeadline.Store(expired)
+	if !w.claimExpiredWriteDeadline(now) {
+		t.Fatal("claim of an expired deadline must win")
+	}
+	if w.claimExpiredWriteDeadline(now) {
+		t.Fatal("second claim after the deadline was cleared must fail")
+	}
+	if w.releaseWriteDeadline(expired) {
+		t.Fatal("release after the watchdog claimed the deadline must lose")
+	}
+}
+
+// TestProviderWriterExpiredButCompletedWritesNeverReportSuccessOnDeadSocket
+// drives the caller-visible contract at the deadline boundary: with an
+// immediately-expired per-frame deadline (timeoutFor = 1ns), every frame is
+// past its deadline while in flight, so writeFrame's release races the
+// watchdog's claim on every tick. The caller must only ever observe (a) nil
+// with a still-usable writer, or (b) errProviderWriteTimeout followed by
+// errProviderWriterStopped. A connection-closed error after a nil result —
+// the success-then-dead-socket signature of the TOCTOU bug — fails the test.
+func TestProviderWriterExpiredButCompletedWritesNeverReportSuccessOnDeadSocket(t *testing.T) {
+	serverConn, clientConn := testWebSocketPair(t)
+	w := &providerWriter{
+		conn:       serverConn,
+		queue:      make(chan *providerWriteRequest, providerWriteQueueSize),
+		control:    make(chan *providerWriteRequest, providerControlQueueSize),
+		stop:       make(chan struct{}),
+		done:       make(chan struct{}),
+		timeoutFor: func(int) time.Duration { return time.Nanosecond },
+	}
+	go w.run()
+	t.Cleanup(w.closeNow)
+
+	// Drain the client side so writes complete quickly.
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		for {
+			if _, _, err := clientConn.Read(context.Background()); err != nil {
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		_ = clientConn.CloseNow()
+		<-readerDone
+	})
+
+	// Span several watchdog ticks (250ms interval).
+	stopAt := time.Now().Add(3 * providerWriteWatchdogInterval)
+	for time.Now().Before(stopAt) {
+		err := w.write(context.Background(), []byte(`{"boundary":"frame"}`))
+		if err == nil {
+			continue // writer won the CAS; writer must still be live for the next iteration
+		}
+		if err == errProviderWriteTimeout {
+			// Watchdog won the CAS on an expired in-flight frame; the writer
+			// must now be dead and later frames attributed as stopped.
+			if err2 := w.write(context.Background(), []byte(`{"after":"timeout"}`)); err2 != errProviderWriterStopped {
+				t.Fatalf("write after timeout teardown = %v, want errProviderWriterStopped", err2)
+			}
+			return
+		}
+		t.Fatalf("boundary write = %v, want nil or errProviderWriteTimeout (connection error after reported success indicates the watchdog TOCTOU)", err)
+	}
+}
+
+// TestProviderWriterAwaitResultPrefersSuccessOverStopped deterministically
+// pins the stopped-vs-success select race: both req.done (carrying nil from a
+// successful write) and w.done (writer stopped) are ready before the waiter
+// runs, and the waiter must still report success — otherwise the caller
+// re-dispatches a request that is already running on this provider.
+func TestProviderWriterAwaitResultPrefersSuccessOverStopped(t *testing.T) {
+	serverConn, clientConn := testWebSocketPair(t)
+	w := &providerWriter{
+		conn:    serverConn,
+		queue:   make(chan *providerWriteRequest, providerWriteQueueSize),
+		control: make(chan *providerWriteRequest, providerControlQueueSize),
+		stop:    make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	req := laneRequest(`{"type":"request"}`)
+	w.queue <- req
+	go w.run()
+	t.Cleanup(w.closeNow)
+
+	readFrames(t, clientConn, 1) // the frame reached the wire
+	// Wait until serve() has delivered the frame's result, then stop the
+	// writer, so req.done and w.done are BOTH ready before the waiter runs.
+	settle := time.Now().Add(5 * time.Second)
+	for len(req.done) == 0 {
+		if time.Now().After(settle) {
+			t.Fatal("serve() never delivered the write result")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	w.closeNow()
+	select {
+	case <-w.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("writer did not stop after closeNow")
+	}
+
+	if err := w.awaitWriteResult(context.Background(), req); err != nil {
+		t.Fatalf("awaitWriteResult with success and stop both ready = %v, want nil (success)", err)
+	}
+}
+
+// TestProviderWriterCloseAfterSuccessfulWriteReportsSuccess is the end-to-end
+// variant of the stopped-vs-success race through the public write path: a
+// frame is written to the wire, the writer is torn down immediately, and the
+// caller blocked in write() must observe nil, never errProviderWriterStopped.
+// Run with -count=50 -race: before the awaitWriteResult drain fix this flaked
+// ~50% of runs (select picked <-w.done over the ready req.done).
+func TestProviderWriterCloseAfterSuccessfulWriteReportsSuccess(t *testing.T) {
+	serverConn, clientConn := testWebSocketPair(t)
+	w := newProviderWriter(serverConn)
+	t.Cleanup(w.closeNow)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.write(context.Background(), []byte(`{"type":"request"}`)) }()
+	readFrames(t, clientConn, 1) // success on the wire
+	w.closeNow()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("write result after wire delivery + immediate close = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for write result")
 	}
 }
 

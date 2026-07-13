@@ -97,7 +97,22 @@ func (s *Server) releaseInitialReservation(accountID, model string, amount int64
 		return
 	}
 	start := time.Now()
-	_ = s.store.Credit(accountID, amount, store.LedgerRefund, "reservation_refund")
+	// Financial: a failed refund over-charges the consumer. Never swallow it.
+	// No inline retry — this path can run on latency-sensitive request paths;
+	// the ERROR log + billing.refund_failures metric is the alerting hook.
+	if err := s.store.Credit(accountID, amount, store.LedgerRefund, "reservation_refund"); err != nil {
+		s.logger.Error("failed to credit reservation refund to consumer",
+			"account_id", accountID,
+			"model", model,
+			"refund_micro_usd", amount,
+			"error", err,
+		)
+		s.ddIncr("billing.refund_failures", tags)
+		// Return WITHOUT the refund/release success counters: a failure
+		// counted as a success would make refund dashboards undercount
+		// exactly the incidents this alert exists to surface.
+		return
+	}
 	s.ddIncr("billing.reservation_refunds", tags)
 	s.ddIncr("billing.reservation_releases", append(tags, "reason:early"))
 	s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})

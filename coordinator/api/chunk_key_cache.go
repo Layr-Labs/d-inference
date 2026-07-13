@@ -1,6 +1,7 @@
 package api
 
 import (
+	"reflect"
 	"sync"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
@@ -13,6 +14,13 @@ import (
 // X25519 recompute per live stream.
 const chunkKeyCacheMax = 8192
 
+// chunkKeyDeadMax bounds the tombstone set (chunkKeyCache.dead). One tombstone
+// is added per terminated request; when full the set is dropped wholesale. A
+// tombstone only needs to outlive the terminal path's race with a late
+// in-flight decrypt on the provider read loop (milliseconds), so losing old
+// tombstones to the reset is harmless in practice.
+const chunkKeyDeadMax = 8192
+
 // chunkKeyCache memoizes the NaCl box shared key per inference request so the
 // per-token chunk decrypt path performs only the symmetric open, not a fresh
 // X25519 scalar multiplication per chunk (~40-60µs each, serialized on the
@@ -23,10 +31,60 @@ const chunkKeyCacheMax = 8192
 // key change (paranoia: reconnect races) invalidates the entry instead of
 // decrypting with a stale shared key.
 //
+// Lifecycle / zeroing policy. Every request-terminal path must drop its entry
+// (orphans are otherwise pinned until the chunkKeyCacheMax wholesale reset),
+// but only SOME of those paths may zero the key material:
+//
+//   - forgetAndZero (delete + zero): ONLY from the provider read-loop
+//     goroutine that performs this request's chunk decryption —
+//     handleComplete, handleInferenceError, and providerReadLoop's disconnect
+//     cleanup. On that goroutine no decrypt with the key can be concurrently
+//     in flight, so zeroing is safe and scrubs the shared secret from the
+//     heap promptly.
+//   - forget (delete only, NO zeroing): every CROSS-GOROUTINE terminal —
+//     dispatch retry key reassignment, the settlement-grace expiry timer,
+//     dispatch-loop cancel/abandon sites. Zeroing there would race a
+//     possibly-in-flight box.OpenAfterPrecomputation on the read loop; a
+//     corrupted decrypt is reported as an invalid encrypted chunk and
+//     triggers MarkUntrusted against an innocent provider. The deleted
+//     array is left intact for the GC.
+//   - The wholesale cap-reset in sharedKey must NOT zero either: the dropped
+//     entries may belong to live streams that will recompute and keep
+//     decrypting with the same private key.
+//
+// Both forget variants also TOMBSTONE the priv (see dead below): sharedKey
+// drops the lock during the X25519 compute, so without a tombstone a forget
+// racing that window (or a late chunk decrypted just after a cross-goroutine
+// forget) would re-insert an entry for a request no terminal path remains to
+// clean up, pinning the session key until the cap reset. A tombstoned priv is
+// never legitimately re-cached: every dispatch attempt generates fresh session
+// keys, so post-forget decrypts are only late stragglers of an abandoned
+// attempt — they still get a working key, they just recompute per chunk.
+//
 // The zero value is ready to use.
 type chunkKeyCache struct {
 	mu sync.Mutex
 	m  map[*[32]byte]chunkKeyEntry
+	// dead tombstones privs whose request hit a terminal path (forget /
+	// forgetAndZero). sharedKey refuses to (re-)cache a tombstoned priv.
+	// Bounded by chunkKeyDeadMax with a wholesale drop, like m.
+	//
+	// Keyed by the priv's ADDRESS (uintptr), not the pointer, so a tombstone
+	// never pins the 32-byte private-key array in the heap after its
+	// PendingRequest is gone — retaining dead key material would undermine
+	// the forget-on-terminal hygiene this cache exists for. The trade is a
+	// benign ABA: after the GC reclaims a tombstoned array, a future
+	// SessionPrivKey allocated at the same address is falsely treated as
+	// dead — its stream still decrypts correctly (sharedKey always returns a
+	// freshly computed key), it just recomputes per chunk until the wholesale
+	// drop clears the stale tombstone. Perf-only, rare, self-healing.
+	//
+	// Why a tombstone rather than refcounting or an owner-managed lifecycle:
+	// the racing readers (late chunks on the provider read loop) are
+	// fire-and-forget with no owner to release against, and the race window
+	// is milliseconds; a lock-only O(1) set that self-expires via the
+	// wholesale drop is the smallest mechanism that closes it.
+	dead map[uintptr]struct{}
 }
 
 type chunkKeyEntry struct {
@@ -52,7 +110,20 @@ func (c *chunkKeyCache) sharedKey(priv *[32]byte, peerPub string) (*[32]byte, er
 	shared := e2e.PrecomputeSharedKey(&pub, priv)
 
 	c.mu.Lock()
+	if _, gone := c.dead[tombstoneKey(priv)]; gone {
+		// The request hit a terminal path while the lock was dropped for the
+		// compute (or this is a late chunk of an already-forgotten request):
+		// hand the key back for this one decrypt but do NOT cache it — no
+		// terminal path remains to forget the entry, so it would pin the
+		// session key until the cap reset.
+		c.mu.Unlock()
+		return shared, nil
+	}
 	if c.m == nil || len(c.m) >= chunkKeyCacheMax {
+		// Wholesale reset (abandoned-entry safety net). Deliberately does NOT
+		// zero the dropped keys: entries may belong to live streams whose read
+		// loops are decrypting with them right now (see the zeroing policy on
+		// the type comment).
 		c.m = make(map[*[32]byte]chunkKeyEntry)
 	}
 	c.m[priv] = chunkKeyEntry{peerPub: peerPub, shared: shared}
@@ -60,12 +131,91 @@ func (c *chunkKeyCache) sharedKey(priv *[32]byte, peerPub string) (*[32]byte, er
 	return shared, nil
 }
 
-// forget drops the cached shared key for a finished request.
+// markDeadLocked tombstones priv so sharedKey never re-caches it. Caller must
+// hold c.mu. The set is dropped wholesale at chunkKeyDeadMax — a tombstone
+// only needs to outlive the milliseconds-scale window in which a terminal
+// path can race a late decrypt (see the field comment).
+func (c *chunkKeyCache) markDeadLocked(priv *[32]byte) {
+	if c.dead == nil || len(c.dead) >= chunkKeyDeadMax {
+		c.dead = make(map[uintptr]struct{})
+	}
+	c.dead[tombstoneKey(priv)] = struct{}{}
+}
+
+// forget drops the cached shared key for a finished request WITHOUT zeroing
+// it, and tombstones the priv so a racing/late decrypt cannot re-cache it
+// (see the type comment). Safe to call from ANY goroutine — this is the
+// variant every cross-goroutine terminal path must use (dispatch retry
+// reassignment, settlement-grace timer, dispatch cancel/abandon): zeroing
+// here could race an in-flight decrypt on the provider read loop.
 func (c *chunkKeyCache) forget(priv *[32]byte) {
 	if priv == nil {
 		return
 	}
 	c.mu.Lock()
 	delete(c.m, priv)
+	c.markDeadLocked(priv)
 	c.mu.Unlock()
+}
+
+// forgetAndZero drops the cached shared key for a terminal request AND zeroes
+// the 32-byte array so the shared secret does not linger on the heap. Like
+// forget, it tombstones the priv so a late decrypt cannot re-cache it (see
+// the type comment).
+//
+// MUST only be called from the goroutine that performs this request's chunk
+// decryption — the owning provider's read loop (handleComplete,
+// handleInferenceError, providerReadLoop's disconnect cleanup). On any other
+// goroutine the zeroing races a possibly-in-flight
+// box.OpenAfterPrecomputation and can corrupt a decrypt (which would
+// MarkUntrusted an innocent provider); use forget there instead.
+func (c *chunkKeyCache) forgetAndZero(priv *[32]byte) {
+	if priv == nil {
+		return
+	}
+	c.mu.Lock()
+	if e, ok := c.m[priv]; ok {
+		if e.shared != nil {
+			*e.shared = [32]byte{}
+		}
+		delete(c.m, priv)
+	}
+	c.markDeadLocked(priv)
+	c.mu.Unlock()
+}
+
+// forgetPeer drops every cache entry whose peer public key matches peerPub,
+// WITHOUT zeroing and WITHOUT tombstoning. It is the provider-disconnect
+// catch-all: registry-initiated disconnects (stale eviction, duplicate-serial
+// eviction, forced removal) call Registry.Disconnect directly, which wipes
+// the provider's pending map BEFORE the read-loop cleanup defer can snapshot
+// the session keys — leaving those requests' entries unreachable by any
+// per-request terminal. Sweeping by the provider's public key needs no
+// request state at all.
+//
+// No zeroing and no tombstones because the same peerPub can serve a NEWER
+// session of the same machine (duplicate-serial eviction: the replacement
+// connection reuses the keypair): zeroing could corrupt a live decrypt on the
+// new session's read loop, and a tombstone would permanently disable caching
+// for its live streams. A swept live entry simply recomputes on its next
+// chunk. O(len(m)) ≤ chunkKeyCacheMax under the lock, on rare disconnects.
+func (c *chunkKeyCache) forgetPeer(peerPub string) {
+	if peerPub == "" {
+		return
+	}
+	c.mu.Lock()
+	for priv, e := range c.m {
+		if e.peerPub == peerPub {
+			delete(c.m, priv)
+		}
+	}
+	c.mu.Unlock()
+}
+
+// tombstoneKey converts a priv pointer to its non-pinning map identity. Uses
+// reflect rather than unsafe purely to avoid the unsafe import; the semantics
+// (address as identity, no GC pinning, benign ABA on address reuse — see the
+// dead field comment) are identical.
+func tombstoneKey(priv *[32]byte) uintptr {
+	return reflect.ValueOf(priv).Pointer()
 }

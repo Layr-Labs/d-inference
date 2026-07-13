@@ -176,6 +176,14 @@ func providerDisconnectedError(errorText string, statusCode int) bool {
 }
 
 func postCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
+	if isConsumerCancelTerminal(msg.StatusCode, msg.Error) {
+		// Consumer-side cancel terminal (client cancel or the coordinator's
+		// overflow-499 abort of a stalled consumer stream). Mirrors
+		// handleInferenceError's cancelTerminal branch: partial_success with a
+		// cancel error-class and NO AdmittedButFailed — it is not a provider
+		// fault and must never pollute provider_error calibration signals.
+		return pendingRouteOutcomeWithReason(pr, finalStatusPartialSuccess, errorClassConsumerCancelAfterCommit, msg.StatusCode, msg.ErrorReason, msg.Error)
+	}
 	class := "provider_error_after_commit"
 	if providerDisconnectedError(msg.Error, msg.StatusCode) {
 		class = "provider_disconnect_after_commit"
@@ -285,7 +293,7 @@ func inferenceErrorReason(providerReason, status, class string, code int, messag
 		return errorReasonQueueFull
 	case lowerClass == "queue_timeout" || lowerClass == errorReasonCapacityTimeout || strings.Contains(lowerMessage, "queue timeout") || strings.Contains(lowerMessage, "timed out waiting for a free slot"):
 		return errorReasonCapacityTimeout
-	case lowerStatus == errorReasonCancelled || code == 499 || strings.Contains(lowerClass, "client_gone") || strings.Contains(lowerClass, "cancel") || strings.Contains(lowerMessage, "request cancelled"):
+	case lowerStatus == errorReasonCancelled || code == statusClientClosedRequest || strings.Contains(lowerClass, "client_gone") || strings.Contains(lowerClass, "cancel") || strings.Contains(lowerMessage, "request cancelled"):
 		return errorReasonCancelled
 	case lowerClass == errorReasonClientError || strings.HasPrefix(lowerClass, errorReasonClientError):
 		return errorReasonClientError

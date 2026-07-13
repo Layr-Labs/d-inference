@@ -1087,6 +1087,40 @@ struct EngineV2RequestRoutingTests {
         #expect(events.isEmpty, "text must stay suppressed when no required call is emitted")
     }
 
+    @Test("required tool choice bounds deferred text before a call")
+    func requiredToolChoiceBoundsDeferredContent() async throws {
+        let engine = WiringScriptedEngine(script: .stream([
+            .delta(text: String(repeating: "x", count: 1024 * 1024 + 1),
+                   tokens: [10], logprobs: nil),
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "gemma-4-26b-qat-4bit": .init(
+                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        modelType: "gemma4",
+                        engineV2Bridge: bridge)
+                ]
+            })
+        let request = OpenAIChatCompletionRequest(
+            model: "gemma-4-26b-qat-4bit",
+            messages: [.init(role: .user, content: .text("hello"))],
+            tools: [.init(function: .init(name: "calculate"))],
+            toolChoice: .mode(.required))
+
+        var events: [MLXServerGenerationEvent] = []
+        do {
+            let stream = try await providerEngine.streamChatCompletion(request: request)
+            for try await event in stream { events.append(event) }
+            Issue.record("expected deferred content limit failure")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == .generationFailed(
+                "required tool call response exceeded deferred content limit"))
+        }
+        #expect(events.isEmpty)
+    }
+
     @Test("coordinator path threads cacheScope and logprobs plumbing into the bridge")
     func coordinatorPathThreadsSaltAndLogprobs() async throws {
         let engine = WiringScriptedEngine(script: .stream([

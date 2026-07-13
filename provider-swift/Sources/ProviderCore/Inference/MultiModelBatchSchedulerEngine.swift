@@ -566,6 +566,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Shared by the batched/v2 TEXT path and the v0.7.5 media-through-v2
     /// path (which passes `toolHandler: nil` — see the routing comment) so
     /// the downstream SSE/billing contract is identical for both.
+    private static let maxDeferredToolChoiceContentBytes = 1024 * 1024
+
     private func makeEventStream(
         upstream: AsyncStream<GenerationEvent>,
         cancelUpstream: @escaping @Sendable () async -> Void,
@@ -583,7 +585,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 var stopReason: String = "stop"
                 var failed: String?
                 var deferredContent: [String] = []
+                var deferredContentBytes = 0
                 startedAt = Date()
+
+                func appendDeferredContent(_ content: String) -> Bool {
+                    let byteCount = content.utf8.count
+                    guard byteCount <= Self.maxDeferredToolChoiceContentBytes - deferredContentBytes
+                    else { return false }
+                    deferredContent.append(content)
+                    deferredContentBytes += byteCount
+                    return true
+                }
 
                 for await event in upstream {
                     if Task.isCancelled {
@@ -602,13 +614,28 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                     !visible.isEmpty
                                 {
                                     if requiresToolCall {
-                                        deferredContent.append(visible)
+                                        guard appendDeferredContent(visible) else {
+                                            await cancelUpstream()
+                                            await releaseBox.fire()
+                                            continuation.finish(
+                                                throwing: MultiModelBatchSchedulerEngineError
+                                                    .generationFailed(
+                                                        "required tool call response exceeded deferred content limit"))
+                                            return
+                                        }
                                     } else {
                                         continuation.yield(.content(visible))
                                     }
                                 }
                             } else if requiresToolCall {
-                                deferredContent.append(text)
+                                guard appendDeferredContent(text) else {
+                                    await cancelUpstream()
+                                    await releaseBox.fire()
+                                    continuation.finish(
+                                        throwing: MultiModelBatchSchedulerEngineError.generationFailed(
+                                            "required tool call response exceeded deferred content limit"))
+                                    return
+                                }
                             } else {
                                 continuation.yield(.content(text))
                             }

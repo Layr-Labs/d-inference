@@ -468,6 +468,35 @@ func TestPostgresServingRejectsBroadenedRustStatusConstraint(t *testing.T) {
 	}
 }
 
+func TestPostgresServingRejectsBroadenedRustV4StatusConstraint(t *testing.T) {
+	databaseURL := migrationTestDatabase(t)
+	ctx := context.Background()
+	if _, err := ApplyPostgresMigrations(ctx, databaseURL, MigrationOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	conn := migrationTestConn(t, databaseURL)
+	if _, err := conn.Exec(ctx, `
+		ALTER TABLE rust_coord.telemetry_events
+			DROP CONSTRAINT telemetry_events_status_check;
+		ALTER TABLE rust_coord.telemetry_events
+			ADD CONSTRAINT telemetry_events_status_check
+			CHECK (status IN (
+				'pending', 'processing', 'delivered', 'dropped', 'future_status'
+			))`); err != nil {
+		conn.Close(ctx)
+		t.Fatal(err)
+	}
+	conn.Close(ctx)
+
+	if backend, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL}); err == nil {
+		backend.Close()
+		t.Fatal("NewPostgres accepted a broadened Rust v4 status constraint")
+	} else if !strings.Contains(err.Error(), "is not canonical") &&
+		!strings.Contains(err.Error(), "allows") {
+		t.Fatalf("broadened v4 status constraint error = %v", err)
+	}
+}
+
 func TestPostgresMigrationsSuccessfullyAdoptLegacyDatabaseExplicitly(t *testing.T) {
 	databaseURL := migrationTestDatabase(t)
 	ctx := context.Background()

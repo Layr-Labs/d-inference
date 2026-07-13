@@ -152,13 +152,6 @@ func (t *telemetrySink) workerCount() int64 {
 	return t.workers.Load()
 }
 
-func (t *telemetrySink) activeCount() int64 {
-	if t == nil {
-		return 0
-	}
-	return t.active.Load()
-}
-
 func (t *telemetrySink) outstandingCount() int {
 	if t == nil {
 		return 0

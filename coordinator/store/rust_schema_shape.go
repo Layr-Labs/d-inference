@@ -845,8 +845,8 @@ func validateRustForeignKeys(ctx context.Context, queryer schemaQueryer, version
 
 func validateRustStatusShapes(ctx context.Context, queryer schemaQueryer, version int64) error {
 	requirements := append([]rustStatusShapeRequirement{}, rustSchemaV2StatusShapes...)
-	if version >= 3 {
-		for _, override := range rustSchemaV3StatusShapes {
+	applyOverrides := func(overrides []rustStatusShapeRequirement) {
+		for _, override := range overrides {
 			replaced := false
 			for index := range requirements {
 				if requirements[index].Table == override.Table &&
@@ -860,6 +860,12 @@ func validateRustStatusShapes(ctx context.Context, queryer schemaQueryer, versio
 				requirements = append(requirements, override)
 			}
 		}
+	}
+	if version >= 3 {
+		applyOverrides(rustSchemaV3StatusShapes)
+	}
+	if version >= 4 {
+		applyOverrides(rustSchemaV4StatusShapes)
 	}
 	for _, required := range requirements {
 		var (

@@ -9,7 +9,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "terminal_id"
           }
         }
@@ -20,7 +20,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "job_id"
           }
         }
@@ -31,7 +31,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "attempt_id"
           }
         }
@@ -42,7 +42,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "provider_id"
           }
         }
@@ -53,7 +53,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "provider_process_generation_id"
           }
         }
@@ -64,7 +64,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "origin_session_epoch"
           }
         }
@@ -75,7 +75,7 @@
         "type_info": "Bytea",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "terminal_digest"
           }
         }
@@ -86,7 +86,7 @@
         "type_info": "Jsonb",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "raw_terminal"
           }
         }
@@ -97,7 +97,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "outcome"
           }
         }
@@ -108,7 +108,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "error_class"
           }
         }
@@ -119,7 +119,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "prompt_tokens"
           }
         }
@@ -130,7 +130,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "completion_tokens"
           }
         }
@@ -141,7 +141,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "reasoning_tokens"
           }
         }
@@ -152,7 +152,7 @@
         "type_info": "Bytea",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "response_digest"
           }
         }
@@ -163,7 +163,7 @@
         "type_info": "Bytea",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "rolling_digest"
           }
         }
@@ -174,7 +174,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "final_generated_tokens"
           }
         }
@@ -185,7 +185,7 @@
         "type_info": "Bytea",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "provider_signature"
           }
         }
@@ -196,7 +196,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.provider_terminals",
+            "table": "provider_terminals",
             "name": "version"
           }
         }
@@ -213,7 +213,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.inference_jobs",
+            "table": "inference_jobs",
             "name": "version"
           }
         }
@@ -224,7 +224,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rust_coord.inference_jobs",
+            "table": "inference_jobs",
             "name": "state"
           }
         }
@@ -235,7 +235,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.inference_attempts",
+            "table": "inference_attempts",
             "name": "version"
           }
         }

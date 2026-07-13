@@ -9,7 +9,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rust_coord.financial_operations",
+            "table": "financial_operations",
             "name": "operation_key"
           }
         }
@@ -20,7 +20,7 @@
         "type_info": "Bytea",
         "origin": {
           "Table": {
-            "table": "rust_coord.financial_operations",
+            "table": "financial_operations",
             "name": "operation_digest"
           }
         }
@@ -31,7 +31,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rust_coord.financial_operations",
+            "table": "financial_operations",
             "name": "kind"
           }
         }
@@ -42,7 +42,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rust_coord.financial_operations",
+            "table": "financial_operations",
             "name": "status"
           }
         }
@@ -53,7 +53,7 @@
         "type_info": "Jsonb",
         "origin": {
           "Table": {
-            "table": "rust_coord.financial_operations",
+            "table": "financial_operations",
             "name": "result"
           }
         }
@@ -64,7 +64,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "rust_coord.financial_operations",
+            "table": "financial_operations",
             "name": "job_id"
           }
         }
@@ -75,7 +75,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "rust_coord.financial_operations",
+            "table": "financial_operations",
             "name": "terminal_id"
           }
         }
@@ -86,7 +86,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "rust_coord.financial_operations",
+            "table": "financial_operations",
             "name": "account_id"
           }
         }
@@ -97,7 +97,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.financial_operations",
+            "table": "financial_operations",
             "name": "amount_total_micro_usd"
           }
         }
@@ -108,7 +108,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.financial_operations",
+            "table": "financial_operations",
             "name": "amount_withdrawable_micro_usd"
           }
         }
@@ -119,7 +119,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.financial_operations",
+            "table": "financial_operations",
             "name": "version"
           }
         }

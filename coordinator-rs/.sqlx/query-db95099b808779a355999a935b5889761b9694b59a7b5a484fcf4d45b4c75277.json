@@ -9,7 +9,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.inference_jobs",
+            "table": "inference_jobs",
             "name": "version"
           }
         }

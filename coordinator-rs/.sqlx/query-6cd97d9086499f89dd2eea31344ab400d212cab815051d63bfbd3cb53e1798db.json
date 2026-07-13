@@ -9,7 +9,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "rust_coord.outbox",
+            "table": "outbox",
             "name": "version"
           }
         }

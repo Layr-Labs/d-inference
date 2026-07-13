@@ -1617,7 +1617,7 @@ class CutoverReadinessTests(unittest.TestCase):
         payload = {
             "check": "rollback-rehearsal",
             "command": [
-                "/workspace/scripts/rehearse-coordinator-rollback.sh",
+                str(ROOT / "scripts/rehearse-coordinator-rollback.sh"),
                 "__execute",
                 CANDIDATE_IMAGE,
                 FALLBACK_IMAGE,

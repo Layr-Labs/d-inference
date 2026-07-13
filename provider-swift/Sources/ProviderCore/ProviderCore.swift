@@ -143,5 +143,5 @@ public enum ProviderCore {
     // eagerly commit only an independently capped physical plan, report pool
     // truth through existing heartbeat fields, and map terminal exhaustion to
     // retryable capacity. VLM and kv-quant slots stay contiguous.
-    public static let version = "0.7.9"
+    public static let version = "0.7.10"
 }

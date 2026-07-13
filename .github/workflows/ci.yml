@@ -159,7 +159,7 @@ jobs:
     name: Deployment Image & Shell Tests
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@11bd71901bbe5b163ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Validate shell syntax and behavior
         run: |
           git ls-files 'coordinator/deploy/*.sh' 'deploy/gcp/*.sh' 'deploy/gcp/tests/*.sh' |
@@ -181,7 +181,7 @@ jobs:
           docker build \
             --file coordinator/Dockerfile \
             --build-arg BUILD_VERSION="${GITHUB_SHA::12}" \
-            --build-arg BUILD_COMMIT="${GITHUB_SHA::12}" \
+            --build-arg BUILD_COMMIT="$GITHUB_SHA" \
             --tag darkbloom/coordinator:ci \
             .
       - name: Validate image layout and versions

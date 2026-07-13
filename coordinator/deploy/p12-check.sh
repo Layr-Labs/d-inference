@@ -1,6 +1,8 @@
 #!/bin/sh
 # Validate deployment PKCS#12 identities without printing key material.
 set -eu
+LC_ALL=C
+export LC_ALL
 
 fail() {
     echo "PKCS#12 validation failed: $*" >&2
@@ -91,8 +93,22 @@ validate_identity() {
         fail "$role certificate and private key are required"
     fi
 
-    openssl verify -purpose any -CAfile "$cert" "$cert" >/dev/null 2>&1 ||
-        fail "$role certificate is expired, not yet valid, or malformed"
+    # The leaf is normally Apple- or Developer-ID-issued, not self-signed.
+    # Trusting it as its own CA rejects every valid production identity.
+    # Deployment validation needs temporal validity, leaf/key matching, and
+    # the role-specific usages below; issuer-chain trust remains macOS/Apple's
+    # responsibility at enrollment or APNs authentication time.
+    openssl x509 -in "$cert" -checkend 0 -noout >/dev/null 2>&1 ||
+        fail "$role certificate is expired or malformed"
+    not_before=$(openssl x509 -in "$cert" -noout -startdate -dateopt iso_8601 2>/dev/null |
+        sed 's/^notBefore=//; s/ /T/') ||
+        fail "$role certificate start date cannot be inspected"
+    now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    [ -n "$not_before" ] || fail "$role certificate start date is empty"
+    if ! awk -v start="$not_before" -v current="$now" \
+        'BEGIN { exit !(("x" start) <= ("x" current)) }'; then
+        fail "$role certificate is not yet valid"
+    fi
 
     cert_public=$(openssl x509 -in "$cert" -pubkey -noout 2>/dev/null |
         openssl pkey -pubin -outform DER 2>/dev/null |

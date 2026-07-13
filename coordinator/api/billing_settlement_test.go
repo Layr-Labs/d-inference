@@ -22,6 +22,19 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
+func assertPendingResponseClosed(t *testing.T, pending *registry.PendingRequest) {
+	t.Helper()
+	if _, ok := <-pending.ChunkCh; ok {
+		t.Fatal("chunk channel remained open after terminal error")
+	}
+	if _, ok := <-pending.CompleteCh; ok {
+		t.Fatal("completion channel remained open after terminal error")
+	}
+	if _, ok := <-pending.ErrorCh; ok {
+		t.Fatal("error channel remained open after terminal error")
+	}
+}
+
 type flakyInferenceSettlementStore struct {
 	store.Store
 	mu        sync.Mutex
@@ -389,9 +402,12 @@ func TestCompletionSettlementFailureDoesNotSignalSuccessOrMoveBeneficiaryMoney(t
 		Usage: protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 1000},
 	})
 	select {
-	case completion := <-pr.CompleteCh:
-		t.Fatalf("failed settlement signaled successful completion: %+v", completion)
+	case completion, ok := <-pr.CompleteCh:
+		if ok {
+			t.Fatalf("failed settlement signaled successful completion: %+v", completion)
+		}
 	default:
+		t.Fatal("failed settlement left completion channel open")
 	}
 	select {
 	case terminal := <-pr.ErrorCh:
@@ -402,6 +418,7 @@ func TestCompletionSettlementFailureDoesNotSignalSuccessOrMoveBeneficiaryMoney(t
 	default:
 		t.Fatal("failed settlement did not signal a retryable error")
 	}
+	assertPendingResponseClosed(t, pr)
 	if balance := ledger.Balance(testConsumerID); balance != initialBalance-reserved {
 		t.Fatalf("failed settlement changed held consumer balance to %d", balance)
 	}
@@ -460,6 +477,7 @@ func TestInvalidProviderUsageReleasesReservationWithoutPayout(t *testing.T) {
 	default:
 		t.Fatal("invalid usage did not produce error terminal")
 	}
+	assertPendingResponseClosed(t, pr)
 }
 
 func TestProviderCompletionUsageIsCappedAtFundedOutputBound(t *testing.T) {

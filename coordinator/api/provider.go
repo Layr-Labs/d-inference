@@ -2179,32 +2179,26 @@ func (s *Server) handleClaimedComplete(
 	}
 
 	if invalidUsage {
-		if !consumerGone && pr.ErrorCh != nil {
-			select {
-			case pr.ErrorCh <- protocol.InferenceErrorMessage{
+		if !consumerGone {
+			signalPendingError(pr, protocol.InferenceErrorMessage{
 				Type: protocol.TypeInferenceError, RequestID: msg.RequestID,
 				Error:       "provider returned invalid token usage",
 				StatusCode:  http.StatusBadGateway,
 				ErrorReason: "invalid_provider_usage",
-			}:
-			default:
-			}
+			})
 		}
 		s.registry.SetProviderIdle(providerID)
 		return
 	}
 
 	if !billingFinalized {
-		if !consumerGone && pr.ErrorCh != nil {
-			select {
-			case pr.ErrorCh <- protocol.InferenceErrorMessage{
+		if !consumerGone {
+			signalPendingError(pr, protocol.InferenceErrorMessage{
 				Type: protocol.TypeInferenceError, RequestID: msg.RequestID,
 				Error:       "completion settlement pending; retry later",
 				StatusCode:  http.StatusServiceUnavailable,
 				ErrorReason: "settlement_pending",
-			}:
-			default:
-			}
+			})
 		}
 		s.registry.SetProviderIdle(providerID)
 		return
@@ -2345,10 +2339,7 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		return
 	}
 
-	pr.ErrorCh <- *msg
-	close(pr.ChunkCh)
-	close(pr.CompleteCh)
-	close(pr.ErrorCh)
+	signalPendingError(pr, *msg)
 
 	s.logger.Error("inference error",
 		"request_id", msg.RequestID,
@@ -2356,6 +2347,32 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		"error", msg.Error,
 		"status_code", msg.StatusCode,
 	)
+}
+
+func signalPendingError(pr *registry.PendingRequest, message protocol.InferenceErrorMessage) {
+	if pr == nil {
+		return
+	}
+	if pr.ErrorCh != nil {
+		func() {
+			defer func() { _ = recover() }()
+			select {
+			case pr.ErrorCh <- message:
+			default:
+			}
+		}()
+	}
+	safeClosePendingChannel(pr.ChunkCh)
+	safeClosePendingChannel(pr.CompleteCh)
+	safeClosePendingChannel(pr.ErrorCh)
+}
+
+func safeClosePendingChannel[T any](channel chan T) {
+	if channel == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	close(channel)
 }
 
 // verifyProviderAttestation verifies a provider's Secure Enclave attestation

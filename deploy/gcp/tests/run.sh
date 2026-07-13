@@ -337,7 +337,7 @@ test_p12_preflight_rejects_malformed_and_wrong_password_before_migration() {
       base64 <"$fixture/$name.p12" | tr '+/' '-_' | tr -d '\n='
   }
 
-  local mdm profile wrong_usage expired case_name migrations status
+  local mdm profile issued_mdm wrong_usage expired case_name migrations status
   mdm=$(make_identity mdm clientAuth mdm-password) || {
     rm -rf "$fixture"
     return 1
@@ -346,6 +346,35 @@ test_p12_preflight_rejects_malformed_and_wrong_password_before_migration() {
     rm -rf "$fixture"
     return 1
   }
+  if ! openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout "$fixture/issuer.key" -out "$fixture/issuer.crt" \
+    -days 1 -subj '/CN=test-issuer' \
+    -addext 'basicConstraints=critical,CA:TRUE' \
+    -addext 'keyUsage=critical,keyCertSign' >/dev/null 2>&1 ||
+    ! openssl req -new -newkey rsa:2048 -nodes \
+      -keyout "$fixture/issued-mdm.key" -out "$fixture/issued-mdm.csr" \
+      -subj '/CN=issued-mdm' >/dev/null 2>&1 ||
+    ! openssl x509 -req -in "$fixture/issued-mdm.csr" \
+      -CA "$fixture/issuer.crt" -CAkey "$fixture/issuer.key" -CAcreateserial \
+      -days 1 -out "$fixture/issued-mdm.crt" \
+      -extfile <(printf '%s\n' \
+        'basicConstraints=critical,CA:FALSE' \
+        'keyUsage=critical,digitalSignature' \
+        'extendedKeyUsage=clientAuth') >/dev/null 2>&1 ||
+    ! openssl pkcs12 -export -out "$fixture/issued-mdm.p12" \
+      -inkey "$fixture/issued-mdm.key" -in "$fixture/issued-mdm.crt" \
+      -certfile "$fixture/issuer.crt" \
+      -passout pass:mdm-password >/dev/null 2>&1; then
+    rm -rf "$fixture"
+    return 1
+  fi
+  issued_mdm=$(base64 <"$fixture/issued-mdm.p12" | tr '+/' '-_' | tr -d '\n=')
+  if ! MDM_PUSH_P12_B64="$issued_mdm" \
+    MDM_PUSH_P12_PASSWORD=mdm-password \
+    "$ROOT/coordinator/deploy/p12-check.sh" bundle mdm; then
+    rm -rf "$fixture"
+    return 1
+  fi
   wrong_usage=$(make_identity wrong-usage serverAuth mdm-password) || {
     rm -rf "$fixture"
     return 1
@@ -717,6 +746,24 @@ test_environment_matrix_has_dual_stack_safety_flags() {
   done
 }
 
+# shellcheck disable=SC2016 # Build-variable spellings are literal source markers.
+test_prod_builds_embed_full_commit_sha() {
+  local checkout_ref expected_checkout
+  expected_checkout=11bd71901bbe5b1630ceea73d27597364c9af683
+  grep -Fq -- '--build-arg="BUILD_COMMIT=$COMMIT_SHA"' \
+    "$ROOT/deploy/gcp/cloudbuild-prod.yaml" &&
+    grep -Fq -- '--build-arg BUILD_COMMIT="$GITHUB_SHA"' \
+      "$ROOT/.github/workflows/ci.yml" &&
+    ! grep -Fq -- 'BUILD_COMMIT="${GITHUB_SHA::12}"' \
+      "$ROOT/.github/workflows/ci.yml" || return 1
+  while IFS= read -r checkout_ref; do
+    [[ "$checkout_ref" == "$expected_checkout" ]] || return 1
+  done < <(
+    sed -n 's/.*actions\/checkout@\([0-9a-f]*\).*/\1/p' \
+      "$ROOT/.github/workflows/ci.yml"
+  )
+}
+
 test_only_digest_refs_are_reboot_pins() {
   validate_pinned_image_ref \
     'us-central1-docker.pkg.dev/project/repo/coordinator@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' &&
@@ -764,6 +811,7 @@ run_test "upload failure restores old env before Go fallback" test_upload_failur
 run_test "MDM certificate rotation is atomic and retryable" test_mdm_cert_rotation_is_atomic_and_retries
 run_test "persistent state mount is mandatory" test_state_mount_required
 run_test "environment matrix defaults safely to Go" test_environment_matrix_has_dual_stack_safety_flags
+run_test "prod builds embed full commit SHA" test_prod_builds_embed_full_commit_sha
 run_test "reboot image pins require immutable digests" test_only_digest_refs_are_reboot_pins
 run_test "Caddy overwrites untrusted identity headers" test_caddy_overwrites_untrusted_identity_headers
 

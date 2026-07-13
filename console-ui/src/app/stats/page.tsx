@@ -1,27 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState } from "react";
 import { useVisiblePolling } from "@/hooks/useVisiblePolling";
 import {
-  Activity,
-  CheckCircle2,
-  Clock,
-  Cpu,
-  HardDrive,
-  ShieldCheck,
-  Shield,
   Layers,
   Loader2,
   RefreshCw,
   Globe2,
   MapPin,
-  Search,
-  Server,
-  SlidersHorizontal,
-  XCircle,
-  Zap,
 } from "lucide-react";
-import { TopBar } from "@/components/TopBar";
 import {
   catalogDataFromResponse,
   capacityModelsFromResponse,
@@ -31,12 +18,6 @@ import {
   type CatalogDataSummary,
   type CatalogModelSummary,
 } from "@/lib/stats-model-filter";
-// Type-only import keeps pkijs/asn1js (~76 KB gz) out of First Load; the
-// verifier is dynamically imported where it's used (perf F4).
-import type {
-  CertVerificationResult,
-  VerificationStep,
-} from "@/lib/cert-verify";
 import { formatPower } from "@/lib/format-power";
 import { activeNetworkPowerWatts } from "@/lib/network-power";
 import {
@@ -45,40 +26,27 @@ import {
   ZoomableMapViewport,
   type MarkerDatum,
 } from "@/components/stats/network-map";
+import { HeadlineMetrics } from "./HeadlineMetrics";
+import { ModelCapacityCard } from "./ModelCapacityCard";
+import { ModelAvailabilitySummary } from "./ModelAvailabilitySummary";
+import { calculateModelAvailability } from "./model-capacity";
+import { ProviderDashboard } from "./ProviderDashboard";
+import { isProviderRoutable, type ProviderStats } from "./provider-fleet";
+import type {
+  NetworkSeriesResponse,
+  NetworkWindowTotals,
+  TimeSeriesBucket,
+  TrafficRange,
+} from "./types";
+import {
+  formatTrafficTimestamp,
+  normalizeTrafficSeries,
+  TRAFFIC_RANGES,
+  trafficRangeConfig,
+  type TrafficRangeConfig,
+} from "./traffic-series";
 
 const COORDINATOR_URL = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
-
-interface CPUCores {
-  total: number;
-  performance: number;
-  efficiency: number;
-}
-
-interface ProviderStats {
-  id: string;
-  chip: string;
-  chip_family: string;
-  chip_tier: string;
-  machine_model: string;
-  memory_gb: number;
-  gpu_cores: number;
-  cpu_cores: CPUCores;
-  memory_bandwidth_gbs: number;
-  status: string;
-  trust_level: string;
-  decode_tps: number;
-  current_model?: string;
-  models?: string[];
-  requests_served: number;
-  tokens_generated: number;
-  attested?: boolean;
-  mda_verified?: boolean;
-  runtime_verified?: boolean;
-  certificate_available?: boolean;
-  last_challenge_verified?: string;
-  failed_challenges?: number;
-  routable?: boolean;
-}
 
 interface ModelStats {
   id: string;
@@ -139,14 +107,6 @@ interface RequestFlowBucket {
   completion_tokens: number;
 }
 
-interface TimeSeriesBucket {
-  timestamp: string;
-  requests: number;
-  prompt_tokens: number;
-  completion_tokens: number;
-  active_providers: number;
-}
-
 interface NetworkUtilization {
   utilization: number;
   warm_utilization?: number;
@@ -163,6 +123,11 @@ interface PlatformStats {
   total_prompt_tokens: number;
   total_completion_tokens: number;
   total_tokens: number;
+  last_24h_requests?: number;
+  last_24h_prompt_tokens?: number;
+  last_24h_completion_tokens?: number;
+  last_24h_total_tokens?: number;
+  location_window_hours?: number;
   avg_tokens_per_request: number;
   active_providers: number;
   total_gpu_cores: number;
@@ -188,28 +153,6 @@ interface PlatformStats {
   time_series: TimeSeriesBucket[];
 }
 
-interface ProviderAttestation {
-  provider_id: string;
-  trust_level: string;
-  status: string;
-  serial_number?: string;
-  se_public_key?: string;
-  mda_verified?: boolean;
-  secure_enclave?: boolean;
-  sip_enabled?: boolean;
-  secure_boot_enabled?: boolean;
-  authenticated_root_enabled?: boolean;
-  system_volume_hash?: string;
-  mda_cert_chain_b64?: string[];
-  mda_serial?: string;
-  mda_os_version?: string;
-  mda_sepos_version?: string;
-}
-
-type NodeStatusFilter = "all" | "routable" | "serving" | "online" | "attention";
-type NodeTrustFilter = "all" | "hardware" | "none";
-type NodeSortKey = "capacity" | "requests" | "tokens" | "chip";
-
 const GEMMA_PUBLIC_ID = "gemma-4-26b";
 const GEMMA_QAT_ID = "gemma-4-26b-qat-4bit";
 const GEMMA_ROLLBACK_ID = "gemma-4-26b-8bit";
@@ -217,7 +160,6 @@ const GEMMA_ROLLOUT_IDS = new Set([GEMMA_PUBLIC_ID, GEMMA_QAT_ID, GEMMA_ROLLBACK
 
 interface ModelInventory {
   model: ModelStats;
-  providers: ProviderStats[];
   routable: number;
   hardware: number;
   gpuCores: number;
@@ -246,12 +188,6 @@ function formatPercent(ratio: number): string {
   return `${Math.round(pct)}%`;
 }
 
-function formatChartMinute(timestamp: string): string {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return "--:--";
-  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-}
-
 function normalizeTimeSeries(data: TimeSeriesBucket[], minutes = 30): TimeSeriesBucket[] {
   const byMinute = new Map<string, TimeSeriesBucket>();
   for (const bucket of data) {
@@ -263,6 +199,9 @@ function normalizeTimeSeries(data: TimeSeriesBucket[], minutes = 30): TimeSeries
 
   const end = new Date();
   end.setSeconds(0, 0);
+  // The current minute is still accumulating and otherwise renders as a false
+  // cliff at the right edge of both traffic charts.
+  end.setMinutes(end.getMinutes() - 1);
   return Array.from({ length: minutes }, (_, index) => {
     const date = new Date(end.getTime() - (minutes - 1 - index) * 60_000);
     const key = date.toISOString();
@@ -317,88 +256,19 @@ async function fetchModelCapacity(): Promise<CapacityModelSummary[] | null> {
   return null;
 }
 
-function formatGB(value?: number): string | null {
-  if (value === undefined) return null;
-  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} GB`;
-}
-
-function formatLatency(ms?: number): string {
-  if (ms === undefined) return "--";
-  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.round(ms)}ms`;
-}
-
-function formatDecimal(value?: number): string {
-  if (value === undefined) return "--";
-  return value >= 100 ? value.toFixed(0) : value.toFixed(1);
-}
-
-function formatTokenBudget(capacity?: CapacityModelSummary): string {
-  if (!capacity || capacity.tokenBudgetTotal === undefined) return "--";
-  if (capacity.tokenBudgetTotal <= 0) return "0";
-  const remaining = capacity.tokenBudgetRemaining ?? 0;
-  return `${Math.round((remaining / capacity.tokenBudgetTotal) * 100)}%`;
-}
-
-function StatusDot({ status }: { status: string }) {
-  const color =
-    status === "online" || status === "serving"
-      ? "bg-accent-green"
-      : status === "untrusted"
-      ? "bg-accent-red"
-      : "bg-accent-amber";
-  return (
-    <span className="relative flex h-2.5 w-2.5">
-      {(status === "online" || status === "serving") && (
-        <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${color} opacity-40`} />
-      )}
-      <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${color}`} />
-    </span>
-  );
-}
-
-function TrustBadge({ level }: { level: string }) {
-  if (level === "hardware") {
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-green/10 border border-accent-green/20 text-accent-green text-xs font-medium uppercase tracking-wider">
-        <ShieldCheck size={10} />
-        Hardware
-      </span>
-    );
+async function fetchNetworkTotals24h(): Promise<NetworkWindowTotals | null> {
+  try {
+    const res = await fetch("/api/network/totals?window=24h", {
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as NetworkWindowTotals;
+    return typeof data.tokens === "number" && typeof data.jobs === "number"
+      ? data
+      : null;
+  } catch {
+    return null;
   }
-  return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-bg-elevated border border-border-subtle text-text-tertiary text-xs font-medium uppercase tracking-wider">
-      <Shield size={10} />
-      None
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Big hero number
-// ---------------------------------------------------------------------------
-function HeroStat({
-  value,
-  label,
-  sub,
-}: {
-  value: string;
-  label: string;
-  sub?: string;
-}) {
-  return (
-    <div className="text-center">
-      <p className="text-2xl sm:text-4xl md:text-5xl font-mono font-bold text-text-primary tracking-tighter">
-        {value}
-      </p>
-      <p className="text-xs font-mono text-text-tertiary uppercase tracking-widest mt-1">
-        {label}
-      </p>
-      {sub && (
-        <p className="text-xs font-mono text-text-tertiary mt-0.5">{sub}</p>
-      )}
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -528,6 +398,7 @@ function aggregateCapacityForBuilds(alias: CatalogAliasSummary, capacityByID: Ma
     canAccept: members.some((capacity) => capacity.canAccept),
     routableProviders: sum((capacity) => capacity.routableProviders),
     warmProviders: sum((capacity) => capacity.warmProviders),
+    runningProviders: sum((capacity) => capacity.runningProviders),
     coldProviders: sum((capacity) => capacity.coldProviders),
     activeRequests: sum((capacity) => capacity.activeRequests),
     queuedRequests: sum((capacity) => capacity.queuedRequests),
@@ -580,7 +451,6 @@ function buildModelInventory(stats: PlatformStats, aliases: CatalogAliasSummary[
         : modelProviders(model.id, stats.providers, providersByModel);
       return {
         model,
-        providers,
         routable: providers.filter(isProviderRoutable).length,
         hardware: providers.filter((provider) => provider.trust_level === "hardware").length,
         gpuCores: providers.reduce((sum, provider) => sum + provider.gpu_cores, 0),
@@ -599,186 +469,61 @@ function deprecatedModelLabel(status?: string): string | null {
   return null;
 }
 
+function plainModelDescription(catalog?: CatalogModelSummary): string {
+  if (!catalog) return "General-purpose text generation model.";
+  const features = new Set(
+    [...(catalog.capabilities ?? []), ...(catalog.supportedFeatures ?? [])]
+      .map((feature) => feature.toLowerCase()),
+  );
+  const uses: string[] = [];
+  if (features.has("reasoning")) uses.push("reasoning");
+  if (features.has("tools") || features.has("tool_use") || features.has("function_calling")) {
+    uses.push("tool use");
+  }
+  if (features.has("structured_outputs")) uses.push("structured outputs");
+  if (features.has("vision") || features.has("images")) uses.push("image understanding");
+  if (uses.length === 0) return "General-purpose text generation model.";
+  if (uses.length === 1) return `Text model for ${uses[0]}.`;
+  return `Text model for ${uses.slice(0, -1).join(", ")}, and ${uses[uses.length - 1]}.`;
+}
+
 function ModelRow({
   item,
-  maxProviders,
-  rank,
 }: {
   item: ActiveModelInventory;
-  maxProviders: number;
-  rank: number;
 }) {
   const { model } = item;
-  const pct = maxProviders > 0 ? (model.providers / maxProviders) * 100 : 0;
-  const routablePct = model.providers > 0 ? (item.routable / model.providers) * 100 : 0;
-  const isLeader = rank === 1;
   const statusLabel = deprecatedModelLabel(item.catalogStatus);
   const catalog = item.catalogModel;
   const capacity = item.capacity;
-  const displayName = catalog?.displayName || shortModelName(model.id);
-  const modelSize = formatGB(catalog?.sizeGB);
-  const minRAM = formatGB(catalog?.minRAMGB);
-  const queueValue = capacity
-    ? `${(capacity.activeRequests ?? 0) + (capacity.queuedRequests ?? 0)}/${capacity.queueLimit ?? "--"}`
-    : "--";
-  const warmColdValue = capacity
-    ? `${capacity.warmProviders ?? 0}/${capacity.coldProviders ?? 0}`
-    : "--";
 
   return (
-    <div
-      className={`relative overflow-hidden rounded-xl border px-4 py-4 shadow-sm transition-colors ${
-        isLeader
-          ? "border-accent-brand/30 bg-[linear-gradient(135deg,var(--accent-brand-dim),var(--bg-secondary)_42%,var(--bg-primary))]"
-          : "border-border-dim bg-bg-secondary"
-      }`}
-    >
-      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-        <div className="flex min-w-0 items-start gap-3">
-          <div
-            className={`relative mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border ${
-              isLeader
-                ? "border-accent-brand/40 bg-accent-brand text-bg-primary"
-                : "border-accent-brand/20 bg-accent-brand/10 text-accent-brand"
-            }`}
-          >
-            <Layers size={16} />
-            <span
-              className={`absolute -right-1.5 -top-1.5 rounded-full border px-1.5 py-0.5 text-[9px] font-mono font-bold ${
-                isLeader
-                  ? "border-accent-brand bg-bg-primary text-accent-brand"
-                  : "border-border-dim bg-bg-primary text-text-tertiary"
-              }`}
-            >
-              {rank}
-            </span>
-          </div>
-          <div className="min-w-0 space-y-2">
-            <div>
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <p className="truncate text-base font-mono font-semibold text-text-primary">
-                  {displayName}
-                </p>
-                {statusLabel && (
-                  <span className="shrink-0 rounded-full border border-accent-amber/30 bg-accent-amber-dim px-2 py-0.5 text-[9px] font-mono uppercase tracking-wider text-accent-amber">
-                    {statusLabel}
-                  </span>
-                )}
-              </div>
-              <p className="truncate text-xs font-mono text-text-tertiary">{model.id}</p>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {catalog?.family && <ModelPill label={catalog.family} />}
-              {catalog?.quantization && <ModelPill label={catalog.quantization} />}
-              {modelSize && <ModelPill label={modelSize} />}
-              {minRAM && <ModelPill label={`${minRAM} min`} />}
-              {catalog?.maxContextLength && <ModelPill label={`${formatNumber(catalog.maxContextLength)} ctx`} />}
-              <ModelPill label={`${formatNumber(item.gpuCores)} GPU`} />
-              <ModelPill label={`${formatNumber(item.memoryGB)} GB RAM`} />
-            </div>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-4 gap-2 text-right md:min-w-[330px]">
-          <ModelMiniMetric label="Nodes" value={model.providers.toString()} />
-          <ModelMiniMetric label="Routable" value={item.routable.toString()} tone="green" />
-          <ModelMiniMetric label="Hardware" value={item.hardware.toString()} />
-          <ModelMiniMetric label="Share" value={`${item.sharePct.toFixed(0)}%`} />
-        </div>
-      </div>
-
-      {capacity && (
-        <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-5">
-          <CapacityMetric label="Capacity TPS" value={formatDecimal(capacity.aggregateTPS)} />
-          <CapacityMetric label="TTFT Est." value={formatLatency(capacity.estimatedTTFTMS)} />
-          <CapacityMetric label="Queue" value={queueValue} />
-          <CapacityMetric label="Warm/Cold" value={warmColdValue} />
-          <CapacityMetric
-            label="Token Budget"
-            value={formatTokenBudget(capacity)}
-            tone={capacity.canAccept ? "green" : "amber"}
-          />
-        </div>
-      )}
-
-      <div className="mt-4 space-y-2">
-        <div className="flex items-center justify-between gap-3 text-[11px] font-mono text-text-tertiary">
-          <span>{item.sharePct.toFixed(0)}% of visible model slots</span>
-          <span>{Math.round(routablePct)}% routable coverage</span>
-        </div>
-        <div className="relative h-2.5 overflow-hidden rounded-full bg-bg-elevated">
-          <div
-            className="absolute inset-y-0 left-0 rounded-full bg-accent-brand/75"
-            style={{ width: `${Math.max(4, pct)}%` }}
-          />
-          <div
-            className="absolute inset-y-0 left-0 rounded-full bg-accent-green/70"
-            style={{ width: `${Math.max(item.routable > 0 ? 4 : 0, (pct * routablePct) / 100)}%` }}
-          />
-          <div className="absolute inset-0 bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.22),transparent)] opacity-50" />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ModelMiniMetric({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone?: "green" | "muted";
-}) {
-  const valueClass =
-    tone === "green"
-      ? "text-accent-green"
-      : tone === "muted"
-        ? "text-text-tertiary"
-        : "text-text-primary";
-
-  return (
-    <div className="rounded-lg border border-border-dim bg-bg-primary/60 px-2.5 py-2">
-      <p className={`text-sm font-mono font-bold ${valueClass}`}>{value}</p>
-      <p className="mt-0.5 text-[9px] font-mono uppercase tracking-wider text-text-tertiary">
-        {label}
-      </p>
-    </div>
-  );
-}
-
-function CapacityMetric({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone?: "green" | "amber";
-}) {
-  let toneClass = "text-text-primary";
-  if (tone === "green") {
-    toneClass = "text-accent-green";
-  } else if (tone === "amber") {
-    toneClass = "text-accent-amber";
-  }
-
-  return (
-    <div className="rounded-lg border border-border-dim bg-bg-primary/60 px-2.5 py-2">
-      <p className={`text-sm font-mono font-bold ${toneClass}`}>{value}</p>
-      <p className="mt-0.5 text-[9px] font-mono uppercase tracking-wider text-text-tertiary">
-        {label}
-      </p>
-    </div>
-  );
-}
-
-function ModelPill({ label }: { label: string }) {
-  return (
-    <span className="rounded-md border border-border-dim bg-bg-primary/70 px-2 py-1 text-[10px] font-mono text-text-tertiary">
-      {label}
-    </span>
+    <ModelCapacityCard
+      id={model.id}
+      displayName={catalog?.displayName || shortModelName(model.id)}
+      description={plainModelDescription(catalog)}
+      statusLabel={statusLabel}
+      family={catalog?.family}
+      quantization={catalog?.quantization}
+      sizeGB={catalog?.sizeGB}
+      minRAMGB={catalog?.minRAMGB}
+      maxContextLength={catalog?.maxContextLength}
+      totalNodes={model.providers}
+      eligibleNodes={item.routable}
+      hardwareNodes={item.hardware}
+      fleetSharePct={item.sharePct}
+      acceptingNodes={capacity?.routableProviders}
+      warmNodes={capacity?.warmProviders}
+      coldNodes={capacity?.coldProviders}
+      activeRequests={capacity?.activeRequests}
+      queuedRequests={capacity?.queuedRequests}
+      queueLimit={capacity?.queueLimit}
+      aggregateTPS={capacity?.aggregateTPS}
+      estimatedTTFTMS={capacity?.estimatedTTFTMS}
+      tokenBudgetRemaining={capacity?.tokenBudgetRemaining}
+      tokenBudgetTotal={capacity?.tokenBudgetTotal}
+      canAccept={capacity?.canAccept ?? item.routable > 0}
+    />
   );
 }
 
@@ -828,9 +573,25 @@ function ActiveModelsSection({
     ...item,
     sharePct: filteredSlots > 0 ? (item.model.providers / filteredSlots) * 100 : 0,
   }));
-  const maxProviders = Math.max(...visibleInventory.map((item) => item.model.providers), 1);
-  const totalSlots = filteredSlots;
-  const routableSlots = visibleInventory.reduce((sum, item) => sum + item.routable, 0);
+  const totalPlacements = filteredSlots;
+  const eligiblePlacements = visibleInventory.reduce((sum, item) => sum + item.routable, 0);
+  const acceptingPlacements = visibleInventory.reduce((sum, item) => {
+    const availability = calculateModelAvailability(
+      item.model.providers,
+      item.routable,
+      item.capacity?.routableProviders,
+    );
+    return sum + availability.accepting;
+  }, 0);
+  const availabilityItems = visibleInventory.map((item) => ({
+    id: item.model.id,
+    displayName: item.catalogModel?.displayName || shortModelName(item.model.id),
+    family: item.catalogModel?.family,
+    connected: item.model.providers,
+    eligible: item.routable,
+    accepting: item.capacity?.routableProviders,
+    fleetSharePct: item.sharePct,
+  }));
 
   return (
     <section className="rounded-xl border border-border-dim bg-bg-white p-5 shadow-sm">
@@ -844,7 +605,7 @@ function ActiveModelsSection({
               Active Models
             </h3>
             <p className="mt-1 text-xs text-text-tertiary">
-              Catalog metadata, live capacity, and trusted node coverage
+              What each model needs, where it is available, and current load
             </p>
           </div>
         </div>
@@ -875,8 +636,8 @@ function ActiveModelsSection({
           )}
           <div className="grid grid-cols-3 gap-2 text-right sm:min-w-[250px]">
             <ModelHeaderMetric label="Models" value={visibleInventory.length.toString()} />
-            <ModelHeaderMetric label="Slots" value={totalSlots.toString()} />
-            <ModelHeaderMetric label="Routable Slots" value={routableSlots.toString()} />
+            <ModelHeaderMetric label="Placements" value={totalPlacements.toString()} />
+            <ModelHeaderMetric label="Accepting now" value={acceptingPlacements.toString()} />
           </div>
         </div>
       </div>
@@ -888,60 +649,20 @@ function ActiveModelsSection({
               No currently served catalog models.
             </div>
           ) : (
-            visibleInventory.map((item, index) => (
+            visibleInventory.map((item) => (
               <ModelRow
                 key={item.model.id}
                 item={item}
-                maxProviders={maxProviders}
-                rank={index + 1}
               />
             ))
           )}
         </div>
-        <div className="rounded-xl border border-border-dim bg-bg-secondary p-4">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-xs font-mono uppercase tracking-wider text-text-tertiary">
-              Fleet Mix
-            </p>
-            <p className="text-xs font-mono text-text-tertiary">
-              {routableSlots}/{totalSlots} routable
-            </p>
-          </div>
-          <div className="mt-4 space-y-3">
-            {visibleInventory.length === 0 ? (
-              <p className="text-sm text-text-tertiary">
-                Deprecated provider-advertised models are hidden.
-              </p>
-            ) : (
-              visibleInventory.map((item) => (
-                <div key={`mix-${item.model.id}`}>
-                  <div className="flex items-center justify-between gap-3 text-xs">
-                    <p className="truncate font-mono text-text-secondary">
-                      {shortModelName(item.model.id)}
-                    </p>
-                    <p className="shrink-0 font-mono font-semibold text-text-primary">
-                      {item.sharePct.toFixed(0)}%
-                    </p>
-                  </div>
-                  <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-bg-elevated">
-                    <div
-                      className="h-full rounded-full bg-accent-brand/70"
-                      style={{ width: `${Math.max(3, item.sharePct)}%` }}
-                    />
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-          <div className="mt-5 rounded-lg border border-accent-green/20 bg-accent-green/10 px-3 py-2">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-xs font-mono text-accent-green">Routable coverage</span>
-              <span className="text-sm font-mono font-bold text-accent-green">
-                {totalSlots > 0 ? Math.round((routableSlots / totalSlots) * 100) : 0}%
-              </span>
-            </div>
-          </div>
-        </div>
+        <ModelAvailabilitySummary
+          items={availabilityItems}
+          totalPlacements={totalPlacements}
+          eligiblePlacements={eligiblePlacements}
+          acceptingPlacements={acceptingPlacements}
+        />
       </div>
     </section>
   );
@@ -966,88 +687,6 @@ function formatPlace(bucket: {
 
 function shortModelName(id: string): string {
   return id.split("/").pop()?.replace(/-/g, " ") || id;
-}
-
-function chipRank(chip: string): number {
-  const normalized = chip.toLowerCase();
-  if (normalized.includes("ultra")) return 4;
-  if (normalized.includes("max")) return 3;
-  if (normalized.includes("pro")) return 2;
-  return 1;
-}
-
-function providerCapacityScore(provider: ProviderStats): number {
-  return (
-    provider.memory_bandwidth_gbs * 3 +
-    provider.gpu_cores * 12 +
-    provider.memory_gb * 1.5 +
-    chipRank(provider.chip) * 100
-  );
-}
-
-function compareProviders(a: ProviderStats, b: ProviderStats, sortKey: NodeSortKey) {
-  if (sortKey === "requests") {
-    return b.requests_served - a.requests_served || a.id.localeCompare(b.id);
-  }
-  if (sortKey === "tokens") {
-    return b.tokens_generated - a.tokens_generated || a.id.localeCompare(b.id);
-  }
-  if (sortKey === "chip") {
-    return a.chip.localeCompare(b.chip) || a.id.localeCompare(b.id);
-  }
-  return providerCapacityScore(b) - providerCapacityScore(a) || a.id.localeCompare(b.id);
-}
-
-function compactId(id: string): string {
-  if (id.length <= 14) return id;
-  return `${id.slice(0, 8)}...${id.slice(-4)}`;
-}
-
-function maskSerial(serial?: string): string {
-  if (!serial) return "";
-  if (serial.length <= 7) return serial;
-  return `${serial.slice(0, 4)}...${serial.slice(-3)}`;
-}
-
-function verificationLabel(provider: ProviderStats): string {
-  if (isProviderRoutable(provider)) return "Routable";
-  if (provider.mda_verified) return "Apple MDA";
-  if (provider.runtime_verified && provider.trust_level === "hardware") return "Challenge fresh";
-  if (provider.trust_level === "hardware") return "Hardware";
-  return "Unverified";
-}
-
-function hasFreshChallenge(iso?: string): boolean {
-  if (!iso) return false;
-  const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return false;
-  return Date.now() - then <= 6 * 60 * 1000;
-}
-
-function isProviderRoutable(provider: ProviderStats): boolean {
-  if (typeof provider.routable === "boolean") {
-    return provider.routable;
-  }
-  const statusOK = provider.status === "online" || provider.status === "serving";
-  const trustOK = provider.trust_level === "hardware";
-  const runtimeOK = provider.runtime_verified !== false;
-  // Note: MDA/certificate proofs deliberately NOT required — they are
-  // informational and do not gate routing (mirror of the coordinator's
-  // providerLivenessGateLocked).
-  return statusOK && trustOK && runtimeOK && hasFreshChallenge(provider.last_challenge_verified);
-}
-
-function relativeChallengeLabel(iso?: string): string {
-  if (iso === undefined) return "not published";
-  if (!iso) return "not seen";
-  const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return "not seen";
-  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  return `${hours}h ago`;
 }
 
 function projectedPoint(bucket: { latitude?: number; longitude?: number }) {
@@ -1101,9 +740,9 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
   const cityBuckets = stats.provider_locations ?? [];
   const regionBuckets = stats.provider_regions ?? [];
   const requestBuckets = stats.request_locations ?? [];
+  const requestRegionBuckets = stats.request_regions ?? [];
   const requestFlows = (stats.request_flows ?? [])
-    .filter((flow) => hasCoordinates(flow.from) && hasCoordinates(flow.to))
-    .slice(0, 18);
+    .filter((flow) => hasCoordinates(flow.from) && hasCoordinates(flow.to));
   const unknown = stats.unknown_location_providers ?? 0;
   const suppressed = stats.suppressed_city_location_providers ?? 0;
   const privacyMin = stats.location_privacy_min_providers ?? 2;
@@ -1145,6 +784,13 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
   const consumerPlotted = sortedRequestBuckets.filter(hasCoordinates).slice(0, 14);
   const demandOnlyOrigins = sortedRequestBuckets.filter((bucket) => !hasLocalProvider(bucket));
   const demandOnlyRequests = demandOnlyOrigins.reduce((sum, bucket) => sum + bucket.requests, 0);
+  const locatedRequestTotal = requestRegionBuckets.reduce((sum, bucket) => sum + bucket.requests, 0);
+  const routedRequestTotal = requestFlows.reduce((sum, flow) => sum + flow.requests, 0);
+  const routeCoverage = locatedRequestTotal > 0
+    ? Math.min(100, Math.round((routedRequestTotal / locatedRequestTotal) * 100))
+    : 0;
+  const maxFlowRequests = Math.max(...requestFlows.map((flow) => flow.requests), 1);
+  const flowWindowLabel = stats.location_window_hours === 24 ? "24h" : "recent";
   const topCities = cityBuckets.slice(0, 4);
   const recentBuckets = normalizeTimeSeries(stats.time_series);
   const recentRequests = recentBuckets.reduce((sum, bucket) => sum + bucket.requests, 0);
@@ -1201,7 +847,7 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
               {requestFlows.length}
             </p>
             <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider">
-              Routes
+              Visible routes
             </p>
           </div>
         </div>
@@ -1233,6 +879,9 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
               <span className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wide text-text-secondary">
                 <span className="h-2 w-2 rounded-full border-[1.5px] border-accent-amber" />
                 demand
+              </span>
+              <span className="border-l border-border-dim pl-3 text-[10px] font-mono text-text-tertiary">
+                line weight = {flowWindowLabel} requests
               </span>
             </div>
           }
@@ -1267,7 +916,7 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
                 <g fill="none" strokeLinecap="round">
                   {requestFlows.map((flow) => {
                     const path = flowPath(flow.from, flow.to);
-                    const width = Math.min(2.2, 0.7 + Math.sqrt(flow.requests) / 44);
+                    const width = 0.7 + Math.sqrt(flow.requests / maxFlowRequests) * 2.5;
                     return (
                       <path
                         key={flow.key}
@@ -1375,7 +1024,11 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
               sub={networkTPS > 0 ? "reported capacity" : "benchmarks pending"}
             />
             <FlowMetric label="Certificates" value={certificateProviders.toString()} sub="public proof ready" />
-            <FlowMetric label="Remote demand" value={formatNumber(demandOnlyRequests)} sub={`${requestFlows.length} active routes`} />
+            <FlowMetric
+              label="Mapped routes"
+              value={requestFlows.length.toString()}
+              sub={routeCoverage > 0 ? `${routeCoverage}% of located requests` : "awaiting located demand"}
+            />
           </div>
 
           <div>
@@ -1483,6 +1136,15 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
   const fallbackPlotted = plotted.length > 0
     ? plotted
     : regionBuckets.filter(hasCoordinates);
+  const mapBuckets = fallbackPlotted
+    .slice()
+    .sort((a, b) => b.requests - a.requests)
+    .slice(0, 24);
+  const maxMapRequests = Math.max(...mapBuckets.map((bucket) => bucket.requests), 1);
+  const geographyWindowLabel = stats.location_window_hours === 24
+    ? "from the last 24 hours"
+    : "from the current production window";
+  const bubbleWindowLabel = stats.location_window_hours === 24 ? "24h" : "recent";
   const totalRequests = regionBuckets.reduce((sum, bucket) => sum + bucket.requests, 0);
   const topCities = cityBuckets.slice(0, 6);
   const topRegions = regionBuckets.slice(0, 6);
@@ -1498,7 +1160,7 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
             </h2>
           </div>
           <p className="text-xs text-text-tertiary mt-1">
-            Privacy-bucketed demand origins from the last 24 hours
+            Privacy-bucketed demand origins {geographyWindowLabel}
           </p>
         </div>
         <div className="grid grid-cols-3 gap-2 text-right sm:min-w-[260px]">
@@ -1541,6 +1203,12 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
         >
           <WorldDotMatrix className="absolute inset-0 h-full w-full" preserveAspectRatio="xMidYMid meet" />
 
+          {mapBuckets.length > 0 && (
+            <div className="pointer-events-none absolute left-3 top-3 z-20 rounded-lg border border-border-dim bg-bg-primary/85 px-3 py-1.5 font-mono text-[10px] text-text-tertiary shadow-sm backdrop-blur">
+              Bubble area = {bubbleWindowLabel} requests · top {mapBuckets.length} origins
+            </div>
+          )}
+
           {fallbackPlotted.length === 0 ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center">
               <MapPin size={22} className="text-text-tertiary" />
@@ -1554,9 +1222,9 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
               </div>
             </div>
           ) : (
-            fallbackPlotted.map((bucket) => {
+            mapBuckets.map((bucket, index) => {
               const point = projectedPoint(bucket);
-              const size = Math.min(34, 8 + Math.sqrt(bucket.requests) * 4);
+              const size = 10 + Math.sqrt(bucket.requests / maxMapRequests) * 28;
               return (
                 <div
                   key={bucket.key}
@@ -1572,6 +1240,11 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
                     }}
                   >
                     <span className="absolute inset-[22%] rounded-full bg-white/20" />
+                    {index < 6 && (
+                      <span className="absolute inset-0 flex items-center justify-center font-mono text-[10px] font-bold text-white">
+                        {index + 1}
+                      </span>
+                    )}
                   </div>
                   <div className="absolute left-1/2 bottom-full mb-3 hidden -translate-x-1/2 group-hover:block z-20">
                     <div className="min-w-[190px] rounded-lg bg-text-primary px-3 py-2 text-bg-primary shadow-lg">
@@ -1684,23 +1357,143 @@ function RequestLocationRow({
   );
 }
 
+type TrafficView = "rate" | "cumulative";
+
+function TrafficCharts({ data }: { data: TimeSeriesBucket[] }) {
+  const [view, setView] = useState<TrafficView>("rate");
+  const [range, setRange] = useState<TrafficRange>("30m");
+  const [seriesByRange, setSeriesByRange] = useState<Map<TrafficRange, NetworkSeriesResponse>>(() => new Map());
+  const [loadingRange, setLoadingRange] = useState<TrafficRange | null>(null);
+  const [rangeError, setRangeError] = useState<string | null>(null);
+  const config = trafficRangeConfig(range);
+  const response = seriesByRange.get(range);
+  const chartData = normalizeTrafficSeries(
+    range === "30m" ? data : response?.time_series ?? [],
+    config,
+    response?.end_at,
+  );
+
+  async function selectRange(nextRange: TrafficRange) {
+    setRange(nextRange);
+    setRangeError(null);
+    if (nextRange === "30m" || seriesByRange.has(nextRange)) return;
+
+    setLoadingRange(nextRange);
+    try {
+      const result = await fetch(`/api/network/series?window=${nextRange}`, { cache: "no-store" });
+      if (!result.ok) throw new Error(`HTTP ${result.status}`);
+      const payload = (await result.json()) as NetworkSeriesResponse;
+      if (!Array.isArray(payload.time_series) || payload.window !== nextRange) {
+        throw new Error("Invalid network series response");
+      }
+      setSeriesByRange((current) => new Map(current).set(nextRange, payload));
+    } catch {
+      setRangeError("Historical traffic is not available from this coordinator yet.");
+    } finally {
+      setLoadingRange(null);
+    }
+  }
+
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 className="text-sm font-semibold text-text-primary">Network traffic</h2>
+          <p className="mt-1 text-xs text-text-tertiary">
+            {config.description} · {config.bucketLabel} buckets
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex rounded-lg border border-border-dim bg-bg-white p-1 shadow-sm" aria-label="Traffic time range">
+            {TRAFFIC_RANGES.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => void selectRange(option.value)}
+                aria-pressed={range === option.value}
+                disabled={loadingRange !== null}
+                className={`rounded-md px-2.5 py-1.5 font-mono text-[10px] transition-colors ${
+                  range === option.value
+                    ? "bg-accent-brand/10 font-semibold text-accent-brand"
+                    : "text-text-tertiary hover:text-text-primary disabled:opacity-45"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <div className="inline-flex rounded-lg border border-border-dim bg-bg-white p-1 shadow-sm" aria-label="Traffic chart view">
+            {([
+              ["rate", config.rateControlLabel],
+              ["cumulative", "Cumulative"],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setView(value)}
+                aria-pressed={view === value}
+                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                  view === value
+                    ? "bg-text-primary text-bg-primary shadow-sm"
+                    : "text-text-tertiary hover:text-text-primary"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      {(loadingRange || rangeError) && (
+        <div className={`rounded-lg border px-3 py-2 text-xs ${rangeError ? "border-accent-amber/30 bg-accent-amber-dim text-accent-amber" : "border-border-dim bg-bg-white text-text-tertiary"}`} role="status">
+          {loadingRange ? `Loading ${trafficRangeConfig(loadingRange).description.toLowerCase()}…` : rangeError}
+        </div>
+      )}
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <ActivityChart
+          data={chartData}
+          label={view === "rate" ? `Requests / ${config.bucketLabel}` : "Cumulative requests"}
+          color="var(--accent-brand)"
+          getValue={(d) => d.requests}
+          view={view}
+          range={range}
+          config={config}
+        />
+        <TokenChart data={chartData} view={view} range={range} config={config} />
+      </div>
+    </section>
+  );
+}
+
 // ---------------------------------------------------------------------------
-// Activity bar chart
+// Activity chart
 // ---------------------------------------------------------------------------
 function ActivityChart({
   data,
   label,
   color,
   getValue,
+  view,
+  range,
+  config,
 }: {
   data: TimeSeriesBucket[];
   label: string;
   color: string;
   getValue: (d: TimeSeriesBucket) => number;
+  view: TrafficView;
+  range: TrafficRange;
+  config: TrafficRangeConfig;
 }) {
-  const chartData = normalizeTimeSeries(data);
+  const chartData = data;
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
-  const values = chartData.map(getValue);
+  const rateValues = chartData.map(getValue);
+  const values = view === "cumulative"
+    ? rateValues.reduce<number[]>((running, value) => {
+        running.push((running[running.length - 1] ?? 0) + value);
+        return running;
+      }, [])
+    : rateValues;
   const max = Math.max(...values, 1);
   const hasData = values.some((v) => v > 0);
   const width = 420;
@@ -1721,8 +1514,9 @@ function ActivityChart({
     points.length > 0
       ? `${linePath} L${points[points.length - 1].x.toFixed(1)} ${height - padY} L${points[0].x.toFixed(1)} ${height - padY} Z`
       : "";
-  const total = values.reduce((sum, v) => sum + v, 0);
-  const peak = Math.max(...values, 0);
+  const total = rateValues.reduce((sum, v) => sum + v, 0);
+  const peak = Math.max(...rateValues, 0);
+  const average = chartData.length > 0 ? Math.round(total / chartData.length) : 0;
   const hovered = hoverIndex === null ? null : points[hoverIndex];
   const hoverPct = hovered ? (hovered.x / width) * 100 : 0;
 
@@ -1734,18 +1528,15 @@ function ActivityChart({
 
   return (
     <div className="bg-bg-white rounded-xl p-5 space-y-4 shadow-sm">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-xs font-mono text-text-tertiary uppercase tracking-wider">
-            {label}
-          </h3>
-          <p className="text-xs text-text-tertiary mt-1">
-            {formatNumber(total)} total / {formatNumber(peak)} peak
-          </p>
-        </div>
-        <span className="text-xs font-mono text-text-tertiary">
-          Last {chartData.length} min
-        </span>
+      <div>
+        <h3 className="text-xs font-mono text-text-tertiary uppercase tracking-wider">
+          {label}
+        </h3>
+        <p className="text-xs text-text-tertiary mt-1">
+          {view === "rate"
+            ? `${formatNumber(total)} total · ${formatNumber(average)} avg / ${config.bucketLabel} · ${formatNumber(peak)} peak`
+            : `+${formatNumber(total)} over the window`}
+        </p>
       </div>
       <div
         data-chart="requests-per-minute"
@@ -1831,9 +1622,9 @@ function ActivityChart({
               transform: hoverPct > 72 ? "translateX(-100%)" : hoverPct < 28 ? "translateX(0)" : "translateX(-50%)",
             }}
           >
-            <p className="font-mono text-text-tertiary">{formatChartMinute(hovered.source.timestamp)}</p>
+            <p className="font-mono text-text-tertiary">{formatTrafficTimestamp(hovered.source.timestamp, range)}</p>
             <p className="mt-1 font-mono font-semibold text-text-primary">
-              {formatNumber(hovered.value)} requests
+              {formatNumber(hovered.value)} {view === "rate" ? "requests" : "total requests"}
             </p>
           </div>
         )}
@@ -1845,8 +1636,29 @@ function ActivityChart({
 // ---------------------------------------------------------------------------
 // Stacked token chart
 // ---------------------------------------------------------------------------
-function TokenChart({ data }: { data: TimeSeriesBucket[] }) {
-  const chartData = normalizeTimeSeries(data);
+function TokenChart({
+  data,
+  view,
+  range,
+  config,
+}: {
+  data: TimeSeriesBucket[];
+  view: TrafficView;
+  range: TrafficRange;
+  config: TrafficRangeConfig;
+}) {
+  const rateData = data;
+  const chartData = view === "cumulative"
+    ? rateData.reduce<TimeSeriesBucket[]>((running, bucket) => {
+        const previous = running[running.length - 1];
+        running.push({
+          ...bucket,
+          prompt_tokens: (previous?.prompt_tokens ?? 0) + bucket.prompt_tokens,
+          completion_tokens: (previous?.completion_tokens ?? 0) + bucket.completion_tokens,
+        });
+        return running;
+      }, [])
+    : rateData;
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const hasData = chartData.some(
     (d) => d.prompt_tokens + d.completion_tokens > 0
@@ -1860,8 +1672,8 @@ function TokenChart({ data }: { data: TimeSeriesBucket[] }) {
   const padX = 12;
   const padY = 14;
   const chartHeight = height - padY * 2;
-  const totalInput = chartData.reduce((sum, d) => sum + d.prompt_tokens, 0);
-  const totalOutput = chartData.reduce((sum, d) => sum + d.completion_tokens, 0);
+  const totalInput = rateData.reduce((sum, d) => sum + d.prompt_tokens, 0);
+  const totalOutput = rateData.reduce((sum, d) => sum + d.completion_tokens, 0);
   const barGap = 3;
   const barWidth = chartData.length > 0
     ? Math.max(3, (width - padX * 2 - barGap * (chartData.length - 1)) / chartData.length)
@@ -1881,10 +1693,12 @@ function TokenChart({ data }: { data: TimeSeriesBucket[] }) {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-xs font-mono text-text-tertiary uppercase tracking-wider">
-            Tokens / Minute
+            {view === "rate" ? `Tokens / ${config.bucketLabel}` : "Cumulative tokens"}
           </h3>
           <p className="text-xs text-text-tertiary mt-1">
-            {formatNumber(totalInput + totalOutput)} tokens / {chartData.length} min
+            {view === "rate"
+              ? `${formatNumber(totalInput + totalOutput)} tokens · ${chartData.length} complete ${config.bucketLabel} buckets`
+              : `+${formatNumber(totalInput + totalOutput)} over the window`}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -1901,7 +1715,7 @@ function TokenChart({ data }: { data: TimeSeriesBucket[] }) {
       <div
         data-chart="tokens-per-minute"
         className="relative h-40 overflow-hidden rounded-lg border border-border-dim bg-bg-secondary"
-        aria-label="Tokens per minute chart"
+        aria-label={view === "rate" ? `Tokens per ${config.bucketLabel} chart` : "Cumulative tokens chart"}
         onMouseMove={(event) => updateHover(event.clientX, event.currentTarget.getBoundingClientRect())}
         onClick={(event) => updateHover(event.clientX, event.currentTarget.getBoundingClientRect())}
         onMouseLeave={() => setHoverIndex(null)}
@@ -1983,7 +1797,7 @@ function TokenChart({ data }: { data: TimeSeriesBucket[] }) {
               transform: hoverPct > 72 ? "translateX(-100%)" : hoverPct < 28 ? "translateX(0)" : "translateX(-50%)",
             }}
           >
-            <p className="font-mono text-text-tertiary">{formatChartMinute(hovered.timestamp)}</p>
+            <p className="font-mono text-text-tertiary">{formatTrafficTimestamp(hovered.timestamp, range)}</p>
             <p className="mt-1 font-mono font-semibold text-text-primary">
               {formatNumber(hovered.prompt_tokens + hovered.completion_tokens)} tokens
             </p>
@@ -1997,577 +1811,24 @@ function TokenChart({ data }: { data: TimeSeriesBucket[] }) {
   );
 }
 
-function NodeMetric({
-  label,
-  value,
-  icon,
-}: {
-  label: string;
-  value: string;
-  icon: ReactNode;
-}) {
-  return (
-    <div className="rounded-lg border border-border-dim bg-bg-secondary px-3 py-2">
-      <div className="flex items-center gap-1.5 text-text-tertiary">
-        {icon}
-        <p className="text-[10px] font-mono uppercase tracking-wider">{label}</p>
-      </div>
-      <p className="mt-1 text-sm font-mono font-semibold text-text-primary">{value}</p>
-    </div>
-  );
-}
-
-function VerifyStepLine({ step }: { step: VerificationStep }) {
-  let icon = <Clock size={12} className="text-text-tertiary" />;
-  if (step.status === "success") {
-    icon = <CheckCircle2 size={12} className="text-accent-green" />;
-  }
-  if (step.status === "error") {
-    icon = <XCircle size={12} className="text-accent-red" />;
-  }
-  if (step.status === "running") {
-    icon = <Loader2 size={12} className="animate-spin text-accent-brand" />;
-  }
-
-  return (
-    <div className="flex gap-2 py-1.5">
-      <div className="mt-0.5 shrink-0">{icon}</div>
-      <div className="min-w-0">
-        <p className="text-xs text-text-secondary">{step.label}</p>
-        {step.detail && (
-          <p className="mt-0.5 break-words text-[11px] font-mono text-text-tertiary">
-            {step.detail}
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function NodeRow({
-  provider,
-  selected,
-  maxCapacity,
-  onSelect,
-}: {
-  provider: ProviderStats;
-  selected: boolean;
-  maxCapacity: number;
-  onSelect: () => void;
-}) {
-  const capacityPct = Math.max(5, (providerCapacityScore(provider) / maxCapacity) * 100);
-  const activeModel = provider.current_model || provider.models?.[0] || "";
-
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={`w-full rounded-xl border px-4 py-3 text-left transition-all ${
-        selected
-          ? "border-accent-brand/35 bg-accent-brand/5 shadow-sm"
-          : "border-border-dim bg-bg-secondary hover:border-border-subtle hover:bg-bg-hover"
-      }`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-3">
-          <StatusDot status={provider.status} />
-          <div className="min-w-0">
-            <div className="flex min-w-0 items-center gap-2">
-              <p className="truncate text-sm font-semibold text-text-primary">
-                {provider.chip}
-              </p>
-              {isProviderRoutable(provider) && (
-                <span className="rounded-full bg-accent-green/10 px-1.5 py-0.5 text-[10px] font-medium text-accent-green">
-                  Routable
-                </span>
-              )}
-            </div>
-            <p className="mt-0.5 truncate text-xs font-mono text-text-tertiary">
-              {provider.machine_model || "Apple Silicon"} · {compactId(provider.id)}
-            </p>
-          </div>
-        </div>
-        <TrustBadge level={provider.trust_level} />
-      </div>
-
-      <div className="mt-3 grid grid-cols-4 gap-2 text-xs font-mono">
-        <div>
-          <p className="text-text-tertiary">RAM</p>
-          <p className="text-text-primary">{provider.memory_gb} GB</p>
-        </div>
-        <div>
-          <p className="text-text-tertiary">GPU</p>
-          <p className="text-text-primary">{provider.gpu_cores}</p>
-        </div>
-        <div>
-          <p className="text-text-tertiary">Req</p>
-          <p className="text-text-primary">{formatNumber(provider.requests_served)}</p>
-        </div>
-        <div>
-          <p className="text-text-tertiary">Tok</p>
-          <p className="text-text-primary">{formatNumber(provider.tokens_generated)}</p>
-        </div>
-      </div>
-
-      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-bg-elevated">
-        <div
-          className="h-full rounded-full bg-accent-brand"
-          style={{
-            width: `${Math.min(100, capacityPct)}%`,
-            opacity: selected ? 0.92 : 0.58,
-          }}
-        />
-      </div>
-
-      {activeModel && (
-        <p className="mt-2 truncate text-[11px] font-mono text-text-tertiary">
-          {shortModelName(activeModel)}
-        </p>
-      )}
-    </button>
-  );
-}
-
-function NodeDetail({
-  provider,
-  verifying,
-  verifySteps,
-  verifyResult,
-  attestation,
-  onVerify,
-}: {
-  provider: ProviderStats | null;
-  verifying: boolean;
-  verifySteps: VerificationStep[];
-  verifyResult: CertVerificationResult | null;
-  attestation: ProviderAttestation | null;
-  onVerify: (provider: ProviderStats) => void;
-}) {
-  if (!provider) {
-    return (
-      <div className="rounded-xl border border-border-dim bg-bg-secondary p-5 text-sm text-text-tertiary">
-        Select a node to inspect its capacity and verification state.
-      </div>
-    );
-  }
-
-  const certCount = attestation?.mda_cert_chain_b64?.length ?? 0;
-  const verifiedSerial = maskSerial(
-    verifyResult?.deviceInfo?.serial || attestation?.mda_serial || attestation?.serial_number
-  );
-  const modelList = provider.models ?? [];
-  let verificationState = "Certificate not checked";
-  let verificationColor = "text-text-tertiary";
-  if (verifyResult?.success) {
-    verificationState = "Apple certificate verified";
-    verificationColor = "text-accent-green";
-  }
-  if (verifyResult && !verifyResult.success) {
-    verificationState = "Certificate check failed";
-    verificationColor = "text-accent-red";
-  }
-
-  return (
-    <div className="rounded-xl border border-border-dim bg-bg-secondary p-5 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <Server size={16} className="text-accent-brand" />
-            <h3 className="truncate text-sm font-semibold text-text-primary">
-              {provider.chip}
-            </h3>
-          </div>
-          <p className="mt-1 truncate text-xs font-mono text-text-tertiary">
-            {provider.machine_model} · {provider.id}
-          </p>
-        </div>
-        <StatusDot status={provider.status} />
-      </div>
-
-      <div className="mt-4 grid grid-cols-2 gap-2">
-        <NodeMetric label="Memory" value={`${provider.memory_gb} GB`} icon={<HardDrive size={12} />} />
-        <NodeMetric label="GPU" value={`${provider.gpu_cores}-core`} icon={<Cpu size={12} />} />
-        <NodeMetric label="CPU" value={`${provider.cpu_cores.performance}P + ${provider.cpu_cores.efficiency}E`} icon={<Activity size={12} />} />
-        <NodeMetric label="Bandwidth" value={`${provider.memory_bandwidth_gbs} GB/s`} icon={<Zap size={12} />} />
-      </div>
-
-      <div className="mt-4 rounded-lg border border-border-dim bg-bg-primary p-3">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold text-text-primary">Certificate verification</p>
-            <p className={`mt-0.5 text-[11px] font-mono ${verificationColor}`}>
-              {verificationState}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => onVerify(provider)}
-            disabled={verifying}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border-subtle px-2.5 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {verifying ? <Loader2 size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
-            Verify
-          </button>
-        </div>
-
-        <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-mono">
-          <div className="rounded-md bg-bg-secondary px-2 py-1.5">
-            <p className="text-text-tertiary">Trust</p>
-            <p className="text-text-primary">{verificationLabel(provider)}</p>
-          </div>
-          <div className="rounded-md bg-bg-secondary px-2 py-1.5">
-            <p className="text-text-tertiary">Challenge</p>
-            <p className="text-text-primary">{relativeChallengeLabel(provider.last_challenge_verified)}</p>
-          </div>
-          <div className="rounded-md bg-bg-secondary px-2 py-1.5">
-            <p className="text-text-tertiary">Certificates</p>
-            <p className="text-text-primary">{certCount > 0 ? certCount : provider.certificate_available ? "available" : "none"}</p>
-          </div>
-          <div className="rounded-md bg-bg-secondary px-2 py-1.5">
-            <p className="text-text-tertiary">Serial</p>
-            <p className="text-text-primary">{verifiedSerial || "hidden"}</p>
-          </div>
-        </div>
-
-        {(verifySteps.length > 0 || verifyResult?.error) && (
-          <div className="mt-3 border-t border-border-dim pt-2">
-            {verifySteps.map((step) => (
-              <VerifyStepLine key={step.label} step={step} />
-            ))}
-            {verifyResult?.error && (
-              <p className="mt-2 rounded-md bg-accent-red/5 px-2 py-1.5 text-[11px] text-accent-red">
-                {verifyResult.error}
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="mt-4">
-        <p className="text-xs font-mono uppercase tracking-wider text-text-tertiary">
-          Models
-        </p>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {modelList.length === 0 ? (
-            <span className="text-xs text-text-tertiary">No model list reported.</span>
-          ) : (
-            modelList.map((model) => (
-              <span
-                key={model}
-                className={`rounded-md px-2 py-1 text-[11px] font-mono ${
-                  model === provider.current_model
-                    ? "bg-accent-brand/10 text-accent-brand"
-                    : "bg-bg-primary text-text-tertiary"
-                }`}
-              >
-                {shortModelName(model)}
-              </span>
-            ))
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function NetworkNodes({ providers }: { providers: ProviderStats[] }) {
-  const [selectedProviderId, setSelectedProviderId] = useState<string>("");
-  const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<NodeStatusFilter>("all");
-  const [trustFilter, setTrustFilter] = useState<NodeTrustFilter>("all");
-  const [modelFilter, setModelFilter] = useState("all");
-  const [sortKey, setSortKey] = useState<NodeSortKey>("capacity");
-  const [verifyingId, setVerifyingId] = useState<string | null>(null);
-  const [verifySteps, setVerifySteps] = useState<VerificationStep[]>([]);
-  const [verifyResult, setVerifyResult] = useState<CertVerificationResult | null>(null);
-  const [attestation, setAttestation] = useState<ProviderAttestation | null>(null);
-  const statusOptions: Array<{ value: NodeStatusFilter; label: string }> = [
-    { value: "all", label: "All" },
-    { value: "routable", label: "Routable" },
-    { value: "serving", label: "Serving" },
-    { value: "online", label: "Online" },
-    { value: "attention", label: "Needs attention" },
-  ];
-  const trustOptions: Array<{ value: NodeTrustFilter; label: string }> = [
-    { value: "all", label: "All trust" },
-    { value: "hardware", label: "Hardware" },
-    { value: "none", label: "Basic" },
-  ];
-
-  const modelOptions = useMemo(() => {
-    return Array.from(new Set(providers.flatMap((provider) => provider.models ?? [])))
-      .sort((a, b) => shortModelName(a).localeCompare(shortModelName(b)));
-  }, [providers]);
-
-  const filteredProviders = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-    return providers
-      .filter((provider) => {
-        const modelNames = provider.models ?? [];
-        const haystack = [
-          provider.id,
-          provider.chip,
-          provider.machine_model,
-          provider.status,
-          provider.trust_level,
-          provider.current_model,
-          ...modelNames,
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-        const matchesQuery = normalizedQuery === "" || haystack.includes(normalizedQuery);
-        const matchesStatus =
-          statusFilter === "all" ||
-          (statusFilter === "routable" && isProviderRoutable(provider)) ||
-          (statusFilter === "attention" && !isProviderRoutable(provider)) ||
-          provider.status === statusFilter;
-        const matchesTrust = trustFilter === "all" || provider.trust_level === trustFilter;
-        const matchesModel = modelFilter === "all" || modelNames.includes(modelFilter);
-        return matchesQuery && matchesStatus && matchesTrust && matchesModel;
-      })
-      .sort((a, b) => compareProviders(a, b, sortKey));
-  }, [modelFilter, providers, query, sortKey, statusFilter, trustFilter]);
-
-  const selectedProvider =
-    filteredProviders.find((provider) => provider.id === selectedProviderId) ??
-    filteredProviders[0] ??
-    null;
-  const maxCapacity = Math.max(
-    ...providers.map((provider) => providerCapacityScore(provider)),
-    1
-  );
-  const servingCount = providers.filter((provider) => provider.status === "serving").length;
-  const routableCount = providers.filter(isProviderRoutable).length;
-
-  useEffect(() => {
-    if (selectedProvider && selectedProvider.id !== selectedProviderId) {
-      setSelectedProviderId(selectedProvider.id);
-    }
-  }, [selectedProvider, selectedProviderId]);
-
-  useEffect(() => {
-    setVerifySteps([]);
-    setVerifyResult(null);
-    setAttestation(null);
-  }, [selectedProviderId]);
-
-  async function handleVerify(provider: ProviderStats) {
-    setVerifyingId(provider.id);
-    setVerifySteps([]);
-    setVerifyResult(null);
-    setAttestation(null);
-
-    try {
-      const response = await fetch("/api/attestation");
-      if (!response.ok) {
-        throw new Error(`Attestation API returned HTTP ${response.status}`);
-      }
-      const data = await response.json();
-      const attestedProviders: ProviderAttestation[] = data.providers ?? [];
-      const matched =
-        attestedProviders.find((entry) => entry.provider_id === provider.id) ??
-        attestedProviders.find((entry) => entry.provider_id?.startsWith(provider.id)) ??
-        null;
-
-      if (!matched) {
-        setVerifyResult({
-          success: false,
-          steps: [],
-          error: "Node was not present in the public attestation feed.",
-        });
-        return;
-      }
-
-      setAttestation(matched);
-      const certs = matched.mda_cert_chain_b64 ?? [];
-      if (certs.length < 2) {
-        setVerifyResult({
-          success: false,
-          steps: [
-            {
-              status: "error",
-              label: "Insufficient certificate chain",
-              detail: `Got ${certs.length}, need at least 2 certificates.`,
-            },
-          ],
-          error: "This node has no Apple MDA certificate chain available yet.",
-        });
-        return;
-      }
-
-      const { verifyCertificateChain } = await import("@/lib/cert-verify");
-      const result = await verifyCertificateChain(certs, (steps) => {
-        setVerifySteps(steps);
-      });
-      setVerifyResult(result);
-    } catch (error) {
-      setVerifyResult({
-        success: false,
-        steps: [],
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      setVerifyingId(null);
-    }
-  }
-
-  return (
-    <section className="rounded-xl border border-border-dim bg-bg-white p-5 shadow-sm">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <Server size={16} className="text-accent-brand" />
-            <h2 className="text-sm font-semibold text-text-primary">Provider Dashboard</h2>
-          </div>
-          <p className="mt-1 text-xs text-text-tertiary">
-            Routability, node health, model coverage, and certificate verification
-          </p>
-        </div>
-        <div className="grid grid-cols-3 gap-3 text-right">
-          <div>
-            <p className="text-lg font-mono font-bold text-text-primary">{providers.length}</p>
-            <p className="text-xs font-medium text-text-tertiary">Nodes</p>
-          </div>
-          <div>
-            <p className="text-lg font-mono font-bold text-text-primary">{routableCount}</p>
-            <p className="text-xs font-medium text-text-tertiary">Routable</p>
-          </div>
-          <div>
-            <p className="text-lg font-mono font-bold text-text-primary">{servingCount}</p>
-            <p className="text-xs font-medium text-text-tertiary">Serving</p>
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-5 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(260px,1fr)_220px_180px]">
-        <label className="relative block">
-          <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search node, chip, model, id"
-            className="h-10 w-full rounded-lg border border-border-dim bg-bg-secondary pl-9 pr-3 text-sm text-text-primary outline-none transition-colors placeholder:text-text-tertiary focus:border-accent-brand/40"
-          />
-        </label>
-
-        <select
-          value={modelFilter}
-          onChange={(event) => setModelFilter(event.target.value)}
-          className="h-10 rounded-lg border border-border-dim bg-bg-secondary px-3 text-sm font-medium text-text-primary outline-none focus:border-accent-brand/40"
-        >
-          <option value="all">All models</option>
-          {modelOptions.map((model) => (
-            <option key={model} value={model}>
-              {shortModelName(model)}
-            </option>
-          ))}
-        </select>
-
-        <select
-          value={sortKey}
-          onChange={(event) => setSortKey(event.target.value as NodeSortKey)}
-          className="h-10 rounded-lg border border-border-dim bg-bg-secondary px-3 text-sm font-medium text-text-primary outline-none focus:border-accent-brand/40"
-        >
-          <option value="capacity">Sort by capacity</option>
-          <option value="requests">Sort by requests</option>
-          <option value="tokens">Sort by tokens</option>
-          <option value="chip">Sort by chip</option>
-        </select>
-      </div>
-
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-text-tertiary">
-          <SlidersHorizontal size={13} />
-          Status
-        </span>
-        {statusOptions.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            onClick={() => setStatusFilter(option.value)}
-            className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
-              statusFilter === option.value
-                ? "border-accent-brand/35 bg-accent-brand/10 text-accent-brand"
-                : "border-border-dim bg-bg-secondary text-text-secondary hover:border-border-subtle hover:bg-bg-hover"
-            }`}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <span className="text-xs font-medium text-text-tertiary">Trust</span>
-        {trustOptions.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            onClick={() => setTrustFilter(option.value)}
-            className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
-              trustFilter === option.value
-                ? "border-accent-green/35 bg-accent-green/10 text-accent-green"
-                : "border-border-dim bg-bg-secondary text-text-secondary hover:border-border-subtle hover:bg-bg-hover"
-            }`}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="mt-5">
-        <div className="space-y-2">
-          {filteredProviders.length === 0 ? (
-            <div className="rounded-xl border border-border-dim bg-bg-secondary p-8 text-center text-sm text-text-tertiary">
-              No nodes match the current filters.
-            </div>
-          ) : (
-            filteredProviders.map((provider) => (
-              <div key={provider.id} className="space-y-2">
-                <NodeRow
-                  provider={provider}
-                  selected={provider.id === selectedProvider?.id}
-                  maxCapacity={maxCapacity}
-                  onSelect={() => setSelectedProviderId(provider.id)}
-                />
-                {provider.id === selectedProvider?.id && (
-                  <div className="pl-0 sm:pl-8">
-                    <NodeDetail
-                      provider={provider}
-                      verifying={verifyingId === provider.id}
-                      verifySteps={verifySteps}
-                      verifyResult={verifyResult}
-                      attestation={attestation}
-                      onVerify={handleVerify}
-                    />
-                  </div>
-                )}
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 export default function StatsPage() {
   const [stats, setStats] = useState<PlatformStats | null>(null);
   const [catalogData, setCatalogData] = useState<CatalogDataSummary | null>(null);
   const [capacityModels, setCapacityModels] = useState<CapacityModelSummary[] | null>(null);
+  const [networkTotals24h, setNetworkTotals24h] = useState<NetworkWindowTotals | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const fetchStats = async () => {
     try {
       const query = typeof window === "undefined" ? "" : window.location.search;
-      const [res, catalog, capacity] = await Promise.all([
+      const [res, catalog, capacity, totals24h] = await Promise.all([
         fetch(`/api/stats${query}`),
         fetchModelCatalog(),
         fetchModelCapacity(),
+        fetchNetworkTotals24h(),
       ]);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -2577,6 +1838,9 @@ export default function StatsPage() {
       }
       if (capacity) {
         setCapacityModels(capacity);
+      }
+      if (totals24h) {
+        setNetworkTotals24h(totals24h);
       }
       setError(null);
     } catch (e: unknown) {
@@ -2606,7 +1870,6 @@ export default function StatsPage() {
   if (loading) {
     return (
       <div className="flex flex-col h-full">
-        <TopBar title="Network Stats" />
         <div className="flex-1 flex items-center justify-center">
           <Loader2 size={24} className="animate-spin text-text-tertiary" />
         </div>
@@ -2617,7 +1880,6 @@ export default function StatsPage() {
   if (error || !stats) {
     return (
       <div className="flex flex-col h-full">
-        <TopBar title="Network Stats" />
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center space-y-2">
             <p className="text-text-secondary text-sm">Failed to load platform stats</p>
@@ -2632,6 +1894,17 @@ export default function StatsPage() {
   }
 
   const hardwareAttested = stats.providers.filter((p) => p.trust_level === "hardware").length;
+  const exactLast24h =
+    typeof stats.last_24h_total_tokens === "number" &&
+    typeof stats.last_24h_requests === "number"
+      ? {
+          window: "24h",
+          tokens: stats.last_24h_total_tokens,
+          jobs: stats.last_24h_requests,
+          updated_at: "",
+        }
+      : null;
+  const headlineTotals24h = exactLast24h ?? networkTotals24h;
   const nu = stats.network_utilization;
   const utilizationSub =
     nu && nu.bottleneck_model && (nu.bottleneck_utilization ?? 0) > (nu.utilization ?? 0)
@@ -2640,7 +1913,6 @@ export default function StatsPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <TopBar title="Network Stats" />
       {/* `relative` makes this the containing block for any absolutely-positioned
           descendants (e.g. the sr-only toggle checkbox in ActiveModelsSection).
           Without it, those abs elements escape this scroller's clip, anchor to
@@ -2672,30 +1944,16 @@ export default function StatsPage() {
           </div>
         </div>
 
-        {/* Hero section -- big numbers */}
-        <div className="bg-bg-white rounded-2xl p-8 shadow-sm">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
-            <HeroStat
-              value={formatNumber(stats.total_tokens)}
-              label="Tokens Served"
-              sub={`${formatNumber(stats.total_prompt_tokens)} in / ${formatNumber(stats.total_completion_tokens)} out`}
-            />
-            <HeroStat
-              value={formatNumber(stats.total_requests)}
-              label="Requests"
-            />
-            <HeroStat
-              value={stats.active_providers.toString()}
-              label="Nodes Online"
-              sub={hardwareAttested === stats.active_providers ? "all hardware-attested" : `${hardwareAttested} hardware-attested`}
-            />
-            <HeroStat
-              value={`${Math.round(stats.total_bandwidth_gbs)}`}
-              label="GB/s Bandwidth"
-              sub="combined memory throughput"
-            />
-          </div>
-        </div>
+        <HeadlineMetrics
+          totalTokens={stats.total_tokens}
+          promptTokens={stats.total_prompt_tokens}
+          completionTokens={stats.total_completion_tokens}
+          totalRequests={stats.total_requests}
+          activeProviders={stats.active_providers}
+          hardwareAttested={hardwareAttested}
+          totalBandwidthGBs={stats.total_bandwidth_gbs}
+          last24h={headlineTotals24h}
+        />
 
         {/* Hardware capacity grid (+ network power) */}
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
@@ -2727,16 +1985,7 @@ export default function StatsPage() {
           />
         </div>
 
-        {/* Charts */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <ActivityChart
-            data={stats.time_series}
-            label="Requests / Minute"
-            color="var(--accent-brand)"
-            getValue={(d) => d.requests}
-          />
-          <TokenChart data={stats.time_series} />
-        </div>
+        <TrafficCharts data={stats.time_series} />
 
         {/* Token distribution bar (only if there are tokens) */}
         {stats.total_tokens > 0 && (
@@ -2783,7 +2032,7 @@ export default function StatsPage() {
           />
         )}
 
-        <NetworkNodes providers={stats.providers} />
+        <ProviderDashboard providers={stats.providers} />
 
         {/* Footer */}
         <div className="text-center pb-8">

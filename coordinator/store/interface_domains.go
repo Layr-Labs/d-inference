@@ -127,9 +127,14 @@ type UsageStore interface {
 	// without transferring per-row data over the wire.
 	UsageTotals() UsageTotals
 
-	// UsageTimeSeries returns per-minute aggregates for the given time window.
-	// Buckets the rows by created_at truncated to the minute.
-	UsageTimeSeries(since time.Time) []UsageBucket
+	// UsageTotalsSince returns aggregate usage at or after the given time
+	// without transferring per-row data over the wire.
+	UsageTotalsSince(since time.Time) UsageTotals
+
+	// UsageTimeSeries returns aggregates for the given time window using the
+	// requested bucket size. Implementations fall back to one minute when the
+	// supplied duration is invalid.
+	UsageTimeSeries(since time.Time, bucketSize time.Duration) []UsageBucket
 
 	// UsageLocationBuckets returns approximate request-origin aggregates for
 	// public stats. Implementations must not store or return raw client IPs.

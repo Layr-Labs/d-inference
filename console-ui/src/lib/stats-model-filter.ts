@@ -52,6 +52,7 @@ export interface CapacityModelSummary {
   canAccept?: boolean;
   routableProviders?: number;
   warmProviders?: number;
+  runningProviders?: number;
   coldProviders?: number;
   activeRequests?: number;
   queuedRequests?: number;
@@ -150,6 +151,7 @@ export function capacityModelsFromResponse(payload: unknown): CapacityModelSumma
       canAccept: asBoolean(model.can_accept),
       routableProviders: asNumber(model.routable_providers),
       warmProviders: asNumber(model.warm_providers),
+      runningProviders: asNumber(model.running_providers),
       coldProviders: asNumber(model.cold_providers),
       activeRequests: asNumber(model.active_requests),
       queuedRequests: asNumber(model.queued_requests),

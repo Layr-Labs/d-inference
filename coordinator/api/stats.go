@@ -209,10 +209,14 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		avgTokens = float64(totalTokens) / float64(totalRequests)
 	}
 
-	// Build time series via SQL bucket aggregation (last 30 minutes).
+	// Build time series via SQL bucket aggregation (last 30 minutes), plus exact
+	// 24-hour totals for the headline deltas. Geography and route analytics use
+	// the full 24-hour window advertised by the public UI.
 	now := time.Now()
-	cutoff := now.Add(-30 * time.Minute)
-	buckets := s.store.UsageTimeSeries(cutoff)
+	timeSeriesCutoff := now.Add(-30 * time.Minute)
+	analyticsCutoff := now.Add(-24 * time.Hour)
+	buckets := s.store.UsageTimeSeries(timeSeriesCutoff, time.Minute)
+	last24h := s.store.UsageTotalsSince(analyticsCutoff)
 
 	timeSeries := make([]map[string]any, 0, len(buckets))
 	for _, b := range buckets {
@@ -229,10 +233,10 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	providerLocations, providerRegions, unknownLocationProviders, suppressedCityProviders := s.aggregateProviderLocations()
 
 	// --- Request location aggregation ---
-	requestLocations, requestRegions, unknownRequestLocReqs, suppressedReqCityReqs := s.aggregateRequestLocations(cutoff)
+	requestLocations, requestRegions, unknownRequestLocReqs, suppressedReqCityReqs := s.aggregateRequestLocations(analyticsCutoff)
 
 	// --- Request flow aggregation ---
-	requestFlows := s.aggregateRequestFlows(cutoff)
+	requestFlows := s.aggregateRequestFlows(analyticsCutoff)
 
 	// --- APNs code-identity coverage (for watching the grace→enforce rollout) ---
 	codeAttestedProviders, _ := s.registry.CodeAttestationCoverage()
@@ -242,24 +246,29 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	util := s.registry.NetworkUtilizationSnapshot()
 
 	resp := map[string]any{
-		"total_requests":            totalRequests,
-		"total_prompt_tokens":       totalPromptTokens,
-		"total_completion_tokens":   totalCompletionTokens,
-		"total_tokens":              totalTokens,
-		"avg_tokens_per_request":    avgTokens,
-		"active_providers":          len(providers),
-		"active_power_watts":        activePowerWatts,
-		"code_attested_providers":   codeAttestedProviders,
-		"code_attestation_enforced": codeAttestationEnforced,
-		"total_gpu_cores":           totalGPUCores,
-		"total_cpu_cores":           totalCPUCores,
-		"total_memory_gb":           totalMemoryGB,
-		"total_bandwidth_gbs":       totalBandwidthGB,
-		"network_capacity_tps":      util.CapacityTPS,
-		"network_utilization":       util.Public(),
-		"providers":                 providers,
-		"models":                    models,
-		"time_series":               timeSeries,
+		"total_requests":             totalRequests,
+		"total_prompt_tokens":        totalPromptTokens,
+		"total_completion_tokens":    totalCompletionTokens,
+		"total_tokens":               totalTokens,
+		"last_24h_requests":          last24h.Requests,
+		"last_24h_prompt_tokens":     last24h.PromptTokens,
+		"last_24h_completion_tokens": last24h.CompletionTokens,
+		"last_24h_total_tokens":      last24h.PromptTokens + last24h.CompletionTokens,
+		"location_window_hours":      24,
+		"avg_tokens_per_request":     avgTokens,
+		"active_providers":           len(providers),
+		"active_power_watts":         activePowerWatts,
+		"code_attested_providers":    codeAttestedProviders,
+		"code_attestation_enforced":  codeAttestationEnforced,
+		"total_gpu_cores":            totalGPUCores,
+		"total_cpu_cores":            totalCPUCores,
+		"total_memory_gb":            totalMemoryGB,
+		"total_bandwidth_gbs":        totalBandwidthGB,
+		"network_capacity_tps":       util.CapacityTPS,
+		"network_utilization":        util.Public(),
+		"providers":                  providers,
+		"models":                     models,
+		"time_series":                timeSeries,
 
 		// Location analytics (privacy-floored).
 		"provider_locations":                 providerLocations,

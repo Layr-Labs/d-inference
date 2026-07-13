@@ -2202,21 +2202,46 @@ func (s *PostgresStore) UsageTotals() UsageTotals {
 	return t
 }
 
-// UsageTimeSeries returns per-minute usage buckets at or after `since`.
-func (s *PostgresStore) UsageTimeSeries(since time.Time) []UsageBucket {
+// UsageTotalsSince returns aggregate usage at or after `since`.
+func (s *PostgresStore) UsageTotalsSince(since time.Time) UsageTotals {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var t UsageTotals
+	_ = s.pool.QueryRow(ctx,
+		`SELECT COUNT(*),
+		        COALESCE(SUM(prompt_tokens), 0),
+		        COALESCE(SUM(completion_tokens), 0)
+		 FROM usage
+		 WHERE created_at >= $1`,
+		since,
+	).Scan(&t.Requests, &t.PromptTokens, &t.CompletionTokens)
+	return t
+}
+
+// UsageTimeSeries returns usage buckets at or after `since` using a bounded,
+// caller-selected interval so long windows do not return tens of thousands of
+// minute rows.
+func (s *PostgresStore) UsageTimeSeries(since time.Time, bucketSize time.Duration) []UsageBucket {
+	if bucketSize <= 0 {
+		bucketSize = time.Minute
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT date_trunc('minute', created_at) AS minute,
+		`SELECT to_timestamp(
+		          floor(extract(epoch FROM created_at) / $2::double precision) * $2::double precision
+		        ) AS bucket_start,
 		        COUNT(*),
 		        COALESCE(SUM(prompt_tokens), 0),
 		        COALESCE(SUM(completion_tokens), 0)
 		 FROM usage
 		 WHERE created_at >= $1
-		 GROUP BY minute
-		 ORDER BY minute ASC`,
+		 GROUP BY 1
+		 ORDER BY 1 ASC`,
 		since,
+		bucketSize.Seconds(),
 	)
 	if err != nil {
 		return nil

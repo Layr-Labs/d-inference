@@ -1747,6 +1747,7 @@ func (s *Server) routes() {
 	// 5-min/1-min cache.
 	s.mux.HandleFunc("GET /v1/leaderboard", s.handleLeaderboard)
 	s.mux.HandleFunc("GET /v1/network/totals", s.handleNetworkTotals)
+	s.mux.HandleFunc("GET /v1/network/series", s.handleNetworkSeries)
 
 	// Provider version check — no auth needed. Providers call this to check for updates.
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)
@@ -2421,6 +2422,7 @@ var publicCORSPaths = map[string]bool{
 	"/v1/models/catalog": true,
 	"/v1/pricing":        true,
 	"/v1/stats":          true,
+	"/v1/network/series": true,
 }
 
 // corsMiddleware sets CORS headers. Authenticated/credentialed requests are

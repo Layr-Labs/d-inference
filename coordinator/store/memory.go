@@ -666,8 +666,31 @@ func (s *MemoryStore) UsageTotals() UsageTotals {
 	return t
 }
 
-// UsageTimeSeries buckets usage records by minute since `since`.
-func (s *MemoryStore) UsageTimeSeries(since time.Time) []UsageBucket {
+// UsageTotalsSince returns aggregate usage at or after `since`.
+func (s *MemoryStore) UsageTotalsSince(since time.Time) UsageTotals {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var t UsageTotals
+	for _, r := range s.usage {
+		ts := r.Timestamp
+		if ts.IsZero() {
+			ts = r.CreatedAt
+		}
+		if ts.Before(since) {
+			continue
+		}
+		t.Requests++
+		t.PromptTokens += int64(r.PromptTokens)
+		t.CompletionTokens += int64(r.CompletionTokens)
+	}
+	return t
+}
+
+// UsageTimeSeries buckets usage records by the requested duration since `since`.
+func (s *MemoryStore) UsageTimeSeries(since time.Time, bucketSize time.Duration) []UsageBucket {
+	if bucketSize <= 0 {
+		bucketSize = time.Minute
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	buckets := make(map[int64]*UsageBucket)
@@ -679,7 +702,7 @@ func (s *MemoryStore) UsageTimeSeries(since time.Time) []UsageBucket {
 		if ts.Before(since) {
 			continue
 		}
-		minute := ts.Truncate(time.Minute)
+		minute := ts.Truncate(bucketSize)
 		key := minute.Unix()
 		b, ok := buckets[key]
 		if !ok {

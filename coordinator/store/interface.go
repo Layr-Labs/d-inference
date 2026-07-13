@@ -292,7 +292,8 @@ type UsageTotals struct {
 	CompletionTokens int64 `json:"completion_tokens"`
 }
 
-// UsageBucket is a per-minute aggregation of usage rows.
+// UsageBucket is a time-bucketed aggregation of usage rows. Minute is retained
+// as the field name for wire compatibility with the original minute series.
 type UsageBucket struct {
 	Minute           time.Time `json:"minute"`
 	Requests         int64     `json:"requests"`

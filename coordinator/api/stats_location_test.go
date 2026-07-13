@@ -94,6 +94,39 @@ func TestStatsAggregatesProviderLocationsWithPrivacyFloor(t *testing.T) {
 	}
 }
 
+func TestStatsIncludesExactLast24hUsageTotals(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	reg := registry.New(logger)
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	st.RecordUsageWithCostAndLocation("provider-a", "consumer", "model", "one", 10, 20, 0, nil)
+	st.RecordUsageWithCostAndLocation("provider-b", "consumer", "model", "two", 30, 40, 0, nil)
+
+	rr := httptest.NewRecorder()
+	srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+
+	var body struct {
+		Requests         int64 `json:"last_24h_requests"`
+		PromptTokens     int64 `json:"last_24h_prompt_tokens"`
+		CompletionTokens int64 `json:"last_24h_completion_tokens"`
+		TotalTokens      int64 `json:"last_24h_total_tokens"`
+		WindowHours      int   `json:"location_window_hours"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Requests != 2 || body.PromptTokens != 40 || body.CompletionTokens != 60 || body.TotalTokens != 100 {
+		t.Fatalf("unexpected 24h totals: %#v", body)
+	}
+	if body.WindowHours != 24 {
+		t.Fatalf("location window = %d, want 24", body.WindowHours)
+	}
+}
+
 func TestStatsAggregatesRequestLocationsWithPrivacyFloor(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := registry.New(logger)

@@ -519,10 +519,12 @@ public actor EngineV2Bridge {
                 continuation.finish()
                 return stream
             }
-            sharedKVReserved =
-                worstCaseBytes == 0
-                || await kvBudget.reserveBytes(
+            if worstCaseBytes == 0 {
+                sharedKVReserved = true
+            } else {
+                sharedKVReserved = await kvBudget.reserveBytes(
                     requestID: id, bytes: worstCaseBytes)
+            }
             guard sharedKVReserved else {
                 if ssdStaged { ssdPrefixCache?.completeStaging(requestID: id) }
                 continuation.yield(

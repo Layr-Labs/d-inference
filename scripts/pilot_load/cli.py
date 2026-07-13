@@ -15,7 +15,7 @@ import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .baseline import create_baseline, validate_baseline_for_run
+from .baseline import create_baseline, load_baseline, validate_baseline_for_run
 from .client import execute_trace
 from .component import (
     RUST_COMPONENT_TESTS,
@@ -47,7 +47,7 @@ from .processes import (
     wait_provider_count,
     wait_ready,
 )
-from .report import build_report, load_baseline, write_reports
+from .report import build_report, write_reports
 from .trace import deterministic_trace
 
 

@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .baseline import load_baseline
 from .compare import Comparison
 from .config import Profile
 from .metrics import GateFailure

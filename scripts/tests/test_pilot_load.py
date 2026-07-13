@@ -18,6 +18,7 @@ from scripts.cutover_readiness.reports import import_pilot_report
 from scripts.pilot_load.client import Observation, TargetRun, execute_trace
 from scripts.pilot_load.baseline import (
     create_baseline,
+    load_baseline,
     validate_baseline_for_run,
 )
 from scripts.pilot_load.cli import (
@@ -42,7 +43,7 @@ from scripts.pilot_load.processes import (
     require_loopback_url,
     validate_isolated_targets,
 )
-from scripts.pilot_load.report import build_report, load_baseline, write_reports
+from scripts.pilot_load.report import build_report, write_reports
 from scripts.pilot_load.trace import deterministic_trace
 
 

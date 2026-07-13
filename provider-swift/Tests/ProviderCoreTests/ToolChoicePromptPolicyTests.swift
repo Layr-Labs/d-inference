@@ -56,7 +56,8 @@ struct ToolChoicePromptPolicyTests {
 
     @Test("named choice rejects undeclared functions")
     func namedChoiceRejectsUndeclaredFunction() {
-        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+        #expect(throws: MultiModelBatchSchedulerEngineError.invalidToolPayload(
+            "tool_choice names an undeclared function")) {
             try ToolChoicePromptPolicy.prepare(request(choice: .function(name: "missing")))
         }
     }

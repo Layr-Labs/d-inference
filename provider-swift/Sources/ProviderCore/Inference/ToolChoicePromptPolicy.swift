@@ -56,7 +56,7 @@ enum ToolChoicePromptPolicy {
         case .function(let name):
             guard let selected = request.tools?.first(where: { $0.function.name == name }) else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool_choice names undeclared function '\(name)'")
+                    "tool_choice names an undeclared function")
             }
             let instruction =
                 "Call the declared function '\(name)' now. You must emit a '\(name)' tool call with "

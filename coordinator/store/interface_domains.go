@@ -132,9 +132,9 @@ type UsageStore interface {
 	UsageTotalsSince(since time.Time) UsageTotals
 
 	// UsageTimeSeries returns aggregates for the given time window using the
-	// requested bucket size. Implementations fall back to one minute when the
-	// supplied duration is invalid.
-	UsageTimeSeries(since time.Time, bucketSize time.Duration) []UsageBucket
+	// requested bucket size. Implementations enforce a one-minute minimum,
+	// thirty-day maximum lookback, and bounded result cardinality.
+	UsageTimeSeries(since, until time.Time, bucketSize time.Duration) []UsageBucket
 
 	// UsageLocationBuckets returns approximate request-origin aggregates for
 	// public stats. Implementations must not store or return raw client IPs.

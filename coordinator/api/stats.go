@@ -215,7 +215,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	timeSeriesCutoff := now.Add(-30 * time.Minute)
 	analyticsCutoff := now.Add(-24 * time.Hour)
-	buckets := s.store.UsageTimeSeries(timeSeriesCutoff, time.Minute)
+	buckets := s.store.UsageTimeSeries(timeSeriesCutoff, now, time.Minute)
 	last24h := s.store.UsageTotalsSince(analyticsCutoff)
 
 	timeSeries := make([]map[string]any, 0, len(buckets))

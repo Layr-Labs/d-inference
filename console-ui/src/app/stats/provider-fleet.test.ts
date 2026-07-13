@@ -39,10 +39,16 @@ describe("provider routing presentation", () => {
   });
 
   it("treats stale and missing challenges as attention states", () => {
-    const stale = provider({ last_challenge_verified: "2026-07-13T01:20:00Z" });
+    const stale = provider({ last_challenge_verified: "2026-07-13T01:13:00Z" });
     expect(isProviderRoutable(stale, NOW)).toBe(false);
     expect(providerRouteState(stale, NOW)).toBe("attention");
-    expect(providerRouteReason(stale, NOW)).toContain("older than six minutes");
+    expect(providerRouteReason(stale, NOW)).toContain("older than sixteen minutes");
+  });
+
+  it("keeps challenges routable through the coordinator's sixteen-minute window", () => {
+    const delayed = provider({ last_challenge_verified: "2026-07-13T01:15:00Z" });
+    expect(isProviderRoutable(delayed, NOW)).toBe(true);
+    expect(providerRouteState(delayed, NOW)).toBe("ready");
   });
 
   it("uses the coordinator routable verdict when it is published", () => {

@@ -4,6 +4,10 @@ import { calculateKVHeadroom, calculateModelAvailability } from "./model-capacit
 import { modelBrand } from "./model-brand";
 import { ModelMakerMark } from "./ModelMakerMark";
 
+const PRIMARY_VALUE_CLASS = "text-text-primary";
+const READY_VALUE_CLASS = "text-accent-green";
+const UNKNOWN_VALUE_CLASS = "text-text-tertiary";
+
 export interface ModelCapacityCardProps {
   id: string;
   displayName: string;
@@ -68,14 +72,16 @@ function AvailabilityStep({
   tone,
 }: {
   label: string;
-  value: number;
+  value: number | null;
   description: string;
   tone?: "green";
 }) {
+  let valueColor = PRIMARY_VALUE_CLASS;
+  if (tone === "green") valueColor = READY_VALUE_CLASS;
   return (
     <div className="min-w-0 rounded-lg border border-border-dim bg-bg-primary/65 px-3 py-3">
-      <p className={`font-mono text-xl font-bold tabular-nums ${tone === "green" ? "text-accent-green" : "text-text-primary"}`}>
-        {value.toLocaleString()}
+      <p className={`font-mono text-xl font-bold tabular-nums ${valueColor}`}>
+        {value === null ? "—" : value.toLocaleString()}
       </p>
       <p className="mt-0.5 text-xs font-semibold text-text-secondary">{label}</p>
       <p className="mt-1 text-[10px] leading-4 text-text-tertiary">{description}</p>
@@ -94,8 +100,8 @@ function LoadMetric({
   detail: string;
   tone?: "green" | "amber";
 }) {
-  let valueColor = "text-text-primary";
-  if (tone === "green") valueColor = "text-accent-green";
+  let valueColor = PRIMARY_VALUE_CLASS;
+  if (tone === "green") valueColor = READY_VALUE_CLASS;
   if (tone === "amber") valueColor = "text-accent-amber";
   return (
     <div>
@@ -131,14 +137,20 @@ function ModelIdentity({ props }: { props: ModelCapacityCardProps }) {
   );
 }
 
-function TrafficStatus({ accepting }: { accepting: boolean }) {
-  const style = accepting
-    ? "border-accent-green/25 bg-accent-green/10 text-accent-green"
-    : "border-accent-amber/30 bg-accent-amber-dim text-accent-amber";
+function TrafficStatus({ accepting }: { accepting: boolean | null }) {
+  let style = "border-border-dim bg-bg-primary/70 text-text-tertiary";
+  let label = "Admission unknown";
+  if (accepting === true) {
+    style = "border-accent-green/25 bg-accent-green/10 text-accent-green";
+    label = "Accepting traffic";
+  } else if (accepting === false) {
+    style = "border-accent-amber/30 bg-accent-amber-dim text-accent-amber";
+    label = "Limited right now";
+  }
   return (
     <div className={`inline-flex w-fit items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${style}`}>
       {accepting ? <CheckCircle2 size={13} /> : <Activity size={13} />}
-      {accepting ? "Accepting traffic" : "Limited right now"}
+      {label}
     </div>
   );
 }
@@ -166,7 +178,9 @@ export function ModelCapacityCard(props: ModelCapacityCardProps) {
   const waiting = Math.max(0, props.queuedRequests ?? 0);
   const queueLimit = Math.max(0, props.queueLimit ?? 0);
   const queueAtLimit = queueLimit > 0 && waiting >= queueLimit;
-  const acceptingTraffic = Boolean(props.canAccept) && availability.accepting > 0;
+  const acceptingTraffic = availability.accepting === null || props.canAccept === undefined
+    ? null
+    : props.canAccept && availability.accepting > 0;
   const requirements = modelRequirements(props);
 
   return (
@@ -187,7 +201,12 @@ export function ModelCapacityCard(props: ModelCapacityCardProps) {
         <div className="grid grid-cols-3 gap-2">
           <AvailabilityStep label="Connected" value={availability.connected} description="advertise this model" />
           <AvailabilityStep label="Eligible" value={availability.eligible} description="trusted and healthy" />
-          <AvailabilityStep label="Accepting now" value={availability.accepting} description="concurrency + KV headroom" tone="green" />
+          <AvailabilityStep
+            label="Accepting now"
+            value={availability.accepting}
+            description={availability.accepting === null ? "admission data unavailable" : "concurrency + KV headroom"}
+            tone={availability.accepting === null ? undefined : "green"}
+          />
         </div>
         <div className="mt-2 flex items-center justify-between gap-3 text-[10px] text-text-tertiary">
           <span>{props.hardwareNodes.toLocaleString()} hardware-attested</span>
@@ -234,13 +253,19 @@ export function ModelCapacityCard(props: ModelCapacityCardProps) {
 
       <div className="mt-4">
         <div className="flex items-center justify-between gap-3 text-[11px] text-text-tertiary">
-          <span>{availability.accepting} of {availability.connected} connected nodes can accept a request now</span>
-          <span className="font-mono font-semibold text-accent-green">{availability.acceptingPct}%</span>
+          <span>
+            {availability.accepting === null
+              ? "Live admission data is currently unavailable"
+              : `${availability.accepting} of ${availability.connected} connected nodes can accept a request now`}
+          </span>
+          <span className={`font-mono font-semibold ${availability.acceptingPct === null ? UNKNOWN_VALUE_CLASS : READY_VALUE_CLASS}`}>
+            {availability.acceptingPct === null ? "—" : `${availability.acceptingPct}%`}
+          </span>
         </div>
         <div className="mt-2 h-2 overflow-hidden rounded-full bg-bg-elevated">
           <div
             className="h-full rounded-full bg-accent-green/75 transition-[width] duration-500"
-            style={{ width: `${availability.acceptingPct}%` }}
+            style={{ width: `${availability.acceptingPct ?? 0}%` }}
           />
         </div>
       </div>

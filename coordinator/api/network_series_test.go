@@ -22,6 +22,7 @@ func TestParseNetworkSeriesWindow(t *testing.T) {
 		{"7d", "7d", 7 * 24 * time.Hour, 4 * time.Hour, true},
 		{"30d", "30d", 30 * 24 * time.Hour, 12 * time.Hour, true},
 		{"15m", "", 0, 0, false},
+		{"31d", "", 0, 0, false},
 	}
 
 	for _, test := range tests {

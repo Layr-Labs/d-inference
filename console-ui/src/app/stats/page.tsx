@@ -40,6 +40,7 @@ import type {
 } from "./types";
 import {
   formatTrafficTimestamp,
+  MAX_TRAFFIC_BUCKETS,
   normalizeTrafficSeries,
   TRAFFIC_RANGES,
   trafficRangeConfig,
@@ -189,6 +190,9 @@ function formatPercent(ratio: number): string {
 }
 
 function normalizeTimeSeries(data: TimeSeriesBucket[], minutes = 30): TimeSeriesBucket[] {
+  const boundedMinutes = Number.isFinite(minutes)
+    ? Math.min(MAX_TRAFFIC_BUCKETS, Math.max(0, Math.floor(minutes)))
+    : 0;
   const byMinute = new Map<string, TimeSeriesBucket>();
   for (const bucket of data) {
     const date = new Date(bucket.timestamp);
@@ -202,8 +206,8 @@ function normalizeTimeSeries(data: TimeSeriesBucket[], minutes = 30): TimeSeries
   // The current minute is still accumulating and otherwise renders as a false
   // cliff at the right edge of both traffic charts.
   end.setMinutes(end.getMinutes() - 1);
-  return Array.from({ length: minutes }, (_, index) => {
-    const date = new Date(end.getTime() - (minutes - 1 - index) * 60_000);
+  return Array.from({ length: boundedMinutes }, (_, index) => {
+    const date = new Date(end.getTime() - (boundedMinutes - 1 - index) * 60_000);
     const key = date.toISOString();
     const existing = byMinute.get(key);
     return existing ?? {
@@ -247,7 +251,9 @@ async function fetchModelCapacity(): Promise<CapacityModelSummary[] | null> {
       const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) continue;
       const capacity = capacityModelsFromResponse(await res.json());
-      if (capacity.length > 0) return capacity;
+      // A successful empty list is an explicit zero-capacity/draining signal.
+      // Only transport or response failures should fall through to unknown.
+      return capacity;
     } catch {
       // Keep stats usable if capacity lookup fails.
     }
@@ -489,8 +495,10 @@ function plainModelDescription(catalog?: CatalogModelSummary): string {
 
 function ModelRow({
   item,
+  capacityKnown,
 }: {
   item: ActiveModelInventory;
+  capacityKnown: boolean;
 }) {
   const { model } = item;
   const statusLabel = deprecatedModelLabel(item.catalogStatus);
@@ -512,7 +520,7 @@ function ModelRow({
       eligibleNodes={item.routable}
       hardwareNodes={item.hardware}
       fleetSharePct={item.sharePct}
-      acceptingNodes={capacity?.routableProviders}
+      acceptingNodes={capacity?.routableProviders ?? (capacityKnown ? 0 : undefined)}
       warmNodes={capacity?.warmProviders}
       coldNodes={capacity?.coldProviders}
       activeRequests={capacity?.activeRequests}
@@ -522,7 +530,7 @@ function ModelRow({
       estimatedTTFTMS={capacity?.estimatedTTFTMS}
       tokenBudgetRemaining={capacity?.tokenBudgetRemaining}
       tokenBudgetTotal={capacity?.tokenBudgetTotal}
-      canAccept={capacity?.canAccept ?? item.routable > 0}
+      canAccept={capacity?.canAccept ?? (capacityKnown ? false : undefined)}
     />
   );
 }
@@ -551,6 +559,7 @@ function ActiveModelsSection({
   const aliases = catalogData?.aliases ?? [];
   const catalogModels = catalogData ? publicCatalogModels(catalogData.models, aliases) : null;
   const publicCapacity = publicCapacityModels(capacityModels, aliases);
+  const capacityKnown = publicCapacity !== null;
   const inventory = buildModelInventory(stats, aliases);
   const catalogByID = new Map((catalogModels ?? []).map((model) => [model.id, model]));
   const capacityByID = new Map((publicCapacity ?? []).map((model) => [model.id, model]));
@@ -575,21 +584,23 @@ function ActiveModelsSection({
   }));
   const totalPlacements = filteredSlots;
   const eligiblePlacements = visibleInventory.reduce((sum, item) => sum + item.routable, 0);
-  const acceptingPlacements = visibleInventory.reduce((sum, item) => {
-    const availability = calculateModelAvailability(
-      item.model.providers,
-      item.routable,
-      item.capacity?.routableProviders,
-    );
-    return sum + availability.accepting;
-  }, 0);
+  const acceptingPlacements = capacityKnown
+    ? visibleInventory.reduce((sum, item) => {
+      const availability = calculateModelAvailability(
+        item.model.providers,
+        item.routable,
+        item.capacity?.routableProviders ?? 0,
+      );
+      return sum + (availability.accepting ?? 0);
+    }, 0)
+    : null;
   const availabilityItems = visibleInventory.map((item) => ({
     id: item.model.id,
     displayName: item.catalogModel?.displayName || shortModelName(item.model.id),
     family: item.catalogModel?.family,
     connected: item.model.providers,
     eligible: item.routable,
-    accepting: item.capacity?.routableProviders,
+    accepting: item.capacity?.routableProviders ?? (capacityKnown ? 0 : undefined),
     fleetSharePct: item.sharePct,
   }));
 
@@ -637,7 +648,7 @@ function ActiveModelsSection({
           <div className="grid grid-cols-3 gap-2 text-right sm:min-w-[250px]">
             <ModelHeaderMetric label="Models" value={visibleInventory.length.toString()} />
             <ModelHeaderMetric label="Placements" value={totalPlacements.toString()} />
-            <ModelHeaderMetric label="Accepting now" value={acceptingPlacements.toString()} />
+            <ModelHeaderMetric label="Accepting now" value={acceptingPlacements?.toString() ?? "—"} />
           </div>
         </div>
       </div>
@@ -653,6 +664,7 @@ function ActiveModelsSection({
               <ModelRow
                 key={item.model.id}
                 item={item}
+                capacityKnown={capacityKnown}
               />
             ))
           )}

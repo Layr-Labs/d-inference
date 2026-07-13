@@ -12,6 +12,8 @@ type networkSeriesWindow struct {
 	bucketSize time.Duration
 }
 
+const maxNetworkSeriesLookback = 30 * 24 * time.Hour
+
 func parseNetworkSeriesWindow(value string) (networkSeriesWindow, bool) {
 	switch value {
 	case "", "30m":
@@ -39,6 +41,11 @@ func (s *Server) handleNetworkSeries(w http.ResponseWriter, r *http.Request) {
 			"window must be one of: 30m, 24h, 7d, 30d"))
 		return
 	}
+	if spec.duration > maxNetworkSeriesLookback {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+			"network series lookback exceeds 30 days"))
+		return
+	}
 
 	cacheKey := "network_series:" + spec.label
 	if cached, ok := s.readCache.Get(cacheKey); ok {
@@ -48,7 +55,7 @@ func (s *Server) handleNetworkSeries(w http.ResponseWriter, r *http.Request) {
 
 	end := time.Now().UTC().Truncate(spec.bucketSize)
 	start := end.Add(-spec.duration)
-	buckets := s.store.UsageTimeSeries(start, spec.bucketSize)
+	buckets := s.store.UsageTimeSeries(start, end, spec.bucketSize)
 	timeSeries := make([]map[string]any, 0, len(buckets))
 	for _, bucket := range buckets {
 		if !bucket.Minute.Before(end) {

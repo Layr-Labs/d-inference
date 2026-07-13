@@ -10,6 +10,11 @@ export interface TrafficRangeConfig {
   rateControlLabel: string;
 }
 
+// The public API currently returns at most 60 points, but keep normalization
+// defensive because this helper also accepts caller-provided configs.
+export const MAX_TRAFFIC_BUCKETS = 366;
+const MIN_TRAFFIC_BUCKET_SECONDS = 60;
+
 const THIRTY_MINUTES: TrafficRangeConfig = {
   value: "30m",
   label: "30m",
@@ -76,7 +81,13 @@ export function normalizeTrafficSeries(
   config: TrafficRangeConfig,
   endAt?: string,
 ): TimeSeriesBucket[] {
-  const bucketMilliseconds = config.bucketSeconds * 1000;
+  const bucketSeconds = Number.isFinite(config.bucketSeconds)
+    ? Math.max(MIN_TRAFFIC_BUCKET_SECONDS, Math.floor(config.bucketSeconds))
+    : MIN_TRAFFIC_BUCKET_SECONDS;
+  const bucketCount = Number.isFinite(config.bucketCount)
+    ? Math.min(MAX_TRAFFIC_BUCKETS, Math.max(0, Math.floor(config.bucketCount)))
+    : 0;
+  const bucketMilliseconds = bucketSeconds * 1000;
   const byBucket = new Map<string, TimeSeriesBucket>();
   for (const bucket of data) {
     const parsed = new Date(bucket.timestamp);
@@ -97,9 +108,9 @@ export function normalizeTrafficSeries(
     ? bucketStart(new Date(), bucketMilliseconds)
     : bucketStart(parsedEnd, bucketMilliseconds);
 
-  return Array.from({ length: config.bucketCount }, (_, index) => {
+  return Array.from({ length: bucketCount }, (_, index) => {
     const date = new Date(
-      end.getTime() - (config.bucketCount - index) * bucketMilliseconds,
+      end.getTime() - (bucketCount - index) * bucketMilliseconds,
     );
     const key = date.toISOString();
     return byBucket.get(key) ?? {

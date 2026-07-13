@@ -42,7 +42,9 @@ export interface ProviderFleetSummary {
   attention: number;
 }
 
-const FRESH_CHALLENGE_MS = 6 * 60 * 1_000;
+// Keep the presentation aligned with registry.challengeFreshnessMaxAge so the
+// dashboard does not reject nodes that the coordinator can still dispatch to.
+const FRESH_CHALLENGE_MS = 16 * 60 * 1_000;
 
 export function hasFreshChallenge(iso?: string, now = Date.now()): boolean {
   if (!iso) return false;
@@ -82,7 +84,7 @@ export function providerRouteReason(provider: ProviderStats, now = Date.now()): 
     return "No successful routing challenge has been published yet."
   }
   if (!hasFreshChallenge(provider.last_challenge_verified, now)) {
-    return "The latest routing challenge is older than six minutes."
+    return "The latest routing challenge is older than sixteen minutes."
   }
   return "The coordinator has temporarily excluded this node from routing."
 }

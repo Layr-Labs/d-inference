@@ -1,8 +1,8 @@
 export interface ModelAvailability {
   connected: number;
   eligible: number;
-  accepting: number;
-  acceptingPct: number;
+  accepting: number | null;
+  acceptingPct: number | null;
 }
 function nonNegativeInteger(value: number | undefined): number {
   if (!Number.isFinite(value)) return 0;
@@ -22,17 +22,18 @@ export function calculateModelAvailability(
 ): ModelAvailability {
   const connected = nonNegativeInteger(totalNodes);
   const eligible = Math.min(connected, nonNegativeInteger(eligibleNodes));
-  const accepting = Math.min(
-    eligible,
-    reportedAcceptingNodes === undefined
-      ? eligible
-      : nonNegativeInteger(reportedAcceptingNodes),
-  );
+  const accepting = reportedAcceptingNodes === undefined
+    ? null
+    : Math.min(eligible, nonNegativeInteger(reportedAcceptingNodes));
+  let acceptingPct: number | null = null;
+  if (accepting !== null) {
+    acceptingPct = connected > 0 ? Math.round((accepting / connected) * 100) : 0;
+  }
   return {
     connected,
     eligible,
     accepting,
-    acceptingPct: connected > 0 ? Math.round((accepting / connected) * 100) : 0,
+    acceptingPct,
   };
 }
 

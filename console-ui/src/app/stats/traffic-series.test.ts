@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { normalizeTrafficSeries, trafficRangeConfig } from "./traffic-series";
+import {
+  MAX_TRAFFIC_BUCKETS,
+  normalizeTrafficSeries,
+  trafficRangeConfig,
+} from "./traffic-series";
+
+const LAST_COMPLETE_MINUTE = "2026-07-12T12:14:00.000Z";
 
 describe("normalizeTrafficSeries", () => {
   it("fills exactly thirty completed minute buckets", () => {
     const result = normalizeTrafficSeries(
       [{
-        timestamp: "2026-07-12T12:14:00.000Z",
+        timestamp: LAST_COMPLETE_MINUTE,
         requests: 7,
         prompt_tokens: 11,
         completion_tokens: 3,
@@ -17,7 +23,7 @@ describe("normalizeTrafficSeries", () => {
 
     expect(result).toHaveLength(30);
     expect(result[0].timestamp).toBe("2026-07-12T11:45:00.000Z");
-    expect(result[29].timestamp).toBe("2026-07-12T12:14:00.000Z");
+    expect(result[29].timestamp).toBe(LAST_COMPLETE_MINUTE);
     expect(result[29].requests).toBe(7);
   });
 
@@ -39,5 +45,20 @@ describe("normalizeTrafficSeries", () => {
       completion_tokens: 3,
       active_providers: 5,
     });
+  });
+
+  it("bounds caller-provided bucket counts before allocating chart rows", () => {
+    const result = normalizeTrafficSeries(
+      [],
+      {
+        ...trafficRangeConfig("30m"),
+        bucketCount: Number.MAX_SAFE_INTEGER,
+        bucketSeconds: 0.001,
+      },
+      "2026-07-12T12:15:00.000Z",
+    );
+
+    expect(result).toHaveLength(MAX_TRAFFIC_BUCKETS);
+    expect(result.at(-1)?.timestamp).toBe(LAST_COMPLETE_MINUTE);
   });
 });

@@ -19,6 +19,15 @@ describe("model availability under load", () => {
     expect(calculateModelAvailability(163, 145, 0).acceptingPct).toBe(0);
   });
 
+  it("preserves unknown admission state when capacity is unavailable", () => {
+    expect(calculateModelAvailability(163, 145)).toEqual({
+      connected: 163,
+      eligible: 145,
+      accepting: null,
+      acceptingPct: null,
+    });
+  });
+
   it("presents token budget as free KV headroom", () => {
     expect(calculateKVHeadroom(990, 1_000)).toBe(99);
     expect(calculateKVHeadroom(-50, 1_000)).toBe(0);

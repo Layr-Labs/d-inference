@@ -3,6 +3,9 @@ import { calculateModelAvailability } from "./model-capacity";
 import { modelBrand } from "./model-brand";
 import { ModelMakerMark } from "./ModelMakerMark";
 
+const UNKNOWN_VALUE_CLASS = "text-text-tertiary";
+const READY_VALUE_CLASS = "text-accent-green";
+
 export interface ModelAvailabilitySummaryItem {
   id: string;
   displayName: string;
@@ -15,8 +18,12 @@ export interface ModelAvailabilitySummaryItem {
 
 function AvailabilityRow({ item }: { item: ModelAvailabilitySummaryItem }) {
   const availability = calculateModelAvailability(item.connected, item.eligible, item.accepting);
-  const eligibleBusy = Math.max(0, availability.eligible - availability.accepting);
-  const busyPct = availability.connected > 0 ? (eligibleBusy / availability.connected) * 100 : 0;
+  const eligibleBusy = availability.accepting === null
+    ? 0
+    : Math.max(0, availability.eligible - availability.accepting);
+  const busyPct = availability.accepting !== null && availability.connected > 0
+    ? (eligibleBusy / availability.connected) * 100
+    : 0;
   const brand = modelBrand(item.id, item.family);
   return (
     <div className="rounded-xl border border-border-dim bg-bg-white p-3">
@@ -29,20 +36,27 @@ function AvailabilityRow({ item }: { item: ModelAvailabilitySummaryItem }) {
           </p>
         </div>
         <div className="shrink-0 text-right">
-          <p className="font-mono text-sm font-bold text-accent-green">
-            {availability.accepting}/{availability.connected}
+          <p className={`font-mono text-sm font-bold ${availability.accepting === null ? UNKNOWN_VALUE_CLASS : READY_VALUE_CLASS}`}>
+            {availability.accepting === null ? "—" : `${availability.accepting}/${availability.connected}`}
           </p>
-          <p className="mt-0.5 font-mono text-[9px] text-text-tertiary">{availability.acceptingPct}% ready</p>
+          <p className="mt-0.5 font-mono text-[9px] text-text-tertiary">
+            {availability.acceptingPct === null ? "admission unknown" : `${availability.acceptingPct}% ready`}
+          </p>
         </div>
       </div>
-      <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-bg-elevated" aria-label={`${item.displayName}: ${availability.acceptingPct}% immediately available`}>
-        <span className="bg-accent-green" style={{ width: `${availability.acceptingPct}%` }} />
+      <div
+        className="mt-3 flex h-2 overflow-hidden rounded-full bg-bg-elevated"
+        aria-label={availability.acceptingPct === null
+          ? `${item.displayName}: immediate availability unknown`
+          : `${item.displayName}: ${availability.acceptingPct}% immediately available`}
+      >
+        <span className="bg-accent-green" style={{ width: `${availability.acceptingPct ?? 0}%` }} />
         <span className="bg-accent-amber/55" style={{ width: `${busyPct}%` }} />
         <span className="flex-1 bg-bg-elevated" />
       </div>
       <div className="mt-2 flex items-center justify-between gap-3 font-mono text-[9px] text-text-tertiary">
-        <span>{availability.accepting} accepting now</span>
-        <span>{eligibleBusy} eligible, at capacity</span>
+        <span>{availability.accepting === null ? "Admission unavailable" : `${availability.accepting} accepting now`}</span>
+        <span>{availability.accepting === null ? `${availability.eligible} eligible` : `${eligibleBusy} eligible, at capacity`}</span>
       </div>
     </div>
   );
@@ -57,11 +71,20 @@ export function ModelAvailabilitySummary({
   items: ModelAvailabilitySummaryItem[];
   totalPlacements: number;
   eligiblePlacements: number;
-  acceptingPlacements: number;
+  acceptingPlacements: number | null;
 }) {
-  const immediatePct = totalPlacements > 0
-    ? Math.round((acceptingPlacements / totalPlacements) * 100)
-    : 0;
+  let immediatePct: number | null = null;
+  if (acceptingPlacements !== null) {
+    immediatePct = totalPlacements > 0
+      ? Math.round((acceptingPlacements / totalPlacements) * 100)
+      : 0;
+  }
+  const availabilityCallout = acceptingPlacements === null
+    ? "border-border-dim bg-bg-primary/70"
+    : "border-accent-green bg-accent-green/10";
+  const availabilityText = acceptingPlacements === null
+    ? "text-text-secondary"
+    : READY_VALUE_CLASS;
   return (
     <aside className="rounded-xl border border-border-dim bg-bg-secondary p-4">
       <div className="flex items-start justify-between gap-3">
@@ -75,14 +98,20 @@ export function ModelAvailabilitySummary({
           </p>
         </div>
         <div className="shrink-0 text-right">
-          <p className="font-mono text-2xl font-bold text-accent-green">{immediatePct}%</p>
-          <p className="mt-0.5 font-mono text-[9px] uppercase tracking-wider text-text-tertiary">ready now</p>
+          <p className={`font-mono text-2xl font-bold ${immediatePct === null ? UNKNOWN_VALUE_CLASS : READY_VALUE_CLASS}`}>
+            {immediatePct === null ? "—" : `${immediatePct}%`}
+          </p>
+          <p className="mt-0.5 font-mono text-[9px] uppercase tracking-wider text-text-tertiary">
+            {immediatePct === null ? "unknown" : "ready now"}
+          </p>
         </div>
       </div>
 
-      <div className="mt-4 rounded-lg border-l-4 border-accent-green bg-accent-green/10 px-3 py-2.5">
-        <p className="text-xs font-semibold text-accent-green">
-          {acceptingPlacements} of {totalPlacements} placements can accept a request
+      <div className={`mt-4 rounded-lg border-l-4 px-3 py-2.5 ${availabilityCallout}`}>
+        <p className={`text-xs font-semibold ${availabilityText}`}>
+          {acceptingPlacements === null
+            ? "Live admission data is currently unavailable"
+            : `${acceptingPlacements} of ${totalPlacements} placements can accept a request`}
         </p>
         <p className="mt-1 text-[10px] leading-4 text-text-secondary">
           {eligiblePlacements} pass trust and health checks; current concurrency and KV memory determine immediate admission.

@@ -27,6 +27,8 @@ final class FakeSMCBackend: SMCBackend, @unchecked Sendable {
     private var writeBehaviors: [SMCKey: [WriteBehavior]] = [:]
     private var recordedOperations: [Operation] = []
     private var writeHook: (@Sendable (SMCKey, [UInt8]) -> Void)?
+    private var readHook: (@Sendable (SMCKey, Int) -> Void)?
+    private var readCounts: [SMCKey: Int] = [:]
 
     var operations: [Operation] {
         lock.withLock { recordedOperations }
@@ -38,6 +40,13 @@ final class FakeSMCBackend: SMCBackend, @unchecked Sendable {
 
     func installWriteHook(_ hook: (@Sendable (SMCKey, [UInt8]) -> Void)?) {
         lock.withLock { writeHook = hook }
+    }
+
+    func installReadHook(_ hook: (@Sendable (SMCKey, Int) -> Void)?) {
+        lock.withLock {
+            readHook = hook
+            readCounts.removeAll()
+        }
     }
 
     func queue(_ behaviors: [WriteBehavior], for key: SMCKey) {
@@ -94,12 +103,19 @@ final class FakeSMCBackend: SMCBackend, @unchecked Sendable {
     }
 
     func read(_ key: SMCKey) throws -> SMCValue {
-        let entry: Entry = try lock.withLock {
+        let snapshot: (Entry, Int, (@Sendable (SMCKey, Int) -> Void)?) = try lock.withLock {
             recordedOperations.append(.read(key))
             guard let entry = entries[key] else { throw SMCError.keyNotFound(key) }
-            return entry
+            let count = readCounts[key, default: 0] + 1
+            readCounts[key] = count
+            return (entry, count, readHook)
         }
-        return try SMCValue(key: key, info: entry.info, bytes: entry.bytes)
+        snapshot.2?(key, snapshot.1)
+        return try SMCValue(
+            key: key,
+            info: snapshot.0.info,
+            bytes: snapshot.0.bytes
+        )
     }
 
     func write(_ key: SMCKey, bytes: [UInt8]) throws {

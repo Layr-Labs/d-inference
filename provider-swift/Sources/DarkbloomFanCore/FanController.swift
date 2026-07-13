@@ -40,6 +40,18 @@ public struct FanControlSession: Equatable, Codable, Sendable {
     }
 }
 
+/// Durable ownership boundary recorded immediately before a write that may
+/// still land despite returning an error.
+public struct FanControlOwnership: Equatable, Sendable {
+    public let fanIndices: [Int]
+    public let ownsFtst: Bool
+
+    public init(fanIndices: [Int], ownsFtst: Bool) {
+        self.fanIndices = Array(Set(fanIndices)).sorted()
+        self.ownsFtst = ownsFtst
+    }
+}
+
 public enum FanRollbackStep: String, Equatable, Codable, Sendable {
     case restoreMode
     case clearFtst
@@ -175,8 +187,7 @@ public actor TransactionalFanController {
     @discardableResult
     public func engage(
         speedPercent: Double,
-        beforeFanWrite: @Sendable () throws -> Void = {},
-        beforeFtstWrite: @Sendable () throws -> Void = {}
+        recordOwnership: @Sendable (FanControlOwnership) throws -> Void = { _ in }
     ) throws -> FanControlSession {
         let allowedSpeed = FanPolicyConfiguration.minimumSpeedPercent...FanPolicyConfiguration.maximumSpeedPercent
         guard speedPercent.isFinite,
@@ -241,14 +252,23 @@ public actor TransactionalFanController {
         }
 
         do {
-            // All foreign-ownership and capability checks are complete. Record
-            // possible ownership immediately before the first fan-mode write,
-            // which may land even if the backend reports an error.
-            try beforeFanWrite()
             for reading in readings {
                 let fan = reading.capability
-                // Mark intent before the first mode write. A backend can fail
-                // after the kernel accepted a write, so "threw" is not proof
+                // Close the initial-scan race, then durably widen ownership only
+                // for this fan. Recheck after the journal fsync so a foreign
+                // claimant that arrived during the write is not overwritten.
+                try verifyAvailableForTakeover(fan)
+                let priorOwnership = currentOwnership()
+                try recordOwnership(currentOwnership(including: fan.index))
+                do {
+                    try verifyAvailableForTakeover(fan)
+                } catch {
+                    try recordOwnership(priorOwnership)
+                    throw error
+                }
+
+                // Mark in-memory intent before the first mode write. A backend
+                // can fail after the kernel accepted it, so "threw" is not proof
                 // that the fan stayed automatic.
                 possiblyControlledFans[fan.index] = fan
                 do {
@@ -258,7 +278,7 @@ public actor TransactionalFanController {
                     guard shouldAttemptFtst(after: directFailure) else {
                         throw directFailure
                     }
-                    try acquireFtstIfNeeded(beforeFtstWrite: beforeFtstWrite)
+                    try acquireFtstIfNeeded(recordOwnership: recordOwnership)
                     try retryManualMode(fan)
                 }
                 guard let target = targets[fan.index] else {
@@ -269,7 +289,7 @@ public actor TransactionalFanController {
             }
 
             try verifyFtstOwnershipAtTransactionEnd(
-                beforeFtstWrite: beforeFtstWrite
+                recordOwnership: recordOwnership
             )
 
             return FanControlSession(
@@ -305,7 +325,7 @@ public actor TransactionalFanController {
     /// control rather than leaving a partially repaired session active.
     @discardableResult
     public func maintain(
-        beforeFtstWrite: @Sendable () throws -> Void = {}
+        recordOwnership: @Sendable (FanControlOwnership) throws -> Void = { _ in }
     ) throws -> FanControlSession {
         guard isControlling else {
             throw FanControllerError.notControlling
@@ -329,7 +349,7 @@ public actor TransactionalFanController {
             // Reassert a gate that this session already owns before touching
             // individual modes.
             if mayOwnFtst {
-                try acquireFtstIfNeeded(beforeFtstWrite: beforeFtstWrite)
+                try acquireFtstIfNeeded(recordOwnership: recordOwnership)
             }
 
             for fan in possiblyControlledFans.values.sorted(by: { $0.index < $1.index }) {
@@ -346,7 +366,7 @@ public actor TransactionalFanController {
                         guard shouldAttemptFtst(after: directFailure) else {
                             throw directFailure
                         }
-                        try acquireFtstIfNeeded(beforeFtstWrite: beforeFtstWrite)
+                        try acquireFtstIfNeeded(recordOwnership: recordOwnership)
                         try retryManualMode(fan)
                     }
                 case .unknown(let value):
@@ -358,7 +378,7 @@ public actor TransactionalFanController {
                 try writeAndVerifyTarget(fan, rpm: target)
             }
             try verifyFtstOwnershipAtTransactionEnd(
-                beforeFtstWrite: beforeFtstWrite
+                recordOwnership: recordOwnership
             )
 
             return FanControlSession(
@@ -427,7 +447,7 @@ public actor TransactionalFanController {
     }
 
     private func acquireFtstIfNeeded(
-        beforeFtstWrite: @Sendable () throws -> Void
+        recordOwnership: @Sendable (FanControlOwnership) throws -> Void
     ) throws {
         guard let ftstKey = inventory.ftstKey else {
             throw FanControllerError.smc(.keyNotFound("Ftst"))
@@ -443,7 +463,7 @@ public actor TransactionalFanController {
         // The caller durably records possible ownership only after we know the
         // gate is free, immediately before the first write that may still land
         // despite throwing. Then mirror that intent in memory for rollback.
-        try beforeFtstWrite()
+        try recordOwnership(currentOwnership(ownsFtst: true))
         mayOwnFtst = true
         do {
             try backend.write(ftstKey, bytes: [1])
@@ -465,7 +485,7 @@ public actor TransactionalFanController {
     }
 
     private func verifyFtstOwnershipAtTransactionEnd(
-        beforeFtstWrite: @Sendable () throws -> Void
+        recordOwnership: @Sendable (FanControlOwnership) throws -> Void
     ) throws {
         guard let ftstKey = inventory.ftstKey else { return }
         if mayOwnFtst {
@@ -474,7 +494,7 @@ public actor TransactionalFanController {
                 throw FanControllerError.foreignFtst(rawValue: current)
             }
             if current == 0 {
-                try beforeFtstWrite()
+                try recordOwnership(currentOwnership(ownsFtst: true))
                 try backend.write(ftstKey, bytes: [1])
                 timing.sleep(timing.ftstSettleSeconds)
                 let refreshed = try readUI8(ftstKey)
@@ -488,6 +508,35 @@ public actor TransactionalFanController {
         guard rawFtst == 0 else {
             throw FanControllerError.foreignFtst(rawValue: rawFtst)
         }
+    }
+
+    private func verifyAvailableForTakeover(_ fan: FanCapability) throws {
+        let rawMode = try readUI8(fan.modeKey)
+        switch FanMode(rawValue: rawMode) {
+        case .automatic, .system:
+            return
+        case .manual:
+            throw FanControllerError.foreignManualControl(indices: [fan.index])
+        case .unknown(let value):
+            throw FanControllerError.unknownFanMode(
+                index: fan.index,
+                rawValue: value
+            )
+        }
+    }
+
+    private func currentOwnership(
+        including fanIndex: Int? = nil,
+        ownsFtst: Bool? = nil
+    ) -> FanControlOwnership {
+        var fanIndices = Set(possiblyControlledFans.keys)
+        if let fanIndex {
+            fanIndices.insert(fanIndex)
+        }
+        return FanControlOwnership(
+            fanIndices: Array(fanIndices),
+            ownsFtst: ownsFtst ?? mayOwnFtst
+        )
     }
 
     private func writeAndVerifyTarget(_ fan: FanCapability, rpm: Double) throws {

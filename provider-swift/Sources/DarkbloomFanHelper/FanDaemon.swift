@@ -26,8 +26,7 @@ actor FanDaemon {
     private let uptime: Uptime
     private let journalOwner: (uid: uid_t, gid: gid_t)?
     private let requireRootJournalOwnership: Bool
-    private let recordFanOwnership: @Sendable () throws -> Void
-    private let recordFtstOwnership: @Sendable () throws -> Void
+    private let recordOwnership: @Sendable (FanControlOwnership) throws -> Void
 
     private var policy: FanPolicyStateMachine
     private var pollTask: Task<Void, Never>?
@@ -62,23 +61,16 @@ actor FanDaemon {
         self.journalOwner = journalOwner
         self.requireRootJournalOwnership = requireRootJournalOwnership
         let journalURL = paths.sessionJournal
-        let fanIndices = inventory.fans.map(\.index)
-        let recordOwnership: @Sendable (Bool) throws -> Void = { ownsFtst in
+        self.recordOwnership = { ownership in
             try FanDurableFile.writeJSON(
                 FanSessionJournal(
-                    fanIndices: fanIndices,
-                    ownsFtst: ownsFtst
+                    fanIndices: ownership.fanIndices,
+                    ownsFtst: ownership.ownsFtst
                 ),
                 to: journalURL,
                 permissions: 0o600,
                 owner: journalOwner
             )
-        }
-        self.recordFanOwnership = {
-            try recordOwnership(false)
-        }
-        self.recordFtstOwnership = {
-            try recordOwnership(true)
         }
         self.policy = FanPolicyStateMachine(configuration: configuration.policy)
         self.mode = configuration.enabled ? .waitingForProvider : .disabled
@@ -265,8 +257,7 @@ actor FanDaemon {
             do {
                 let session = try await controller.engage(
                     speedPercent: speedPercent,
-                    beforeFanWrite: recordFanOwnership,
-                    beforeFtstWrite: recordFtstOwnership
+                    recordOwnership: recordOwnership
                 )
                 try persistOwnership(session)
                 lastMaintenanceAt = uptime()
@@ -286,7 +277,7 @@ actor FanDaemon {
                     try persistOwnership(currentSession)
                 }
                 let session = try await controller.maintain(
-                    beforeFtstWrite: recordFtstOwnership
+                    recordOwnership: recordOwnership
                 )
                 try persistOwnership(session)
                 lastMaintenanceAt = uptime()

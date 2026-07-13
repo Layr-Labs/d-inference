@@ -62,15 +62,16 @@ struct FanServiceManager {
         try verifyRegularExecutable(source)
         try verifyHelperSignature(source)
 
-        // An existing helper may own the fans. Restore first, then boot it out
-        // before replacing its executable or policy.
-        _ = try? FanHelperClient().restoreAutomatic()
-        try bootoutIfLoaded()
-        try recoverJournalIfPresent(hardware: recoveryHardware)
-        let hardware = try hardwareForControl()
-        try preflightAutomaticHardware(hardware)
-
         do {
+            // An existing helper may own the fans. Keep this preflight inside
+            // the guarded recovery path so any failure after bootout restarts a
+            // helper that can continue reconciling the durable journal.
+            _ = try? FanHelperClient().restoreAutomatic()
+            try bootoutIfLoaded()
+            try recoverJournalIfPresent(hardware: recoveryHardware)
+            let hardware = try hardwareForControl()
+            try preflightAutomaticHardware(hardware)
+
             try installHelper(from: source)
             try ensureRootDirectory(paths.configuration.deletingLastPathComponent())
             try FanDurableFile.writeJSON(
@@ -119,7 +120,7 @@ struct FanServiceManager {
             }
 
             do {
-                try recoverJournalIfPresent(hardware: hardware)
+                try recoverJournalIfPresent(hardware: recoveryHardware)
             } catch let recoveryError {
                 // Auto is not verified. Keep/restart the helper so startup
                 // reconciliation continues retrying the durable journal.
@@ -149,7 +150,7 @@ struct FanServiceManager {
                 for _ in 0..<20 {
                     Thread.sleep(forTimeInterval: 0.1)
                     do {
-                        try recoverJournalIfPresent(hardware: hardware)
+                        try recoverJournalIfPresent(hardware: recoveryHardware)
                         directRecoverySucceeded = true
                         break
                     } catch {

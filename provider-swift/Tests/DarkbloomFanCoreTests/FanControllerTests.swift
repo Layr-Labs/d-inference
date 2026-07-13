@@ -125,7 +125,7 @@ struct FanControllerTests {
         let error = await captureControllerError {
             _ = try await controller.engage(
                 speedPercent: 80,
-                beforeFanWrite: { callback.increment() }
+                recordOwnership: { _ in callback.increment() }
             )
         }
         #expect(error == .foreignManualControl(indices: [1]))
@@ -135,6 +135,83 @@ struct FanControllerTests {
             if case .write = $0 { return true }
             return false
         }))
+    }
+
+    @Test("ownership journal expands one fan immediately before each takeover")
+    func ownershipExpandsPerFan() async throws {
+        let backend = makeFanBackend(includeFtst: false)
+        let controller = try makeController(backend: backend)
+        let recorder = OwnershipRecorder()
+
+        let session = try await controller.engage(
+            speedPercent: 80,
+            recordOwnership: recorder.record
+        )
+
+        #expect(session.targetRPMByFan.keys.sorted() == [0, 1])
+        #expect(recorder.values == [
+            FanControlOwnership(fanIndices: [0], ownsFtst: false),
+            FanControlOwnership(fanIndices: [0, 1], ownsFtst: false),
+        ])
+        try await controller.restoreAutomatic()
+    }
+
+    @Test("a foreign manual claim after the initial scan is never overwritten")
+    func concurrentForeignFanIsRechecked() async throws {
+        let backend = makeFanBackend(includeFtst: false)
+        let controller = try makeController(backend: backend)
+        let recorder = OwnershipRecorder()
+        backend.installReadHook { key, count in
+            if key == "F1Md", count == 1 {
+                backend.setUI8("F1Md", 1)
+            }
+        }
+
+        let error = await captureControllerError {
+            _ = try await controller.engage(
+                speedPercent: 80,
+                recordOwnership: recorder.record
+            )
+        }
+
+        #expect(error == .foreignManualControl(indices: [1]))
+        #expect(try backend.uint8("F0Md") == 0)
+        #expect(try backend.uint8("F1Md") == 1)
+        #expect(!backend.operations.contains(.write("F1Md", [1])))
+        #expect(recorder.values == [
+            FanControlOwnership(fanIndices: [0], ownsFtst: false),
+        ])
+    }
+
+    @Test("a foreign claim during journal fsync narrows ownership before aborting")
+    func foreignFanDuringJournalWriteIsPreserved() async throws {
+        let backend = makeFanBackend(includeFtst: false)
+        let controller = try makeController(backend: backend)
+        let recorder = OwnershipRecorder { ownership in
+            if ownership == FanControlOwnership(
+                fanIndices: [0, 1],
+                ownsFtst: false
+            ) {
+                backend.setUI8("F1Md", 1)
+            }
+        }
+
+        let error = await captureControllerError {
+            _ = try await controller.engage(
+                speedPercent: 80,
+                recordOwnership: recorder.record
+            )
+        }
+
+        #expect(error == .foreignManualControl(indices: [1]))
+        #expect(try backend.uint8("F0Md") == 0)
+        #expect(try backend.uint8("F1Md") == 1)
+        #expect(!backend.operations.contains(.write("F1Md", [1])))
+        #expect(recorder.values == [
+            FanControlOwnership(fanIndices: [0], ownsFtst: false),
+            FanControlOwnership(fanIndices: [0, 1], ownsFtst: false),
+            FanControlOwnership(fanIndices: [0], ownsFtst: false),
+        ])
     }
 
     @Test("controller independently enforces the 60 through 90 percent range")
@@ -182,6 +259,33 @@ struct FanControllerTests {
         try await controller.restoreAutomatic()
         #expect(try backend.uint8("F0Md") == 0)
         #expect(try backend.uint8("Ftst") == 0)
+    }
+
+    @Test("Ftst journal preserves only fans already at a possible write boundary")
+    func ftstJournalPreservesExactFanSet() async throws {
+        let backend = makeFanBackend()
+        backend.queue([
+            .failBefore(.firmwareRejected(
+                operation: .writeBytes,
+                key: "F0Md",
+                result: 0x82
+            )),
+            .succeed,
+        ], for: "F0Md")
+        let controller = try makeController(backend: backend)
+        let recorder = OwnershipRecorder()
+
+        let session = try await controller.engage(
+            speedPercent: 80,
+            recordOwnership: recorder.record
+        )
+
+        #expect(session.ownsFtst)
+        let ftstIntent = try #require(
+            recorder.values.first(where: { $0.ownsFtst })
+        )
+        #expect(ftstIntent.fanIndices == [0])
+        try await controller.restoreAutomatic()
     }
 
     @Test("owned Ftst reset during setup is reasserted before success returns")
@@ -657,5 +761,28 @@ private final class CallbackCounter: @unchecked Sendable {
         lock.lock()
         count += 1
         lock.unlock()
+    }
+}
+
+private final class OwnershipRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [FanControlOwnership] = []
+    private let onRecord: @Sendable (FanControlOwnership) -> Void
+
+    init(onRecord: @escaping @Sendable (FanControlOwnership) -> Void = { _ in }) {
+        self.onRecord = onRecord
+    }
+
+    var values: [FanControlOwnership] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+
+    func record(_ ownership: FanControlOwnership) {
+        lock.lock()
+        recorded.append(ownership)
+        lock.unlock()
+        onRecord(ownership)
     }
 }
